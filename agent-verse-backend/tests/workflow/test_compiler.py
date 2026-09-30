@@ -365,3 +365,25 @@ def test_find_terminal_steps_excludes_hitl_action_targets() -> None:
     # depends_on plus branch/action *targets*) still reports it terminal here;
     # _compile_uncached separately wires "gate" via add_conditional_edges.
     assert "gate" in terminal
+
+
+# ── WF-11: bounded compiled-graph cache ──────────────────────────────────────
+
+
+def test_compiled_graph_cache_is_a_bounded_lru(monkeypatch: pytest.MonkeyPatch) -> None:
+    compiler = WorkflowCompiler(ContextResolver(), cache_size=3)
+    defs = [
+        WorkflowDefinition(name=f"wf{i}", id=f"wf-{i}", steps=[StepDefinition(id="s", type="transform")])
+        for i in range(4)
+    ]
+    first = compiler.compile(defs[0])
+    compiler.compile(defs[1])
+    compiler.compile(defs[2])
+    assert compiler.compile(defs[0]) is first  # hit refreshes wf-0
+    compiler.compile(defs[3])  # evicts the least recently used: wf-1
+    assert len(compiler._cache) == 3
+    assert {k.split(":")[0] for k in compiler._cache} == {"wf-0", "wf-2", "wf-3"}
+    assert compiler.compile(defs[0]) is first
+
+    monkeypatch.setenv("WORKFLOW_COMPILED_CACHE_SIZE", "2")
+    assert WorkflowCompiler(ContextResolver())._cache_size == 2

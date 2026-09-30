@@ -17,6 +17,8 @@ import asyncio
 import contextlib
 import hashlib
 import json as _json
+import os
+from collections import OrderedDict
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -52,6 +54,14 @@ _HALTED_STATUSES = frozenset(
 )
 
 
+def _default_cache_size() -> int:
+    """Compiled-graph cache entries per process (``WORKFLOW_COMPILED_CACHE_SIZE``)."""
+    try:
+        return int(os.getenv("WORKFLOW_COMPILED_CACHE_SIZE", "256"))
+    except ValueError:
+        return 256
+
+
 class CompiledWorkflow:
     """Wrapper around a compiled LangGraph graph."""
 
@@ -79,13 +89,18 @@ class WorkflowCompiler:
         self,
         context_resolver: ContextResolver,
         checkpointer: Any = None,
+        *,
+        cache_size: int | None = None,
         **services: Any,
     ) -> None:
         self._ctx = context_resolver
         self._checkpointer = checkpointer or MemorySaver()
         self._services = services
-        # Cache: (workflow_id, version) → CompiledWorkflow
-        self._cache: dict[str, CompiledWorkflow] = {}
+        # Bounded LRU: (workflow_id, version, content hash) → CompiledWorkflow.
+        # Every edit makes a new key, so an unbounded dict grew for the life of
+        # a long-lived worker with every distinct workflow version it ran.
+        self._cache: OrderedDict[str, CompiledWorkflow] = OrderedDict()
+        self._cache_size = max(1, cache_size or _default_cache_size())
 
     def bind_services(self, **services: Any) -> None:
         """Add/replace step services after construction and drop compiled graphs.
@@ -104,11 +119,15 @@ class WorkflowCompiler:
     def compile(self, definition: WorkflowDefinition) -> CompiledWorkflow:
         """Compile a WorkflowDefinition to a runnable graph. Uses cache."""
         cache_key = self._cache_key(definition)
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            self._cache.move_to_end(cache_key)
+            return cached
 
         compiled = self._compile_uncached(definition)
         self._cache[cache_key] = compiled
+        while len(self._cache) > self._cache_size:
+            self._cache.popitem(last=False)  # evict the least recently used
         return compiled
 
     def invalidate(self, workflow_id: str) -> None:
