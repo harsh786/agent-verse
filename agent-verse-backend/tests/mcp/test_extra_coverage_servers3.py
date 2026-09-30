@@ -1146,25 +1146,3 @@ async def test_pinecone_all_tools_dep_error():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_mongodb_list_collections_mock():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    mock_db = AsyncMock()
-    mock_db.list_collection_names = AsyncMock(return_value=["users", "orders"])
-
-    mock_motor_client = MagicMock()
-    mock_motor_client.__getitem__ = MagicMock(return_value=mock_db)
-    mock_motor_client.close = MagicMock()
-
-    mock_motor_cls = MagicMock(return_value=mock_motor_client)
-    mock_motor_asyncio = MagicMock()
-    mock_motor_asyncio.AsyncIOMotorClient = mock_motor_cls
-
-    mock_motor = MagicMock()
-    mock_motor.motor_asyncio = mock_motor_asyncio
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}), \
-         patch.dict("sys.modules", {"motor": mock_motor, "motor.motor_asyncio": mock_motor_asyncio}):
-        result = await call_tool("mongodb_list_collections", {"collection": "dummy"})
-    assert result is not None

@@ -1540,39 +1540,7 @@ async def test_sheets_read_range():
     assert "error" not in result
 
 
-# ---------------------------------------------------------------------------
-# MongoDB – more tests (via motor mock)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_mongodb_insert_one_mock():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    mock_result = MagicMock()
-    mock_result.inserted_id = "obj123"
-
-    mock_coll = MagicMock()
-    mock_coll.insert_one = AsyncMock(return_value=mock_result)
-
-    mock_db = MagicMock()
-    mock_db.__getitem__ = MagicMock(return_value=mock_coll)
-
-    mock_motor_client = MagicMock()
-    mock_motor_client.__getitem__ = MagicMock(return_value=mock_db)
-    mock_motor_client.close = MagicMock()
-
-    mock_motor_cls = MagicMock(return_value=mock_motor_client)
-    mock_motor_asyncio = MagicMock()
-    mock_motor_asyncio.AsyncIOMotorClient = mock_motor_cls
-
-    mock_motor = MagicMock()
-    mock_motor.motor_asyncio = mock_motor_asyncio
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}), \
-         patch.dict("sys.modules", {"motor": mock_motor, "motor.motor_asyncio": mock_motor_asyncio}):
-        result = await call_tool("mongodb_insert_one", {"collection": "users", "document": {"name": "Alice"}})
-    assert result is not None
+# MongoDB: see tests/mcp/test_mongodb_builtin_credentials.py (tenant credentials only).
 
 
 # ---------------------------------------------------------------------------

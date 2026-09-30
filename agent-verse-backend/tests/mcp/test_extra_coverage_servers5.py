@@ -105,10 +105,10 @@ def test_redis_get_tools_redis_missing():
     assert len(tools) == 1
 
 
-def test_mongodb_get_tools_motor_missing():
+def test_mongodb_get_tools_pymongo_missing():
     from app.mcp.servers.mongodb_server import get_tools
 
-    with patch.dict("sys.modules", {"motor": None}):
+    with patch.dict("sys.modules", {"pymongo": None}):
         tools = get_tools()
     assert len(tools) == 1
 
@@ -408,67 +408,6 @@ async def test_tiktok_http_error():
 # ---------------------------------------------------------------------------
 # MongoDB – more tool branches via proper motor mock
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_mongodb_delete_one_mock():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    mock_result = MagicMock()
-    mock_result.deleted_count = 1
-
-    mock_coll = MagicMock()
-    mock_coll.delete_one = AsyncMock(return_value=mock_result)
-
-    mock_db = MagicMock()
-    mock_db.__getitem__ = MagicMock(return_value=mock_coll)
-
-    mock_motor_client = MagicMock()
-    mock_motor_client.__getitem__ = MagicMock(return_value=mock_db)
-    mock_motor_client.close = MagicMock()
-
-    mock_motor_cls = MagicMock(return_value=mock_motor_client)
-    mock_motor_asyncio = MagicMock()
-    mock_motor_asyncio.AsyncIOMotorClient = mock_motor_cls
-    mock_motor = MagicMock()
-    mock_motor.motor_asyncio = mock_motor_asyncio
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}), \
-         patch.dict("sys.modules", {"motor": mock_motor, "motor.motor_asyncio": mock_motor_asyncio}):
-        result = await call_tool("mongodb_delete_one", {"collection": "users", "filter": {"_id": "u1"}})
-    assert result is not None
-
-
-@pytest.mark.asyncio
-async def test_mongodb_aggregate_mock():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    mock_cursor = MagicMock()
-    mock_cursor.to_list = AsyncMock(return_value=[{"_id": "group1", "count": 5}])
-
-    mock_coll = MagicMock()
-    mock_coll.aggregate = MagicMock(return_value=mock_cursor)
-
-    mock_db = MagicMock()
-    mock_db.__getitem__ = MagicMock(return_value=mock_coll)
-
-    mock_motor_client = MagicMock()
-    mock_motor_client.__getitem__ = MagicMock(return_value=mock_db)
-    mock_motor_client.close = MagicMock()
-
-    mock_motor_cls = MagicMock(return_value=mock_motor_client)
-    mock_motor_asyncio = MagicMock()
-    mock_motor_asyncio.AsyncIOMotorClient = mock_motor_cls
-    mock_motor = MagicMock()
-    mock_motor.motor_asyncio = mock_motor_asyncio
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}), \
-         patch.dict("sys.modules", {"motor": mock_motor, "motor.motor_asyncio": mock_motor_asyncio}):
-        result = await call_tool("mongodb_aggregate", {
-            "collection": "users",
-            "pipeline": [{"$group": {"_id": "$city", "count": {"$sum": 1}}}]
-        })
-    assert result is not None
 
 
 # ---------------------------------------------------------------------------

@@ -147,7 +147,8 @@ async def test_mongodb_no_url_returns_error():
     try:
         result = await call_tool("mongodb_find", {"collection": "test"})
         assert "error" in result
-        assert "MONGODB_MCP_URL" in result["error"]
+        # Tenant credentials only — the platform env var is never consulted.
+        assert "configure credentials" in result["error"].lower()
     finally:
         if old is not None:
             os.environ["MONGODB_MCP_URL"] = old

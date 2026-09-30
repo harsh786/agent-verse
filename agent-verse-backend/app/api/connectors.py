@@ -406,6 +406,19 @@ async def _assert_connector_urls_public(
         candidate = raw.strip()
         if not candidate or candidate.startswith("builtin://"):
             continue
+        if candidate.lower().startswith(("mongodb://", "mongodb+srv://")):
+            # A database URI is not HTTP: check every host it dials (each
+            # replica-set seed / SRV target) instead of refusing the scheme.
+            from app.ingestion.connector_egress import check_source_dsn
+
+            try:
+                await check_source_dsn(candidate, context=context)
+            except (SSRFError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Connector URL rejected by SSRF guard: {exc}",
+                ) from exc
+            continue
         if "://" not in candidate:
             candidate = f"https://{candidate}"  # same default as MCPClient
         try:

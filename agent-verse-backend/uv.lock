@@ -146,7 +146,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "respx" },
     { name = "ruff" },
-    { name = "testcontainers", extra = ["redis"] },
+    { name = "testcontainers", extra = ["mongodb", "redis"] },
 ]
 
 [package.metadata]
@@ -195,7 +195,7 @@ requires-dist = [
     { name = "prometheus-client", specifier = ">=0.21.0" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.9.0" },
     { name = "pydantic-settings", specifier = ">=2.6.0" },
-    { name = "pymongo", specifier = ">=4.9" },
+    { name = "pymongo", specifier = ">=4.10" },
     { name = "pymupdf", marker = "extra == 'multimodal'", specifier = ">=1.24.0" },
     { name = "pyotp", specifier = ">=2.10.0" },
     { name = "pypdf", specifier = ">=5.0" },
@@ -242,7 +242,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "respx", specifier = ">=0.22.0" },
     { name = "ruff", specifier = ">=0.8.0" },
-    { name = "testcontainers", extras = ["postgres", "redis"], specifier = ">=4.9.0" },
+    { name = "testcontainers", extras = ["mongodb", "postgres", "redis"], specifier = ">=4.9.0" },
 ]
 
 [[package]]
@@ -5049,6 +5049,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+mongodb = [
+    { name = "pymongo" },
+]
 redis = [
     { name = "redis" },
 ]

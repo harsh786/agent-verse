@@ -81,6 +81,20 @@ def _ws_to_http_url(url: str) -> str:
 # Credential keys a built-in handler uses as the vendor API endpoint.
 _BUILTIN_ENDPOINT_KEYS = ("url", "base_url", "instance_url", "server_url", "endpoint")
 
+# Database connection URIs a built-in driver dials (not HTTP): checked host by
+# host (every replica-set seed / SRV target) instead of being refused on scheme.
+_DSN_SCHEMES = ("mongodb://", "mongodb+srv://")
+
+
+def _assert_egress_allowed(url: str, *, context: str) -> None:
+    """Raise SSRFError unless every host ``url`` would reach is allowed."""
+    if url.strip().lower().startswith(_DSN_SCHEMES):
+        from app.ingestion.connector_egress import assert_source_dsn
+
+        assert_source_dsn(url, context=context)
+        return
+    assert_public_url(url, context=context)
+
 
 def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     """Extract credentials dict from an MCPServerConfig for passing to builtin handlers.
@@ -651,7 +665,7 @@ class MCPClient:
             if not isinstance(_ep, str) or not _ep.strip() or _ep.startswith("builtin://"):
                 continue
             try:
-                assert_public_url(
+                _assert_egress_allowed(
                     _absolute_http_url(_ep), context=f"MCP built-in {server.server_id}"
                 )
             except SSRFError as exc:
@@ -1009,7 +1023,7 @@ class MCPClient:
             _guard_urls.append(_ws_to_http_url(cfg.ws_url))
         for _guard_url in _guard_urls:
             try:
-                assert_public_url(_guard_url, context=f"MCP server {server_id}")
+                _assert_egress_allowed(_guard_url, context=f"MCP server {server_id}")
             except SSRFError as exc:
                 logger.warning(
                     "ssrf_guard_blocked_mcp: server_id=%s, error=%s", server_id, str(exc)

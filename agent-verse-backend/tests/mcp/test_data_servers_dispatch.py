@@ -1,7 +1,7 @@
 """Dispatch-level tests for data/storage MCP servers.
 
 Covers: postgres (asyncpg), mysql (aiomysql - not installed),
-        mongodb (motor - not installed), snowflake (not installed),
+        snowflake (not installed),
         elasticsearch, redis, pinecone (not installed), supabase.
 """
 from __future__ import annotations
@@ -224,65 +224,7 @@ async def test_mysql_list_tables_with_mock():
     assert "error" not in result
 
 
-# ---------------------------------------------------------------------------
-# MongoDB (motor - not installed: test ImportError path)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_mongodb_missing_dep_returns_error():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}):
-        result = await call_tool("mongodb_find", {"collection": "users"})
-    # motor not installed → ImportError path
-    assert "error" in result
-
-
-@pytest.mark.asyncio
-async def test_mongodb_missing_env():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": ""}):
-        os.environ.pop("MONGODB_MCP_URL", None)
-        result = await call_tool("mongodb_find", {"collection": "users"})
-    assert "error" in result
-
-
-@pytest.mark.asyncio
-async def test_mongodb_with_mock_motor():
-    """Test mongodb_find when motor is mocked."""
-    from app.mcp.servers.mongodb_server import call_tool
-
-    # Build a fake motor module
-    mock_doc = {"_id": "obj_id", "name": "Alice"}
-
-    mock_cursor = AsyncMock()
-    mock_cursor.to_list = AsyncMock(return_value=[mock_doc])
-
-    mock_coll = MagicMock()
-    mock_coll.find = MagicMock(return_value=mock_cursor)
-    mock_coll.find.return_value.limit = MagicMock(return_value=mock_cursor)
-
-    mock_db = MagicMock()
-    mock_db.__getitem__ = MagicMock(return_value=mock_coll)
-
-    mock_motor_client = MagicMock()
-    mock_motor_client.__getitem__ = MagicMock(return_value=mock_db)
-    mock_motor_client.close = MagicMock()
-
-    mock_motor_cls = MagicMock(return_value=mock_motor_client)
-    mock_motor_asyncio = MagicMock()
-    mock_motor_asyncio.AsyncIOMotorClient = mock_motor_cls
-
-    mock_motor = MagicMock()
-    mock_motor.motor_asyncio = mock_motor_asyncio
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}), \
-         patch.dict("sys.modules", {"motor": mock_motor, "motor.motor_asyncio": mock_motor_asyncio}):
-        result = await call_tool("mongodb_find", {"collection": "users"})
-    # May succeed or fail with AttributeError depending on mock wiring; just check no crash
-    assert result is not None
+# MongoDB: see tests/mcp/test_mongodb_builtin_credentials.py (tenant credentials only).
 
 
 # ---------------------------------------------------------------------------

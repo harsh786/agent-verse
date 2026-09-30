@@ -699,69 +699,6 @@ async def test_pinecone_fetch_vectors():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_mongodb_count_documents_mock():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    mock_coll = MagicMock()
-    mock_coll.count_documents = AsyncMock(return_value=42)
-
-    mock_db = MagicMock()
-    mock_db.__getitem__ = MagicMock(return_value=mock_coll)
-
-    mock_motor_client = MagicMock()
-    mock_motor_client.__getitem__ = MagicMock(return_value=mock_db)
-    mock_motor_client.close = MagicMock()
-
-    mock_motor_cls = MagicMock(return_value=mock_motor_client)
-    mock_motor_asyncio = MagicMock()
-    mock_motor_asyncio.AsyncIOMotorClient = mock_motor_cls
-
-    mock_motor = MagicMock()
-    mock_motor.motor_asyncio = mock_motor_asyncio
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}), \
-         patch.dict("sys.modules", {"motor": mock_motor, "motor.motor_asyncio": mock_motor_asyncio}):
-        result = await call_tool("mongodb_count", {"collection": "users", "query": {"active": True}})
-    assert result is not None
-
-
-@pytest.mark.asyncio
-async def test_mongodb_update_one_mock():
-    from app.mcp.servers.mongodb_server import call_tool
-
-    mock_result = MagicMock()
-    mock_result.matched_count = 1
-    mock_result.modified_count = 1
-    mock_result.upserted_id = None
-
-    mock_coll = MagicMock()
-    mock_coll.update_one = AsyncMock(return_value=mock_result)
-
-    mock_db = MagicMock()
-    mock_db.__getitem__ = MagicMock(return_value=mock_coll)
-
-    mock_motor_client = MagicMock()
-    mock_motor_client.__getitem__ = MagicMock(return_value=mock_db)
-    mock_motor_client.close = MagicMock()
-
-    mock_motor_cls = MagicMock(return_value=mock_motor_client)
-    mock_motor_asyncio = MagicMock()
-    mock_motor_asyncio.AsyncIOMotorClient = mock_motor_cls
-
-    mock_motor = MagicMock()
-    mock_motor.motor_asyncio = mock_motor_asyncio
-
-    with patch.dict("os.environ", {"MONGODB_MCP_URL": "mongodb://localhost/mydb"}), \
-         patch.dict("sys.modules", {"motor": mock_motor, "motor.motor_asyncio": mock_motor_asyncio}):
-        result = await call_tool("mongodb_update_one", {
-            "collection": "users",
-            "filter": {"_id": "user1"},
-            "update": {"name": "Bob Updated"},
-        })
-    assert result is not None
-
-
 # ---------------------------------------------------------------------------
 # Docker – remaining response processing branches
 # ---------------------------------------------------------------------------
