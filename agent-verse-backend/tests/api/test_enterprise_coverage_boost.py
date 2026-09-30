@@ -332,6 +332,25 @@ def _bench_router(
     ]
 
 
+def _shared_platform(
+    success: float | None, cost: float | None, eval_score: float | None = None
+) -> Any:
+    """Patch the shared /insights platform computation (MEM-31) with fixed figures."""
+    live = success is not None
+    shared = {
+        "platform_avg_success_rate": success,
+        "platform_avg_cost_usd": cost,
+        "data_source": "live_platform_data" if live else "insufficient_data",
+    }
+    evals = {"eval_score": eval_score, "dims": {"safety": 0.88} if eval_score else {}}
+    return (
+        patch("app.api.insights.compute_platform_benchmarks", AsyncMock(return_value=shared)),
+        patch(
+            "app.api.insights.compute_platform_eval_benchmarks", AsyncMock(return_value=evals)
+        ),
+    )
+
+
 def test_benchmarks_your_and_platform_metrics_top_10_percent() -> None:
     """Real-schema benchmark computation: your success rate crushes platform."""
     router = _bench_router(
@@ -340,16 +359,15 @@ def test_benchmarks_your_and_platform_metrics_top_10_percent() -> None:
             "cost": (0.01, 100),
             "eval": (50, 0.876, 0.9, 0.85, 0.88, 0.95, 0.8),
         },
-        platform={
-            "goals": (1000, 720, 12),
-            "cost": (0.05, 1000),
-            "eval": (900, 0.764, 0.75, 0.72, 0.76, 0.88, 0.71),
-        },
+        platform={},
     )
     session = _FakeSession(router=router)
     app = _make_app(db_session_factory=_db_factory(session))
+    app.state.system_db_session_factory = object()
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/intelligence/benchmarks?days=7", headers=_headers())
+    p1, p2 = _shared_platform(0.72, 0.05, 0.764)
+    with p1, p2:
+        resp = client.get("/intelligence/benchmarks?days=7", headers=_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert body["your_success_rate"] == 0.95
@@ -384,12 +402,15 @@ def test_benchmarks_sql_matches_real_schema() -> None:
 def test_benchmarks_below_average_and_high_cost_percentile() -> None:
     router = _bench_router(
         your={"goals": (100, 10, 1), "cost": (0.5, 100)},
-        platform={"goals": (1000, 720, 8), "cost": (0.05, 1000)},
+        platform={},
     )
     session = _FakeSession(router=router)
     app = _make_app(db_session_factory=_db_factory(session))
+    app.state.system_db_session_factory = object()
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/intelligence/benchmarks", headers=_headers())
+    p1, p2 = _shared_platform(0.72, 0.05)
+    with p1, p2:
+        resp = client.get("/intelligence/benchmarks", headers=_headers())
     assert resp.status_code == 200
     body = resp.json()
     assert body["percentile_success"] == 75
@@ -418,20 +439,14 @@ def test_benchmarks_too_few_tenants_is_insufficient_data() -> None:
     assert body["your_success_rate"] == 0.5
 
 
-def test_benchmarks_db_query_exceptions_return_nulls_not_defaults() -> None:
+def test_benchmarks_db_query_exceptions_are_503_not_nulls() -> None:
+    # MEM-31: a failed tenant-metrics query used to be swallowed into nulls,
+    # which read as "you have no data"; it is an honest 503 now.
     session = _FakeSession(router=[], raise_on="goals")
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/intelligence/benchmarks", headers=_headers())
-    assert resp.status_code == 200
-    body = resp.json()
-    # Never the old hard-coded 0.72 / $0.05 / 0.74 presented as real data.
-    assert body["platform_avg_success_rate"] is None
-    assert body["platform_avg_cost_usd"] is None
-    assert body["platform_avg_eval_score"] is None
-    assert body["your_success_rate"] is None
-    assert body["comparison_label"] == "insufficient_data"
-    assert body["dimensions"] == {"your": {}, "platform": {}}
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

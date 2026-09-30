@@ -592,6 +592,26 @@ describe('SelfImprovementPage', () => {
     await waitFor(() => expect(screen.getByText('Benchmark data unavailable')).toBeInTheDocument());
   });
 
+  test('benchmarks tab says the metrics store is unavailable on a 503 (not "no data")', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/intelligence/benchmarks')) {
+        return new Response(
+          JSON.stringify({ detail: 'Your benchmark metrics are unavailable: database query failed' }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await user.click(await screen.findByRole('tab', { name: 'benchmarks' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/temporarily unavailable/i);
+    expect(alert).toHaveTextContent(/database query failed/i);
+    expect(screen.queryByTestId('benchmark-insufficient-data')).not.toBeInTheDocument();
+  });
+
   test('benchmarks tab shows the eval-dimensions radar chart when dimension data is present', async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {

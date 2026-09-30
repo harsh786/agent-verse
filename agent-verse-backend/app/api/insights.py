@@ -906,6 +906,15 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Platform benchmarks are computed in Postgres and need a database",
         )
+    return await compute_platform_benchmarks(system_db)
+
+
+async def compute_platform_benchmarks(system_db: Any) -> dict[str, Any]:
+    """The platform benchmark figures (system session, k-anonymity); 503 on a DB error.
+
+    Shared by ``/insights/benchmarks`` and the legacy ``/intelligence/benchmarks``
+    so the two pages that show platform averages report the same numbers.
+    """
     from app.db.rls import system_session
 
     since = datetime.now(UTC) - timedelta(days=_BENCHMARK_WINDOW_DAYS)
@@ -941,4 +950,51 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
         },
         "sample_count": total,
         "data_source": "live_platform_data",
+    }
+
+
+async def compute_platform_eval_benchmarks(
+    system_db: Any, dimensions: Sequence[str]
+) -> dict[str, Any]:
+    """Platform mean eval score and per-dimension means over the benchmark window.
+
+    Same system session, window and k-anonymity guard as
+    :func:`compute_platform_benchmarks`; ``None`` / ``{}`` when too few tenants
+    contributed. A DB error is a 503.
+    """
+    from sqlalchemy import Float, cast
+
+    from app.db.rls import system_session
+
+    ev = Evaluation.__table__
+    since = datetime.now(UTC) - timedelta(days=_BENCHMARK_WINDOW_DAYS)
+    stmt = select(
+        func.count(),
+        func.count(func.distinct(ev.c.tenant_id)),
+        func.avg(ev.c.average_score),
+        *(func.avg(cast(ev.c.scores[d].as_string(), Float)) for d in dimensions),
+    ).where(ev.c.created_at >= since)
+    try:
+        async with system_db() as session, session.begin(), system_session(session):
+            row = (await session.execute(stmt)).fetchone()
+    except Exception as exc:
+        logger.warning("insights_eval_benchmarks_query_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Platform benchmarks unavailable: database query failed",
+        ) from exc
+    if (
+        row is None
+        or int(row[0] or 0) < _BENCHMARK_MIN_GOALS
+        or int(row[1] or 0) < _BENCHMARK_MIN_TENANTS
+        or row[2] is None
+    ):
+        return {"eval_score": None, "dims": {}}
+    return {
+        "eval_score": round(float(row[2]), 4),
+        "dims": {
+            d: round(float(v), 4)
+            for d, v in zip(dimensions, row[3:], strict=False)
+            if v is not None
+        },
     }

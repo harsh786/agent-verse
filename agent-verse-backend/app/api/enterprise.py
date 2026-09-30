@@ -1000,10 +1000,12 @@ async def reject_suggestion(request: Request, suggestion_id: str) -> dict[str, A
     return {"suggestion_id": suggestion_id, "rejected": True}
 
 
-# A platform benchmark is only reported when this many tenants / goals
-# contributed (k-anonymity guard for the cross-tenant aggregate).
-_BENCHMARK_MIN_TENANTS = 5
-_BENCHMARK_MIN_GOALS = 10
+
+def _insights_window_days() -> int:
+    """The platform benchmark window (shared with /insights/benchmarks)."""
+    from app.api.insights import _BENCHMARK_WINDOW_DAYS
+
+    return _BENCHMARK_WINDOW_DAYS
 
 
 @intelligence_router.get("/benchmarks")
@@ -1022,7 +1024,9 @@ async def get_benchmarks(
     ctx = _require_tenant(request)
     tenant_id = ctx.tenant_id
 
-    db = _get_db(request)
+    # The app's own factory only (no global fallback): without a DB there is
+    # nothing to report, and every figure below stays null.
+    db = getattr(request.app.state, "db_session_factory", None)
 
     # Real schema (the previous SQL referenced columns that do not exist —
     # goals.cost_usd, evaluations.score_* / run_at — so every query raised,
@@ -1104,23 +1108,34 @@ async def get_benchmarks(
                     session, "tenant_id = :tid AND", {"tid": tenant_id, "days": days}
                 )
         except Exception as exc:
+            # A DB outage must not read as "you have no data".
             _log.warning("benchmarks_your_metrics_failed: %s", exc)
+            raise HTTPException(
+                503, "Your benchmark metrics are unavailable: database query failed"
+            ) from exc
 
-        try:
-            # DELIBERATELY NOT tenant-scoped (a cross-tenant aggregate). With no GUC
-            # under FORCE RLS this matches nothing, so it reports insufficient_data
-            # unless the deployment's role can read across tenants. Even then it is
-            # only reported when >= _BENCHMARK_MIN_TENANTS tenants contributed, so
-            # a small platform cannot de-anonymise another tenant's figures.
-            async with db() as session:
-                platform = await _metrics(session, "", {"days": days})
-        except Exception as exc:
-            _log.warning("benchmarks_platform_metrics_failed: %s", exc)
+    # The cross-tenant side is the SAME computation as /insights/benchmarks
+    # (system session, k-anonymity guard) so every page shows one set of
+    # platform figures. It used to run on the tenant session with no GUC, which
+    # under FORCE RLS matched nothing: always insufficient_data.
+    platform_ok = False
+    system_db = getattr(request.app.state, "system_db_session_factory", None)
+    if system_db is not None:
+        from app.api.insights import (
+            compute_platform_benchmarks,
+            compute_platform_eval_benchmarks,
+        )
 
-    platform_ok = (
-        platform.get("n_tenants", 0) >= _BENCHMARK_MIN_TENANTS
-        and platform.get("n_goals", 0) >= _BENCHMARK_MIN_GOALS
-    )
+        shared = await compute_platform_benchmarks(system_db)  # 503 on DB error
+        platform_ok = shared.get("data_source") == "live_platform_data"
+        if platform_ok:
+            evals = await compute_platform_eval_benchmarks(system_db, dim_names)
+            platform = {
+                "success_rate": shared.get("platform_avg_success_rate"),
+                "cost_usd": shared.get("platform_avg_cost_usd"),
+                "eval_score": evals["eval_score"],
+                "dims": evals["dims"],
+            }
     if not platform_ok:
         platform = {"success_rate": None, "cost_usd": None, "eval_score": None, "dims": {}}
 
@@ -1161,6 +1176,8 @@ async def get_benchmarks(
         "percentile_cost": percentile_cost,
         "comparison_label": comparison_label,
         "your_sample_count": yours.get("n_goals", 0),
+        "your_window_days": days,
+        "platform_window_days": _insights_window_days(),
         "data_source": "live_platform_data" if platform_ok else "insufficient_data",
         "dimensions": {
             "your": yours["dims"],

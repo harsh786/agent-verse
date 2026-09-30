@@ -9,7 +9,7 @@ import {
   Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, Tooltip, Legend,
 } from "recharts";
-import { selfImprovementApi } from "@/lib/api/client";
+import { ApiError, selfImprovementApi } from "@/lib/api/client";
 import type { Experiment, Suggestion, BenchmarkMetrics } from "@/lib/api/client";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { StatusOrb } from '@/components/ui/StatusOrb';
@@ -144,12 +144,23 @@ function ExperimentDetail({ experiment }: { experiment: Experiment }): JSX.Eleme
 // ── Benchmarks Tab ────────────────────────────────────────────────────────────
 
 function BenchmarksTab(): JSX.Element {
-  const { data: bm, isLoading, isError } = useQuery<BenchmarkMetrics>({
+  const { data: bm, isLoading, isError, error } = useQuery<BenchmarkMetrics>({
     queryKey: ["benchmarks"],
     queryFn: () => selfImprovementApi.getBenchmarks(30),
   });
 
   if (isLoading) return <div className="flex justify-center p-12"><LoadingSpinner /></div>;
+  if (error instanceof ApiError && error.status === 503) {
+    // The metrics store could not be read: say so, rather than showing empty
+    // figures that would read as "no data yet".
+    return (
+      <div role="alert" className="flex flex-col items-center p-12 text-muted-foreground">
+        <AlertCircle className="h-8 w-8 mb-2 opacity-40" />
+        <p className="text-sm font-medium">Benchmarks are temporarily unavailable</p>
+        <p className="text-xs mt-1">{error.message}</p>
+      </div>
+    );
+  }
   if (isError || !bm) {
     return (
       <div className="flex flex-col items-center p-12 text-muted-foreground">
