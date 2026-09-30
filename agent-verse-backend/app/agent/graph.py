@@ -1042,7 +1042,7 @@ class AgentGraph(
         self, goal_id: str, step_index: int, state: Any, tenant_ctx: Any
     ) -> None:
         """Write step checkpoint to DB after each successful step."""
-        if self._db_session_factory is None:
+        if self._db_session_factory is None or not getattr(self, "_checkpoints_enabled", True):
             return
         try:
             from datetime import UTC, datetime
@@ -1124,7 +1124,7 @@ class AgentGraph(
 
     async def _load_checkpoint(self, goal_id: str, tenant_ctx: Any) -> dict[str, Any] | None:
         """Load latest checkpoint for goal resume."""
-        if self._db_session_factory is None:
+        if self._db_session_factory is None or not getattr(self, "_checkpoints_enabled", True):
             return None
         try:
             from sqlalchemy import select

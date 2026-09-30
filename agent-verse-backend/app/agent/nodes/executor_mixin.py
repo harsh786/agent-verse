@@ -388,6 +388,11 @@ class ExecutorMixin:
                 # Grants are keyed by agent: a sub-agent acts as its parent agent.
                 graph._agent_id = getattr(self, "_agent_id", None)
                 graph._db_session_factory = getattr(self, "_db_session_factory", None)
+                # A child's synthetic id has no goals row (and exceeds goals.id), so
+                # every checkpoint write failed the FK — a wasted, swallowed DB round
+                # trip per step. Children are re-run from the PARENT's checkpoints,
+                # so they do not checkpoint themselves (CORE-10).
+                graph._checkpoints_enabled = False
                 graph._agent_collection_ids = list(self._agent_collection_ids)
                 graph._event_callback = self._event_callback
                 graph._parent_trace_context = otel_context.get_current()
@@ -398,9 +403,19 @@ class ExecutorMixin:
                 if self._model_router is not None:
                     with contextlib.suppress(Exception):
                         _tree_model = self._model_router.model_for("planning") or ""
+                from app.providers.guarded_completion import GuardedDecisionProvider
+
                 sub_goals: list[SubGoal] = await execute_goal_tree(
                     agent_state.goal,
-                    planner=self._planner,
+                    # Decomposition through the guarded path: circuit breaker,
+                    # timeout and a charge to the parent goal's budget (it called
+                    # planner.complete directly — uncharged, no circuit).
+                    planner=GuardedDecisionProvider(
+                        self._planner,
+                        role="goal_tree",
+                        tenant_ctx=tenant_ctx,
+                        goal_id=agent_state.goal_id,
+                    ),
                     tenant_ctx=tenant_ctx,
                     parent_goal_id=agent_state.goal_id,
                     graph_factory=_sub_graph_factory,
