@@ -774,28 +774,23 @@ def test_get_suite_results_with_runner() -> None:
 
 
 def test_start_gdpr_export_no_db() -> None:
-    """Lines 856-869: no DB → still returns job_id with pending status."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post("/compliance/export/start", headers=_headers())
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "job_id" in data
-    assert data["status"] == "pending"
+    """No DB → 503; a job that was never recorded must not be reported 'pending'."""
+    with patch("app.api.enterprise._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.post("/compliance/export/start", headers=_headers())
+    assert resp.status_code == 503
 
 
 def test_start_gdpr_export_with_db_exception() -> None:
-    """Lines 856-869: DB insert fails gracefully."""
-    session = AsyncMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=False)
-    session.begin = MagicMock(return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock()))
-    session.execute = AsyncMock(side_effect=Exception("DB error"))
-
-    db_factory = MagicMock(return_value=session)
-    client = TestClient(_make_app(db_session_factory=db_factory), raise_server_exceptions=False)
-    resp = client.post("/compliance/export/start", headers=_headers())
-    assert resp.status_code == 200
-    assert "job_id" in resp.json()
+    """A failed job INSERT answers 503 and never enqueues the export."""
+    db_factory = _make_db_mock(fail=True)
+    with patch("app.scaling.tasks.run_gdpr_export") as task:
+        client = TestClient(
+            _make_app(db_session_factory=db_factory), raise_server_exceptions=False
+        )
+        resp = client.post("/compliance/export/start", headers=_headers())
+    assert resp.status_code == 503
+    task.delay.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -836,28 +831,23 @@ def test_gdpr_export_status_not_found() -> None:
 # ---------------------------------------------------------------------------
 
 def test_record_consent_no_db() -> None:
-    """Line 921: record consent → returns consent_id even without DB."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/compliance/consent",
-        json={"purpose": "analytics", "legal_basis": "legitimate_interest"},
-        headers=_headers(),
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "consent_id" in data
-    assert data["purpose"] == "analytics"
-    assert data["status"] == "recorded"
+    """No DB → 503; consent that was never stored must not be reported 'recorded'."""
+    with patch("app.api.enterprise._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.post(
+            "/compliance/consent",
+            json={"purpose": "analytics", "legal_basis": "legitimate_interest"},
+            headers=_headers(),
+        )
+    assert resp.status_code == 503
 
 
 def test_revoke_consent_no_db() -> None:
-    """Lines 944-947: revoke consent without DB → status revoked."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.delete("/compliance/consent/analytics", headers=_headers())
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "revoked"
-    assert data["purpose"] == "analytics"
+    """No DB → 503; a revocation that was never written must not be reported 'revoked'."""
+    with patch("app.api.enterprise._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.delete("/compliance/consent/analytics", headers=_headers())
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -1419,11 +1409,16 @@ def test_list_suggestions_applied_filter() -> None:
 def test_start_gdpr_export_with_db_success() -> None:
     """Lines 847-849: DB insert succeeds → job_id returned."""
     db = _make_db_mock()
-    with patch("app.api.enterprise._get_db", return_value=db):
+    # The export task is enqueued on a stub, never a real broker.
+    with (
+        patch("app.api.enterprise._get_db", return_value=db),
+        patch("app.scaling.tasks.run_gdpr_export") as task,
+    ):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.post("/compliance/export/start", headers=_headers())
         assert resp.status_code == 200
-        assert "job_id" in resp.json()
+        job_id = resp.json()["job_id"]
+    task.delay.assert_called_once_with(job_id, _CTX.tenant_id)
 
 
 # Lines 1076-1077 — sign_contract with DB that succeeds

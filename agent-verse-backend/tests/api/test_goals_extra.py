@@ -43,24 +43,25 @@ def _make_app(svc: Any, *, extra_state: dict | None = None) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 
-def test_goal_feedback_returns_success_when_db_unavailable() -> None:
-    """FIX 1: feedback endpoint returns 200 even when no DB is available (graceful degradation)."""
+def test_goal_feedback_is_503_when_db_unavailable() -> None:
+    """Feedback that cannot be stored is a 503, never 'feedback_recorded'.
+
+    This test used to patch a name the endpoint never reads
+    (``app.api.goals.get_session_factory``), so the feedback row was written to
+    whatever Postgres DATABASE_URL defaulted to — the developer's.
+    """
     svc = AsyncMock()
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
 
-    # get_session_factory returns None → DB path skipped, no crash
-    with patch("app.api.goals.get_session_factory", return_value=None, create=True):
+    with patch("app.db.session.get_session_factory", return_value=None):
         resp = client.post(
             "/goals/test-goal-id/feedback",
             json={"rating": 5, "comment": "Great result!"},
             headers={"X-API-Key": _KEY},
         )
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "feedback_recorded"
-    assert data["goal_id"] == "test-goal-id"
-    assert data["rating"] == 5
+    assert resp.status_code == 503
+    assert "could not be recorded" in resp.json()["detail"]
 
 
 def test_goal_feedback_requires_auth() -> None:

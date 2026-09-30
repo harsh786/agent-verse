@@ -130,11 +130,13 @@ def test_require_tenant_invalid_key() -> None:
 
 def test_get_db_fallback_to_session_factory() -> None:
     """Lines 57-58: _get_db tries to import get_session_factory when db_session_factory not set."""
-    # No db_session_factory on app.state → _get_db tries import
+    # No db_session_factory on app.state → _get_db falls back to the global
+    # factory; with it unavailable too the list is a 503, never [].
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    # list_civilizations returns [] when db is None (after fallback)
-    resp = client.get("/civilizations", headers=H)
-    assert resp.status_code in (200, 500)
+    with patch("app.db.session.get_session_factory", side_effect=Exception("No DB")) as gsf:
+        resp = client.get("/civilizations", headers=H)
+    gsf.assert_called()
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

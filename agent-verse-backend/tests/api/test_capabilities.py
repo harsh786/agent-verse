@@ -19,13 +19,17 @@ def _auth_header(app):
 
 
 def test_capabilities_endpoint_returns_list():
+    from tests._rls_recorder import RlsRecordingDb
+
     app = _make_app()
     client, headers = _auth_header(app)
     if headers is None:
         pytest.skip("signup failed")
+    # The capability index lives in Postgres; an empty fake table stands in for it.
+    app.state.db_session_factory = RlsRecordingDb()
     resp = client.get("/connectors/capabilities", headers=headers)
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.json() == []
 
 
 def test_capabilities_search_endpoint_exists():

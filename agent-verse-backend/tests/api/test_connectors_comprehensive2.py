@@ -15,6 +15,7 @@ from app.api.connectors import router as connectors_router
 from app.mcp.registry import MCPRegistry
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
+from tests._rls_recorder import RlsRecordingDb
 
 _CTX = TenantContext(tenant_id="tid-conn2", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
 _VALID_KEY = "av_test_connectors2"
@@ -127,16 +128,39 @@ def test_get_connector_health_history_not_found() -> None:
 
 
 def test_list_capabilities_empty() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    app = _make_app()
+    db = RlsRecordingDb()  # an empty tool_capabilities table, no real database
+    app.state.db_session_factory = db
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/connectors/capabilities", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.json() == []
+    [stmt] = db.touching("tool_capabilities")
+    assert stmt.tenant_guc == _CTX.tenant_id
 
 
 def test_list_capabilities_with_query() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    app = _make_app()
+    db = RlsRecordingDb()
+    app.state.db_session_factory = db
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/connectors/capabilities?q=github", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
+    [stmt] = db.touching("tool_capabilities")
+    assert stmt.params["q"] == "%github%"
+
+
+def test_list_capabilities_db_error_is_503() -> None:
+    """An unreadable capability index is a 503, never an invented list."""
+
+    def _unreachable(_sql: str, _params: dict[str, Any]) -> list[Any]:
+        raise ConnectionRefusedError("database unreachable")
+
+    app = _make_app()
+    app.state.db_session_factory = RlsRecordingDb(rows_for=_unreachable)
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/connectors/capabilities", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
 
 
 def test_search_capabilities() -> None:

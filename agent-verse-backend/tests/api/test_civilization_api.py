@@ -10,6 +10,12 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+# Tests that persist civilizations run against a migrated Postgres testcontainer
+# (``test_backends`` in tests/conftest.py points the app's global engine at it) —
+# they used to fall through to the developer's live database, or skip without one.
+_REAL_DB = pytest.mark.usefixtures("test_backends")
+
+
 # ── App factory helpers ────────────────────────────────────────────────────────
 
 def _make_app_enabled():
@@ -74,6 +80,8 @@ def test_civilization_unauthenticated_returns_401():
 
 # ── CRUD tests ─────────────────────────────────────────────────────────────────
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_create_when_enabled():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -84,9 +92,6 @@ def test_civilization_create_when_enabled():
         json={"name": "Test Civ", "constitution": {"max_depth": 3}},
         headers=h,
     )
-    # DB may not be running in unit test — accept 201 or 500/503
-    if resp.status_code in (500, 503):
-        pytest.skip("DB not available in unit test environment")
     assert resp.status_code in (200, 201), f"Create failed: {resp.text}"
     data = resp.json()
     assert data.get("name") == "Test Civ"
@@ -94,18 +99,23 @@ def test_civilization_create_when_enabled():
     assert data["constitution"]["max_depth"] == 3
 
 
-def test_civilization_list():
+def test_civilization_list_without_database_is_503(monkeypatch):
+    # No database at all (no app.state factory, no global engine): the list is
+    # unreadable, which is a 503 -- never an empty list passed off as "none".
+    def _no_database():
+        raise RuntimeError("no database configured in this test")
+
+    monkeypatch.setattr("app.db.session.get_session_factory", _no_database)
     app = _make_app_enabled()
     c, h = _signup(app)
     if not h:
         pytest.skip("signup failed")
-    c.post("/civilizations", json={"name": "Civ 1"}, headers=h)
     resp = c.get("/civilizations", headers=h)
-    # list endpoint returns [] gracefully when DB is unavailable
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.status_code == 503
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_get_detail():
     app = _make_app_enabled()
     # Keep all requests on TestClient's single portal/event loop. Calling a
@@ -121,7 +131,7 @@ def test_civilization_get_detail():
         h = {"X-API-Key": signup.json().get("api_key", "")}
         create = c.post("/civilizations", json={"name": "My Civ"}, headers=h)
         if create.status_code not in (200, 201):
-            pytest.skip("create failed — DB likely unavailable")
+            pytest.fail(f"create failed against the test database: {create.text}")
         civ_id = create.json()["id"]
         resp = c.get(f"/civilizations/{civ_id}", headers=h)
         assert resp.status_code == 200
@@ -138,6 +148,8 @@ def test_civilization_get_nonexistent_returns_404_or_503():
     assert resp.status_code in (404, 500, 503), resp.text
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_update_constitution():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -145,7 +157,7 @@ def test_civilization_update_constitution():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Const Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
     resp = c.put(
         f"/civilizations/{civ_id}/constitution",
@@ -173,6 +185,8 @@ def test_civilization_update_constitution_unknown_civ():
 
 # ── Control tests ──────────────────────────────────────────────────────────────
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_control_pause_resume():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -180,7 +194,7 @@ def test_civilization_control_pause_resume():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Ctrl Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     pause = c.post(f"/civilizations/{civ_id}/controls/pause", json={}, headers=h)
@@ -192,6 +206,8 @@ def test_civilization_control_pause_resume():
     assert resume.json()["status"] == "active"
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_control_unknown_action():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -199,13 +215,15 @@ def test_civilization_control_unknown_action():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Act Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
     resp = c.post(f"/civilizations/{civ_id}/controls/fly_to_moon", json={}, headers=h)
     assert resp.status_code == 400
     assert "Unknown action" in resp.json().get("detail", "")
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_control_adjust_budget():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -213,7 +231,7 @@ def test_civilization_control_adjust_budget():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Budget Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
     resp = c.post(
         f"/civilizations/{civ_id}/controls/adjust_budget",
@@ -226,6 +244,8 @@ def test_civilization_control_adjust_budget():
 
 # ── Goal submission ────────────────────────────────────────────────────────────
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_submit_goal():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -233,7 +253,7 @@ def test_civilization_submit_goal():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Goal Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.post(
@@ -249,6 +269,8 @@ def test_civilization_submit_goal():
 
 # ── Graph + inspector ──────────────────────────────────────────────────────────
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_graph_endpoint():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -256,7 +278,7 @@ def test_civilization_graph_endpoint():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Graph Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.get(f"/civilizations/{civ_id}/graph", headers=h)
@@ -265,6 +287,8 @@ def test_civilization_graph_endpoint():
     assert "nodes" in data and "edges" in data
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_blackboard_endpoint():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -272,7 +296,7 @@ def test_civilization_blackboard_endpoint():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "BB Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.get(f"/civilizations/{civ_id}/blackboard", headers=h)
@@ -280,6 +304,8 @@ def test_civilization_blackboard_endpoint():
     assert isinstance(resp.json(), list)
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_debates_endpoint():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -287,7 +313,7 @@ def test_civilization_debates_endpoint():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Debate Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.get(f"/civilizations/{civ_id}/debates", headers=h)
@@ -295,6 +321,8 @@ def test_civilization_debates_endpoint():
     assert isinstance(resp.json(), list)
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_learnings_endpoint():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -302,7 +330,7 @@ def test_civilization_learnings_endpoint():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Learn Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.get(f"/civilizations/{civ_id}/learnings", headers=h)
@@ -310,6 +338,8 @@ def test_civilization_learnings_endpoint():
     assert isinstance(resp.json(), list)
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_spawns_endpoint():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -317,7 +347,7 @@ def test_civilization_spawns_endpoint():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Spawn Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.get(f"/civilizations/{civ_id}/spawns", headers=h)
@@ -327,6 +357,8 @@ def test_civilization_spawns_endpoint():
 
 # ── Replay ────────────────────────────────────────────────────────────────────
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_replay_endpoint():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -334,7 +366,7 @@ def test_civilization_replay_endpoint():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Replay Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.get(f"/civilizations/{civ_id}/replay", headers=h)
@@ -345,6 +377,8 @@ def test_civilization_replay_endpoint():
     assert data["civilization_id"] == civ_id
 
 
+@pytest.mark.integration
+@_REAL_DB
 def test_civilization_replay_with_since_param():
     app = _make_app_enabled()
     c, h = _signup(app)
@@ -352,7 +386,7 @@ def test_civilization_replay_with_since_param():
         pytest.skip("signup failed")
     create = c.post("/civilizations", json={"name": "Replay Since Civ"}, headers=h)
     if create.status_code not in (200, 201):
-        pytest.skip("create failed — DB likely unavailable")
+        pytest.fail(f"create failed against the test database: {create.text}")
     civ_id = create.json()["id"]
 
     resp = c.get(

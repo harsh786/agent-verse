@@ -6,7 +6,7 @@ Covers compliance, simulation, red-team, marketplace, intelligence, SAML, SCIM.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -436,14 +436,16 @@ def test_list_eval_suites() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_compliance_export_start() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/compliance/export/start",
-        json={"format": "json"},
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code in (200, 201, 422, 500)
+def test_compliance_export_start_without_db_is_503() -> None:
+    # No database → no job row → honest 503 (never a live-DB insert).
+    with patch("app.api.enterprise._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.post(
+            "/compliance/export/start",
+            json={"format": "json"},
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert resp.status_code == 503
 
 
 def test_compliance_export_job_status() -> None:
@@ -455,14 +457,15 @@ def test_compliance_export_job_status() -> None:
     assert resp.status_code in (200, 404, 500)
 
 
-def test_compliance_consent_management() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/compliance/consent",
-        json={"purpose": "marketing", "granted": True},
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code in (200, 201, 422, 500)
+def test_compliance_consent_without_db_is_503() -> None:
+    with patch("app.api.enterprise._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.post(
+            "/compliance/consent",
+            json={"purpose": "marketing", "granted": True},
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

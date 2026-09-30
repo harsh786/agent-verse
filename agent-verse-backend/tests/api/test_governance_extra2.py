@@ -223,9 +223,17 @@ class TestSlaStats:
 
 class TestPolicyVersions:
     def test_get_policy_versions_nonexistent(self):
-        client = TestClient(_make_app(), raise_server_exceptions=False)
+        from tests._rls_recorder import RlsRecordingDb
+
+        app = _make_app()
+        db = RlsRecordingDb()  # an empty policy_versions table, no real database
+        app.state.db_session_factory = db
+        client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/governance/policies/ghost/versions", headers=_H)
-        assert resp.status_code in (200, 404)
+        assert resp.status_code == 200
+        assert resp.json() == []
+        [stmt] = db.touching("policy_versions")
+        assert stmt.params["pid"] == "ghost"
 
     def test_rollback_policy_nonexistent(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)

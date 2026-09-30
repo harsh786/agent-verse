@@ -560,8 +560,10 @@ def test_create_legal_hold_with_db() -> None:
 
 def test_list_legal_holds_no_db() -> None:
     """Line 999: no DB → returns empty list."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/governance/legal-holds", headers=_headers())
+    # Truly no database (no app.state factory, no global-engine fallback).
+    with patch("app.api.governance._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.get("/governance/legal-holds", headers=_headers())
     assert resp.status_code == 200
     assert resp.json() == []
 
@@ -661,8 +663,9 @@ def test_batch_reject_not_found() -> None:
 
 def test_get_policy_versions_no_db() -> None:
     """Line 1142: no DB → returns empty list."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/governance/policies/some-policy-id/versions", headers=_headers())
+    with patch("app.api.governance._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.get("/governance/policies/some-policy-id/versions", headers=_headers())
     assert resp.status_code == 200
     assert resp.json() == []
 
