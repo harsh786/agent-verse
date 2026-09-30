@@ -33,6 +33,9 @@ _tracer = trace.get_tracer(__name__)
 # Mirrors app.org.org_learning.OrgLearningLoop.MIN_CONFIDENCE_FOR_PROMOTION.
 MIN_CONFIDENCE_FOR_PROMOTION = 0.70
 
+# Keywords of a retrieval query that take part in the SQL ranking.
+_MAX_QUERY_KEYWORDS = 32
+
 
 @dataclass
 class MemoryEntry:
@@ -79,13 +82,38 @@ class DepartmentMemory:
     def set_db(self, db_factory: Any) -> None:
         self._db_factory = db_factory
 
-    async def _db_rows(self, dept_id: str, tenant_id: str, active_only: bool) -> list[MemoryEntry]:
-        """Load a department's entries from Postgres (RLS-scoped)."""
+    async def _db_rows(
+        self,
+        dept_id: str,
+        tenant_id: str,
+        active_only: bool,
+        *,
+        keywords: list[str] | None = None,
+        limit: int = 1000,
+    ) -> list[MemoryEntry]:
+        """A department's entries from Postgres (RLS-scoped), best matches first.
+
+        With ``keywords`` the ranking happens in SQL: the score is the share of
+        query keywords the content contains (case-insensitive substring, the
+        same rule as the in-memory path) times the entry's confidence, ties
+        newest first, and only ``limit`` rows leave the database. It used to
+        load the newest 1000 rows and score them in Python, so an older SOP in
+        a busy department could never be found.
+        """
         import json as _json
 
         from sqlalchemy import text as _t
 
         clause = " AND is_active IS TRUE" if active_only else ""
+        params: dict[str, Any] = {"tid": tenant_id, "did": dept_id, "lim": max(1, limit)}
+        order = "created_at DESC"
+        if keywords:
+            hits = " + ".join(
+                f"(CASE WHEN strpos(lower(content), :kw{i}) > 0 THEN 1 ELSE 0 END)"
+                for i in range(len(keywords))
+            )
+            params.update({f"kw{i}": kw for i, kw in enumerate(keywords)})
+            order = f"(({hits})::float / {len(keywords)}) * confidence DESC, created_at DESC"
         async with self._db_factory() as s, s.begin():
             await s.execute(
                 _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
@@ -96,9 +124,9 @@ class DepartmentMemory:
                         "SELECT entry_id, dept_id, org_id, tenant_id, content, source, "
                         "confidence, tags, is_active, corrections, created_at, updated_at "
                         f"FROM department_memory_entries WHERE tenant_id = :tid "
-                        f"AND dept_id = :did{clause} ORDER BY created_at DESC LIMIT 1000"
+                        f"AND dept_id = :did{clause} ORDER BY {order} LIMIT :lim"
                     ),
-                    {"tid": tenant_id, "did": dept_id},
+                    params,
                 )
             ).mappings().all()
 
@@ -127,8 +155,9 @@ class DepartmentMemory:
     ) -> list[MemoryEntry]:
         """Retrieve relevant department memories for a query.
 
-        Uses simple keyword scoring when no vector store is available;
-        upgrades to semantic search when an embedder is configured.
+        Lexical ranking (not semantic): the share of query keywords an entry
+        contains, weighted by its confidence. With Postgres the ranking runs in
+        SQL over every entry of the department and returns ``top_k`` rows.
         """
         with _tracer.start_as_current_span("dept_memory.retrieve") as span:
             span.set_attribute("dept_id", dept_id)
@@ -136,7 +165,12 @@ class DepartmentMemory:
             span.set_attribute("top_k", top_k)
 
             if self._db_factory is not None and tenant_id is not None:
-                entries = await self._db_rows(dept_id, tenant_id, active_only)
+                keywords = query.lower().split()[:_MAX_QUERY_KEYWORDS]
+                results = await self._db_rows(
+                    dept_id, tenant_id, active_only, keywords=keywords, limit=top_k
+                )
+                span.set_attribute("results_count", len(results))
+                return results
             else:
                 entries = self._store.get(dept_id, [])
                 if active_only:
@@ -382,7 +416,7 @@ class DepartmentMemory:
         """DB-backed list of a department's entries (falls back to in-memory)."""
         if self._db_factory is None:
             return self.list_entries(dept_id, active_only=active_only, limit=limit)
-        entries = await self._db_rows(dept_id, tenant_id, active_only)
+        entries = await self._db_rows(dept_id, tenant_id, active_only, limit=limit)
         return [
             {
                 "entry_id": e.entry_id,
