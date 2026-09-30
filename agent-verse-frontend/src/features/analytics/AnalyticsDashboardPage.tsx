@@ -59,7 +59,10 @@ interface KpiProps {
 
 function KpiCard({ label, value, sub, trend, trendLabel, icon, accentClass }: KpiProps) {
   return (
-    <div className="bg-card border border-border rounded-xl p-5 flex flex-col gap-2 relative overflow-hidden">
+    <div
+      data-testid={`kpi-${label}`}
+      className="bg-card border border-border rounded-xl p-5 flex flex-col gap-2 relative overflow-hidden"
+    >
       <div className="flex items-center justify-between">
         <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
         <span className={`p-1.5 rounded-lg ${accentClass}`}>{icon}</span>
@@ -210,14 +213,14 @@ export function AnalyticsDashboardPage() {
     new Set(['task_completion', 'efficiency', 'accuracy', 'safety', 'coherence'])
   );
 
-  const { data: goals } = useQuery<AnalyticsGoalMetrics>({
+  const { data: goals, isError: goalsError } = useQuery<AnalyticsGoalMetrics>({
     queryKey: ['analytics-goals', days],
     queryFn: () => analyticsApi.getGoalMetrics(days),
     enabled: !!apiKey,
     refetchInterval: 60_000,
   });
 
-  const { data: costs } = useQuery<CostMetrics>({
+  const { data: costs, isError: costsError } = useQuery<CostMetrics>({
     queryKey: ['analytics-costs', days],
     queryFn: () => analyticsApi.getCostMetrics(days),
     enabled: !!apiKey,
@@ -231,14 +234,14 @@ export function AnalyticsDashboardPage() {
     refetchInterval: 60_000,
   });
 
-  const { data: tools } = useQuery<AnalyticsToolMetrics>({
+  const { data: tools, isError: toolsError } = useQuery<AnalyticsToolMetrics>({
     queryKey: ['analytics-tools', days],
     queryFn: () => analyticsApi.getToolMetrics(days),
     enabled: !!apiKey,
     refetchInterval: 60_000,
   });
 
-  const { data: agents } = useQuery<AnalyticsAgentMetrics>({
+  const { data: agents, isError: agentsError } = useQuery<AnalyticsAgentMetrics>({
     queryKey: ['analytics-agents', days],
     queryFn: () => analyticsApi.getAgentMetrics(days),
     enabled: !!apiKey,
@@ -251,6 +254,16 @@ export function AnalyticsDashboardPage() {
     enabled: !!apiKey,
     refetchInterval: 300_000,
   });
+
+  // A failed analytics request (the backend answers 503 when the tenant's data
+  // cannot be read) must never read as "no activity": those sections say
+  // "unavailable" and their KPIs show a dash instead of 0.
+  const unavailable = [
+    goalsError && 'goals',
+    toolsError && 'tools',
+    costsError && 'costs',
+    agentsError && 'agents',
+  ].filter((s): s is string => !!s);
 
   // ── KPI computations ──
 
@@ -350,12 +363,23 @@ export function AnalyticsDashboardPage() {
         </div>
       </div>
 
+      {unavailable.length > 0 && (
+        <div
+          role="alert"
+          data-testid="analytics-unavailable"
+          className="border border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300 rounded-lg px-4 py-3 text-sm"
+        >
+          Analytics unavailable for: {unavailable.join(', ')}. This is a service error, not an
+          absence of activity — the affected figures are not shown.
+        </div>
+      )}
+
       {/* ── Executive Summary KPI Row ── */}
       <section aria-label="Key performance indicators">
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <KpiCard
             label="Total Goals"
-            value={fmt(totalGoals)}
+            value={goalsError ? NO_VALUE : fmt(totalGoals)}
             sub={`${days}d period`}
             icon={<Target className="h-4 w-4" />}
             accentClass="bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-[#00D4FF]"
@@ -393,7 +417,7 @@ export function AnalyticsDashboardPage() {
           />
           <KpiCard
             label="Active Agents"
-            value={fmt(activeAgents)}
+            value={agentsError ? NO_VALUE : fmt(activeAgents)}
             sub={`across ${days}d`}
             icon={<Users className="h-4 w-4" />}
             accentClass="bg-pink-100 text-pink-600 dark:bg-pink-900/30 dark:text-pink-400"
@@ -406,7 +430,9 @@ export function AnalyticsDashboardPage() {
         {/* Goal Funnel */}
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="font-semibold text-sm mb-4">Goal Execution Funnel</h2>
-          {totalGoals === 0 ? (
+          {goalsError ? (
+            <div className="h-40 flex items-center justify-center text-sm text-muted-foreground">Goal analytics unavailable</div>
+          ) : totalGoals === 0 ? (
             <div className="h-40 flex items-center justify-center text-sm text-muted-foreground">No goals in period</div>
           ) : (
             <FunnelChart stages={funnelStages} />
@@ -433,7 +459,9 @@ export function AnalyticsDashboardPage() {
           {/* `tools.tools` is optional in practice: a payload without it (an
               envelope, an empty object) made .length throw and took the whole
               Analytics page down through the error boundary. */}
-          {!tools?.tools?.length ? (
+          {toolsError ? (
+            <div className="h-40 flex items-center justify-center text-sm text-muted-foreground">Tool analytics unavailable</div>
+          ) : !tools?.tools?.length ? (
             <div className="h-40 flex items-center justify-center text-sm text-muted-foreground">No tool data yet</div>
           ) : (
             <div className="overflow-auto max-h-64">
@@ -457,7 +485,9 @@ export function AnalyticsDashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div>
             <h3 className="text-xs font-medium text-muted-foreground mb-3">Cost by Model</h3>
-            {costByModel.length === 0 ? (
+            {costsError ? (
+              <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">Cost analytics unavailable</div>
+            ) : costByModel.length === 0 ? (
               <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">No model cost data</div>
             ) : (
               <ThemedBarChart
@@ -471,7 +501,9 @@ export function AnalyticsDashboardPage() {
           </div>
           <div>
             <h3 className="text-xs font-medium text-muted-foreground mb-3">Cost Trajectory ({days}d)</h3>
-            {costByDay.length === 0 ? (
+            {costsError ? (
+              <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">Cost analytics unavailable</div>
+            ) : costByDay.length === 0 ? (
               <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">No cost trend data</div>
             ) : (
               <ThemedLineChart
@@ -485,7 +517,9 @@ export function AnalyticsDashboardPage() {
           </div>
           <div>
             <h3 className="text-xs font-medium text-muted-foreground mb-3">Agent Cost Ranking</h3>
-            {agentCostData.length === 0 ? (
+            {agentsError ? (
+              <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">Agent analytics unavailable</div>
+            ) : agentCostData.length === 0 ? (
               <div className="h-32 flex items-center justify-center text-xs text-muted-foreground">No agent data</div>
             ) : (
               <div className="space-y-1.5 overflow-auto max-h-40">

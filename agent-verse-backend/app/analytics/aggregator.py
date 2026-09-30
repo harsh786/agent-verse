@@ -14,6 +14,14 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
+class AnalyticsUnavailableError(RuntimeError):
+    """The tenant's analytics could not be read (the API answers 503).
+
+    Raised instead of falling back to another source: an empty or failed DB
+    read must never be papered over with in-memory goals of other tenants.
+    """
+
+
 @dataclass
 class GoalMetrics:
     total: int = 0
@@ -61,20 +69,31 @@ def _goal_status_cancelled(status: Any) -> bool:
 
 
 class GoalAnalyticsAggregator:
-    """Computes analytics from the GoalService in-memory goal states.
+    """Computes a tenant's goal analytics.
 
-    When ``db`` is provided, ``goal_metrics()`` will query PostgreSQL for
-    accurate analytics instead of reading from the in-process in-memory store.
+    With ``db`` the database is the ONLY source: an empty result means the
+    tenant has no data (zeros / empty lists) and a failed query raises
+    :class:`AnalyticsUnavailableError`. The in-process GoalService goals are
+    read only when there is no database at all, and then filtered to the
+    tenant. A falsy ``tenant_id`` yields no data — never every tenant's.
     """
 
     def __init__(self, goal_service: Any = None, db: Any = None) -> None:
         self._goal_service = goal_service
         self._db = db
 
-    async def _get_goals_from_db(self, tenant_id: str, db: Any, days: int = 30) -> list[dict]:
-        """Query goals directly from PostgreSQL for accurate analytics."""
-        if db is None:
+    async def _get_goals_from_db(
+        self, tenant_id: str, db: Any, days: int = 30, agent_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The tenant's goals (optionally one agent's) with duration inputs and
+        their ledger cost. Raises :class:`AnalyticsUnavailableError` on failure."""
+        if db is None or not tenant_id:
             return []
+        params: dict[str, Any] = {"tid": tenant_id, "days": days}
+        agent_clause = ""
+        if agent_id:
+            agent_clause = "AND g.agent_id = :agent_id"
+            params["agent_id"] = agent_id
         try:
             from sqlalchemy import text
 
@@ -83,31 +102,42 @@ class GoalAnalyticsAggregator:
                 sqlalchemy_rls_context(session, tenant_id),
             ):
                 result = await session.execute(
-                    text("""
-                        SELECT id, status, priority, agent_id, created_at, dry_run
-                        FROM goals
-                        WHERE tenant_id = :tid
-                          AND created_at > NOW() - (:days * INTERVAL '1 day')
-                        ORDER BY created_at DESC
+                    text(f"""
+                        SELECT g.id, g.status, g.priority, g.agent_id, g.created_at,
+                               g.dry_run, g.completed_at, COALESCE(c.goal_cost, 0)
+                        FROM goals g
+                        LEFT JOIN (
+                            SELECT goal_id, SUM(COALESCE(cost_usd, 0)) AS goal_cost
+                            FROM cost_ledger
+                            WHERE tenant_id = :tid
+                              AND created_at > NOW() - (:days * INTERVAL '1 day')
+                            GROUP BY goal_id
+                        ) c ON c.goal_id = g.id
+                        WHERE g.tenant_id = :tid
+                          AND g.created_at > NOW() - (:days * INTERVAL '1 day')
+                          {agent_clause}
+                        ORDER BY g.created_at DESC
                         LIMIT 10000
                     """),
-                    {"tid": tenant_id, "days": days},
+                    params,
                 )
                 rows = result.fetchall()
-            return [
-                {
-                    "id": r[0],
-                    "status": r[1],
-                    "priority": r[2],
-                    "agent_id": r[3],
-                    "created_at": r[4].isoformat() if r[4] else "",
-                    "dry_run": r[5],
-                }
-                for r in rows
-            ]
         except Exception as exc:
             logger.warning("analytics_db_query_failed", error=str(exc))
-            return []
+            raise AnalyticsUnavailableError("goal analytics query failed") from exc
+        return [
+            {
+                "id": r[0],
+                "status": r[1],
+                "priority": r[2],
+                "agent_id": r[3],
+                "created_at": r[4],
+                "dry_run": r[5],
+                "completed_at": r[6],
+                "cost_usd": float(r[7] or 0.0),
+            }
+            for r in rows
+        ]
 
     @staticmethod
     def _parse_created_at(g: Any) -> datetime | None:
@@ -129,13 +159,22 @@ class GoalAnalyticsAggregator:
         self,
         since: datetime | None = None,
         agent_id: str | None = None,
+        *,
+        tenant_id: str,
     ) -> list[Any]:
-        """Get all goal states, optionally filtered."""
+        """The tenant's in-process goal states, optionally filtered.
+
+        GoalService holds every tenant's goals, so the tenant filter is
+        mandatory; no tenant means no goals.
+        """
+        if not tenant_id:
+            return []
         goals = (
             list(self._goal_service._goals.values())
             if hasattr(self._goal_service, "_goals")
             else []
         )
+        goals = [g for g in goals if getattr(g, "tenant_id", None) == tenant_id]
         if since:
             # created_at may be a datetime or ISO string — normalise before comparing
             goals = [
@@ -151,61 +190,88 @@ class GoalAnalyticsAggregator:
         days: int = 30,
         agent_id: str | None = None,
     ) -> GoalMetrics:
-        """Compute success/failure breakdown for goals.
+        """Success/failure breakdown, duration and cost of the tenant's goals.
 
-        Uses PostgreSQL when ``tenant_id`` and ``db`` are available;
-        falls back to the in-process in-memory store otherwise.
+        PostgreSQL is authoritative when configured (empty = zeros, error =
+        :class:`AnalyticsUnavailableError`); the tenant-filtered in-memory
+        store is used only without a database.
         """
+        if not tenant_id:
+            return GoalMetrics()
+        if self._db is not None:
+            rows = await self._get_goals_from_db(tenant_id, self._db, days, agent_id)
+            return self._metrics_from(
+                [
+                    (
+                        r["status"],
+                        r["cost_usd"],
+                        self._duration_s(r["created_at"], r["completed_at"]),
+                    )
+                    for r in rows
+                ]
+            )
+
         since = datetime.now(UTC) - timedelta(days=days)
-        goals: list[Any]
+        goals = self._get_all_goals(since=since, agent_id=agent_id, tenant_id=tenant_id)
+        return self._metrics_from(
+            [
+                (
+                    getattr(g, "status", None),
+                    float(getattr(g, "cost_usd", 0.0) or 0.0),
+                    self._duration_s(
+                        self._parse_created_at(g), getattr(g, "completed_at", None)
+                    ),
+                )
+                for g in goals
+            ]
+        )
 
-        if tenant_id and self._db is not None:
-            db_rows = await self._get_goals_from_db(tenant_id, self._db, days)
-            if db_rows:
-                m = GoalMetrics(total=len(db_rows))
-                for row in db_rows:
-                    status = row.get("status", "")
-                    if _goal_status_completed(status):
-                        m.completed += 1
-                    elif _goal_status_failed(status):
-                        m.failed += 1
-                    elif _goal_status_cancelled(status):
-                        m.cancelled += 1
-                m.success_rate = round(m.completed / m.total, 4) if m.total > 0 else 0.0
-                return m
+    @staticmethod
+    def _as_aware(v: Any) -> datetime | None:
+        if isinstance(v, datetime):
+            return v if v.tzinfo else v.replace(tzinfo=UTC)
+        if isinstance(v, str) and v:
+            try:
+                dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+            return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+        return None
 
-        goals = self._get_all_goals(since=since, agent_id=agent_id)
+    @classmethod
+    def _duration_s(cls, created: Any, completed: Any) -> float | None:
+        start, end = cls._as_aware(created), cls._as_aware(completed)
+        if start is None or end is None:
+            return None
+        return (end - start).total_seconds()
 
+    @staticmethod
+    def _metrics_from(goals: list[tuple[Any, float, float | None]]) -> GoalMetrics:
+        """Aggregate ``(status, cost_usd, duration_s | None)`` tuples."""
         m = GoalMetrics(total=len(goals))
         durations: list[float] = []
         costs: list[float] = []
-
-        for g in goals:
-            status = getattr(g, "status", None)
+        for status, cost, duration in goals:
             if _goal_status_completed(status):
                 m.completed += 1
             elif _goal_status_failed(status):
                 m.failed += 1
             elif _goal_status_cancelled(status):
                 m.cancelled += 1
-
-            cost = getattr(g, "cost_usd", 0.0) or 0.0
             costs.append(cost)
             m.total_cost_usd += cost
-
-            if hasattr(g, "created_at") and hasattr(g, "completed_at") and g.completed_at:
-                duration = (g.completed_at - g.created_at).total_seconds()
+            if duration is not None:
                 durations.append(duration)
-
+        m.total_cost_usd = round(m.total_cost_usd, 6)
         m.success_rate = round(m.completed / m.total, 4) if m.total > 0 else 0.0
         m.avg_duration_s = round(statistics.mean(durations), 2) if durations else 0.0
         m.avg_cost_usd = round(statistics.mean(costs), 6) if costs else 0.0
         return m
 
-    def tool_metrics(self, days: int = 30) -> list[ToolMetrics]:
-        """Compute tool usage and reliability from goal events."""
+    def tool_metrics(self, days: int = 30, *, tenant_id: str) -> list[ToolMetrics]:
+        """Tool usage and reliability from the tenant's in-memory goal events."""
         since = datetime.now(UTC) - timedelta(days=days)
-        goals = self._get_all_goals(since=since)
+        goals = self._get_all_goals(since=since, tenant_id=tenant_id)
 
         tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for g in goals:
@@ -231,10 +297,14 @@ class GoalAnalyticsAggregator:
     async def tool_metrics_db(self, tenant_id: str, days: int = 30) -> list[ToolMetrics]:
         """Query tool call metrics from goal_events table in PostgreSQL.
 
-        Falls back to in-memory tool_metrics() when DB is unavailable.
+        Empty result = no tool calls; a failed query raises
+        :class:`AnalyticsUnavailableError`. The tenant-filtered in-memory
+        :meth:`tool_metrics` is used only when no database is configured.
         """
-        if self._db is None or not tenant_id:
-            return self.tool_metrics(days=days)
+        if not tenant_id:
+            return []
+        if self._db is None:
+            return self.tool_metrics(days=days, tenant_id=tenant_id)
         try:
             from sqlalchemy import text
 
@@ -281,17 +351,17 @@ class GoalAnalyticsAggregator:
                         failure_rate=round(failure_count / max(call_count, 1), 4),
                     )
                 )
-            if results:
-                return results
         except Exception as exc:
             logger.warning("tool_metrics_db_failed", error=str(exc))
-        # Fallback to in-memory
-        return self.tool_metrics(days=days)
+            raise AnalyticsUnavailableError("tool analytics query failed") from exc
+        return results
 
-    def cost_trends(self, days: int = 30, bucket: str = "day") -> list[dict[str, Any]]:
-        """Return daily/weekly cost aggregates."""
+    def cost_trends(
+        self, days: int = 30, bucket: str = "day", *, tenant_id: str
+    ) -> list[dict[str, Any]]:
+        """Daily/weekly cost aggregates of the tenant's in-memory goals."""
         since = datetime.now(UTC) - timedelta(days=days)
-        goals = self._get_all_goals(since=since)
+        goals = self._get_all_goals(since=since, tenant_id=tenant_id)
 
         buckets: dict[str, float] = defaultdict(float)
         for g in goals:
@@ -318,10 +388,14 @@ class GoalAnalyticsAggregator:
 
         Costs live in ``cost_ledger`` (per-tool spend rows), not on ``goals`` —
         the goals table has no cost column. Returns list of {period, cost_usd}
-        dicts, falling back to in-memory cost_trends() when DB is unavailable.
+        dicts; empty = no spend, a failed query raises
+        :class:`AnalyticsUnavailableError`. The tenant-filtered in-memory
+        :meth:`cost_trends` is used only when no database is configured.
         """
-        if self._db is None or not tenant_id:
-            return self.cost_trends(days=days, bucket=bucket)
+        if not tenant_id:
+            return []
+        if self._db is None:
+            return self.cost_trends(days=days, bucket=bucket, tenant_id=tenant_id)
         try:
             from sqlalchemy import text
 
@@ -345,22 +419,18 @@ class GoalAnalyticsAggregator:
                 )
                 rows = result.fetchall()
 
-            db_results = [
-                {"period": str(row[0]), "cost_usd": round(float(row[1] or 0), 6)} for row in rows
-            ]
-            if db_results:
-                return db_results
         except Exception as exc:
             logger.warning("cost_trends_db_failed", error=str(exc))
-        # Fallback to in-memory
-        return self.cost_trends(days=days, bucket=bucket)
+            raise AnalyticsUnavailableError("cost analytics query failed") from exc
+        return [{"period": str(row[0]), "cost_usd": round(float(row[1] or 0), 6)} for row in rows]
 
     async def cost_by_model_db(self, tenant_id: str, days: int = 30) -> dict[str, float]:
         """Return cost aggregated by model from cost_ledger table.
 
         Groups on ``cost_ledger.model``. It previously grouped on ``tool_name``,
         a column the partitioned ledger (migration 0058) does not have, so every
-        call raised UndefinedColumn, was swallowed, and returned ``{}``.
+        call raised UndefinedColumn, was swallowed, and returned ``{}``. A failed
+        query now raises :class:`AnalyticsUnavailableError`.
         """
         if self._db is None or not tenant_id:
             return {}
@@ -386,15 +456,15 @@ class GoalAnalyticsAggregator:
                     {"tid": tenant_id, "days": days},
                 )
                 rows = result.fetchall()
-            return {str(row[0]): round(float(row[1] or 0), 6) for row in rows}
         except Exception as exc:
             logger.warning("cost_by_model_db_failed", error=str(exc))
-        return {}
+            raise AnalyticsUnavailableError("cost-by-model query failed") from exc
+        return {str(row[0]): round(float(row[1] or 0), 6) for row in rows}
 
-    def agent_metrics(self, days: int = 30) -> list[AgentMetrics]:
-        """Per-agent goal performance."""
+    def agent_metrics(self, days: int = 30, *, tenant_id: str) -> list[AgentMetrics]:
+        """Per-agent performance of the tenant's in-memory goals."""
         since = datetime.now(UTC) - timedelta(days=days)
-        goals = self._get_all_goals(since=since)
+        goals = self._get_all_goals(since=since, tenant_id=tenant_id)
 
         by_agent: dict[str, list[Any]] = defaultdict(list)
         for g in goals:
@@ -432,11 +502,15 @@ class GoalAnalyticsAggregator:
         Aggregates ``goals`` (count + success rate) per agent in the database and
         LEFT JOINs a per-goal ``cost_ledger`` rollup for average cost, instead of
         pulling every goal into Python. Eval scores are not persisted as a goals
-        column, so ``avg_eval_score`` is reported as 0.0 on the DB path. Falls back
-        to the in-memory :meth:`agent_metrics` when no DB/tenant is available.
+        column, so ``avg_eval_score`` is reported as 0.0 on the DB path. Empty =
+        no goals; a failed query raises :class:`AnalyticsUnavailableError`. The
+        tenant-filtered in-memory :meth:`agent_metrics` is used only when no
+        database is configured.
         """
-        if self._db is None or not tenant_id:
-            return self.agent_metrics(days=days)
+        if not tenant_id:
+            return []
+        if self._db is None:
+            return self.agent_metrics(days=days, tenant_id=tenant_id)
         try:
             from sqlalchemy import text
 
@@ -485,8 +559,7 @@ class GoalAnalyticsAggregator:
                         avg_cost_usd=round(total_cost / goal_count, 6) if goal_count else 0.0,
                     )
                 )
-            if results:
-                return results
         except Exception as exc:
             logger.warning("agent_metrics_db_failed", error=str(exc))
-        return self.agent_metrics(days=days)
+            raise AnalyticsUnavailableError("agent analytics query failed") from exc
+        return results

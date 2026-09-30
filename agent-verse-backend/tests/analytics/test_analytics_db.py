@@ -5,7 +5,9 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from app.analytics.aggregator import GoalAnalyticsAggregator
+import pytest
+
+from app.analytics.aggregator import AnalyticsUnavailableError, GoalAnalyticsAggregator
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -59,13 +61,12 @@ def test_tool_metrics_db_failure_rate_calculation():
 
 
 def test_tool_metrics_db_empty_results_falls_back_to_memory():
-    """Empty DB result should fall back to in-memory (returns empty from in-memory too)."""
+    """An empty DB result means no tool calls for the tenant."""
     db = _make_db_factory([])  # no rows
     svc = MagicMock()
     svc._goals = {}
     agg = GoalAnalyticsAggregator(goal_service=svc, db=db)
     result = asyncio.run(agg.tool_metrics_db(tenant_id="tenant-1", days=30))
-    # Falls back to in-memory which also returns empty
     assert result == []
 
 
@@ -79,8 +80,8 @@ def test_tool_metrics_db_no_db_falls_back_to_memory():
     assert isinstance(result, list)
 
 
-def test_tool_metrics_db_exception_falls_back_to_memory():
-    """DB exception should fall back to in-memory tool_metrics()."""
+def test_tool_metrics_db_exception_raises():
+    """ENT-01: a DB exception raises — never an in-memory (all-tenant) fallback."""
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=Exception("DB error"))
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -89,8 +90,8 @@ def test_tool_metrics_db_exception_falls_back_to_memory():
     svc = MagicMock()
     svc._goals = {}
     agg = GoalAnalyticsAggregator(goal_service=svc, db=lambda: mock_session)
-    result = asyncio.run(agg.tool_metrics_db(tenant_id="tenant-1", days=30))
-    assert isinstance(result, list)  # graceful fallback
+    with pytest.raises(AnalyticsUnavailableError):
+        asyncio.run(agg.tool_metrics_db(tenant_id="tenant-1", days=30))
 
 
 # ── cost_trends_db ────────────────────────────────────────────────────────────
@@ -164,15 +165,15 @@ def test_cost_by_model_db_no_db_returns_empty():
     assert result == {}
 
 
-def test_cost_by_model_db_exception_returns_empty():
-    """DB exception should return empty dict gracefully."""
+def test_cost_by_model_db_exception_raises():
+    """A DB exception raises (the API answers 503) instead of reading as "no spend"."""
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=Exception("connection refused"))
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
     agg = GoalAnalyticsAggregator(db=lambda: mock_session)
-    result = asyncio.run(agg.cost_by_model_db(tenant_id="tenant-1", days=30))
-    assert result == {}
+    with pytest.raises(AnalyticsUnavailableError):
+        asyncio.run(agg.cost_by_model_db(tenant_id="tenant-1", days=30))
 
 
 # ── agent_metrics_db ──────────────────────────────────────────────────────────
@@ -203,8 +204,8 @@ def test_agent_metrics_db_no_db_falls_back_to_memory():
     assert result == []
 
 
-def test_agent_metrics_db_exception_falls_back_to_memory():
-    """A DB error should degrade to the in-memory aggregation, not raise."""
+def test_agent_metrics_db_exception_raises():
+    """ENT-01: a DB error raises — never an in-memory (all-tenant) fallback."""
     svc = MagicMock()
     svc._goals = {}
     mock_session = AsyncMock()
@@ -212,5 +213,5 @@ def test_agent_metrics_db_exception_falls_back_to_memory():
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
     agg = GoalAnalyticsAggregator(goal_service=svc, db=lambda: mock_session)
-    result = asyncio.run(agg.agent_metrics_db(tenant_id="tenant-1", days=30))
-    assert result == []
+    with pytest.raises(AnalyticsUnavailableError):
+        asyncio.run(agg.agent_metrics_db(tenant_id="tenant-1", days=30))

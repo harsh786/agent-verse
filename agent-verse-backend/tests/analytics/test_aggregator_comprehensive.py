@@ -4,8 +4,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.analytics.aggregator import (
     AgentMetrics,
+    AnalyticsUnavailableError,
     GoalAnalyticsAggregator,
     GoalMetrics,
     ToolMetrics,
@@ -90,6 +93,7 @@ def _mock_goal(
     completed_at: datetime | None = None,
 ) -> MagicMock:
     g = MagicMock()
+    g.tenant_id = "t1"  # in-memory analytics are tenant-filtered
     g.status = status
     g.cost_usd = cost
     g.agent_id = agent_id
@@ -113,7 +117,7 @@ async def test_goal_metrics_success_rate_calculation():
         "g3": _mock_goal("failed"),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
 
     assert m.total == 3
     assert m.completed == 2
@@ -125,7 +129,7 @@ async def test_goal_metrics_all_completed():
     svc = MagicMock()
     svc._goals = {f"g{i}": _mock_goal("complete") for i in range(5)}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
     assert m.success_rate == 1.0
     assert m.failed == 0
     assert m.cancelled == 0
@@ -135,7 +139,7 @@ async def test_goal_metrics_all_failed():
     svc = MagicMock()
     svc._goals = {"g1": _mock_goal("failed"), "g2": _mock_goal("failed")}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
     assert m.success_rate == 0.0
     assert m.failed == 2
     assert m.completed == 0
@@ -148,7 +152,7 @@ async def test_goal_metrics_cancelled_counted():
         "g2": _mock_goal("cancelled"),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
     assert m.cancelled == 1
     assert m.total == 2
 
@@ -161,7 +165,7 @@ async def test_goal_metrics_cost_aggregation():
         "g3": _mock_goal("failed", cost=0.05),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
     assert abs(m.total_cost_usd - 0.35) < 0.001
     assert m.avg_cost_usd > 0
 
@@ -173,7 +177,7 @@ async def test_goal_metrics_duration():
     svc._goals = {"g1": goal}
 
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
     assert m.avg_duration_s == 120.0
 
 
@@ -181,7 +185,7 @@ async def test_goal_metrics_empty_goals():
     svc = MagicMock()
     svc._goals = {}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
     assert m.total == 0
     assert m.success_rate == 0.0
 
@@ -193,7 +197,7 @@ async def test_goal_metrics_filters_old_goals():
     svc._goals = {"old": old_goal, "recent": recent_goal}
 
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    m = await agg.goal_metrics(days=30)
+    m = await agg.goal_metrics(tenant_id="t1", days=30)
     # Old goal should be filtered out
     assert m.total == 1
     assert m.failed == 1
@@ -207,9 +211,9 @@ async def test_goal_metrics_filters_old_goals():
 async def test_goal_metrics_db_path():
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [
-        (1, "complete", "normal", "agent-1", datetime.now(UTC), False),
-        (2, "complete", "normal", "agent-1", datetime.now(UTC), False),
-        (3, "failed", "high", "agent-2", datetime.now(UTC), False),
+        (1, "complete", "normal", "agent-1", datetime.now(UTC), False, None, 0.0),
+        (2, "complete", "normal", "agent-1", datetime.now(UTC), False, None, 0.0),
+        (3, "failed", "high", "agent-2", datetime.now(UTC), False, None, 0.0),
     ]
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -227,8 +231,9 @@ async def test_goal_metrics_db_path():
     assert abs(m.success_rate - (2 / 3)) < 0.001
 
 
-async def test_goal_metrics_db_query_failed_returns_in_memory():
-    """When DB query fails, falls back to in-memory goal service."""
+async def test_goal_metrics_db_query_failed_raises_not_in_memory():
+    """ENT-01: a failed DB query raises (the API answers 503); it never falls back
+    to GoalService's in-memory goals, which hold every tenant's goals."""
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -239,15 +244,13 @@ async def test_goal_metrics_db_query_failed_returns_in_memory():
     svc._goals = {"g1": _mock_goal("complete")}
 
     agg = GoalAnalyticsAggregator(goal_service=svc, db=mock_db)
-    m = await agg.goal_metrics(tenant_id="t1", days=30)
-
-    # Falls back to in-memory — 0 goals because _get_goals_from_db returned []
-    # and the DB path returned empty, so it uses the in-memory path
-    assert m is not None
+    with pytest.raises(AnalyticsUnavailableError):
+        await agg.goal_metrics(tenant_id="t1", days=30)
 
 
-async def test_goal_metrics_db_empty_falls_back_to_in_memory():
-    """When DB returns empty rows, uses in-memory goals."""
+async def test_goal_metrics_db_empty_means_no_goals():
+    """ENT-01: an empty DB result means the tenant has no goals — zeros, never the
+    in-memory goals of the process (other tenants')."""
     mock_result = MagicMock()
     mock_result.fetchall.return_value = []  # Empty DB result
     mock_session = AsyncMock()
@@ -262,9 +265,8 @@ async def test_goal_metrics_db_empty_falls_back_to_in_memory():
     agg = GoalAnalyticsAggregator(goal_service=svc, db=mock_db)
     m = await agg.goal_metrics(tenant_id="t1", days=30)
 
-    # Falls back to in-memory
-    assert m.total == 1
-    assert m.completed == 1
+    assert m.total == 0
+    assert m.completed == 0
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +284,7 @@ def test_tool_metrics_call_count():
     svc._goals = {"g1": _mock_goal("complete", events=events)}
     agg = GoalAnalyticsAggregator(goal_service=svc)
 
-    results = agg.tool_metrics(days=30)
+    results = agg.tool_metrics(days=30, tenant_id="t1")
     assert len(results) == 1
     tool = results[0]
     assert tool.tool_name == "search"
@@ -300,7 +302,7 @@ def test_tool_metrics_latency():
     svc._goals = {"g1": _mock_goal("complete", events=events)}
     agg = GoalAnalyticsAggregator(goal_service=svc)
 
-    results = agg.tool_metrics(days=30)
+    results = agg.tool_metrics(days=30, tenant_id="t1")
     assert results[0].avg_latency_ms == 100.0
 
 
@@ -317,7 +319,7 @@ def test_tool_metrics_multiple_tools_sorted_by_count():
         "g2": _mock_goal("complete", events=events_b),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    results = agg.tool_metrics(days=30)
+    results = agg.tool_metrics(days=30, tenant_id="t1")
 
     # Most called tool should be first
     assert results[0].tool_name == "tool_b"
@@ -328,7 +330,7 @@ def test_tool_metrics_empty_goals():
     svc = MagicMock()
     svc._goals = {}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    assert agg.tool_metrics() == []
+    assert agg.tool_metrics(tenant_id="t1") == []
 
 
 def test_tool_metrics_step_complete_event():
@@ -336,7 +338,7 @@ def test_tool_metrics_step_complete_event():
     events = [{"type": "step_complete", "tool_name": "my_tool"}]
     svc._goals = {"g1": _mock_goal("complete", events=events)}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    results = agg.tool_metrics()
+    results = agg.tool_metrics(tenant_id="t1")
     assert any(t.tool_name == "my_tool" for t in results)
 
 
@@ -353,7 +355,7 @@ def test_cost_trends_daily_bucket():
         "g2": _mock_goal("complete", cost=0.20, created_at=now),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    trends = agg.cost_trends(days=30, bucket="day")
+    trends = agg.cost_trends(days=30, bucket="day", tenant_id="t1")
 
     assert len(trends) == 1
     assert abs(trends[0]["cost_usd"] - 0.30) < 0.001
@@ -367,7 +369,7 @@ def test_cost_trends_weekly_bucket():
         "g1": _mock_goal("complete", cost=0.50, created_at=now),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    trends = agg.cost_trends(days=30, bucket="week")
+    trends = agg.cost_trends(days=30, bucket="week", tenant_id="t1")
 
     assert len(trends) == 1
     assert "W" in trends[0]["period"]
@@ -377,7 +379,7 @@ def test_cost_trends_empty():
     svc = MagicMock()
     svc._goals = {}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    assert agg.cost_trends() == []
+    assert agg.cost_trends(tenant_id="t1") == []
 
 
 def test_cost_trends_sorted_by_period():
@@ -387,7 +389,7 @@ def test_cost_trends_sorted_by_period():
         "g2": _mock_goal("complete", cost=0.20, created_at=datetime(2024, 1, 1, tzinfo=UTC)),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    trends = agg.cost_trends(days=365, bucket="day")
+    trends = agg.cost_trends(days=365, bucket="day", tenant_id="t1")
     periods = [t["period"] for t in trends]
     assert periods == sorted(periods)
 
@@ -405,7 +407,7 @@ def test_agent_metrics_per_agent():
         "g3": _mock_goal("failed", agent_id="a2", cost=0.05),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    results = agg.agent_metrics(days=30)
+    results = agg.agent_metrics(days=30, tenant_id="t1")
 
     a1 = next(r for r in results if r.agent_id == "a1")
     a2 = next(r for r in results if r.agent_id == "a2")
@@ -427,7 +429,7 @@ def test_agent_metrics_sorted_by_goal_count():
         "g4": _mock_goal("failed", agent_id="idle"),
     }
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    results = agg.agent_metrics()
+    results = agg.agent_metrics(tenant_id="t1")
     assert results[0].agent_id == "busy"
     assert results[0].goal_count == 3
 
@@ -436,7 +438,7 @@ def test_agent_metrics_no_eval_score_returns_zero():
     svc = MagicMock()
     svc._goals = {"g1": _mock_goal("complete", eval_score=None)}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    results = agg.agent_metrics()
+    results = agg.agent_metrics(tenant_id="t1")
     assert results[0].avg_eval_score == 0.0
 
 
@@ -444,7 +446,7 @@ def test_agent_metrics_empty():
     svc = MagicMock()
     svc._goals = {}
     agg = GoalAnalyticsAggregator(goal_service=svc)
-    assert agg.agent_metrics() == []
+    assert agg.agent_metrics(tenant_id="t1") == []
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +463,7 @@ async def test_get_goals_from_db_none_db_returns_empty():
 async def test_get_goals_from_db_maps_rows():
     now = datetime.now(UTC)
     rows = [
-        (1, "complete", "normal", "agent-1", now, False),
+        (1, "complete", "normal", "agent-1", now, False, None, 0.25),
     ]
     mock_result = MagicMock()
     mock_result.fetchall.return_value = rows
@@ -480,7 +482,7 @@ async def test_get_goals_from_db_maps_rows():
     assert result[0]["dry_run"] is False
 
 
-async def test_get_goals_from_db_handles_exception():
+async def test_get_goals_from_db_raises_on_exception():
     session = AsyncMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
@@ -488,8 +490,8 @@ async def test_get_goals_from_db_handles_exception():
     db = MagicMock(return_value=session)
 
     agg = GoalAnalyticsAggregator()
-    result = await agg._get_goals_from_db("t1", db, days=30)
-    assert result == []
+    with pytest.raises(AnalyticsUnavailableError):
+        await agg._get_goals_from_db("t1", db, days=30)
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +501,7 @@ async def test_get_goals_from_db_handles_exception():
 
 def test_get_all_goals_without_service():
     agg = GoalAnalyticsAggregator(goal_service=None)
-    result = agg._get_all_goals()
+    result = agg._get_all_goals(tenant_id="t1")
     assert result == []
 
 
@@ -510,7 +512,7 @@ def test_get_all_goals_filters_by_agent_id():
     svc._goals = {"g1": g1, "g2": g2}
     agg = GoalAnalyticsAggregator(goal_service=svc)
 
-    result = agg._get_all_goals(agent_id="a1")
+    result = agg._get_all_goals(agent_id="a1", tenant_id="t1")
     assert len(result) == 1
     assert result[0].agent_id == "a1"
 
@@ -523,5 +525,5 @@ def test_get_all_goals_filters_by_since():
     agg = GoalAnalyticsAggregator(goal_service=svc)
 
     since = datetime(2024, 1, 1, tzinfo=UTC)
-    result = agg._get_all_goals(since=since)
+    result = agg._get_all_goals(since=since, tenant_id="t1")
     assert len(result) == 1

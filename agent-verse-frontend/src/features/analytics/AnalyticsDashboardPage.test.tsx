@@ -18,7 +18,10 @@ vi.mock('@/stores/auth', () => {
   };
   const hook = (sel: (s: typeof state) => unknown) => sel(state);
   (hook as unknown as { getState: () => typeof state }).getState = () => state;
-  return { useAuthStore: hook };
+  // The API client adds the MFA header on every request; without this export
+  // request() threw before fetch, so every query failed and the data-dependent
+  // tests timed out (they looked flaky, but never saw a response).
+  return { useAuthStore: hook, getMfaHeader: () => ({}) };
 });
 
 const mockFetch = vi.fn();
@@ -300,5 +303,58 @@ describe('AnalyticsDashboardPage benchmarks with insufficient data', () => {
     });
     render(<AnalyticsDashboardPage />, { wrapper: Wrapper });
     expect(await screen.findByText('Benchmark data unavailable')).toBeInTheDocument();
+  });
+});
+
+describe('AnalyticsDashboardPage when analytics are unavailable (503)', () => {
+  function mock503(paths: string[]) {
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (paths.some((p) => url.includes(p))) {
+        return {
+          ok: false, status: 503, statusText: 'Service Unavailable',
+          json: () => Promise.resolve({ detail: 'Analytics unavailable' }),
+        } as Response;
+      }
+      if (url.includes('/analytics/evals')) {
+        return { ok: true, status: 200, json: () => Promise.resolve(MOCK_EVALS) } as Response;
+      }
+      if (url.includes('/intelligence/benchmarks')) {
+        return { ok: true, status: 200, json: () => Promise.resolve(MOCK_BENCHMARKS) } as Response;
+      }
+      return { ok: true, status: 200, json: () => Promise.resolve({}) } as Response;
+    });
+  }
+
+  test('an outage is reported as unavailable, never as zero goals or "no data"', async () => {
+    mock503(['/analytics/goals', '/analytics/tools', '/analytics/costs', '/analytics/agents']);
+    render(<AnalyticsDashboardPage />, { wrapper: Wrapper });
+
+    await waitFor(() =>
+      expect(screen.getByTestId('analytics-unavailable')).toHaveTextContent(
+        /goals.*tools.*costs.*agents/i,
+      ),
+    );
+    expect(screen.getByText('Goal analytics unavailable')).toBeInTheDocument();
+    expect(screen.getByText('Tool analytics unavailable')).toBeInTheDocument();
+    expect(screen.getAllByText('Cost analytics unavailable').length).toBeGreaterThan(0);
+    expect(screen.getByText('Agent analytics unavailable')).toBeInTheDocument();
+    // An outage must not read as a tenant with no activity.
+    expect(screen.queryByText('No goals in period')).not.toBeInTheDocument();
+    expect(screen.queryByText('No tool data yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('No agent data')).not.toBeInTheDocument();
+    expect(screen.getByTestId('kpi-Total Goals')).toHaveTextContent('—');
+    expect(screen.getByTestId('kpi-Active Agents')).toHaveTextContent('—');
+  });
+
+  test('a tenant with genuinely no data still shows zeros and empty states', async () => {
+    setupMocks({
+      goals: { ...MOCK_GOALS, total: 0, completed: 0, failed: 0, success_rate: 0 },
+      tools: { period_days: 30, tools: [] },
+    });
+    render(<AnalyticsDashboardPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByTestId('kpi-Total Goals')).toHaveTextContent('0'));
+    expect(screen.getByText('No goals in period')).toBeInTheDocument();
+    expect(screen.queryByTestId('analytics-unavailable')).not.toBeInTheDocument();
   });
 });

@@ -60,8 +60,11 @@ async def tool_analytics(
     agg = _get_aggregator(request)
     tenant = _require_tenant(request)
     tenant_id = tenant.tenant_id
-    # Use DB-backed method when tenant_id available (falls back to in-memory)
-    tools = await agg.tool_metrics_db(tenant_id=tenant_id, days=days)
+    # The tenant's DB rows only (in-memory, tenant-filtered, only without a DB).
+    try:
+        tools = await agg.tool_metrics_db(tenant_id=tenant_id, days=days)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Tool analytics unavailable") from exc
     return {
         "period_days": days,
         "tools": [
@@ -92,9 +95,12 @@ async def cost_analytics(
     tenant = _require_tenant(request)
     tenant_id = tenant.tenant_id
 
-    # Use DB-backed methods when tenant_id available (fall back to in-memory)
-    trends = await agg.cost_trends_db(tenant_id=tenant_id, days=days, bucket=bucket)
-    cost_by_model = await agg.cost_by_model_db(tenant_id=tenant_id, days=days)
+    # The tenant's DB rows only (in-memory, tenant-filtered, only without a DB).
+    try:
+        trends = await agg.cost_trends_db(tenant_id=tenant_id, days=days, bucket=bucket)
+        cost_by_model = await agg.cost_by_model_db(tenant_id=tenant_id, days=days)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Cost analytics unavailable") from exc
 
     total = sum(t["cost_usd"] for t in trends)
     tenant_ctx = tenant
@@ -142,9 +148,11 @@ async def agent_analytics(
     agg = _get_aggregator(request)
     tenant = _require_tenant(request)
     tenant_id = tenant.tenant_id
-    # Use the DB-backed GROUP BY path when a tenant is available (falls back to
-    # the in-memory aggregation otherwise).
-    agents = await agg.agent_metrics_db(tenant_id=tenant_id, days=days)
+    # The tenant's DB GROUP BY only (in-memory, tenant-filtered, only without a DB).
+    try:
+        agents = await agg.agent_metrics_db(tenant_id=tenant_id, days=days)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Agent analytics unavailable") from exc
     return {
         "period_days": days,
         "agents": [

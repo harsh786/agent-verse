@@ -14,6 +14,7 @@ def _make_mock_goal(
     agent_id: str = "agent-1",
 ):
     g = MagicMock()
+    g.tenant_id = "t1"  # in-memory analytics are tenant-filtered
     g.status = status
     g.cost_usd = cost
     g.agent_id = agent_id
@@ -32,7 +33,7 @@ def test_goal_metrics_success_rate():
         "g3": _make_mock_goal("failed"),
     }
     agg = GoalAnalyticsAggregator(svc)
-    m = asyncio.run(agg.goal_metrics(days=30))
+    m = asyncio.run(agg.goal_metrics(tenant_id="t1", days=30))
     assert m.total == 3
     assert m.completed == 2
     assert m.failed == 1
@@ -46,7 +47,7 @@ def test_cost_trends_buckets_by_day():
         "g2": _make_mock_goal("complete", cost=0.20),
     }
     agg = GoalAnalyticsAggregator(svc)
-    trends = agg.cost_trends(days=30, bucket="day")
+    trends = agg.cost_trends(days=30, bucket="day", tenant_id="t1")
     # All goals created today, so one bucket
     assert len(trends) == 1
     assert abs(trends[0]["cost_usd"] - 0.30) < 1e-6
@@ -58,7 +59,7 @@ def test_tool_metrics_empty_when_no_events():
         "g1": _make_mock_goal("complete"),
     }
     agg = GoalAnalyticsAggregator(svc)
-    tools = agg.tool_metrics(days=30)
+    tools = agg.tool_metrics(days=30, tenant_id="t1")
     assert tools == []
 
 
@@ -70,7 +71,7 @@ def test_agent_metrics_groups_by_agent():
         "g3": _make_mock_goal("complete", agent_id="agent-b"),
     }
     agg = GoalAnalyticsAggregator(svc)
-    result = agg.agent_metrics(days=30)
+    result = agg.agent_metrics(days=30, tenant_id="t1")
     agent_ids = {a.agent_id for a in result}
     assert "agent-a" in agent_ids
     assert "agent-b" in agent_ids
