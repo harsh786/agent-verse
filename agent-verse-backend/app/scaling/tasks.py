@@ -992,10 +992,18 @@ class _WorkerWorkflowRunner:
     AgentState), so the worker's signals / timeout / terminal bookkeeping apply.
     """
 
-    def __init__(self, context_factory: Any, *, tool_gate: Any, goal_id: str) -> None:
+    def __init__(
+        self,
+        context_factory: Any,
+        *,
+        tool_gate: Any,
+        goal_id: str,
+        retrieval_gateway: Any = None,
+    ) -> None:
         self._context_factory = context_factory
         self._tool_gate = tool_gate
         self._goal_id = goal_id
+        self._retrieval_gateway = retrieval_gateway
 
     async def run(
         self,
@@ -1020,6 +1028,8 @@ class _WorkerWorkflowRunner:
             plan = build_static_workflow(goal)
             executor = WorkflowExecutor(
                 mcp_client=mcp_client,
+                # Retrieval steps need the gateway (parity with the API path).
+                retrieval_gateway=self._retrieval_gateway,
                 tool_gate=self._tool_gate,
                 goal_id=goal_id or self._goal_id,
             )
@@ -3371,6 +3381,7 @@ def run_goal(
                     _build_worker_mcp_context,
                     tool_gate=_worker_tool_gate(_policy, _hitl, _cost, agent_id),
                     goal_id=goal_id,
+                    retrieval_gateway=_retrieval_gateway_worker,
                 )
 
             state = _run_async(

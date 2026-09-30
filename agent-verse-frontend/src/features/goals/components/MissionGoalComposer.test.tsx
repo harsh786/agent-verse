@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, test, vi } from 'vitest';
 import { MissionGoalComposer } from './MissionGoalComposer';
+import { agentsApi } from '@/lib/api/client';
 
 const { submit } = vi.hoisted(() => ({
   submit: vi.fn().mockResolvedValue({ goal_id: 'goal-1' }),
@@ -44,5 +45,42 @@ describe('MissionGoalComposer strategy controls', () => {
     fireEvent.change(screen.getByLabelText('Goal text'), { target: { value: 'Run a bounded goal' } });
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({ strategy_override: 'react', pattern_limits: { calls: 4 } })));
+  });
+});
+
+describe('MissionGoalComposer multi-agent fan-out (CORE-15)', () => {
+  const AGENTS = [
+    { agent_id: 'a1', name: 'Researcher', autonomy_mode: 'supervised' },
+    { agent_id: 'a2', name: 'Writer', autonomy_mode: 'supervised' },
+    { agent_id: 'a3', name: 'Reviewer', autonomy_mode: 'supervised' },
+  ];
+
+  test('sends the selected agent_ids for a multi-agent goal', async () => {
+    vi.mocked(agentsApi.list).mockResolvedValue(AGENTS as never);
+    view();
+    fireEvent.click(screen.getByRole('button', { name: 'Options' }));
+    fireEvent.click(screen.getByRole('button', { name: /multi-agent/i }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /researcher/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /writer/i }));
+    fireEvent.change(screen.getByLabelText('Goal text'), { target: { value: 'Research and write' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() =>
+      expect(submit).toHaveBeenLastCalledWith(
+        expect.objectContaining({ workflow_mode: 'multi_agent', agent_ids: ['a1', 'a2'] }),
+      ),
+    );
+  });
+
+  test('explains the static workflow and sends no agent_ids with fewer than two agents', async () => {
+    vi.mocked(agentsApi.list).mockResolvedValue(AGENTS as never);
+    view();
+    fireEvent.click(screen.getByRole('button', { name: 'Options' }));
+    fireEvent.click(screen.getByRole('button', { name: /multi-agent/i }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /researcher/i }));
+    expect(screen.getByText(/at least 2 agents/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Goal text'), { target: { value: 'Research only' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(submit.mock.calls[submit.mock.calls.length - 1]?.[0]).not.toHaveProperty('agent_ids');
   });
 });

@@ -420,9 +420,24 @@ class WorkflowExecutor:
                     raise RuntimeError("budget_exceeded: workflow step LLM spend denied")
                 if not (resp.content or "").strip():
                     raise RuntimeError("LLM returned no output for the step")
-                step.status = "complete"
+                # LLM prose is not evidence the task was done: it used to be marked
+                # complete unchecked. A verifier call must accept it; otherwise the
+                # step is "unverified" and the workflow ends incomplete (CORE-15).
+                verified, why = await self._verify_llm_step(
+                    step.description, resp.content, tenant_ctx
+                )
                 step.result = resp.content
-                return {"status": "complete", "output": resp.content}
+                if not verified:
+                    step.status = "unverified"
+                    step.error = why
+                    return {
+                        "status": "unverified",
+                        "output": resp.content,
+                        "reason": f"unverified LLM output: {why}",
+                        "step_id": step.id,
+                    }
+                step.status = "complete"
+                return {"status": "complete", "output": resp.content, "verified": True}
 
             # No provider and no tool: nothing can execute this step. Never report a
             # stub "Completed: ..." as done.
@@ -434,6 +449,46 @@ class WorkflowExecutor:
             step.status = "failed"
             step.error = str(exc)
             return {"status": "failed", "error": str(exc), "step_id": step.id}
+
+    async def _verify_llm_step(
+        self, description: str, output: str, tenant_ctx: Any
+    ) -> tuple[bool, str]:
+        """Ask the LLM, as a strict verifier, whether *output* accomplishes the step.
+
+        Returns ``(verified, reason)``. Any verifier failure counts as unverified.
+        """
+        from app.agent.schemas import parse_verifier_verdict
+        from app.providers.base import CompletionRequest, Message
+
+        provider = self._llm_provider or self._provider
+        if provider is None:
+            return False, "no verifier available"
+        prompt = (
+            "Verify a workflow step result. The step was answered by a language model "
+            "with no tool access. Judge strictly: it passes only if the text itself "
+            "accomplishes the task (e.g. an analysis, a draft, an answer from the given "
+            "context) — not if it claims to have taken an action (sent, created, "
+            "deployed, fetched live data) that it could not have taken.\n\n"
+            f"Task: {description}\n\nResult:\n{output[:4000]}\n\n"
+            'Reply as JSON: {"success": true|false, "reason": "<one sentence>"}'
+        )
+        try:
+            resp = await provider.complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model=getattr(provider, "_default_model", ""),
+                    max_tokens=200,
+                )
+            )
+            if not await self._tool_gate.charge_llm(
+                goal_id=self._goal_id, tenant_ctx=tenant_ctx, resp=resp
+            ):
+                return False, "verification spend denied by budget"
+            verdict = parse_verifier_verdict(resp.content or "")
+        except Exception as exc:
+            return False, f"verification failed ({type(exc).__name__})"
+        reason = str(verdict.get("reason", "") or "")[:300]
+        return bool(verdict.get("success", False)), reason or "verifier rejected the output"
 
     # ── legacy sequential API (used by goal_service.py) ───────────────────────
 

@@ -34,6 +34,10 @@ const WORKFLOW_MODES = [
 
 type WorkflowMode = (typeof WORKFLOW_MODES)[number]['id'];
 
+// The API fans a multi-agent goal out to at most five agents.
+const MAX_FANOUT_AGENTS = 5;
+const MIN_FANOUT_AGENTS = 2;
+
 interface Attachment {
   type: string;
   url?: string;
@@ -77,6 +81,9 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
   const [strategyOverride, setStrategyOverride] = useState('');
   const [patternLimits, setPatternLimits] = useState<Partial<Record<LimitName, string>>>({});
+  // Multi-agent fan-out: the API runs one goal per selected agent (2-5). It needs
+  // agent_ids — without them the goal falls back to the static workflow.
+  const [multiAgentIds, setMultiAgentIds] = useState<string[]>([]);
 
   // Sync when parent passes a new initialGoal (e.g. from TemplatePickerModal)
   useEffect(() => {
@@ -126,6 +133,9 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
         agent_id: resolvedAgentId,
         workflow_mode: workflowMode,
         attachments: attachments.length > 0 ? attachments : undefined,
+        ...(workflowMode === 'multi_agent' && multiAgentIds.length >= MIN_FANOUT_AGENTS
+          ? { agent_ids: multiAgentIds }
+          : {}),
         ...(strategyOverride ? { strategy_override: strategyOverride } : {}),
         ...(Object.keys(limits).length > 0 ? { pattern_limits: limits } : {}),
       });
@@ -298,6 +308,49 @@ export function MissionGoalComposer({ onSuccess, initialGoal }: { onSuccess?: (g
                 ))}
               </div>
             </div>
+
+            {workflowMode === 'multi_agent' && (
+              <fieldset className="flex items-start gap-3">
+                <legend className="sr-only">Agents for the multi-agent run</legend>
+                <span className="text-xs text-muted-foreground w-20 shrink-0 pt-1">Agents</span>
+                <div className="flex-1 space-y-1">
+                  {agents.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      No agents yet — the goal will run the static multi-step workflow.
+                    </p>
+                  ) : (
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      {agents.map((a) => {
+                        const checked = multiAgentIds.includes(a.agent_id);
+                        const full = !checked && multiAgentIds.length >= MAX_FANOUT_AGENTS;
+                        return (
+                          <label key={a.agent_id} className={`flex items-center gap-1.5 text-xs ${full ? 'opacity-50' : 'cursor-pointer'}`}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={full}
+                              onChange={(e) =>
+                                setMultiAgentIds((prev) =>
+                                  e.target.checked ? [...prev, a.agent_id] : prev.filter((id) => id !== a.agent_id),
+                                )
+                              }
+                              className="accent-primary"
+                            />
+                            {a.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {agents.length > 0 && multiAgentIds.length < MIN_FANOUT_AGENTS && (
+                    <p className="text-[11px] text-muted-foreground">
+                      Select at least 2 agents (up to {MAX_FANOUT_AGENTS}) to run them in parallel;
+                      otherwise the goal runs the static multi-step workflow.
+                    </p>
+                  )}
+                </div>
+              </fieldset>
+            )}
 
             <div className="flex items-center gap-3">
               <label htmlFor="strategy-override" className="w-20 shrink-0 text-xs text-muted-foreground">Runtime</label>

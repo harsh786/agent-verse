@@ -245,6 +245,8 @@ export interface GoalRequest {
   dry_run?: boolean;
   agent_id?: string;
   workflow_mode?: string;
+  /** Multi-agent fan-out: one goal per agent (2-5). */
+  agent_ids?: string[];
   /** Multimodal attachments (Gap 2) */
   attachments?: Array<{ type: string; url?: string; data?: string; name?: string }>;
   /** Single image shorthand (Gap 2) */

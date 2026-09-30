@@ -68,6 +68,8 @@ def test_queued_multi_agent_goal_executes_the_workflow_path(worker: dict[str, An
     assert tenant_id == "tenant-wf" and goal == "research and summarise vendors"
     assert plan is not None
     assert worker["executor_kwargs"].get("tool_gate") is not None, "tools stay governed"
+    # CORE-15: retrieval steps get the worker's gateway (they had none).
+    assert worker["executor_kwargs"].get("retrieval_gateway") is not None
     assert result["status"] == "complete"
     assert result["workflow_mode"] == "multi_agent"
 

@@ -22,6 +22,23 @@ from app.tenancy.context import PlanTier, TenantContext
 _CTX = TenantContext(tenant_id="tid-we", plan=PlanTier.ENTERPRISE, api_key_id="key-we")
 
 
+class _Verifying(FakeProvider):
+    """Step prompts get the scripted outputs; CORE-15 verification prompts pass."""
+
+    def __init__(self, responses: list[str]) -> None:
+        super().__init__(responses=responses)
+
+    async def complete(self, request):  # type: ignore[override]
+        if request.messages[-1].content.startswith("Verify"):
+            from app.providers.base import CompletionResponse
+
+            return CompletionResponse(
+                content='{"success": true, "reason": "ok"}', model="fake",
+                input_tokens=1, output_tokens=1,
+            )
+        return await super().complete(request)
+
+
 # ── _arguments_for_step ───────────────────────────────────────────────────────
 
 def _make_static_step(intent: str, input_from=None) -> _StaticWorkflowStep:
@@ -94,7 +111,7 @@ async def test_execute_step_no_provider_no_tool_fails_instead_of_stub() -> None:
 
 
 async def test_execute_step_with_provider_uses_llm() -> None:
-    fake = FakeProvider(responses=["LLM completed the step"])
+    fake = _Verifying(["LLM completed the step"])
     executor = WorkflowExecutor(provider=fake, mcp_client=None)
     step = WorkflowStep(id="s1", description="Analyze data")
     result = await executor._execute_step(step, _CTX, prior_results={})
@@ -135,7 +152,7 @@ async def test_execute_step_tool_failure_no_provider_fails() -> None:
 
 
 async def test_execute_step_with_prior_context() -> None:
-    fake = FakeProvider(responses=["Result using context"])
+    fake = _Verifying(["Result using context"])
     executor = WorkflowExecutor(provider=fake)
     step = WorkflowStep(id="s2", description="Use prior data", depends_on=["s1"])
     prior_results = {"s1": {"output": "Previous step result"}}
@@ -157,7 +174,7 @@ async def test_execute_step_exception_returns_failed() -> None:
 # ── WorkflowExecutor.execute ─────────────────────────────────────────────────
 
 async def test_execute_single_step_success() -> None:
-    fake = FakeProvider(responses=["Done"])
+    fake = _Verifying(["Done"])
     executor = WorkflowExecutor(provider=fake)
     plan = WorkflowPlan(goal="G", steps=[WorkflowStep(id="s1", description="Single step")])
     result = await executor.execute(plan, _CTX)
@@ -166,7 +183,7 @@ async def test_execute_single_step_success() -> None:
 
 
 async def test_execute_multiple_independent_steps() -> None:
-    fake = FakeProvider(responses=["R1", "R2", "R3"])
+    fake = _Verifying(["R1", "R2", "R3"])
     executor = WorkflowExecutor(provider=fake)
     plan = WorkflowPlan(goal="G", steps=[
         WorkflowStep(id="s1", description="A"),
@@ -180,7 +197,7 @@ async def test_execute_multiple_independent_steps() -> None:
 
 
 async def test_execute_chained_steps_sequential_waves() -> None:
-    fake = FakeProvider(responses=["R1", "R2"])
+    fake = _Verifying(["R1", "R2"])
     executor = WorkflowExecutor(provider=fake)
     plan = WorkflowPlan(goal="G", steps=[
         WorkflowStep(id="s1", description="Step 1"),
@@ -227,7 +244,7 @@ async def test_execute_empty_plan_fails_closed() -> None:
 
 
 async def test_execute_summary_from_completed_steps() -> None:
-    fake = FakeProvider(responses=["Output A", "Output B"])
+    fake = _Verifying(["Output A", "Output B"])
     executor = WorkflowExecutor(provider=fake)
     plan = WorkflowPlan(goal="G", steps=[
         WorkflowStep(id="s1", description="A"),
