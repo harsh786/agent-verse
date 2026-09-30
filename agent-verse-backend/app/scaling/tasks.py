@@ -1911,10 +1911,12 @@ def run_goal(
     trigger_chain_depth: int = 0,
     source_trigger_id: str = "",
 ) -> dict[str, Any]:
-    """Run a goal worker task and return its local result.
+    """Run a submitted goal in a worker and return its local result.
 
-    This task does not update GoalService/DB status or lifecycle events for the
-    submitted goal; that bridge is intentionally deferred until Phase 10.
+    Through the goal status bridge (``goal_bridge``) the worker claims the goal
+    row, updates its DB status and appends its lifecycle events, so the API
+    process sees the worker's progress. A per-goal Redis lock excludes
+    concurrent runs of the same goal; every exit path releases it.
     """
     from app.providers.fake import FakeProvider
     from app.reliability.result_processor import ResultProcessor
@@ -2313,6 +2315,11 @@ def run_goal(
         # than run it on the deployment/platform provider below.
         _run_async(mark_worker_failed(_byok_exc))
         _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        # WF-19: this early return is outside the try/finally that releases
+        # the goal lock — without this a retry was refused for the plan's
+        # goal timeout + 5 min.
+        if _lock:
+            _lock.release(goal_id)
         return {
             "status": "failed",
             "goal_id": goal_id,
@@ -3069,6 +3076,8 @@ def run_goal(
             sanitized = RuntimeError("Canonical AgentGraph assembly failed")
             _run_async(mark_worker_failed(sanitized))
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            if _lock:  # WF-19: outside the lock-releasing try/finally
+                _lock.release(goal_id)
             return {
                 "status": "failed",
                 "goal_id": goal_id,
