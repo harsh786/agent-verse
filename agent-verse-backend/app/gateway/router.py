@@ -384,6 +384,20 @@ async def _process_command(command: OrgCommand, state: Any = None) -> OrgRespons
         )
 
         ctx, tenant_id = _tenant_ctx_for(command)
+        if tenant_id:
+            # TRG-06: relay goals run on the tenant's real plan (was always FREE).
+            import dataclasses
+
+            from app.tenancy.plan_resolver import resolve_tenant_plan
+
+            ctx = dataclasses.replace(
+                ctx,
+                plan=await resolve_tenant_plan(
+                    tenant_id,
+                    tenant_service=getattr(state, "tenant_service", None),
+                    db_factory=getattr(state, "db_session_factory", None),
+                ),
+            )
 
         # No trusted tenant → acknowledge only. Never create goals or ingest
         # documents for a tenant derived from an unauthenticated, spoofable

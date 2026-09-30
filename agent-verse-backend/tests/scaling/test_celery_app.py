@@ -151,7 +151,6 @@ def test_run_scheduled_goal_routes_through_governed_dispatcher(monkeypatch: Any)
             "trigger_type": "cron",
             "condition": "",
             "max_firings_per_hour": 0,
-            "tenant_plan": "",
             "event_payload": None,
         },
     }
@@ -556,7 +555,6 @@ def test_fire_due_schedules_discovers_db_schedule_without_redis(monkeypatch: Any
                 "trigger_type": "interval",
                 "condition": "",
                 "max_firings_per_hour": 0,
-                "tenant_plan": "",
             },
             "queue": "schedules",
         }

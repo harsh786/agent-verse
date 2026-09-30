@@ -5,12 +5,32 @@ from __future__ import annotations
 import json
 import os
 import urllib.parse
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
+if TYPE_CHECKING:
+    from app.tenancy.context import PlanTier
+
 router = APIRouter(prefix="/integrations", tags=["integrations"])
+
+
+async def _tenant_plan(request: Request, tenant_id: str) -> PlanTier:
+    """The tenant's real plan tier from its tenant record (TRG-06).
+
+    These unauthenticated-by-API-key integrations used to hard-code
+    PROFESSIONAL, so a free tenant got professional limits and an enterprise
+    tenant was throttled to professional ones.
+    """
+    from app.tenancy.plan_resolver import resolve_tenant_plan
+
+    state = request.app.state
+    return await resolve_tenant_plan(
+        tenant_id,
+        tenant_service=getattr(state, "tenant_service", None),
+        db_factory=getattr(state, "db_session_factory", None),
+    )
 
 
 def _get_slack_tenant_id() -> str:
@@ -101,7 +121,7 @@ async def slack_slash_command(
     if goal_service is None:
         return {"response_type": "ephemeral", "text": "AgentVerse service unavailable"}
 
-    from app.tenancy.context import PlanTier, TenantContext
+    from app.tenancy.context import TenantContext
 
     slack_tenant_id = _get_slack_tenant_id()
     if not slack_tenant_id:
@@ -119,7 +139,7 @@ async def slack_slash_command(
 
     ctx = TenantContext(
         tenant_id=slack_tenant_id,
-        plan=PlanTier.PROFESSIONAL,
+        plan=await _tenant_plan(request, slack_tenant_id),
         api_key_id=f"slack:{user_id}",
     )
 
@@ -177,11 +197,11 @@ async def slack_events(
 
             hitl = getattr(request.app.state, "hitl_gateway", None)
             if hitl:
-                from app.tenancy.context import PlanTier, TenantContext
+                from app.tenancy.context import TenantContext
 
                 ctx = TenantContext(
                     tenant_id=bound_tenant,
-                    plan=PlanTier.PROFESSIONAL,
+                    plan=await _tenant_plan(request, bound_tenant),
                     api_key_id="slack-button",
                 )
                 approver = _slack_approver(data)
@@ -253,13 +273,13 @@ async def slack_interactive_callback(request: Request) -> dict:
             # Resolve tenant context from the goal
             if goal_service:
                 try:
-                    from app.tenancy.context import PlanTier, TenantContext
+                    from app.tenancy.context import TenantContext
 
                     tenant_id = bound_tenant
                     if tenant_id:
                         tenant_ctx = TenantContext(
                             tenant_id=tenant_id,
-                            plan=PlanTier.PROFESSIONAL,
+                            plan=await _tenant_plan(request, tenant_id),
                             api_key_id="slack-interactive",
                         )
                         await goal_service.resume_goal(
@@ -309,7 +329,7 @@ async def zapier_trigger(
     if not goal_service:
         raise HTTPException(503, "Goal service unavailable")
 
-    from app.tenancy.context import PlanTier, TenantContext
+    from app.tenancy.context import TenantContext
 
     zapier_tenant_id = _get_zapier_tenant_id()
     if not zapier_tenant_id:
@@ -317,7 +337,7 @@ async def zapier_trigger(
 
     ctx = TenantContext(
         tenant_id=zapier_tenant_id,
-        plan=PlanTier.PROFESSIONAL,
+        plan=await _tenant_plan(request, zapier_tenant_id),
         api_key_id="zapier",
     )
 
@@ -387,14 +407,14 @@ async def receive_alertmanager_event(
 
         if goal_service is not None:
             try:
-                from app.tenancy.context import PlanTier, TenantContext
+                from app.tenancy.context import TenantContext
 
                 alert_tenant = os.getenv("ALERTMANAGER_TENANT_ID", "")
                 if not alert_tenant:
                     continue
                 tenant_ctx = TenantContext(
                     tenant_id=alert_tenant,
-                    plan=PlanTier.PROFESSIONAL,
+                    plan=await _tenant_plan(request, alert_tenant),
                     api_key_id="alertmanager",
                 )
                 # priority/dry_run are required by submit_goal; omitting them
@@ -461,11 +481,11 @@ async def receive_datadog_event(
         dd_tenant = os.getenv("DATADOG_TENANT_ID", "")
         if dd_tenant:
             try:
-                from app.tenancy.context import PlanTier, TenantContext
+                from app.tenancy.context import TenantContext
 
                 ctx = TenantContext(
                     tenant_id=dd_tenant,
-                    plan=PlanTier.PROFESSIONAL,
+                    plan=await _tenant_plan(request, dd_tenant),
                     api_key_id="datadog",
                 )
                 # priority/dry_run are required by submit_goal (see alertmanager).
@@ -503,7 +523,7 @@ async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
     if not goal_service:
         return []
 
-    from app.tenancy.context import PlanTier, TenantContext
+    from app.tenancy.context import TenantContext
 
     zapier_tenant_id = _get_zapier_tenant_id()
     if not zapier_tenant_id:
@@ -511,7 +531,7 @@ async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
 
     ctx = TenantContext(
         tenant_id=zapier_tenant_id,
-        plan=PlanTier.PROFESSIONAL,
+        plan=await _tenant_plan(request, zapier_tenant_id),
         api_key_id="zapier-poll",
     )
 
@@ -557,9 +577,13 @@ async def _authenticated_reingest_target(
     )
     store = getattr(request.app.state, "knowledge_store", None)
     if store is not None:
-        from app.tenancy.context import PlanTier, TenantContext
+        from app.tenancy.context import TenantContext
 
-        ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="reingest-webhook")
+        ctx = TenantContext(
+            tenant_id=tenant_id,
+            plan=await _tenant_plan(request, tenant_id),
+            api_key_id="reingest-webhook",
+        )
         if await store.get_collection_async(collection_id, tenant_ctx=ctx) is None:
             raise HTTPException(404, "Collection not found")
     return tenant_id, collection_id

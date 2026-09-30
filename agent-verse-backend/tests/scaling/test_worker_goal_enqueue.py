@@ -42,8 +42,17 @@ def test_worker_goal_service_carries_task_queue() -> None:
 
 def test_scheduled_goal_is_enqueued_via_real_worker_path(captured_run_goal) -> None:
     from app.scaling.tasks import _run_async, _run_scheduled_goal_governed
+    from app.tenancy.context import PlanTier
 
-    with _no_db(), patch("app.scaling.tasks._worker_async_redis", return_value=None):
+    async def _professional(*_a: object, **_k: object) -> PlanTier:
+        return PlanTier.PROFESSIONAL
+
+    with (
+        _no_db(),
+        patch("app.scaling.tasks._worker_async_redis", return_value=None),
+        # TRG-06: the plan comes from the tenant record at fire time.
+        patch("app.tenancy.plan_resolver.resolve_tenant_plan", new=_professional),
+    ):
         event = _run_async(
             _run_scheduled_goal_governed(
                 "sched-1",
@@ -51,7 +60,6 @@ def test_scheduled_goal_is_enqueued_via_real_worker_path(captured_run_goal) -> N
                 "Summarise the nightly report",
                 "",
                 "2026-09-28T09:00:00Z",
-                tenant_plan="professional",
             )
         )
 

@@ -11,7 +11,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.scaling.tasks import _dispatch_scheduled_via_dispatcher
+from app.tenancy.context import PlanTier
 from app.triggers.dispatcher import TriggerDispatcher
+from tests.tenancy.test_plan_resolver import plan_db
 
 
 class _FakeGoalService:
@@ -53,7 +55,6 @@ def _sched(**overrides: Any) -> dict[str, Any]:
         "cron_expression": "0 * * * *",
         "goal_template": "Do the scheduled thing",
         "tenant_id": "t-1",
-        "tenant_plan": "starter",
     }
     base.update(overrides)
     return base
@@ -140,15 +141,53 @@ async def test_scheduled_spec_carries_goal_and_agent() -> None:
         _sched(agent_id="agent-42", goal_template="Rotate the keys"),
         fire_instance_id="2026-09-08T09:00:00Z",
         dispatcher=dispatcher,
+        db_factory=plan_db({"t-1": "starter"}),
     )
 
     assert len(goal_service.calls) == 1
     call = goal_service.calls[0]
     assert call["goal_text"] == "Rotate the keys"
     assert call["agent_id"] == "agent-42"
-    # tenant context flowed through with the schedule's plan.
+    # tenant context flowed through with the tenant record's plan.
     assert call["tenant_ctx"].tenant_id == "t-1"
     assert call["tenant_ctx"].plan == "starter"
+
+
+# ── TRG-06: the plan is the tenant's real plan, resolved at fire time ───────────
+
+
+async def test_beat_fire_runs_with_tenant_record_plan() -> None:
+    """Schedule payloads carry no plan; an enterprise tenant's cron fire used to
+    run as FREE (10 fires/h, 2 bulkhead slots, the free queue)."""
+    goal_service = _FakeGoalService()
+    dispatcher = TriggerDispatcher(goal_service=goal_service, redis=_FakeRedis())
+
+    await _dispatch_scheduled_via_dispatcher(
+        "sched-key-ent",
+        _sched(tenant_id="t-ent"),
+        fire_instance_id="2026-09-08T09:00:00Z",
+        dispatcher=dispatcher,
+        db_factory=plan_db({"t-ent": "enterprise"}),
+    )
+
+    assert goal_service.calls[0]["tenant_ctx"].plan is PlanTier.ENTERPRISE
+
+
+async def test_stored_tenant_plan_value_is_not_trusted() -> None:
+    """A plan written into the schedule (client-supplied, or stale after a
+    downgrade) must not override the tenant record."""
+    goal_service = _FakeGoalService()
+    dispatcher = TriggerDispatcher(goal_service=goal_service, redis=_FakeRedis())
+
+    await _dispatch_scheduled_via_dispatcher(
+        "sched-key-free",
+        _sched(tenant_id="t-free", tenant_plan="enterprise"),
+        fire_instance_id="2026-09-08T09:00:00Z",
+        dispatcher=dispatcher,
+        db_factory=plan_db({"t-free": "free"}),
+    )
+
+    assert goal_service.calls[0]["tenant_ctx"].plan is PlanTier.FREE
 
 
 async def test_missing_goal_and_tenant_returns_none() -> None:

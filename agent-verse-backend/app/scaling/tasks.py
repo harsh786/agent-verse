@@ -3550,7 +3550,9 @@ def run_scheduled_goal(
     no condition), and the beat's polling families (file_drop, rss_feed,
     api_poll, db_row_change, alert webhooks) bypassed this task entirely.
     ``event_payload`` carries what the poll observed (file, entry, value, alert)
-    so the condition and ``{{payload.*}}`` template see it.
+    so the condition and ``{{payload.*}}`` template see it. ``tenant_plan`` is
+    accepted for already-queued messages but ignored: the plan is read from the
+    tenant record at fire time (TRG-06).
     """
     logger.info("Firing schedule %s for tenant %s", schedule_id, tenant_id)
     try:
@@ -3564,7 +3566,6 @@ def run_scheduled_goal(
                 trigger_type=trigger_type,
                 condition=condition,
                 max_firings_per_hour=max_firings_per_hour,
-                tenant_plan=tenant_plan,
                 event_payload=event_payload,
             )
         )
@@ -3665,7 +3666,7 @@ def _enqueue_governed_fire(
         "trigger_type": str(sched.get("trigger_type") or "cron"),
         "condition": str(sched.get("condition") or ""),
         "max_firings_per_hour": int(sched.get("max_firings_per_hour") or 0),
-        "tenant_plan": str(sched.get("tenant_plan") or ""),
+        # No tenant_plan: the governed dispatch resolves it from the tenant record.
     }
     if event_payload is not None:
         kwargs["event_payload"] = event_payload
@@ -3773,19 +3774,17 @@ async def _dispatch_scheduled_via_dispatcher(
         return None
 
     spec = _build_scheduled_trigger_spec(schedule_key, sched)
-    # plan MUST be a PlanTier enum, not a raw string: downstream goal creation
-    # reads ``tenant_ctx.plan.value`` (goal_service), so a bare string crashed every
-    # scheduled/beat fire with "'str' object has no attribute 'value'".
-    from app.tenancy.context import PlanTier
+    # TRG-06: the plan is the tenant's REAL plan, read from the tenant record at
+    # fire time. Schedule payloads never carried one, so every beat fire ran as
+    # FREE (10 fires/h, 2 bulkhead slots, the free queue); a plan stored in the
+    # schedule is client-supplied or stale after a plan change and is ignored.
+    # It is a PlanTier enum: goal creation reads ``tenant_ctx.plan.value``.
+    from app.tenancy.plan_resolver import resolve_tenant_plan
 
-    _plan_raw = str(sched.get("tenant_plan") or "free")
-    try:
-        _plan = PlanTier(_plan_raw)
-    except ValueError:
-        _plan = PlanTier.FREE
+    tenant_id = str(sched.get("tenant_id") or "")
     tenant_ctx = SimpleNamespace(
-        tenant_id=str(sched.get("tenant_id") or ""),
-        plan=_plan,
+        tenant_id=tenant_id,
+        plan=await resolve_tenant_plan(tenant_id, db_factory=db_factory),
     )
 
     if dispatcher is None:
@@ -3935,7 +3934,6 @@ async def _run_scheduled_goal_governed(
     trigger_type: str = "cron",
     condition: str = "",
     max_firings_per_hour: int = 0,
-    tenant_plan: str = "",
     event_payload: dict[str, Any] | None = None,
 ) -> Any:
     """Async body of ``run_scheduled_goal`` — governed scheduled dispatch (WT-9)."""
@@ -3948,7 +3946,6 @@ async def _run_scheduled_goal_governed(
         "agent_id": agent_id,
         "condition": condition,
         "max_firings_per_hour": max_firings_per_hour,
-        "tenant_plan": tenant_plan,
     }
     if event_payload is not None:
         sched["event_payload"] = event_payload
@@ -5164,18 +5161,10 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                             _tenant_id_fd = str(sched.get("tenant_id") or "")
                             if not _tenant_id_fd:
                                 continue
-                            from app.tenancy.context import (
-                                PlanTier as _PT_fd,
-                            )
-                            from app.tenancy.context import (
-                                TenantContext as _TC_fd,
-                            )
-
-                            _tenant_ctx_fd = _TC_fd(
-                                tenant_id=_tenant_id_fd,
-                                plan=_PT_fd.PROFESSIONAL,
-                                api_key_id="trigger-file-drop",
-                            )
+                            # Only the goal text is taken from _alert_kw; the
+                            # fire runs through the governed dispatch, which
+                            # resolves the tenant's real plan (TRG-06 — this
+                            # used to hard-code PROFESSIONAL).
                             _file_alert = {
                                 "file_path": _file_path,
                                 "file_name": _file_name,
@@ -5187,7 +5176,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                     "file_drop",
                                     _file_alert,
                                     goal_service=None,
-                                    tenant_ctx=_tenant_ctx_fd,
+                                    tenant_ctx=None,
                                 )
                             )
                             if _alert_kw:
@@ -6082,7 +6071,8 @@ async def _do_check_email_goals() -> dict[str, Any]:
         from app.db.session import get_session_factory as _get_fresh_db
         from app.services.event_store import EventStore
         from app.services.goal_service import GoalService
-        from app.tenancy.context import PlanTier, TenantContext
+        from app.tenancy.context import TenantContext
+        from app.tenancy.plan_resolver import resolve_tenant_plan
 
         db_factory = _get_fresh_db()
         event_store = EventStore(db_factory)
@@ -6099,7 +6089,8 @@ async def _do_check_email_goals() -> dict[str, Any]:
         email_tenant_id = os.getenv("IMAP_TENANT_ID", "email-default")
         ctx = TenantContext(
             tenant_id=email_tenant_id,
-            plan=PlanTier.PROFESSIONAL,
+            # TRG-06: the tenant's real plan (was hard-coded PROFESSIONAL).
+            plan=await resolve_tenant_plan(email_tenant_id, db_factory=db_factory),
             api_key_id="email-listener",
         )
 

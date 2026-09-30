@@ -79,19 +79,22 @@ def _push_webhook_types() -> frozenset[str]:
     return frozenset({*WEBHOOK_TYPE_MAP.values(), TriggerType.WEBHOOK.value})
 
 
-def _webhook_tenant_ctx(request: Request, tenant_id: str) -> TenantContext:
+async def _webhook_tenant_ctx(request: Request, tenant_id: str) -> TenantContext:
     """Least-privilege context for a token-authenticated webhook delivery: the
-    token owner's tenant and plan, no roles (nothing here is scope-gated)."""
-    from app.tenancy.context import PlanTier
+    token owner's tenant and plan, no roles (nothing here is scope-gated).
 
-    plan_value = "free"
-    tenants = getattr(getattr(request.app.state, "tenant_service", None), "_tenants", None)
-    if isinstance(tenants, dict):
-        plan_value = str((tenants.get(tenant_id) or {}).get("plan", "free"))
-    try:
-        plan = PlanTier(plan_value)
-    except ValueError:
-        plan = PlanTier.FREE
+    TRG-06: the plan is read from the tenant record; it used to come from this
+    replica's in-memory tenant dict, which is empty for tenants created on
+    another replica (so their deliveries ran as FREE).
+    """
+    from app.tenancy.plan_resolver import resolve_tenant_plan
+
+    state = request.app.state
+    plan = await resolve_tenant_plan(
+        tenant_id,
+        tenant_service=getattr(state, "tenant_service", None),
+        db_factory=getattr(state, "db_session_factory", None),
+    )
     return TenantContext(tenant_id=tenant_id, plan=plan, api_key_id="webhook-token", roles=())
 
 
@@ -887,7 +890,7 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     )
     if not tenant_id:
         raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
-    caller = _webhook_tenant_ctx(request, tenant_id)
+    caller = await _webhook_tenant_ctx(request, tenant_id)
 
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
     matched = 0
