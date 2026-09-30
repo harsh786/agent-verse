@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from app.db.rls import sqlalchemy_rls_context
 from app.tenancy.context import TenantContext
+
+# Auto-routing scores at most this many (newest, active) agents per tenant.
+MAX_ROUTING_CANDIDATES = 50
 
 
 @dataclass
@@ -31,15 +35,24 @@ class RoutingDecision:
     mode: str = "single_agent"  # single_agent|multi_agent|needs_new_agent|needs_human_choice
     candidate_agents: list[dict] = field(default_factory=list)
     all_scores: list[AgentScore] = field(default_factory=list)
+    # "" when LLM scoring was not attempted or succeeded; else why it failed.
+    llm_scoring: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "agent_id": self.agent_id,
             "reason": self.reason,
             "confidence": round(self.confidence, 3),
             "mode": self.mode,
             "candidate_agents": self.candidate_agents,
         }
+        if self.llm_scoring:
+            out["llm_scoring"] = self.llm_scoring
+        return out
+
+
+class _LLMScoringError(RuntimeError):
+    """LLM agent scoring failed; routing falls back to keyword/history scores."""
 
 
 class AgentRouter:
@@ -285,7 +298,62 @@ class AgentRouter:
             logging.getLogger(__name__).debug("router_history_score_failed: %s", exc)
         return 0.0
 
+    async def _history_scores_db(
+        self, agent_ids: list[str], tenant_ctx: Any
+    ) -> dict[str, float]:
+        """30-day average eval score for every candidate, in ONE grouped query.
+
+        Scoring ran one history query per agent over an unbounded list (N+1).
+        Agents without evaluations score 0.0; a DB error scores everyone 0.0.
+        """
+        ids = [a for a in agent_ids if a]
+        if self._db is None or not ids:
+            return {}
+        try:
+            from sqlalchemy import bindparam, text
+
+            stmt = text(
+                """
+                SELECT g.agent_id, AVG(e.average_score) AS avg_score, COUNT(*) AS run_count
+                FROM evaluations e
+                JOIN goals g ON e.goal_id = g.id
+                WHERE g.tenant_id = :tid AND g.agent_id IN :aids
+                  AND e.created_at > NOW() - INTERVAL '30 days'
+                GROUP BY g.agent_id
+                """
+            ).bindparams(bindparam("aids", expanding=True))
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                rows = (
+                    await session.execute(stmt, {"tid": tenant_ctx.tenant_id, "aids": ids})
+                ).fetchall()
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning("router_history_scores_failed: %s", exc)
+            return {}
+        return {
+            str(row[0]): min(1.0, float(row[1] or 0))
+            for row in rows
+            if row[2] and row[2] > 0
+        }
+
     async def _score_by_llm(
+        self,
+        goal: str,
+        agents: list[dict[str, Any]],
+        provider: Any,
+        tenant_ctx: TenantContext | None = None,
+    ) -> list[AgentScore]:
+        """LLM scores, or [] when unavailable or failed (see _score_by_llm_checked)."""
+        try:
+            return await self._score_by_llm_checked(goal, agents, provider, tenant_ctx)
+        except _LLMScoringError:
+            return []
+
+    async def _score_by_llm_checked(
         self,
         goal: str,
         agents: list[dict[str, Any]],
@@ -344,8 +412,9 @@ class AgentRouter:
                         )
                     )
                 return scores
-        except Exception:
-            pass
+        except Exception as exc:
+            # Recorded on the decision by route() (it used to vanish silently).
+            raise _LLMScoringError(f"{type(exc).__name__}: {str(exc)[:120]}") from exc
         return []
 
     # ── public API ────────────────────────────────────────────────────────────
@@ -372,9 +441,17 @@ class AgentRouter:
         agent achieves a composite score ≥ 0.3.
         """
         if available_agents is None:
-            agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
+            # DB-backed per-tenant read (active agents, newest first) — the
+            # process-local list missed agents created on another replica and
+            # still offered ones deleted there.
+            lister = getattr(self._agent_store, "list_async", None)
+            if lister is not None and inspect.iscoroutinefunction(lister):
+                agents = await lister(tenant_ctx=tenant_ctx, limit=MAX_ROUTING_CANDIDATES)
+            else:
+                agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
         else:
             agents = available_agents
+        agents = list(agents)[:MAX_ROUTING_CANDIDATES]
 
         if not agents:
             return RoutingDecision(
@@ -384,13 +461,20 @@ class AgentRouter:
             )
 
         scores: list[AgentScore] = []
+        history = (
+            await self._history_scores_db(
+                [str(a.get("agent_id", "")) for a in agents], tenant_ctx
+            )
+            if self._db is not None
+            else {}
+        )
         for agent in agents:
             aid = agent.get("agent_id", "")
             kw = self._score_by_keywords(goal, agent)
             conn = self._score_by_connector_match(goal, agent)
-            # Use DB-backed history scoring when available, fall back to eval store
+            # DB-backed history (one grouped query above), else the eval store
             if self._db is not None:
-                hist = await self._score_by_history_db(agent, goal, tenant_ctx)
+                hist = history.get(str(aid), 0.0)
             else:
                 hist = self._score_by_history(aid, tenant_ctx)
 
@@ -406,9 +490,10 @@ class AgentRouter:
             )
 
         # LLM scoring (optional, when provider available)
+        llm_scoring = ""
         if self._llm_provider and len(agents) > 1:
             try:
-                llm_scores = await self._score_by_llm(
+                llm_scores = await self._score_by_llm_checked(
                     goal, agents, self._llm_provider, tenant_ctx=tenant_ctx
                 )
                 if llm_scores:
@@ -419,8 +504,11 @@ class AgentRouter:
                         if llm_s:
                             s.score = 0.4 * s.score + 0.6 * llm_s.score
                             s.reasons.extend(llm_s.reasons)
-            except Exception:
-                pass
+            except Exception as exc:
+                llm_scoring = f"routing_llm_failed: {exc}"[:200]
+                import logging
+
+                logging.getLogger(__name__).warning("routing_llm_failed: %s", exc)
 
         scores.sort(key=lambda s: s.score, reverse=True)
         best = scores[0]
@@ -431,6 +519,7 @@ class AgentRouter:
                 reason="low_confidence",
                 confidence=best.score,
                 all_scores=scores,
+                llm_scoring=llm_scoring,
             )
 
         # Determine mode: needs_human_choice when top two agents are very close
@@ -457,4 +546,5 @@ class AgentRouter:
             mode=mode,
             candidate_agents=candidate_agents,
             all_scores=scores,
+            llm_scoring=llm_scoring,
         )
