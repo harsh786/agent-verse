@@ -374,6 +374,27 @@ class Settings(BaseSettings):
     # they stay off unless explicitly enabled.
     triggers_extended_consumers_enabled: bool = False
 
+    # --- Trigger event bus (TRG-18, app/triggers/bus.py) ---
+    # One Redis Stream per event family; consumers read them through consumer
+    # groups so an event published while they are down is delivered later.
+    trigger_bus_stream_goal: str = "trigger:stream:goal"  # goal.completed/failed/score_below
+    trigger_bus_stream_hitl: str = "trigger:stream:hitl"  # hitl.approved/rejected
+    trigger_bus_stream_memory: str = "trigger:stream:memory"  # memory.created
+    trigger_bus_stream_event: str = "trigger:stream:event"  # trigger:event:* (custom/chat/state)
+    # Approximate MAXLEN cap per stream (XADD MAXLEN ~ N).
+    trigger_bus_stream_maxlen: int = 100_000
+    # Also PUBLISH to the legacy pub/sub channel so replicas still running the
+    # pub/sub consumers during a rolling deploy keep receiving events. Turn off
+    # once every replica consumes the streams (rollout in app/triggers/bus.py).
+    trigger_bus_dual_publish: bool = True
+    # Consumer tuning: XREADGROUP block, batch size, the idle time after which a
+    # pending (delivered, never acked) entry is XAUTOCLAIMed by another consumer,
+    # and the delivery count after which a poison entry is acked and dropped.
+    trigger_bus_block_ms: int = 5_000
+    trigger_bus_read_count: int = 50
+    trigger_bus_claim_idle_ms: int = 60_000
+    trigger_bus_max_deliveries: int = 10
+
     # Advanced RAG pattern feature flags
     enable_raptor: bool = True
     enable_flare: bool = True
