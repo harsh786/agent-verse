@@ -16,6 +16,43 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '@/lib/api/client';
 
+/** GET /ai-ops/eval-results row (the fields this card shows). */
+interface EvalRun {
+  result_id: string;
+  dataset_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'abandoned' | string;
+  total_cases?: number;
+  completed_cases?: number;
+  avg_score?: number;
+  passed?: boolean;
+  error?: string;
+}
+
+function evalRunLabel(run: EvalRun): string {
+  switch (run.status) {
+    case 'queued':
+      return 'queued — waiting for a worker';
+    case 'running':
+      return `running · ${run.completed_cases ?? 0}/${run.total_cases ?? '?'} cases`;
+    case 'abandoned':
+      return 'abandoned — no progress, the run was lost';
+    case 'failed':
+      return `failed${run.error ? ` · ${run.error}` : ''}`;
+    case 'completed':
+      return `${run.passed ? 'passed' : 'did not pass'} · ${Math.round((run.avg_score ?? 0) * 100)}%`;
+    default:
+      return run.status;
+  }
+}
+
+const EVAL_RUN_COLORS: Record<string, string> = {
+  queued: 'text-muted-foreground',
+  running: 'text-[#00D4FF]',
+  completed: 'text-green-600 dark:text-green-400',
+  failed: 'text-red-500',
+  abandoned: 'text-amber-500',
+};
+
 export function AIOpsDashboard() {
   const navigate = useNavigate();
 
@@ -44,6 +81,17 @@ export function AIOpsDashboard() {
     queryFn: () => apiFetch<any>('/ai-ops/regression-status'),
     refetchInterval: 60_000,
   });
+
+  // Dataset eval runs execute on workers; poll while any is still in flight.
+  const { data: runsData, isError: runsError } = useQuery({
+    queryKey: ['dashboard-eval-runs'],
+    queryFn: () => apiFetch<{ results?: EvalRun[] }>('/ai-ops/eval-results'),
+    refetchInterval: (query) => {
+      const rows = (query.state.data as { results?: EvalRun[] } | undefined)?.results ?? [];
+      return rows.some((r) => r.status === 'queued' || r.status === 'running') ? 10_000 : 60_000;
+    },
+  });
+  const evalRuns = (runsData?.results ?? []).slice(0, 5);
 
   const goals = goalsData?.goals ?? [];
   const activeGoals = goals.filter((g: any) => ['executing', 'planning'].includes(g.status));
@@ -256,6 +304,32 @@ export function AIOpsDashboard() {
               </div>
             </div>
           </div>
+
+          {/* Eval runs (AI-Ops datasets) */}
+          {(runsError || evalRuns.length > 0) && (
+            <div className="bg-card border border-border rounded-xl overflow-hidden">
+              <div className="px-4 py-3 border-b border-border">
+                <h2 className="text-sm font-semibold flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-[#00D4FF]" />
+                  Eval Runs
+                </h2>
+              </div>
+              {runsError ? (
+                <p role="alert" className="px-4 py-3 text-xs text-red-500">Eval runs could not be loaded</p>
+              ) : (
+                <div className="divide-y divide-border">
+                  {evalRuns.map((run) => (
+                    <div key={run.result_id} data-testid={`eval-run-${run.result_id}`} className="px-4 py-2.5">
+                      <p className="text-xs font-medium truncate">{run.dataset_id}</p>
+                      <p className={`text-[10px] mt-0.5 ${EVAL_RUN_COLORS[run.status] ?? 'text-muted-foreground'}`}>
+                        {evalRunLabel(run)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Recent Alerts */}
           {alertsError && (

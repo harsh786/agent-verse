@@ -100,6 +100,8 @@ celery_app.conf.update(
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
         "app.scaling.tasks.expire_hitl_approvals": {"queue": "maintenance"},
         "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
+        # AI-Ops dataset runs (durable, resumable per case) — MEM-25.
+        "app.scaling.tasks.run_ai_ops_dataset": {"queue": "maintenance"},
         "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
         # GDPR export — runs in background, long-running
         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},

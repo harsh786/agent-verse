@@ -117,9 +117,9 @@ async def list_eval_datasets(request: Request) -> dict[str, Any]:
     return {"datasets": datasets, "total": len(datasets)}
 
 
-#: A ``running`` result older than this is reported ``abandoned``: the replica
-#: executing it died (the background task is per-process), so it never claims a
-#: result it does not have. Mirrors eval_suite_store.STALE_RUN_AFTER.
+#: A ``queued`` / ``running`` result with no progress (heartbeat) for this long
+#: is reported ``abandoned`` (no worker picked it up, or the in-process fallback
+#: died with its replica), so it never claims a result it does not have.
 STALE_RUN_AFTER = datetime.timedelta(hours=1)
 
 
@@ -131,96 +131,58 @@ async def _load_judge(request: Request, tenant_id: str, judge_id: str) -> dict[s
     return _judges.get(f"{tenant_id}:{judge_id}")
 
 
-async def _save_result(request: Request, tenant_id: str, result: dict[str, Any]) -> None:
-    store = _store(request)
-    if store is not None:
-        await store.update_eval_result(
-            tenant_id=tenant_id, result_id=result["result_id"], payload=result
+class _MemoryRunStore:
+    """The in-process fallback dicts behind the run job's store interface.
+
+    Single-process dev and tests only (no durable store wired); production
+    runs go through :class:`app.evals.ai_ops_store.AIOpsStore` on a worker.
+    """
+
+    async def get_eval_result(self, tenant_id: str, result_id: str) -> dict[str, Any] | None:
+        return next(
+            (r for r in _eval_results.get(tenant_id, []) if r.get("result_id") == result_id),
+            None,
         )
-    # In-memory fallback: the dict in _eval_results is mutated in place.
+
+    async def update_eval_result(
+        self, *, tenant_id: str, result_id: str, payload: dict[str, Any]
+    ) -> None:
+        rows = _eval_results.setdefault(tenant_id, [])
+        for i, row in enumerate(rows):
+            if row.get("result_id") == result_id:
+                if row is not payload:
+                    rows[i] = payload
+                return
+        rows.append(payload)
+
+    async def get_dataset(self, tenant_id: str, dataset_id: str) -> dict[str, Any] | None:
+        return _datasets.get(f"{tenant_id}:{dataset_id}")
+
+    async def get_judge(self, tenant_id: str, judge_id: str) -> dict[str, Any] | None:
+        return _judges.get(f"{tenant_id}:{judge_id}")
+
+    async def get_baseline(self, tenant_id: str, metric_name: str) -> float | None:
+        return _baselines.get(tenant_id, {}).get(metric_name)
+
+    async def add_alert(self, *, tenant_id: str, alert: dict[str, Any]) -> None:
+        _drift_alerts.setdefault(tenant_id, []).append(alert)
+
+    async def set_baseline_if_absent(
+        self, *, tenant_id: str, metric_name: str, value: float
+    ) -> None:
+        _baselines.setdefault(tenant_id, {}).setdefault(metric_name, value)
 
 
-async def _finish_eval_run(
-    request: Request,
-    *,
-    tenant: Any,
-    dataset: dict[str, Any],
-    result: dict[str, Any],
-    goal_service: Any,
-    judge: dict[str, Any] | None,
-    provider: Any,
-    agent_id: str | None,
-) -> None:
-    """Background body of a dataset run: execute every case, score, persist."""
-    from app.evals.ai_ops_runner import run_dataset
-    from app.observability.logging import get_logger
+def _enqueue_worker_run(tenant: Any, result_id: str) -> None:
+    """Hand a dataset run to a Celery worker (survives API restarts/deploys)."""
+    from app.scaling.tasks import run_ai_ops_dataset
 
-    log = get_logger(__name__)
-    tenant_id = tenant.tenant_id
-    store = _store(request)
-    try:
-        outcome = await run_dataset(
-            dataset=dataset,
-            goal_service=goal_service,
-            tenant_ctx=tenant,
-            agent_id=agent_id,
-            judge=judge,
-            provider=provider,
-        )
-        result.update(outcome)
-        result["finished_at"] = datetime.datetime.now(datetime.UTC).isoformat()
-        await _save_result(request, tenant_id, result)
-    except Exception as exc:
-        log.warning("ai_ops_eval_run_failed", result_id=result["result_id"], error=str(exc)[:300])
-        result.update(status="failed", passed=False, error=str(exc)[:2000])
-        try:
-            await _save_result(request, tenant_id, result)
-        except Exception as store_exc:
-            log.error(
-                "ai_ops_eval_run_status_lost", result_id=result["result_id"], error=str(store_exc)
-            )
-        return
-
-    # Regression / baseline bookkeeping only for a run that actually completed.
-    avg_score = float(result["avg_score"])
-    metric = f"eval_{result['dataset_id']}"
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    # `is None`, not truthiness: a legitimate baseline of 0.0 is falsy, which
-    # previously made every run look like a first run.
-    try:
-        if store is not None:
-            baseline = await store.get_baseline(tenant_id, metric)
-        else:
-            baseline = _baselines.get(tenant_id, {}).get(metric)
-
-        if baseline is not None and avg_score < baseline - 0.05:  # 5% regression
-            alert = {
-                "alert_id": str(uuid.uuid4()),
-                "tenant_id": tenant_id,
-                "drift_type": "model_output",
-                "severity": "warning",
-                "metric_name": metric,
-                "baseline_value": baseline,
-                "current_value": avg_score,
-                "drift_score": baseline - avg_score,
-                "message": f"Eval score regressed: {baseline:.2f} → {avg_score:.2f}",
-                "created_at": now,
-            }
-            if store is not None:
-                await store.add_alert(tenant_id=tenant_id, alert=alert)
-            else:
-                _drift_alerts.setdefault(tenant_id, []).append(alert)
-
-        # Auto-set baseline on first run only; never clobber an existing one.
-        if baseline is None:
-            if store is not None:
-                await store.set_baseline_if_absent(
-                    tenant_id=tenant_id, metric_name=metric, value=avg_score
-                )
-            else:
-                _baselines.setdefault(tenant_id, {})[metric] = avg_score
-    except Exception as exc:
-        log.warning("ai_ops_eval_baseline_update_failed", metric=metric, error=str(exc)[:300])
+    plan = getattr(getattr(tenant, "plan", None), "value", None) or str(
+        getattr(tenant, "plan", "free")
+    )
+    run_ai_ops_dataset.apply_async(
+        kwargs={"tenant_id": tenant.tenant_id, "plan": plan, "result_id": result_id}
+    )
 
 
 @router.post("/datasets/{dataset_id}/run", status_code=202)
@@ -263,6 +225,10 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
     if judge is not None and provider is None:
         raise HTTPException(503, "Judge configured but no LLM provider is available")
 
+    # A durable store + Celery (the goal queue is Celery-backed) → the run is
+    # a worker task: it outlives this replica and resumes per case after a
+    # worker restart. Otherwise (single-process dev / tests) it runs here.
+    use_worker = store is not None and getattr(goal_service, "_task_queue", None) is not None
     now = datetime.datetime.now(datetime.UTC).isoformat()
     result_id = str(uuid.uuid4())
     result: dict[str, Any] = {
@@ -271,7 +237,7 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
         "tenant_id": tenant.tenant_id,
         "goal_id": body.goal_id,
         "agent_id": body.agent_id,
-        "status": "running",
+        "status": "queued" if use_worker else "running",
         "passed": False,
         "total_cases": len(dataset["golden_tasks"]),
         "judge_model": (judge or {}).get("model", ""),
@@ -295,19 +261,35 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
     else:
         _eval_results.setdefault(tenant.tenant_id, []).append(result)
 
-    running: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault(
+    if use_worker:
+        assert store is not None
+        try:
+            _enqueue_worker_run(tenant, result_id)
+        except Exception as exc:
+            result.update(status="failed", passed=False, error=f"could not enqueue run: {exc}")
+            await store.update_eval_result(
+                tenant_id=tenant.tenant_id, result_id=result_id, payload=result
+            )
+            raise HTTPException(503, "Eval run could not be queued; try again") from exc
+        return {
+            "result_id": result_id,
+            "dataset_id": dataset_id,
+            "status": "queued",
+            "total": len(dataset["golden_tasks"]),
+        }
+
+    from app.evals.ai_ops_jobs import execute_dataset_run
+
+    running: set[asyncio.Task[Any]] = request.app.state.__dict__.setdefault(
         "_ai_ops_run_tasks", set()
     )
     task = asyncio.create_task(
-        _finish_eval_run(
-            request,
-            tenant=tenant,
-            dataset=dataset,
-            result=result,
+        execute_dataset_run(
+            store=store if store is not None else _MemoryRunStore(),
+            tenant_ctx=tenant,
+            result_id=result_id,
             goal_service=goal_service,
-            judge=judge,
             provider=provider,
-            agent_id=body.agent_id,
         )
     )
     running.add(task)  # strong reference until it finishes
@@ -321,15 +303,21 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
 
 
 def _with_staleness(result: dict[str, Any]) -> dict[str, Any]:
-    if result.get("status") != "running":
+    """A queued/running run with no progress for STALE_RUN_AFTER reads ``abandoned``.
+
+    Progress is the run's last heartbeat (written as each case finishes), so a
+    long run that keeps finishing cases is never reported abandoned.
+    """
+    if result.get("status") not in {"queued", "running"}:
         return result
+    last = result.get("heartbeat_at") or result.get("started_at") or result.get("created_at")
     try:
-        created = datetime.datetime.fromisoformat(str(result.get("created_at")))
+        seen = datetime.datetime.fromisoformat(str(last))
     except ValueError:
         return result
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=datetime.UTC)
-    if datetime.datetime.now(datetime.UTC) - created > STALE_RUN_AFTER:
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=datetime.UTC)
+    if datetime.datetime.now(datetime.UTC) - seen > STALE_RUN_AFTER:
         return {**result, "status": "abandoned", "passed": False}
     return result
 
@@ -359,9 +347,12 @@ async def list_eval_results(request: Request) -> dict[str, Any]:
     store = _store(request)
     if store is not None:
         results = await store.list_eval_results(tenant.tenant_id, limit=50)
-        return {"results": results, "total": await store.count_eval_results(tenant.tenant_id)}
+        return {
+            "results": [_with_staleness(r) for r in results],
+            "total": await store.count_eval_results(tenant.tenant_id),
+        }
     results = list(reversed(_eval_results.get(tenant.tenant_id, [])))
-    return {"results": results[:50], "total": len(results)}
+    return {"results": [_with_staleness(r) for r in results[:50]], "total": len(results)}
 
 
 @router.post("/judges")

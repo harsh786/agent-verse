@@ -8034,3 +8034,82 @@ try:
     }
 except Exception as _org_sched_exc:
     logger.warning("Failed to register org cron schedules: %s", _org_sched_exc)
+
+
+# ── AI-Ops dataset runs (MEM-25) ──────────────────────────────────────────────
+
+
+def _ai_ops_worker_platform_provider() -> Any:
+    """The platform LLM for AI-Ops judges on a worker (same precedence as run_goal)."""
+    provider = _worker_deployment_provider()
+    if provider is not None:
+        return provider
+    from app.providers.fake import FakeProvider as _RegFake
+    from app.providers.registry import resolve_provider as _resolve_provider
+
+    resolved = _resolve_provider()
+    return None if isinstance(resolved, _RegFake) else resolved
+
+
+def _ai_ops_worker_deps() -> tuple[Any, Any, Any, str]:
+    """``(store, goal_service, provider, redis_url)`` for a worker-side dataset run."""
+    from app.evals.ai_ops_store import AIOpsStore
+
+    goal_service, db_factory = _build_worker_goal_service()
+    if goal_service is None or db_factory is None:
+        raise RuntimeError("worker goal service / database unavailable")
+    redis_url = os.getenv("REDIS_URL", "") or str(celery_app.conf.broker_url or "")
+    return AIOpsStore(db_factory), goal_service, _ai_ops_worker_platform_provider(), redis_url
+
+
+async def _run_ai_ops_dataset_async(tenant_id: str, plan: str, result_id: str) -> dict[str, Any]:
+    from app.evals.ai_ops_jobs import execute_dataset_run
+    from app.tenancy.context import PlanTier, TenantContext
+
+    store, goal_service, provider, redis_url = _ai_ops_worker_deps()
+    try:
+        tier = PlanTier(plan)
+    except ValueError:
+        tier = PlanTier.FREE
+    tenant_ctx = TenantContext(tenant_id=tenant_id, plan=tier, api_key_id="ai-ops-run")
+    redis = None
+    if redis_url:
+        # Case goals run on goal workers: their events arrive over Redis
+        # pub/sub, and cancelling an unscored case reaches its runner through
+        # the Redis cancel flag.
+        goal_service._redis_url_for_pubsub = redis_url
+        goal_service.start_celery_event_bridge(redis_url)
+        redis = _worker_async_redis()
+        goal_service._redis = redis
+    try:
+        result = await execute_dataset_run(
+            store=store,
+            tenant_ctx=tenant_ctx,
+            result_id=result_id,
+            goal_service=goal_service,
+            provider=provider,
+        )
+    finally:
+        for task in list(getattr(goal_service, "_background_tasks", ())):
+            task.cancel()
+        if redis is not None:
+            with contextlib.suppress(Exception):
+                await redis.aclose()
+    if result is None:
+        return {"status": "missing", "result_id": result_id}
+    return {"status": result.get("status"), "result_id": result_id}
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.run_ai_ops_dataset",
+    bind=True,
+    max_retries=0,
+    # At-least-once: a worker lost mid-run has the message redelivered, and the
+    # run resumes from the cases it already persisted (execute_dataset_run).
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def run_ai_ops_dataset(self: Any, tenant_id: str, plan: str, result_id: str) -> dict[str, Any]:
+    """Execute (or resume) one AI-Ops dataset run on a worker."""
+    result: dict[str, Any] = _run_async(_run_ai_ops_dataset_async(tenant_id, plan, result_id))
+    return result

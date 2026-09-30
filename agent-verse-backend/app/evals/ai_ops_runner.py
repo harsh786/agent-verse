@@ -27,6 +27,7 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -256,12 +257,29 @@ async def run_dataset(
     provider: Any,
     timeout: float = CASE_TIMEOUT_SECONDS,
     concurrency: int = CASE_CONCURRENCY,
+    done_cases: Mapping[int, dict[str, Any]] | None = None,
+    on_case: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
-    """Execute and score every golden task. Returns the result fields to merge."""
+    """Execute and score every golden task. Returns the result fields to merge.
+
+    ``done_cases`` (by case index) are cases a previous attempt of this run
+    already finished and persisted: they are reused, not executed again, so a
+    run resumed after a worker restart only runs what is left. ``on_case`` is
+    awaited with each newly finished case (the caller persists progress).
+    """
     tasks: list[dict[str, Any]] = list(dataset.get("golden_tasks") or [])
     gate = asyncio.Semaphore(max(1, concurrency))
+    reuse: Mapping[int, dict[str, Any]] = done_cases or {}
 
     async def _one(idx: int, task: dict[str, Any]) -> dict[str, Any]:
+        if idx in reuse:
+            return reuse[idx]
+        case = await _score_one(idx, task)
+        if on_case is not None:
+            await on_case(case)
+        return case
+
+    async def _score_one(idx: int, task: dict[str, Any]) -> dict[str, Any]:
         task_input = str(task.get("input") or task.get("goal") or "").strip()
         expected = str(task.get("expected_output") or "")
         case: dict[str, Any] = {"index": idx, "input": task_input[:500], "expected": expected[:500]}
@@ -326,7 +344,15 @@ async def run_dataset(
         case.update(status="scored", score=round(sim, 3), passed=sim >= LEXICAL_FAIL_FLOOR)
         return case
 
-    cases = list(await asyncio.gather(*(_one(i, t) for i, t in enumerate(tasks))))
+    pending = [asyncio.ensure_future(_one(i, t)) for i, t in enumerate(tasks)]
+    try:
+        cases = list(await asyncio.gather(*pending))
+    except BaseException:
+        # Stop the sibling cases: a failed/aborted run must not keep executing
+        # goals and writing progress behind the caller's back.
+        for fut in pending:
+            fut.cancel()
+        raise
 
     n = max(len(cases), 1)
     avg_score = sum(float(c["score"]) for c in cases) / n

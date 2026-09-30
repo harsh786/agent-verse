@@ -230,4 +230,32 @@ describe('AIOpsDashboard', () => {
     expect(screen.queryByText(/0 critical/)).not.toBeInTheDocument();
     expect(screen.getAllByText('—').length).toBe(4);
   });
+
+  test('eval runs show queued / running (with progress) / abandoned / completed states', async () => {
+    const runs = {
+      results: [
+        { result_id: 'r1', dataset_id: 'ds-queued', status: 'queued', total_cases: 5 },
+        { result_id: 'r2', dataset_id: 'ds-running', status: 'running', total_cases: 4, completed_cases: 2 },
+        { result_id: 'r3', dataset_id: 'ds-lost', status: 'abandoned', total_cases: 3 },
+        { result_id: 'r4', dataset_id: 'ds-done', status: 'completed', total_cases: 3, avg_score: 0.82, passed: true },
+      ],
+      total: 4,
+    };
+    const fetchMock = mockFetch();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      const json = (b: unknown) =>
+        new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/ai-ops/eval-results')) return json(runs);
+      if (url.includes('/ai-ops/alerts')) return json(ALERTS);
+      if (url.includes('/ai-ops/regression-status')) return json(REGRESSION);
+      if (url.includes('/models/health')) return json(MODELS);
+      return json(GOALS);
+    });
+    renderDashboard();
+    expect(await screen.findByTestId('eval-run-r1')).toHaveTextContent(/queued/i);
+    expect(screen.getByTestId('eval-run-r2')).toHaveTextContent(/running · 2\/4/i);
+    expect(screen.getByTestId('eval-run-r3')).toHaveTextContent(/abandoned/i);
+    expect(screen.getByTestId('eval-run-r4')).toHaveTextContent(/passed · 82%/i);
+  });
 });
