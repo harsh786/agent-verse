@@ -26,6 +26,7 @@ touching ``app/ingestion/*``.
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -231,9 +232,12 @@ class KGIngestionHook:
             if text is None:
                 continue
             if provider is not None:
-                self._extractor.set_provider(provider)
-                nodes = await self._extractor.extract_entities_llm(text, tenant_id, source_id)
-                edges = await self._extractor.extract_relationships_llm(
+                # A copy per call: pointing the shared extractor at this call's
+                # provider raced with concurrent documents of other tenants.
+                extractor = copy.copy(self._extractor)
+                extractor.set_provider(provider)
+                nodes = await extractor.extract_entities_llm(text, tenant_id, source_id)
+                edges = await extractor.extract_relationships_llm(
                     text, nodes, tenant_id, source_id
                 )
             else:

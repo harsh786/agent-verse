@@ -46,27 +46,32 @@ class AddEdgeRequest(BaseModel):
 async def extract_from_text(request: Request, body: ExtractRequest) -> dict[str, Any]:
     """Extract entities and relationships from text into the tenant knowledge graph."""
     tenant = _require_tenant(request)
-    from app.knowledge_graph.extractor import entity_extractor
+    from app.knowledge_graph.extractor import EntityExtractor
     from app.knowledge_graph.store import kg_store
 
+    # A per-request extractor: set_provider on the module-global one raced
+    # between concurrent requests. Without use_llm it has no provider at all,
+    # so nothing below can spend an LLM call (relationships used to be
+    # extracted with the LLM even for use_llm=false).
+    extractor = EntityExtractor()
     provider = getattr(request.app.state, "_app_provider", None)
-    if provider:
-        entity_extractor.set_provider(provider)
+    use_llm = bool(body.use_llm and provider)
+    if use_llm:
+        extractor.set_provider(provider)
 
-    # Extract entities
-    if body.use_llm and provider:
-        entities = await entity_extractor.extract_entities_llm(
+    if use_llm:
+        entities = await extractor.extract_entities_llm(
             body.text, tenant.tenant_id, body.source_id
+        )
+        edges = await extractor.extract_relationships_llm(
+            body.text, entities, tenant.tenant_id, body.source_id
         )
     else:
-        entities = entity_extractor.extract_entities_deterministic(
+        # Deterministic extraction finds entities only; it emits no edges.
+        entities = extractor.extract_entities_deterministic(
             body.text, tenant.tenant_id, body.source_id
         )
-
-    # Extract relationships
-    edges = await entity_extractor.extract_relationships_llm(
-        body.text, entities, tenant.tenant_id, body.source_id
-    )
+        edges = []
 
     # One awaited, batched upsert: the response reports these as extracted, so
     # they must be durable when it returns (the old per-element fire-and-forget

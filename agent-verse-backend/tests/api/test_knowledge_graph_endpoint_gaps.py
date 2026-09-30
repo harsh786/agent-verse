@@ -241,7 +241,8 @@ def test_extract_with_llm_provider_set_uses_llm_extraction() -> None:
     app = _make_app()
     app.state._app_provider = mock_provider  # Endpoint checks request.app.state._app_provider
 
-    with patch("app.knowledge_graph.extractor.entity_extractor", mock_extractor):
+    # KB-30: the route builds a per-request extractor (the module singleton raced).
+    with patch("app.knowledge_graph.extractor.EntityExtractor", return_value=mock_extractor):
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/knowledge-graph/extract",
