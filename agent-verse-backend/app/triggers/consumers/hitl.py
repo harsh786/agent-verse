@@ -63,15 +63,15 @@ class HITLTriggerConsumer:
         triggers = await self._store.find_by_type_async(trigger_type, tenant_id=tenant_id)
         if not triggers:
             return
+        from app.governance.hitl_queues import matches
         from app.triggers.consumers.tenant_ctx import event_tenant_ctx
 
         # Plan from the tenant record — never from the event payload.
         tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
         for trigger in triggers:
             spec = trigger.get("spec", trigger)
-            queue_id = data.get("hitl_queue_id", "")
-            watch_queue = getattr(spec, "hitl_queue_id", "") or ""
-            if watch_queue and watch_queue != queue_id:
+            # TRG-23: the filter matches either derived queue (agent:<id> / risk:<tier>).
+            if not matches(getattr(spec, "hitl_queue_id", "") or "", data):
                 continue
             try:
                 await self._dispatcher.dispatch(spec, data, tenant_ctx)

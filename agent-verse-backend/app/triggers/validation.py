@@ -162,6 +162,12 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     from app.triggers.consumers.conversational import validate_conversational_patterns
 
     validate_conversational_patterns(spec)
+    # TRG-23: HITL queue filters are derived ids (agent:<id> / risk:<tier>).
+    if spec.hitl_queue_id:
+        from app.governance.hitl_queues import queue_id_error
+
+        if (reason := queue_id_error(spec.hitl_queue_id)) is not None:
+            raise ValueError(reason)
 
     # ── Type-specific required fields ────────────────────────────────────────
     if v == "cron":

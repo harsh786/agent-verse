@@ -1212,6 +1212,37 @@ class HITLGateway:
 
         return None
 
+    async def _goal_agent_id(self, goal_id: str, tenant_id: str) -> str | None:
+        """The agent that owns *goal_id* (for its ``agent:<id>`` HITL queue), or None.
+
+        Best effort: without a DB, or when the lookup fails, the event still
+        carries the ``risk:<tier>`` queue.
+        """
+        if self._db_session_factory is None or not goal_id:
+            return None
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                row = (
+                    await session.execute(
+                        text("SELECT agent_id FROM goals WHERE id = :gid AND tenant_id = :tid"),
+                        {"gid": goal_id, "tid": tenant_id},
+                    )
+                ).fetchone()
+            return str(row[0]) if row is not None and row[0] else None
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("hitl_goal_agent_lookup_failed", error=str(exc))
+            return None
+
     async def _publish_trigger_event(
         self, channel: str, req: ApprovalRequest, tenant_ctx: TenantContext
     ) -> None:
@@ -1224,7 +1255,14 @@ class HITLGateway:
             return
         import json
 
+        from app.governance.hitl_queues import queue_ids
+
         plan = getattr(getattr(tenant_ctx, "plan", None), "value", None) or "free"
+        # TRG-23: the request's derived queues (agent:<id>, risk:<tier>). The
+        # single-id field used to be "" always, so queue-filtered triggers never fired.
+        queues = queue_ids(
+            await self._goal_agent_id(req.goal_id, tenant_ctx.tenant_id), req.risk_level
+        )
         payload = {
             "tenant_id": tenant_ctx.tenant_id,
             "tenant_plan": plan,
@@ -1234,7 +1272,8 @@ class HITLGateway:
             "risk_level": req.risk_level,
             "approver": req.approver or "",
             "note": req.note,
-            "hitl_queue_id": "",
+            "hitl_queue_ids": queues,
+            "hitl_queue_id": queues[0] if queues else "",
         }
         try:
             from app.triggers.bus import publish_trigger_event

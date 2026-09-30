@@ -59,12 +59,15 @@ export function GoalChainFamilyForm({ triggerType, value, onChange }: FamilyForm
         </>
       )}
       {(triggerType === 'hitl_approved' || triggerType === 'hitl_rejected') && (
-        <Field label="HITL Queue ID (optional)" hint="Restrict to approvals from a specific queue">
+        <Field
+          label="HITL Queue (optional)"
+          hint="Only approvals for one agent (agent:<agent_id>) or one risk tier (risk:high, risk:critical, risk:write_high, …)"
+        >
           <input
             type="text"
             value={(value.hitl_queue_id as string) ?? ''}
             onChange={(e) => set('hitl_queue_id', e.target.value)}
-            placeholder="queue-uuid"
+            placeholder="agent:<agent_id> or risk:high"
             className={inputCls}
           />
         </Field>

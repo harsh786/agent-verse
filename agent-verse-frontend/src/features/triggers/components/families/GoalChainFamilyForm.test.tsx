@@ -15,7 +15,7 @@ describe('GoalChainFamilyForm', () => {
     expect(screen.getByPlaceholderText('goal-uuid')).toHaveValue('');
     expect(screen.getByPlaceholderText('agent-uuid')).toHaveValue('');
     expect(screen.queryByPlaceholderText('accuracy')).not.toBeInTheDocument();
-    expect(screen.queryByPlaceholderText('queue-uuid')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('agent:<agent_id> or risk:high')).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText('learning')).not.toBeInTheDocument();
   });
 
@@ -70,19 +70,19 @@ describe('GoalChainFamilyForm', () => {
   describe('hitl_approved / hitl_rejected', () => {
     test('renders HITL queue id field for hitl_approved', () => {
       render(<GoalChainFamilyForm triggerType="hitl_approved" value={{}} onChange={vi.fn()} />);
-      expect(screen.getByPlaceholderText('queue-uuid')).toHaveValue('');
+      expect(screen.getByPlaceholderText('agent:<agent_id> or risk:high')).toHaveValue('');
     });
 
     test('renders HITL queue id field for hitl_rejected', () => {
       render(<GoalChainFamilyForm triggerType="hitl_rejected" value={{}} onChange={vi.fn()} />);
-      expect(screen.getByPlaceholderText('queue-uuid')).toHaveValue('');
+      expect(screen.getByPlaceholderText('agent:<agent_id> or risk:high')).toHaveValue('');
     });
 
     test('editing HITL queue id merges into value', () => {
       const onChange = vi.fn();
       render(<GoalChainFamilyForm triggerType="hitl_rejected" value={{}} onChange={onChange} />);
-      fireEvent.change(screen.getByPlaceholderText('queue-uuid'), { target: { value: 'queue-9' } });
-      expect(lastArg(onChange)).toEqual({ hitl_queue_id: 'queue-9' });
+      fireEvent.change(screen.getByPlaceholderText('agent:<agent_id> or risk:high'), { target: { value: 'risk:high' } });
+      expect(lastArg(onChange)).toEqual({ hitl_queue_id: 'risk:high' });
     });
   });
 
