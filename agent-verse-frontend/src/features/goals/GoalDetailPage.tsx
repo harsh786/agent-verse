@@ -453,7 +453,19 @@ const TERMINAL_EVENT_COLORS: Record<string, string> = {
   worker_started:       "text-slate-400",
   worker_complete:      "text-slate-400",
   knowledge_retrieved:  "text-teal-400",
+  grounding_warning:    "text-amber-400",
+  claim_grounding_warning: "text-amber-400",
+  grounding_blocked:    "text-red-400",
+  worker_failed:        "text-red-300 font-bold",
 };
+
+// Grounding events carry the claims the gate could not support; show them so a
+// reader can see *what* was unsupported instead of an opaque event name.
+const GROUNDING_EVENTS = new Set(["grounding_warning", "claim_grounding_warning", "grounding_blocked"]);
+
+function readStrList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && x.length > 0) : [];
+}
 
 const TERMINAL_ICONS: Record<string, string> = {
   goal_started:         "🚀",
@@ -481,8 +493,16 @@ function TerminalLine({ event, onRetry, isRetrying }: {
   const step = readStr(event.step);
   const color = TERMINAL_EVENT_COLORS[type] ?? "text-slate-300";
   const icon = TERMINAL_ICONS[type] ?? "·";
-  const isFailure = type === "tool_call_failed" || type === "goal_failed";
+  const isFailure =
+    type === "tool_call_failed" || type === "goal_failed" || type === "worker_failed" ||
+    type === "grounding_blocked";
   const isTool = type === "tool_call_complete" || type === "tool_call_failed";
+  const isGrounding = GROUNDING_EVENTS.has(type);
+  const groundingClaims = isGrounding
+    ? [...readStrList(event.ungrounded_claims), ...readStrList(event.contradicted)]
+    : [];
+  const groundingReasons = isGrounding ? readStrList(event.reasons) : [];
+  const riskNote = event.high_risk === true ? " (high-risk)" : "";
 
   const label = (() => {
     switch (type) {
@@ -495,13 +515,26 @@ function TerminalLine({ event, onRetry, isRetrying }: {
       case "verification_done": return `Verification ${event.success === true ? "passed" : "failed"}`;
       case "goal_complete": return "🎉 Goal complete";
       case "goal_failed": return "💥 Goal failed";
+      case "worker_failed": return "💥 Goal failed";
+      case "grounding_warning":
+      case "grounding_blocked": {
+        const n = groundingClaims.length;
+        const what = `${n} unsupported claim${n === 1 ? "" : "s"}`;
+        return type === "grounding_blocked"
+          ? `Grounding blocked: ${what}${riskNote}`
+          : `Grounding: ${what}${riskNote}`;
+      }
+      case "claim_grounding_warning": return `Claim check failed${riskNote}`;
       default: return step ?? type.replace(/_/g, " ");
     }
   })();
 
   const isStep = type === "step_complete" || type === "step_started";
   const stepOutput = isStep ? (event.output ?? event.result ?? (event as any).data) : null;
-  const hasDetails = isTool || type === "plan_ready" || type === "verification_done" || stepOutput != null;
+  const hasDetails =
+    isTool || type === "plan_ready" || type === "verification_done" || stepOutput != null ||
+    (isGrounding && (groundingClaims.length > 0 || groundingReasons.length > 0)) ||
+    (type === "worker_failed" && readStr(event.reason) != null);
 
   return (
     <div className={`group ${isFailure ? "bg-red-950/10" : ""}`}>
@@ -545,6 +578,27 @@ function TerminalLine({ event, onRetry, isRetrying }: {
           <pre className="text-[10px] text-emerald-400 whitespace-pre-wrap break-words max-h-64 overflow-auto leading-relaxed border border-emerald-900/30 rounded p-1.5 bg-emerald-950/20">
             {typeof stepOutput === "string" ? stepOutput : JSON.stringify(stepOutput, null, 2)}
           </pre>
+        </div>
+      )}
+
+      {expanded && isGrounding && (
+        <div className="px-8 pb-2 space-y-0.5">
+          {groundingReasons.map((r, i) => (
+            <p key={`r${i}`} className="text-[10px] text-amber-300">{r}</p>
+          ))}
+          {groundingClaims.length > 0 && (
+            <ul className="list-disc pl-4">
+              {groundingClaims.map((c, i) => (
+                <li key={`c${i}`} className="font-mono text-[10px] text-slate-300 break-words">{c}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {expanded && type === "worker_failed" && readStr(event.reason) && (
+        <div className="px-8 pb-2">
+          <p className="text-[10px] text-red-300 whitespace-pre-wrap break-words">{readStr(event.reason)}</p>
         </div>
       )}
 

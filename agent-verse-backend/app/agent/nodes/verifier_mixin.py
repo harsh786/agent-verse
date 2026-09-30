@@ -279,12 +279,14 @@ class VerifierMixin:
                     _evidence.append(_rag_knowledge)
                 _high_risk = _is_high_risk_step(agent_state.goal)
                 # Whether there was any real evidence (tool outputs or retrieved
-                # knowledge) to check the answer against. The gate always *warns*
-                # when the answer is ungrounded, but only *fails closed* (drives a
-                # replan) when there was evidence that failed to support it — an
-                # answer produced with zero evidence on a text-only path is warned
-                # and annotated, not force-replanned, to avoid breaking legitimate
-                # evidence-free completions.
+                # knowledge) to check the answer against. The keyword gate below
+                # fails closed on a high-risk goal whenever the answer carries a
+                # concrete claim (number, id, URL, ...) that nothing supports —
+                # including when there is no evidence at all: a text-only answer
+                # inventing a row count for "delete production data" used to
+                # complete with only a warning (CORE-03). The sentence-level NLI
+                # gate still needs evidence to judge against, since without any
+                # it would flag every sentence of every text-only answer.
                 _had_evidence = bool(_evidence)
                 # Run the grounding check whenever there is a final answer — NOT only
                 # when tool evidence exists. check_grounding's own "concrete claims
@@ -311,7 +313,7 @@ class VerifierMixin:
                                 "ungrounded_claims": _grounding.ungrounded_claims[:5],
                             }
                         )
-                        if _high_risk and _had_evidence:
+                        if _high_risk:
                             # Fail-closed: drive a replan instead of emitting.
                             success = False
                             retry = True

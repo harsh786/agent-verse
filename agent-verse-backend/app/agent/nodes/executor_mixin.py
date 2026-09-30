@@ -2890,17 +2890,27 @@ class ExecutorMixin:
             _tool_outputs_for_grounding = collect_grounding_sources(
                 state.steps, step_context or ""
             )
-            if raw_output and _tool_outputs_for_grounding and not _is_structured_tool_output:
-                # P0-4: high/critical-risk goals get zero ungrounded tolerance.
-                _rp_ground = state.context.get("_runtime_profile")
-                _risk_ground = str(
-                    getattr(
-                        getattr(getattr(_rp_ground, "properties", None), "risk", None),
-                        "value",
-                        "",
-                    )
-                    or ""
-                ).lower()
+            # P0-4: high/critical-risk goals get zero ungrounded tolerance.
+            _rp_ground = state.context.get("_runtime_profile")
+            _risk_ground = str(
+                getattr(
+                    getattr(getattr(_rp_ground, "properties", None), "risk", None),
+                    "value",
+                    "",
+                )
+                or ""
+            ).lower()
+            # CORE-03: on a high-risk goal a step asserting concrete claims with no
+            # evidence at all is ungrounded too (check_grounding's own "claims +
+            # no evidence" branch); the gate used to be skipped without evidence.
+            _goal_high_risk = _risk_ground in ("high", "critical") or _is_high_risk_step(
+                state.goal
+            )
+            if (
+                raw_output
+                and (_tool_outputs_for_grounding or _goal_high_risk)
+                and not _is_structured_tool_output
+            ):
                 _ground_ratio = 0.0 if _risk_ground in ("high", "critical") else None
                 _use_policy = False
                 with contextlib.suppress(Exception):

@@ -224,6 +224,29 @@ describe('GoalDetailPage', () => {
     vi.restoreAllMocks();
   });
 
+  test('renders grounding warnings with the unsupported claims', async () => {
+    goalStreamState.current = {
+      ...goalStreamState.current,
+      events: [
+        { type: 'goal_started', status: 'executing' },
+        { type: 'grounding_warning', stage: 'final_answer', high_risk: true, ungrounded_claims: ['4718', 'https://made.up/x'] },
+        { type: 'claim_grounding_warning', stage: 'final_answer', high_risk: true, reasons: ['1 unsupported claim(s)'], contradicted: [] },
+      ],
+    };
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    expect(await screen.findByText('Grounding: 2 unsupported claims (high-risk)')).toBeInTheDocument();
+    expect(screen.getByText('Claim check failed (high-risk)')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByText('Grounding: 2 unsupported claims (high-risk)'));
+    expect(screen.getByText('4718')).toBeInTheDocument();
+    expect(screen.getByText('https://made.up/x')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByText('Claim check failed (high-risk)'));
+    expect(screen.getByText('1 unsupported claim(s)')).toBeInTheDocument();
+  });
+
   test('renders typed execution events with meaningful labels and details', async () => {
     mockGoal('executing');
 

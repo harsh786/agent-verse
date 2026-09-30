@@ -198,6 +198,35 @@ async def test_write_high_tool_is_not_dispatched_and_files_no_request(mode: str)
     assert "tool_call_failed" in types
 
 
+# ── CORE-03: executor grounding gate on high-risk goals without evidence ────
+
+
+async def test_high_risk_goal_step_with_unsupported_claim_and_no_evidence_is_ungrounded() -> None:
+    executor = FakeProvider(responses=["Removed 4718 stale records."])
+    graph = _graph(executor)
+    events = _collect(graph)
+    state = AgentState(goal="delete the stale production records", tenant_ctx=T)
+    state.steps.append(StepResult(description="report the count", status=StepStatus.RUNNING))
+
+    await graph._execute_step("report the count", state, T)
+
+    assert state.steps[-1].status == StepStatus.UNGROUNDED
+    assert "4718" in state.ungrounded_claims
+    assert any(e.get("type") == "grounding_warning" for e in events)
+
+
+async def test_normal_goal_step_without_evidence_skips_grounding() -> None:
+    executor = FakeProvider(responses=["Revenue grew 4718 percent."])
+    graph = _graph(executor)
+    state = AgentState(goal="summarize the quarterly notes", tenant_ctx=T)
+    state.steps.append(StepResult(description="summarize", status=StepStatus.RUNNING))
+
+    await graph._execute_step("summarize", state, T)
+
+    assert state.steps[-1].status == StepStatus.RUNNING
+    assert state.ungrounded_claims == []
+
+
 # ── gate-7 vocabulary: whole words, not substrings ──────────────────────────
 
 

@@ -475,6 +475,59 @@ async def test_verify_grounding_gate_annotates_cited_answer_on_normal_goal() -> 
 
 
 @pytest.mark.asyncio
+async def test_verify_high_risk_text_only_answer_with_unsupported_number_fails() -> None:
+    """CORE-03: a high-risk goal whose answer asserts a concrete claim (a number)
+    with no tool/RAG evidence at all must not complete — it used to pass with
+    only a grounding_warning because the fail-closed path required evidence."""
+    verifier = FakeProvider(responses=['{"success": true, "reason": "deletion reported"}'])
+    graph = _make_graph(verifier=verifier)
+    events: list[dict] = []
+
+    async def _cb(event: dict) -> None:
+        events.append(event)
+
+    graph._event_callback = _cb  # type: ignore[assignment]
+    agent_state = _agent_state("delete the stale production records and report the count")
+    agent_state.steps.append(
+        _completed_step("remove stale records", "Removed 4718 stale records.")
+    )
+
+    result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+
+    assert result["agent_state"].verification_success is False
+    assert "grounding" in (result["agent_state"].verification_feedback or "")
+    assert "4718" in result["agent_state"].ungrounded_claims
+    assert any(e.get("type") == "grounding_warning" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_verify_high_risk_text_only_answer_without_concrete_claims_passes() -> None:
+    """No concrete claim and no evidence: nothing is unsupported, so no flip."""
+    verifier = FakeProvider(responses=['{"success": true, "reason": "plan written"}'])
+    graph = _make_graph(verifier=verifier)
+    agent_state = _agent_state("draft a production rollout checklist")
+    agent_state.steps.append(
+        _completed_step("draft checklist", "Back up the data, notify the team, then roll out.")
+    )
+
+    result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+
+    assert result["agent_state"].verification_success is True
+
+
+@pytest.mark.asyncio
+async def test_verify_normal_goal_text_only_unsupported_number_stays_fail_open() -> None:
+    verifier = FakeProvider(responses=['{"success": true, "reason": "ok"}'])
+    graph = _make_graph(verifier=verifier)
+    agent_state = _agent_state("summarize the quarterly notes")
+    agent_state.steps.append(_completed_step("summarize", "Revenue grew 4718 percent."))
+
+    result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+
+    assert result["agent_state"].verification_success is True
+
+
+@pytest.mark.asyncio
 async def test_verify_grounding_gate_error_is_contained_and_never_crashes() -> None:
     """The grounding gate is explicitly documented as 'must never crash
     verification' — if check_grounding raises, the verdict must still be

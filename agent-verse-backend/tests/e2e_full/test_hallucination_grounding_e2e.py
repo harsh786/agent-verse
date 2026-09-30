@@ -1,32 +1,16 @@
-"""e2e_full: an ungrounded answer on a high-risk goal should be flipped by the
-grounding gate (DOCUMENTED REACHABILITY GAP — xfail).
+"""e2e_full: an ungrounded answer on a high-risk goal is flipped by the grounding gate.
 
-Phase-3 *hallucination* dimension. The desired capability: when a high-risk goal
-(``_is_high_risk_step`` keyword — "delete", "production", …) produces a final
-answer carrying a concrete claim (a number, id, URL, …) that is **not** supported
-by the execution evidence, the verifier's grounding gate flips the verdict
-(``success=False, retry=True`` → replan, ultimately failed) rather than letting
-the hallucinated answer complete.
+Phase-3 *hallucination* dimension. When a high-risk goal (``_is_high_risk_step``
+keyword — "delete", "production", ...) produces a final answer carrying a
+concrete claim (a number, id, URL, ...) that no execution evidence supports, the
+verifier's grounding gate flips the verdict (``success=False, retry=True`` ->
+replan, ultimately failed) instead of letting the hallucinated answer complete.
 
-Why this is ``xfail(strict=True)`` on the live in-process path:
-
-Both grounding gates are guarded on **non-empty tool-call evidence** — the
-verifier gate runs only ``if _final_answer and _evidence`` where
-``_evidence = [tc["output"] for step in steps for tc in step.tool_calls if
-tc["output"]]`` (``app/agent/nodes/verifier_mixin.py``), and the executor gate on
-``_tool_outputs_for_grounding`` (``app/agent/nodes/executor_mixin.py``). A step's
-``tool_calls`` is populated only when a real tool actually executes. In the
-``e2e_full`` harness there are no executable tools (RPA/Playwright disabled, no
-MCP tools registered), so a text-only scripted provider yields **empty**
-``step.tool_calls`` → ``_evidence`` is empty → **both gates are skipped**, and the
-ungrounded claim on a high-risk goal passes straight through to ``complete``.
-
-So the gap this pins is precise: the grounding gates cannot engage without
-tool-call evidence, and the readily-reachable live path (text-only execution)
-produces none. When the gate is made reachable for evidence-free ungrounded
-answers (e.g. ``check_grounding``'s own "claims present + no evidence →
-ungrounded" branch is honoured by the callers instead of the ``and _evidence``
-guard), this test should pass and the ``xfail`` be removed.
+The e2e harness has no executable tools, so the text-only answer has **no**
+evidence at all. The gates used to fail closed only when evidence existed, so
+this case completed with a mere warning (CORE-03). The planned step itself is
+worded without a high-risk keyword so the approval gate does not deny it
+first: the grounding gate is what must fail the goal.
 """
 
 from __future__ import annotations
@@ -59,7 +43,7 @@ class _UngroundedHighRiskProvider(FakeProvider):
         schema = getattr(request, "response_schema", None)
         props = (schema or {}).get("properties", {}) if isinstance(schema, dict) else {}
         if "steps" in props:
-            content = '{"steps": ["Delete the production database and report the row count"]}'
+            content = '{"steps": ["Report how many rows were removed"]}'
         elif "success" in props:
             # Verifier believes the step succeeded — the grounding gate is the
             # only thing that should catch the unsupported claim.
@@ -67,6 +51,13 @@ class _UngroundedHighRiskProvider(FakeProvider):
         else:
             content = f"Deleted the production database. Removed {_UNGROUNDED_CLAIM} rows."
         return CompletionResponse(content=content, model="fake", input_tokens=6, output_tokens=6)
+
+    async def stream_tokens(self, request: Any, on_token: Any) -> Any:  # type: ignore[override]
+        # The executor streams: without this it received FakeProvider's canned
+        # reply and the unsupported claim never reached the step output.
+        resp = await self.complete(request)
+        await on_token(resp.content)
+        return resp
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -118,12 +109,11 @@ async def test_ungrounded_high_risk_answer_is_flipped(
         {"grounding_blocked", "grounding_warning", "claim_grounding_warning"} & types
     )
 
-    # DESIRED: the grounding gate caught the unsupported claim on this high-risk
-    # goal — either an explicit grounding event fired, or the verdict was flipped
-    # so the goal did not complete with the hallucination intact.
-    assert grounding_fired or str(final.get("status")) == "failed", (
-        f"ungrounded high-risk answer was not flipped by the grounding gate: "
-        f"status={final.get('status')!r}, grounding events={types & {'grounding_blocked', 'grounding_warning', 'claim_grounding_warning'}}"
+    # The unsupported claim on this high-risk goal must be caught AND must stop
+    # the goal from completing with the hallucination intact.
+    assert grounding_fired, f"no grounding event fired: {sorted(types)}"
+    assert str(final.get("status")) == "failed", (
+        f"ungrounded high-risk answer completed: status={final.get('status')!r}"
     )
 
 
