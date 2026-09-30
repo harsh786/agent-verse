@@ -704,6 +704,34 @@ class KnowledgeStore:
         await self._notify_changed(tenant_ctx.tenant_id)
         return True
 
+    async def count_active_ingestion_jobs_async(
+        self, *, tenant_ctx: TenantContext, source_type: str = "repository"
+    ) -> int:
+        """The tenant's queued or running durable ingestion jobs of ``source_type``."""
+        if self._db is None:
+            return 0
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            count = (
+                await session.execute(
+                    text(
+                        "SELECT COUNT(*) FROM knowledge_documents "
+                        "WHERE tenant_id = :tenant_id AND source_type = :source_type "
+                        "AND domain_metadata->>'record_type' = 'ingestion_job' "
+                        "AND status IN ('queued', 'running')"
+                    ),
+                    {"tenant_id": tenant_ctx.tenant_id, "source_type": source_type},
+                )
+            ).scalar_one()
+        return int(count or 0)
+
     async def create_ingestion_job_async(
         self,
         *,

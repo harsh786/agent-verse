@@ -6,7 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -125,6 +125,11 @@ class _AwaitedStore(KnowledgeStore):
             "source_url": source_url,
         }
         return job_id
+
+    async def count_active_ingestion_jobs_async(
+        self, *, tenant_ctx: TenantContext, source_type: str = "repository"
+    ) -> int:
+        return sum(1 for job in self.jobs.values() if job["status"] in ("queued", "running"))
 
     async def update_ingestion_job_async(
         self,
@@ -1002,11 +1007,8 @@ def test_repo_ingest_creates_queryable_job_before_scheduling() -> None:
         KnowledgeCollection(name="repository", collection_id="collection-1")
     )
 
-    def schedule(coroutine: Any) -> object:
-        coroutine.close()
-        return MagicMock()
-
-    with patch("asyncio.create_task", side_effect=schedule):
+    # KB-10: queued as a durable Celery job, not an in-process asyncio task.
+    with patch("app.ingestion.repo_tasks.ingest_repository_task") as task:
         client = TestClient(_app(store), raise_server_exceptions=False)
         response = client.post(
             "/knowledge/ingest/repo",
@@ -1025,7 +1027,7 @@ def test_repo_ingest_creates_queryable_job_before_scheduling() -> None:
     assert response.json()["job_id"] == "job-1"
     assert status_response.status_code == 200
     assert status_response.json()["status"] == "queued"
-    assert len(cast(Any, client.app).state.repository_ingestion_tasks) == 1
+    task.apply_async.assert_called_once()
 
 
 async def test_repo_background_failure_records_sanitized_durable_status() -> None:

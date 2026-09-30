@@ -63,6 +63,8 @@ celery_app = Celery(
         # ingestion.dispatch_due_sources / retry_dlq_entries, which were never
         # registered on the worker without this import.
         "app.ingestion.scheduler",
+        # Durable repository (git clone) ingestion (POST /knowledge/ingest/repo).
+        "app.ingestion.repo_tasks",
         # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
         "app.scaling.raft_tasks",
         # Expired strategy-evidence purge (beat: purge-expired-strategy-evidence).

@@ -433,6 +433,28 @@ async def _retry_dlq_async() -> dict:
             await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
             continue
 
+        repository_payload = _repository_dlq_payload(entry.get("raw_doc_json"))
+        if repository_payload is not None:
+            # A failed repository ingestion: replay it as a new durable job
+            # (these rows used to be marked permanent — nothing could replay them).
+            from app.ingestion.repo_tasks import replay_repository_dlq_entry
+
+            try:
+                replayed = await replay_repository_dlq_entry(
+                    repository_payload, tenant_id=tenant_id, max_attempts=_DLQ_MAX_RETRIES
+                )
+            except Exception as exc:
+                await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc)[:300])
+                still_failed += 1
+                continue
+            if replayed:
+                await tracker.resolve_dlq_entry(dlq_id, tenant_id)
+                retried += 1
+                succeeded += 1
+            else:
+                await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+            continue
+
         raw_doc = raw_document_from_dlq_json(
             entry.get("raw_doc_json"),
             source_id=source_id,
@@ -475,6 +497,21 @@ async def _retry_dlq_async() -> dict:
         "retry_dlq: retried=%d succeeded=%d still_failed=%d", retried, succeeded, still_failed
     )
     return {"retried": retried, "succeeded": succeeded, "still_failed": still_failed}
+
+
+def _repository_dlq_payload(raw_doc_json: object) -> dict | None:
+    """The replay parameters of a dead-lettered repository ingestion, or None."""
+    import json
+
+    if not isinstance(raw_doc_json, str) or not raw_doc_json:
+        return None
+    try:
+        payload = json.loads(raw_doc_json)
+    except ValueError:
+        return None
+    if isinstance(payload, dict) and payload.get("kind") == "repository":
+        return payload
+    return None
 
 
 # ── Celery beat schedule registration ────────────────────────────────────────

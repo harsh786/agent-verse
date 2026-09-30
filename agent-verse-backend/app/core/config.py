@@ -434,6 +434,9 @@ class Settings(BaseSettings):
     repo_ingest_lease_seconds: int = Field(default=60, ge=10, le=600)
     repo_ingest_heartbeat_seconds: int = Field(default=5, ge=1, le=60)
     repo_ingest_ca_bundle: str = ""
+    # Repository ingestions one tenant may have queued or running at once
+    # (each is a clone of up to repo_ingest_max_repository_bytes on a worker).
+    repo_ingest_max_concurrent_per_tenant: int = Field(default=2, ge=1, le=50)
 
     # --- search ---
     searxng_url: str = "http://searxng:8080"

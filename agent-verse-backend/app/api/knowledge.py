@@ -1196,6 +1196,25 @@ async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[s
             tenant_ctx=tenant,
             stale_after_seconds=settings.repo_ingest_stale_job_seconds,
         )
+        active = await store.count_active_ingestion_jobs_async(
+            tenant_ctx=tenant, source_type="repository"
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge persistence is unavailable",
+        ) from exc
+    # Each ingestion clones up to repo_ingest_max_repository_bytes on a worker:
+    # a burst of them from one tenant used to be unbounded.
+    if active >= settings.repo_ingest_max_concurrent_per_tenant:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"{active} repository ingestions are already queued or running for this "
+                f"tenant (limit {settings.repo_ingest_max_concurrent_per_tenant}); retry later"
+            ),
+        )
+    try:
         job_id = await store.create_ingestion_job_async(
             collection_id=body.collection_id,
             source_url=repository_url,
@@ -1209,40 +1228,31 @@ async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[s
             detail="Knowledge persistence is unavailable",
         ) from exc
 
-    import asyncio
+    # A durable Celery job on the ingestion queue: it used to be an
+    # asyncio.create_task on this replica, lost on restart / scale-down.
+    from app.ingestion.repo_tasks import enqueue_repository_ingest
 
-    # Run in background task
-    task = asyncio.create_task(
-        _ingest_repo_background(
+    try:
+        enqueue_repository_ingest(
             job_id=job_id,
+            tenant_id=tenant.tenant_id,
             repo_url=repository_url,
             collection_id=body.collection_id,
             branch=branch,
             file_patterns=file_patterns,
             max_files=min(body.max_files, settings.repo_ingest_max_files),
-            store=store,
-            embedder=embedder,
-            tenant_ctx=tenant,
-            limits=RepositoryLimits(
-                max_files=min(body.max_files, settings.repo_ingest_max_files),
-                max_file_bytes=settings.repo_ingest_max_file_bytes,
-                max_total_bytes=settings.repo_ingest_max_total_bytes,
-                max_repository_bytes=settings.repo_ingest_max_repository_bytes,
-                max_repository_files=settings.repo_ingest_max_repository_files,
-            ),
-            clone_timeout_seconds=settings.repo_ingest_clone_timeout_seconds,
-            curl_resolve=repository_source.curl_resolve,
-            lease_seconds=settings.repo_ingest_lease_seconds,
-            heartbeat_seconds=settings.repo_ingest_heartbeat_seconds,
-            job_tracker=getattr(request.app.state, "ingestion_job_tracker", None),
         )
-    )
-    tasks = getattr(request.app.state, "repository_ingestion_tasks", None)
-    if tasks is None:
-        tasks = set()
-        request.app.state.repository_ingestion_tasks = tasks
-    tasks.add(task)
-    task.add_done_callback(tasks.discard)
+    except Exception as exc:
+        with suppress(Exception):
+            await store.fail_ingestion_job_async(
+                job_id,
+                lease_owner=None,
+                error_message="Repository ingestion could not be queued",
+                tenant_ctx=tenant,
+            )
+        raise HTTPException(
+            status_code=503, detail="Repository ingestion could not be queued; retry later"
+        ) from exc
 
     return {
         "status": "ingestion_started",
@@ -1250,7 +1260,7 @@ async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[s
         "repo_url": repository_url,
         "collection_id": body.collection_id,
         "branch": branch,
-        "message": "Repository ingestion started in background.",
+        "message": "Repository ingestion queued.",
     }
 
 
@@ -1290,6 +1300,7 @@ async def _ingest_repo_background(
     lease_seconds: int = 60,
     heartbeat_seconds: int = 5,
     job_tracker: Any = None,
+    dlq_attempt: int = 0,
 ) -> None:
     """Clone and atomically ingest under a disk/file quota and durable lease.
 
@@ -1332,6 +1343,9 @@ async def _ingest_repo_background(
                     "branch": branch,
                     "file_patterns": file_patterns,
                     "max_files": max_files,
+                    # How many times this ingestion was replayed from the DLQ
+                    # (the retry job stops replaying at its retry limit).
+                    "dlq_attempt": dlq_attempt,
                 },
             )
         except Exception as dlq_exc:
