@@ -252,9 +252,44 @@ class StrategyEvidenceRecorder:
         }
 
 
+async def record_goal_strategy_evidence(
+    recorder: StrategyEvidenceRecorder | None,
+    *,
+    tenant_id: str,
+    goal_id: str,
+    execution_context: Any,
+    succeeded: bool | None,
+    dry_run: bool = False,
+) -> list[StrategyRunEvidence]:
+    """Record evidence for the strategies a finished goal actually ran.
+
+    Shared by the API (GoalService) and the Celery worker: only the in-process
+    path used to record, so queued production goals left certification empty.
+    ``succeeded`` is None for a non-terminal outcome (nothing is recorded), and
+    dry runs never count.
+    """
+    if recorder is None or dry_run or succeeded is None:
+        return []
+    ctx = execution_context if isinstance(execution_context, dict) else {}
+    execution = ctx.get("strategy_execution")
+    if not isinstance(execution, dict):
+        return []
+    patterns = [str(item) for item in execution.get("patterns") or ()]
+    if not patterns:
+        return []
+    return await recorder.record_run(
+        tenant_id=tenant_id,
+        goal_id=goal_id,
+        strategy_ids=patterns,
+        succeeded=succeeded,
+        runtime_path=str(ctx.get("strategy_runtime_path") or "legacy"),
+    )
+
+
 __all__ = [
     "CANARY",
     "PRODUCTION_RUN",
     "StrategyEvidenceRecorder",
     "StrategyRunEvidence",
+    "record_goal_strategy_evidence",
 ]

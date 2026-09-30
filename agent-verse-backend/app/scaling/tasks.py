@@ -359,6 +359,47 @@ async def _finalize_owning_mission(goal_id: str, tenant_id: str) -> None:
         logger.warning("worker mission finalize failed (non-fatal): %s", exc)
 
 
+async def _record_worker_strategy_evidence(
+    *,
+    tenant_id: str,
+    goal_id: str,
+    execution: Any,
+    runtime_path: str,
+    status: str,
+    dry_run: bool,
+    db_factory: Any,
+) -> None:
+    """Record strategy certification evidence for a finished worker goal (CORE-16).
+
+    Never raises: evidence is bookkeeping and must not change the goal outcome.
+    """
+    succeeded = {"complete": True, "completed": True, "failed": False}.get(status)
+    if succeeded is None or dry_run or not isinstance(execution, dict):
+        return
+    try:
+        from app.orchestration.strategy_evidence import (
+            StrategyEvidenceRecorder,
+            record_goal_strategy_evidence,
+        )
+        from app.orchestration.strategy_registry import build_default_registry
+
+        recorder = StrategyEvidenceRecorder(
+            build_default_registry(), db_factory_getter=lambda: db_factory
+        )
+        await record_goal_strategy_evidence(
+            recorder,
+            tenant_id=tenant_id,
+            goal_id=goal_id,
+            execution_context={
+                "strategy_execution": execution,
+                "strategy_runtime_path": runtime_path,
+            },
+            succeeded=succeeded,
+        )
+    except Exception as exc:
+        logger.warning("worker_strategy_evidence_failed goal=%s: %s", goal_id, exc)
+
+
 def _build_worker_retrieval_gateway(dependencies: Any) -> Any:
     from app.rag.gateway import RetrievalGateway
 
@@ -2472,8 +2513,12 @@ def run_goal(
         _worker_profile_downgrade,
     ) = _runtime_profile_from_context(_worker_exec_ctx)
 
+    # What the worker's graph actually runs, for certification evidence at the end.
+    _worker_strategy_run: dict[str, Any] = {}
+
     async def _record_worker_strategy_execution(execution: dict[str, Any]) -> None:
         """Persist which strategy the worker actually runs (goals.execution_context)."""
+        _worker_strategy_run["execution"] = execution
         if goal_bridge is None:
             return
         try:
@@ -3427,6 +3472,18 @@ def run_goal(
                 trigger_chain_depth=trigger_chain_depth,
                 source_trigger_id=source_trigger_id,
             )
+        # Certification evidence for what ran (only in-process goals recorded it).
+        _run_async(
+            _record_worker_strategy_evidence(
+                tenant_id=tenant_id,
+                goal_id=goal_id,
+                execution=_worker_strategy_run.get("execution"),
+                runtime_path=str(_worker_exec_ctx.get("strategy_runtime_path") or "legacy"),
+                status=state.status.value,
+                dry_run=dry_run,
+                db_factory=db_factory,
+            )
+        )
         # After the terminal status is recorded: learning never delays completion.
         _run_async(
             _learn_from_worker_goal(

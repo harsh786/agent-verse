@@ -2995,27 +2995,26 @@ class GoalService:
         if record.dry_run or status not in ("completed", "failed"):
             return
         execution = record.execution_context.get("strategy_execution")
-        if not isinstance(execution, dict):
+        if not isinstance(execution, dict) or not execution.get("patterns"):
             return
-        patterns = [str(item) for item in execution.get("patterns") or ()]
-        if not patterns:
-            return
-        from app.orchestration.strategy_evidence import StrategyEvidenceRecorder
+        from app.orchestration.strategy_evidence import (
+            StrategyEvidenceRecorder,
+            record_goal_strategy_evidence,
+        )
 
         state: Any = self._app_state
         state = getattr(state, "state", state)
         recorder = getattr(state, "strategy_evidence", None) if state is not None else None
         if not isinstance(recorder, StrategyEvidenceRecorder):
             return
-        runtime_path = str(record.execution_context.get("strategy_runtime_path") or "legacy")
 
         async def _record() -> None:
-            await recorder.record_run(
+            await record_goal_strategy_evidence(
+                recorder,
                 tenant_id=record.tenant_id,
                 goal_id=record.goal_id,
-                strategy_ids=patterns,
+                execution_context=record.execution_context,
                 succeeded=status == "completed",
-                runtime_path=runtime_path,
             )
 
         coro = _record()
