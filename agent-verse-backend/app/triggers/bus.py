@@ -42,10 +42,14 @@ Rollout (one release of dual publish):
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
-from collections.abc import Mapping
+import os
+import socket
+import uuid
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from app.core.config import Settings, get_settings
@@ -157,10 +161,230 @@ def publish_trigger_event_sync(redis: Any, channel: str, payload: Mapping[str, A
     return entry_id
 
 
+# ── Consumer side ─────────────────────────────────────────────────────────────
+
+Handler = Callable[[dict[str, Any]], Awaitable[None]]
+
+# Upper bound on XAUTOCLAIM batches per reclaim pass, so a large backlog of
+# stale entries cannot starve new reads.
+_MAX_CLAIM_BATCHES = 10
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode()
+    return "" if value is None else str(value)
+
+
+def default_consumer_name() -> str:
+    """A consumer name unique to this process (host + pid + random suffix)."""
+    return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+
+class TriggerStreamReader:
+    """Reads one trigger stream through a consumer group.
+
+    ``run`` delivers each entry to the handler as a pub/sub-shaped message
+    (``{"type": "message", "channel", "data", "id"}``) and XACKs it only after
+    the handler returned. A handler exception leaves the entry pending; pending
+    entries idle for ``trigger_bus_claim_idle_ms`` (this consumer's failures or
+    a crashed replica's in-flight entries) are XAUTOCLAIMed and retried, and an
+    entry delivered more than ``trigger_bus_max_deliveries`` times is acked and
+    dropped with an error log so one poison event cannot wedge the group.
+
+    Redis errors propagate out of ``run``: the consumer's ``start`` returns and
+    ``TriggerConsumerSupervisor`` restarts it with backoff (TRG-17), which also
+    re-creates the group if the stream vanished (e.g. a flushed Redis).
+    """
+
+    def __init__(
+        self,
+        redis: Any,
+        *,
+        stream: str,
+        group: str,
+        consumer: str | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        s = settings or get_settings()
+        self.redis = redis
+        self.stream = stream
+        self.group = group
+        self.consumer = consumer or default_consumer_name()
+        self._block_ms = max(1, int(s.trigger_bus_block_ms))
+        self._count = max(1, int(s.trigger_bus_read_count))
+        self._claim_idle_ms = max(0, int(s.trigger_bus_claim_idle_ms))
+        self._max_deliveries = max(1, int(s.trigger_bus_max_deliveries))
+        # Look for stale pending entries twice per idle threshold.
+        self._claim_interval_s = self._claim_idle_ms / 2000
+
+    async def ensure_group(self) -> None:
+        """Create the group at the start of the stream (idempotent).
+
+        Starting at ``0`` rather than ``$`` means entries XADDed before the
+        group first existed (the first deploy's dual-publish window) are
+        processed too; after that the group's position persists in Redis.
+        """
+        try:
+            await self.redis.xgroup_create(self.stream, self.group, id="0", mkstream=True)
+        except Exception as exc:
+            if "BUSYGROUP" not in str(exc):
+                raise
+
+    async def run(self, handler: Handler, is_running: Callable[[], bool]) -> None:
+        await self.ensure_group()
+        loop = asyncio.get_running_loop()
+        next_claim = loop.time()  # reclaim right away: recover a crashed replica's entries
+        while is_running():
+            if loop.time() >= next_claim:
+                await self.reclaim(handler)
+                next_claim = loop.time() + self._claim_interval_s
+            started = loop.time()
+            response = await self.redis.xreadgroup(
+                self.group,
+                self.consumer,
+                {self.stream: ">"},
+                count=self._count,
+                block=self._block_ms,
+            )
+            entries = self._entries(response)
+            for entry_id, fields in entries:
+                await self._process(entry_id, fields, handler)
+            if not entries and (loop.time() - started) * 1000 < self._block_ms / 2:
+                # The client returned at once instead of blocking: don't spin.
+                await asyncio.sleep(min(self._block_ms / 1000, 0.05))
+
+    async def reclaim(self, handler: Handler) -> int:
+        """XAUTOCLAIM entries pending longer than the idle threshold and retry them."""
+        start = "0-0"
+        handled = 0
+        for _ in range(_MAX_CLAIM_BATCHES):
+            result = await self.redis.xautoclaim(
+                self.stream,
+                self.group,
+                self.consumer,
+                min_idle_time=self._claim_idle_ms,
+                start_id=start,
+                count=self._count,
+            )
+            if not result:
+                break
+            next_start = _text(result[0])
+            for raw_id, fields in result[1] or []:
+                entry_id = _text(raw_id)
+                if not fields:  # trimmed by MAXLEN while pending
+                    await self._ack(entry_id)
+                    continue
+                deliveries = await self._deliveries(entry_id)
+                if deliveries > self._max_deliveries:
+                    _log.error(
+                        "trigger_bus_entry_dropped stream=%s group=%s id=%s deliveries=%d",
+                        self.stream,
+                        self.group,
+                        entry_id,
+                        deliveries,
+                    )
+                    await self._ack(entry_id)
+                    continue
+                await self._process(entry_id, fields, handler)
+                handled += 1
+            if next_start in ("0-0", "0", ""):
+                break
+            start = next_start
+        return handled
+
+    async def _deliveries(self, entry_id: str) -> int:
+        try:
+            rows = await self.redis.xpending_range(
+                self.stream, self.group, min=entry_id, max=entry_id, count=1
+            )
+        except Exception as exc:  # unknown count: keep retrying rather than drop
+            _log.warning("trigger_bus_pending_lookup_failed id=%s: %s", entry_id, exc)
+            return 0
+        if not rows:
+            return 0
+        row = rows[0]
+        count = row.get("times_delivered", 0) if isinstance(row, dict) else 0
+        return int(count or 0)
+
+    async def _process(self, entry_id: Any, fields: Any, handler: Handler) -> None:
+        entry = _text(entry_id)
+        items = fields.items() if isinstance(fields, Mapping) else []
+        decoded = {_text(k): _text(v) for k, v in items}
+        channel = decoded.get("channel", "")
+        data = decoded.get("data")
+        if not channel or data is None:
+            _log.error("trigger_bus_malformed_entry stream=%s id=%s", self.stream, entry)
+            await self._ack(entry)
+            return
+        message = {"type": "message", "channel": channel, "data": data, "id": entry}
+        try:
+            await handler(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.warning(
+                "trigger_bus_handler_failed stream=%s group=%s id=%s (left pending): %s",
+                self.stream,
+                self.group,
+                entry,
+                exc,
+            )
+            return
+        await self._ack(entry)
+
+    async def _ack(self, entry_id: str) -> None:
+        await self.redis.xack(self.stream, self.group, entry_id)
+
+    @staticmethod
+    def _entries(response: Any) -> list[tuple[Any, Any]]:
+        if not response:
+            return []
+        if isinstance(response, Mapping):  # RESP3: {stream: [entries]}
+            batches: list[Any] = list(response.values())
+        else:  # RESP2: [[stream, [entries]], ...]
+            batches = [item[1] for item in response]
+        out: list[tuple[Any, Any]] = []
+        for batch in batches:
+            if batch and isinstance(batch[0], list | tuple) and len(batch[0]) == 2:
+                out.extend((entry[0], entry[1]) for entry in batch)
+            else:
+                for inner in batch or []:
+                    out.extend((entry[0], entry[1]) for entry in inner or [])
+        return out
+
+
+async def run_stream_consumer(consumer: Any, *, label: str, channel: str, group: str) -> None:
+    """Shared ``start()`` body of the trigger consumers.
+
+    Reads the stream holding *channel*'s family with *group* (one group per
+    consumer type) and feeds entries to ``consumer._handle`` while
+    ``consumer._running``. The reader — and so the consumer name — is kept on
+    the consumer across supervisor restarts.
+    """
+    reader: TriggerStreamReader | None = getattr(consumer, "_stream_reader", None)
+    if reader is None or reader.redis is not consumer._redis:
+        reader = TriggerStreamReader(
+            consumer._redis, stream=stream_for_channel(channel), group=group
+        )
+        consumer._stream_reader = reader
+    _log.info(
+        "%s_started stream=%s group=%s consumer=%s",
+        label,
+        reader.stream,
+        reader.group,
+        reader.consumer,
+    )
+    await reader.run(consumer._handle, lambda: bool(consumer._running))
+
+
 __all__ = [
     "EVENT_CHANNEL_PREFIX",
     "TriggerBusPublishError",
+    "TriggerStreamReader",
+    "default_consumer_name",
     "publish_trigger_event",
     "publish_trigger_event_sync",
+    "run_stream_consumer",
     "stream_for_channel",
 ]

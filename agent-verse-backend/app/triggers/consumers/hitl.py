@@ -1,4 +1,4 @@
-"""HITL (Human-in-the-Loop) trigger consumer."""
+"""HITL (Human-in-the-Loop) trigger consumer — reads the HITL trigger stream (TRG-18)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,17 @@ import json
 import logging
 from typing import Any
 
+from app.triggers.bus import run_stream_consumer
+
 _log = logging.getLogger(__name__)
 
 
 class HITLTriggerConsumer:
-    """Subscribe to HITL approval/rejection events and dispatch matching triggers."""
+    """Consume HITL approval/rejection events and dispatch matching triggers."""
 
     CHANNELS: list[str] = ["hitl.approved", "hitl.rejected"]  # noqa: RUF012
+    # Consumer group on the HITL trigger stream (TRG-18).
+    GROUP = "trigger-consumer:hitl"
 
     def __init__(
         self,
@@ -32,15 +36,9 @@ class HITLTriggerConsumer:
             return
         self._running = True
         try:
-            pubsub = self._redis.pubsub()
-            await pubsub.subscribe(*self.CHANNELS)
-            _log.info("hitl_consumer_started channels=%s", self.CHANNELS)
-            async for message in pubsub.listen():
-                if not self._running:
-                    break
-                if message.get("type") != "message":
-                    continue
-                await self._handle(message)
+            await run_stream_consumer(
+                self, label="hitl_consumer", channel=self.CHANNELS[0], group=self.GROUP
+            )
         except Exception as exc:
             _log.error("hitl_consumer_error: %s", exc)
 

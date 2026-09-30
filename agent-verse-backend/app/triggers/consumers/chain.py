@@ -1,21 +1,22 @@
-"""Goal chain trigger consumer — subscribes to Redis goal lifecycle events.
+"""Goal chain trigger consumer — reads the goal lifecycle trigger stream.
+
+Goal lifecycle events (``goal.completed`` / ``goal.failed`` /
+``goal.score_below``) are XADDed to the goal family stream by
+``app.triggers.bus.publish_trigger_event``; this consumer reads it with the
+``trigger-consumer:chain`` consumer group, so each event is handled once across
+replicas and one published while consumers were down is still delivered
+(TRG-18).
 
 NOTE: ``hitl.approved`` / ``hitl.rejected`` / ``memory.created`` are deliberately
-NOT in ``CHANNELS`` here even though goal-chain triggers can reference those
-trigger types. Those three channels are already owned exclusively by
-``HITLTriggerConsumer`` / ``MemoryTriggerConsumer`` (see
-``app/triggers/consumers/hitl.py`` / ``memory.py``), which additionally apply
-the ``hitl_queue_id`` / ``memory_type`` scoping filters this consumer does not
-implement. All three consumers are started together by
-``TriggerConsumerSupervisor``, each opening its own ``redis.pubsub()``
-subscription — Redis fans a published message out to every subscriber, so if
-this consumer also subscribed to those channels, a single HITL
-approve/reject or memory-creation event would be dispatched twice: once here
-(with a ``source_goal_id``/``completion_event_id``-keyed idempotency key) and
-once by the dedicated consumer (which does not pass those, so it derives a
-*different* key) — two different dedup keys for the same event means the
-Redis-backed dedup in ``TriggerDispatcher._is_duplicate`` never sees a
-collision, and the trigger fires (and creates a goal) twice per event.
+NOT handled here even though goal-chain triggers can reference those trigger
+types. They live on their own streams owned by ``HITLTriggerConsumer`` /
+``MemoryTriggerConsumer`` (see ``app/triggers/consumers/hitl.py`` /
+``memory.py``), which additionally apply the ``hitl_queue_id`` /
+``memory_type`` scoping filters this consumer does not implement. Handling
+them here too would dispatch one HITL/memory event twice with two different
+idempotency keys (this consumer passes ``source_goal_id`` /
+``completion_event_id``, the dedicated consumers do not), so the dispatcher's
+dedup would never see a collision and the trigger would fire twice per event.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import json
 import logging
 from types import SimpleNamespace
 
+from app.triggers.bus import run_stream_consumer
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx
 
 _log = logging.getLogger(__name__)
@@ -75,13 +77,15 @@ def build_chain_event(
 
 
 class ChainTriggerConsumer:
-    """Listens on Redis pub/sub for goal lifecycle events and fires chain triggers."""
+    """Reads goal lifecycle events from the trigger stream and fires chain triggers."""
 
     CHANNELS: list[str] = [  # noqa: RUF012
         "goal.completed",
         "goal.failed",
         "goal.score_below",
     ]
+    # Consumer group on the goal stream (one delivery per event across replicas).
+    GROUP = "trigger-consumer:chain"
 
     def __init__(
         self,
@@ -96,21 +100,15 @@ class ChainTriggerConsumer:
         self._running = False
 
     async def start(self) -> None:
-        """Subscribe to all goal lifecycle channels and process messages."""
+        """Consume the goal lifecycle stream (consumer group ``GROUP``)."""
         if self._redis is None:
             _log.warning("chain_consumer_no_redis — goal chain triggers disabled")
             return
         self._running = True
         try:
-            pubsub = self._redis.pubsub()
-            await pubsub.subscribe(*self.CHANNELS)
-            _log.info("chain_consumer_started channels=%s", self.CHANNELS)
-            async for message in pubsub.listen():
-                if not self._running:
-                    break
-                if message.get("type") != "message":
-                    continue
-                await self._handle(message)
+            await run_stream_consumer(
+                self, label="chain_consumer", channel=self.CHANNELS[0], group=self.GROUP
+            )
         except Exception as exc:
             _log.error("chain_consumer_error: %s", exc)
 
@@ -169,8 +167,10 @@ class ChainTriggerConsumer:
                 tenant_id=tenant_id,
             )
         except Exception as exc:
+            # Not accepted: raise so the stream entry stays pending and is
+            # retried, instead of acking an event whose triggers were never seen.
             _log.warning("chain_store_error: %s", exc)
-            return
+            raise
 
         tenant_ctx: SimpleNamespace | None = None
         for trigger in triggers:

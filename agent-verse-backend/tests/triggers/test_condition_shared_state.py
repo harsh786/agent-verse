@@ -132,6 +132,9 @@ async def test_published_events_carry_a_server_event_id(redis) -> None:
             self.bodies.append(json.loads(data))
             return 1
 
+        async def xadd(self, stream: str, fields: dict[str, str], **_: Any) -> str:
+            return "1-0"  # TRG-18 durable stream copy (bodies checked via publish)
+
     cap = _Capture()
     await publish_trigger_event(cap, event_channel="metrics", tenant_id="t1", payload={"x": 1})
     await publish_trigger_event(cap, event_channel="metrics", tenant_id="t1", payload={"x": 1})

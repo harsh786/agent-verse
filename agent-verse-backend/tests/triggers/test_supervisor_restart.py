@@ -1,6 +1,6 @@
 """TRG-17: one Redis error no longer kills an event-driven trigger consumer for good.
 
-Each consumer's ``pubsub.listen()`` loop logged and returned on the first error
+Each consumer's read loop (then ``pubsub.listen()``) logged and returned on the first error
 and the supervisor never restarted it, so a Redis failover silently disabled
 chain / HITL / memory / event / condition / chat triggers until the pod
 restarted. The supervisor now restarts an exited consumer with exponential
@@ -10,46 +10,36 @@ backoff and reports per-consumer health (surfaced in /health).
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 from unittest.mock import AsyncMock
 
+import fakeredis
 import pytest
 
 from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.supervisor import TriggerConsumerSupervisor
+from tests.triggers.stream_support import publish
 
 
-class _FlakyPubSub:
-    """First listen() raises (Redis failover); later ones deliver one event."""
+class _FlakyRedis(fakeredis.FakeAsyncRedis):
+    """The first XREADGROUP fails (Redis failover); later reads work.
 
-    def __init__(self, redis: _FlakyRedis) -> None:
-        self._redis = redis
+    TRG-18: consumers read their trigger stream through a consumer group; the
+    event published before the failover stays in the stream meanwhile.
+    """
 
-    async def psubscribe(self, *_: str) -> None:
-        self._redis.subscriptions += 1
-
-    async def subscribe(self, *_: str) -> None:
-        self._redis.subscriptions += 1
-
-    async def listen(self) -> Any:
-        if self._redis.subscriptions == 1:
-            raise ConnectionError("Connection closed by server.")
-        yield {
-            "type": "pmessage",
-            "channel": b"trigger:event:deploys",
-            "data": json.dumps({"tenant_id": "t1", "event_id": "e1"}).encode(),
-        }
-        while True:
-            await asyncio.sleep(3600)
-
-
-class _FlakyRedis:
     def __init__(self) -> None:
-        self.subscriptions = 0
+        super().__init__(decode_responses=True)
+        self.subscriptions = 0  # consumer (re)starts: one group join each
 
-    def pubsub(self) -> _FlakyPubSub:
-        return _FlakyPubSub(self)
+    async def xgroup_create(self, *args: Any, **kwargs: Any) -> Any:
+        self.subscriptions += 1
+        return await super().xgroup_create(*args, **kwargs)
+
+    async def xreadgroup(self, *args: Any, **kwargs: Any) -> Any:
+        if self.subscriptions == 1:
+            raise ConnectionError("Connection closed by server.")
+        return await super().xreadgroup(*args, **kwargs)
 
 
 class _Store:
@@ -73,6 +63,7 @@ async def test_consumer_resubscribes_after_listen_raises_and_handles_next_event(
     monkeypatch.setattr(sup, "_consumer_specs", lambda: [
         s for s in TriggerConsumerSupervisor._consumer_specs(sup) if s.name == "EventTriggerConsumer"
     ])
+    await publish(redis, "trigger:event:deploys", {"tenant_id": "t1", "event_id": "e1"})
     await sup.start()
     try:
         for _ in range(200):

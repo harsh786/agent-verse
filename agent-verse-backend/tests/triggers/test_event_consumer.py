@@ -3,7 +3,6 @@ scoped to the event's tenant."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -15,31 +14,17 @@ from app.triggers.consumers.event import (
     event_channel_name,
     publish_trigger_event,
 )
+from tests.triggers.stream_support import drain, publish, stream_redis
 
 pytestmark = pytest.mark.asyncio
 
 
-class _FakePubSub:
-    def __init__(self, messages: list[dict[str, Any]]) -> None:
-        self._messages = messages
-
-    async def psubscribe(self, pattern: str) -> None:
-        self.pattern = pattern
-
-    async def listen(self) -> Any:
-        for m in self._messages:
-            await asyncio.sleep(0)
-            yield m
-
-
 class _FakeRedis:
-    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
-        self._messages = messages or []
+    """Publisher-side fake (sync client) recording PUBLISH and XADD."""
+
+    def __init__(self) -> None:
         self.published: list[tuple[str, str]] = []
         self.streamed: list[tuple[str, dict[str, str]]] = []
-
-    def pubsub(self) -> _FakePubSub:
-        return _FakePubSub(self._messages)
 
     def publish(self, channel: str, data: str) -> None:  # sync
         self.published.append((channel, data))
@@ -68,12 +53,11 @@ class _FakeDispatcher:
         self.calls.append((spec, payload, tenant_ctx, message_id))
 
 
-def _pmessage(event_channel: str, body: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "type": "pmessage",
-        "channel": event_channel_name(event_channel).encode(),
-        "data": json.dumps(body).encode(),
-    }
+async def _stream_with(event_channel: str, body: dict[str, Any]) -> Any:
+    """A fake Redis whose EVENT stream already holds one published event."""
+    redis = stream_redis()
+    await publish(redis, event_channel_name(event_channel), body)
+    return redis
 
 
 def _trigger(event_channel: str) -> dict[str, Any]:
@@ -81,37 +65,37 @@ def _trigger(event_channel: str) -> dict[str, Any]:
 
 
 async def test_event_fires_matching_trigger() -> None:
-    redis = _FakeRedis([_pmessage("deployments", {"tenant_id": "t1", "event_id": "e1"})])
+    redis = await _stream_with("deployments", {"tenant_id": "t1", "event_id": "e1"})
     store = _FakeStore({"t1": [_trigger("deployments")]})
     disp = _FakeDispatcher()
-    await EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis).start()
+    await drain(EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis))
     assert len(disp.calls) == 1
     assert disp.calls[0][3] == "e1"  # message_id threaded for idempotency
 
 
 async def test_event_non_matching_channel_does_not_fire() -> None:
-    redis = _FakeRedis([_pmessage("deployments", {"tenant_id": "t1"})])
+    redis = await _stream_with("deployments", {"tenant_id": "t1"})
     store = _FakeStore({"t1": [_trigger("some-other-channel")]})
     disp = _FakeDispatcher()
-    await EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis).start()
+    await drain(EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis))
     assert disp.calls == []
 
 
 async def test_event_is_tenant_scoped() -> None:
     # Event carries tenant t1; tenant t2 also has a matching-channel trigger but
     # must NOT fire (find_by_type_async is scoped to the event's tenant).
-    redis = _FakeRedis([_pmessage("deployments", {"tenant_id": "t1"})])
+    redis = await _stream_with("deployments", {"tenant_id": "t1"})
     store = _FakeStore({"t1": [], "t2": [_trigger("deployments")]})
     disp = _FakeDispatcher()
-    await EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis).start()
+    await drain(EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis))
     assert disp.calls == []
 
 
 async def test_event_without_tenant_id_is_ignored() -> None:
-    redis = _FakeRedis([_pmessage("deployments", {"no_tenant": True})])
+    redis = await _stream_with("deployments", {"no_tenant": True})
     store = _FakeStore({"t1": [_trigger("deployments")]})
     disp = _FakeDispatcher()
-    await EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis).start()
+    await drain(EventTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis))
     assert disp.calls == []
 
 

@@ -11,39 +11,24 @@ import asyncio
 import contextlib
 from typing import Any
 
+import fakeredis
+
 from app.triggers.supervisor import TriggerConsumerSupervisor
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
 
-class _FakePubSub:
-    """Minimal async pub/sub: records subscriptions, then blocks forever."""
+class FakeRedis(fakeredis.FakeAsyncRedis):
+    """Fake Redis recording the consumer groups the consumers create (TRG-18:
+    consumers read trigger streams through consumer groups, not pub/sub)."""
 
-    def __init__(self, record: list[str]) -> None:
-        self._record = record
-
-    async def subscribe(self, *channels: str) -> None:
-        self._record.extend(channels)
-
-    async def psubscribe(self, *patterns: str) -> None:
-        self._record.extend(patterns)
-
-    async def listen(self) -> Any:
-        # One non-"message" frame (consumers skip it), then block until cancelled.
-        yield {"type": "subscribe", "channel": b"chan", "data": 1}
-        while True:
-            await asyncio.sleep(3600)
-
-
-class FakeRedis:
     def __init__(self) -> None:
-        self.subscribed_channels: list[str] = []
+        super().__init__(decode_responses=True)
+        self.groups: list[tuple[str, str]] = []
 
-    def pubsub(self) -> _FakePubSub:
-        return _FakePubSub(self.subscribed_channels)
-
-    async def set(self, *_a: Any, **_k: Any) -> Any:
-        return True
+    async def xgroup_create(self, name: str, groupname: str, *args: Any, **kwargs: Any) -> Any:
+        self.groups.append((name, groupname))
+        return await super().xgroup_create(name, groupname, *args, **kwargs)
 
 
 class FakeStore:
@@ -219,10 +204,10 @@ async def test_consumer_start_invoked_under_lifespan() -> None:
     app = FastAPI(lifespan=lifespan)
 
     async with _drive_asgi_lifespan(app):
-        # start() ran → each consumer subscribed to its Redis channels.
+        # start() ran → each consumer joined its trigger stream's group.
         await asyncio.sleep(0.05)
-        assert fake_redis.subscribed_channels, "consumer .start() was not invoked"
-        assert "goal.completed" in fake_redis.subscribed_channels
+        assert fake_redis.groups, "consumer .start() was not invoked"
+        assert ("trigger:stream:goal", "trigger-consumer:chain") in fake_redis.groups
         sup = app.state.trigger_consumers
         assert len(sup.tasks) == 6
 

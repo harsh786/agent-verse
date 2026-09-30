@@ -33,7 +33,8 @@ from typing import Any
 import regex
 
 from app.triggers.bus import publish_trigger_event as publish_bus_event
-from app.triggers.consumers.event import CHANNEL_PREFIX, _decode, event_channel_name
+from app.triggers.bus import run_stream_consumer
+from app.triggers.consumers.event import _decode, event_channel_name
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx, strip_reserved
 
 _log = logging.getLogger(__name__)
@@ -296,6 +297,9 @@ def conversational_matches(ttype: str, spec: Any, event: dict[str, Any]) -> bool
 class ConversationalTriggerConsumer:
     """Fires Family C triggers on normalized conversational events."""
 
+    # Consumer group on the EVENT-family stream (TRG-18).
+    GROUP = "trigger-consumer:conversational"
+
     def __init__(
         self,
         *,
@@ -314,16 +318,13 @@ class ConversationalTriggerConsumer:
             return
         self._running = True
         try:
-            pubsub = self._redis.pubsub()  # type: ignore[attr-defined]
-            await pubsub.psubscribe(f"{CHANNEL_PREFIX}*")
-            _log.info("conversational_consumer_started")
-            async for message in pubsub.listen():
-                if not self._running:
-                    break
-                if message.get("type") != "pmessage":
-                    continue
-                await self._handle(message)
-        except Exception as exc:  # pragma: no cover - defensive
+            await run_stream_consumer(
+                self,
+                label="conversational_consumer",
+                channel=event_channel_name(CONVERSATIONAL_CHANNEL),
+                group=self.GROUP,
+            )
+        except Exception as exc:
             _log.error("conversational_consumer_error: %s", exc)
 
     async def stop(self) -> None:
@@ -347,6 +348,7 @@ class ConversationalTriggerConsumer:
         if not tenant_id:
             return
         tenant_ctx: SimpleNamespace | None = None
+        store_error: Exception | None = None
         for ttype in _CONV_TYPES:
             try:
                 triggers = await self._store.find_by_type_async(  # type: ignore[attr-defined]
@@ -354,6 +356,7 @@ class ConversationalTriggerConsumer:
                 )
             except Exception as exc:
                 _log.warning("conversational_store_error type=%s: %s", ttype, exc)
+                store_error = exc
                 continue
             for trig in triggers:
                 spec = trig.get("spec") if isinstance(trig, dict) else getattr(trig, "spec", None)
@@ -367,3 +370,7 @@ class ConversationalTriggerConsumer:
                     )
                 except Exception as exc:
                     _log.warning("conversational_dispatch_error: %s", exc)
+        if store_error is not None:
+            # Not accepted: the stream entry stays pending and is retried; the
+            # event_id-keyed idempotency stops a double fire (TRG-18).
+            raise store_error

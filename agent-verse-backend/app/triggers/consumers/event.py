@@ -5,8 +5,10 @@ Fires ``EVENT`` triggers when a matching custom event is published to Redis.
 Convention: events are published — server-side, from an authenticated path that
 stamps the caller's ``tenant_id`` — to the channel
 ``trigger:event:{event_channel}`` with a JSON payload carrying at least
-``tenant_id``. A single ``psubscribe`` on ``trigger:event:*`` catches every EVENT
-channel, so newly-created triggers fire without re-subscription. Firing is
+``tenant_id``. Every ``trigger:event:*`` channel is XADDed to the one EVENT-family
+stream (``app.triggers.bus``, TRG-18), which this consumer reads with its own
+consumer group, so newly-created triggers fire without re-subscription and an
+event published while consumers are down is delivered later. Firing is
 tenant-scoped: only EVENT triggers belonging to the payload's ``tenant_id`` and
 whose ``event_channel`` matches are dispatched, so one tenant cannot fire
 another's trigger.
@@ -21,12 +23,15 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.triggers.bus import publish_trigger_event as publish_bus_event
+from app.triggers.bus import run_stream_consumer
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx, strip_reserved
 
 _log = logging.getLogger(__name__)
 
 CHANNEL_PREFIX = "trigger:event:"
 CHANNEL_PATTERN = "trigger:event:*"
+# Any ``trigger:event:*`` channel: resolves the EVENT-family stream.
+CONVENTION_CHANNEL = f"{CHANNEL_PREFIX}any"
 
 
 def event_channel_name(event_channel: str) -> str:
@@ -56,7 +61,10 @@ def _decode(value: Any) -> str:
 
 
 class EventTriggerConsumer:
-    """Listens on Redis pub/sub for custom events and fires EVENT triggers."""
+    """Reads custom events from the EVENT trigger stream and fires EVENT triggers."""
+
+    # Consumer group on the EVENT-family stream (TRG-18).
+    GROUP = "trigger-consumer:event"
 
     def __init__(
         self,
@@ -76,16 +84,10 @@ class EventTriggerConsumer:
             return
         self._running = True
         try:
-            pubsub = self._redis.pubsub()  # type: ignore[attr-defined]
-            await pubsub.psubscribe(CHANNEL_PATTERN)
-            _log.info("event_consumer_started pattern=%s", CHANNEL_PATTERN)
-            async for message in pubsub.listen():
-                if not self._running:
-                    break
-                if message.get("type") != "pmessage":
-                    continue
-                await self._handle(message)
-        except Exception as exc:  # pragma: no cover - defensive
+            await run_stream_consumer(
+                self, label="event_consumer", channel=CONVENTION_CHANNEL, group=self.GROUP
+            )
+        except Exception as exc:
             _log.error("event_consumer_error: %s", exc)
 
     async def stop(self) -> None:
@@ -114,8 +116,9 @@ class EventTriggerConsumer:
                 "event", tenant_id=tenant_id
             )
         except Exception as exc:
+            # Not accepted: the stream entry stays pending and is retried.
             _log.warning("event_store_error: %s", exc)
-            return
+            raise
 
         tenant_ctx: SimpleNamespace | None = None
         for trigger in triggers:

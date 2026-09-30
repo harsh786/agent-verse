@@ -27,13 +27,14 @@ import logging
 import time
 from typing import Any
 
+from app.triggers.bus import run_stream_consumer
 from app.triggers.condition.evaluator import (
     CELEvaluator,
     CompoundTriggerEvaluator,
     CounterThresholdEvaluator,
     WindowAggregateEvaluator,
 )
-from app.triggers.consumers.event import CHANNEL_PATTERN, CHANNEL_PREFIX, _decode
+from app.triggers.consumers.event import CHANNEL_PREFIX, CONVENTION_CHANNEL, _decode
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx
 from app.triggers.polling import extract_path
 
@@ -54,6 +55,9 @@ _STATEFUL_TYPES = frozenset({"counter_threshold", "window_aggregate", "state_tra
 
 class ConditionTriggerConsumer:
     """Evaluates Family D (condition/state) triggers on the EVENT bus."""
+
+    # Consumer group on the EVENT-family stream (TRG-18).
+    GROUP = "trigger-consumer:condition"
 
     def __init__(
         self,
@@ -78,16 +82,10 @@ class ConditionTriggerConsumer:
             return
         self._running = True
         try:
-            pubsub = self._redis.pubsub()  # type: ignore[attr-defined]
-            await pubsub.psubscribe(CHANNEL_PATTERN)
-            _log.info("condition_consumer_started pattern=%s", CHANNEL_PATTERN)
-            async for message in pubsub.listen():
-                if not self._running:
-                    break
-                if message.get("type") != "pmessage":
-                    continue
-                await self._handle(message)
-        except Exception as exc:  # pragma: no cover - defensive
+            await run_stream_consumer(
+                self, label="condition_consumer", channel=CONVENTION_CHANNEL, group=self.GROUP
+            )
+        except Exception as exc:
             _log.error("condition_consumer_error: %s", exc)
 
     async def stop(self) -> None:
@@ -114,6 +112,7 @@ class ConditionTriggerConsumer:
         # Load every Family D trigger for this tenant once, indexed by id.
         by_type: dict[str, list[Any]] = {}
         index: dict[str, Any] = {}
+        store_error: Exception | None = None
         for ttype in _FAMILY_TYPES:
             try:
                 triggers = await self._store.find_by_type_async(  # type: ignore[attr-defined]
@@ -121,6 +120,7 @@ class ConditionTriggerConsumer:
                 )
             except Exception as exc:
                 _log.warning("condition_store_error type=%s: %s", ttype, exc)
+                store_error = exc
                 continue
             by_type[ttype] = triggers
             for trig in triggers:
@@ -141,9 +141,15 @@ class ConditionTriggerConsumer:
                         await self._dispatch(spec, payload, tenant_id)
                 except Exception as exc:
                     _log.warning("condition_eval_error type=%s: %s", ttype, exc)
+        if store_error is not None:
+            # Some triggers were never looked up: not accepted, so the stream
+            # entry stays pending and is retried (claims + dedup keep the
+            # already-evaluated triggers from firing twice) — TRG-18.
+            raise store_error
 
     # ── Shared (Redis) evaluator state — TRG-19 ───────────────────────────────
-    # Every replica receives every event (pub/sub fan-out) and used to keep
+    # Every replica used to receive every event (pub/sub fan-out; consumer groups
+    # now deliver once per group, but a reclaimed entry is redelivered) and kept
     # counters / windows / last states in its own memory, so thresholds fired
     # once per replica at different events, or never after a restart. With Redis
     # the state is keyed by tenant + trigger, and each (trigger, event) pair is

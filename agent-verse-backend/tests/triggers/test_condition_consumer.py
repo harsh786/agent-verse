@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -11,6 +10,7 @@ import pytest
 
 from app.triggers.consumers.condition import ConditionTriggerConsumer
 from app.triggers.consumers.event import event_channel_name
+from tests.triggers.stream_support import drain, publish, stream_redis
 
 
 def _consumer() -> ConditionTriggerConsumer:
@@ -123,25 +123,11 @@ def test_compound_and_no_fire_when_one_false() -> None:
 # ── Dispatch flow via the event bus ───────────────────────────────────────────
 
 
-class _FakePubSub:
-    def __init__(self, messages: list[dict[str, Any]]) -> None:
-        self._messages = messages
-
-    async def psubscribe(self, pattern: str) -> None:
-        self.pattern = pattern
-
-    async def listen(self) -> Any:
-        for m in self._messages:
-            await asyncio.sleep(0)
-            yield m
-
-
-class _FakeRedis:
-    def __init__(self, messages: list[dict[str, Any]]) -> None:
-        self._messages = messages
-
-    def pubsub(self) -> _FakePubSub:
-        return _FakePubSub(self._messages)
+async def _redis_with(msg: dict[str, Any]) -> Any:
+    """A fake Redis whose EVENT stream already holds *msg* (TRG-18)."""
+    redis = stream_redis()
+    await publish(redis, msg["channel"].decode(), msg["data"].decode())
+    return redis
 
 
 class _FakeStore:
@@ -171,8 +157,8 @@ async def test_condition_consumer_dispatches_on_event() -> None:
     }
     store = _FakeStore({"condition": [{"spec": _spec(condition_expression="")}]})  # empty → True
     disp = _FakeDispatcher()
-    c = ConditionTriggerConsumer(trigger_store=store, dispatcher=disp, redis=_FakeRedis([msg]))
-    await c.start()
+    c = ConditionTriggerConsumer(trigger_store=store, dispatcher=disp, redis=await _redis_with(msg))
+    await drain(c)
     assert len(disp.calls) == 1
 
 
@@ -185,6 +171,6 @@ async def test_condition_consumer_ignores_untenanted_event() -> None:
     }
     store = _FakeStore({"condition": [{"spec": _spec(condition_expression="")}]})
     disp = _FakeDispatcher()
-    c = ConditionTriggerConsumer(trigger_store=store, dispatcher=disp, redis=_FakeRedis([msg]))
-    await c.start()
+    c = ConditionTriggerConsumer(trigger_store=store, dispatcher=disp, redis=await _redis_with(msg))
+    await drain(c)
     assert disp.calls == []

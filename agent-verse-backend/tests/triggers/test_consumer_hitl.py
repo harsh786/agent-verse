@@ -18,22 +18,15 @@ class TestStartStop:
         assert consumer._running is False
 
     @pytest.mark.asyncio
-    async def test_start_subscribes_and_processes_messages(self) -> None:
-        redis = MagicMock()
-        pubsub = MagicMock()
-        redis.pubsub.return_value = pubsub
-        pubsub.subscribe = AsyncMock()
+    async def test_start_reads_the_stream_and_processes_messages(self) -> None:
+        """TRG-18: the consumer reads its trigger stream via a consumer group."""
+        import fakeredis
 
-        messages = [
-            {"type": "subscribe", "data": 1},
-            {"type": "message", "channel": "hitl.approved", "data": json.dumps({"tenant_id": "t1"})},
-        ]
+        from app.core.config import get_settings
+        from app.triggers.bus import publish_trigger_event
 
-        async def fake_listen():
-            for m in messages:
-                yield m
-
-        pubsub.listen = fake_listen
+        redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+        await publish_trigger_event(redis, "hitl.approved", {"tenant_id": "t1"})
 
         consumer = HITLTriggerConsumer(redis=redis)
         handled = []
@@ -45,13 +38,16 @@ class TestStartStop:
         consumer._handle = fake_handle  # type: ignore[method-assign]
         await consumer.start()
 
-        pubsub.subscribe.assert_awaited_once_with("hitl.approved", "hitl.rejected")
         assert len(handled) == 1
+        assert handled[0]["channel"] == "hitl.approved"
+        assert json.loads(handled[0]["data"]) == {"tenant_id": "t1"}
+        stream = get_settings().trigger_bus_stream_hitl
+        assert (await redis.xpending(stream, HITLTriggerConsumer.GROUP))["pending"] == 0
 
     @pytest.mark.asyncio
     async def test_start_swallows_exceptions(self) -> None:
         redis = MagicMock()
-        redis.pubsub.side_effect = RuntimeError("boom")
+        redis.xgroup_create = AsyncMock(side_effect=RuntimeError("boom"))
         consumer = HITLTriggerConsumer(redis=redis)
         await consumer.start()  # should not raise
 

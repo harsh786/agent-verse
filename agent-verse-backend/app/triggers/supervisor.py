@@ -5,9 +5,11 @@ Owns the long-running trigger consumers and their asyncio task handles. On
 one background task per available consumer; on ``stop()`` it cancels and awaits
 every task so shutdown is graceful.
 
-The three *core* consumers (chain / HITL / memory) subscribe to Redis pub/sub
-and therefore need a ``schedule_store`` (trigger lookups), a ``dispatcher``
-(governed dispatch) and a ``redis`` client. A consumer whose dependencies are
+The *core* consumers (chain / HITL / memory / event / condition /
+conversational) read the trigger Redis Streams through one consumer group per
+consumer type (``app.triggers.bus``, TRG-18) and therefore need a
+``schedule_store`` (trigger lookups), a ``dispatcher`` (governed dispatch) and a
+``redis`` client. A consumer whose dependencies are
 missing is skipped and recorded in :attr:`skipped` rather than crashing startup.
 
 The extended families (data / monitoring / IoT / advanced) require external
@@ -167,10 +169,11 @@ class TriggerConsumerSupervisor:
     async def _run_consumer(self, name: str, consumer: _Consumer) -> None:
         """Run *consumer*, restarting it with exponential backoff whenever it exits.
 
-        Consumers log and RETURN from ``start()`` on a pub/sub error (Redis
-        failover, dropped connection); that used to disable their triggers on
-        this replica until the pod restarted (TRG-17). Only a supervisor
-        shutdown ends the loop.
+        Consumers log and RETURN from ``start()`` on a Redis error (failover,
+        dropped connection); that used to disable their triggers on this
+        replica until the pod restarted (TRG-17). Only a supervisor shutdown
+        ends the loop. Events published meanwhile wait in the trigger stream
+        and are read when the consumer rejoins its group (TRG-18).
         """
         loop = asyncio.get_running_loop()
         failures = 0
