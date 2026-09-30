@@ -65,7 +65,7 @@ def _run_beat(monkeypatch: pytest.MonkeyPatch, sched: dict[str, Any]) -> list[di
     r.set("schedule:t1:fd", json.dumps(sched))
     sent: list[dict[str, Any]] = []
     monkeypatch.setenv("REDIS_URL", "redis://fake")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setattr("redis.from_url", lambda *_a, **_k: r)
     monkeypatch.setattr(
         tasks.run_scheduled_goal, "apply_async", lambda *, kwargs, queue: sent.append(kwargs)

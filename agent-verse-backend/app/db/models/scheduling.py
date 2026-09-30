@@ -5,7 +5,18 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,6 +46,15 @@ class Schedule(Base):
     """Agent trigger schedule (cron, interval, webhook, one-shot, or event)."""
 
     __tablename__ = "schedules"
+    # The beat's due scan (TRG-15, migration e2b4d6f8a0c1).
+    __table_args__ = (
+        Index(
+            "ix_schedules_due",
+            "tenant_id",
+            "next_fire_at",
+            postgresql_where=text("NOT paused"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(

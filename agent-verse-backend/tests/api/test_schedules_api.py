@@ -450,7 +450,7 @@ def test_fire_due_schedules_dispatches_agent_bound_goal(monkeypatch: MonkeyPatch
         return SimpleNamespace(id="task-1")
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setitem(
         sys.modules,
         "redis",

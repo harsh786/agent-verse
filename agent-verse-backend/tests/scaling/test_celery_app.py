@@ -277,7 +277,7 @@ def test_fire_due_schedules_discovers_schedule_store_payload(monkeypatch: Any) -
         return SimpleNamespace(id="task-1")
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setitem(
         sys.modules,
         "redis",
@@ -337,7 +337,7 @@ def test_fire_due_schedules_redacts_legacy_redis_secret_fields(monkeypatch: Any)
         return SimpleNamespace(id="task-1")
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setitem(
         sys.modules,
         "redis",
@@ -418,7 +418,7 @@ def test_fire_due_schedules_sanitizes_undispatched_legacy_redis_secrets(
         raise AssertionError("schedule should not dispatch")
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setitem(
         sys.modules,
         "redis",
@@ -451,7 +451,7 @@ def test_fire_due_schedules_does_not_discover_db_by_default_with_redis(
         raise AssertionError("DB discovery should be gated by env")
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setitem(
         sys.modules,
         "redis",
@@ -872,7 +872,7 @@ def test_fire_due_schedules_retries_dispatch_failure(monkeypatch: Any) -> None:
         raise RuntimeError("broker down")
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setitem(
         sys.modules,
         "redis",
@@ -927,7 +927,7 @@ def test_fire_due_schedules_cron_dispatch_failure_raises(monkeypatch: Any) -> No
         raise RuntimeError("broker down")
 
     monkeypatch.setenv("REDIS_URL", "redis://test")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setitem(
         sys.modules,
         "redis",
@@ -1415,8 +1415,10 @@ def test_fire_due_schedules_merges_redis_and_db_without_duplicate(monkeypatch: A
     assert result["schedules_checked"] == 2
     assert result["schedules_fired"] == 2
     assert dispatched == []
+    # TRG-15: Postgres is authoritative; the Redis mirror is not even scanned
+    # when DB discovery succeeds, so the DB row's template is what fires.
     assert [call["kwargs"]["goal_template"] for call in dispatched_scheduled] == [
-        "Compile shared report",
+        "Compile shared report from DB",
         "Compile DB-only report",
     ]
     # INTERVAL fire instants are the deterministic epoch-aligned slot ("now"

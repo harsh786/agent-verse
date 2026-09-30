@@ -576,7 +576,8 @@ class ScheduleStore:
         if rec is None:
             return None
         if self._db is not None and not await self._db_update_values(
-            schedule_id, tenant_id, {"paused": paused}
+            # Resuming resets next_fire_at so the beat re-evaluates it next tick (TRG-15).
+            schedule_id, tenant_id, {"paused": paused, "next_fire_at": None}
         ):
             self._data.pop((tenant_id, schedule_id), None)
             return None
@@ -641,6 +642,8 @@ class ScheduleStore:
                 "condition": new_spec.condition or "",
                 "description": new_spec.description or "",
                 "config": spec_config(new_spec),
+                # An edit may move the next fire earlier: re-evaluate next tick.
+                "next_fire_at": None,
             }
             if spec is not None:
                 values["webhook_signature_secret_enc"] = encrypt_webhook_secret(

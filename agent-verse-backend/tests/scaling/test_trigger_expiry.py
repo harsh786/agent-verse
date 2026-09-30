@@ -128,7 +128,7 @@ def test_beat_does_not_fire_and_auto_pauses_an_expired_cron(
     )
     sent: list[dict[str, Any]] = []
     monkeypatch.setenv("REDIS_URL", "redis://fake")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     monkeypatch.setattr("redis.from_url", lambda *_a, **_k: r)
     monkeypatch.setattr(
         tasks.run_scheduled_goal, "apply_async", lambda *, kwargs, queue: sent.append(kwargs)

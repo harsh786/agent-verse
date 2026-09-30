@@ -4446,15 +4446,118 @@ def _db_schedule_payload(row: Any) -> dict[str, Any]:
         "description": str(getattr(row, "description", "") or ""),
         "paused": bool(getattr(row, "paused", False)),
         "last_fired_at": _datetime_to_naive_iso(getattr(row, "last_fired_at", None)),
+        "next_fire_at": _datetime_to_naive_iso(getattr(row, "next_fire_at", None)),
     }
     if isinstance(config, dict):
         payload.update(config)
     return payload
 
 
-async def _load_db_schedules() -> dict[str, dict[str, Any]]:
+# Types the beat loop evaluates (BEAT_TYPES plus the cached-alert branches).
+_BEAT_DISCOVERY_TYPES: tuple[str, ...] = (
+    "cron",
+    "interval",
+    "once",
+    "relative_delay",
+    "deadline",
+    "business_calendar",
+    "file_drop",
+    "rss_feed",
+    "api_poll",
+    "db_row_change",
+    "alertmanager",
+    "datadog",
+    "pagerduty",
+)
+# Upper bound on due rows loaded per tenant per tick (the rest are next tick's).
+_DUE_BATCH_PER_TENANT = 1000
+# "Never again" for fired one-shot schedules (Python cannot hold 'infinity').
+_NEVER = datetime.datetime(9999, 1, 1, tzinfo=datetime.UTC)
+
+
+def _next_evaluation_at(
+    sched: dict[str, Any], now: datetime.datetime
+) -> datetime.datetime | None:
+    """When the beat next needs to look at *sched* (TRG-15), UTC-aware.
+
+    ``None`` means "every tick": polling / alert families, and anything whose
+    next time cannot be computed (a create/edit/resume also resets it to None
+    so the change is evaluated on the next tick).
+    """
+    trigger_type = str(sched.get("trigger_type") or "")
+    now_aware = now.replace(tzinfo=datetime.UTC) if now.tzinfo is None else now
+    last = _schedule_datetime(sched.get("last_fired_at"))
+
+    def _utc(dt: datetime.datetime) -> datetime.datetime:
+        return dt.replace(tzinfo=datetime.UTC) if dt.tzinfo is None else dt
+
+    if trigger_type in ("cron", "business_calendar"):
+        expr = str(sched.get("cron_expression") or "")
+        if not expr:
+            return None
+        from croniter import croniter
+
+        tz = _resolve_tz(str(sched.get("timezone") or "UTC"))
+        nxt = croniter(expr, now_aware.astimezone(tz)).get_next(datetime.datetime)
+        return _utc(nxt).astimezone(datetime.UTC)
+    if trigger_type == "interval":
+        seconds = int(sched.get("interval_seconds") or 0)
+        if seconds <= 0 or last is None:
+            return None
+        return _utc(last + datetime.timedelta(seconds=seconds))
+    if trigger_type in ("once", "relative_delay", "deadline"):
+        if last is not None:
+            return _NEVER
+        base = _schedule_datetime(sched.get("fire_at_iso"))
+        if base is None:
+            return None
+        if trigger_type == "relative_delay":
+            base += datetime.timedelta(seconds=int(sched.get("relative_offset_seconds") or 0))
+        elif trigger_type == "deadline":
+            base -= datetime.timedelta(seconds=int(sched.get("deadline_warning_seconds") or 0))
+        return _utc(base)
+    return None
+
+
+async def _persist_next_evaluations(
+    updates: list[tuple[str, str, datetime.datetime | None]],
+) -> None:
+    """Write ``schedules.next_fire_at`` for the evaluated DB schedules (RLS)."""
     try:
-        from sqlalchemy import select
+        from sqlalchemy import update
+
+        from app.db.models.scheduling import Schedule
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory as _get_fresh_db
+
+        db_factory = _get_fresh_db()
+        for tenant_id, schedule_id, nxt in updates:
+            if not tenant_id or not schedule_id:
+                continue
+            async with (
+                db_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    update(Schedule)
+                    .where(Schedule.tenant_id == tenant_id, Schedule.id == schedule_id)
+                    .values(next_fire_at=nxt)
+                )
+    except Exception as exc:
+        # Harmless: a stale next_fire_at in the past only means the schedule is
+        # evaluated again next tick.
+        logger.warning("next_fire_at_update_failed: %s", exc)
+
+
+async def _load_db_schedules(
+    now: datetime.datetime | None = None,
+) -> dict[str, dict[str, Any]] | None:
+    """Due beat schedules from Postgres, or ``None`` when the DB is unreachable."""
+    due_at = now or datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    due_at = due_at.replace(tzinfo=datetime.UTC) if due_at.tzinfo is None else due_at
+    try:
+        from sqlalchemy import or_, select
 
         from app.db.models.scheduling import Schedule
         from app.db.models.tenant import Tenant
@@ -4472,10 +4575,18 @@ async def _load_db_schedules() -> dict[str, dict[str, Any]]:
                 tenant_id = str(tenant.id)
                 async with sqlalchemy_rls_context(session, tenant_id):
                     schedule_result = await session.execute(
-                        select(Schedule).where(
+                        select(Schedule)
+                        .where(
                             Schedule.tenant_id == tenant_id,
                             Schedule.paused == False,  # noqa: E712
+                            Schedule.trigger_type.in_(_BEAT_DISCOVERY_TYPES),
+                            or_(
+                                Schedule.next_fire_at.is_(None),
+                                Schedule.next_fire_at <= due_at,
+                            ),
                         )
+                        .order_by(Schedule.next_fire_at.asc().nulls_first())
+                        .limit(_DUE_BATCH_PER_TENANT)
                     )
                 for row in schedule_result.scalars().all():
                     payload = _db_schedule_payload(row)
@@ -4486,8 +4597,8 @@ async def _load_db_schedules() -> dict[str, dict[str, Any]]:
                     schedules[_schedule_key(row_tenant_id, schedule_id)] = payload
         return schedules
     except Exception as exc:
-        logger.warning("DB schedule discovery skipped: %s", exc)
-        return {}
+        logger.warning("DB schedule discovery failed: %s", exc)
+        return None
 
 
 async def _update_db_schedule_last_fired_at(
@@ -4556,7 +4667,9 @@ async def _pause_db_schedule(tenant_id: str, schedule_id: str) -> None:
 def _db_schedule_discovery_enabled() -> bool:
     import os
 
-    return os.getenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false").lower() in {
+    # TRG-15: on by default (Postgres is the source of truth; every deployment
+    # config already set it). "false" keeps the Redis-mirror-only mode.
+    return os.getenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true").lower() in {
         "1",
         "true",
         "yes",
@@ -4898,6 +5011,17 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
         r: Any | None = None
         schedules: dict[str, dict[str, Any]] = {}
         db_schedule_keys: set[str] = set()
+        # TRG-15: Postgres is the source of truth. Only DUE schedules are loaded
+        # (indexed next_fire_at predicate); the Redis SCAN of every schedule:*
+        # key is only a fallback when DB discovery is off or fails, so an
+        # evicted Redis key no longer stops a schedule from firing.
+        db_discovered: dict[str, dict[str, Any]] | None = None
+        if _db_schedule_discovery_enabled():
+            db_discovered = cast(
+                "dict[str, dict[str, Any]] | None", _run_async(_load_db_schedules(now))
+            )
+            if db_discovered is None:
+                logger.warning("fire_due_schedules: DB discovery failed; using the Redis mirror")
         if redis_url:
             try:
                 import redis as sync_redis
@@ -4906,7 +5030,11 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                 r = redis_from_url(redis_url, decode_responses=True)
 
                 # Scan for all schedule keys written by ScheduleStore: schedule:{tenant}:{id}
-                schedule_keys = list(r.scan_iter(match="schedule:*", count=100))
+                schedule_keys = (
+                    list(r.scan_iter(match="schedule:*", count=100))
+                    if db_discovered is None
+                    else []
+                )
                 for key in schedule_keys:
                     try:
                         raw = r.get(key)
@@ -4924,18 +5052,11 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
         else:
             logger.info("fire_due_schedules: no REDIS_URL configured, checking DB schedules only")
 
-        if _db_schedule_discovery_enabled():
-            db_schedules = cast(dict[str, dict[str, Any]], _run_async(_load_db_schedules()))
-            for key, sched in db_schedules.items():
+        if db_discovered is not None:
+            for key, sched in db_discovered.items():
                 db_schedule_keys.add(key)
-                if key not in schedules:
-                    schedules[key] = sched
-                else:
-                    schedules[key]["schedule_id"] = sched.get("schedule_id")
-                    schedules[key]["last_fired_at"] = sched.get("last_fired_at")
-        else:
-            # Postgres schedule source-of-truth fallback is opt-in until Phase 12
-            # deployment config enables AGENTVERSE_DB_SCHEDULE_DISCOVERY.
+                schedules[key] = sched
+        elif not _db_schedule_discovery_enabled():
             logger.info("fire_due_schedules: DB schedule discovery disabled")
 
         def mark_schedule_fired(
@@ -5672,6 +5793,25 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             except Exception as exc:
                 logger.warning("Error processing schedule key %s: %s", key, exc)
                 continue
+
+        # TRG-15: record when each DB schedule next needs evaluating, so the
+        # next tick's indexed query skips it until then.
+        _next_updates: list[tuple[str, str, datetime.datetime | None]] = []
+        for key in db_schedule_keys:
+            sched = schedules.get(key) or {}
+            if sched.get("paused"):
+                continue
+            try:
+                nxt = _next_evaluation_at(sched, now)
+            except Exception as nxt_exc:
+                logger.warning("next_evaluation_failed schedule=%s: %s", key, nxt_exc)
+                nxt = None
+            if _norm_utc_naive(nxt) != _schedule_datetime(sched.get("next_fire_at")):
+                _next_updates.append(
+                    (str(sched.get("tenant_id") or ""), str(sched.get("schedule_id") or ""), nxt)
+                )
+        if _next_updates:
+            _run_async(_persist_next_evaluations(_next_updates))
 
         return {
             "status": "ok",

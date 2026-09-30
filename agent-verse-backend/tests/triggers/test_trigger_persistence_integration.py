@@ -390,3 +390,58 @@ async def test_outcome_circuit_opens_from_failed_goals_on_the_app_role(
     assert (await read_outcome_circuit(dbs.app, dbs.t1, trigger_id)).state == "open"
     # Another tenant sees none of those rows.
     assert (await read_outcome_circuit(dbs.app, dbs.t2, trigger_id)).state == "closed"
+
+
+@pytest.mark.asyncio
+async def test_beat_loads_only_due_schedules(
+    dbs: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TRG-15: 20k schedules, 10 due -> the beat's Postgres discovery returns
+    exactly those 10 (bounded, indexed next_fire_at predicate) on the
+    least-privilege role, and a next_fire_at written back is honoured."""
+    from app.scaling import tasks
+
+    insert = (
+        "INSERT INTO schedules (id, tenant_id, goal_id_template, trigger_type, "
+        "cron_expression, interval_seconds, config, paused, next_fire_at) "
+    )
+    async with dbs.admin() as s, s.begin():
+        await s.execute(
+            text(
+                insert + "SELECT md5(random()::text || g), :t, 'x', 'cron', '0 9 * * *', 0, "
+                "'{}'::jsonb, false, NOW() + interval '1 hour' FROM generate_series(1, 20000) g"
+            ),
+            {"t": dbs.t1},
+        )
+        await s.execute(
+            text(
+                insert + "SELECT 'due' || lpad(g::text, 29, '0'), :t, 'x', 'cron', "
+                "'* * * * *', 0, '{}'::jsonb, false, NOW() - interval '1 minute' "
+                "FROM generate_series(1, 10) g"
+            ),
+            {"t": dbs.t1},
+        )
+        # A webhook row (never a beat type) and a paused row are not loaded.
+        await s.execute(
+            text(
+                insert + "VALUES ('hook1', :t, 'x', 'webhook', '', 0, '{}'::jsonb, false, NULL), "
+                "('paused1', :t, 'x', 'cron', '* * * * *', 0, '{}'::jsonb, true, NULL)"
+            ),
+            {"t": dbs.t1},
+        )
+    monkeypatch.setattr("app.db.session.get_session_factory", lambda: dbs.app)
+
+    def _mine(found: dict[str, Any]) -> list[str]:
+        prefix = f"schedule:{dbs.t1}:"
+        return sorted(k.removeprefix(prefix) for k in found if k.startswith(prefix))
+
+    due = await tasks._load_db_schedules()
+    assert due is not None
+    assert _mine(due) == [f"due{i:029d}" for i in range(1, 11)]
+
+    # The beat records the next evaluation time; the schedule is then not due.
+    later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
+    await tasks._persist_next_evaluations([(dbs.t1, f"due{1:029d}", later)])
+    again = await tasks._load_db_schedules()
+    assert again is not None
+    assert _mine(again) == [f"due{i:029d}" for i in range(2, 11)]

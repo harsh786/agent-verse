@@ -558,7 +558,7 @@ def test_db_schedule_payload_last_fired_at_datetime() -> None:
 # ===========================================================================
 
 def test_db_schedule_discovery_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     from app.scaling.tasks import _db_schedule_discovery_enabled
     assert _db_schedule_discovery_enabled() is False
 
@@ -754,7 +754,7 @@ def test_check_mcp_health_fallback_with_valid_server(monkeypatch: pytest.MonkeyP
 def test_fire_due_schedules_no_redis_no_db(monkeypatch: pytest.MonkeyPatch) -> None:
     """fire_due_schedules with no Redis and no DB returns ok with 0 fired."""
     monkeypatch.setenv("REDIS_URL", "")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     from app.scaling.tasks import fire_due_schedules
 
     with patch("app.scaling.tasks._run_async", return_value={}):
@@ -767,7 +767,7 @@ def test_fire_due_schedules_no_redis_no_db(monkeypatch: pytest.MonkeyPatch) -> N
 def test_fire_due_schedules_with_redis_empty_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """fire_due_schedules with Redis returning no schedule keys fires 0."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     from app.scaling.tasks import fire_due_schedules
 
     mock_r = MagicMock()
@@ -783,7 +783,7 @@ def test_fire_due_schedules_with_redis_empty_keys(monkeypatch: pytest.MonkeyPatc
 def test_fire_due_schedules_skips_paused_schedules(monkeypatch: pytest.MonkeyPatch) -> None:
     """Paused schedules are skipped even if they are due."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
 
     from app.scaling.tasks import fire_due_schedules
@@ -810,7 +810,7 @@ def test_fire_due_schedules_skips_paused_schedules(monkeypatch: pytest.MonkeyPat
 def test_fire_due_schedules_interval_due_dispatches_goal(monkeypatch: pytest.MonkeyPatch) -> None:
     """An overdue interval schedule fires a goal."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
     from datetime import UTC, datetime, timedelta
 
@@ -1011,7 +1011,7 @@ def test_record_queue_depths_retry_on_redis_failure(monkeypatch: pytest.MonkeyPa
 def test_fire_due_schedules_cron_due_dispatches_goal(monkeypatch: pytest.MonkeyPatch) -> None:
     """A cron schedule that is due fires a goal."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
 
     # Cron that fires every minute — always due since last_fired_at is old
@@ -1055,7 +1055,7 @@ def test_fire_due_schedules_cron_due_dispatches_goal(monkeypatch: pytest.MonkeyP
 def test_fire_due_schedules_once_schedule_due_fires(monkeypatch: pytest.MonkeyPatch) -> None:
     """A 'once' schedule that is due fires exactly once."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
     from datetime import UTC, datetime, timedelta
 
@@ -1101,7 +1101,7 @@ def test_fire_due_schedules_rrule_due_dispatches_goal(monkeypatch: pytest.Monkey
     window must be honored the same way cron schedules are.
     """
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
     from datetime import UTC, datetime, timedelta
 
@@ -1138,7 +1138,7 @@ def test_fire_due_schedules_rrule_due_dispatches_goal(monkeypatch: pytest.Monkey
 def test_fire_due_schedules_rrule_parse_error_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
     """A malformed RRULE must be logged and skipped, not crash the whole beat tick."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
 
     from app.scaling.tasks import fire_due_schedules
@@ -1180,7 +1180,7 @@ def test_fire_due_schedules_solar_due_dispatches_goal(monkeypatch: pytest.Monkey
     import types
 
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
     from datetime import UTC, datetime, timedelta
 
@@ -1231,7 +1231,7 @@ def test_fire_due_schedules_relative_delay_due_dispatches_goal(
 ) -> None:
     """A relative_delay schedule (fire once at base + offset) dispatches when due."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
     from datetime import UTC, datetime, timedelta
 
@@ -1648,13 +1648,14 @@ def test_execute_retention_policy_calls_run_async(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.asyncio
 async def test_load_db_schedules_handles_db_error() -> None:
-    """When DB is unavailable, _load_db_schedules returns empty dict."""
+    """When DB is unavailable, _load_db_schedules returns None (TRG-15: the beat
+    then falls back to the Redis mirror instead of seeing "no schedules")."""
     from app.scaling.tasks import _load_db_schedules
 
     with patch("app.db.session.get_session_factory", side_effect=Exception("no db")):
         result = await _load_db_schedules()
 
-    assert result == {}
+    assert result is None
 
 
 # ===========================================================================
@@ -2016,7 +2017,7 @@ async def test_delete_expired_records_per_table_error() -> None:
 def test_fire_due_schedules_exception_in_schedule_processing(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exception processing a single schedule key is caught and logged."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
 
     from app.scaling.tasks import fire_due_schedules
 
@@ -2036,7 +2037,7 @@ def test_fire_due_schedules_exception_in_schedule_processing(monkeypatch: pytest
 def test_fire_due_schedules_key_with_none_value(monkeypatch: pytest.MonkeyPatch) -> None:
     """When r.get() returns None for a key, it is skipped (line 1200 coverage)."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     from app.scaling.tasks import fire_due_schedules
 
     mock_r = MagicMock()
@@ -2053,7 +2054,7 @@ def test_fire_due_schedules_key_with_none_value(monkeypatch: pytest.MonkeyPatch)
 def test_fire_due_schedules_redis_scan_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """When scan_iter raises, outer exception handler catches it (lines 1208-1209)."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     from app.scaling.tasks import fire_due_schedules
 
     mock_r = MagicMock()
@@ -2071,7 +2072,7 @@ def test_fire_due_schedules_invalid_cron_expression_is_skipped(
 ) -> None:
     """Invalid cron expression triggers cron_exc path (lines 1305-1307)."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
     from datetime import UTC, datetime, timedelta
 
@@ -2104,7 +2105,7 @@ def test_fire_due_schedules_schedule_with_secret_fields_sanitized(
 ) -> None:
     """Schedules with secret fields are sanitized and re-saved (line 1203-1204)."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
     import json
 
     from app.scaling.tasks import fire_due_schedules

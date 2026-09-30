@@ -12,6 +12,9 @@ import pytest
 os.environ.setdefault("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
 # Ensure tests run in development mode (not production fail-closed)
 os.environ.setdefault("ENVIRONMENT", "development")
+# The beat reads Postgres by default (TRG-15); unit tests must never reach a
+# developer database through the default DATABASE_URL, so they opt out.
+os.environ.setdefault("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
 
 # Tests must not depend on the developer's .env: a real provider key there (e.g.
 # NVIDIA_API_KEY) turned "no keys -> FakeProvider" tests into real-provider runs.
