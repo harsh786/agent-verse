@@ -64,12 +64,30 @@ def _terminal_event(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# Trigger types with a real firing path: api/webhook via POST /wf-hooks (and the
+# trigger API), schedule via the beat scan. The DSL keeps the other literals
+# (nl, event, file_drop, alertmanager, datadog, pagerduty) for round-trips, but
+# nothing fires them yet.
+SUPPORTED_TRIGGER_TYPES = frozenset({"api", "webhook", "schedule"})
+
+
 def publish_problems(definition: dict[str, Any]) -> list[str]:
     """Reasons a definition must not be published (empty = publishable).
 
     Reads the raw stored DSL so an older definition never fails to load here.
     """
+    from app.workflow.trigger_extract import extract_triggers, schedule_cron
+
     problems: list[str] = []
+    for trigger in extract_triggers(definition):
+        ttype = str(trigger.get("type") or "api")
+        if ttype not in SUPPORTED_TRIGGER_TYPES:
+            problems.append(
+                f"trigger type {ttype!r} is not supported yet, so the workflow could never "
+                f"start (supported: {', '.join(sorted(SUPPORTED_TRIGGER_TYPES))})"
+            )
+        elif ttype == "schedule" and not schedule_cron(trigger)[0]:
+            problems.append("schedule trigger has no cron expression")
     steps = definition.get("steps") if isinstance(definition, dict) else None
     for step in steps or []:
         if not isinstance(step, dict) or step.get("type") != "hitl":

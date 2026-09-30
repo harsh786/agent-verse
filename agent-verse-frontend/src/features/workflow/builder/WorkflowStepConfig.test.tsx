@@ -63,6 +63,23 @@ describe('WorkflowStepConfig — trigger', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Hourly' }));
     expect(onUpdate).toHaveBeenCalledWith({ cron: '0 * * * *' });
   });
+
+  // WF-08: only trigger types with a firing path are selectable.
+  test('unsupported trigger types are listed as coming soon and disabled', () => {
+    renderConfig(makeNode('trigger'));
+    const select = screen.getByLabelText('How does this workflow start?');
+    const options = Array.from(select.querySelectorAll('option'));
+    const enabled = options.filter((o) => !o.disabled).map((o) => o.value);
+    expect(enabled).toEqual(['api', 'schedule', 'webhook']);
+    const soon = screen.getByRole('option', { name: /event \(coming soon\)/i }) as HTMLOptionElement;
+    expect(soon.disabled).toBe(true);
+  });
+
+  test('a workflow loaded with an unsupported trigger warns it cannot be published', () => {
+    renderConfig(makeNode('trigger', { triggerType: 'event' }));
+    expect(screen.getByLabelText('How does this workflow start?')).toHaveValue('event');
+    expect(screen.getByRole('alert')).toHaveTextContent(/can't start runs yet/i);
+  });
 });
 
 describe('WorkflowStepConfig — llm', () => {

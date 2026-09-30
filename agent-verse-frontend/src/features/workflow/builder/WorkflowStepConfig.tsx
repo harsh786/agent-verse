@@ -91,7 +91,7 @@ function SelectField({
   label, value, options, onChange,
 }: {
   label: string; value: string;
-  options: { label: string; value: string }[];
+  options: { label: string; value: string; disabled?: boolean }[];
   onChange: (v: string) => void;
 }) {
   const id = `cfg-select-${label.replace(/\s+/g, '-').toLowerCase()}`;
@@ -108,7 +108,9 @@ function SelectField({
                    text-xs focus:outline-none focus:ring-2 focus:ring-sky-500"
       >
         {options.map((o) => (
-          <option key={o.value} value={o.value} className="bg-slate-800">{o.label}</option>
+          <option key={o.value} value={o.value} disabled={o.disabled} className="bg-slate-800">
+            {o.label}
+          </option>
         ))}
       </select>
     </div>
@@ -152,10 +154,20 @@ const CRON_PRESETS: { label: string; value: string }[] = [
 
 // ── Type-specific config panels ───────────────────────────────────────────────
 
+/** Trigger types the backend can fire (publish refuses the others with a 422). */
+export const SUPPORTED_TRIGGER_TYPES = ['api', 'schedule', 'webhook'] as const;
+const COMING_SOON_TRIGGERS = [
+  { label: 'Event (coming soon)', value: 'event' },
+  { label: 'File drop (coming soon)', value: 'file_drop' },
+  { label: 'Alert: Alertmanager / Datadog / PagerDuty (coming soon)', value: 'alertmanager' },
+  { label: 'Natural language (coming soon)', value: 'nl' },
+];
+
 function TriggerConfig({ data, onUpdate }: PanelProps) {
   const triggerType = String(data.triggerType ?? 'api');
   const cron = String(data.cron ?? '');
   const human = cron ? humanCron(cron) : '';
+  const unsupported = !(SUPPORTED_TRIGGER_TYPES as readonly string[]).includes(triggerType);
   return (
     <>
       <SelectField
@@ -166,8 +178,21 @@ function TriggerConfig({ data, onUpdate }: PanelProps) {
           { label: '▶ Manual / API', value: 'api' },
           { label: '🕑 Schedule (cron)', value: 'schedule' },
           { label: '🔗 Webhook (URL)', value: 'webhook' },
+          ...COMING_SOON_TRIGGERS
+            .filter((o) => o.value !== triggerType)
+            .map((o) => ({ ...o, disabled: true })),
+          // Keep an unsupported type loaded from YAML visible (and selected).
+          ...(unsupported ? [{ label: `${triggerType} (not supported yet)`, value: triggerType }] : []),
         ]}
       />
+
+      {unsupported && (
+        <p className="text-xs text-amber-400 flex items-start gap-1.5" role="alert">
+          <Info className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          The “{triggerType}” trigger can't start runs yet, so this workflow can't be
+          published with it. Pick Manual / API, Schedule or Webhook.
+        </p>
+      )}
 
       {triggerType === 'schedule' && (
         <>

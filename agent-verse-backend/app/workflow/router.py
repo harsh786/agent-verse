@@ -437,10 +437,15 @@ async def validate_workflow(workflow_id: str, request: Request) -> dict[str, Any
     if item is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     errors: list[str] = []
+    definition = item.definition if hasattr(item, "definition") else item["definition"]
     try:
-        WorkflowDefinition(**item.definition if hasattr(item, "definition") else item["definition"])
+        WorkflowDefinition(**definition)
     except Exception as exc:
         errors.append(str(exc))
+    # The same checks publish enforces (unsupported triggers, ...).
+    from app.workflow.service import publish_problems
+
+    errors.extend(publish_problems(definition or {}))
     return {"valid": not errors, "errors": errors}
 
 
