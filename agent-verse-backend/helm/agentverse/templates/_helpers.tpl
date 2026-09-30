@@ -46,6 +46,10 @@ Full image references
 {{ .Values.global.imageRegistry }}/{{ .Values.worker.image.name }}:{{ .Values.worker.image.tag }}
 {{- end }}
 
+{{- define "agentverse.subgoalWorkerImage" -}}
+{{ .Values.global.imageRegistry }}/{{ .Values.subgoalWorker.image.name }}:{{ .Values.subgoalWorker.image.tag }}
+{{- end }}
+
 {{- define "agentverse.frontendImage" -}}
 {{ .Values.global.imageRegistry }}/{{ .Values.frontend.image.name }}:{{ .Values.frontend.image.tag }}
 {{- end }}

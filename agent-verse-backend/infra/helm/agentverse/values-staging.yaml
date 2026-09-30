@@ -25,6 +25,12 @@ worker:
     repository: ghcr.io/harsh786/agentverse-backend
     tag: staging
 
+subgoalWorker:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/harsh786/agentverse-backend
+    tag: staging
+
 beat:
   image:
     repository: ghcr.io/harsh786/agentverse-backend

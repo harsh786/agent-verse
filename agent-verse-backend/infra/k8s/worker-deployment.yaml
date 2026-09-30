@@ -57,3 +57,62 @@ spec:
             periodSeconds: 60
             timeoutSeconds: 15
             failureThreshold: 3
+---
+# Dedicated pool for supervisor sub-goals (CORE-09). A supervisor parent holds its
+# agentverse-worker slot while it waits for its sub-goals; they are routed to
+# goals.subgoals.{plan}, which ONLY this pool consumes, so a parent can never
+# starve its own children however busy the main pool is.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-subgoal-worker
+  namespace: agentverse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agentverse-subgoal-worker
+  template:
+    metadata:
+      labels:
+        app: agentverse-subgoal-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9540"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: subgoal-worker
+          image: agentverse-backend:latest
+          command:
+            - "celery"
+            - "-A"
+            - "app.scaling.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "-Q"
+            - "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"
+            - "--concurrency=4"
+            - "--max-tasks-per-child=100"
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "celery -A app.scaling.celery_app inspect ping -d celery@$HOSTNAME -t 5 2>/dev/null | grep -q OK"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 3

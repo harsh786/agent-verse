@@ -38,6 +38,16 @@ _GOAL_PAUSE_EVENTS: dict[str, asyncio.Event] = {}
 _PAUSE_POLL_SECONDS = 2.0
 
 
+def _subgoal_queue_kwargs(execution_context: Any) -> dict[str, Any]:
+    """``subgoal=True`` for a supervisor's sub-goal (else nothing, keeping the
+    enqueue call shape): it runs on the dedicated sub-goal pool so a parent that
+    holds a worker slot while waiting can never starve it (CORE-09)."""
+    from app.agent.supervisor import SUBGOAL_MARKER
+
+    ctx = execution_context if isinstance(execution_context, dict) else {}
+    return {"subgoal": True} if ctx.get(SUBGOAL_MARKER) else {}
+
+
 def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
     """``tenant_llm_config=`` only when one was resolved (keeps subclass
     overrides of ``_make_agent_loop_for_tenant`` without the kwarg working)."""
@@ -1098,6 +1108,7 @@ class GoalService:
                 workflow_mode=record.workflow_mode,
                 goal_template="",
                 plan=plan,
+                **_subgoal_queue_kwargs(record.execution_context),
             )
         except Exception:
             # Hand the claim back so a later start can retry, then surface it.
@@ -4364,6 +4375,7 @@ class GoalService:
                         # may hand a plain string.
                         plan=getattr(tenant_ctx.plan, "value", tenant_ctx.plan),
                         **_chain_kw,
+                        **_subgoal_queue_kwargs(execution_context),
                     )
                 else:
                     tool_context = await self._build_tool_context(
@@ -5191,6 +5203,7 @@ class GoalService:
                 workflow_mode=record.workflow_mode,
                 goal_template="",
                 plan=getattr(tenant_ctx.plan, "value", tenant_ctx.plan),
+                **_subgoal_queue_kwargs(record.execution_context),
             )
             return
         tool_context = await self._build_tool_context(

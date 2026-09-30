@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 import yaml
 
-from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
+from app.scaling.celery_app import PLAN_QUEUE_MAP, SUBGOAL_QUEUE_MAP, celery_app
 
 INFRA = Path(__file__).resolve().parents[2] / "infra"
 _PLANS = ("free", "starter", "professional", "enterprise")
@@ -49,6 +49,8 @@ def _required_queues() -> set[str]:
     # Dynamic apply_async(queue=...) targets: CeleryGoalTaskQueue → PLAN_QUEUE_MAP,
     # WorkflowRunner → workflows.{plan_tier}.
     queues |= set(PLAN_QUEUE_MAP.values())
+    # Supervisor sub-goals: CeleryGoalTaskQueue(subgoal=True) → SUBGOAL_QUEUE_MAP.
+    queues |= set(SUBGOAL_QUEUE_MAP.values())
     queues |= {f"workflows.{p}" for p in _PLANS}
     return queues
 
@@ -112,11 +114,108 @@ def test_helm_worker_consumes_every_routed_queue() -> None:
     chart = INFRA / "helm" / "agentverse"
     template = (chart / "templates" / "app-workloads.yaml").read_text()
     assert "-Q\", {{ .Values.worker.queues | quote }}" in template
+    base = yaml.safe_load((chart / "values.yaml").read_text()) or {}
     for values_file in sorted(chart.glob("values*.yaml")):
         values = yaml.safe_load(values_file.read_text()) or {}
         queues = (values.get("worker") or {}).get("queues")
-        if values_file.name != "values.yaml" and queues is None:
-            continue  # inherits the base values.yaml list
-        consumed = {q.strip() for q in str(queues or "").split(",") if q.strip()}
+        sub_queues = (values.get("subgoalWorker") or {}).get("queues")
+        if values_file.name != "values.yaml" and queues is None and sub_queues is None:
+            continue  # inherits the base values.yaml lists
+        queues = queues if queues is not None else base["worker"]["queues"]
+        if sub_queues is None:
+            sub_queues = base["subgoalWorker"]["queues"]
+        consumed = {
+            q.strip() for q in f"{queues},{sub_queues}".split(",") if q.strip()
+        }
         missing = sorted(_required_queues() - consumed)
         assert missing == [], f"helm {values_file.name}: worker.queues lacks {missing}"
+
+
+# ── CORE-09: supervisor sub-goals have their own worker pool ──────────────────
+# A worker-run supervisor parent holds its slot while it waits for its sub-goals.
+# If the pool that runs parents also consumed the sub-goal queues, a pool whose
+# slots are all held by waiting parents would never run their children.
+
+_SUBGOAL_QUEUES = set(SUBGOAL_QUEUE_MAP.values())
+_MAIN_GOAL_QUEUES = set(PLAN_QUEUE_MAP.values())
+
+
+def _assert_separate_pools(pools: list[set[str]], where: str) -> None:
+    main = [q for q in pools if q & _MAIN_GOAL_QUEUES]
+    sub = [q for q in pools if q & _SUBGOAL_QUEUES]
+    assert main, f"{where}: no worker consumes the main goal queues"
+    for queues in main:
+        leaked = sorted(queues & _SUBGOAL_QUEUES)
+        assert leaked == [], f"{where}: the main goal pool also consumes {leaked}"
+    assert sub, f"{where}: no dedicated worker consumes the sub-goal queues"
+    for queues in sub:
+        missing = sorted(_SUBGOAL_QUEUES - queues)
+        assert missing == [], f"{where}: sub-goal pool lacks {missing}"
+
+
+def _compose_pools(path: Path) -> list[set[str]]:
+    doc = yaml.safe_load(path.read_text())
+    pools = []
+    for svc in (doc.get("services") or {}).values():
+        argv = _argv(svc.get("command"))
+        if "celery" in argv and "worker" in argv:
+            pools.append(_queues_from_argv(argv))
+    return pools
+
+
+@pytest.mark.parametrize("compose", ["docker-compose.yml", "docker-compose.prod.yml"])
+def test_compose_runs_subgoals_on_a_dedicated_pool(compose: str) -> None:
+    _assert_separate_pools(_compose_pools(INFRA / compose), compose)
+
+
+def test_dev_compose_subgoal_worker_mirrors_the_goal_worker() -> None:
+    doc = yaml.safe_load((INFRA / "docker-compose.yml").read_text())
+    worker, sub = doc["services"]["worker"], doc["services"]["subgoal-worker"]
+    assert sub["build"] == worker["build"]
+    # Code steps run in sandbox containers on the host daemon, like the goal worker.
+    assert "/var/run/docker.sock:/var/run/docker.sock" in sub["volumes"]
+    assert sub["group_add"] == worker["group_add"]
+
+
+def test_k8s_runs_subgoals_on_a_dedicated_pool() -> None:
+    pools = []
+    for doc in yaml.safe_load_all((INFRA / "k8s" / "worker-deployment.yaml").read_text()):
+        if not doc:
+            continue
+        for c in doc["spec"]["template"]["spec"]["containers"]:
+            pools.append(_queues_from_argv(_argv(c.get("command")) + _argv(c.get("args"))))
+    _assert_separate_pools(pools, "k8s worker-deployment")
+
+
+def test_maintained_helm_chart_runs_subgoals_on_a_dedicated_pool() -> None:
+    chart = INFRA / "helm" / "agentverse"
+    template = (chart / "templates" / "app-workloads.yaml").read_text()
+    assert "{{- if .Values.subgoalWorker.enabled }}" in template
+    assert "-Q\", {{ .Values.subgoalWorker.queues | quote }}" in template
+    values = yaml.safe_load((chart / "values.yaml").read_text())
+    pools = [
+        {q.strip() for q in str(values[k]["queues"]).split(",") if q.strip()}
+        for k in ("worker", "subgoalWorker")
+    ]
+    _assert_separate_pools(pools, "helm infra/helm/agentverse")
+    for values_file in sorted(chart.glob("values-*.yaml")):
+        overlay = yaml.safe_load(values_file.read_text()) or {}
+        worker_on = (overlay.get("worker") or {}).get("enabled", True)
+        sub_on = (overlay.get("subgoalWorker") or {}).get("enabled", True)
+        assert worker_on == sub_on, f"{values_file.name}: sub-goal pool must follow the worker"
+        repo = ((overlay.get("worker") or {}).get("image") or {}).get("repository")
+        if repo:
+            sub_repo = ((overlay.get("subgoalWorker") or {}).get("image") or {}).get("repository")
+            assert sub_repo == repo, f"{values_file.name}: sub-goal worker image differs"
+
+
+def test_legacy_helm_chart_runs_subgoals_on_a_dedicated_pool() -> None:
+    chart = Path(__file__).resolve().parents[2] / "helm" / "agentverse"
+    values = yaml.safe_load((chart / "values.yaml").read_text())
+    pools = [
+        {q.strip() for q in str(values[k]["queues"]).split(",") if q.strip()}
+        for k in ("worker", "subgoalWorker")
+    ]
+    _assert_separate_pools(pools, "helm helm/agentverse")
+    template = (chart / "templates" / "subgoal-worker-deployment.yaml").read_text()
+    assert "{{ .Values.subgoalWorker.queues }}" in template

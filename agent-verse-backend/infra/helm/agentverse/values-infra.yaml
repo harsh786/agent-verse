@@ -10,6 +10,9 @@ frontend:
 worker:
   enabled: false
 
+subgoalWorker:
+  enabled: false
+
 beat:
   enabled: false
 

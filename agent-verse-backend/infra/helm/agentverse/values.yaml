@@ -92,6 +92,25 @@ worker:
       cpu: "2"
       memory: 2Gi
 
+# Dedicated pool for supervisor sub-goals (CORE-09). `worker.queues` must NOT
+# list these queues: a supervisor parent holds its worker slot while it waits, so
+# its sub-goals need slots the parents can never occupy.
+subgoalWorker:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: agentverse/backend
+    tag: local
+  concurrency: 4
+  queues: goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
 beat:
   enabled: true
   image:

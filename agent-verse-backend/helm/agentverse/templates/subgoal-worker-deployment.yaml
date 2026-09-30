@@ -1,0 +1,53 @@
+# Dedicated pool for supervisor sub-goals (CORE-09): a supervisor parent holds its
+# agentverse-worker slot while it waits, so its sub-goals (goals.subgoals.{plan})
+# are consumed only by this pool and can never queue behind their own parent.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-subgoal-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-subgoal-worker
+    component: subgoal-worker
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.subgoalWorker.replicas }}
+  selector:
+    matchLabels:
+      app: agentverse-subgoal-worker
+  template:
+    metadata:
+      labels:
+        app: agentverse-subgoal-worker
+        component: subgoal-worker
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: subgoal-worker
+          image: {{ include "agentverse.subgoalWorkerImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - celery
+            - -A
+            - app.scaling.celery_app
+            - worker
+            - --loglevel=info
+            - --concurrency={{ .Values.subgoalWorker.concurrency }}
+            - -Q
+            - {{ .Values.subgoalWorker.queues }}
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: database-url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: redis-url
+          resources:
+            {{- toYaml .Values.subgoalWorker.resources | nindent 12 }}

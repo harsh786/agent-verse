@@ -329,6 +329,58 @@ services:
       retries: 3
       start_period: 30s
 
+  # Dedicated pool for supervisor sub-goals (CORE-09). A supervisor parent holds
+  # its `worker` slot while it waits for its sub-goals; those go to
+  # goals.subgoals.{plan} (never consumed by `worker`), so the parent can never
+  # starve its own children however few slots the main pool has.
+  subgoal-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    restart: unless-stopped
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_TLS: "false"
+      SEARXNG_URL: http://searxng:8080
+      # ── LLM providers — set at least one for real goal execution ──
+      # ANTHROPIC_API_KEY: sk-ant-...
+      # OPENAI_API_KEY: sk-...
+      # VOYAGE_API_KEY: pa-...
+    volumes:
+      - ../app/db/migrations:/app/app/db/migrations:ro
+      # Code steps run in throwaway sandbox containers (app/tools/code_interpreter.py)
+      # on the host daemon. Local dev only: this grants control of Docker here.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The socket is root:docker 0660 in the colima VM; the image runs as "app".
+    group_add:
+      - "${DOCKER_SOCKET_GID:-991}"
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   beat:
     build:
       context: ..

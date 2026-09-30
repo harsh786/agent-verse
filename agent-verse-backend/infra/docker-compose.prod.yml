@@ -160,6 +160,38 @@ services:
         limits:
           memory: 1G
 
+  # Dedicated pool for supervisor sub-goals (CORE-09): a supervisor parent holds
+  # its `worker` slot while it waits, so its sub-goals (goals.subgoals.{plan})
+  # must never queue behind it on the same pool. `worker` never consumes these.
+  subgoal-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    command: ["celery", "-A", "app.scaling.celery_app", "worker",
+              "--loglevel=info", "-Q",
+              "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise",
+              "--concurrency=4", "--max-tasks-per-child=100"]
+    environment:
+      <<: *common-env
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.scaling.celery_app", "inspect", "ping", "-d", "celery@$HOSTNAME", "--timeout=5"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          memory: 1G
+
   beat:
     build:
       context: ..

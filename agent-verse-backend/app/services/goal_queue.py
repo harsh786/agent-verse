@@ -21,8 +21,13 @@ class GoalTaskQueue(Protocol):
         workflow_mode: str = "single_agent",
         goal_template: str = "",
         plan: str = "free",
+        subgoal: bool = False,
     ) -> str:
-        """Enqueue a goal worker task and return the backend task id."""
+        """Enqueue a goal worker task and return the backend task id.
+
+        ``subgoal`` marks a supervisor's sub-goal: it is routed to the dedicated
+        sub-goal queue family so a parent holding a worker slot never starves it.
+        """
 
         ...
 
@@ -45,11 +50,14 @@ class CeleryGoalTaskQueue:
         plan: str = "free",
         trigger_chain_depth: int = 0,
         source_trigger_id: str = "",
+        subgoal: bool = False,
     ) -> str:
-        from app.scaling.celery_app import PLAN_QUEUE_MAP
+        from app.scaling.celery_app import goal_queue_for
         from app.scaling.tasks import run_goal
 
-        target_queue = PLAN_QUEUE_MAP.get(plan, "goals.free")
+        # Supervisor sub-goals go to goals.subgoals.{plan}, consumed only by the
+        # dedicated sub-goal pool (CORE-09); everything else to goals.{plan}.
+        target_queue = goal_queue_for(plan, subgoal=subgoal)
         # Sent only for chained goals, so workers predating the kwarg keep
         # accepting ordinary goals during a rolling deploy.
         extra: dict[str, Any] = (

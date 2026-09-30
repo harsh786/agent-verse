@@ -36,6 +36,13 @@ worker:
     tag: latest
   concurrency: 8
 
+subgoalWorker:
+  replicaCount: 2
+  image:
+    repository: ghcr.io/harsh786/agentverse-backend
+    tag: latest
+  concurrency: 8
+
 beat:
   image:
     repository: ghcr.io/harsh786/agentverse-backend

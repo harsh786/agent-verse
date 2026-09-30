@@ -211,6 +211,59 @@ spec:
           {{- toYaml .Values.worker.resources | nindent 10 }}
 {{- end }}
 ---
+{{- /*
+  Dedicated pool for supervisor sub-goals (CORE-09): a supervisor parent holds its
+  worker slot while it waits, so its sub-goals (goals.subgoals.{plan}) are consumed
+  only by this pool and can never queue behind their own parent.
+*/}}
+{{- if .Values.subgoalWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentverse.fullname" . }}-subgoal-worker
+  labels:
+    {{- include "agentverse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: subgoal-worker
+spec:
+  replicas: {{ .Values.subgoalWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "agentverse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: subgoal-worker
+  template:
+    metadata:
+      labels:
+        {{- include "agentverse.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: subgoal-worker
+    spec:
+      containers:
+      - name: subgoal-worker
+        image: "{{ .Values.subgoalWorker.image.repository }}:{{ .Values.subgoalWorker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["celery"]
+        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.subgoalWorker.queues | quote }}, "--concurrency", {{ .Values.subgoalWorker.concurrency | quote }}]
+        envFrom:
+        - configMapRef:
+            name: {{ include "agentverse.fullname" . }}-config
+        env:
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: DATABASE_PASSWORD
+        - name: DATABASE_URL
+          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: REDIS_PASSWORD
+        - name: REDIS_URL
+          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        resources:
+          {{- toYaml .Values.subgoalWorker.resources | nindent 10 }}
+{{- end }}
+---
 {{- if .Values.beat.enabled }}
 apiVersion: apps/v1
 kind: Deployment

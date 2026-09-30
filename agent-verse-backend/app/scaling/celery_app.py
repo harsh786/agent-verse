@@ -43,13 +43,35 @@ _BROKER_URL = _build_celery_broker_url()
 #   celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,
 #   goals_dlq,schedules,maintenance,governance,ingestion,
 #   workflows.free,workflows.starter,workflows.professional,workflows.enterprise,
-#   workflows.maintenance
+#   workflows.maintenance,
+#   goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,
+#   goals.subgoals.enterprise  (dedicated sub-goal pool only, see below)
 PLAN_QUEUE_MAP = {
     "free": "goals.free",
     "starter": "goals.starter",
     "professional": "goals.professional",
     "enterprise": "goals.enterprise",
 }
+
+# ── Supervisor sub-goal queues (CORE-09) ───────────────────────────────────────
+# A worker-run supervisor parent holds its Celery slot while it waits for its
+# sub-goals. Sub-goals used to share the parent's goals.{plan} queue, so a pool
+# whose slots were all held by waiting parents never ran their children (the
+# parent starved, or deadlocked, its own sub-goals). Sub-goals therefore go to
+# their own per-plan queue family, consumed ONLY by a dedicated sub-goal worker
+# pool (the ``subgoal-worker`` service / deployment). The main goal worker must
+# never consume these queues (tests/scaling/test_worker_queue_coverage.py). A
+# sub-goal never runs the supervisor itself (SUBGOAL_MARKER), so the sub-goal
+# pool cannot be starved the same way.
+SUBGOAL_QUEUE_MAP = {plan: f"goals.subgoals.{plan}" for plan in PLAN_QUEUE_MAP}
+
+
+def goal_queue_for(plan: str, *, subgoal: bool = False) -> str:
+    """The Celery queue a goal of *plan* is dispatched to (unknown plan: free)."""
+    if subgoal:
+        return SUBGOAL_QUEUE_MAP.get(plan, "goals.subgoals.free")
+    return PLAN_QUEUE_MAP.get(plan, "goals.free")
+
 
 celery_app = Celery(
     "agent_verse",

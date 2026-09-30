@@ -11,6 +11,7 @@ spec:
         values:
           - agentverse-backend
           - agentverse-worker
+          - agentverse-subgoal-worker
           - agentverse-beat
           - agentverse-db-migration
   policyTypes:
@@ -69,6 +70,7 @@ spec:
                 values:
                   - agentverse-backend
                   - agentverse-worker
+                  - agentverse-subgoal-worker
                   - agentverse-beat
                   - agentverse-db-migration
       ports:
@@ -95,6 +97,7 @@ spec:
                 values:
                   - agentverse-backend
                   - agentverse-worker
+                  - agentverse-subgoal-worker
                   - agentverse-beat
       ports:
         - protocol: TCP

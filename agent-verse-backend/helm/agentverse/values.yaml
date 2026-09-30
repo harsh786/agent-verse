@@ -55,6 +55,25 @@ worker:
     maxReplicas: 20
     targetCPUUtilizationPercentage: 60
 
+# ── Celery sub-goal worker (CORE-09) ──────────────────────────────────────────
+# Dedicated pool for supervisor sub-goals. worker.queues must NOT list these: a
+# supervisor parent holds its worker slot while waiting, so its sub-goals need
+# slots the parents can never occupy. Mirrors infra/helm/agentverse.
+subgoalWorker:
+  image:
+    name: backend
+    tag: "latest"
+  replicas: 1
+  concurrency: 4
+  queues: "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
 # ── Celery Beat ───────────────────────────────────────────────────────────────
 beat:
   image:
