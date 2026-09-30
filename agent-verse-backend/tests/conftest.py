@@ -4,8 +4,79 @@ from __future__ import annotations
 
 import contextlib
 import os
+import socket
 
 import pytest
+
+# ── Live-infra safety net ──────────────────────────────────────────────────────
+# The app's defaults (Settings.database_url / redis_url, the Celery broker, the
+# many ``os.getenv("REDIS_URL", "redis://localhost:6379/0")`` call sites) point at
+# the developer's LIVE local Postgres (:5432), pgbouncer (:6432) and Redis (:6379).
+# Tests that fell through to those defaults used to write rows into the dev
+# database. So, unless a run explicitly opts in with
+# ``AGENTVERSE_TESTS_ALLOW_LIVE_INFRA=1`` (e.g. CI's integration job, whose
+# Postgres/Redis are disposable service containers on localhost), this:
+#
+# 1. forces DATABASE_URL / REDIS_URL to an unreachable address BEFORE any app
+#    module is imported (so module-level ``os.getenv`` reads and ``Settings``
+#    both see it) and clears the Sentinel/Cluster/maintenance DSNs, and
+# 2. refuses any socket connection to a loopback address on 5432/6432/6379, so
+#    even a hard-coded ``localhost:5432`` in a test or a literal default argument
+#    cannot reach live infra.
+#
+# Tests that genuinely need Postgres/Redis use testcontainers (random host
+# ports, unaffected) via the ``pg_url`` / ``redis_url`` fixtures below or the
+# ``tests/e2e_full`` harness, and are marked ``integration`` / ``e2e_full``.
+_ALLOW_LIVE_INFRA = os.getenv("AGENTVERSE_TESTS_ALLOW_LIVE_INFRA", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+UNREACHABLE_DATABASE_URL = "postgresql+asyncpg://nouser:nopass@127.0.0.1:1/none"
+UNREACHABLE_REDIS_URL = "redis://127.0.0.1:1/0"
+_LIVE_INFRA_PORTS = frozenset({5432, 6432, 6379})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "0.0.0.0", "::"})
+
+if not _ALLOW_LIVE_INFRA:
+    os.environ["DATABASE_URL"] = UNREACHABLE_DATABASE_URL
+    os.environ["REDIS_URL"] = UNREACHABLE_REDIS_URL
+    for _var in (
+        "MAINTENANCE_DATABASE_URL",
+        "REDIS_SENTINEL_URLS",
+        "REDIS_CLUSTER_NODES",
+    ):
+        os.environ.pop(_var, None)
+
+    _real_connect = socket.socket.connect
+    _real_connect_ex = socket.socket.connect_ex
+
+    def _is_live_infra(address: object) -> bool:
+        if not isinstance(address, tuple) or len(address) < 2:
+            return False
+        host, port = address[0], address[1]
+        return port in _LIVE_INFRA_PORTS and (
+            host in _LOOPBACK_HOSTS or str(host).startswith("127.")
+        )
+
+    def _refuse(address: object) -> ConnectionRefusedError:
+        return ConnectionRefusedError(
+            111,
+            f"tests/conftest.py blocked a connection to live local infra {address!r}; "
+            "use a testcontainers fixture, or set AGENTVERSE_TESTS_ALLOW_LIVE_INFRA=1",
+        )
+
+    def _guarded_connect(self: socket.socket, address: object) -> None:
+        if _is_live_infra(address):
+            raise _refuse(address)
+        return _real_connect(self, address)  # type: ignore[arg-type]
+
+    def _guarded_connect_ex(self: socket.socket, address: object) -> int:
+        if _is_live_infra(address):
+            return 111  # ECONNREFUSED
+        return _real_connect_ex(self, address)  # type: ignore[arg-type]
+
+    socket.socket.connect = _guarded_connect  # type: ignore[method-assign]
+    socket.socket.connect_ex = _guarded_connect_ex  # type: ignore[method-assign]
 
 # Allow subprocess execution in test environments (not production).
 # The CodeInterpreter uses subprocess as Docker fallback in dev/CI.
@@ -411,3 +482,49 @@ def _beat_guard_lock(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
 
     locks = _GuardLocks()
     monkeypatch.setattr(beat_guard, "_guard_client", lambda *_a, **_k: locks)
+
+
+# ── Ephemeral backends for tests that genuinely need Postgres / Redis ─────────
+# See tests/_test_backends.py. Session-scoped and lazy: a container starts only
+# when a test first asks for it. Tests using these must be marked ``integration``.
+
+
+@pytest.fixture(scope="session")
+def pg_url():
+    """DSN of a migrated pgvector Postgres testcontainer (asyncpg driver)."""
+    from tests._test_backends import migrated_postgres
+
+    with migrated_postgres() as url:
+        yield url
+
+
+@pytest.fixture(scope="session")
+def redis_url():
+    """URL of a Redis testcontainer."""
+    from tests._test_backends import redis_container
+
+    with redis_container() as url:
+        yield url
+
+
+@pytest.fixture
+def test_backends(pg_url, redis_url, monkeypatch):
+    """Point the whole process at the testcontainers for one test.
+
+    For code that reaches Postgres/Redis through process-global configuration
+    (``get_settings()``, ``app.db.session.get_session_factory()``, the Celery
+    task module's ``REDIS_URL``) rather than an injected factory. Everything is
+    restored afterwards, so later tests are back behind the live-infra net.
+    """
+    from tests._test_backends import reset_db_singletons
+
+    monkeypatch.setenv("DATABASE_URL", pg_url)
+    monkeypatch.setenv("REDIS_URL", redis_url)
+    import app.scaling.celery_app as celery_app_mod
+    import app.scaling.tasks as tasks_mod
+
+    monkeypatch.setattr(tasks_mod, "REDIS_URL", redis_url, raising=False)
+    monkeypatch.setattr(celery_app_mod, "REDIS_URL", redis_url, raising=False)
+    reset_db_singletons()
+    yield pg_url, redis_url
+    reset_db_singletons()
