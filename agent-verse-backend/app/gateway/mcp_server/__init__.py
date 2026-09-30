@@ -651,19 +651,22 @@ class OrgMCPServer:
                 except Exception as exc:
                     _log.warning("mcp.search_knowledge.error", error=str(exc)[:80])
 
-            # Fallback: dept memory search
+            # Fallback: department memory across this org's departments, from the
+            # DB-wired store, for this server's tenant (MEM-14: it used to pass
+            # the org id as a department id to an empty, DB-less instance).
             try:
-                from app.memory.dept_memory import DepartmentMemory
+                from app.memory.dept_memory import get_dept_memory
 
-                dm = DepartmentMemory()
-                mem_entries = await dm.retrieve(self.org_id, query, top_k=top_k)
+                mem_entries = await get_dept_memory().retrieve_for_org(
+                    self.org_id, query, top_k=top_k, tenant_id=self._tenant_id
+                )
                 results = [
                     {"content": e.content[:400], "source": "dept_memory", "score": e.confidence}
                     for e in mem_entries
                 ]
                 return {"results": results, "query": query}
-            except Exception:
-                pass
+            except Exception as exc:
+                _log.warning("mcp.search_knowledge.dept_memory_error", error=str(exc)[:120])
 
             return {"results": [], "query": query, "error": "knowledge_store_unavailable"}
 

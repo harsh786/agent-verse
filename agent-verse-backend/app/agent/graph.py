@@ -683,10 +683,23 @@ class AgentGraph(
                     # planner has access to lessons learned, SOPs, and decisions.
                     if dept_id:
                         try:
-                            from app.memory.dept_memory import DepartmentMemory
+                            from app.memory.dept_memory import (
+                                DepartmentMemory,
+                                get_dept_memory,
+                            )
 
-                            _dept_mem = DepartmentMemory()
-                            _mem_entries = await _dept_mem.retrieve(dept_id, goal, top_k=6)
+                            # MEM-14: the DB-wired store the org CRUD routes write
+                            # to (a bare DepartmentMemory() was always empty), read
+                            # for the goal's tenant. A worker process has no
+                            # lifespan-wired singleton: use its session factory.
+                            _dept_mem = get_dept_memory()
+                            _graph_db = getattr(self, "_db_session_factory", None)
+                            if _dept_mem._db_factory is None and _graph_db is not None:
+                                _dept_mem = DepartmentMemory()
+                                _dept_mem.set_db(_graph_db)
+                            _mem_entries = await _dept_mem.retrieve(
+                                dept_id, goal, top_k=6, tenant_id=tenant_ctx.tenant_id
+                            )
                             if _mem_entries:
                                 # MemoryEntry has no `category`; `tags` is the
                                 # analogous categorization field. (Reading a

@@ -23,6 +23,7 @@ async def test_dept_memory_add_and_retrieve():
     results = await mem.retrieve(
         query="Who is our ideal customer?",
         dept_id="marketing",
+        tenant_id="t1",
     )
     assert len(results) >= 1
     assert any("ICP" in r.content or "mid-market" in r.content for r in results)
@@ -56,9 +57,12 @@ async def test_dept_memory_deprecate():
         tenant_id="t1",
     )
     await mem.deprecate(
-        dept_id="engineering", entry_id=entry.entry_id, reason="Stack migrated to FastAPI"
+        dept_id="engineering", entry_id=entry.entry_id, reason="Stack migrated to FastAPI",
+        tenant_id="t1",
     )
-    results = await mem.retrieve(dept_id="engineering", query="What is the tech stack?")
+    results = await mem.retrieve(
+        dept_id="engineering", query="What is the tech stack?", tenant_id="t1"
+    )
     assert not any(r.entry_id == entry.entry_id for r in results)
 
 
@@ -74,5 +78,5 @@ async def test_dept_memory_cross_dept_isolation():
         org_id="org1",
         tenant_id="t1",
     )
-    eng_results = await mem.retrieve("campaign", "engineering", "org1", "t1")
+    eng_results = await mem.retrieve("engineering", "campaign", tenant_id="t1")
     assert all("secret campaign A" not in r.content for r in eng_results)

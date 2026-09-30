@@ -52,7 +52,9 @@ async def test_dept_memory_injection_mapping_succeeds_with_entries() -> None:
         tags=["stack", "infra"],
     )
 
-    entries = await mem.retrieve(dept_id="engineering", query="What stack do we use?")
+    entries = await mem.retrieve(
+        dept_id="engineering", query="What stack do we use?", tenant_id="t1"
+    )
     assert entries, "expected at least one retrieved entry (the case the bug hid)"
 
     mapped = _inject_like_graph(entries)

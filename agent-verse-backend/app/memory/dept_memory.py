@@ -73,8 +73,9 @@ class DepartmentMemory:
     """
 
     def __init__(self) -> None:
-        # dept_id → [entries]
-        self._store: dict[str, list[MemoryEntry]] = {}
+        # (tenant_id, dept_id) → [entries]. Keyed by tenant too: two tenants may
+        # use the same dept_id and must never see each other's entries.
+        self._store: dict[tuple[str, str], list[MemoryEntry]] = {}
         # Wired by the app lifespan; when set, entries persist to Postgres
         # (durable + cross-pod) instead of only this process's dict.
         self._db_factory: Any = None
@@ -90,6 +91,7 @@ class DepartmentMemory:
         *,
         keywords: list[str] | None = None,
         limit: int = 1000,
+        org_id: str | None = None,
     ) -> list[MemoryEntry]:
         """A department's entries from Postgres (RLS-scoped), best matches first.
 
@@ -105,7 +107,14 @@ class DepartmentMemory:
         from sqlalchemy import text as _t
 
         clause = " AND is_active IS TRUE" if active_only else ""
-        params: dict[str, Any] = {"tid": tenant_id, "did": dept_id, "lim": max(1, limit)}
+        params: dict[str, Any] = {"tid": tenant_id, "lim": max(1, limit)}
+        # One department, or (org_id given) every department of an org.
+        if org_id is not None:
+            scope = "org_id = :oid"
+            params["oid"] = org_id
+        else:
+            scope = "dept_id = :did"
+            params["did"] = dept_id
         order = "created_at DESC"
         if keywords:
             hits = " + ".join(
@@ -124,7 +133,7 @@ class DepartmentMemory:
                         "SELECT entry_id, dept_id, org_id, tenant_id, content, source, "
                         "confidence, tags, is_active, corrections, created_at, updated_at "
                         f"FROM department_memory_entries WHERE tenant_id = :tid "
-                        f"AND dept_id = :did{clause} ORDER BY {order} LIMIT :lim"
+                        f"AND {scope}{clause} ORDER BY {order} LIMIT :lim"
                     ),
                     params,
                 )
@@ -151,9 +160,10 @@ class DepartmentMemory:
         query: str,
         top_k: int = 5,
         active_only: bool = True,
-        tenant_id: str | None = None,
+        *,
+        tenant_id: str,
     ) -> list[MemoryEntry]:
-        """Retrieve relevant department memories for a query.
+        """Retrieve relevant department memories for a query (tenant required).
 
         Lexical ranking (not semantic): the share of query keywords an entry
         contains, weighted by its confidence. With Postgres the ranking runs in
@@ -163,35 +173,62 @@ class DepartmentMemory:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("query_len", len(query))
             span.set_attribute("top_k", top_k)
-
-            if self._db_factory is not None and tenant_id is not None:
+            if self._db_factory is not None:
                 keywords = query.lower().split()[:_MAX_QUERY_KEYWORDS]
                 results = await self._db_rows(
                     dept_id, tenant_id, active_only, keywords=keywords, limit=top_k
                 )
-                span.set_attribute("results_count", len(results))
-                return results
             else:
-                entries = self._store.get(dept_id, [])
-                if active_only:
-                    entries = [e for e in entries if e.is_active]
-
-            if not entries:
-                return []
-
-            # Score by simple keyword overlap (replaced by vector search in prod)
-            query_lower = query.lower()
-            scored = []
-            for entry in entries:
-                content_lower = entry.content.lower()
-                keywords = query_lower.split()
-                overlap = sum(1 for kw in keywords if kw in content_lower)
-                score = overlap / max(1, len(keywords))
-                scored.append((score * entry.confidence, entry))
-
-            results = [e for _, e in sorted(scored, key=lambda x: x[0], reverse=True)[:top_k]]
+                results = self._rank(
+                    self._store.get((tenant_id, dept_id), []), query, top_k, active_only
+                )
             span.set_attribute("results_count", len(results))
             return results
+
+    async def retrieve_for_org(
+        self,
+        org_id: str,
+        query: str,
+        top_k: int = 5,
+        active_only: bool = True,
+        *,
+        tenant_id: str,
+    ) -> list[MemoryEntry]:
+        """Retrieve relevant memories across every department of one org."""
+        with _tracer.start_as_current_span("dept_memory.retrieve_for_org") as span:
+            span.set_attribute("org_id", org_id)
+            if self._db_factory is not None:
+                keywords = query.lower().split()[:_MAX_QUERY_KEYWORDS]
+                results = await self._db_rows(
+                    "", tenant_id, active_only, keywords=keywords, limit=top_k, org_id=org_id
+                )
+            else:
+                entries = [
+                    e
+                    for (tid, _did), rows in self._store.items()
+                    if tid == tenant_id
+                    for e in rows
+                    if e.org_id == org_id
+                ]
+                results = self._rank(entries, query, top_k, active_only)
+            span.set_attribute("results_count", len(results))
+            return results
+
+    @staticmethod
+    def _rank(
+        entries: list[MemoryEntry], query: str, top_k: int, active_only: bool
+    ) -> list[MemoryEntry]:
+        """Keyword-overlap x confidence ranking (the SQL path's rule, in memory)."""
+        if active_only:
+            entries = [e for e in entries if e.is_active]
+        keywords = query.lower().split()[:_MAX_QUERY_KEYWORDS]
+        scored = []
+        for entry in entries:
+            content_lower = entry.content.lower()
+            overlap = sum(1 for kw in keywords if kw in content_lower)
+            score = overlap / max(1, len(keywords))
+            scored.append((score * entry.confidence, entry))
+        return [e for _, e in sorted(scored, key=lambda x: x[0], reverse=True)[:top_k]]
 
     async def add(
         self,
@@ -251,7 +288,7 @@ class DepartmentMemory:
                         },
                     )
             else:
-                self._store.setdefault(dept_id, []).append(entry)
+                self._store.setdefault((tenant_id, dept_id), []).append(entry)
             span.set_attribute("entry_id", entry.entry_id)
             _log.info(
                 "dept_memory.added",
@@ -267,7 +304,8 @@ class DepartmentMemory:
         entry_id: str,
         correction: str,
         corrector: str,
-        tenant_id: str | None = None,
+        *,
+        tenant_id: str,
     ) -> MemoryEntry | None:
         """Append a correction to an existing entry (non-destructive).
 
@@ -278,7 +316,7 @@ class DepartmentMemory:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("entry_id", entry_id)
 
-            if self._db_factory is not None and tenant_id is not None:
+            if self._db_factory is not None:
                 import json as _json
 
                 from sqlalchemy import text as _t
@@ -323,7 +361,7 @@ class DepartmentMemory:
                     updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
                 )
 
-            for entry in self._store.get(dept_id, []):
+            for entry in self._store.get((tenant_id, dept_id), []):
                 if entry.entry_id == entry_id:
                     entry.corrections.append(
                         {
@@ -344,14 +382,15 @@ class DepartmentMemory:
         dept_id: str,
         entry_id: str,
         reason: str,
-        tenant_id: str | None = None,
+        *,
+        tenant_id: str,
     ) -> MemoryEntry | None:
         """Mark an entry as no longer valid."""
         with _tracer.start_as_current_span("dept_memory.deprecate") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("entry_id", entry_id)
 
-            if self._db_factory is not None and tenant_id is not None:
+            if self._db_factory is not None:
                 from sqlalchemy import text as _t
 
                 async with self._db_factory() as s, s.begin():
@@ -372,7 +411,7 @@ class DepartmentMemory:
                     content="", source="", is_active=False,
                 )
 
-            for entry in self._store.get(dept_id, []):
+            for entry in self._store.get((tenant_id, dept_id), []):
                 if entry.entry_id == entry_id:
                     entry.is_active = False
                     entry.tags.append(f"deprecated:{reason}")
@@ -388,9 +427,11 @@ class DepartmentMemory:
         dept_id: str,
         active_only: bool = False,
         limit: int = 50,
+        *,
+        tenant_id: str,
     ) -> list[dict[str, Any]]:
-        """Return all entries for a department."""
-        entries = self._store.get(dept_id, [])
+        """Return all entries for a tenant's department (DB-less store)."""
+        entries = self._store.get((tenant_id, dept_id), [])
         if active_only:
             entries = [e for e in entries if e.is_active]
         return [
@@ -415,7 +456,9 @@ class DepartmentMemory:
     ) -> list[dict[str, Any]]:
         """DB-backed list of a department's entries (falls back to in-memory)."""
         if self._db_factory is None:
-            return self.list_entries(dept_id, active_only=active_only, limit=limit)
+            return self.list_entries(
+                dept_id, active_only=active_only, limit=limit, tenant_id=tenant_id
+            )
         entries = await self._db_rows(dept_id, tenant_id, active_only, limit=limit)
         return [
             {
@@ -430,9 +473,9 @@ class DepartmentMemory:
             for e in entries[:limit]
         ]
 
-    def dept_summary(self, dept_id: str) -> dict[str, Any]:
-        """Return summary statistics for a department's memory."""
-        entries = self._store.get(dept_id, [])
+    def dept_summary(self, dept_id: str, *, tenant_id: str) -> dict[str, Any]:
+        """Return summary statistics for a tenant's department memory (DB-less)."""
+        entries = self._store.get((tenant_id, dept_id), [])
         active = [e for e in entries if e.is_active]
         avg_conf = sum(e.confidence for e in active) / len(active) if active else 0.0
         return {

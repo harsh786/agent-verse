@@ -74,4 +74,10 @@ async def test_old_matching_entry_is_found_past_the_newest_thousand() -> None:
         # A query that matches nothing still answers (newest first), bounded by top_k.
         none = await mem.retrieve("eng", "zzz-no-such-term", top_k=2, tenant_id="t1")
         assert len(none) == 2
+
+        # MEM-14: org-wide search (the MCP gateway fallback) spans the org's
+        # departments, ranked in SQL, tenant-scoped.
+        org_hits = await mem.retrieve_for_org("o1", "rotate signing keys", top_k=2, tenant_id="t1")
+        assert org_hits and org_hits[0].entry_id == "sop-old"
+        assert await mem.retrieve_for_org("o2", "rotate", tenant_id="t1") == []
         await engine.dispose()

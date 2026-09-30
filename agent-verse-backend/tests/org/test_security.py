@@ -328,8 +328,11 @@ class TestGDPRCompliance:
             org_id="org1",
             tenant_id="t1",
         )
-        await mem.deprecate(dept_id="hr", entry_id=entry.entry_id, reason="GDPR deletion request")
-        results = await mem.retrieve(dept_id="hr", query="PII content")
+        await mem.deprecate(
+            dept_id="hr", entry_id=entry.entry_id, reason="GDPR deletion request",
+            tenant_id="t1",
+        )
+        results = await mem.retrieve(dept_id="hr", query="PII content", tenant_id="t1")
         ids = [r.entry_id for r in results]
         assert entry.entry_id not in ids
 

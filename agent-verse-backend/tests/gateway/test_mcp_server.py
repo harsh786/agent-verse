@@ -583,8 +583,8 @@ class TestToolSearchKnowledge:
 
         fake_entry = MagicMock(content="mem content", confidence=0.5)
         fake_dm = AsyncMock()
-        fake_dm.retrieve = AsyncMock(return_value=[fake_entry])
-        with patch("app.memory.dept_memory.DepartmentMemory", return_value=fake_dm):
+        fake_dm.retrieve_for_org = AsyncMock(return_value=[fake_entry])
+        with patch("app.memory.dept_memory.get_dept_memory", return_value=fake_dm):
             result = await server._tool_search_knowledge({"query": "test"}, {})
         assert result["results"][0]["source"] == "dept_memory"
 
@@ -592,7 +592,7 @@ class TestToolSearchKnowledge:
     async def test_ks_none_and_dept_memory_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         server = OrgMCPServer(org_id=ORG_ID)
         monkeypatch.setattr(server, "_get_knowledge_store", MagicMock(return_value=None))
-        with patch("app.memory.dept_memory.DepartmentMemory", side_effect=RuntimeError("no mem")):
+        with patch("app.memory.dept_memory.get_dept_memory", side_effect=RuntimeError("no mem")):
             result = await server._tool_search_knowledge({"query": "test"}, {})
         assert result["error"] == "knowledge_store_unavailable"
 

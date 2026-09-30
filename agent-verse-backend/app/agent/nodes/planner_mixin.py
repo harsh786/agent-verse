@@ -268,6 +268,20 @@ class PlannerMixin:
         rag_knowledge: str = agent_state.context.get("rag_knowledge", "")
         if rag_knowledge:
             extra_parts.append(f"[Knowledge base context]\n{rag_knowledge}")
+        # MEM-14: department memory (SOPs, decisions, lessons) pre-fetched by
+        # AgentGraph.run for org-dispatched goals. Nothing read it before.
+        _dept_entries = agent_state.context.get("dept_memory")
+        if isinstance(_dept_entries, list) and _dept_entries:
+            _dept_lines = [
+                f"- {str(e.get('content', ''))[:400]}"
+                for e in _dept_entries[:6]
+                if isinstance(e, dict) and e.get("content")
+            ]
+            if _dept_lines:
+                extra_parts.append(
+                    "[Department memory — SOPs, decisions and lessons for this department]\n"
+                    + "\n".join(_dept_lines)
+                )
         tool_prompt = agent_state.context.get("tool_prompt")
         # Under grant enforcement, show the planner only the tools this agent may
         # actually call. It used to see the whole catalogue: a real model with the
