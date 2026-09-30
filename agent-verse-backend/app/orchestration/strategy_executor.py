@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
@@ -91,6 +92,9 @@ class DistributedStrategyExecutor:
     adapter-created runtime with LLM-backed callback implementations.
     """
 
+    # Per-(tenant, goal) in-process checkpoint stores kept at once (LRU).
+    _MAX_CHECKPOINT_STORES = 256
+
     def __init__(
         self,
         *,
@@ -103,7 +107,10 @@ class DistributedStrategyExecutor:
         self._cost_controller = cost_controller
         # Per-(tenant, goal) checkpoint stores so a retried execution within this process can
         # resume mid-flight. Not durable across process restarts — see module docstring.
-        self._checkpoint_stores: dict[tuple[str, str], InMemoryPatternCheckpointStore] = {}
+        # Bounded LRU (CORE-18): one store per goal was kept for the process's life.
+        self._checkpoint_stores: OrderedDict[
+            tuple[str, str], InMemoryPatternCheckpointStore
+        ] = OrderedDict()
         self._answers: dict[str, str] = {}
 
     def _checkpoint_store_for(
@@ -114,6 +121,10 @@ class DistributedStrategyExecutor:
         if store is None:
             store = InMemoryPatternCheckpointStore()
             self._checkpoint_stores[key] = store
+            while len(self._checkpoint_stores) > self._MAX_CHECKPOINT_STORES:
+                self._checkpoint_stores.popitem(last=False)
+        else:
+            self._checkpoint_stores.move_to_end(key)
         return store
 
     async def __call__(

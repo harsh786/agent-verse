@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -48,7 +50,9 @@ Executor = Callable[
 ]
 Admission = Callable[[StrategyExecutionRequest], tuple[bool, str]]
 CheckpointCallback = Callable[[StrategyCheckpoint], Any]
-ReserveBudget = Callable[[StrategyExecutionRequest, PatternLimits], bool]
+ReserveBudget = Callable[
+    [StrategyExecutionRequest, PatternLimits], bool | Awaitable[bool]
+]
 ReleaseBudget = Callable[[StrategyExecutionRequest], Any]
 
 
@@ -72,6 +76,9 @@ class StrategyRunner:
         checkpoint_callback: CheckpointCallback | None = None,
         reserve_budget: ReserveBudget = lambda _request, _limits: True,
         release_budget: ReleaseBudget = lambda _request: None,
+        max_cached_results: int = 1024,
+        result_ttl_seconds: float = 3600.0,
+        max_pending_cancels: int = 10_000,
     ) -> None:
         self._registry = registry
         self._executor = executor
@@ -79,9 +86,17 @@ class StrategyRunner:
         self._checkpoint_callback = checkpoint_callback
         self._reserve_budget = reserve_budget
         self._release_budget = release_budget
-        self._cancel_events: dict[str, asyncio.Event] = {}
-        self._results: dict[tuple[str, str], StrategyExecutionResult] = {}
+        # Bounded per process (CORE-18): results were cached forever — failures
+        # included, so a transient error replayed for the idempotency key — and
+        # locks / cancel events were never evicted.
+        self._cancel_events: OrderedDict[str, asyncio.Event] = OrderedDict()
+        self._results: OrderedDict[
+            tuple[str, str], tuple[float, StrategyExecutionResult]
+        ] = OrderedDict()
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._max_cached_results = max(1, int(max_cached_results))
+        self._result_ttl = float(result_ttl_seconds)
+        self._max_pending_cancels = max(1, int(max_pending_cancels))
 
     @property
     def has_real_executor(self) -> bool:
@@ -95,7 +110,33 @@ class StrategyRunner:
         return self._executor is not _default_executor
 
     def cancel(self, cancellation_token: str) -> None:
-        self._cancel_events.setdefault(cancellation_token, asyncio.Event()).set()
+        self._cancel_event(cancellation_token).set()
+
+    def _cancel_event(self, token: str) -> asyncio.Event:
+        event = self._cancel_events.get(token)
+        if event is None:
+            event = asyncio.Event()
+            self._cancel_events[token] = event
+            while len(self._cancel_events) > self._max_pending_cancels:
+                self._cancel_events.popitem(last=False)
+        return event
+
+    def _cached_result(self, key: tuple[str, str]) -> StrategyExecutionResult | None:
+        entry = self._results.get(key)
+        if entry is None:
+            return None
+        stored_at, result = entry
+        if time.monotonic() - stored_at > self._result_ttl:
+            self._results.pop(key, None)
+            return None
+        self._results.move_to_end(key)
+        return result
+
+    def _cache_result(self, key: tuple[str, str], result: StrategyExecutionResult) -> None:
+        self._results[key] = (time.monotonic(), result)
+        self._results.move_to_end(key)
+        while len(self._results) > self._max_cached_results:
+            self._results.popitem(last=False)
 
     @staticmethod
     async def _invoke(callback: Callable[..., Any], *args: Any) -> Any:
@@ -178,13 +219,21 @@ class StrategyRunner:
     ) -> StrategyExecutionResult:
         cache_key = (request.tenant_id, request.idempotency_key)
         lock = self._locks.setdefault(cache_key, asyncio.Lock())
-        async with lock:
-            cached = self._results.get(cache_key)
-            if cached is not None:
-                return cached
-            result = await self._run_once(request, limits, checkpoint=checkpoint)
-            self._results[cache_key] = result
-            return result
+        try:
+            async with lock:
+                cached = self._cached_result(cache_key)
+                if cached is not None:
+                    return cached
+                result = await self._run_once(request, limits, checkpoint=checkpoint)
+                # Only a success is replayed for the idempotency key: a failure,
+                # denial or timeout is retryable, never a sticky cached answer.
+                if result.terminal_state is ExecutionTerminalState.SUCCEEDED:
+                    self._cache_result(cache_key, result)
+                return result
+        finally:
+            if not lock.locked() and self._locks.get(cache_key) is lock:
+                self._locks.pop(cache_key, None)
+            self._cancel_events.pop(request.cancellation_token, None)
 
     async def _run_once(
         self,
@@ -193,7 +242,7 @@ class StrategyRunner:
         *,
         checkpoint: StrategyCheckpoint | None,
     ) -> StrategyExecutionResult:
-        cancelled = self._cancel_events.setdefault(request.cancellation_token, asyncio.Event())
+        cancelled = self._cancel_event(request.cancellation_token)
         if cancelled.is_set():
             return self._result(ExecutionTerminalState.CANCELLED)
         if request.deadline <= datetime.now(UTC):
@@ -231,7 +280,7 @@ class StrategyRunner:
                 ExecutionTerminalState.POLICY_DENIED,
                 reason_codes=(admission_reason,),
             )
-        reserved = self._reserve_budget(request, limits)
+        reserved = bool(await self._invoke(self._reserve_budget, request, limits))
         if not reserved:
             return self._result(
                 ExecutionTerminalState.POLICY_DENIED,
@@ -249,11 +298,19 @@ class StrategyRunner:
                 limits.duration_seconds,
                 max(0.0, (request.deadline - datetime.now(UTC)).total_seconds()),
             )
-            done, _ = await asyncio.wait(
-                {execution, cancellation},
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            try:
+                done, _ = await asyncio.wait(
+                    {execution, cancellation},
+                    timeout=timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except asyncio.CancelledError:
+                # The caller (e.g. a cancelled goal task) was cancelled: stop the
+                # execution too — it used to run on, orphaned, to completion.
+                execution.cancel()
+                cancellation.cancel()
+                await asyncio.gather(execution, cancellation, return_exceptions=True)
+                raise
             if cancellation in done and cancelled.is_set():
                 execution.cancel()
                 await asyncio.gather(execution, return_exceptions=True)

@@ -507,6 +507,33 @@ def _make_workflow_hitl_resume_callback(
 # ── error handlers ─────────────────────────────────────────────────────────────
 
 
+def _strategy_budget_reserver(state: Any) -> Any:
+    """StrategyRunner ``reserve_budget``: refuse when the tenant has no budget left.
+
+    The runner's default reservation always said yes (CORE-18). Reads the
+    Redis-backed controller when the lifespan wired one; no controller at all
+    fails closed.
+    """
+
+    async def _reserve(request: Any, _limits: Any) -> bool:
+        from types import SimpleNamespace
+
+        controller = getattr(state, "redis_cost_controller", None) or getattr(
+            state, "cost_controller", None
+        )
+        check = getattr(controller, "ahas_remaining_budget", None)
+        if check is None:
+            return False
+        try:
+            return bool(
+                await check(tenant_ctx=SimpleNamespace(tenant_id=request.tenant_id))
+            )
+        except Exception:
+            return False  # an unverifiable budget never admits the run
+
+    return _reserve
+
+
 def _scrub_surrogates(value: Any) -> Any:
     """Escape unpaired UTF-16 surrogates so a value can be encoded as UTF-8 JSON."""
     if isinstance(value, str):
@@ -2632,6 +2659,7 @@ def create_app(
             ),
         ),
         admission=default_distributed_admission,
+        reserve_budget=_strategy_budget_reserver(app.state),
     )
     app.state.graph_factory = GraphFactory()
     from app.routing_runtime.decision_store import InMemoryDecisionStore

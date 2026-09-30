@@ -4986,6 +4986,15 @@ class GoalService:
             "persisted": persisted,
         }
 
+    def _cancel_local_strategy_run(self, goal_id: str) -> None:
+        state: Any = self._app_state
+        state = getattr(state, "state", state)
+        runner = getattr(state, "strategy_runner", None) if state is not None else None
+        cancel = getattr(runner, "cancel", None)
+        if cancel is not None:
+            with suppress(Exception):
+                cancel(goal_id)
+
     async def cancel_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Cancel a running goal.  Idempotent if the goal is already terminal.
 
@@ -5024,6 +5033,9 @@ class GoalService:
         if self._runs_locally(record):
             assert record.task is not None
             record.task.cancel()
+        # A distributed strategy run for this goal (cancellation token = goal id)
+        # stops too; nothing ever called StrategyRunner.cancel (CORE-18).
+        self._cancel_local_strategy_run(goal_id)
 
         record.status = GoalStatus.CANCELLED
         cancelled_event: dict[str, Any] = {"type": "goal_cancelled"}
