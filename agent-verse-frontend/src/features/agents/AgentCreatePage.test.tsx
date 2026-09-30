@@ -349,16 +349,37 @@ describe('AgentCreatePage', () => {
       expect(systemPrompt).toHaveValue('Be concise.');
     });
 
-    test('parses comma-separated connector IDs and trims/filters blanks', async () => {
+    // UI-AGENT-CONNECTOR-PICKER: the free-text "Connector IDs" box (which also
+    // ate the comma as you typed a second id) is replaced by a picker of the
+    // tenant's registered connectors that submits their server ids.
+    test('picks registered connectors (same-type instances separately) and submits their server ids', async () => {
       const user = userEvent.setup();
+      const connectors = [
+        { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb', url: 'builtin://' },
+        { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb', url: 'builtin://' },
+      ];
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = String(input);
+        const body = url.endsWith('/connectors') && (init?.method ?? 'GET') === 'GET'
+          ? connectors
+          : MOCK_CREATED_AGENT;
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
       renderPage();
       await openManualTab(user);
-      const connectorInput = screen.getByPlaceholderText('github, jira-mcp, slack-mcp');
-      // Set the raw value in one shot (rather than keystroke-by-keystroke) since
-      // the field is fully controlled and re-derives its display value from the
-      // parsed connector_ids array on every change.
-      fireEvent.change(connectorInput, { target: { value: 'github, , jira-mcp ,' } });
-      expect(connectorInput).toHaveValue('github, jira-mcp');
+      expect(screen.queryByPlaceholderText('github, jira-mcp, slack-mcp')).not.toBeInTheDocument();
+      await user.type(screen.getByPlaceholderText('My Jira Agent'), 'Reporter');
+      await user.click(await screen.findByRole('checkbox', { name: /analytics-db/ }));
+      expect(screen.getByRole('checkbox', { name: /orders-db/ })).not.toBeChecked();
+      expect(screen.getByText(/Connectors \(1 selected\)/)).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /^create agent$/i }));
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith(`/agents/${MOCK_CREATED_AGENT.agent_id}`));
+      const createCall = fetchMock.mock.calls.find(
+        ([u, i]) => String(u).endsWith('/agents') && (i as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(JSON.parse(String((createCall![1] as RequestInit).body)).connector_ids).toEqual([
+        'builtin-mongodb:analytics-db',
+      ]);
     });
 
     test('parses comma-separated knowledge collection IDs and trims/filters blanks', async () => {
@@ -405,7 +426,13 @@ describe('AgentCreatePage', () => {
 
     test('shows an error message when manual submission fails', async () => {
       const user = userEvent.setup();
-      vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network error'));
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        // The connector picker's list loads fine; only the create call fails.
+        if (String(input).endsWith('/connectors')) {
+          return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        throw new Error('Network error');
+      });
       renderPage();
       await openManualTab(user);
       await user.type(screen.getByPlaceholderText('My Jira Agent'), 'My New Agent');

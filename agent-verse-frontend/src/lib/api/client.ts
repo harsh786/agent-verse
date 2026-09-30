@@ -682,8 +682,12 @@ export interface ConnectorRequest {
 }
 
 export interface ConnectorResponse {
+  /** Opaque, unique per registered connector (instance) — never parse it. */
   server_id: string;
+  /** The instance's own name (a tenant may have several of one type, e.g. two MongoDBs). */
   name: string;
+  /** Catalog type of this instance (e.g. "mongodb"), when the backend reports it. */
+  connector_type?: string;
   url: string;
   // Real upstream API endpoint for a built-in connector (whose `url` is the
   // internal "builtin://" dispatch marker). Empty for local/unknown built-ins.

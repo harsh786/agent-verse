@@ -14,6 +14,7 @@ import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { ReasoningPatternsFieldset, emptyPatternFlags } from './ReasoningPatterns';
+import { ConnectorPicker } from './ConnectorPicker';
 
 export function AgentCreatePage() {
   const apiKey = useAuthStore((s) => s.apiKey);
@@ -244,20 +245,14 @@ export function AgentCreatePage() {
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1 text-white/70">Connector IDs (comma-separated)</label>
-                <input
-                  value={manualForm.connector_ids.join(', ')}
-                  onChange={(e) =>
-                    setManualForm((p) => ({
-                      ...p,
-                      connector_ids: e.target.value
-                        .split(',')
-                        .map((s) => s.trim())
-                        .filter(Boolean),
-                    }))
-                  }
-                  className="w-full px-3 py-2 border border-neural-violet/20 rounded-lg text-sm bg-command-black text-white placeholder-white/25 focus:ring-2 focus:ring-neural-violet/40 outline-none transition-colors"
-                  placeholder="github, jira-mcp, slack-mcp"
+                <p className="block text-sm font-medium mb-1 text-white/70">
+                  Connectors
+                  {manualForm.connector_ids.length > 0 ? ` (${manualForm.connector_ids.length} selected)` : ''}
+                </p>
+                {/* The tenant's registered connectors — submits their server ids. */}
+                <ConnectorPicker
+                  value={manualForm.connector_ids}
+                  onChange={(ids) => setManualForm((p) => ({ ...p, connector_ids: ids }))}
                 />
               </div>
 

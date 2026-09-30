@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -443,6 +443,56 @@ describe('AgentDetailPage — navigation buttons', () => {
     // Navigated away from the detail route (no matching route registered for /radar
     // in this test's router, so the agent name is no longer rendered).
     await waitFor(() => expect(screen.queryByTestId('agent-name')).not.toBeInTheDocument());
+  });
+
+  // UI-AGENT-CONNECTOR-PICKER: existing ids must stay visible (by name when
+  // registered, flagged "missing" when not) and same-type instances are
+  // separate choices saved by their own id.
+  test('shows attached connectors by name and flags ids that are no longer registered', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/connectors'))
+        return json([{ server_id: 'github', name: 'GitHub (work)', connector_type: 'github' }]);
+      if (url.includes('/versions')) return json([]);
+      if (url.includes('/goals')) return json({ goals: [] });
+      return json(AGENT); // connector_ids: ['github', 'jira']
+    });
+    renderPage();
+    const list = await screen.findByTestId('connector-list');
+    const card = list.parentElement as HTMLElement;
+    expect(await within(card).findByText('GitHub (work)')).toBeInTheDocument();
+    expect(within(card).getByText('jira')).toBeInTheDocument();
+    expect(within(card).getByText(/missing/i)).toBeInTheDocument();
+  });
+
+  test('editing saves the specific instance id when two connectors share a type', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/connectors'))
+        return json([
+          { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb' },
+          { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb' },
+        ]);
+      if (url.includes('/versions')) return json([]);
+      if (url.includes('/goals')) return json({ goals: [] });
+      return json({ ...AGENT, connector_ids: ['builtin-mongodb:orders-db', 'jira'] });
+    });
+    renderPage();
+    await screen.findByTestId('agent-name');
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByRole('checkbox', { name: /orders-db/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /^jira$/ })).toBeChecked(); // missing, still shown
+    await userEvent.click(screen.getByRole('checkbox', { name: /analytics-db/ }));
+    await userEvent.click(screen.getByRole('checkbox', { name: /^jira$/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      const put = spy.mock.calls.find(([, i]) => (i as RequestInit | undefined)?.method === 'PUT'
+        || (i as RequestInit | undefined)?.method === 'PATCH');
+      expect(put).toBeTruthy();
+      expect(JSON.parse(String((put![1] as RequestInit).body)).connector_ids).toEqual([
+        'builtin-mongodb:orders-db', 'builtin-mongodb:analytics-db',
+      ]);
+    });
   });
 
   test('the "Add a connector" link in the empty-connectors editor navigates to the catalog', async () => {

@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import {
-  goalsApi, agentsApi, knowledgeApi, credentialsApi, connectorsApi,
+  goalsApi, agentsApi, knowledgeApi, credentialsApi,
   type CreateAgentRequest,
 } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -22,6 +22,7 @@ import {
   emptyPatternFlags,
   type PatternFlags,
 } from './ReasoningPatterns';
+import { ConnectorPicker, connectorLabel, useRegisteredConnectors } from './ConnectorPicker';
 
 interface AgentVersion {
   snapshot_id: string;
@@ -227,12 +228,14 @@ export function AgentDetailPage() {
     },
   });
 
-  // Tenant's registered connectors — offered as attachable tools while editing.
-  const { data: registeredConnectors = [] } = useQuery({
-    queryKey: ["connectors"],
-    queryFn: () => connectorsApi.list(),
-    enabled: editing,
-  });
+  // Tenant's registered connectors — resolves the attached ids to names (and
+  // flags ids that are no longer registered). The edit picker shares the query.
+  const { data: registeredConnectors, isSuccess: connectorsLoaded } = useRegisteredConnectors(
+    Array.isArray(agent?.connector_ids) && agent.connector_ids.length > 0,
+  );
+  const registeredById = new Map(
+    (Array.isArray(registeredConnectors) ? registeredConnectors : []).map((c) => [c.server_id, c]),
+  );
 
   // Fix 6: Use agentsApi.update instead of raw fetch
   const saveMutation = useMutation({
@@ -505,47 +508,9 @@ export function AgentDetailPage() {
               <label className="block text-xs font-medium mb-1">
                 Connectors{editConnectors.length > 0 ? ` (${editConnectors.length} selected)` : ''}
               </label>
-              {registeredConnectors.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  No connectors registered yet.{' '}
-                  <button
-                    type="button"
-                    onClick={() => navigate('/connectors/catalog')}
-                    className="text-primary hover:underline"
-                  >
-                    Add a connector
-                  </button>
-                </p>
-              ) : (
-                <div className="max-h-44 overflow-y-auto rounded-lg border border-input bg-background divide-y divide-border">
-                  {registeredConnectors.map((c) => {
-                    const checked = editConnectors.includes(c.server_id);
-                    return (
-                      <label
-                        key={c.server_id}
-                        className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-accent/50"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) =>
-                            setEditConnectors((prev) =>
-                              e.target.checked
-                                ? [...prev, c.server_id]
-                                : prev.filter((id) => id !== c.server_id),
-                            )
-                          }
-                          className="h-4 w-4 rounded border-input accent-[#00D4FF]"
-                        />
-                        <span className="flex-1 min-w-0 truncate">{c.name || c.server_id}</span>
-                        {c.status && (
-                          <span className="text-[10px] text-muted-foreground shrink-0">{c.status}</span>
-                        )}
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
+              {/* Each registered instance by name (+type, server id); ids no
+                  longer registered stay listed as "missing". */}
+              <ConnectorPicker value={editConnectors} onChange={setEditConnectors} />
             </div>
             <ReasoningPatternsFieldset value={editFlags} onChange={setEditFlags} />
             {saveMutation.error && (
@@ -649,11 +614,27 @@ export function AgentDetailPage() {
                 Connector IDs
               </h2>
               <div className="flex flex-wrap gap-2">
-                {(agent.connector_ids as string[]).map((cid: string) => (
-                  <span key={cid} className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-[#00D4FF] text-xs px-2 py-1 rounded">
-                    {cid}
-                  </span>
-                ))}
+                {(agent.connector_ids as string[]).map((cid: string) => {
+                  const conn = connectorsLoaded ? registeredById.get(cid) : undefined;
+                  const isMissing = connectorsLoaded && !conn;
+                  return (
+                    <span
+                      key={cid}
+                      title={conn ? `Server ID: ${cid}` : isMissing ? 'No longer registered for this tenant' : cid}
+                      className={`text-xs px-2 py-1 rounded inline-flex items-center gap-1.5 ${
+                        isMissing
+                          ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                          : 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-[#00D4FF]'
+                      }`}
+                    >
+                      {conn ? connectorLabel(conn) : <span className="font-mono">{cid}</span>}
+                      {conn?.connector_type && (
+                        <span className="text-[10px] opacity-70">{conn.connector_type}</span>
+                      )}
+                      {isMissing && <span className="text-[10px] font-semibold uppercase">missing</span>}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           )}
