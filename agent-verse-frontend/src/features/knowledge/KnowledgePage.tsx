@@ -19,7 +19,7 @@ import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Pagination } from '@/components/ui/Pagination';
-import { apiFetch } from '@/lib/api/client';
+import { ApiError, apiFetch } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -397,10 +397,33 @@ function AskAITab() {
 
 const SOURCE_TYPES = [
   { value: 'text', label: 'Text' }, { value: 'markdown', label: 'Markdown' }, { value: 'url', label: 'URL' },
-  { value: 'pdf', label: 'PDF' }, { value: 'docx', label: 'DOCX' }, { value: 'git', label: 'Git' },
+  { value: 'pdf', label: 'PDF' }, { value: 'docx', label: 'DOCX' }, { value: 'pptx', label: 'PowerPoint' },
+  { value: 'image', label: 'Image' }, { value: 'git', label: 'Git' },
   { value: 'github', label: 'GitHub' }, { value: 'openapi', label: 'OpenAPI' }, { value: 'confluence', label: 'Confluence' },
   { value: 'jira', label: 'Jira' }, { value: 'slack', label: 'Slack' },
 ];
+
+/** Source types that can only be ingested by uploading a file. */
+const FILE_ONLY_SOURCES = ['pdf', 'docx', 'pptx', 'image'];
+/** Source types whose content is typed/pasted into the textarea. */
+const TEXT_SOURCES = ['text', 'markdown', 'openapi'];
+/** Source types that show the file drop zone (a queued file wins over typed text). */
+const FILE_UPLOAD_SOURCES = [...FILE_ONLY_SOURCES, 'text', 'markdown'];
+/** Extensions POST /knowledge/ingest/file accepts. Legacy .ppt is deliberately
+ *  absent — the backend refuses it with 415 and asks for .pptx. */
+const UPLOAD_EXTENSIONS = ['.txt', '.md', '.py', '.ts', '.js', '.json', '.pdf', '.docx', '.pptx', '.png', '.jpg', '.jpeg', '.webp'];
+const NO_COLLECTION_MSG = 'Select a collection first.';
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function uploadErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) return `Upload failed (${e.status}): ${e.message}`;
+  return `Upload failed: ${e instanceof Error ? e.message : String(e)}`;
+}
 
 // ── RPA URL Scraper ───────────────────────────────────────────────────────────
 
@@ -543,6 +566,11 @@ function IngestTab() {
   const [collectionId, setCollectionId] = useState('');
   const [content, setContent] = useState('');
   const [config, setConfig] = useState<Record<string, string>>({});
+  // A picked/dropped file is only queued here; the Ingest button uploads it.
+  const [queuedFile, setQueuedFile] = useState<File | null>(null);
+  // Persistent (not a toast) so the user can read it and retry the same file.
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lastResult, setLastResult] = useState<{ filename: string; chunks: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
 
@@ -569,18 +597,52 @@ function IngestTab() {
       const fd = new FormData();
       fd.append('file', file);
       fd.append('collection_id', collectionId);
-      return apiFetch<{ chunks_created: number; filename: string }>('/knowledge/ingest/file', { method: 'POST', body: fd });
+      // The inline error + our own toast report failures, so silence the client's
+      // generic 5xx toast (otherwise a 503 flashed two toasts).
+      return apiFetch<{ chunks_created: number; filename: string }>('/knowledge/ingest/file', { method: 'POST', body: fd }, { silenceServerErrorToast: true });
     },
-    onSuccess: (r) => toast({ kind: 'success', message: `${r.filename}: ${r.chunks_created} chunks.` }),
-    onError: (e) => toast({ kind: 'error', message: String(e) }),
+    onMutate: () => { setUploadError(null); setLastResult(null); },
+    onSuccess: (r, file) => {
+      const filename = r.filename || file.name;
+      toast({ kind: 'success', message: `${filename}: ${r.chunks_created} chunks created.` });
+      setLastResult({ filename, chunks: r.chunks_created });
+      setQueuedFile(null);
+      void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
+    },
+    onError: (e) => {
+      const message = uploadErrorMessage(e);
+      setUploadError(message); // keep the queued file so Retry is one click
+      toast({ kind: 'error', message });
+    },
   });
+
+  const queueFile = useCallback((file: File | undefined) => {
+    if (!file) return;
+    setQueuedFile(file);
+    setUploadError(null);
+    setLastResult(null);
+    if (!collectionId) toast({ kind: 'error', message: NO_COLLECTION_MSG });
+  }, [collectionId]);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
-    const file = e.dataTransfer.files[0];
-    if (file && collectionId) fileMutation.mutate(file);
-    else if (!collectionId) toast({ kind: 'error', message: 'Select a collection first.' });
-  }, [collectionId, fileMutation]);
+    queueFile(e.dataTransfer.files[0]);
+  }, [queueFile]);
+
+  const showsDropzone = FILE_UPLOAD_SOURCES.includes(selectedSource);
+  const sendsFile = showsDropzone && queuedFile !== null;
+  const isPending = ingestMutation.isPending || fileMutation.isPending;
+  let disabledReason: string | null = null;
+  if (!collectionId) disabledReason = NO_COLLECTION_MSG;
+  else if (FILE_ONLY_SOURCES.includes(selectedSource) && !queuedFile) disabledReason = 'Choose a file to upload.';
+  else if (TEXT_SOURCES.includes(selectedSource) && !sendsFile && !content.trim())
+    disabledReason = showsDropzone ? 'Enter some content or choose a file.' : 'Enter some content.';
+
+  const submit = () => {
+    if (disabledReason || isPending) return;
+    if (sendsFile && queuedFile) fileMutation.mutate(queuedFile);
+    else if (!FILE_ONLY_SOURCES.includes(selectedSource)) ingestMutation.mutate();
+  };
 
   return (
     <div className="space-y-5">
@@ -618,7 +680,7 @@ function IngestTab() {
         </div>
       </div>
 
-      {['text', 'markdown', 'openapi'].includes(selectedSource) && (
+      {TEXT_SOURCES.includes(selectedSource) && (
         <div>
           <label className="block text-xs text-muted-foreground mb-1">Content *</label>
           <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={8}
@@ -666,24 +728,72 @@ function IngestTab() {
       )}
 
       {/* File upload zone */}
-      {['pdf', 'docx', 'text', 'markdown'].includes(selectedSource) && (
-        <div onDrop={onDrop} onDragOver={(e) => e.preventDefault()}
-          className="border-2 border-dashed border-border rounded-xl p-6 flex flex-col items-center gap-2 cursor-pointer hover:border-[#00D4FF]/50 transition-colors"
-          onClick={() => fileRef.current?.click()}>
-          <Upload className="h-6 w-6 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Drag & drop a file here, or click to browse</p>
-          <p className="text-xs text-muted-foreground">.txt .md .py .ts .js .json .pdf .docx</p>
-          {fileMutation.isPending && <span className="text-xs text-primary">Uploading…</span>}
-          <input ref={fileRef} type="file" accept=".txt,.md,.py,.ts,.js,.json,.pdf,.docx" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f && collectionId) fileMutation.mutate(f); }} />
+      {showsDropzone && (
+        <div className="space-y-2">
+          <div onDrop={onDrop} onDragOver={(e) => e.preventDefault()}
+            className="border-2 border-dashed border-border rounded-xl p-6 flex flex-col items-center gap-2 cursor-pointer hover:border-[#00D4FF]/50 transition-colors"
+            onClick={() => fileRef.current?.click()}>
+            <Upload className="h-6 w-6 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Drag & drop a file here, or click to browse</p>
+            <p className="text-xs text-muted-foreground">{UPLOAD_EXTENSIONS.join(' ')}</p>
+            <p className="text-xs text-muted-foreground">Legacy .ppt isn&apos;t supported — save as .pptx first.</p>
+            <input ref={fileRef} type="file" accept={UPLOAD_EXTENSIONS.join(',')} className="hidden"
+              data-testid="ingest-file-input"
+              onChange={(e) => {
+                queueFile(e.target.files?.[0]);
+                // Reset so picking the same file again still fires onChange.
+                e.target.value = '';
+              }} />
+          </div>
+          {queuedFile && (
+            <div data-testid="queued-file" className="flex items-center gap-2 px-3 py-2 border border-border rounded-md text-sm bg-muted/30">
+              <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+              <span className="truncate font-medium">{queuedFile.name}</span>
+              <span className="text-xs text-muted-foreground shrink-0">{formatBytes(queuedFile.size)}</span>
+              <span className="text-xs text-muted-foreground shrink-0">· queued</span>
+              <button type="button" aria-label={`Remove ${queuedFile.name}`} disabled={fileMutation.isPending}
+                onClick={() => { setQueuedFile(null); setUploadError(null); }}
+                className="ml-auto p-1 rounded text-muted-foreground hover:text-red-500 disabled:opacity-50">
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      <button onClick={() => ingestMutation.mutate()} disabled={!collectionId || (!content.trim() && ['text', 'markdown', 'openapi'].includes(selectedSource)) || ingestMutation.isPending}
-        className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50">
-        {ingestMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-        {ingestMutation.isPending ? 'Ingesting…' : 'Ingest'}
-      </button>
+      {uploadError && queuedFile && showsDropzone && (
+        <div role="alert" data-testid="ingest-error"
+          className="flex items-start gap-2 px-3 py-2 border border-red-500/40 bg-red-500/10 rounded-md text-sm text-red-600">
+          <XCircle className="h-4 w-4 mt-0.5 shrink-0" />
+          <span className="flex-1">{uploadError}</span>
+          <button type="button" onClick={submit} disabled={isPending || disabledReason !== null}
+            className="shrink-0 flex items-center gap-1 px-2 py-0.5 border border-red-500/40 rounded text-xs hover:bg-red-500/10 disabled:opacity-50">
+            <RefreshCw className="h-3 w-3" /> Retry
+          </button>
+        </div>
+      )}
+
+      {lastResult && (
+        <div role="status" data-testid="ingest-result"
+          className="flex items-center gap-2 px-3 py-2 border border-green-500/40 bg-green-500/10 rounded-md text-sm text-green-700">
+          <CheckCircle className="h-4 w-4 shrink-0" />
+          <span>{lastResult.filename}: {lastResult.chunks} chunks created.</span>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <button data-testid="ingest-submit" onClick={submit} disabled={disabledReason !== null || isPending}
+          aria-describedby={disabledReason ? 'ingest-disabled-reason' : undefined}
+          className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm disabled:opacity-50">
+          {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+          {fileMutation.isPending ? 'Uploading…' : ingestMutation.isPending ? 'Ingesting…' : 'Ingest'}
+        </button>
+        {disabledReason && !isPending && (
+          <span id="ingest-disabled-reason" data-testid="ingest-disabled-reason" className="text-xs text-muted-foreground">
+            {disabledReason}
+          </span>
+        )}
+      </div>
       </div>
     </div>
   );

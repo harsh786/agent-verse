@@ -617,6 +617,10 @@ describe('KnowledgePage – Ingest tab (extended source types & uploads)', () =>
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
     await userEvent.upload(fileInput, file);
+    // Picking only queues the file — the Ingest button sends it.
+    await screen.findByTestId('queued-file');
+    const submitBtns = screen.getAllByRole('button', { name: /^ingest$/i });
+    await userEvent.click(submitBtns[submitBtns.length - 1]);
     await waitFor(() =>
       expect(spy.mock.calls.some(([u, i]) => String(u).includes('/knowledge/ingest/file') && (i as RequestInit)?.method === 'POST')).toBe(true)
     );
@@ -646,6 +650,9 @@ describe('KnowledgePage – Ingest tab (extended source types & uploads)', () =>
     const dropzone = screen.getByText(/drag & drop a file here/i).closest('div') as HTMLElement;
     const file = new File(['hi'], 'a.txt', { type: 'text/plain' });
     fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
+    await screen.findByTestId('queued-file');
+    const submitBtns = screen.getAllByRole('button', { name: /^ingest$/i });
+    await userEvent.click(submitBtns[submitBtns.length - 1]);
     await waitFor(() =>
       expect(spy.mock.calls.some(([u, i]) => String(u).includes('/knowledge/ingest/file') && (i as RequestInit)?.method === 'POST')).toBe(true)
     );
@@ -672,6 +679,205 @@ describe('KnowledgePage – Ingest tab (extended source types & uploads)', () =>
     const submitBtns = screen.getAllByRole('button', { name: /^ingest$/i });
     await userEvent.click(submitBtns[submitBtns.length - 1]);
     await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true));
+  });
+});
+
+// ── File queue: pick/drop stores the file; the Ingest button uploads it ──────
+
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+/** fetch mock whose /knowledge/ingest/file handler is supplied per test. */
+function mockFetchWithUpload(upload: (callNo: number) => Response) {
+  let n = 0;
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    if (url.includes('/knowledge/ingest/file') && method === 'POST') { n += 1; return upload(n); }
+    if (url.includes('/knowledge/ingest') && method === 'POST') return jsonResponse({ chunks_created: 7, document_id: 'doc-1' }, 201);
+    if (url.includes('/knowledge/collections')) return jsonResponse([COLLECTION]);
+    return jsonResponse({});
+  });
+}
+
+async function openIngest() {
+  renderPage();
+  await screen.findByRole('heading', { name: /knowledge/i });
+  await userEvent.click(screen.getByTestId('tab-ingest'));
+  await screen.findByRole('button', { name: /^text$/i });
+  // wait until collections have loaded into the collection selects
+  await screen.findAllByRole('option', { name: 'Engineering Docs' });
+}
+
+async function selectCollection() {
+  const selects = screen.getAllByRole('combobox');
+  await userEvent.selectOptions(selects[selects.length - 1], 'col-1');
+}
+
+function ingestButton() {
+  return screen.getByTestId('ingest-submit');
+}
+
+function fileInput() {
+  return document.querySelector('input[type="file"]') as HTMLInputElement;
+}
+
+type FetchSpy = ReturnType<typeof mockFetchWithUpload>;
+
+function uploadCalls(spy: FetchSpy) {
+  return spy.mock.calls.filter(([u, i]) => String(u).includes('/knowledge/ingest/file') && i?.method === 'POST');
+}
+
+function jsonIngestCalls(spy: FetchSpy) {
+  return spy.mock.calls.filter(([u, i]) => /\/knowledge\/ingest$/.test(String(u)) && i?.method === 'POST');
+}
+
+describe('KnowledgePage – Ingest tab file queue', () => {
+  beforeEach(() => useToastStore.setState({ toasts: [] }));
+
+  test('picking a file queues it (name, size, remove) and does not upload', async () => {
+    const spy = mockFetchWithUpload(() => jsonResponse({ chunks_created: 3, filename: 'notes.txt' }));
+    await openIngest();
+    await selectCollection();
+    await userEvent.upload(fileInput(), new File(['hello world'], 'notes.txt', { type: 'text/plain' }));
+    const queued = await screen.findByTestId('queued-file');
+    expect(queued).toHaveTextContent('notes.txt');
+    expect(queued).toHaveTextContent(/11 B/);
+    expect(screen.getByRole('button', { name: /remove notes\.txt/i })).toBeInTheDocument();
+    expect(uploadCalls(spy)).toHaveLength(0);
+    expect(screen.queryByText(/uploading…/i)).not.toBeInTheDocument();
+  });
+
+  test('Ingest uploads the queued file as multipart (file + collection_id), then clears the queue and shows chunks created', async () => {
+    const spy = mockFetchWithUpload(() => jsonResponse({ chunks_created: 4, filename: 'deck.pptx' }));
+    await openIngest();
+    await userEvent.click(screen.getByRole('button', { name: /^powerpoint$/i }));
+    await selectCollection();
+    const file = new File(['pptx-bytes'], 'deck.pptx', { type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+    await userEvent.upload(fileInput(), file);
+    await screen.findByTestId('queued-file');
+    await userEvent.click(ingestButton());
+    await waitFor(() => expect(uploadCalls(spy)).toHaveLength(1));
+    const body = uploadCalls(spy)[0][1]?.body as FormData;
+    expect(body).toBeInstanceOf(FormData);
+    expect((body.get('file') as File).name).toBe('deck.pptx');
+    expect(body.get('collection_id')).toBe('col-1');
+    expect(jsonIngestCalls(spy)).toHaveLength(0);
+    expect(await screen.findByTestId('ingest-result')).toHaveTextContent(/4 chunks created/i);
+    expect(screen.queryByTestId('queued-file')).not.toBeInTheDocument();
+  });
+
+  test('file source types disable Ingest with a reason until a file is queued, and never send empty JSON', async () => {
+    const spy = mockFetchWithUpload(() => jsonResponse({ chunks_created: 1, filename: 'a.pdf' }));
+    await openIngest();
+    await userEvent.click(screen.getByRole('button', { name: /^pdf$/i }));
+    expect(ingestButton()).toBeDisabled();
+    expect(screen.getByTestId('ingest-disabled-reason')).toHaveTextContent(/select a collection first/i);
+    await selectCollection();
+    expect(ingestButton()).toBeDisabled();
+    expect(screen.getByTestId('ingest-disabled-reason')).toHaveTextContent(/choose a file/i);
+    await userEvent.click(ingestButton());
+    expect(jsonIngestCalls(spy)).toHaveLength(0);
+    await userEvent.upload(fileInput(), new File(['%PDF'], 'a.pdf', { type: 'application/pdf' }));
+    expect(ingestButton()).toBeEnabled();
+    expect(screen.queryByTestId('ingest-disabled-reason')).not.toBeInTheDocument();
+  });
+
+  test('Text source keeps posting JSON to /knowledge/ingest and explains why it is disabled when empty', async () => {
+    const spy = mockFetchWithUpload(() => jsonResponse({}));
+    await openIngest();
+    await selectCollection();
+    expect(ingestButton()).toBeDisabled();
+    expect(screen.getByTestId('ingest-disabled-reason')).toHaveTextContent(/enter some content/i);
+    await userEvent.type(screen.getByPlaceholderText(/paste content/i), 'hello');
+    await userEvent.click(ingestButton());
+    await waitFor(() => expect(jsonIngestCalls(spy)).toHaveLength(1));
+    const sent = JSON.parse(String(jsonIngestCalls(spy)[0][1]?.body)) as Record<string, unknown>;
+    expect(sent).toMatchObject({ content: 'hello', source_type: 'text', collection_id: 'col-1' });
+    expect(uploadCalls(spy)).toHaveLength(0);
+  });
+
+  test('resets the file input after each pick so the same file can be picked again', async () => {
+    mockFetchWithUpload(() => jsonResponse({}));
+    await openIngest();
+    await selectCollection();
+    const file = new File(['x'], 'same.md', { type: 'text/markdown' });
+    await userEvent.upload(fileInput(), file);
+    await screen.findByTestId('queued-file');
+    expect(fileInput().value).toBe('');
+    await userEvent.click(screen.getByRole('button', { name: /remove same\.md/i }));
+    expect(screen.queryByTestId('queued-file')).not.toBeInTheDocument();
+    await userEvent.upload(fileInput(), file);
+    expect(await screen.findByTestId('queued-file')).toHaveTextContent('same.md');
+  });
+
+  test('picking a file with no collection shows "Select a collection first"', async () => {
+    const spy = mockFetchWithUpload(() => jsonResponse({}));
+    await openIngest();
+    await userEvent.upload(fileInput(), new File(['x'], 'notes.txt', { type: 'text/plain' }));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.message.includes('Select a collection first'))).toBe(true)
+    );
+    expect(screen.getByTestId('ingest-disabled-reason')).toHaveTextContent(/select a collection first/i);
+    expect(uploadCalls(spy)).toHaveLength(0);
+  });
+
+  test('on 503 keeps the queued file, shows a persistent inline error with the server message, and retries in one click', async () => {
+    const spy = mockFetchWithUpload((n) =>
+      n === 1
+        ? jsonResponse({ detail: 'Embedding provider is unavailable' }, 503)
+        : jsonResponse({ chunks_created: 2, filename: 'notes.txt' }),
+    );
+    await openIngest();
+    await selectCollection();
+    await userEvent.upload(fileInput(), new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+    await userEvent.click(ingestButton());
+    const alert = await screen.findByTestId('ingest-error');
+    expect(alert).toHaveTextContent('Embedding provider is unavailable');
+    expect(alert).toHaveAttribute('role', 'alert');
+    expect(screen.getByTestId('queued-file')).toHaveTextContent('notes.txt');
+    // one transient toast, not two
+    expect(useToastStore.getState().toasts.filter((t) => t.kind === 'error')).toHaveLength(1);
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+    await waitFor(() => expect(uploadCalls(spy)).toHaveLength(2));
+    expect(await screen.findByTestId('ingest-result')).toHaveTextContent(/2 chunks created/i);
+    expect(screen.queryByTestId('ingest-error')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('queued-file')).not.toBeInTheDocument();
+  });
+
+  test('shows the server message for a 415 (e.g. legacy .ppt dropped)', async () => {
+    mockFetchWithUpload(() => jsonResponse({ detail: 'Legacy .ppt is not supported; convert to .pptx' }, 415));
+    await openIngest();
+    await selectCollection();
+    const dropzone = screen.getByText(/drag & drop a file here/i).closest('div') as HTMLElement;
+    fireEvent.drop(dropzone, { dataTransfer: { files: [new File(['x'], 'old.ppt')] } });
+    await screen.findByTestId('queued-file');
+    await userEvent.click(ingestButton());
+    expect(await screen.findByTestId('ingest-error')).toHaveTextContent(/convert to \.pptx/i);
+    expect(screen.getByTestId('queued-file')).toHaveTextContent('old.ppt');
+  });
+
+  test('offers PowerPoint and Image source types and accepts .pptx and images but not .ppt', async () => {
+    mockFetchWithUpload(() => jsonResponse({}));
+    await openIngest();
+    expect(screen.getByRole('button', { name: /^powerpoint$/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^image$/i }));
+    const accept = (fileInput().getAttribute('accept') ?? '').split(',');
+    for (const ext of ['.pptx', '.png', '.jpg', '.jpeg', '.webp', '.pdf', '.docx']) expect(accept).toContain(ext);
+    expect(accept).not.toContain('.ppt');
+    expect(screen.getByText(/save as \.pptx/i)).toBeInTheDocument();
+  });
+
+  test('an image can be queued and uploaded under the Image source type', async () => {
+    const spy = mockFetchWithUpload(() => jsonResponse({ chunks_created: 1, filename: 'scan.png' }));
+    await openIngest();
+    await userEvent.click(screen.getByRole('button', { name: /^image$/i }));
+    await selectCollection();
+    await userEvent.upload(fileInput(), new File(['png'], 'scan.png', { type: 'image/png' }));
+    await userEvent.click(ingestButton());
+    await waitFor(() => expect(uploadCalls(spy)).toHaveLength(1));
+    expect((uploadCalls(spy)[0][1]?.body as FormData).get('file')).toBeInstanceOf(File);
   });
 });
 
