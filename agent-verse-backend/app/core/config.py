@@ -452,6 +452,10 @@ class Settings(BaseSettings):
     # reaches either setting.
     ingestion_allow_internal_sources: bool = False
     ingestion_internal_source_allowlist: str = ""  # comma-separated hostnames
+    # Connector drivers are pinned to the addresses the egress check validated
+    # (no DNS-rebinding window). A driver that resolves hosts outside Python and
+    # cannot be pinned (confluent-kafka / librdkafka) is refused while this is on.
+    ingestion_egress_strict_pinning: bool = True
 
     # --- SAML 2.0 ---
     saml_enabled: bool = False

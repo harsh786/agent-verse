@@ -6,7 +6,6 @@ Supports all file formats via ParserRegistry dispatch.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import uuid
@@ -14,7 +13,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import ConnectorEgressBlockedError, assert_source_url
+from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_urls
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -107,9 +106,14 @@ def _download_capped(container_client: Any, name: str, cap: int) -> bytes | None
     return bytes(buf)
 
 
-def _assert_azure_egress(config: SourceConfig) -> None:
-    for endpoint in azure_blob_endpoints(config.connection_config):
-        assert_source_url(endpoint, context="azure_blob", config=config)
+def _pinned_azure_egress(config: SourceConfig) -> Any:
+    """Egress-check every endpoint the SDK could dial and pin them for the block.
+
+    Raises ConnectorEgressBlockedError for an internal / unparseable endpoint.
+    Inside the block the SDK's own lookups of those hosts answer with the checked
+    addresses only (no DNS-rebinding window between check and connect).
+    """
+    return pin_source_urls(azure_blob_endpoints(config.connection_config), context="azure_blob")
 
 
 @register("azure_blob", feature_flag="ingestion_connector_azure_blob_enabled")
@@ -126,23 +130,23 @@ class AzureBlobConnector(BaseConnector):
         try:
             # Egress check before the SDK is even imported: the connection
             # string / account name is tenant-controlled.
-            await asyncio.to_thread(_assert_azure_egress, config)
-            from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
+            async with _pinned_azure_egress(config):
+                from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
 
-            conn_str = config.connection_config.get("connection_string", "")
-            account_name = config.connection_config.get("account_name", "")
-            account_key = config.connection_config.get("account_key", "")
-            container = config.connection_config.get("container", "")
+                conn_str = config.connection_config.get("connection_string", "")
+                account_name = config.connection_config.get("account_name", "")
+                account_key = config.connection_config.get("account_key", "")
+                container = config.connection_config.get("container", "")
 
-            if conn_str:
-                client = BlobServiceClient.from_connection_string(conn_str)
-            else:
-                client = BlobServiceClient(
-                    account_url=f"https://{account_name}.blob.core.windows.net",
-                    credential=account_key,
-                )
-            cc = client.get_container_client(container)
-            props = cc.get_container_properties()
+                if conn_str:
+                    client = BlobServiceClient.from_connection_string(conn_str)
+                else:
+                    client = BlobServiceClient(
+                        account_url=f"https://{account_name}.blob.core.windows.net",
+                        credential=account_key,
+                    )
+                cc = client.get_container_client(container)
+                props = cc.get_container_properties()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
                 ok=True,
@@ -160,10 +164,18 @@ class AzureBlobConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        from app.ingestion.source_config import RawDocument
 
         # Raises ConnectorEgressBlockedError for an internal / unparseable endpoint.
-        await asyncio.to_thread(_assert_azure_egress, config)
+        async with _pinned_azure_egress(config):
+            async for item in self._iter_blobs(config, cursor):
+                yield item
+
+    async def _iter_blobs(
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        """Runs inside the pinned egress block (see :func:`_pinned_azure_egress`)."""
+        from app.ingestion.source_config import RawDocument
+
         try:
             from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
         except ImportError:

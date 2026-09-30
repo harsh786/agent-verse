@@ -108,6 +108,7 @@ def _metadata_advertising(host: str) -> MagicMock:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_unpinnable_drivers")
 async def test_kafka_validate_blocks_internal_advertised_broker() -> None:
     """A public bootstrap broker that advertises an internal listener is refused."""
     from app.ingestion.connectors.kafka_connector import KafkaConnector
@@ -122,6 +123,7 @@ async def test_kafka_validate_blocks_internal_advertised_broker() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allow_unpinnable_drivers")
 async def test_kafka_get_delta_blocks_internal_advertised_broker() -> None:
     from app.ingestion.connectors.kafka_connector import KafkaConnector
 

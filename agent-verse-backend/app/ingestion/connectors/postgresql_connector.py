@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import check_source_dsn
+from app.ingestion.connector_egress import (
+    EgressPins,
+    dsn_with_pinned_hosts,
+    pin_source_dsn,
+    pinned_hostname_ssl,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -45,11 +50,12 @@ class PostgreSQLConnector(BaseConnector):
         t0 = time.perf_counter()
         try:
             dsn = config.connection_config.get("dsn") or _build_dsn(config.connection_config)
-            # Every host the DSN would dial must resolve public (SSRF guard).
-            await check_source_dsn(dsn, context="postgresql")
-            import asyncpg  # type: ignore[import-not-found]
+            # Every host the DSN would dial must resolve public (SSRF guard), and
+            # asyncpg dials the checked address, never a fresh DNS answer.
+            async with pin_source_dsn(dsn, context="postgresql") as pins:
+                import asyncpg  # type: ignore[import-not-found]
 
-            conn = await asyncpg.connect(dsn, timeout=10)
+                conn = await asyncpg.connect(**_pinned_connect_kwargs(dsn, pins), timeout=10)
             version = await conn.fetchval("SELECT version()")
             await conn.close()
             latency = (time.perf_counter() - t0) * 1000
@@ -81,18 +87,18 @@ class PostgreSQLConnector(BaseConnector):
                 "postgresql_cdc_mode=%s not yet implemented, falling back to query", cdc_mode
             )
 
-        await check_source_dsn(dsn, context="postgresql")
         try:
             import asyncpg
         except ImportError:
             _log.error("asyncpg not installed")
             return
 
-        try:
-            conn = await asyncpg.connect(dsn)
-        except Exception as exc:
-            _log.error("postgresql_connect_error: %s", exc)
-            return
+        async with pin_source_dsn(dsn, context="postgresql") as pins:
+            try:
+                conn = await asyncpg.connect(**_pinned_connect_kwargs(dsn, pins))
+            except Exception as exc:
+                _log.error("postgresql_connect_error: %s", exc)
+                return
 
         try:
             new_cursor = cursor or "1970-01-01T00:00:00"
@@ -139,6 +145,29 @@ class PostgreSQLConnector(BaseConnector):
                     yield raw, new_cursor
         finally:
             await conn.close()
+
+
+_VERIFYING_SSLMODES = frozenset({"verify-full"})
+
+
+def _pinned_connect_kwargs(dsn: str, pins: EgressPins) -> dict[str, Any]:
+    """asyncpg connect kwargs that dial only the egress-checked addresses.
+
+    asyncpg resolves hosts on the event loop (libuv under uvloop), outside the
+    pinned ``socket.getaddrinfo``, so the DSN's hosts are replaced by the checked
+    IPs. ``sslmode=verify-full`` would then check the certificate against the IP;
+    it gets a context that verifies (and sends SNI for) the configured hostname.
+    """
+    from urllib.parse import parse_qsl, urlsplit
+
+    if "://" not in dsn:
+        # asyncpg only understands URI DSNs; don't hand it a keyword string.
+        raise ValueError("postgresql: dsn must be a postgresql:// URI")
+    query = {k.lower(): v for k, v in parse_qsl(urlsplit(dsn).query, keep_blank_values=True)}
+    kwargs: dict[str, Any] = {"dsn": dsn_with_pinned_hosts(dsn, pins)}
+    if query.get("sslmode", "").lower() in _VERIFYING_SSLMODES:
+        kwargs["ssl"] = pinned_hostname_ssl(pins, cafile=query.get("sslrootcert") or None)
+    return kwargs
 
 
 def _build_dsn(cfg: dict) -> str:

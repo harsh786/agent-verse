@@ -6,13 +6,14 @@ Supports InfluxDB 2.x (Flux queries) and 3.x.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import pin_source_urls
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -36,15 +37,20 @@ class InfluxDBConnector(BaseConnector):
             # Tenant-supplied URL: egress-guarded (it used to default to the
             # platform's own http://localhost:8086).
             url = cc.get("url", "")
-            assert_source_url(url, context="influxdb", config=config)
-            from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
 
-            with InfluxDBClient(
-                url=url,
-                token=cc.get("token", ""),
-                org=cc.get("org", ""),
-            ) as client:
-                health = client.health()
+            def _health() -> Any:
+                from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
+
+                with InfluxDBClient(
+                    url=url,
+                    token=cc.get("token", ""),
+                    org=cc.get("org", ""),
+                ) as client:
+                    return client.health()
+
+            # The HTTP client's own lookups answer with the checked addresses.
+            async with pin_source_urls([url], context="influxdb"):
+                health = await asyncio.to_thread(_health)
             latency = (time.perf_counter() - t0) * 1000
             if health.status == "pass":
                 return ConnectionHealth(
@@ -65,15 +71,6 @@ class InfluxDBConnector(BaseConnector):
 
         cc = config.connection_config
         url = cc.get("url", "")
-        assert_source_url(url, context="influxdb", config=config)
-        try:
-            from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("influxdb-client not installed")
-            return
-
-        import asyncio
-
         token = cc.get("token", "")
         org = cc.get("org", "")
         bucket = cc.get("bucket", "")
@@ -90,6 +87,8 @@ class InfluxDBConnector(BaseConnector):
             flux_query = cc["flux_query"].replace("{range_start}", range_start)
 
         def _query():
+            from influxdb_client import InfluxDBClient
+
             with InfluxDBClient(url=url, token=token, org=org) as client:
                 tables = client.query_api().query(flux_query, org=org)
                 rows = []
@@ -98,8 +97,13 @@ class InfluxDBConnector(BaseConnector):
                         rows.append(record.values)
                 return rows
 
-        loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(None, _query)
+        async with pin_source_urls([url], context="influxdb"):
+            try:
+                import influxdb_client  # type: ignore[import-not-found]  # noqa: F401
+            except ImportError:
+                _log.error("influxdb-client not installed")
+                return
+            rows = await asyncio.to_thread(_query)
 
         new_cursor = cursor or range_start
         for row in rows:

@@ -6,6 +6,7 @@ Supports: MongoDB Atlas, self-hosted, and DocumentDB-compatible.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -13,7 +14,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import check_source_dsn
+from app.ingestion.connector_egress import pin_source_dsn
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -68,12 +69,21 @@ class MongoDBConnector(BaseConnector):
         try:
             cc = config.connection_config
             uri = _mongo_uri(cc)
-            # Every host in the URI (and SRV targets) must resolve public.
-            await check_source_dsn(uri, context="mongodb")
-            from pymongo import MongoClient  # type: ignore[import-not-found]
 
-            client = MongoClient(uri, serverSelectionTimeoutMS=5000)
-            client.admin.command("ping")
+            # Every host in the URI (and SRV targets) must resolve public, and
+            # the driver dials only the checked addresses: an SRV URI is handed
+            # over expanded, so pymongo runs no SRV/DNS lookup of its own.
+            async with pin_source_dsn(uri, context="mongodb") as pins:
+                from pymongo import MongoClient  # type: ignore[import-not-found]
+
+                def _ping() -> None:
+                    client = MongoClient(pins.dsn, serverSelectionTimeoutMS=5000)
+                    try:
+                        client.admin.command("ping")
+                    finally:
+                        client.close()
+
+                await asyncio.to_thread(_ping)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"host": cc.get("host")})
         except ImportError:
@@ -88,35 +98,39 @@ class MongoDBConnector(BaseConnector):
 
         cc = config.connection_config
         uri = _mongo_uri(cc)
-        await check_source_dsn(uri, context="mongodb")
-        try:
-            from bson import ObjectId  # type: ignore[import-not-found]
-            from pymongo import MongoClient  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("pymongo not installed")
-            return
-
-        import asyncio
-
         db_name = cc.get("database", "")
         collection_name = cc.get("collection", "")
         batch_size = int(cc.get("batch_size", 500))
         cursor_field = cc.get("cursor_field", "_id")
 
-        def _fetch():
-            client = MongoClient(uri)
-            db = client[db_name]
-            col = db[collection_name]
-            query: dict = {}
-            if cursor and cursor_field == "_id":
-                with contextlib.suppress(Exception):
-                    query["_id"] = {"$gt": ObjectId(cursor)}
-            elif cursor and cursor_field != "_id":
-                query[cursor_field] = {"$gt": cursor}
-            return list(col.find(query).sort(cursor_field, 1).limit(batch_size))
+        def _fetch(pinned_uri: str):
+            from bson import ObjectId
+            from pymongo import MongoClient
 
-        loop = asyncio.get_event_loop()
-        docs = await loop.run_in_executor(None, _fetch)
+            # Closed before the pin block ends: pymongo's monitor threads keep
+            # resolving the hosts for as long as a client is open.
+            client = MongoClient(pinned_uri)
+            try:
+                db = client[db_name]
+                col = db[collection_name]
+                query: dict = {}
+                if cursor and cursor_field == "_id":
+                    with contextlib.suppress(Exception):
+                        query["_id"] = {"$gt": ObjectId(cursor)}
+                elif cursor and cursor_field != "_id":
+                    query[cursor_field] = {"$gt": cursor}
+                return list(col.find(query).sort(cursor_field, 1).limit(batch_size))
+            finally:
+                client.close()
+
+        async with pin_source_dsn(uri, context="mongodb") as pins:
+            try:
+                import bson  # type: ignore[import-not-found]  # noqa: F401
+                import pymongo  # type: ignore[import-not-found]  # noqa: F401
+            except ImportError:
+                _log.error("pymongo not installed")
+                return
+            docs = await asyncio.to_thread(_fetch, pins.dsn)
 
         new_cursor = cursor or ""
         for doc in docs:

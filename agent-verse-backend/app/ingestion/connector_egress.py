@@ -26,12 +26,31 @@ Checking a URL and then fetching it with a plain ``httpx.AsyncClient`` leaves a
 DNS-rebinding window (the client resolves the name again). Connectors build
 their HTTP clients with :func:`source_client`, which pins every connection to an
 address validated at connect time under this same policy.
+
+Database drivers and vendor SDKs (pymysql, pymongo, neo4j, paho-mqtt, imaplib,
+clickhouse-connect, influxdb-client, boto3, azure-storage-blob) resolve the host
+themselves, so the same window existed there. They run inside
+:func:`pin_source_hosts` / :func:`pin_source_dsn` / :func:`pin_source_urls`: the
+host is resolved and checked **once**, and for the lifetime of the block every
+``socket.getaddrinfo`` lookup of that name answers with the checked addresses
+only, so the driver dials what was validated while TLS still sees the real
+hostname (SNI + certificate checks unchanged). Drivers that bypass the Python
+resolver get the checked IP directly (asyncpg, which may run on uvloop), and a
+driver that cannot be pinned at all (librdkafka) is refused while
+``INGESTION_EGRESS_STRICT_PINNING`` is on.
 """
 
 from __future__ import annotations
 
+import contextlib
+import ipaddress
+import socket
+import ssl
+import threading
+from collections.abc import AsyncIterator, Iterable, Iterator
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
 
 from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
@@ -49,6 +68,11 @@ __all__ = [
     "check_source_dsn",
     "check_source_host",
     "guarded_request",
+    "pin_source_dsn",
+    "pin_source_hosts",
+    "pin_source_urls",
+    "pin_source_urls_sync",
+    "require_pinnable_driver",
     "source_client",
     "source_url_is_allowed",
 ]
@@ -94,13 +118,16 @@ def source_client(**httpx_kwargs: Any) -> Any:
     return public_async_client(allowed_domains=_effective_allowlist(), **httpx_kwargs)
 
 
-def assert_source_url(url: str, *, context: str, config: SourceConfig | None = None) -> None:
+def assert_source_url(url: str, *, context: str, config: SourceConfig | None = None) -> list[str]:
     """Raise :class:`ConnectorEgressBlockedError` unless ``url`` is safe to fetch.
 
     Call this before *any* outbound request a connector makes to a host derived
     from ``connection_config`` — in ``validate_connection`` as well as
     ``get_delta``, since validation runs against the same attacker-supplied URL
     and returns its own response body/error to the caller.
+
+    Returns the checked addresses (empty for an operator-allowlisted internal
+    name that does not resolve from here).
     """
     del config  # tenant config must never widen the policy; kept for call-site clarity
     if not url:
@@ -108,7 +135,7 @@ def assert_source_url(url: str, *, context: str, config: SourceConfig | None = N
 
     effective_allowlist = _effective_allowlist()
     try:
-        assert_public_url(url, allowed_domains=effective_allowlist, context=context)
+        return assert_public_url(url, allowed_domains=effective_allowlist, context=context)
     except (SSRFError, ValueError) as exc:
         _log.warning("connector_egress_blocked", context=context, error=str(exc)[:200])
         raise ConnectorEgressBlockedError(str(exc)) from exc
@@ -123,7 +150,7 @@ def source_url_is_allowed(url: str, *, context: str) -> bool:
         return False
 
 
-def assert_source_host(host: object, port: object = None, *, context: str) -> None:
+def assert_source_host(host: object, port: object = None, *, context: str) -> list[str]:
     """Egress check for a connector that dials ``host[:port]`` directly (a database
     driver, a broker) rather than fetching a URL.
 
@@ -149,7 +176,7 @@ def assert_source_host(host: object, port: object = None, *, context: str) -> No
             raise ConnectorEgressBlockedError(
                 f"SSRF guard [{context}]: invalid port {port!r} blocked"
             ) from exc
-    assert_source_url(f"http://{bracketed}{port_part}/", context=context)
+    return assert_source_url(f"http://{bracketed}{port_part}/", context=context)
 
 
 def _dsn_hosts(dsn: str) -> list[tuple[str, str]]:
@@ -186,8 +213,8 @@ def _dsn_hosts(dsn: str) -> list[tuple[str, str]]:
     return hosts or [("", "")]
 
 
-def _srv_targets(name: str) -> list[str]:
-    """Resolve ``mongodb+srv://name`` to the hosts the driver will actually dial."""
+def _srv_records(name: str) -> list[tuple[str, int]]:
+    """Resolve ``mongodb+srv://name`` to the (host, port) pairs the driver would dial."""
     try:
         import dns.resolver
     except ImportError as exc:  # pragma: no cover - dnspython ships with the app
@@ -200,7 +227,12 @@ def _srv_targets(name: str) -> list[str]:
         raise ConnectorEgressBlockedError(
             f"SSRF guard: cannot resolve SRV record for {name!r} — blocked"
         ) from exc
-    return [str(a.target).rstrip(".") for a in answers]
+    return [(str(a.target).rstrip("."), int(getattr(a, "port", 27017))) for a in answers]
+
+
+def _srv_targets(name: str) -> list[str]:
+    """Resolve ``mongodb+srv://name`` to the hosts the driver will actually dial."""
+    return [host for host, _port in _srv_records(name)]
 
 
 def assert_source_dsn(dsn: object, *, context: str) -> None:
@@ -210,10 +242,9 @@ def assert_source_dsn(dsn: object, *, context: str) -> None:
     ``mongodb+srv`` the SRV targets are resolved and each is checked, since the
     SRV name itself says nothing about where the driver will connect.
 
-    Residual risk, stated plainly: database drivers do their own DNS lookup after
-    this check, so a rebinding resolver with a ~0 TTL can still race it. Pinning
-    the connection to the checked IP is not possible for every driver (TLS SNI /
-    SRV); the check closes the direct and literal-IP cases.
+    This is the check only: a driver that dials the DSN afterwards resolves the
+    names again. Connectors run their driver inside :func:`pin_source_dsn`, which
+    performs this check and pins the checked addresses for the connection.
     """
     text = str(dsn or "").strip()
     if not text:
@@ -290,3 +321,382 @@ async def check_source_dsn(dsn: object, *, context: str) -> None:
     import asyncio
 
     await asyncio.to_thread(assert_source_dsn, dsn, context=context)
+
+
+# ── Resolver pinning for drivers / SDKs that resolve the host themselves ─────
+#
+# ``_pins`` maps a normalised hostname to the address lists currently pinned for
+# it (one entry per active pin block; several syncs may pin the same name at
+# once, and each list was checked). While a name is pinned, ``socket.getaddrinfo``
+# answers with those addresses only — numerically, never from DNS — so a driver
+# that looks the name up again cannot be steered to an address that was not
+# checked. Every other lookup passes straight through.
+
+_pins: dict[str, list[tuple[str, ...]]] = {}
+_pins_lock = threading.Lock()
+
+
+def _host_key(host: object) -> str:
+    if isinstance(host, bytes | bytearray):
+        host = bytes(host).decode("ascii", errors="replace")
+    return str(host or "").strip().strip("[]").lower().rstrip(".")
+
+
+def _make_pinned_getaddrinfo(inner: Any) -> Any:
+    """Wrap ``inner`` (the resolver in place at install time) with the pin table."""
+
+    def _pinned_getaddrinfo(
+        host: Any,
+        port: Any,
+        family: int = 0,
+        type: int = 0,  # noqa: A002 - socket.getaddrinfo's own parameter name
+        proto: int = 0,
+        flags: int = 0,
+    ) -> Any:
+        if _pins and host is not None:
+            key = _host_key(host)
+            with _pins_lock:
+                entries = list(_pins.get(key, ()))
+            if entries:
+                ips = list(dict.fromkeys(ip for entry in entries for ip in entry))
+                results: list[Any] = []
+                for ip in ips:
+                    try:
+                        results.extend(
+                            inner(ip, port, family, type, proto, flags | socket.AI_NUMERICHOST)
+                        )
+                    except socket.gaierror:
+                        continue  # e.g. an IPv6 pin asked for AF_INET only
+                if results:
+                    return results
+                raise socket.gaierror(
+                    socket.EAI_NONAME, f"no pinned address for {key!r} matches the request"
+                )
+        return inner(host, port, family, type, proto, flags)
+
+    _pinned_getaddrinfo._egress_pin_wrapper = True  # type: ignore[attr-defined]
+    return _pinned_getaddrinfo
+
+
+def _ensure_resolver_pinning_installed() -> None:
+    """Route ``socket.getaddrinfo`` through the pin table (idempotent).
+
+    Re-checked on every registration: if something replaced ``socket.getaddrinfo``
+    since (a test double, a library), a pin wrapper is layered over the current
+    function instead of silently not applying. Each wrapper keeps its own inner
+    resolver, so restoring an earlier ``socket.getaddrinfo`` restores a
+    consistent one.
+    """
+    with _pins_lock:
+        current = socket.getaddrinfo
+        if getattr(current, "_egress_pin_wrapper", False):
+            return
+        socket.getaddrinfo = _make_pinned_getaddrinfo(current)
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass
+class EgressPins:
+    """The checked addresses a connector may dial, by hostname."""
+
+    ips: dict[str, list[str]] = field(default_factory=dict)
+    dsn: str = ""  # the DSN to hand the driver (SRV URIs are expanded)
+
+    def ip(self, host: object) -> str:
+        """A checked address for ``host`` (``host`` itself when nothing is pinned:
+        a literal IP, or an operator-allowlisted name unresolvable from here)."""
+        addrs = self.ips.get(_host_key(host))
+        return addrs[0] if addrs else str(host or "")
+
+
+def _register(pins: dict[str, list[str]]) -> list[tuple[str, tuple[str, ...]]]:
+    _ensure_resolver_pinning_installed()
+    tokens: list[tuple[str, tuple[str, ...]]] = []
+    with _pins_lock:
+        for host, ips in pins.items():
+            if not ips or _is_ip_literal(host):
+                continue
+            entry = tuple(ips)
+            _pins.setdefault(host, []).append(entry)
+            tokens.append((host, entry))
+    return tokens
+
+
+def _release(tokens: list[tuple[str, tuple[str, ...]]]) -> None:
+    with _pins_lock:
+        for host, entry in tokens:
+            entries = _pins.get(host)
+            if not entries:
+                continue
+            with contextlib.suppress(ValueError):
+                entries.remove(entry)
+            if not entries:
+                _pins.pop(host, None)
+
+
+def _merge(checked: dict[str, list[str]], host: object, ips: list[str]) -> None:
+    key = _host_key(host)
+    checked[key] = list(dict.fromkeys([*checked.get(key, []), *ips]))
+
+
+def _check_hosts(targets: Iterable[tuple[object, object]], context: str) -> dict[str, list[str]]:
+    checked: dict[str, list[str]] = {}
+    for host, port in targets:
+        _merge(checked, host, assert_source_host(host, port, context=context))
+    return checked
+
+
+@contextlib.asynccontextmanager
+async def _pinned(checked: dict[str, list[str]], dsn: str = "") -> AsyncIterator[EgressPins]:
+    tokens = _register(checked)
+    try:
+        yield EgressPins(ips=checked, dsn=dsn)
+    finally:
+        _release(tokens)
+
+
+@contextlib.asynccontextmanager
+async def pin_source_hosts(
+    targets: Iterable[tuple[object, object]], *, context: str
+) -> AsyncIterator[EgressPins]:
+    """Check every ``(host, port)`` (DNS off the loop) and pin it for the block.
+
+    Raises :class:`ConnectorEgressBlockedError` exactly like
+    :func:`assert_source_host`. Run *all* driver work for these hosts inside the
+    block; lookups made after it ends are no longer pinned.
+    """
+    import asyncio
+
+    checked = await asyncio.to_thread(_check_hosts, list(targets), context)
+    async with _pinned(checked) as pins:
+        yield pins
+
+
+def _check_urls(urls: Iterable[str], context: str) -> dict[str, list[str]]:
+    checked: dict[str, list[str]] = {}
+    for url in urls:
+        _merge(checked, urlsplit(url).hostname or "", assert_source_url(url, context=context))
+    return checked
+
+
+@contextlib.asynccontextmanager
+async def pin_source_urls(urls: Iterable[str], *, context: str) -> AsyncIterator[EgressPins]:
+    """:func:`pin_source_hosts` for SDKs configured with endpoint URLs."""
+    import asyncio
+
+    checked = await asyncio.to_thread(_check_urls, list(urls), context)
+    async with _pinned(checked) as pins:
+        yield pins
+
+
+@contextlib.contextmanager
+def pin_source_urls_sync(urls: Iterable[str], *, context: str) -> Iterator[EgressPins]:
+    """Synchronous :func:`pin_source_urls`, for code already off the event loop."""
+    tokens = _register(checked := _check_urls(list(urls), context))
+    try:
+        yield EgressPins(ips=checked)
+    finally:
+        _release(tokens)
+
+
+_MONGODB_SRV_TXT_OPTIONS = frozenset({"authsource", "replicaset", "loadbalanced"})
+
+
+def _srv_txt_options(name: str) -> list[tuple[str, str]]:
+    """The URI options a ``mongodb+srv`` TXT record contributes (pymongo's subset)."""
+    try:
+        import dns.resolver
+
+        answers = dns.resolver.resolve(name, "TXT")
+    except Exception:
+        return []  # no TXT record is normal
+    options: list[tuple[str, str]] = []
+    for answer in answers:
+        text = b"".join(getattr(answer, "strings", [])).decode("utf-8", errors="replace")
+        for key, value in parse_qsl(text, keep_blank_values=True):
+            if key.lower() in _MONGODB_SRV_TXT_OPTIONS:
+                options.append((key, value))
+    return options
+
+
+def _expand_mongodb_srv(uri: str, context: str) -> tuple[str, list[tuple[str, int]]]:
+    """Rewrite ``mongodb+srv://name/...`` as a seed-list ``mongodb://`` URI.
+
+    The driver would otherwise run its own SRV query, and a hostile DNS answer
+    could name different (internal) targets than the ones checked here. SRV
+    semantics are kept: TLS on unless the URI says otherwise, the TXT record's
+    options (URI options win), and pymongo's rule that every target must sit
+    under the SRV name's parent domain.
+    """
+    parts = urlsplit(uri)
+    userinfo, _, name = parts.netloc.rpartition("@")
+    name = unquote(name).strip().lower().rstrip(".")
+    if not name or "," in name or ":" in name:
+        raise ConnectorEgressBlockedError(
+            f"SSRF guard [{context}]: a mongodb+srv URI names exactly one host, no port"
+        )
+    parent = name.split(".", 1)[1] if name.count(".") >= 2 else name
+    records = _srv_records(name)
+    if not records:
+        raise ConnectorEgressBlockedError(
+            f"SSRF guard [{context}]: SRV record for {name!r} names no hosts — blocked"
+        )
+    for host, _port in records:
+        if not (host.lower() == parent or host.lower().endswith("." + parent)):
+            raise ConnectorEgressBlockedError(
+                f"SSRF guard [{context}]: SRV target {host!r} is outside {parent!r} — blocked"
+            )
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    present = {k.lower() for k, _ in query}
+    query.extend((k, v) for k, v in _srv_txt_options(name) if k.lower() not in present)
+    if not present & {"tls", "ssl"}:
+        query.append(("tls", "true"))
+    seeds = ",".join(f"{_netloc_host(h)}:{p}" for h, p in records)
+    netloc = f"{userinfo}@{seeds}" if userinfo else seeds
+    expanded = urlunsplit(("mongodb", netloc, parts.path or "/", urlencode(query), ""))
+    return expanded, records
+
+
+def _check_dsn(dsn: str, context: str) -> tuple[str, dict[str, list[str]]]:
+    text = str(dsn or "").strip()
+    if not text:
+        raise ConnectorEgressBlockedError(f"SSRF guard [{context}]: empty DSN blocked")
+    if text.lower().startswith("mongodb+srv://"):
+        text, records = _expand_mongodb_srv(text, context)
+        return text, _check_hosts(records, context)
+    return text, _check_hosts(_dsn_hosts(text), context)
+
+
+@contextlib.asynccontextmanager
+async def pin_source_dsn(dsn: object, *, context: str) -> AsyncIterator[EgressPins]:
+    """Check every host a DSN would dial and pin them for the block.
+
+    Hand the driver ``pins.dsn`` — for ``mongodb+srv`` that is the expanded
+    seed-list URI of the checked SRV targets, so the driver runs no SRV query of
+    its own. For drivers that bypass ``socket.getaddrinfo`` use
+    :func:`dsn_with_pinned_hosts`.
+    """
+    import asyncio
+
+    text, checked = await asyncio.to_thread(_check_dsn, str(dsn or ""), context)
+    async with _pinned(checked, dsn=text) as pins:
+        yield pins
+
+
+def _netloc_host(host: str) -> str:
+    return f"[{host}]" if ":" in host else host
+
+
+def dsn_with_pinned_hosts(dsn: str, pins: EgressPins) -> str:
+    """``dsn`` (a URI) with every host replaced by its pinned address.
+
+    For drivers whose connect path never calls ``socket.getaddrinfo`` (asyncpg
+    under uvloop resolves in libuv). Pair it with :func:`pinned_hostname_ssl`
+    when the DSN asks for certificate hostname verification.
+    """
+    parts = urlsplit(dsn)
+    userinfo, sep, hostlist = parts.netloc.rpartition("@")
+    rebuilt: list[str] = []
+    for raw_item in hostlist.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if item.startswith("["):
+            host, _, rest = item[1:].partition("]")
+            port = rest.lstrip(":")
+        else:
+            host, _, port = item.partition(":")
+            host = unquote(host)
+        rebuilt.append(_netloc_host(pins.ip(host)) + (f":{port}" if port else ""))
+    netloc = f"{userinfo}{sep}{','.join(rebuilt)}"
+    query = [
+        (k, ",".join(pins.ip(h) for h in v.split(",")) if k.lower() in ("host", "hostaddr") else v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+    ]
+    return urlunsplit((parts.scheme, netloc, parts.path, urlencode(query), parts.fragment))
+
+
+class _PinnedHostnameSSLContext(ssl.SSLContext):
+    """TLS context that verifies the certificate against the *original* hostname
+    (and sends it as SNI) while the socket is connected to a pinned IP."""
+
+    _ip_to_host: dict[str, str]
+
+    def _host_for(self, server_hostname: Any) -> Any:
+        return self._ip_to_host.get(str(server_hostname), server_hostname)
+
+    def wrap_bio(  # type: ignore[override]
+        self,
+        incoming: Any,
+        outgoing: Any,
+        server_side: bool = False,
+        server_hostname: Any = None,
+        session: Any = None,
+    ) -> Any:
+        return super().wrap_bio(
+            incoming, outgoing, server_side, self._host_for(server_hostname), session
+        )
+
+    def wrap_socket(  # type: ignore[override]
+        self,
+        sock: Any,
+        server_side: bool = False,
+        do_handshake_on_connect: bool = True,
+        suppress_ragged_eofs: bool = True,
+        server_hostname: Any = None,
+        session: Any = None,
+    ) -> Any:
+        return super().wrap_socket(
+            sock,
+            server_side,
+            do_handshake_on_connect,
+            suppress_ragged_eofs,
+            self._host_for(server_hostname),
+            session,
+        )
+
+
+def pinned_hostname_ssl(pins: EgressPins, *, cafile: str | None = None) -> ssl.SSLContext:
+    """A verifying TLS client context for connections dialled to pinned IPs.
+
+    Certificates are still checked against the hostname the tenant configured,
+    never against the IP the socket was pinned to.
+    """
+    ctx = _PinnedHostnameSSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx._ip_to_host = {ips[0]: host for host, ips in pins.ips.items() if ips}
+    ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    if cafile:
+        ctx.load_verify_locations(cafile=cafile)
+    else:
+        ctx.load_default_certs()
+    return ctx
+
+
+def require_pinnable_driver(driver: str, *, context: str) -> None:
+    """Refuse a driver that resolves hosts outside Python while strict pinning is on.
+
+    Such a driver (librdkafka) does its own DNS lookups — including for the
+    broker addresses the cluster advertises — so a checked name could be
+    re-resolved to an internal address. Operators can accept that risk by
+    setting ``INGESTION_EGRESS_STRICT_PINNING=false``.
+    """
+    try:
+        from app.core.config import get_settings
+
+        strict = bool(getattr(get_settings(), "ingestion_egress_strict_pinning", True))
+    except Exception:  # pragma: no cover - settings unavailable: fail closed
+        strict = True
+    if strict:
+        raise ConnectorEgressBlockedError(
+            f"SSRF guard [{context}]: {driver} resolves hosts itself, so its connections "
+            "cannot be pinned to checked addresses (DNS rebinding); refused while "
+            "INGESTION_EGRESS_STRICT_PINNING is on"
+        )

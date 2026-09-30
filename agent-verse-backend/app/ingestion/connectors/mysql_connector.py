@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import check_source_host
+from app.ingestion.connector_egress import pin_source_hosts
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -34,13 +34,16 @@ class MySQLConnector(BaseConnector):
         t0 = time.perf_counter()
         cc = config.connection_config
         try:
-            # The tenant-chosen host must resolve public (SSRF guard).
-            await check_source_host(cc.get("host", ""), cc.get("port", 3306), context="mysql")
-            conn = self._connect(cc)
-            cur = conn.cursor()
-            cur.execute("SELECT VERSION()")
-            version = cur.fetchone()[0]
-            conn.close()
+            # The tenant-chosen host must resolve public (SSRF guard), and the
+            # driver dials the checked address, never a fresh DNS answer.
+            async with pin_source_hosts(
+                [(cc.get("host", ""), cc.get("port", 3306))], context="mysql"
+            ) as pins:
+                conn = self._connect(cc, host=pins.ip(cc.get("host", "")))
+                cur = conn.cursor()
+                cur.execute("SELECT VERSION()")
+                version = cur.fetchone()[0]
+                conn.close()
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"version": version})
         except ImportError as exc:
@@ -49,12 +52,15 @@ class MySQLConnector(BaseConnector):
             return ConnectionHealth(ok=False, error=str(exc))
 
     @staticmethod
-    def _connect(cc: dict):
+    def _connect(cc: dict, *, host: str | None = None):
+        # ``host`` is the pinned, egress-checked address (no TLS is configured
+        # here, so there is no certificate hostname to preserve).
+        host = host or cc.get("host", "")
         try:
             import pymysql  # type: ignore[import-not-found]
 
             return pymysql.connect(
-                host=cc.get("host", ""),
+                host=host,
                 port=int(cc.get("port", 3306)),
                 user=cc.get("username", ""),
                 password=cc.get("password", ""),
@@ -66,7 +72,7 @@ class MySQLConnector(BaseConnector):
             import MySQLdb  # type: ignore[import-not-found]
 
             return MySQLdb.connect(
-                host=cc.get("host", ""),
+                host=host,
                 port=int(cc.get("port", 3306)),
                 user=cc.get("username", ""),
                 passwd=cc.get("password", ""),
@@ -95,10 +101,8 @@ class MySQLConnector(BaseConnector):
             else:
                 query += f" ORDER BY {cursor_col} LIMIT {batch_size}"
 
-        await check_source_host(cc.get("host", ""), cc.get("port", 3306), context="mysql")
-
-        def _fetch():
-            conn = self._connect(cc)
+        def _fetch(pinned_host: str):
+            conn = self._connect(cc, host=pinned_host)
             try:
                 cur = conn.cursor()
                 cur.execute(query, (cursor,) if cursor and "%s" in query else ())
@@ -106,8 +110,10 @@ class MySQLConnector(BaseConnector):
             finally:
                 conn.close()
 
-        loop = asyncio.get_event_loop()
-        rows = await loop.run_in_executor(None, _fetch)
+        async with pin_source_hosts(
+            [(cc.get("host", ""), cc.get("port", 3306))], context="mysql"
+        ) as pins:
+            rows = await asyncio.to_thread(_fetch, pins.ip(cc.get("host", "")))
 
         new_cursor = cursor or ""
         for row in rows:

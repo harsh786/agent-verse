@@ -94,6 +94,9 @@ def _install_fake_pymongo(docs=None, ping_side_effect=None):
         def __getitem__(self, name):
             return _FakeDB(collection)
 
+        def close(self):
+            self.closed = True
+
     fake_pymongo = types.ModuleType("pymongo")
     fake_pymongo.MongoClient = FakeMongoClient
     fake_bson = types.ModuleType("bson")

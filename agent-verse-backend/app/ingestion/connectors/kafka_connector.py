@@ -15,7 +15,11 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import ConnectorEgressBlockedError, assert_source_host
+from app.ingestion.connector_egress import (
+    ConnectorEgressBlockedError,
+    assert_source_host,
+    require_pinnable_driver,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -71,6 +75,9 @@ class KafkaConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
+            # librdkafka resolves bootstrap and advertised brokers itself, so its
+            # connections cannot be pinned to the checked addresses.
+            require_pinnable_driver("confluent-kafka (librdkafka)", context="kafka_connector")
             from confluent_kafka.admin import AdminClient  # type: ignore[import-not-found]
 
             cc = config.connection_config
@@ -96,6 +103,7 @@ class KafkaConnector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
+        require_pinnable_driver("confluent-kafka (librdkafka)", context="kafka_connector")
         try:
             from confluent_kafka import Consumer, KafkaError
             from confluent_kafka.admin import AdminClient

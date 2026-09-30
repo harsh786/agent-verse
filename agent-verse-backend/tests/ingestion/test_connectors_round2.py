@@ -15,6 +15,8 @@ import sys
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.ingestion.source_config import SourceConfig
 
 
@@ -452,6 +454,7 @@ def _install_fake_confluent_kafka():
     return fake_pkg, fake_admin
 
 
+@pytest.mark.usefixtures("allow_unpinnable_drivers")
 class TestKafkaConnector:
     def test_register(self):
         import importlib

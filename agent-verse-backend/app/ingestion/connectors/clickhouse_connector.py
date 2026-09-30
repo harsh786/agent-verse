@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import check_source_host
+from app.ingestion.connector_egress import pin_source_hosts
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -33,22 +33,23 @@ class ClickHouseConnector(BaseConnector):
         t0 = time.perf_counter()
         try:
             cc = config.connection_config
-            # The tenant-chosen host must resolve public (SSRF guard).
-            await check_source_host(
-                cc.get("host", ""), cc.get("port", 8123), context="clickhouse"
-            )
-            import clickhouse_connect  # type: ignore[import-not-found]
+            # The tenant-chosen host must resolve public (SSRF guard); inside the
+            # block the HTTP client's lookups answer with the checked addresses.
+            async with pin_source_hosts(
+                [(cc.get("host", ""), cc.get("port", 8123))], context="clickhouse"
+            ):
+                import clickhouse_connect  # type: ignore[import-not-found]
 
-            client = clickhouse_connect.get_client(
-                host=cc.get("host", ""),
-                port=int(cc.get("port", 8123)),
-                username=cc.get("username", "default"),
-                password=cc.get("password", ""),
-                database=cc.get("database", "default"),
-                connect_timeout=10,
-            )
-            result = client.query("SELECT version()")
-            version = result.first_row[0]
+                client = clickhouse_connect.get_client(
+                    host=cc.get("host", ""),
+                    port=int(cc.get("port", 8123)),
+                    username=cc.get("username", "default"),
+                    password=cc.get("password", ""),
+                    database=cc.get("database", "default"),
+                    connect_timeout=10,
+                )
+                result = client.query("SELECT version()")
+                version = result.first_row[0]
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"version": version})
         except ImportError:
@@ -62,21 +63,6 @@ class ClickHouseConnector(BaseConnector):
         from app.ingestion.source_config import RawDocument
 
         cc = config.connection_config
-        await check_source_host(cc.get("host", ""), cc.get("port", 8123), context="clickhouse")
-        try:
-            import clickhouse_connect  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("clickhouse-connect not installed")
-            return
-
-        client = clickhouse_connect.get_client(
-            host=cc.get("host", ""),
-            port=int(cc.get("port", 8123)),
-            username=cc.get("username", "default"),
-            password=cc.get("password", ""),
-            database=cc.get("database", "default"),
-        )
-
         query = cc.get("query", "")
         cursor_col = cc.get("cursor_column", "updated_at")
         batch_size = int(cc.get("batch_size", 1000))
@@ -90,7 +76,22 @@ class ClickHouseConnector(BaseConnector):
         elif cursor and "{cursor}" in query:
             query = query.replace("{cursor}", cursor)
 
-        result = client.query(query)
+        async with pin_source_hosts(
+            [(cc.get("host", ""), cc.get("port", 8123))], context="clickhouse"
+        ):
+            try:
+                import clickhouse_connect  # type: ignore[import-not-found]
+            except ImportError:
+                _log.error("clickhouse-connect not installed")
+                return
+            client = clickhouse_connect.get_client(
+                host=cc.get("host", ""),
+                port=int(cc.get("port", 8123)),
+                username=cc.get("username", "default"),
+                password=cc.get("password", ""),
+                database=cc.get("database", "default"),
+            )
+            result = client.query(query)
         col_names = result.column_names
         new_cursor = cursor or ""
 

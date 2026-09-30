@@ -60,3 +60,17 @@ def _allow_connector_test_hosts(monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
         yield
     finally:
         get_settings.cache_clear()
+
+
+@pytest.fixture
+def allow_unpinnable_drivers(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Opt out of strict egress pinning, for tests of drivers that resolve hosts
+    themselves (confluent-kafka): with it on they are refused outright."""
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("INGESTION_EGRESS_STRICT_PINNING", "false")
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()

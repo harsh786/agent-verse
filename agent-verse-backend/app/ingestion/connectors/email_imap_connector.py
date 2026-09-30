@@ -7,6 +7,7 @@ Supports: Gmail (IMAP enabled), Outlook, Exchange (IMAP), and any RFC 3501 serve
 
 from __future__ import annotations
 
+import asyncio
 import email
 import imaplib
 import logging
@@ -16,7 +17,7 @@ from email.header import decode_header as _decode_header
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import check_source_host
+from app.ingestion.connector_egress import pin_source_hosts
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -76,14 +77,19 @@ class EmailIMAPConnector(BaseConnector):
             ssl = cc.get("ssl", True)
             user = cc.get("username", "")
             password = cc.get("password", "")
+
             # Tenant-supplied host: never let the API/worker dial internal IMAP.
-            await check_source_host(host, port, context="imap_connector")
+            # imaplib resolves the name itself; inside the block that lookup
+            # answers with the checked addresses (TLS still verifies ``host``).
+            def _probe() -> list:
+                conn = imaplib.IMAP4_SSL(host, port) if ssl else imaplib.IMAP4(host, port)
+                conn.login(user, password)
+                _typ, boxes = conn.list()
+                conn.logout()
+                return list(boxes or [])
 
-            conn = imaplib.IMAP4_SSL(host, port) if ssl else imaplib.IMAP4(host, port)
-
-            conn.login(user, password)
-            _typ, mboxes = conn.list()
-            conn.logout()
+            async with pin_source_hosts([(host, port)], context="imap_connector"):
+                mboxes = await asyncio.to_thread(_probe)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
                 ok=True,
@@ -96,8 +102,6 @@ class EmailIMAPConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import asyncio
-
         from app.ingestion.source_config import RawDocument
 
         cc = config.connection_config
@@ -108,7 +112,6 @@ class EmailIMAPConnector(BaseConnector):
         password = cc.get("password", "")
         mailbox = cc.get("mailbox", "INBOX")
         batch_size = int(cc.get("batch_size", 100))
-        await check_source_host(host, port, context="imap_connector")
 
         # IMAP is sync — run in executor
         def _fetch_emails() -> list[tuple[str, str, dict]]:
@@ -142,8 +145,8 @@ class EmailIMAPConnector(BaseConnector):
             conn.logout()
             return results
 
-        loop = asyncio.get_event_loop()
-        messages = await loop.run_in_executor(None, _fetch_emails)
+        async with pin_source_hosts([(host, port)], context="imap_connector"):
+            messages = await asyncio.to_thread(_fetch_emails)
 
         new_cursor = cursor or "0"
         for uid, text, meta in messages:

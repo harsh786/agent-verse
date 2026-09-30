@@ -27,5 +27,5 @@ class MinIOConnector(S3Connector):
     # endpoint_url would have indexed the platform's buckets into its own
     # knowledge base. (The override that injected it was never called, so the
     # default was dead code; it is removed rather than left armed.) endpoint_url
-    # is required and egress-guarded by S3Connector._endpoint_url.
+    # is required and egress-checked + pinned by S3Connector._pinned_endpoint.
     _requires_endpoint = True

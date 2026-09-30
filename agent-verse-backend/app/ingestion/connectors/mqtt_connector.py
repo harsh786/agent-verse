@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import ConnectorEgressBlockedError, check_source_host
+from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_hosts
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -22,8 +22,8 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
-async def _vetted_broker(cc: dict[str, Any]) -> str:
-    """Return the tenant broker host after the egress (SSRF) check.
+def _broker_host(cc: dict[str, Any]) -> str:
+    """Return the tenant broker host (egress-checked and pinned by the caller).
 
     No ``localhost`` default: an unset host used to make the API/worker dial its
     own loopback on the tenant's behalf.
@@ -31,7 +31,6 @@ async def _vetted_broker(cc: dict[str, Any]) -> str:
     host = str(cc.get("host") or "").strip()
     if not host:
         raise ConnectorEgressBlockedError("mqtt: host is required")
-    await check_source_host(host, cc.get("port", 1883), context="mqtt_connector")
     return host
 
 
@@ -50,7 +49,7 @@ class MQTTConnector(BaseConnector):
             import paho.mqtt.client as mqtt  # type: ignore[import-not-found]
 
             cc = config.connection_config
-            host = await _vetted_broker(cc)
+            host = _broker_host(cc)
             port = int(cc.get("port", 1883))
 
             connected = False
@@ -59,20 +58,23 @@ class MQTTConnector(BaseConnector):
                 nonlocal connected
                 connected = rc == 0
 
-            client = mqtt.Client()
-            if cc.get("username"):
-                client.username_pw_set(cc["username"], cc.get("password", ""))
-            client.on_connect = on_connect
-            client.connect_async(host, port, 10)
-            client.loop_start()
             import asyncio
 
-            for _ in range(50):  # 5 second timeout
-                if connected:
-                    break
-                await asyncio.sleep(0.1)
-            client.loop_stop()
-            client.disconnect()
+            # paho resolves the host on its network thread; inside the block that
+            # lookup answers with the egress-checked addresses only.
+            async with pin_source_hosts([(host, port)], context="mqtt_connector"):
+                client = mqtt.Client()
+                if cc.get("username"):
+                    client.username_pw_set(cc["username"], cc.get("password", ""))
+                client.on_connect = on_connect
+                client.connect_async(host, port, 10)
+                client.loop_start()
+                for _ in range(50):  # 5 second timeout
+                    if connected:
+                        break
+                    await asyncio.sleep(0.1)
+                client.loop_stop()
+                client.disconnect()
             latency = (time.perf_counter() - t0) * 1000
             if connected:
                 return ConnectionHealth(
@@ -100,7 +102,7 @@ class MQTTConnector(BaseConnector):
             return
 
         cc = config.connection_config
-        host = await _vetted_broker(cc)
+        host = _broker_host(cc)
         port = int(cc.get("port", 1883))
         topics = cc.get("topics") or ["#"]
         max_messages = int(cc.get("max_messages", 1000))
@@ -123,17 +125,18 @@ class MQTTConnector(BaseConnector):
                 }
             )
 
-        client = mqtt.Client()
-        if cc.get("username"):
-            client.username_pw_set(cc["username"], cc.get("password", ""))
-        client.on_message = on_message
-        client.connect(host, port, 60)
-        for topic in topics:
-            client.subscribe(topic, qos=cc.get("qos", 0))
-        client.loop_start()
-        await asyncio.sleep(timeout_seconds)
-        client.loop_stop()
-        client.disconnect()
+        async with pin_source_hosts([(host, port)], context="mqtt_connector"):
+            client = mqtt.Client()
+            if cc.get("username"):
+                client.username_pw_set(cc["username"], cc.get("password", ""))
+            client.on_message = on_message
+            await asyncio.to_thread(client.connect, host, port, 60)
+            for topic in topics:
+                client.subscribe(topic, qos=cc.get("qos", 0))
+            client.loop_start()
+            await asyncio.sleep(timeout_seconds)
+            client.loop_stop()
+            client.disconnect()
 
         import time as _time
 

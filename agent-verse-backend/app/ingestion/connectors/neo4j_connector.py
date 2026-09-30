@@ -6,13 +6,14 @@ Exports nodes and relationships as structured text for embedding.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import check_source_dsn
+from app.ingestion.connector_egress import pin_source_dsn
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -33,15 +34,19 @@ class Neo4jConnector(BaseConnector):
         t0 = time.perf_counter()
         try:
             cc = config.connection_config
-            # No bolt://localhost default, and the host must resolve public.
-            await check_source_dsn(cc.get("uri", ""), context="neo4j")
-            from neo4j import GraphDatabase  # type: ignore[import-not-found]
+            def _verify() -> None:
+                from neo4j import GraphDatabase  # type: ignore[import-not-found]
 
-            with GraphDatabase.driver(
-                cc.get("uri", ""),
-                auth=(cc.get("username", "neo4j"), cc.get("password", "")),
-            ) as driver:
-                driver.verify_connectivity()
+                with GraphDatabase.driver(
+                    cc.get("uri", ""),
+                    auth=(cc.get("username", "neo4j"), cc.get("password", "")),
+                ) as driver:
+                    driver.verify_connectivity()
+
+            # No bolt://localhost default, the host must resolve public, and the
+            # driver's own lookups answer with the checked addresses only.
+            async with pin_source_dsn(cc.get("uri", ""), context="neo4j"):
+                await asyncio.to_thread(_verify)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"uri": cc.get("uri")})
         except ImportError:
@@ -56,15 +61,6 @@ class Neo4jConnector(BaseConnector):
 
         cc = config.connection_config
         neo4j_uri = cc.get("uri", "")
-        await check_source_dsn(neo4j_uri, context="neo4j")
-        try:
-            from neo4j import GraphDatabase  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("neo4j not installed")
-            return
-
-        import asyncio
-
         auth = (cc.get("username", "neo4j"), cc.get("password", ""))
         cypher = cc.get("cypher", "")
         node_labels = cc.get("node_labels") or []
@@ -79,12 +75,19 @@ class Neo4jConnector(BaseConnector):
                 cypher = f"MATCH (n) RETURN n LIMIT {batch_size}"
 
         def _run_query():
+            from neo4j import GraphDatabase
+
             with GraphDatabase.driver(neo4j_uri, auth=auth) as driver, driver.session() as session:
                 result = session.run(cypher)
                 return [dict(record) for record in result]
 
-        loop = asyncio.get_event_loop()
-        records = await loop.run_in_executor(None, _run_query)
+        async with pin_source_dsn(neo4j_uri, context="neo4j"):
+            try:
+                import neo4j  # type: ignore[import-not-found]  # noqa: F401
+            except ImportError:
+                _log.error("neo4j not installed")
+                return
+            records = await asyncio.to_thread(_run_query)
 
         new_cursor = cursor or ""
         for record in records:
