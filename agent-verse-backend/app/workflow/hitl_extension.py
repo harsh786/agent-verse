@@ -679,24 +679,59 @@ class HITLWorkflowGateway:
             req.assigned_to = await self._skill_based_pick(req.assigned_role, req.tenant_id)
         return req
 
+    async def _role_load(
+        self, role: str | None, tenant_id: str
+    ) -> tuple[list[str], dict[str, tuple[int, datetime | None]]]:
+        """Members of ``role`` and their shared (DB) approval load.
+
+        Empty when there is no role or no durable store — the approval then stays
+        role-/un-assigned and any eligible reviewer may take it (never a guess
+        from this process's memory, which other replicas can't see)."""
+        store = self._approval_store
+        if not role or not tenant_id or store is None or not hasattr(store, "role_members"):
+            return [], {}
+        try:
+            members = list(await store.role_members(tenant_id, role))
+            load = dict(await store.assignee_load(tenant_id, members)) if members else {}
+        except Exception as exc:
+            _log.warning("hitl_assignment_lookup_failed", role=role, error=str(exc))
+            return [], {}
+        return members, load
+
     async def _round_robin_pick(self, role: str | None, tenant_id: str) -> str | None:
-        """Simple round-robin — for now returns None (DB-backed in production)."""
-        return None
+        """Rotate through the role's members: the one assigned least recently
+        (never-assigned first, then by id). Derived from the shared approvals
+        table, so the rotation holds across replicas.
+
+        Old bug: always returned None, so the default strategy assigned nobody."""
+        members, load = await self._role_load(role, tenant_id)
+        if not members:
+            return None
+        epoch = datetime.min.replace(tzinfo=UTC)
+
+        def last_assigned(user: str) -> datetime:
+            at = load.get(user, (0, None))[1]
+            if at is None:
+                return epoch
+            return at if at.tzinfo else at.replace(tzinfo=UTC)
+
+        return min(members, key=lambda u: (last_assigned(u), members.index(u)))
 
     async def _least_busy_pick(self, role: str | None, tenant_id: str) -> str | None:
-        """Picks reviewer with fewest pending requests."""
-        if not self._store:
+        """The role member with the fewest pending approvals (shared DB count).
+
+        Old bug: counted only this process's in-memory approvals, across every
+        assignee regardless of role."""
+        members, load = await self._role_load(role, tenant_id)
+        if not members:
             return None
-        pending_by_user: dict[str, int] = {}
-        for r in self._store.values():
-            if r.tenant_id == tenant_id and r.status == "pending" and r.assigned_to:
-                pending_by_user[r.assigned_to] = pending_by_user.get(r.assigned_to, 0) + 1
-        if not pending_by_user:
-            return None
-        return min(pending_by_user, key=lambda u: pending_by_user[u])
+        return min(members, key=lambda u: (load.get(u, (0, None))[0], members.index(u)))
 
     async def _skill_based_pick(self, role: str | None, tenant_id: str) -> str | None:
-        """Stub — hooks into a skills registry in production."""
+        """No skills registry exists: publishing a ``skill_based`` approval step is
+        refused (see ``WorkflowService.publish``). A definition that still reaches
+        here leaves the approval with its role so any member can take it."""
+        _log.warning("hitl_skill_based_unsupported", role=role, tenant_id=tenant_id)
         return None
 
     # ── Persistence ───────────────────────────────────────────────────────────

@@ -79,6 +79,7 @@ async def store(postgres_url: str) -> AsyncIterator[PostgresWorkflowApprovalStor
         await conn.execute(
             text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON workflow_approvals TO {APP_ROLE}")
         )
+        await conn.execute(text(f"GRANT SELECT ON user_roles TO {APP_ROLE}"))
 
     app_engine = create_async_engine(_app_url(postgres_url, password), pool_size=4, max_overflow=0)
     yield PostgresWorkflowApprovalStore(async_sessionmaker(app_engine, expire_on_commit=False))
@@ -194,3 +195,72 @@ async def test_list_by_run(store: PostgresWorkflowApprovalStore) -> None:
 
     for_run = await store.list_by_run(tenant, run_id)
     assert {r.request_id for r in for_run} == {a.request_id, b.request_id}
+
+
+# ── WF-04: reviewer directory for auto-assignment ─────────────────────────────
+
+
+async def _grant_role(postgres_url: str, tenant: str, user: str, role: str) -> None:
+    admin_engine = create_async_engine(postgres_url)
+    async with admin_engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO user_roles (id, tenant_id, user_id, role) "
+                "VALUES (:id, :tid, :uid, :role)"
+            ),
+            {"id": uuid.uuid4().hex, "tid": tenant, "uid": user, "role": role},
+        )
+    await admin_engine.dispose()
+
+
+async def test_role_members_are_tenant_scoped(
+    store: PostgresWorkflowApprovalStore, postgres_url: str
+) -> None:
+    tenant, other = uuid.uuid4().hex, uuid.uuid4().hex
+    for user in ("carol", "alice", "bob"):
+        await _grant_role(postgres_url, tenant, user, "finance")
+    await _grant_role(postgres_url, tenant, "dave", "viewer")
+    await _grant_role(postgres_url, other, "mallory", "finance")
+
+    assert await store.role_members(tenant, "finance") == ["alice", "bob", "carol"]
+    assert await store.role_members(other, "finance") == ["mallory"]
+
+
+async def test_round_robin_and_least_busy_read_the_shared_table(
+    store: PostgresWorkflowApprovalStore, postgres_url: str
+) -> None:
+    from app.workflow.hitl_extension import HITLWorkflowGateway
+
+    tenant = uuid.uuid4().hex
+    for user in ("alice", "bob", "carol"):
+        await _grant_role(postgres_url, tenant, user, "finance")
+
+    # Two gateways = two replicas sharing only the database.
+    replicas = [HITLWorkflowGateway(approval_store=store) for _ in range(2)]
+    picked = []
+    for i in range(4):
+        rid = await replicas[i % 2].create_workflow_approval(
+            run_id=str(uuid.uuid4()),
+            step_id="gate",
+            tenant_id=tenant,
+            assignee_role="finance",
+            strategy="round_robin",
+        )
+        got = await store.get(rid, tenant)
+        assert got is not None
+        picked.append(got.assigned_to)
+    assert picked == ["alice", "bob", "carol", "alice"]
+
+    load = await store.assignee_load(tenant, ["alice", "bob", "carol"])
+    assert {u: n for u, (n, _at) in load.items()} == {"alice": 2, "bob": 1, "carol": 1}
+
+    # least_busy on the OTHER replica: bob and carol tie at 1 -> bob (by id).
+    rid = await replicas[1].create_workflow_approval(
+        run_id=str(uuid.uuid4()),
+        step_id="gate",
+        tenant_id=tenant,
+        assignee_role="finance",
+        strategy="least_busy",
+    )
+    got = await store.get(rid, tenant)
+    assert got is not None and got.assigned_to == "bob"

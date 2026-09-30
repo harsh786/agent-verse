@@ -249,6 +249,49 @@ class PostgresWorkflowApprovalStore:
             "avg_resolution_seconds": avg_resolution,
         }
 
+    # ── Reviewer directory (auto-assignment) ──────────────────────────────────
+    async def role_members(self, tenant_id: str, role: str) -> list[str]:
+        """Principals holding ``role`` in the tenant (``user_roles``), sorted."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT DISTINCT user_id FROM user_roles "
+                        "WHERE tenant_id = :tid AND role = :role ORDER BY user_id"
+                    ),
+                    {"tid": tenant_id, "role": role},
+                )
+            ).all()
+        return [str(r[0]) for r in rows]
+
+    async def assignee_load(
+        self, tenant_id: str, users: list[str]
+    ) -> dict[str, tuple[int, datetime | None]]:
+        """Per user: (pending approvals assigned, when they were last assigned one).
+
+        Read from the shared table, so every replica sees the same numbers."""
+        if not users:
+            return {}
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT assigned_to, "
+                        " COUNT(*) FILTER (WHERE status = 'pending'), MAX(created_at) "
+                        "FROM workflow_approvals WHERE assigned_to = ANY(:users) "
+                        "GROUP BY assigned_to"
+                    ),
+                    {"users": list(users)},
+                )
+            ).all()
+        return {str(r[0]): (int(r[1] or 0), r[2]) for r in rows}
+
     async def list_by_run(
         self, tenant_id: str, run_id: str
     ) -> list[WorkflowHITLRequest]:

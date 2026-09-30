@@ -27,6 +27,25 @@ _log = structlog.get_logger(__name__)
 _TERMINAL_STATUSES = {"complete", "failed", "cancelled", "timed_out"}
 
 
+def publish_problems(definition: dict[str, Any]) -> list[str]:
+    """Reasons a definition must not be published (empty = publishable).
+
+    Reads the raw stored DSL so an older definition never fails to load here.
+    """
+    problems: list[str] = []
+    steps = definition.get("steps") if isinstance(definition, dict) else None
+    for step in steps or []:
+        if not isinstance(step, dict) or step.get("type") != "hitl":
+            continue
+        strategy = (step.get("assignee") or {}).get("strategy")
+        if strategy == "skill_based":
+            problems.append(
+                f"approval step {step.get('id')!r} uses assignee strategy 'skill_based', "
+                "which is not supported yet (use round_robin, least_busy or specific)"
+            )
+    return problems
+
+
 class WorkflowService:
     """Full-featured workflow service used by app/workflow/router.py."""
 
@@ -133,7 +152,16 @@ class WorkflowService:
         (``fire_due_workflow_schedules``) begins evaluating its cron triggers
         (item 4). The returned dict carries the webhook token/path/url so the UI
         can show the caller their trigger URL.
+
+        Raises ``ValueError`` (HTTP 422) when the definition uses a feature that
+        cannot work once live, instead of publishing a workflow that never runs.
         """
+        current = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+        if current is None:
+            return None
+        problems = publish_problems(current.get("definition") or {})
+        if problems:
+            raise ValueError("Cannot publish: " + "; ".join(problems))
         result = await self._store.update(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
