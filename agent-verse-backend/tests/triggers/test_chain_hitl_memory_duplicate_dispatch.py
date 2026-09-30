@@ -43,9 +43,9 @@ from app.triggers.store import ScheduleStore
 
 
 class _FakeAsyncRedis:
-    """Minimal async Redis stand-in: only ``set`` (SETNX) is implemented, which
-    is all ``TriggerDispatcher._is_duplicate`` needs. Every other method raises
-    AttributeError, which the rate limiter / bulkhead already fail open on."""
+    """Minimal async Redis stand-in: SETNX for dedup plus the INCR/DECR/EXPIRE/
+    DELETE the rate limiter and bulkhead use (they fail CLOSED on a Redis error
+    since TRG-14, so a partial fake would skip every firing)."""
 
     def __init__(self) -> None:
         self._store: dict[str, int] = {}
@@ -55,6 +55,20 @@ class _FakeAsyncRedis:
             return None  # already exists -> SETNX fails, mirrors real Redis
         self._store[key] = value
         return True
+
+    async def incr(self, key):
+        self._store[key] = int(self._store.get(key, 0)) + 1
+        return self._store[key]
+
+    async def decr(self, key):
+        self._store[key] = int(self._store.get(key, 0)) - 1
+        return self._store[key]
+
+    async def expire(self, key, ttl):
+        return True
+
+    async def delete(self, *keys):
+        return sum(1 for k in keys if self._store.pop(k, None) is not None)
 
 
 class _FakeGoalService:

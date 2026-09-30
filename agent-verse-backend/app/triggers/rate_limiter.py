@@ -24,6 +24,10 @@ def effective_rate_cap(spec_max: int, plan: str) -> int:
     return min(spec_max, plan_cap)
 
 
+class TriggerGateUnavailableError(RuntimeError):
+    """A Redis-backed dispatch gate (rate limit, bulkhead) could not be checked."""
+
+
 class TriggerRateLimiter:
     """Redis-backed sliding window rate limiter for trigger firings."""
 
@@ -50,6 +54,8 @@ class TriggerRateLimiter:
             if count == 1:
                 await self._redis.expire(key, 3600)
             return count <= cap
-        except Exception:
+        except Exception as exc:
+            # Fail CLOSED (TRG-14): a Redis blip used to let every trigger fire
+            # without limit. The dispatcher skips + dead-letters the firing.
             _log.warning("rate_limiter_redis_error trigger_id=%s", trigger_id)
-            return True  # fail open
+            raise TriggerGateUnavailableError(f"rate limiter unavailable: {exc}") from exc

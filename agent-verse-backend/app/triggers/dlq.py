@@ -17,6 +17,9 @@ FAILURE_TYPES = frozenset(
         "RATE_LIMITED",
         "DEDUP_BLOCKED",
         "BULKHEAD_FULL",
+        # A Redis-backed gate could not be checked; the firing failed closed.
+        "RATE_LIMIT_UNAVAILABLE",
+        "BULKHEAD_UNAVAILABLE",
         "CIRCUIT_OPEN",
         "QUOTA_EXCEEDED",
         "RBAC_DENIED",

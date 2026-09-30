@@ -39,9 +39,13 @@ class TriggerBulkhead:
                 await self._redis.decr(key)
                 return False
             return True
-        except Exception:
+        except Exception as exc:
+            # Fail CLOSED (TRG-14), like dedup: an uncheckable bulkhead used to
+            # admit every firing.
+            from app.triggers.rate_limiter import TriggerGateUnavailableError
+
             _log.warning("bulkhead_redis_error tenant_id=%s", tenant_id)
-            return True
+            raise TriggerGateUnavailableError(f"bulkhead unavailable: {exc}") from exc
 
     async def release(self, tenant_id: str) -> None:
         """Release a bulkhead slot."""

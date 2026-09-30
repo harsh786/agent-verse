@@ -19,7 +19,7 @@ from app.triggers.dlq import write_to_dlq
 from app.triggers.events import SimulatedTriggerResult, TriggerEvent
 from app.triggers.models import TriggerSpec
 from app.triggers.quota import TriggerQuotaEnforcer
-from app.triggers.rate_limiter import TriggerRateLimiter
+from app.triggers.rate_limiter import TriggerGateUnavailableError, TriggerRateLimiter
 from app.triggers.rbac import SYSTEM_ROLE, check_permission
 
 _log = logging.getLogger(__name__)
@@ -262,8 +262,23 @@ class TriggerDispatcher:
                 "dedup",
             )
 
+        # Steps 5-7 are governance gates. A firing they skip has not run, so its
+        # dedup claim is released — a legitimate redelivery (after the rate
+        # window, the circuit closing, a free bulkhead slot) must not be dropped
+        # as a duplicate (TRG-14). An uncheckable gate fails CLOSED: skipped and
+        # dead-lettered with the reason, never admitted.
+
         # ── Step 5: Rate limit check ──────────────────────────────────────────
-        if not await self._rate_limiter.check(trigger_id, trigger_spec.max_firings_per_hour, plan):
+        try:
+            allowed = await self._rate_limiter.check(
+                trigger_id, trigger_spec.max_firings_per_hour, plan
+            )
+        except TriggerGateUnavailableError as exc:
+            return await self._gate_unavailable(
+                trigger_id, tenant_id, payload, idempotency_key, "rate_limit", exc
+            )
+        if not allowed:
+            await self._release_dedup(idempotency_key, tenant_id)
             return self._make_skip_event(
                 trigger_id,
                 tenant_id,
@@ -275,6 +290,7 @@ class TriggerDispatcher:
         # ── Step 6: Circuit breaker check ─────────────────────────────────────
         cb = self._cb_registry.get(trigger_id)
         if cb.is_open():
+            await self._release_dedup(idempotency_key, tenant_id)
             return self._make_skip_event(
                 trigger_id,
                 tenant_id,
@@ -284,7 +300,14 @@ class TriggerDispatcher:
             )
 
         # ── Step 7: Bulkhead check ────────────────────────────────────────────
-        if not await self._bulkhead.acquire(tenant_id, plan):
+        try:
+            acquired = await self._bulkhead.acquire(tenant_id, plan)
+        except TriggerGateUnavailableError as exc:
+            return await self._gate_unavailable(
+                trigger_id, tenant_id, payload, idempotency_key, "bulkhead", exc
+            )
+        if not acquired:
+            await self._release_dedup(idempotency_key, tenant_id)
             return self._make_skip_event(
                 trigger_id,
                 tenant_id,
@@ -422,6 +445,33 @@ class TriggerDispatcher:
             "professional": 1024 * 1024,
             "enterprise": 4096 * 1024,
         }.get(plan, 64 * 1024)
+
+    async def _release_dedup(self, idempotency_key: str, tenant_id: str) -> None:
+        """Drop the Redis dedup claim of a firing a governance gate skipped."""
+        if self._redis is None:
+            return
+        try:
+            await self._redis.delete(f"trigger_dedup:{tenant_id}:{idempotency_key}")
+        except Exception as exc:  # the claim then just expires after its TTL
+            _log.warning("trigger_dedup_release_failed: %s", str(exc)[:200])
+
+    async def _gate_unavailable(
+        self,
+        trigger_id: str,
+        tenant_id: str,
+        payload: dict,
+        idempotency_key: str,
+        gate: str,
+        exc: Exception,
+    ) -> TriggerEvent:
+        """Fail closed: skip + dead-letter a firing whose gate could not be checked."""
+        await self._release_dedup(idempotency_key, tenant_id)
+        await self._write_dlq(
+            tenant_id, trigger_id, f"{gate.upper()}_UNAVAILABLE", str(exc)[:500], payload
+        )
+        return self._make_skip_event(
+            trigger_id, tenant_id, payload, idempotency_key, f"{gate}_unavailable"
+        )
 
     async def _is_duplicate(self, idempotency_key: str, tenant_id: str) -> bool:
         """Two-layer dedup: Redis for the race, Postgres for the replay.
