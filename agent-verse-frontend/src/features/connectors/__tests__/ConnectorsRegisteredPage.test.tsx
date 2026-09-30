@@ -5,7 +5,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { ConnectorsRegisteredPage } from '../ConnectorsRegisteredPage';
 import { useAuthStore } from '@/stores/auth';
@@ -86,6 +86,46 @@ describe('Page rendering', () => {
     expect(await screen.findByText('PineLabs JIRA')).toBeInTheDocument();
     expect(screen.getByText('https://pinelabs.atlassian.net')).toBeInTheDocument();
     expect(screen.getByText('Basic Auth')).toBeInTheDocument();
+  });
+
+  // UI-CONNECTOR-LINK: the name was plain text — the detail page (tools, health,
+  // usage, server id) was unreachable from the list.
+  it('links the connector name to its detail page and shows the server id', async () => {
+    mockFetch([{ match: (u) => u.endsWith('/connectors'), response: [CONNECTOR_ROW] }]);
+    renderPage();
+    const link = await screen.findByRole('link', { name: 'PineLabs JIRA' });
+    expect(link).toHaveAttribute('href', '/connectors/s-jira-001');
+    expect(screen.getByText('s-jira-001')).toBeInTheDocument();
+  });
+
+  it('URL-encodes an opaque server id in the detail link', async () => {
+    const odd = { ...CONNECTOR_ROW, server_id: 'builtin-mongodb:prod db/#1', name: 'Mongo Prod' };
+    mockFetch([{ match: (u) => u.endsWith('/connectors'), response: [odd] }]);
+    renderPage();
+    const link = await screen.findByRole('link', { name: 'Mongo Prod' });
+    expect(link).toHaveAttribute('href', `/connectors/${encodeURIComponent('builtin-mongodb:prod db/#1')}`);
+    expect(screen.getByText('builtin-mongodb:prod db/#1')).toBeInTheDocument();
+  });
+
+  it('clicking the connector opens its detail page', async () => {
+    mockFetch([{ match: (u) => u.endsWith('/connectors'), response: [CONNECTOR_ROW] }]);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function DetailProbe() {
+      const { connectorId } = useParams();
+      return <p>detail page for {connectorId}</p>;
+    }
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/connectors']}>
+          <Routes>
+            <Route path="/connectors" element={<ConnectorsRegisteredPage />} />
+            <Route path="/connectors/:connectorId" element={<DetailProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    await userEvent.click(await screen.findByRole('link', { name: 'PineLabs JIRA' }));
+    expect(await screen.findByText('detail page for s-jira-001')).toBeInTheDocument();
   });
 
   it('shows connector count in subtitle', async () => {

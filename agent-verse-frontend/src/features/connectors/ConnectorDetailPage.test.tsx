@@ -369,3 +369,25 @@ describe('ConnectorDetailPage', () => {
     expect(screen.queryByText(/Connector not found/i)).not.toBeInTheDocument();
   });
 });
+
+// UI-CONNECTOR-LINK: server ids are opaque (e.g. builtin-mongodb:<slug>) — the
+// detail page must encode them in every API path and show the server id.
+describe('ConnectorDetailPage — opaque server ids (UI-CONNECTOR-LINK)', () => {
+  test('encodes the server id in API calls and shows it on the page', async () => {
+    const id = 'builtin-mongodb:prod db#1';
+    const spy = mockFetch({ connector: { ...CONNECTOR, server_id: id, name: 'Mongo Prod' } });
+    renderPage(encodeURIComponent(id));
+    expect(await screen.findByRole('heading', { name: 'Mongo Prod' })).toBeInTheDocument();
+    expect(screen.getAllByText(id).length).toBeGreaterThanOrEqual(1);
+    const enc = encodeURIComponent(id);
+    await waitFor(() => {
+      const urls = spy.mock.calls.map(([u]) => String(u));
+      expect(urls.some((u) => u.endsWith(`/connectors/${enc}`))).toBe(true);
+      expect(urls.some((u) => u.endsWith(`/connectors/${enc}/tools`))).toBe(true);
+    });
+    await userEvent.click(screen.getByRole('tab', { name: 'Usage' }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u]) => String(u).endsWith(`/connectors/${enc}/usage`))).toBe(true),
+    );
+  });
+});

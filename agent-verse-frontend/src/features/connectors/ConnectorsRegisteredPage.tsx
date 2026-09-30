@@ -790,7 +790,13 @@ export function ConnectorsRegisteredPage() {
                     <tr key={c.server_id} className="hover:bg-accent/50 transition-colors">
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
-                          <span className="font-medium">{c.name}</span>
+                          {/* server_id is opaque (e.g. builtin-mongodb:<slug>) — encode it. */}
+                          <Link
+                            to={`/connectors/${encodeURIComponent(c.server_id)}`}
+                            className="font-medium text-primary hover:underline"
+                          >
+                            {c.name || c.server_id}
+                          </Link>
                           {c.has_builtin && (
                             <span
                               title="Built-in handler — runs inside AgentVerse, no external MCP server needed"
@@ -800,6 +806,9 @@ export function ConnectorsRegisteredPage() {
                             </span>
                           )}
                         </div>
+                        <p className="mt-0.5 font-mono text-[11px] text-muted-foreground break-all" title="Server ID">
+                          {c.server_id}
+                        </p>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate">
                         {c.upstream_url

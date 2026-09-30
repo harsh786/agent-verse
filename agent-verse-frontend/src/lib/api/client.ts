@@ -756,18 +756,19 @@ export interface PkceOAuthCallback {
   has_refresh_token?: boolean;
 }
 
+// Server ids are opaque (e.g. `builtin-mongodb:<slug>`), so every path segment is encoded.
 export const connectorsApi = {
   getCatalog: () => request<CatalogEntry[]>("/connectors/catalog"),
   list: () => request<ConnectorResponse[]>("/connectors"),
-  get: (id: string) => request<ConnectorResponse>(`/connectors/${id}`),
-  tools: (id: string) => request<{ name?: string; description?: string }[]>(`/connectors/${id}/tools`),
+  get: (id: string) => request<ConnectorResponse>(`/connectors/${encodeURIComponent(id)}`),
+  tools: (id: string) => request<{ name?: string; description?: string }[]>(`/connectors/${encodeURIComponent(id)}/tools`),
   register: (body: ConnectorRequest) =>
     request<ConnectorResponse>("/connectors", { method: "POST", body: JSON.stringify(body) }),
   update: (id: string, body: Partial<ConnectorRequest>) =>
-    request<ConnectorResponse>(`/connectors/${id}`, { method: "PUT", body: JSON.stringify(body) }),
-  unregister: (id: string) => request<void>(`/connectors/${id}`, { method: "DELETE" }),
+    request<ConnectorResponse>(`/connectors/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
+  unregister: (id: string) => request<void>(`/connectors/${encodeURIComponent(id)}`, { method: "DELETE" }),
   test: (id: string) =>
-    request<ConnectorTestResult>(`/connectors/${id}/test`, { method: "POST" }),
+    request<ConnectorTestResult>(`/connectors/${encodeURIComponent(id)}/test`, { method: "POST" }),
   /**
    * Legacy popup flow start (POST). Its completion, POST /connectors/oauth/callback,
    * now always answers 501 `oauth-token-exchange-unavailable` (it never exchanged
@@ -803,7 +804,7 @@ export const connectorsApi = {
     ),
   getUsage: (connectorId: string) =>
     request<{ goals: GoalResponse[]; total: number; success_rate: number | null; filtered: boolean }>(
-      `/connectors/${connectorId}/usage`
+      `/connectors/${encodeURIComponent(connectorId)}/usage`
     ),
 };
 
