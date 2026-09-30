@@ -44,6 +44,14 @@ def is_enabled(settings: Any) -> bool:
     return bool(getattr(settings, "rag_default_rerank_enabled", False))
 
 
+async def _cross_encoder_status(settings: Any) -> str:
+    """Readiness of the cross-encoder, waiting at most the configured budget."""
+    from app.rag.cross_encoder import ensure_default_cross_encoder_ready
+
+    budget = float(getattr(settings, "rag_rerank_warmup_wait_seconds", 2.0))
+    return await ensure_default_cross_encoder_ready(budget)
+
+
 def _resolve_strategy(name: str) -> RerankStrategy:
     from app.context.rerank_policy import RerankStrategy
 
@@ -73,6 +81,38 @@ async def apply_default_rerank(
     from app.context.rerank_policy import RerankPolicy, RerankStrategy
 
     strategy = _resolve_strategy(strategy_name)
+    # RERANK-PRELOAD: the cross-encoder model is warmed in the background at
+    # startup. Until it is loaded, a search waits for it only within a small
+    # budget and then skips it honestly (marked on every result) — it used to
+    # load the model inline (``auto`` even on the event loop) and so the first
+    # search after a restart burned the whole retrieval deadline and 503'd.
+    skipped_reason: str | None = None
+    if strategy in (RerankStrategy.AUTO, RerankStrategy.CROSS_ENCODER, RerankStrategy.LLM):
+        status = await _cross_encoder_status(settings)
+        if status == "ready":
+            if strategy is RerankStrategy.AUTO:
+                strategy = RerankStrategy.CROSS_ENCODER
+        else:
+            skipped_reason = (
+                "reranker_warming_up" if status == "warming_up" else "reranker_unavailable"
+            )
+            from app.observability.metrics import RERANK_DEGRADED_TOTAL
+
+            RERANK_DEGRADED_TOTAL.labels(reason=skipped_reason).inc()
+            logger.info(
+                "default_rerank_skipped", strategy=strategy.value, reason=skipped_reason
+            )
+            if strategy is not RerankStrategy.AUTO:
+                # An explicitly requested cross-encoder is not silently replaced:
+                # original order, flagged.
+                for result in results:
+                    result.source_metadata = {
+                        **(result.source_metadata or {}),
+                        "rerank_skipped": skipped_reason,
+                    }
+                return results
+            # ``auto`` keeps its documented degradation: deterministic score order.
+            strategy = RerankStrategy.SCORE
     # Pure reranker: no dedup, no min-score filter, no per-source cap, and no
     # calibration mutation — the stage's contract is ordering only.
     policy = RerankPolicy(
@@ -136,6 +176,8 @@ async def apply_default_rerank(
         seen.add(idx)
         result = results[idx]
         result.source_metadata = {**(result.source_metadata or {}), "rerank_strategy": effective}
+        if skipped_reason is not None:
+            result.source_metadata["rerank_skipped"] = skipped_reason
         # Reflect a genuine reranker score when one was computed.
         new_score = chunk.get("score")
         ce_score = chunk.get("ce_score")

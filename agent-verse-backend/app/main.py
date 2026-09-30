@@ -1011,6 +1011,16 @@ def create_app(
 
             await close_default_cross_encoder()
 
+        def start_process_reranker_warmup() -> None:
+            """RERANK-PRELOAD: warm the cross-encoder on a background thread so
+            the first search after a restart does not pay the model load."""
+            try:
+                from app.rag import cross_encoder as _cross_encoder
+
+                _cross_encoder.preload_default_cross_encoder(settings)
+            except Exception as _warm_exc:
+                logger.warning("cross_encoder_preload_failed", error=str(_warm_exc))
+
         async def start_voice_runtime() -> None:
             """Voice OS warmup + proactive alert manager + binary voice Redis.
 
@@ -2553,6 +2563,7 @@ def create_app(
             except Exception as _vision_exc:
                 logger.warning("vision_model_warmup_skipped", error=str(_vision_exc))
 
+            start_process_reranker_warmup()
             await start_voice_runtime()
             try:
                 yield
@@ -2600,6 +2611,7 @@ def create_app(
                     logger.warning("guardrails_repository_unbind_failed", error=str(_ge_stop_exc))
                 await active.shutdown()
         else:
+            start_process_reranker_warmup()
             await start_voice_runtime()
             try:
                 yield

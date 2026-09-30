@@ -85,6 +85,9 @@ os.environ.setdefault("ENVIRONMENT", "development")
 # The beat reads Postgres by default (TRG-15); unit tests must never reach a
 # developer database through the default DATABASE_URL, so they opt out.
 os.environ.setdefault("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "false")
+# Unit tests must not load the real cross-encoder in the background at every app
+# startup (RERANK-PRELOAD); tests that exercise the warm-up opt in explicitly.
+os.environ.setdefault("RAG_RERANK_PRELOAD", "false")
 
 # Tests must not depend on the developer's .env: a real provider key there (e.g.
 # NVIDIA_API_KEY) turned "no keys -> FakeProvider" tests into real-provider runs.

@@ -6,6 +6,7 @@ import os
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.schedules import crontab  # type: ignore[import-untyped]
+from celery.signals import worker_process_init  # type: ignore[import-untyped]
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 _SENTINEL_URLS = os.getenv("REDIS_SENTINEL_URLS", "")
@@ -419,3 +420,26 @@ if _SENTINEL_URLS:
 
 # Backwards-compatible alias used by some imports
 app = celery_app
+
+
+# ── Retrieval model warm-up (RERANK-PRELOAD) ─────────────────────────────────
+# Each prefork child process warms the cross-encoder on a background thread so
+# the first knowledge search a worker runs does not pay the model load inside
+# its retrieval deadline. worker_process_init must return quickly (Celery gives
+# it a few seconds), hence the background load.
+
+
+def _preload_retrieval_models() -> None:
+    try:
+        from app.rag import cross_encoder
+
+        cross_encoder.preload_default_cross_encoder()
+    except Exception as exc:  # never fail worker start over a warm-up
+        import logging
+
+        logging.getLogger(__name__).warning("cross_encoder_preload_failed: %s", exc)
+
+
+@worker_process_init.connect  # type: ignore[untyped-decorator]
+def _on_worker_process_init(**_kwargs: object) -> None:
+    _preload_retrieval_models()

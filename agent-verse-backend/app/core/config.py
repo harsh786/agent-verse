@@ -197,6 +197,12 @@ class Settings(BaseSettings):
     # disabled or when the reranker backend is unavailable.
     rag_default_rerank_enabled: bool = True
     rag_default_rerank_strategy: str = "auto"  # score|rrf|diversity|cross_encoder|llm|hosted|auto
+    # RERANK-PRELOAD: warm the cross-encoder in the background at API startup and
+    # in each Celery worker process (only when the strategy above uses it). Until
+    # it is warm a search waits at most ``rag_rerank_warmup_wait_seconds`` for it,
+    # then skips the cross-encoder and flags ``rerank_skipped`` on each citation.
+    rag_rerank_preload: bool = True
+    rag_rerank_warmup_wait_seconds: float = 2.0
     # --- Hosted reranker (first-class managed reranking provider) --------------
     # A managed cross-encoder rerank API (Cohere-compatible ``/v1/rerank`` shape:
     # Cohere, Voyage, Jina, or a self-hosted equivalent). When a URL is set the
