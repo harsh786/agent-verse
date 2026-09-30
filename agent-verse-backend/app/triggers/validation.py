@@ -14,7 +14,7 @@ filters that legitimately default to "any") are intentionally not required.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app.triggers.models import TriggerSpec, validate_cron
 
@@ -27,6 +27,28 @@ def _is_iso(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def is_trigger_expired(expires_at_iso: object, *, now: datetime | None = None) -> bool:
+    """True when a trigger's ``expires_at_iso`` is at or before *now* (TRG-09).
+
+    A naive timestamp (and a naive *now*) is read as UTC. An empty value never
+    expires; an unparseable one is treated as expired — create-time validation
+    rejects it, so a stored one is corrupt and must not keep firing.
+    """
+    raw = str(expires_at_iso or "").strip()
+    if not raw:
+        return False
+    try:
+        expires = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    return expires <= current
 
 
 def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:

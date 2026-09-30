@@ -3538,6 +3538,7 @@ def run_scheduled_goal(
     tenant_plan: str = "",
     event_payload: dict[str, Any] | None = None,
     condition_expression: str = "",
+    expires_at_iso: str = "",
 ) -> dict[str, Any]:
     """Execute a scheduled goal trigger.
 
@@ -3569,6 +3570,7 @@ def run_scheduled_goal(
                 max_firings_per_hour=max_firings_per_hour,
                 event_payload=event_payload,
                 condition_expression=condition_expression,
+                expires_at_iso=expires_at_iso,
             )
         )
     except Exception as exc:
@@ -3676,6 +3678,11 @@ def _enqueue_governed_fire(
     condition_expression = str(sched.get("condition_expression") or "")
     if condition_expression:
         kwargs["condition_expression"] = condition_expression
+    # TRG-09: the dispatcher re-checks expiry when the task runs (it may be
+    # queued past the deadline).
+    expires_at_iso = str(sched.get("expires_at_iso") or "")
+    if expires_at_iso:
+        kwargs["expires_at_iso"] = expires_at_iso
     if event_payload is not None:
         kwargs["event_payload"] = event_payload
     run_scheduled_goal.apply_async(kwargs=kwargs, queue="schedules")
@@ -3749,6 +3756,7 @@ def _build_scheduled_trigger_spec(schedule_key: str, sched: dict[str, Any]) -> A
         condition=str(sched.get("condition") or ""),
         # TRG-07: the dispatcher requires BOTH gates to hold.
         condition_expression=str(sched.get("condition_expression") or ""),
+        expires_at_iso=str(sched.get("expires_at_iso") or ""),
         max_firings_per_hour=int(sched.get("max_firings_per_hour") or 0),
         watch_agent_id=str(sched.get("agent_id") or ""),
     )
@@ -3946,6 +3954,7 @@ async def _run_scheduled_goal_governed(
     max_firings_per_hour: int = 0,
     event_payload: dict[str, Any] | None = None,
     condition_expression: str = "",
+    expires_at_iso: str = "",
 ) -> Any:
     """Async body of ``run_scheduled_goal`` — governed scheduled dispatch (WT-9)."""
     goal_service, db_factory = _build_worker_goal_service()
@@ -3957,6 +3966,7 @@ async def _run_scheduled_goal_governed(
         "agent_id": agent_id,
         "condition": condition,
         "condition_expression": condition_expression,
+        "expires_at_iso": expires_at_iso,
         "max_firings_per_hour": max_firings_per_hour,
     }
     if event_payload is not None:
@@ -4513,6 +4523,36 @@ async def _update_db_schedule_last_fired_at(
         raise
 
 
+async def _pause_db_schedule(tenant_id: str, schedule_id: str) -> None:
+    """Durably pause an expired schedule (TRG-09); failures are logged, the
+    beat still skips the schedule because it re-checks expiry every tick."""
+    try:
+        from sqlalchemy import update
+
+        from app.db.models.scheduling import Schedule
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory as _get_fresh_db
+
+        db_factory = _get_fresh_db()
+        async with db_factory() as session:
+            async with sqlalchemy_rls_context(session, tenant_id):
+                await session.execute(
+                    update(Schedule)
+                    .where(Schedule.tenant_id == tenant_id, Schedule.id == schedule_id)
+                    .values(paused=True)
+                )
+            commit = getattr(session, "commit", None)
+            if commit is not None:
+                await commit()
+    except Exception as exc:
+        logger.warning(
+            "expired_schedule_pause_failed",
+            tenant_id=tenant_id,
+            schedule_id=schedule_id,
+            error=str(exc)[:200],
+        )
+
+
 def _db_schedule_discovery_enabled() -> bool:
     import os
 
@@ -4919,6 +4959,17 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             elif r is not None:
                 r.set(key, json.dumps(_strip_secret_redis_schedule_fields(sched)))
 
+        def pause_expired_schedule(key: str, sched: dict[str, Any]) -> None:
+            sched["paused"] = True
+            tenant_id = str(sched.get("tenant_id") or "")
+            schedule_id = str(sched.get("schedule_id") or "")
+            if key in db_schedule_keys and tenant_id and schedule_id:
+                _run_async(_pause_db_schedule(tenant_id, schedule_id))
+            if r is not None:
+                # xx: only rewrite a Redis-backed schedule, never create one.
+                r.set(key, json.dumps(_strip_secret_redis_schedule_fields(sched)), xx=True)
+            logger.info("schedule_expired_auto_paused", schedule=key)
+
         def advance_and_dispatch_schedule(
             key: str,
             sched: dict[str, Any],
@@ -4989,6 +5040,14 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
         for key, sched in schedules.items():
             try:
                 if sched.get("paused"):
+                    continue
+
+                # TRG-09: an expired trigger stops firing and is auto-paused so
+                # the UI/API show it as no longer active.
+                from app.triggers.validation import is_trigger_expired
+
+                if is_trigger_expired(sched.get("expires_at_iso"), now=now):
+                    pause_expired_schedule(key, sched)
                     continue
 
                 trigger_type = sched.get("trigger_type", "")

@@ -1,10 +1,12 @@
-import { Zap, Pause, AlertTriangle } from 'lucide-react';
+import { Zap, Pause, AlertTriangle, CalendarX } from 'lucide-react';
 
-type TriggerStatus = 'active' | 'paused' | 'circuit_open';
+type TriggerStatus = 'active' | 'paused' | 'circuit_open' | 'expired';
 
 interface TriggerStatusBadgeProps {
   paused: boolean;
   circuitOpen?: boolean;
+  /** Past its expires_at_iso: it no longer fires (TRG-09). */
+  expired?: boolean;
 }
 
 const STATUS_CONFIG: Record<TriggerStatus, {
@@ -27,10 +29,21 @@ const STATUS_CONFIG: Record<TriggerStatus, {
     icon: <AlertTriangle className="h-3 w-3 animate-pulse" />,
     className: 'bg-red-100 text-red-700 border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-800',
   },
+  expired: {
+    label: 'Expired',
+    icon: <CalendarX className="h-3 w-3" />,
+    className: 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-800/50 dark:text-slate-300 dark:border-slate-700',
+  },
 };
 
-export function TriggerStatusBadge({ paused, circuitOpen = false }: TriggerStatusBadgeProps) {
-  const status: TriggerStatus = circuitOpen ? 'circuit_open' : paused ? 'paused' : 'active';
+export function TriggerStatusBadge({ paused, circuitOpen = false, expired = false }: TriggerStatusBadgeProps) {
+  const status: TriggerStatus = circuitOpen
+    ? 'circuit_open'
+    : expired
+      ? 'expired'
+      : paused
+        ? 'paused'
+        : 'active';
   const { label, icon, className } = STATUS_CONFIG[status];
 
   return (

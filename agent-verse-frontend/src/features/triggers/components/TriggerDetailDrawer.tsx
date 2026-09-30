@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { X, Zap, RefreshCw, Pencil, Save, Play, Pause } from 'lucide-react';
 import type { Trigger } from '../types';
 import { TRIGGER_FAMILY_LABELS, TRIGGER_TYPE_FAMILY } from '../types';
+import { isTriggerExpired } from '../expiry';
 import {
   useSimulateTrigger,
   useFireTriggerNow,
@@ -21,6 +22,7 @@ interface TriggerDetailDrawerProps {
 
 export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerProps) {
   const family = TRIGGER_TYPE_FAMILY[trigger.spec.trigger_type];
+  const expired = isTriggerExpired(trigger.spec);
   const simulate = useSimulateTrigger();
   const fireNow = useFireTriggerNow();
   const update = useUpdateTrigger();
@@ -74,7 +76,7 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
               {trigger.spec.description ?? 'Trigger Detail'}
             </h2>
             <div className="mt-1">
-              <TriggerStatusBadge paused={trigger.paused} />
+              <TriggerStatusBadge paused={trigger.paused} expired={expired} />
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -158,8 +160,12 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
               <dt className="text-muted-foreground">Total fires</dt>
               <dd>{trigger.fire_count ?? 0}</dd>
               <dt className="text-muted-foreground">Status</dt>
-              <dd className={trigger.paused ? 'text-amber-600' : 'text-emerald-600'}>
-                {trigger.paused ? 'Paused' : 'Active'}
+              <dd
+                className={
+                  expired ? 'text-slate-600' : trigger.paused ? 'text-amber-600' : 'text-emerald-600'
+                }
+              >
+                {expired ? 'Expired' : trigger.paused ? 'Paused' : 'Active'}
               </dd>
             </dl>
           </Section>

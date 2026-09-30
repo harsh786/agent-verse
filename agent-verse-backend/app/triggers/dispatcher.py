@@ -252,6 +252,20 @@ class TriggerDispatcher:
             txn_id=txn_id,
         )
 
+        # ── Step 3b: Expiry (TRG-09) ──────────────────────────────────────────
+        # ``expires_at_iso`` was validated on create but never read, so an
+        # expired trigger kept firing forever. Audited as ``expired``.
+        from app.triggers.validation import is_trigger_expired
+
+        if is_trigger_expired(getattr(trigger_spec, "expires_at_iso", "")):
+            return self._make_skip_event(
+                trigger_id,
+                tenant_id,
+                payload,
+                idempotency_key,
+                "expired",
+            )
+
         # ── Step 4: Deduplication check ───────────────────────────────────────
         if await self._is_duplicate(idempotency_key, tenant_id):
             return self._make_skip_event(

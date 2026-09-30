@@ -153,6 +153,7 @@ def test_run_scheduled_goal_routes_through_governed_dispatcher(monkeypatch: Any)
             "max_firings_per_hour": 0,
             "event_payload": None,
             "condition_expression": "",
+            "expires_at_iso": "",
         },
     }
 

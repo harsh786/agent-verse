@@ -59,6 +59,23 @@ describe('TriggerCard', () => {
     expect(screen.getByRole('button', { name: /resume trigger/i })).toBeInTheDocument();
   });
 
+  test('a trigger past its expires_at_iso shows the expired badge (TRG-09)', () => {
+    mockFetch();
+    renderCard({
+      ...TRIGGER,
+      paused: true, // the beat auto-pauses expired schedules
+      spec: { ...TRIGGER.spec, expires_at_iso: '2020-01-01T00:00' },
+    });
+    expect(screen.getByText('expired')).toBeInTheDocument();
+    expect(screen.queryByText('paused')).not.toBeInTheDocument();
+  });
+
+  test('a future expires_at_iso keeps the active badge', () => {
+    mockFetch();
+    renderCard({ ...TRIGGER, spec: { ...TRIGGER.spec, expires_at_iso: '2999-01-01T00:00:00Z' } });
+    expect(screen.getByText('active')).toBeInTheDocument();
+  });
+
   test('Fire now posts to the fire endpoint', async () => {
     const spy = mockFetch();
     renderCard();

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Play, Pause, Trash2, Zap, ChevronRight, Clock, AlertCircle, Repeat, History, Calendar } from 'lucide-react';
 import type { Trigger } from '../types';
+import { isTriggerExpired } from '../expiry';
 import { usePauseTrigger, useResumeTrigger, useDeleteTrigger, useFireTriggerNow } from '../hooks';
 import { TriggerDetailDrawer } from './TriggerDetailDrawer';
 
@@ -11,6 +12,7 @@ interface TriggerCardProps {
 const STATUS_COLORS = {
   active: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
   paused: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+  expired: 'bg-slate-100 text-slate-700 dark:bg-slate-800/50 dark:text-slate-300',
 };
 
 /** Human-readable schedule summary derived from the trigger spec. */
@@ -60,7 +62,8 @@ export function TriggerCard({ trigger }: TriggerCardProps) {
   const del = useDeleteTrigger();
   const fireNow = useFireTriggerNow();
 
-  const statusKey = trigger.paused ? 'paused' : 'active';
+  // An expired trigger no longer fires (and the beat auto-pauses it) — TRG-09.
+  const statusKey = isTriggerExpired(trigger.spec) ? 'expired' : trigger.paused ? 'paused' : 'active';
   const schedule = scheduleSummary(trigger.spec);
   const nextFire = fmtTime(trigger.next_fire_at);
   const lastFire = fmtTime(trigger.last_fired_at);

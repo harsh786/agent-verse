@@ -67,6 +67,18 @@ describe('TriggerDetailDrawer', () => {
     expect(screen.getAllByText('Active').length).toBeGreaterThanOrEqual(1);
   });
 
+  test('an expired trigger shows Expired in the badge and the status row (TRG-09)', () => {
+    mockFetch();
+    renderDrawer(vi.fn(), {
+      ...TRIGGER,
+      paused: true,
+      spec: { ...TRIGGER.spec, expires_at_iso: '2020-01-01T00:00:00Z' },
+    });
+    expect(screen.getByLabelText('Trigger status: expired')).toBeInTheDocument();
+    expect(screen.getAllByText('Expired').length).toBe(2);
+    expect(screen.queryByText('Paused')).not.toBeInTheDocument();
+  });
+
   test('the close button invokes onClose', async () => {
     mockFetch();
     const onClose = renderDrawer();
