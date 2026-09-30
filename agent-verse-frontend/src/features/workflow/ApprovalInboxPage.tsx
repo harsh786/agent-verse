@@ -302,6 +302,11 @@ export default function ApprovalInboxPage() {
       const status = (err as { status?: number } | null)?.status;
       if (status === 403) {
         toast.error('Not your approval', 'This request is assigned to someone else.');
+      } else if (status === 409) {
+        // Another reviewer got there first; the server names who.
+        const body = (err as { body?: { detail?: { reviewed_by?: string } } }).body;
+        const by = body?.detail?.reviewed_by;
+        toast.warning(by ? `Already decided by ${by}` : 'Already decided', err instanceof Error ? err.message : undefined);
       } else {
         toast.error('Decision failed', err instanceof Error ? err.message : undefined);
       }

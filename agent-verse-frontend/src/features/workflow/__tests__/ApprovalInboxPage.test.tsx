@@ -432,4 +432,27 @@ describe('ApprovalInboxPage', () => {
     fireEvent.click(within(card).getByRole('button', { name: /approve request/i }));
     expect(await screen.findByText('Not your approval')).toBeInTheDocument();
   });
+
+  // WF-03: losing a concurrent decision is explained and the list refreshed.
+  it('shows who already decided on a 409 and refetches the inbox', async () => {
+    vi.mocked(workflowEngineApi.listApprovals).mockResolvedValue({
+      items: [mockApprovals[0]],
+      total: 1,
+    });
+    vi.mocked(workflowEngineApi.decideApproval).mockRejectedValue(
+      Object.assign(new Error('Already decided by key-alice (approve)'), {
+        status: 409,
+        body: { detail: { reviewed_by: 'key-alice', action_taken: 'approve' } },
+      }),
+    );
+    renderPage();
+
+    const card = await screen.findByRole('article');
+    const callsBefore = vi.mocked(workflowEngineApi.listApprovals).mock.calls.length;
+    fireEvent.click(within(card).getByRole('button', { name: /reject request/i }));
+    expect(await screen.findByText('Already decided by key-alice')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(vi.mocked(workflowEngineApi.listApprovals).mock.calls.length).toBeGreaterThan(callsBefore);
+    });
+  });
 });

@@ -82,12 +82,18 @@ async def test_decide_reject(gateway: HITLWorkflowGateway) -> None:
 
 @pytest.mark.asyncio
 async def test_decide_idempotent(gateway: HITLWorkflowGateway) -> None:
-    """Deciding twice on same request is a no-op (idempotent)."""
+    """Repeating the same decision is a no-op; a different one is a conflict
+    (WF-03) and never changes the recorded decision."""
+    from app.workflow.hitl_extension import ApprovalAlreadyDecidedError
+
     req = await gateway.create_request(_req())
-    d1 = await gateway.decide(req.request_id, "approved", actor_id="u1")
-    d2 = await gateway.decide(req.request_id, "rejected", actor_id="u2", idempotent=True)
-    assert d2.status == "approved"  # unchanged
-    assert d2.reviewed_by == "u1"
+    await gateway.decide(req.request_id, "approved", actor_id="u1")
+    d2 = await gateway.decide(req.request_id, "approved", actor_id="u1", idempotent=True)
+    assert d2.status == "approved" and d2.reviewed_by == "u1"
+    with pytest.raises(ApprovalAlreadyDecidedError) as exc:
+        await gateway.decide(req.request_id, "rejected", actor_id="u2", idempotent=True)
+    assert exc.value.request.status == "approved"  # unchanged
+    assert exc.value.request.reviewed_by == "u1"
 
 
 @pytest.mark.asyncio

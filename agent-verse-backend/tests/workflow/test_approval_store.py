@@ -197,6 +197,39 @@ async def test_list_by_run(store: PostgresWorkflowApprovalStore) -> None:
     assert {r.request_id for r in for_run} == {a.request_id, b.request_id}
 
 
+# ── WF-03: concurrent decisions ───────────────────────────────────────────────
+
+
+async def test_concurrent_decisions_on_two_replicas_resume_once(
+    store: PostgresWorkflowApprovalStore,
+) -> None:
+    import asyncio
+
+    from app.workflow.hitl_extension import ApprovalAlreadyDecidedError, HITLWorkflowGateway
+
+    tenant = str(uuid.uuid4())
+    resumed: list[str] = []
+
+    async def resume(req: WorkflowHITLRequest) -> None:
+        resumed.append(str(req.action_taken))
+
+    a, b = (HITLWorkflowGateway(approval_store=store, resume_callback=resume) for _ in range(2))
+    rid = await a.create_workflow_approval(run_id=str(uuid.uuid4()), step_id="g", tenant_id=tenant)
+
+    results = await asyncio.gather(
+        a.decide(rid, "approve", "alice", tenant_id=tenant),
+        b.decide(rid, "reject", "bob", tenant_id=tenant),
+        return_exceptions=True,
+    )
+    wins = [r for r in results if isinstance(r, WorkflowHITLRequest)]
+    losses = [r for r in results if isinstance(r, ApprovalAlreadyDecidedError)]
+    assert len(wins) == 1 and len(losses) == 1, results
+    assert resumed == [wins[0].action_taken]
+    got = await store.get(rid, tenant)
+    assert got is not None and got.action_taken == wins[0].action_taken
+    assert got.reviewed_by == wins[0].reviewed_by
+
+
 # ── WF-04: reviewer directory for auto-assignment ─────────────────────────────
 
 

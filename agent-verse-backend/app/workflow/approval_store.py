@@ -126,6 +126,36 @@ class PostgresWorkflowApprovalStore:
             )
             await session.commit()
 
+    async def decide_if_pending(self, req: WorkflowHITLRequest) -> bool:
+        """Record ``req``'s decision only if the approval is still pending.
+
+        One conditional UPDATE, so of two reviewers (on any replicas) deciding
+        the same approval exactly one gets ``True`` — the other must not resume
+        the run. Old bug: read-then-upsert let both win (last write wins) and
+        both resume callbacks dispatched the run.
+        """
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, req.tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "UPDATE workflow_approvals SET status = :status, "
+                        " payload = CAST(:payload AS jsonb), updated_at = NOW() "
+                        "WHERE request_id = :rid AND status = 'pending' "
+                        "RETURNING request_id"
+                    ),
+                    {
+                        "status": req.status,
+                        "payload": json.dumps(self._to_payload(req)),
+                        "rid": req.request_id,
+                    },
+                )
+            ).first()
+            await session.commit()
+            return row is not None
+
     # ── Read ──────────────────────────────────────────────────────────────────
     async def get(
         self, request_id: str, tenant_id: str | None = None

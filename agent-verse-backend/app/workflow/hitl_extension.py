@@ -25,7 +25,9 @@ Features (20):
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import dataclasses
 import json
 import secrets
 import time
@@ -115,6 +117,17 @@ class WorkflowHITLRequest:
 _SLA_ACTOR = "system:sla"
 
 
+class ApprovalAlreadyDecidedError(Exception):
+    """Someone else already decided this approval (HTTP 409)."""
+
+    def __init__(self, req: WorkflowHITLRequest) -> None:
+        self.request = req
+        super().__init__(
+            f"Already decided by {req.reviewed_by or 'someone else'} "
+            f"({req.action_taken or req.status})"
+        )
+
+
 @dataclass(frozen=True)
 class ReviewerAuthorization:
     """Whether a caller may act (decide / delegate / escalate) on an approval.
@@ -201,6 +214,8 @@ class HITLWorkflowGateway:
         self._approval_store = approval_store
         # In-memory fallback (dev/tests, and process-local mirror).
         self._store: dict[str, WorkflowHITLRequest] = {}
+        # Serialises decide() check-and-set when there is no durable store.
+        self._decide_lock = asyncio.Lock()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -301,10 +316,12 @@ class HITLWorkflowGateway:
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
 
-        if idempotent and req.status != "pending":
-            _log.info("hitl_duplicate_decision", request_id=request_id, status=req.status)
-            return req
+        if req.status != "pending":
+            return self._already_decided(req, action, actor_id, idempotent)
 
+        # Decide on a copy: the in-memory mirror hands out shared objects, and a
+        # losing concurrent decision must not overwrite the winner's fields.
+        req = dataclasses.replace(req)
         req.status = action if action in ("approved", "rejected") else "decided"
         req.action_taken = action
         req.reviewed_by = actor_id
@@ -312,7 +329,10 @@ class HITLWorkflowGateway:
         req.note = note
         req.form_data = form_data
 
-        await self._save(req)
+        # Claim the decision atomically; only the winner resumes the run.
+        if not await self._claim_decision(req):
+            current = await self.get_request(request_id, tenant_id)
+            return self._already_decided(current or req, action, actor_id, idempotent)
 
         # Resume the workflow
         if self._resume_callback:
@@ -325,6 +345,51 @@ class HITLWorkflowGateway:
             actor=actor_id,
         )
         return req
+
+    @staticmethod
+    def _already_decided(
+        req: WorkflowHITLRequest, action: str, actor_id: str, idempotent: bool
+    ) -> WorkflowHITLRequest:
+        """A repeat of the recorded decision (same reviewer, same action) is an
+        idempotent no-op; anything else is a conflict the caller must see."""
+        same = req.reviewed_by == actor_id and req.action_taken == action
+        if idempotent and same:
+            _log.info("hitl_duplicate_decision", request_id=req.request_id, status=req.status)
+            return req
+        raise ApprovalAlreadyDecidedError(req)
+
+    async def _claim_decision(self, req: WorkflowHITLRequest) -> bool:
+        """Persist a decision only if the approval is still pending.
+
+        With the durable store this is one conditional UPDATE (atomic across
+        replicas) and a failure to record it is raised — a decision that is not
+        durably recorded must not resume the run. Without it, a per-process
+        lock serialises check-and-set.
+        """
+        if self._approval_store is not None and hasattr(
+            self._approval_store, "decide_if_pending"
+        ):
+            try:
+                won = bool(await self._approval_store.decide_if_pending(req))
+            except Exception as exc:
+                _log.error(
+                    "hitl_decision_persist_failed", request_id=req.request_id, error=str(exc)
+                )
+                raise RuntimeError("the decision could not be recorded; try again") from exc
+            if won:
+                self._store[req.request_id] = req
+                if self._redis is not None:
+                    with contextlib.suppress(Exception):
+                        await self._redis.setex(
+                            f"hitl:req:{req.request_id}", 86_400 * 30, json.dumps(req.__dict__)
+                        )
+            return won
+        async with self._decide_lock:
+            local = self._store.get(req.request_id)
+            if local is not None and local.status != "pending":
+                return False
+            await self._save(req)
+            return True
 
     async def delegate(
         self,

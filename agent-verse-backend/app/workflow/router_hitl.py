@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from app.observability.logging import get_logger
+from app.workflow.hitl_extension import ApprovalAlreadyDecidedError
 
 _log = get_logger(__name__)
 
@@ -246,9 +247,28 @@ async def decide_approval(request_id: str, body: DecideRequest, request: Request
             form_data=body.form_data or None,
             tenant_id=_tenant_id(request),
         )
+    except ApprovalAlreadyDecidedError as exc:
+        raise _conflict(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return req.__dict__
+
+
+def _conflict(exc: ApprovalAlreadyDecidedError) -> HTTPException:
+    """409 carrying the recorded decision, so the loser sees who decided."""
+    req = exc.request
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": str(exc),
+            "status": req.status,
+            "action_taken": req.action_taken,
+            "reviewed_by": req.reviewed_by,
+            "reviewed_at": req.reviewed_at,
+        },
+    )
 
 
 @router.post("/{request_id}/delegate", status_code=status.HTTP_200_OK)
@@ -353,6 +373,10 @@ async def magic_link_decide(
             # Resolve from the durable, RLS-scoped store of the owning tenant.
             tenant_id=payload.get("tenant_id") or None,
         )
+    except ApprovalAlreadyDecidedError as exc:
+        raise _conflict(exc) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"request_id": req.request_id, "action": bound_action, "status": req.status}
