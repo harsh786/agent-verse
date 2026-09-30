@@ -173,6 +173,15 @@ class GovernedToolGate:
     ) -> GateDecision:
         if self._hitl is None:
             return GateDecision(False, f"'{tool_name}' requires approval; no approval gateway")
+        if self._autonomy_mode != "supervised":
+            # Same as the AgentGraph executor: outside supervised mode nobody waits,
+            # so the tool is NOT run and no request is filed (CORE-01) — one used
+            # to be filed and left pending, and deciding it changed nothing.
+            return GateDecision(
+                False,
+                f"'{tool_name}' requires approval ({self._autonomy_mode} mode awaits none); "
+                "run the goal in supervised mode to approve it",
+            )
         req_id = str(
             self._hitl.request_approval(
                 goal_id=goal_id,
@@ -181,12 +190,6 @@ class GovernedToolGate:
                 tenant_ctx=tenant_ctx,
             )
         )
-        if self._autonomy_mode != "supervised":
-            # Same as the AgentGraph executor: outside supervised mode nobody waits,
-            # so the tool is NOT run (the request is logged for a human).
-            return GateDecision(
-                False, f"'{tool_name}' requires approval (non-supervised mode); request {req_id}"
-            )
         status = await self._hitl.wait_for_approval(
             req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
         )

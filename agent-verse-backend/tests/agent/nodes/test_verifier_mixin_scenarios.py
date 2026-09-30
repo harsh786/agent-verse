@@ -332,7 +332,12 @@ async def test_verify_consensus_disagreement_escalates_to_hitl_and_can_flip_verd
     consensus.verify = AsyncMock(return_value=consensus_result)
 
     verifier = FakeProvider(responses=['{"success": false, "reason": "looked broken", "retry": true}'])
-    graph = _make_graph(verifier=verifier, consensus_verifier=consensus, hitl_gateway=hitl)
+    graph = _make_graph(
+        verifier=verifier,
+        consensus_verifier=consensus,
+        hitl_gateway=hitl,
+        autonomy_mode="supervised",
+    )
 
     agent_state = _agent_state("delete production database backups")
     step = StepResult(
@@ -349,6 +354,44 @@ async def test_verify_consensus_disagreement_escalates_to_hitl_and_can_flip_verd
     assert result["agent_state"].verification_success is True
     assert result["agent_state"].verification_feedback == "2 of 3 verifiers say it worked"
     assert len(hitl._requests) == 1  # an approval request was actually filed
+
+
+@pytest.mark.parametrize("mode", ["bounded-autonomous", "fully-autonomous"])
+@pytest.mark.asyncio
+async def test_verify_consensus_disagreement_outside_supervised_is_not_trusted(
+    mode: str,
+) -> None:
+    """CORE-01: outside supervised mode no human will adjudicate a disputed
+    consensus, so it must not overturn the primary FAIL verdict — and no
+    approval request is filed (one used to be orphaned while the goal
+    completed on the disputed majority)."""
+    hitl = HITLGateway()
+    consensus_result = MagicMock()
+    consensus_result.success = True
+    consensus_result.majority_reason = "2 of 3 verifiers say it worked"
+    consensus_result.requires_hitl = True
+    consensus = MagicMock()
+    consensus.verify = AsyncMock(return_value=consensus_result)
+    verifier = FakeProvider(responses=['{"success": false, "reason": "looked broken", "retry": true}'])
+    graph = _make_graph(
+        verifier=verifier, consensus_verifier=consensus, hitl_gateway=hitl, autonomy_mode=mode
+    )
+    agent_state = _agent_state("delete production database backups")
+    agent_state.steps.append(
+        StepResult(
+            description="delete backups",
+            status=StepStatus.COMPLETE,
+            output="deleted",
+            tool_calls=[{"tool_name": "db.delete", "risk_level": "destructive"}],
+        )
+    )
+
+    result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+
+    consensus.verify.assert_called_once()
+    assert result["agent_state"].verification_success is False
+    assert "disputed" in (result["agent_state"].verification_feedback or "")
+    assert hitl._requests == {}
 
 
 @pytest.mark.asyncio

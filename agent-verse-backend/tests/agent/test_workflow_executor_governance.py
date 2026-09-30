@@ -82,6 +82,24 @@ async def test_high_risk_tool_runs_after_approval() -> None:
     mcp.call_tool.assert_awaited_once()
 
 
+@pytest.mark.parametrize("mode", ["bounded-autonomous", "fully-autonomous"])
+async def test_high_risk_tool_outside_supervised_is_denied_without_orphan_request(
+    mode: str,
+) -> None:
+    """CORE-01: nothing waits for a decision outside supervised mode, so the tool
+    is denied and no approval request is filed (one used to be left pending)."""
+    hitl = MagicMock()
+    hitl.request_approval.return_value = "r1"
+    hitl.wait_for_approval = AsyncMock(return_value=ApprovalStatus.APPROVED)
+    gate = GovernedToolGate(hitl_gateway=hitl, autonomy_mode=mode, guardrails=None)
+    result, mcp = await _run_tool_step(gate, tool="create_invoice")
+    assert result["status"] == "denied"
+    assert "supervised mode" in result["error"]
+    hitl.request_approval.assert_not_called()
+    hitl.wait_for_approval.assert_not_awaited()
+    mcp.call_tool.assert_not_called()
+
+
 async def test_exhausted_budget_blocks_tool_call() -> None:
     cc = SimpleNamespace(check_and_record=AsyncMock(return_value=False))
     result, mcp = await _run_tool_step(GovernedToolGate(cost_controller=cc, guardrails=None))

@@ -223,8 +223,22 @@ class VerifierMixin:
                     )
                     success = consensus_result.success
                     reason = consensus_result.majority_reason or reason
-                    # HITL if disagreement
-                    if consensus_result.requires_hitl and self._hitl_gateway is not None:
+                    # HITL if disagreement. Only a supervised run pauses on the
+                    # pending request (routing → waiting_human); anywhere else it
+                    # was orphaned while the goal completed on the disputed
+                    # majority. There, a disputed verdict does not overturn the
+                    # primary FAIL and no request is filed (CORE-01).
+                    if consensus_result.requires_hitl and self._autonomy_mode != "supervised":
+                        if success:
+                            success = False
+                            retry = True
+                            agent_state.context["verification_retry"] = retry
+                            reason = (
+                                "Consensus verification disputed (needs human review; "
+                                "run the goal in supervised mode): "
+                                f"{consensus_result.majority_reason or ''}"
+                            )[:1000]
+                    elif consensus_result.requires_hitl and self._hitl_gateway is not None:
                         req_id = str(
                             self._hitl_gateway.request_approval(
                                 goal_id=agent_state.goal_id,
