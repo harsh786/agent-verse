@@ -936,25 +936,35 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
 async def delete_agent(request: Request, agent_id: str) -> None:
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
+    if await store.get_async(agent_id, tenant_ctx=tenant_ctx) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Agent {agent_id} not found",
+        )
+
+    # TRG-31: delete the agent's schedules FIRST, in Postgres (every replica's
+    # schedules, not this process's cache) — schedules.agent_id is ON DELETE SET
+    # NULL, so after the agent row goes they can no longer be found and keep
+    # firing. An outage is a 503 and the agent is kept (the call is retryable),
+    # never a silently orphaned schedule.
+    schedule_store = getattr(request.app.state, "schedule_store", None)
+    if schedule_store is not None:
+        from app.triggers.store import ScheduleStoreUnavailableError
+
+        try:
+            await schedule_store.delete_for_agent_async(agent_id, tenant_ctx=tenant_ctx)
+        except ScheduleStoreUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not delete the agent's schedules; retry",
+            ) from exc
+
     removed = await store.delete_async(agent_id, tenant_ctx=tenant_ctx)
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
-
-    # Clean up associated schedules
-    schedule_store = getattr(request.app.state, "schedule_store", None)
-    if schedule_store is not None:
-        try:
-            schedules = schedule_store.list_all(tenant_ctx=tenant_ctx)
-            for sched in schedules:
-                if sched.get("agent_id") == agent_id:
-                    await schedule_store.delete_async(sched["schedule_id"], tenant_ctx=tenant_ctx)
-        except Exception as _se:
-            import logging
-
-            logging.getLogger(__name__).warning("agent_schedule_cleanup_failed: %s", _se)
 
 
 @router.get("/{agent_id}/permissions")

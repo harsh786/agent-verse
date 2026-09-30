@@ -398,38 +398,37 @@ def test_create_agent_schedule_creation_failure_is_non_fatal() -> None:
 # ---------------------------------------------------------------------------
 
 def test_delete_agent_with_schedule_cleanup() -> None:
-    """Lines 712-721: delete_agent cleans up associated schedules."""
+    """TRG-31: delete_agent removes the agent's schedules via the durable store
+    (every replica's rows), not by walking this process's cache."""
     schedule_store = MagicMock()
-    schedule_store.list_all = MagicMock(return_value=[
-        {"schedule_id": "s1", "agent_id": "PLACEHOLDER"},
-        {"schedule_id": "s2", "agent_id": "other-agent"},
-    ])
-    schedule_store.delete_async = AsyncMock(return_value=True)
+    schedule_store.delete_for_agent_async = AsyncMock(return_value=["s1"])
     client = TestClient(_make_app(schedule_store=schedule_store), raise_server_exceptions=False)
 
-    # Create an agent
     agent = _create_agent(client)
     agent_id = agent["agent_id"]
 
-    # Fix: update the mock schedule to point to the real agent
-    schedule_store.list_all.return_value = [
-        {"schedule_id": "s1", "agent_id": agent_id},
-        {"schedule_id": "s2", "agent_id": "other-agent"},
-    ]
-
     resp = client.delete(f"/agents/{agent_id}", headers=H)
     assert resp.status_code == 204
+    schedule_store.delete_for_agent_async.assert_awaited_once()
+    assert schedule_store.delete_for_agent_async.await_args.args == (agent_id,)
+    schedule_store.list_all.assert_not_called()
 
 
-def test_delete_agent_schedule_cleanup_exception_non_fatal() -> None:
-    """Lines 719-721: Schedule cleanup exception is swallowed."""
+def test_delete_agent_schedule_cleanup_failure_is_a_503() -> None:
+    """TRG-31: a schedule-store outage is no longer swallowed (the schedules
+    would keep firing for a deleted agent); the agent is kept and the call
+    can be retried."""
+    from app.triggers.store import ScheduleStoreUnavailableError
+
     schedule_store = MagicMock()
-    schedule_store.list_all = MagicMock(side_effect=Exception("Schedule store error"))
+    schedule_store.delete_for_agent_async = AsyncMock(
+        side_effect=ScheduleStoreUnavailableError("Schedule store error")
+    )
     client = TestClient(_make_app(schedule_store=schedule_store), raise_server_exceptions=False)
 
     agent = _create_agent(client)
     resp = client.delete(f"/agents/{agent['agent_id']}", headers=H)
-    assert resp.status_code == 204
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

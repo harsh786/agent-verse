@@ -320,3 +320,38 @@ async def test_channel_mapping_created_and_resolved_under_rls(dbs: SimpleNamespa
         assert resp.status_code == 409
         assert await _resolve_tenant_from_channel("slack", team, dbs.admin) == dbs.t1
         assert json.dumps((await client.get("/channels/mappings")).json()) == "[]"
+
+
+@pytest.mark.asyncio
+async def test_agent_schedules_deleted_across_replicas(dbs: SimpleNamespace) -> None:
+    """TRG-31: a schedule created on replica A is deleted when the agent is
+    deleted on replica B (B never cached it). Only that agent's rows, only in
+    that tenant, go — before the agent row (agent_id is ON DELETE SET NULL)."""
+    agent_a, agent_other = uuid.uuid4().hex, uuid.uuid4().hex
+    async with dbs.admin() as s, s.begin():
+        for aid in (agent_a, agent_other):
+            await s.execute(
+                text("INSERT INTO agents (id, tenant_id, name) VALUES (:i, :t, 'a')"),
+                {"i": aid, "t": dbs.t1},
+            )
+    ctx = _ctx(dbs.t1)
+    replica_a, replica_b = _replica(dbs), _replica(dbs)
+
+    def _spec() -> TriggerSpec:
+        return TriggerSpec(trigger_type=TriggerType.INTERVAL, interval_seconds=3600)
+
+    doomed = await replica_a.create_async(
+        goal_id="", spec=_spec(), tenant_ctx=ctx, agent_id=agent_a, goal_template="x"
+    )
+    kept = await replica_a.create_async(
+        goal_id="", spec=_spec(), tenant_ctx=ctx, agent_id=agent_other, goal_template="x"
+    )
+    assert replica_b.get(doomed, tenant_ctx=ctx) is None  # B never saw it
+
+    assert await replica_b.delete_for_agent_async(agent_a, tenant_ctx=ctx) == [doomed]
+
+    async with dbs.admin() as s:
+        left = (await s.execute(text("SELECT id FROM schedules"))).scalars().all()
+    assert doomed not in left and kept in left
+    # Another tenant's context deletes nothing (RLS).
+    assert await replica_b.delete_for_agent_async(agent_other, tenant_ctx=_ctx(dbs.t2)) == []

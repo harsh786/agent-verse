@@ -947,6 +947,68 @@ class ScheduleStore:
         self._data.pop(key, None)
         return True
 
+    async def delete_for_agent_async(
+        self, agent_id: str, *, tenant_ctx: TenantContext
+    ) -> list[str]:
+        """Delete every schedule of *agent_id* in Postgres, Redis and the cache (TRG-31).
+
+        Agent deletion used to walk ``list_all`` — this replica's cache — so a
+        schedule created on another replica survived and kept firing goals for
+        the deleted agent. Postgres decides which rows go (one ``DELETE ...
+        RETURNING`` under the tenant's RLS context). Must run BEFORE the agent
+        row is deleted: ``schedules.agent_id`` is ``ON DELETE SET NULL``.
+        Raises :class:`ScheduleStoreUnavailableError` on an outage.
+        """
+        tenant_id = tenant_ctx.tenant_id
+
+        async def _evict(schedule_ids: list[str]) -> None:
+            # The beat fires from the Redis mirror, so its keys must go too.
+            try:
+                for schedule_id in schedule_ids:
+                    await self._delete_redis_schedule_async(tenant_id, schedule_id, strict=True)
+                    self._data.pop((tenant_id, schedule_id), None)
+            except Exception as exc:
+                raise ScheduleStoreUnavailableError(f"schedule cache evict failed: {exc}") from exc
+
+        if self._db is None:
+            ids = [
+                sid
+                for (tid, sid), rec in self._data.items()
+                if tid == tenant_id and rec.get("agent_id") == agent_id
+            ]
+            await _evict(ids)
+            return ids
+        try:
+            from sqlalchemy import delete, select
+
+            from app.db.models.scheduling import Schedule
+            from app.db.rls import sqlalchemy_rls_context
+
+            where = (Schedule.tenant_id == tenant_id, Schedule.agent_id == agent_id)
+            # Evict the Redis keys BEFORE the rows go: if eviction fails the rows
+            # are still there, so a retry finds (and evicts) them again.
+            async with self._db() as session, sqlalchemy_rls_context(session, tenant_id):
+                rows = await session.execute(select(Schedule.id).where(*where))
+                ids = [str(r[0]) for r in rows]
+        except Exception as exc:
+            raise ScheduleStoreUnavailableError(f"agent schedule lookup failed: {exc}") from exc
+        await _evict(ids)
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                result = await session.execute(
+                    delete(Schedule).where(*where).returning(Schedule.id)
+                )
+                deleted = [str(r[0]) for r in result.fetchall()]
+        except Exception as exc:
+            raise ScheduleStoreUnavailableError(f"agent schedule delete failed: {exc}") from exc
+        # A schedule created between the lookup and the delete.
+        await _evict([sid for sid in deleted if sid not in ids])
+        return deleted
+
     def pause(self, schedule_id: str, *, tenant_ctx: TenantContext) -> bool:
         rec = self.get(schedule_id, tenant_ctx=tenant_ctx)
         if rec is None:
