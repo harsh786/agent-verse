@@ -30,6 +30,7 @@ Key improvements over v1:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import struct
 import time
@@ -42,6 +43,55 @@ from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
 logger = get_logger(__name__)
+
+# Per-tenant knowledge generation (Redis INCR counter). Every cache namespace is
+# derived from it, so bumping it makes every layer on every replica miss.
+_PREFIX_GEN = "scv2:gen:"
+
+
+def _generation_scope(tenant_id: str, generation: int) -> str:
+    """The storage namespace for ``tenant_id`` at ``generation`` (0 = legacy key)."""
+    return tenant_id if generation <= 0 else f"{tenant_id}#g{generation}"
+
+
+async def bump_knowledge_generation(tenant_id: str, *, redis: Any = None) -> bool:
+    """Invalidate every cached answer of ``tenant_id`` across all replicas.
+
+    For processes that change knowledge but hold no :class:`SemanticCache` (the
+    Celery worker's ingestion / retention). Without ``redis`` it uses the
+    configured Redis (``REDIS_URL`` / sentinel / cluster env) and does nothing
+    when none is configured — there is then no shared cache to invalidate.
+    Best-effort: returns False (logged) when the bump could not be written.
+    """
+    if not tenant_id:
+        return False
+    client = redis
+    owned = False
+    if client is None:
+        import os
+
+        if not any(
+            os.getenv(name) for name in ("REDIS_URL", "REDIS_SENTINEL_URLS", "REDIS_CLUSTER_NODES")
+        ):
+            return False
+        from app.net.redis_factory import get_redis_kwargs, make_async_redis
+
+        client = make_async_redis(**get_redis_kwargs(), socket_timeout=5)
+        owned = True
+    try:
+        await client.incr(f"{_PREFIX_GEN}{tenant_id}")
+        return True
+    except Exception as exc:
+        logger.warning(
+            "semantic_cache_invalidation_failed", tenant=tenant_id, error=str(exc)[:200]
+        )
+        return False
+    finally:
+        if owned:
+            close = getattr(client, "aclose", None) or getattr(client, "close", None)
+            if close is not None:
+                with contextlib.suppress(Exception):  # best-effort close
+                    await close()
 
 
 # ── Maths helpers ─────────────────────────────────────────────────────────────
@@ -214,6 +264,57 @@ class SemanticCache:
         self._l1 = _LRUCache(max_size=l1_size, ttl=effective_l1_ttl, threshold=threshold)
         # Stats counters
         self._stats: dict[str, dict[str, int]] = {}
+        # Highest knowledge generation seen per tenant (the only source without
+        # Redis; with Redis the shared counter wins).
+        self._generation: dict[str, int] = {}
+
+    # ── Knowledge generation (invalidation) ──────────────────────────────────
+
+    async def _scope(self, tenant_id: str) -> str | None:
+        """The tenant's current cache namespace; None when it cannot be known.
+
+        Read from Redis on every call so a bump made by any process (another
+        replica, the worker) takes effect everywhere at once. If Redis cannot
+        be read the answer might be stale, so callers treat None as a miss.
+        """
+        generation = self._generation.get(tenant_id, 0)
+        if self._redis is not None:
+            try:
+                raw = await self._redis.get(f"{_PREFIX_GEN}{tenant_id}")
+            except Exception as exc:
+                logger.debug("semantic_cache_generation_unreadable", error=str(exc)[:100])
+                return None
+            try:
+                shared = int(raw.decode() if isinstance(raw, bytes) else (raw or 0))
+            except (TypeError, ValueError):
+                return None
+            generation = max(generation, shared)
+            self._generation[tenant_id] = generation
+        return _generation_scope(tenant_id, generation)
+
+    def _scope_sync(self, tenant_id: str) -> str:
+        """Namespace for the synchronous (L1-only) API: the last generation seen."""
+        return _generation_scope(tenant_id, self._generation.get(tenant_id, 0))
+
+    async def invalidate_tenant(self, tenant_id: str) -> None:
+        """Knowledge of ``tenant_id`` changed: drop every cached answer, everywhere.
+
+        Bumps the shared generation (every replica's next lookup moves to a new,
+        empty namespace, so their L1s, the Redis L2 and the pgvector backend all
+        miss) and this process's own copy, so the invalidation holds here even
+        when Redis is unavailable. Old entries age out by TTL.
+        """
+        generation = self._generation.get(tenant_id, 0) + 1
+        if self._redis is not None:
+            try:
+                shared = int(await self._redis.incr(f"{_PREFIX_GEN}{tenant_id}"))
+                generation = max(generation, shared)
+            except Exception as exc:
+                logger.warning(
+                    "semantic_cache_invalidation_failed", tenant=tenant_id, error=str(exc)[:200]
+                )
+        self._generation[tenant_id] = generation
+        logger.info("semantic_cache_invalidated", tenant=tenant_id, generation=generation)
 
     # ── Public API (used by agent loop) ───────────────────────────────────────
 
@@ -233,9 +334,13 @@ class SemanticCache:
         """
         t0 = time.monotonic()
         s = self._get_stats(tenant_id)
+        scope = await self._scope(tenant_id)
+        if scope is None:
+            s["misses"] += 1
+            return None
 
         # ── L1 lookup ────────────────────────────────────────────────────────
-        l1_response = self._l1.get(embedding, tenant_id)
+        l1_response = self._l1.get(embedding, scope)
         if l1_response is not None:
             # _LRUCache.get() already skips empty-response warmup entries;
             # l1_response is always non-empty here.
@@ -253,7 +358,7 @@ class SemanticCache:
         # ── L2 ANN backend lookup (pgvector HNSW — faster for large caches) ──
         if self._backend is not None:
             try:
-                ann_hit = await self._backend.get_similar(embedding, tenant_id, self._threshold)
+                ann_hit = await self._backend.get_similar(embedding, scope, self._threshold)
                 if ann_hit is not None:
                     response = ann_hit["response"]
                     # Skip empty-response entries (used for prefetch warming only)
@@ -261,7 +366,7 @@ class SemanticCache:
                         pass  # fall through to Redis lookup
                     else:
                         score = float(ann_hit.get("score", 1.0))
-                        self._l1._put(embedding, response, tenant_id, key=f"ann:{id(response)}")
+                        self._l1._put(embedding, response, scope, key=f"ann:{id(response)}")
                         latency_ms = (time.monotonic() - t0) * 1000
                         s["hits"] += 1
                         s["l2_hits"] += 1
@@ -282,14 +387,14 @@ class SemanticCache:
 
         # ── L2 Redis lookup ──────────────────────────────────────────────────
         if self._redis is not None:
-            hit = await self._redis_lookup(embedding, tenant_id)
+            hit = await self._redis_lookup(embedding, scope)
             if hit is not None:
                 # Skip empty-response entries (used for prefetch warming only)
                 if not hit.response:
                     pass  # fall through to cache miss
                 else:
                     # Promote to L1
-                    self._l1._put(embedding, hit.response, tenant_id, key=f"l2:{id(hit.response)}")
+                    self._l1._put(embedding, hit.response, scope, key=f"l2:{id(hit.response)}")
                     latency_ms = (time.monotonic() - t0) * 1000
                     s["hits"] += 1
                     s["l2_hits"] += 1
@@ -320,16 +425,19 @@ class SemanticCache:
 
         response = response[: self._max_response]  # cap length
         entry_id = uuid.uuid4().hex[:16]
+        scope = await self._scope(tenant_id)
+        if scope is None:
+            return  # generation unknown: never store under a possibly stale one
 
         # L1 store
-        self._l1._put(embedding, response, tenant_id, key=entry_id)
+        self._l1._put(embedding, response, scope, key=entry_id)
         # Track bytes saved regardless of Redis availability
         self._get_stats(tenant_id)["bytes_saved"] += len(response)
 
         # L2 Redis store
         if self._redis is not None:
             try:
-                await self._redis_store(entry_id, embedding, query, response, tenant_id)
+                await self._redis_store(entry_id, embedding, query, response, scope)
             except Exception as exc:
                 logger.debug("semantic_cache_store_error", error=str(exc)[:100])
 
@@ -338,7 +446,7 @@ class SemanticCache:
         # stayed empty and every backend lookup was a guaranteed miss.
         if self._backend is not None:
             try:
-                await self._backend.store(query, embedding, response, tenant_id)
+                await self._backend.store(query, embedding, response, scope)
             except Exception as exc:
                 logger.warning("semantic_cache_backend_store_error", error=str(exc)[:100])
 
@@ -384,12 +492,17 @@ class SemanticCache:
         """Legacy sync store. Stores in L1 only (no Redis without async)."""
         import uuid
 
-        self._l1._put(query_embedding, response, tenant_ctx.tenant_id, key=uuid.uuid4().hex[:16])
+        self._l1._put(
+            query_embedding,
+            response,
+            self._scope_sync(tenant_ctx.tenant_id),
+            key=uuid.uuid4().hex[:16],
+        )
         self._get_stats(tenant_ctx.tenant_id)["bytes_saved"] += len(response)
 
     def lookup_sync(self, *, query_embedding: list[float], tenant_ctx: TenantContext) -> str | None:
         """Legacy sync lookup. Checks L1 only."""
-        result = self._l1.get(query_embedding, tenant_ctx.tenant_id)
+        result = self._l1.get(query_embedding, self._scope_sync(tenant_ctx.tenant_id))
         s = self._get_stats(tenant_ctx.tenant_id)
         if result:
             s["hits"] += 1
@@ -416,7 +529,7 @@ class SemanticCache:
     def clear(self, *, tenant_ctx: TenantContext) -> None:
         """Backward-compatible sync clear. Clears L1 and resets stats (no Redis flush)."""
         tid = tenant_ctx.tenant_id
-        self._l1.clear(tid)
+        self._l1.clear(self._scope_sync(tid))
         self._stats.pop(tid, None)
 
     # ── Batch embedding support ───────────────────────────────────────────────
@@ -431,11 +544,14 @@ class SemanticCache:
         Dramatically reduces round-trips when checking cache for all plan steps at once.
         """
         results: list[_CacheHit | None] = [None] * len(embeddings)
+        scope = await self._scope(tenant_id)
+        if scope is None:
+            return results
 
         # L1 pass (no network)
         l1_misses: list[int] = []
         for i, emb in enumerate(embeddings):
-            l1_resp = self._l1.get(emb, tenant_id)
+            l1_resp = self._l1.get(emb, scope)
             if l1_resp is not None:
                 results[i] = _CacheHit(
                     response=l1_resp,
@@ -451,14 +567,14 @@ class SemanticCache:
 
         # L2 pass — load all Redis entries once, then compare in-process
         try:
-            all_entries = await self._redis_load_all_entries(tenant_id)
+            all_entries = await self._redis_load_all_entries(scope)
             for i in l1_misses:
                 emb = embeddings[i]
                 best = _find_best_match(emb, all_entries, self._threshold)
                 if best:
                     response = best[0]
                     sim = best[1]
-                    self._l1._put(emb, response, tenant_id, key=f"batch:{i}")
+                    self._l1._put(emb, response, scope, key=f"batch:{i}")
                     results[i] = _CacheHit(
                         response=response,
                         similarity=sim,
@@ -539,7 +655,7 @@ class SemanticCache:
         """
         tid = tenant_ctx.tenant_id
         s = self._get_stats(tid)
-        l1_info = self._l1.stats(tid)
+        l1_info = self._l1.stats(self._scope_sync(tid))
         total = s["hits"] + s["misses"]
         hit_rate = round(s["hits"] / total, 4) if total > 0 else 0.0
         return {
@@ -561,22 +677,26 @@ class SemanticCache:
         Returns the number of Redis entries deleted.
         """
         tid = tenant_ctx.tenant_id
+        scope = await self._scope(tid) or self._scope_sync(tid)
         # Clear L1
-        self._l1.clear(tid)
+        self._l1.clear(scope)
         # Clear L2 Redis
         deleted = 0
         if self._redis is not None:
             try:
-                deleted = await self._redis_clear_tenant(tid)
+                deleted = await self._redis_clear_tenant(scope)
             except Exception as exc:
                 logger.warning("semantic_cache_clear_error", error=str(exc)[:100])
         # Clear the backend too — otherwise a "cleared" tenant kept being served
         # its old answers from semantic_cache_entries.
         if self._backend is not None:
             try:
-                await self._backend.clear(tid)
+                await self._backend.clear(scope)
             except Exception as exc:
                 logger.warning("semantic_cache_backend_clear_error", error=str(exc)[:100])
+        # Other replicas keep their own L1: move every replica to a new, empty
+        # namespace (this used to clear only the pod serving the request).
+        await self.invalidate_tenant(tid)
         # Reset stats
         self._stats.pop(tid, None)
         logger.info("semantic_cache_cleared", tenant=tid, redis_keys_deleted=deleted)
@@ -584,10 +704,11 @@ class SemanticCache:
 
     async def size(self, tenant_id: str) -> int:
         """Return number of entries stored in Redis for this tenant."""
+        scope = await self._scope(tenant_id) or self._scope_sync(tenant_id)
         if self._redis is None:
-            return cast(int, self._l1.stats(tenant_id).get("l1_size", 0))
+            return cast(int, self._l1.stats(scope).get("l1_size", 0))
         try:
-            return cast(int, await self._redis.scard(f"{self._PREFIX_INDEX}{tenant_id}"))
+            return cast(int, await self._redis.scard(f"{self._PREFIX_INDEX}{scope}"))
         except Exception:
             return 0
 
@@ -714,7 +835,7 @@ class SemanticCache:
         """Fallback: exact text match when no embedding is available."""
         # Use a simple dict keyed by query text in l1._store under a special sentinel
         key = f"__text__:{query[:100]}"
-        store = self._l1._store.get(tenant_id)
+        store = self._l1._store.get(self._scope_sync(tenant_id))
         if store and key in store:
             entry = store[key]
             if (time.monotonic() - entry.created_at) < self._l1._ttl:
@@ -723,7 +844,7 @@ class SemanticCache:
 
     def _l1_text_set(self, query: str, response: str, tenant_id: str) -> None:
         key = f"__text__:{query[:100]}"
-        self._l1._put([], response, tenant_id, key=key)
+        self._l1._put([], response, self._scope_sync(tenant_id), key=key)
 
     # ── Stats helpers ─────────────────────────────────────────────────────────
 

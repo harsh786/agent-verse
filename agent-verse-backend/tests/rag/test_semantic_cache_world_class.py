@@ -432,8 +432,9 @@ async def test_redis_paraphrase_hit_cross_replica():
 
 @pytest.mark.asyncio
 async def test_redis_error_falls_back_to_l1():
-    """Redis failures are silent — L1 still works."""
+    """Redis L2 failures are silent — L1 still works (the generation read is fine)."""
     redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(side_effect=ConnectionError("Redis down"))
     redis.pipeline = MagicMock(side_effect=ConnectionError("Redis down"))
     redis.scard = AsyncMock(side_effect=ConnectionError("Redis down"))
@@ -445,6 +446,20 @@ async def test_redis_error_falls_back_to_l1():
     # L1 should still work
     assert hit is not None
     assert hit.source == "l1"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_knowledge_generation_is_a_miss_not_a_stale_hit():
+    """If Redis is down entirely the tenant's knowledge generation is unknown:
+    an L1 entry might predate a knowledge change made elsewhere, so it is not
+    served (and nothing is stored under a guessed generation)."""
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
+    cache = SemanticCache(threshold=0.92, redis=redis)
+    v = _vec(1.0)
+    await cache.store_async(v, "q", "l1 response", "t1")
+    redis.get = AsyncMock(side_effect=ConnectionError("Redis down"))
+    assert await cache.get_similar(v, "t1") is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -102,6 +102,11 @@ async def expire_knowledge_chunks(
                 app_db = get_session_factory()
             for tenant_id, docs in by_tenant.items():
                 counts = await _expire_tenant_documents(app_db, table, tenant_id, docs)
+                if counts["knowledge_chunks_expired"]:
+                    # Answers cached from the expired knowledge must not be served.
+                    from app.rag.semantic_cache import bump_knowledge_generation
+
+                    await bump_knowledge_generation(tenant_id)
                 batch_deleted += counts["knowledge_chunks_expired"]
                 for key, value in counts.items():
                     totals[key] += value

@@ -102,6 +102,11 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     resolution = resolve_embedder()
     embedder = resolution.embedder
     knowledge_store = KnowledgeStore(db_factory, embedding_dim=resolution.dimension)
+    # Documents indexed here must invalidate answers the API replicas cached
+    # from the tenant's old knowledge (shared Redis generation).
+    from app.rag.semantic_cache import bump_knowledge_generation
+
+    knowledge_store.add_change_listener(bump_knowledge_generation)
     # Stage 1 (quota) and Stage 6 (PII) were never wired here, so every
     # scheduled/DLQ-retried document skipped both.
     pipeline = IngestionPipeline(

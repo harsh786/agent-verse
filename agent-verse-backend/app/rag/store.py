@@ -158,9 +158,26 @@ class KnowledgeStore:
         self._data: dict[tuple[str, str], _CollectionStore] = {}
         self._index_records: dict[tuple[str, str], list[RAGIndexRecord]] = {}
         self._db = db_session_factory
+        # Called with the tenant id after the tenant's knowledge changed (chunks
+        # written or deleted) — e.g. SemanticCache.invalidate_tenant, so cached
+        # answers built from the old knowledge stop being served.
+        self._change_listeners: list[Any] = []
         # The active embedder's REAL output width, when known. New collections are
         # sized to it instead of the static settings.embedding_dim.
         self._embedding_dim = embedding_dim
+
+    def add_change_listener(self, listener: Any) -> None:
+        """Register ``async listener(tenant_id)`` for knowledge changes."""
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
+
+    async def _notify_changed(self, tenant_id: str) -> None:
+        """Best-effort: a listener failure never fails the write that committed."""
+        for listener in list(self._change_listeners):
+            try:
+                await listener(tenant_id)
+            except Exception as exc:
+                _log.warning("knowledge_change_listener_failed: %s", exc)
 
     def set_embedding_dim(self, dimension: int | None) -> None:
         """Bind the active embedder's real output dimension (None = unknown)."""
@@ -605,7 +622,10 @@ class KnowledgeStore:
         """
         key = (tenant_ctx.tenant_id, collection_id)
         if self._db is None:
-            return self._data.pop(key, None) is not None
+            removed_collection = self._data.pop(key, None) is not None
+            if removed_collection:
+                await self._notify_changed(tenant_ctx.tenant_id)
+            return removed_collection
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
@@ -681,6 +701,7 @@ class KnowledgeStore:
         if deleted is None:
             return False
         self._data.pop(key, None)
+        await self._notify_changed(tenant_ctx.tenant_id)
         return True
 
     async def create_ingestion_job_async(
@@ -1565,11 +1586,14 @@ class KnowledgeStore:
         """Delete a persisted document using its collection's vector dimension."""
         _db = db or self._db
         if _db is None:
-            return self.delete_document(
+            removed_chunks = self.delete_document(
                 document_id,
                 collection_id=collection_id,
                 tenant_ctx=tenant_ctx,
             )
+            if removed_chunks:
+                await self._notify_changed(tenant_ctx.tenant_id)
+            return removed_chunks
 
         from sqlalchemy import text
 
@@ -1646,6 +1670,8 @@ class KnowledgeStore:
             collection_id=collection_id,
             tenant_ctx=tenant_ctx,
         )
+        if deleted or memory_deleted:
+            await self._notify_changed(tenant_ctx.tenant_id)
         return max(deleted, memory_deleted)
 
     async def ingest_document(
@@ -1751,6 +1777,7 @@ class KnowledgeStore:
                     {item.document_id for item in store.chunks}
                 )
 
+        await self._notify_changed(tenant_ctx.tenant_id)
         return chunk_id
 
     async def persist_index_records(
@@ -2045,6 +2072,8 @@ class KnowledgeStore:
                 )
             for chunk in chunks:
                 self.ingest_chunk(chunk, collection_id=collection_id, tenant_ctx=tenant_ctx)
+            if chunks:
+                await self._notify_changed(tenant_ctx.tenant_id)
             return [chunk.chunk_id for chunk in chunks]
 
         records = [
@@ -2087,6 +2116,8 @@ class KnowledgeStore:
                 cached.collection.document_count = len(
                     {chunk.document_id for chunk in cached.chunks}
                 )
+        if chunks:
+            await self._notify_changed(tenant_ctx.tenant_id)
         return [chunk.chunk_id for chunk in chunks]
 
     async def ingest_repository_chunks_async(
@@ -2188,6 +2219,7 @@ class KnowledgeStore:
                 cached.collection.document_count = len(
                     {chunk.document_id for chunk in cached.chunks}
                 )
+        await self._notify_changed(tenant_ctx.tenant_id)
         return [chunk.chunk_id for chunk in chunks]
 
     async def _persist_chunk(

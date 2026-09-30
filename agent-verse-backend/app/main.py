@@ -657,6 +657,8 @@ def create_app(
     _nl_sched = NLScheduler(provider=_app_provider)
     _knowledge_store = KnowledgeStore()
     _semantic_cache = SemanticCache()
+    # Knowledge writes invalidate answers cached from the old knowledge (KB-05).
+    _knowledge_store.add_change_listener(_semantic_cache.invalidate_tenant)
     # D-23: multimodal ingestion pipeline, DI'd via app.state instead of the
     # module-level singleton so its job store can be upgraded to a
     # Redis-backed one below (two-phase wiring, same pattern as ScheduleStore
@@ -1583,6 +1585,7 @@ def create_app(
             # Chat SCHEDULE turns use the DB-backed schedule store (Phase 2).
             if getattr(app.state, "chat_service", None) is not None:
                 app.state.chat_service.attach_engine(schedule_store=_schedule_store_db)
+            _knowledge_store_db.add_change_listener(app.state.semantic_cache.invalidate_tenant)
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
 

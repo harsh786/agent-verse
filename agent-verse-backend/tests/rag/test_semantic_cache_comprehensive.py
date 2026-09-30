@@ -131,9 +131,8 @@ class TestSemanticCacheGetSet:
     async def test_set_and_get_with_redis_success(self):
         """Covers lines 93-99, 117-124: Redis-backed get/set."""
         mock_redis = AsyncMock()
-        import json
-        cached_data = json.dumps({"query": "test query", "response": "cached answer"})
-        mock_redis.get = AsyncMock(return_value=cached_data)
+        # GET only reads the tenant's knowledge generation now (none bumped yet).
+        mock_redis.get = AsyncMock(return_value=None)
         mock_redis.set = AsyncMock(return_value=True)
 
         cache = SemanticCache(redis=mock_redis)
