@@ -468,6 +468,15 @@ async def _embed_texts_or_http(
         if len(vectors) != len(batch) or any(not vector for vector in vectors):
             raise HTTPException(status_code=503, detail="Embedding provider is unavailable")
         embeddings.extend(vectors)
+        if request is not None:
+            from app.embedding.usage import approx_tokens, record_embedding_usage
+            from app.providers.embedder_factory import embedder_model_name
+
+            await record_embedding_usage(
+                _require_tenant(request).tenant_id,
+                embedder_model_name(embedder),
+                approx_tokens(batch),
+            )
     return embeddings
 
 

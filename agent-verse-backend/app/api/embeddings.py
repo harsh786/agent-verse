@@ -126,11 +126,21 @@ async def validate_dimension(request: Request) -> dict[str, Any]:
 
 @router.get("/usage")
 async def get_embedding_usage(request: Request) -> dict[str, Any]:
-    """The calling tenant's embedding usage statistics (this replica)."""
+    """The calling tenant's embedding usage, across every replica and process.
+
+    Token counts come from the shared Redis counters every embed path writes
+    (ingestion, retrieval queries, direct uploads, POST /embeddings); without
+    Redis only this replica's POST /embeddings counters are available.
+    """
     tenant = _require_tenant(request)
     from app.embedding.router import embedding_router
+    from app.embedding.usage import read_embedding_usage
 
-    return embedding_router.get_usage_stats(tenant_id=tenant.tenant_id)
+    stats = embedding_router.get_usage_stats(tenant_id=tenant.tenant_id)
+    shared = await read_embedding_usage(tenant.tenant_id)
+    if shared is not None:
+        stats["usage_by_model"] = shared
+    return stats
 
 
 async def _collection_avg_similarity(

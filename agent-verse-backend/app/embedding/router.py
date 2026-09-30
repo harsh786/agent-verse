@@ -176,6 +176,10 @@ class EmbeddingRouter:
                     t_usage = self._tenant_usage.setdefault(tenant_id, {})
                     t_usage[model_key] = t_usage.get(model_key, 0) + token_count
                 actual = str(getattr(resp, "model", "") or "") or model_key
+                if tenant_id:
+                    from app.embedding.usage import record_embedding_usage
+
+                    await record_embedding_usage(tenant_id, actual, token_count)
                 return EmbeddingRunResult(embeddings=embeddings, model=actual, used_fallback=False)
             except EmbeddingModelUnavailableError:
                 raise  # a client error: no fallback substitutes another model

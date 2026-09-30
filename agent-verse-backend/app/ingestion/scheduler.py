@@ -113,6 +113,10 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     from app.rag.semantic_cache import bump_knowledge_generation
 
     knowledge_store.add_change_listener(bump_knowledge_generation)
+    # Worker embeds count into the tenant's shared usage counters too.
+    from app.embedding.usage import configure_usage_redis_from_env
+
+    configure_usage_redis_from_env()
     # Stage 1 (quota) and Stage 6 (PII) were never wired here, so every
     # scheduled/DLQ-retried document skipped both.
     pipeline = IngestionPipeline(

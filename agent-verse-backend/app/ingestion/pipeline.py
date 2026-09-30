@@ -729,6 +729,10 @@ class IngestionPipeline:
             for chunk, embedding in zip(enriched_chunks, embeddings, strict=False):
                 chunk["embedding"] = embedding
                 chunk["embedding_model"] = model if embedding else ""
+            if any(embeddings):
+                from app.embedding.usage import approx_tokens, record_embedding_usage
+
+                await record_embedding_usage(config.tenant_id, model, approx_tokens(texts))
         except Exception as e:
             _log.warning("pipeline_embed_error: %s", e)
             for chunk in enriched_chunks:

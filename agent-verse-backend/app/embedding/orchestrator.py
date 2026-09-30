@@ -181,19 +181,11 @@ class EmbeddingOrchestrator:
                 selection_reason="fallback to text embedding",
             )
 
-        # Ultimate fallback — development/tests only. In production a fake
-        # 10-dim "embedding" would silently poison the vector index.
-        if _is_production():
-            raise NoEmbeddingModelAvailableError(
-                f"no embedding model available for content_type={content_type.value}"
-            )
-        return EmbeddingSelectionResult(
-            model_id="fake-embedding",
-            dimension=10,
-            modality="text",
-            cost_class="free",
-            provider="fake",
-            selection_reason="no embedding model available",
+        # No model at all: refuse in every environment. A fake 10-dim
+        # "embedding" (the old non-production fallback) silently poisons a
+        # vector index wherever it runs.
+        raise NoEmbeddingModelAvailableError(
+            f"no embedding model available for content_type={content_type.value}"
         )
 
     async def embed_with_fallback(

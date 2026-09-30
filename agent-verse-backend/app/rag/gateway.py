@@ -302,6 +302,13 @@ class _BudgetedEmbedder:
         event_index = await self._guard.reserve("embedding")
         response = await self._embedder.embed(request)
         self._guard.record_tokens(event_index, int(getattr(response, "total_tokens", 0)))
+        from app.embedding.usage import approx_tokens, record_embedding_usage
+
+        await record_embedding_usage(
+            self._guard._tenant_context.tenant_id,
+            str(getattr(response, "model", "") or model),
+            int(getattr(response, "total_tokens", 0) or 0) or approx_tokens(texts),
+        )
         # Populate cache for next time (best-effort; only when aligned 1:1).
         embs = getattr(response, "embeddings", None)
         if _cache_on and texts and embs and len(embs) == len(texts):

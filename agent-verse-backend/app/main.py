@@ -2011,6 +2011,11 @@ def create_app(
                 if _rpa_ss is not None:
                     _rpa_ss._redis = redis_for_runtime
 
+                # Embedding usage counters shared by every replica (KB-27).
+                from app.embedding.usage import configure_usage_redis
+
+                configure_usage_redis(redis_for_runtime)
+
                 # SemanticCache: wire Redis so cache is shared across all workers.
                 _sem_cache = getattr(app.state, "semantic_cache", None)
                 if _sem_cache is not None and hasattr(_sem_cache, "_redis"):

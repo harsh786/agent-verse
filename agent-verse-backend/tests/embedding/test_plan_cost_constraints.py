@@ -161,12 +161,11 @@ class TestBudgetExhaustionDegradesGracefully:
         assert result.model_id == "text-cheap"
         assert result.cost_class == "low"
 
-    def test_all_modalities_unaffordable_hits_ultimate_fallback(self) -> None:
+    def test_all_modalities_unaffordable_refuses_instead_of_a_fake_model(self) -> None:
         """When the registry has candidates but NONE are affordable on the
         tenant's plan for ANY modality the content type maps to, and there is
-        also no plain 'text' model at all to fall back to, selection must
-        still return a usable (though degraded) result — the hard-coded
-        fake-embedding ultimate fallback — never raise."""
+        also no plain 'text' model at all to fall back to, selection refuses
+        (KB-27) — it used to return a fake 10-dim 'embedding' model."""
         registry = EmbeddingModelRegistry(
             [
                 EmbeddingModelSpec("code-only-expensive", "code", 2048, "high", "p"),
@@ -174,11 +173,10 @@ class TestBudgetExhaustionDegradesGracefully:
         )
         orch = EmbeddingOrchestrator(registry=registry)
 
-        result = orch.select(content_type=ContentType.CODE, tenant_ctx=_ctx(PlanTier.FREE))
-        assert result.model_id == "fake-embedding"
-        assert result.dimension == 10
-        assert result.cost_class == "free"
-        assert result.selection_reason == "no embedding model available"
+        from app.embedding.orchestrator import NoEmbeddingModelAvailableError
+
+        with pytest.raises(NoEmbeddingModelAvailableError):
+            orch.select(content_type=ContentType.CODE, tenant_ctx=_ctx(PlanTier.FREE))
 
     def test_last_resort_fallback_ignores_plan_cap_when_no_affordable_text_model(
         self,
@@ -204,10 +202,11 @@ class TestBudgetExhaustionDegradesGracefully:
         assert result.cost_class == "high"
         assert result.selection_reason == "fallback to text embedding"
 
-    def test_empty_registry_hits_ultimate_fallback_for_any_content_type(self) -> None:
+    def test_empty_registry_refuses_for_any_content_type(self) -> None:
+        from app.embedding.orchestrator import NoEmbeddingModelAvailableError
+
         registry = EmbeddingModelRegistry([])
         orch = EmbeddingOrchestrator(registry=registry)
 
-        result = orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.ENTERPRISE))
-        assert result.model_id == "fake-embedding"
-        assert result.provider == "fake"
+        with pytest.raises(NoEmbeddingModelAvailableError):
+            orch.select(content_type=ContentType.TEXT, tenant_ctx=_ctx(PlanTier.ENTERPRISE))
