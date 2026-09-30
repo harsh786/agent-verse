@@ -14,8 +14,8 @@ import pytest
 # the developer's LIVE local Postgres (:5432), pgbouncer (:6432) and Redis (:6379).
 # Tests that fell through to those defaults used to write rows into the dev
 # database. So, unless a run explicitly opts in with
-# ``AGENTVERSE_TESTS_ALLOW_LIVE_INFRA=1`` (e.g. CI's integration job, whose
-# Postgres/Redis are disposable service containers on localhost), this:
+# ``AGENTVERSE_TESTS_ALLOW_LIVE_INFRA=1`` (only ever for disposable infra, e.g. a
+# deliberate run of the live-stack suites under tests/real_e2e), this:
 #
 # 1. forces DATABASE_URL / REDIS_URL to an unreachable address BEFORE any app
 #    module is imported (so module-level ``os.getenv`` reads and ``Settings``
@@ -54,9 +54,8 @@ if not _ALLOW_LIVE_INFRA:
         if not isinstance(address, tuple) or len(address) < 2:
             return False
         host, port = address[0], address[1]
-        return port in _LIVE_INFRA_PORTS and (
-            host in _LOOPBACK_HOSTS or str(host).startswith("127.")
-        )
+        host = str(host).removeprefix("::ffff:")  # IPv4-mapped IPv6
+        return port in _LIVE_INFRA_PORTS and (host in _LOOPBACK_HOSTS or host.startswith("127."))
 
     def _refuse(address: object) -> ConnectionRefusedError:
         return ConnectionRefusedError(

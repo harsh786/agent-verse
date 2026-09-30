@@ -31,6 +31,15 @@ These are non-obvious and have bitten previous sessions — read before running 
 - **Integration tests (testcontainers)** need these env vars set:
   `DOCKER_HOST="unix:///Users/harsh/.colima/default/docker.sock"` and
   `TESTCONTAINERS_RYUK_DISABLED=true`.
+- **Tests can never reach the live local Postgres/Redis.** `tests/conftest.py` forces
+  `DATABASE_URL`/`REDIS_URL` to an unreachable address before any app import and refuses
+  socket connects to loopback `:5432`/`:6432`/`:6379` (earlier tests silently wrote rows into
+  the dev DB through the app defaults). Tests that need a real DB/Redis use the
+  testcontainers fixtures `pg_url` (migrated via alembic), `redis_url` and `test_backends`
+  (points the global engine/`get_settings()` at them) and carry the `integration` marker;
+  unit tests use fakes (`tests/_rls_recorder.RlsRecordingDb`, `in_memory_goal_lock`).
+  Opt out only for disposable infra (e.g. a CI service container) with
+  `AGENTVERSE_TESTS_ALLOW_LIVE_INFRA=1` — never against the dev stack.
 - **`httpx2`** is a dev dependency because Starlette's `TestClient` requires it; plain httpx
   raises a deprecation that `filterwarnings=error` turns into a test failure.
 - **pytest treats warnings as errors** (`filterwarnings = ["error"]`); only specific
