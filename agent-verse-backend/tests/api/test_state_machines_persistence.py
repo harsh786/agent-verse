@@ -20,7 +20,6 @@ Run with::
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncIterator
 
@@ -37,9 +36,6 @@ from app.triggers.state_machine import (
 )
 
 pytestmark = pytest.mark.integration
-
-_DATABASE_URL = os.environ.get("DATABASE_URL", "")
-
 
 def _make_definition(machine_id: str, tenant_id: str) -> StateMachineDefinition:
     return StateMachineDefinition(
@@ -59,10 +55,9 @@ def _make_definition(machine_id: str, tenant_id: str) -> StateMachineDefinition:
 
 
 @pytest.fixture
-async def db_factory() -> AsyncIterator[async_sessionmaker]:
-    if not _DATABASE_URL:
-        pytest.skip("DATABASE_URL not set")
-    engine = create_async_engine(_DATABASE_URL, poolclass=NullPool)
+async def db_factory(pg_url: str) -> AsyncIterator[async_sessionmaker]:
+    # The migrated Postgres testcontainer (tests/conftest.py), never live infra.
+    engine = create_async_engine(pg_url, poolclass=NullPool)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     # Sanity check the tables exist (migration applied); skip otherwise.
     try:

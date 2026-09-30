@@ -28,7 +28,6 @@ Run with:
 
 from __future__ import annotations
 
-import os
 import types
 import uuid
 from typing import Any
@@ -41,12 +40,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.db.rls import sqlalchemy_rls_context, system_session
 from app.org.service import OrgService
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
-
 class _FakeGoalService:
     """Stands in for the wired GoalService: the goal is already terminal."""
 
@@ -55,8 +48,8 @@ class _FakeGoalService:
 
 
 @pytest.mark.integration
-async def test_one_failing_task_does_not_block_closing_the_rest_or_the_mission() -> None:
-    engine = create_async_engine(DATABASE_URL)
+async def test_one_failing_task_does_not_block_closing_the_rest_or_the_mission(pg_url: str) -> None:
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = str(uuid.uuid4())
     org_id = str(uuid.uuid4())

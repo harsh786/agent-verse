@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -19,15 +18,9 @@ from app.coordination.cancellation import (
 from app.db.models.coordination import COORDINATION_TABLES
 from app.db.rls import sqlalchemy_rls_context
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
-
 @pytest_asyncio.fixture
-async def postgres_cancellation_state():
-    engine = create_async_engine(DATABASE_URL)
+async def postgres_cancellation_state(pg_url: str):
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = f"cancel-{uuid.uuid4().hex[:11]}"
     session_id = uuid.uuid4().hex

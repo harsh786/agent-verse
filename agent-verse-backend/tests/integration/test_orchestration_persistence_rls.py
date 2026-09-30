@@ -12,7 +12,6 @@ production despite the code "succeeding" from the caller's point of view.
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
@@ -33,21 +32,15 @@ from app.orchestration.runtime_profile import (
 )
 from app.services.orchestration_persistence import OrchestrationPersistence
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
-
 @pytest.mark.integration
-async def test_persist_scorecard_actually_lands_a_row_under_rls() -> None:
+async def test_persist_scorecard_actually_lands_a_row_under_rls(pg_url: str) -> None:
     """A real persist_scorecard call must produce a readable eval_scorecards row.
 
     Before the fix this insert silently violated the FORCE RLS policy on
     eval_scorecards (no app.tenant_id set), the exception was swallowed, and
     this assertion failed because the row was never written.
     """
-    engine = create_async_engine(DATABASE_URL)
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = f"orch-{uuid.uuid4().hex[:11]}"
     goal_id = uuid.uuid4().hex
@@ -117,14 +110,14 @@ async def test_persist_scorecard_actually_lands_a_row_under_rls() -> None:
 
 
 @pytest.mark.integration
-async def test_persist_regression_case_actually_lands_a_row_under_rls() -> None:
+async def test_persist_regression_case_actually_lands_a_row_under_rls(pg_url: str) -> None:
     """A real persist_regression_case call must produce a readable regression_cases row.
 
     Before the fix this insert silently violated the FORCE RLS policy on
     regression_cases (no app.tenant_id set); the row was never written and the
     exception was swallowed by the method's own warning-log except block.
     """
-    engine = create_async_engine(DATABASE_URL)
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = f"orch-reg-{uuid.uuid4().hex[:8]}"
     goal_id = uuid.uuid4().hex

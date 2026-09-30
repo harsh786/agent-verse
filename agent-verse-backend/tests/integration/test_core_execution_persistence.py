@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
@@ -9,15 +8,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.agent.persistence import GoalPersistenceEngine
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
-
 @pytest.mark.integration
-async def test_duplicate_delivery_creates_one_versioned_attempt() -> None:
-    engine = create_async_engine(DATABASE_URL)
+async def test_duplicate_delivery_creates_one_versioned_attempt(pg_url: str) -> None:
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = f"attempt-{uuid.uuid4().hex[:12]}"
     goal_id = uuid.uuid4().hex

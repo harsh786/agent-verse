@@ -1,51 +1,20 @@
-"""Integration tests using the real local Docker PostgreSQL.
+"""Integration tests against a real, migrated PostgreSQL (testcontainers).
 
-These tests connect to the actual PostgreSQL instance running on localhost:5432
-and validate all 4 partial item implementations with real DB queries.
+Validate all 4 partial item implementations with real DB queries.
 
 Run with: uv run pytest tests/integration/test_real_postgres.py -v
-Requires: PostgreSQL running (pgvector/pgvector:pg16 on localhost:5432)
+Requires: Docker (the ``pg_url`` fixture starts a pgvector/pgvector:pg16 container)
 """
 from __future__ import annotations
 
-import asyncio
-import os
 import uuid
 
 import pytest
 import pytest_asyncio
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
-
-# ---------------------------------------------------------------------------
-# DB reachability guard
-# ---------------------------------------------------------------------------
-
-def _sync_db_reachable() -> bool:
-    async def _check() -> bool:
-        try:
-            from sqlalchemy import text
-            from sqlalchemy.ext.asyncio import create_async_engine
-
-            engine = create_async_engine(DATABASE_URL, pool_timeout=5)
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-            await engine.dispose()
-            return True
-        except Exception:
-            return False
-
-    return asyncio.run(_check())
-
-
-pytestmark = pytest.mark.skipif(
-    not _sync_db_reachable(),
-    reason="Local PostgreSQL not reachable (start with docker-compose up)",
-)
+# Runs against the migrated Postgres testcontainer (``pg_url``, tests/conftest.py),
+# never the developer's live database.
+pytestmark = pytest.mark.integration
 
 
 # ---------------------------------------------------------------------------
@@ -53,11 +22,11 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
-async def db_factory():
-    """Real async SQLAlchemy session factory connected to local Docker Postgres."""
+async def db_factory(pg_url):
+    """Real async SQLAlchemy session factory on the Postgres testcontainer."""
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    engine = create_async_engine(DATABASE_URL, echo=False)
+    engine = create_async_engine(pg_url, echo=False)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory
     await engine.dispose()
@@ -214,12 +183,12 @@ async def test_ltm_delete_removes_from_in_memory(db_factory, tenant_ctx):
 
 
 @pytest.mark.asyncio
-async def test_ltm_embedding_column_exists():
+async def test_ltm_embedding_column_exists(pg_url):
     """Verify the embedding column was added to long_term_memory."""
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    engine = create_async_engine(DATABASE_URL)
+    engine = create_async_engine(pg_url)
     async with engine.connect() as conn:
         result = await conn.execute(
             text(

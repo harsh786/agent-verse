@@ -9,7 +9,6 @@ same (tenant, goal, checkpoint_key) twice must now update in place.
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
@@ -25,12 +24,6 @@ from app.reliability.result_processor import ResultProcessor
 from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import PlanTier, TenantContext
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
-
 def _build_graph() -> AgentGraph:
     fake = FakeProvider(responses=["done"])
     return AgentGraph(
@@ -45,8 +38,8 @@ def _build_graph() -> AgentGraph:
 
 
 @pytest.mark.integration
-async def test_write_checkpoint_upserts_same_step_on_replan() -> None:
-    engine = create_async_engine(DATABASE_URL)
+async def test_write_checkpoint_upserts_same_step_on_replan(pg_url: str) -> None:
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = uuid.uuid4().hex
     goal_id = uuid.uuid4().hex

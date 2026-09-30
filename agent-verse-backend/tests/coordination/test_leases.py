@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -18,15 +17,9 @@ from app.coordination.leases import (
 )
 from app.db.models.coordination import COORDINATION_TABLES
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
-
 @pytest_asyncio.fixture
-async def postgres_lease_repository():
-    engine = create_async_engine(DATABASE_URL)
+async def postgres_lease_repository(pg_url: str):
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = f"lease-{uuid.uuid4().hex[:12]}"
     work_item_id = uuid.uuid4().hex

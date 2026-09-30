@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 
 import pytest
@@ -18,17 +17,12 @@ from app.coordination.store import (
 )
 from app.tenancy.context import PlanTier, TenantContext
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse",
-)
-
 pytestmark = pytest.mark.integration
 
 
 @pytest_asyncio.fixture
-async def store_context():
-    engine = create_async_engine(DATABASE_URL)
+async def store_context(pg_url: str):
+    engine = create_async_engine(pg_url)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     tenant_id = f"coord-{uuid.uuid4().hex[:12]}"
     async with factory() as session, session.begin():

@@ -10,7 +10,6 @@ tenant isolation holds. Requires DATABASE_URL + `alembic upgrade head`.
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncIterator
 
@@ -21,14 +20,10 @@ from sqlalchemy.pool import NullPool
 
 pytestmark = pytest.mark.integration
 
-_DATABASE_URL = os.environ.get("DATABASE_URL", "")
-
-
 @pytest.fixture
-async def db_factory() -> AsyncIterator[async_sessionmaker]:
-    if not _DATABASE_URL:
-        pytest.skip("DATABASE_URL not set")
-    engine = create_async_engine(_DATABASE_URL, poolclass=NullPool)
+async def db_factory(pg_url: str) -> AsyncIterator[async_sessionmaker]:
+    # The migrated Postgres testcontainer (tests/conftest.py), never live infra.
+    engine = create_async_engine(pg_url, poolclass=NullPool)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with factory() as session:
