@@ -1016,12 +1016,16 @@ class TestExcelParser:
         result = parser.parse(buf.getvalue())
         assert f"[truncated at {parser.MAX_ROWS} rows]" in result
 
-    def test_import_error_returns_empty(self):
+    def test_import_error_is_parser_unavailable(self):
+        # KB-09: a missing openpyxl is a server gap (503), not an empty workbook.
+        from app.ingestion.document_text import ParserUnavailableError
         from app.ingestion.parsers.excel_parser import ExcelParser
 
-        with patch.dict("sys.modules", {"openpyxl": None}):
-            result = ExcelParser().parse(b"anything", filename="x.xlsx")
-        assert result == ""
+        with (
+            patch.dict("sys.modules", {"openpyxl": None}),
+            pytest.raises(ParserUnavailableError),
+        ):
+            ExcelParser().parse(b"anything", filename="x.xlsx")
 
     def test_corrupt_bytes_returns_empty(self):
         from app.ingestion.parsers.excel_parser import ExcelParser
