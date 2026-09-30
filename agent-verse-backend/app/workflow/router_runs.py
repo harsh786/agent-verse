@@ -62,6 +62,7 @@ class RunDetailResponse(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    error_step_id: str | None = None  # the step whose failure stopped the run
     started_at: str | None = None
     finished_at: str | None = None
     duration_ms: float | None = None

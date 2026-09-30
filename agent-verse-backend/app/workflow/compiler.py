@@ -590,7 +590,11 @@ class WorkflowCompiler:
             )
 
         if policy == "abort":
-            raise exc if exc is not None else RuntimeError(err)
+            failure = exc if exc is not None else RuntimeError(err)
+            # Tell the runner which step failed so the run row records it.
+            with contextlib.suppress(Exception):
+                failure.workflow_step_id = step.id  # type: ignore[attr-defined]
+            raise failure
 
         # Default "pause": halt the run for operator intervention. Downstream
         # nodes short-circuit on ``paused_by`` (see node_fn guard).

@@ -282,7 +282,14 @@ export default function WorkflowRunDetailPage() {
         {/* Error */}
         {run.error && (
           <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/20" role="alert">
-            <p className="text-xs font-semibold text-red-400 mb-1">Error</p>
+            <p className="text-xs font-semibold text-red-400 mb-1">
+              Error
+              {run.error_step_id && (
+                <span className="font-normal text-red-300/80">
+                  {' '}in step <code className="font-mono">{run.error_step_id}</code>
+                </span>
+              )}
+            </p>
             <p className="text-xs text-red-300 font-mono">{run.error}</p>
           </div>
         )}

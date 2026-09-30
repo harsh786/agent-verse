@@ -180,6 +180,19 @@ describe('WorkflowRunDetailPage', () => {
     });
   });
 
+  it('names the failing step next to the run error', async () => {
+    vi.mocked(workflowEngineApi.getRun).mockResolvedValue({
+      ...mockRun,
+      status: 'failed',
+      error: "step 'synthesize' exceeded timeout 60s",
+      error_step_id: 'synthesize',
+    } as any);
+    wrap();
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Error in step synthesize');
+    expect(alert).toHaveTextContent("step 'synthesize' exceeded timeout 60s");
+  });
+
   it('shows loading state', async () => {
     vi.mocked(workflowEngineApi.getRun).mockImplementation(() => new Promise(() => {}));
     wrap();

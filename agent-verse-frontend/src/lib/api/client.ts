@@ -3155,6 +3155,8 @@ export interface WERun {
   inputs: Record<string, unknown>;
   outputs: Record<string, unknown>;
   error?: string;
+  /** The step whose failure stopped the run. */
+  error_step_id?: string | null;
   started_at?: string;
   finished_at?: string;
   duration_ms?: number;

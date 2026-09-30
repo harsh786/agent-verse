@@ -284,17 +284,10 @@ class WorkflowRunner:
             _log.error(
                 "workflow_run_failed_inline", run_id=run_id, error=repr(exc), exc_info=True
             )
-            if self._run_store:
-                # tenant_id is keyword-only-required (RLS-scoped); read it from
-                # the run state so the failure update targets the right tenant.
-                await self._run_store.update_status(
-                    run_id,
-                    WorkflowRunStatus.FAILED,
-                    tenant_id=initial_state["tenant_id"],
-                    error=str(exc),
-                )
-            self._fire_callback(
-                WorkflowRunStatus.FAILED, {**initial_state, "error": str(exc)}, definition
+            # tenant_id is keyword-only-required (RLS-scoped); read it from the
+            # run state so the failure update targets the right tenant.
+            await self._fail_run(
+                run_id, initial_state["tenant_id"], exc, initial_state, definition
             )
 
     def _build_initial_state(
@@ -462,13 +455,7 @@ class WorkflowRunner:
             _log.error(
                 "workflow_run_failed_worker", run_id=run_id, error=repr(exc), exc_info=True
             )
-            if self._run_store is not None:
-                await self._run_store.update_status(
-                    run_id, WorkflowRunStatus.FAILED, tenant_id=tenant_id, error=str(exc)
-                )
-            self._fire_callback(
-                WorkflowRunStatus.FAILED, {**initial_state, "error": str(exc)}, definition
-            )
+            await self._fail_run(run_id, tenant_id, exc, initial_state, definition)
             return
         # Finalize the run-level status. The graph leaves a successful run at its
         # initial PENDING status (step nodes only emit step_outputs); a halting
@@ -544,15 +531,61 @@ class WorkflowRunner:
             _log.error(
                 "workflow_resume_failed_worker", run_id=run_id, error=repr(exc), exc_info=True
             )
-            if self._run_store is not None:
-                await self._run_store.update_status(
-                    run_id, WorkflowRunStatus.FAILED, tenant_id=tenant_id, error=str(exc)
-                )
-            self._fire_callback(
-                WorkflowRunStatus.FAILED, {**initial_state, "error": str(exc)}, definition
-            )
+            await self._fail_run(run_id, tenant_id, exc, initial_state, definition)
             return
         await self._finalize_status(run_id, tenant_id, final_state, definition=definition)
+
+    async def _fail_run(
+        self,
+        run_id: str,
+        tenant_id: str,
+        exc: BaseException,
+        state: Any,
+        definition: WorkflowDefinition | None,
+    ) -> None:
+        """Mark the run FAILED with the failing step's error and id."""
+        error, error_step_id = await self._failure_details(run_id, tenant_id, exc)
+        if self._run_store is not None:
+            await self._run_store.update_status(
+                run_id,
+                WorkflowRunStatus.FAILED,
+                tenant_id=tenant_id,
+                error=error,
+                error_step_id=error_step_id,
+            )
+        self._fire_callback(WorkflowRunStatus.FAILED, {**state, "error": error}, definition)
+
+    async def _failure_details(
+        self, run_id: str, tenant_id: str, exc: BaseException
+    ) -> tuple[str, str | None]:
+        """(error, error_step_id) for a run that raised ``exc``.
+
+        An aborting step tags its exception with ``workflow_step_id``; otherwise
+        the failed step row supplies the step (and the error, when the exception
+        has no message) — a failed run must never show an empty error.
+        """
+        error = str(exc)
+        step_id = getattr(exc, "workflow_step_id", None)
+        if step_id is None or not error:
+            row_error, row_step = await self._failed_step(run_id, tenant_id)
+            step_id = step_id or row_step
+            error = error or row_error or ""
+        return error or type(exc).__name__, step_id
+
+    async def _failed_step(self, run_id: str, tenant_id: str) -> tuple[str | None, str | None]:
+        """The error and id of the most recent failed step row of the run."""
+        lister = getattr(self._run_store, "list_step_results", None)
+        if lister is None:
+            return None, None
+        try:
+            rows = await lister(tenant_id, run_id)
+        except Exception as exc:
+            _log.warning("workflow_failed_step_lookup_failed", run_id=run_id, error=str(exc))
+            return None, None
+        for row in reversed(list(rows or [])):
+            if str(row.get("status") or "") == "failed" and row.get("error"):
+                return str(row["error"]), str(row.get("step_id") or "") or None
+        return None, None
 
     async def _finalize_status(
         self,
@@ -577,11 +610,19 @@ class WorkflowRunner:
             final_state.get("outputs") if isinstance(final_state, dict) else None
         ) or None
         _fs = final_state if isinstance(final_state, dict) else {}
+        error = _fs.get("error")
+        error_step_id = _fs.get("error_step_id")
+        if status in (WorkflowRunStatus.FAILED, WorkflowRunStatus.PAUSED) and not error:
+            # A failed/paused run must name its failing step: fall back to the
+            # failed step row when the state carries no error.
+            row_error, row_step = await self._failed_step(run_id, tenant_id)
+            error, error_step_id = row_error, error_step_id or row_step
         await self._run_store.update_status(
             run_id,
             status,
             tenant_id=tenant_id,
-            error=_fs.get("error"),
+            error=error,
+            error_step_id=error_step_id,
             outputs=outputs,
             # Persist the run's accumulated telemetry so the run row (and UI) show
             # real cost/tokens/duration instead of 0 — the graph accumulates these
