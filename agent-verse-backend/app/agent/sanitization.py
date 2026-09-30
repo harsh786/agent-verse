@@ -38,6 +38,13 @@ BARE_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
     # JSON Web Tokens
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    # Stripe secret / restricted keys and webhook signing secrets
+    re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"),
+    re.compile(r"\bwhsec_[A-Za-z0-9]{24,}"),
+    # Google API keys
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}"),
+    # GitLab personal / project / group access tokens
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"),
 )
 _SIMPLE_EVENT_VALUE_TYPES = (str, int, float, bool)
 
