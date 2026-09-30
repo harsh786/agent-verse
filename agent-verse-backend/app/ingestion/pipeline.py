@@ -393,12 +393,18 @@ class IngestionPipeline:
             # doc. Guarded: never fail ingestion on a KG extraction error.
             if self._kg_hook is not None and chunk_ids:
                 try:
-                    _kg_chunk_texts = [
-                        str(c.get("text", "")) for c in unique_chunks if c.get("text")
+                    # Each chunk goes with the id it was indexed under (the
+                    # store returns them in order), so graph nodes point at the
+                    # exact chunk GraphRAG seeds from.
+                    _kg_pairs = [
+                        (str(c.get("text", "")), str(cid))
+                        for c, cid in zip(unique_chunks, chunk_ids, strict=False)
+                        if c.get("text")
                     ]
-                    if _kg_chunk_texts:
+                    if _kg_pairs:
                         _kg_summary = await self._kg_hook.process(
-                            chunks=_kg_chunk_texts,
+                            chunks=[text for text, _cid in _kg_pairs],
+                            chunk_ids=[cid for _text, cid in _kg_pairs],
                             document_id=raw_doc.doc_id,
                             tenant_id=source_config.tenant_id,
                             provider=self._kg_provider,

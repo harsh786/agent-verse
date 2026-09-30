@@ -137,7 +137,7 @@ async def _expire_tenant_documents(
                         "AND document_id = :did "
                         "AND expires_at IS NOT NULL AND expires_at < now() "
                         f"AND {_NOT_UNDER_LEGAL_HOLD.format(t='c')} "
-                        "RETURNING octet_length(content), chunk_index"
+                        "RETURNING octet_length(content), chunk_index, id"
                     ),
                     params,
                 )
@@ -187,15 +187,20 @@ async def _delete_document_graph(
 ) -> tuple[int, int]:
     """Delete the KG rows extracted from ``document_id``.
 
-    ``KGIngestionHook`` stamps nodes with ``source_id = f"{doc}:{i}"`` for the
-    i-th indexed chunk, so the exact ids are enumerable from the chunk indices —
-    an ``= ANY`` lookup on ``(tenant_id, source_id)`` instead of a ``LIKE`` scan
+    ``removed`` rows are ``(bytes, chunk_index, chunk_id)``. ``KGIngestionHook``
+    stamps nodes with the id of the chunk they came from; nodes written before
+    that carry ``f"{doc}:{i}"``. Both are enumerable from the removed chunks — an
+    ``= ANY`` lookup on ``(tenant_id, source_id)`` instead of a ``LIKE`` scan
     over the tenant's whole graph.
     """
     from sqlalchemy import text
 
     span = max([len(removed), *[int(r[1] or 0) + 1 for r in removed]])
-    source_ids = [document_id, *[f"{document_id}:{i}" for i in range(span)]]
+    source_ids = [
+        document_id,
+        *[str(r[2]) for r in removed if len(r) > 2 and r[2]],
+        *[f"{document_id}:{i}" for i in range(span)],
+    ]
     node_ids = [
         row[0]
         for row in (

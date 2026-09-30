@@ -207,18 +207,26 @@ class KGIngestionHook:
         document_id: str,
         tenant_id: str,
         provider: LLMProvider | None = None,
+        chunk_ids: list[str] | None = None,
     ) -> dict[str, int]:
         """Extract entities/relations from each chunk and persist them; return counts.
+
+        ``chunk_ids`` (aligned with ``chunks``) are the ids the chunks were indexed
+        under; each node's ``source_id`` is its chunk's id, which is what GraphRAG
+        seeds its graph lookup with (``RetrievalResult.chunk_id``). Without them
+        the legacy ``f"{document_id}:{idx}"`` provenance is used.
 
         Errors from the extractor/store surface to the caller (the pipeline wraps
         this call in its own guard so a KG failure never blocks ingestion).
         """
+        if chunk_ids is not None and len(chunk_ids) != len(chunks):
+            raise ValueError("chunk_ids must align one-to-one with chunks")
         entities = 0
         relations = 0
         for idx, text in enumerate(chunks):
             if not text or not text.strip():
                 continue
-            source_id = f"{document_id}:{idx}"
+            source_id = chunk_ids[idx] if chunk_ids is not None else f"{document_id}:{idx}"
             text = await _guardrail_gate_graph_extract(text, tenant_id, source_id)
             if text is None:
                 continue
