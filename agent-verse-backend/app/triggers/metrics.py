@@ -42,6 +42,12 @@ try:
         ["trigger_type", "tenant_id"],
     )
 
+    TRIGGER_CONSUMER_UP = Gauge(
+        "agentverse_trigger_consumer_up",
+        "1 while an event-bus trigger consumer is running on this replica, 0 while it restarts",
+        ["consumer"],
+    )
+
     METRICS_AVAILABLE = True
 
 except ImportError:
@@ -61,3 +67,4 @@ except ImportError:
     TRIGGER_CIRCUIT_STATE = _Noop()  # type: ignore[assignment]
     TRIGGER_DLQ_DEPTH = _Noop()  # type: ignore[assignment]
     TRIGGER_RATE_LIMIT_DROPS_TOTAL = _Noop()  # type: ignore[assignment]
+    TRIGGER_CONSUMER_UP = _Noop()  # type: ignore[assignment]

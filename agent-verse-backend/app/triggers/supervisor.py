@@ -52,16 +52,23 @@ class TriggerConsumerSupervisor:
         dispatcher: Any = None,
         redis: Any = None,
         enable_extended: bool = False,
+        restart_backoff_s: float = 1.0,
+        restart_backoff_max_s: float = 60.0,
     ) -> None:
         self._schedule_store = schedule_store
         self._dispatcher = dispatcher
         self._redis = redis
         self._enable_extended = enable_extended
+        self._restart_backoff_s = restart_backoff_s
+        self._restart_backoff_max_s = restart_backoff_max_s
 
         self.consumers: list[_Consumer] = []
         self.tasks: list[asyncio.Task[Any]] = []
         self.skipped: list[tuple[str, str]] = []
         self._started = False
+        self._stopping = False
+        # Per-consumer health: state (running | restarting | stopped) + restarts.
+        self._health: dict[str, dict[str, Any]] = {}
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -70,6 +77,7 @@ class TriggerConsumerSupervisor:
         if self._started:
             return
         self._started = True
+        self._stopping = False
 
         for spec in self._consumer_specs():
             missing = spec.missing_deps()
@@ -105,6 +113,7 @@ class TriggerConsumerSupervisor:
         """Cancel and await every consumer task."""
         if not self._started:
             return
+        self._stopping = True  # an exit from here on is a shutdown, not a crash
 
         for consumer in self.consumers:
             stop = getattr(consumer, "stop", None)
@@ -129,13 +138,68 @@ class TriggerConsumerSupervisor:
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
-    async def _run_consumer(self, name: str, consumer: _Consumer) -> None:
+    # A consumer that stayed up this long is considered healthy again, so its
+    # next failure restarts after the base backoff rather than the grown one.
+    _HEALTHY_RUN_S = 60.0
+
+    def health(self) -> dict[str, dict[str, Any]]:
+        """Per-consumer state (running | restarting | stopped) and restart count."""
+        return {name: dict(info) for name, info in self._health.items()}
+
+    async def check_health(self) -> None:
+        """HealthCheck callable for /health: raises while any consumer is down."""
+        down = sorted(n for n, i in self._health.items() if i.get("state") != "running")
+        if down:
+            raise RuntimeError(f"trigger consumers not running: {', '.join(down)}")
+
+    def _set_health(self, name: str, state: str, *, restarted: bool = False) -> None:
+        info = self._health.setdefault(name, {"state": state, "restarts": 0})
+        info["state"] = state
+        if restarted:
+            info["restarts"] = int(info.get("restarts", 0)) + 1
         try:
-            await consumer.start()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # pragma: no cover - defensive
-            _log.error("trigger_consumer_crashed name=%s: %s", name, exc)
+            from app.triggers.metrics import TRIGGER_CONSUMER_UP
+
+            TRIGGER_CONSUMER_UP.labels(consumer=name).set(1 if state == "running" else 0)
+        except Exception:  # pragma: no cover - metrics are best-effort
+            pass
+
+    async def _run_consumer(self, name: str, consumer: _Consumer) -> None:
+        """Run *consumer*, restarting it with exponential backoff whenever it exits.
+
+        Consumers log and RETURN from ``start()`` on a pub/sub error (Redis
+        failover, dropped connection); that used to disable their triggers on
+        this replica until the pod restarted (TRG-17). Only a supervisor
+        shutdown ends the loop.
+        """
+        loop = asyncio.get_running_loop()
+        failures = 0
+        while True:
+            self._set_health(name, "running")
+            started_at = loop.time()
+            try:
+                await consumer.start()
+                error: object = "exited"
+            except asyncio.CancelledError:
+                self._set_health(name, "stopped")
+                raise
+            except Exception as exc:
+                error = exc
+            if self._stopping or not self._started:
+                self._set_health(name, "stopped")
+                return
+            failures = 1 if loop.time() - started_at >= self._HEALTHY_RUN_S else failures + 1
+            delay = min(
+                self._restart_backoff_s * (2 ** (failures - 1)), self._restart_backoff_max_s
+            )
+            self._set_health(name, "restarting", restarted=True)
+            _log.error(
+                "trigger_consumer_restarting name=%s error=%s in=%.2fs", name, error, delay
+            )
+            await asyncio.sleep(delay)
+            if self._stopping or not self._started:
+                self._set_health(name, "stopped")
+                return
 
     def _consumer_specs(self) -> list[_ConsumerSpec]:
         from app.triggers.consumers.chain import ChainTriggerConsumer

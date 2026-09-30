@@ -2450,6 +2450,17 @@ def create_app(
                     # the breakdown is now Postgres-backed, bound with the DB stores
                     # above, so the Celery worker and every replica share it.)
                     await _trigger_consumers.start()
+                    # /health reports a consumer that is down (restarting after a
+                    # Redis error) instead of it failing silently (TRG-17).
+                    if _trigger_consumers.tasks:
+                        from app.observability.health import HealthCheck as _HealthCheck
+
+                        app.state.health.register(
+                            _HealthCheck(
+                                name="trigger_consumers",
+                                check=_trigger_consumers.check_health,
+                            )
+                        )
                     logger.info(
                         "trigger_consumers_wired",
                         started=len(_trigger_consumers.tasks),
