@@ -13,6 +13,7 @@ import { HeuristicDraftConfirm } from './HeuristicDraftConfirm';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { ReasoningPatternsFieldset, emptyPatternFlags } from './ReasoningPatterns';
 
 export function AgentCreatePage() {
   const apiKey = useAuthStore((s) => s.apiKey);
@@ -31,6 +32,7 @@ export function AgentCreatePage() {
     system_prompt: '',
     max_iterations: 15,
     allowed_collection_ids: [] as string[],
+    ...emptyPatternFlags(),
   });
 
   // Set when the backend refused to create an agent because its designer LLM
@@ -296,6 +298,12 @@ export function AgentCreatePage() {
                   className="w-full px-3 py-2 text-sm border border-neural-violet/20 rounded-lg bg-command-black text-white placeholder-white/25 focus:outline-none focus:ring-2 focus:ring-neural-violet/40 transition-colors"
                 />
               </div>
+
+              <ReasoningPatternsFieldset
+                className="text-white/70"
+                value={manualForm}
+                onChange={(flags) => setManualForm((f) => ({ ...f, ...flags }))}
+              />
 
               {error && (
                 <p role="alert" className="text-xs text-mission-red">

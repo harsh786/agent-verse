@@ -26,6 +26,8 @@ from typing import Any, cast
 
 from opentelemetry import trace
 
+# AGENT_PATTERN_FLAG_KEYS is re-exported: the worker imports it from here.
+from app.agent.pattern_flags import AGENT_PATTERN_FLAG_KEYS, pattern_flags_from_record
 from app.observability.logging import get_logger as _get_logger
 
 _svc_logger = _get_logger(__name__)
@@ -525,17 +527,16 @@ GRAPH_CONTEXT_KEYS: tuple[str, ...] = (
 # Agent-config reasoning-pattern flags the graph is compiled with. Snapshotted on
 # the goal at submission (execution_context["agent_pattern_flags"]) so the Celery
 # worker — which has no in-memory agent store — builds the same graph.
-AGENT_PATTERN_FLAG_KEYS: tuple[str, ...] = (
-    "enable_cot",
-    "enable_reflection",
-    "enable_goal_tree",
-    "enable_self_refine",
-    "enable_self_consistency",
-    "enable_tree_of_thoughts",
-    "enable_peer_review",
-    "enable_supervisor",
-    "enable_debate",
-)
+def _resolved_pattern_flags(
+    agent_config: Any, execution_context: dict[str, Any] | None
+) -> dict[str, bool]:
+    """All pattern flags for the graph: submission snapshot over agent config."""
+    flags = dict.fromkeys(AGENT_PATTERN_FLAG_KEYS, False)
+    flags.update(pattern_flags_from_record(agent_config))
+    snapshot = (execution_context or {}).get("agent_pattern_flags")
+    if isinstance(snapshot, dict):
+        flags.update({k: bool(v) for k, v in snapshot.items() if k in flags})
+    return flags
 
 
 def graph_context_from_execution_context(execution_context: Any) -> dict[str, Any]:
@@ -1612,19 +1613,6 @@ class GoalService:
         except Exception:
             pass
 
-        # N1: Extract pattern flags from agent_config + execution_context runtime_profile.
-        # These MUST be passed to the constructor — setting them post-construction is a no-op
-        # because _build() runs inside __init__ and compiles the LangGraph statically.
-        _enable_self_refine = bool(_agent_config.get("enable_self_refine", False))
-        _enable_self_consistency = bool(_agent_config.get("enable_self_consistency", False))
-        _enable_tree_of_thoughts = bool(_agent_config.get("enable_tree_of_thoughts", False))
-        _enable_peer_review = bool(_agent_config.get("enable_peer_review", False))
-        # D-2: multi-agent pattern flags were extracted for the other reasoning nodes
-        # but supervisor/debate were dropped here, so an agent configured for them
-        # never got the real SupervisorAgent/DebateOrchestrator nodes on the default
-        # (non-dynamic-orchestration) path. Thread them through like the others.
-        _enable_supervisor = bool(_agent_config.get("enable_supervisor", False))
-        _enable_debate = bool(_agent_config.get("enable_debate", False))
         # Wrap the resolved provider as role-tagged traced providers so every
         # planner/executor/verifier LLM call emits a GenAI span (tokens/cost/
         # latency/role) under the goal's trace — the Langfuse-style generations.
@@ -1672,9 +1660,11 @@ class GoalService:
             # Distributed per-tenant concurrency bulkhead
             "bulkhead_registry": _bulkhead_registry,
             # Agent feature flags (H-4: loaded from agent record when available)
-            "enable_cot": _agent_config.get("enable_cot", False),
-            "enable_reflection": _agent_config.get("enable_reflection", False),
-            "enable_goal_tree": _agent_config.get("enable_goal_tree", False),
+            # Every reasoning-pattern flag — passed at construction, since _build()
+            # compiles the LangGraph inside __init__ — from the goal's submission
+            # snapshot (DB-read, so right on any replica) over the local agent
+            # config, which on a stale replica lacked them (CORE-04).
+            **_resolved_pattern_flags(_agent_config, execution_context),
             # WS-3: a caller-supplied execution_context override (currently used
             # by OrgService.create_mission_and_execute to force "supervised" when
             # its MetaOrchestrator flags the mission as needing an approval gate)
@@ -1695,14 +1685,6 @@ class GoalService:
                     or "fully-autonomous"
                 ),
             ),
-            # N1: pattern flags passed at construction so _build() includes them in the graph
-            "enable_self_refine": _enable_self_refine,
-            "enable_self_consistency": _enable_self_consistency,
-            "enable_tree_of_thoughts": _enable_tree_of_thoughts,
-            "enable_peer_review": _enable_peer_review,
-            # D-2: real supervisor decomposition / debate voting nodes, opt-in per agent
-            "enable_supervisor": _enable_supervisor,
-            "enable_debate": _enable_debate,
             # Use RedisSaver when available for cross-replica state persistence (Fix 7)
             "checkpointer": _resolve_checkpointer(app_state),
             # H-1: real token-cost tracker
@@ -2349,14 +2331,28 @@ class GoalService:
         except Exception as exc:
             _svc_logger.warning("agent_refresh_failed", agent_id=agent_id, error=str(exc)[:200])
 
-    def _validate_agent_id(self, agent_id: str | None, tenant_ctx: TenantContext) -> None:
+    async def _validate_agent_id(
+        self, agent_id: str | None, tenant_ctx: TenantContext
+    ) -> dict[str, Any] | None:
+        """Raise NotFoundError for an unknown agent; return its record otherwise.
+
+        Reads the DB-backed store when it offers ``get_async``: this replica's
+        cache misses agents created on another replica (they were rejected as
+        unknown, and their pattern flags were silently lost — CORE-04).
+        """
         if agent_id is None:
-            return
+            return None
         agent_store = self._get_agent_store()
         if agent_store is None:
-            return
-        if agent_store.get(agent_id, tenant_ctx=tenant_ctx) is None:
+            return None
+        getter = getattr(agent_store, "get_async", None)
+        if getter is not None and inspect.iscoroutinefunction(getter):
+            record = await getter(agent_id, tenant_ctx=tenant_ctx)
+        else:
+            record = agent_store.get(agent_id, tenant_ctx=tenant_ctx)
+        if record is None:
             raise NotFoundError(f"Agent not found: {agent_id}")
+        return record if isinstance(record, dict) else None
 
     @staticmethod
     def _register_tools_from_context(loop: Any, tool_context: Any) -> None:
@@ -3902,7 +3898,7 @@ class GoalService:
             span.set_attribute("tenant_id", tenant_ctx.tenant_id)
             span.set_attribute("goal", goal[:100])
             await self._refresh_agent_record(agent_id, tenant_ctx)
-            self._validate_agent_id(agent_id, tenant_ctx)
+            _agent_record = await self._validate_agent_id(agent_id, tenant_ctx)
 
             # Enforce daily goal limit per plan tier (Redis-backed for multi-process safety)
             await self._check_daily_goal_limit_redis(tenant_ctx)
@@ -4149,20 +4145,11 @@ class GoalService:
 
             # The agent's pattern flags travel with the goal: a queued goal runs on a
             # worker that cannot see this replica's agent store.
-            if agent_id:
-                with suppress(Exception):
-                    _agent_rec = None
-                    _agent_store_for_flags = self._get_agent_store()
-                    if _agent_store_for_flags is not None:
-                        _agent_rec = _agent_store_for_flags.get(agent_id, tenant_ctx=tenant_ctx)
-                    if isinstance(_agent_rec, dict):
-                        _flags = {
-                            k: bool(_agent_rec[k])
-                            for k in AGENT_PATTERN_FLAG_KEYS
-                            if k in _agent_rec
-                        }
-                        if _flags:
-                            record.execution_context["agent_pattern_flags"] = _flags
+            # (Read from the DB-backed store by _validate_agent_id above — the
+            # local cache, read under suppress(Exception), lost them silently.)
+            _flags = pattern_flags_from_record(_agent_record)
+            if _flags:
+                record.execution_context["agent_pattern_flags"] = _flags
 
             # Dynamic orchestration: build the runtime profile, record it on the goal, and
             # let the v2 rollout decide whether it drives execution. The profile columns

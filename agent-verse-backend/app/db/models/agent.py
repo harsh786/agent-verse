@@ -58,6 +58,11 @@ class Agent(Base):
     policy_ids: Mapped[list] = mapped_column(
         JSON, nullable=False, default=list, server_default=text("'[]'")
     )
+    # Reasoning-pattern opt-ins (enable_cot, enable_debate, ...), see
+    # app.agent.pattern_flags. Snapshotted onto each goal at submission.
+    pattern_flags: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict, server_default=text("'{}'")
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     is_archived: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

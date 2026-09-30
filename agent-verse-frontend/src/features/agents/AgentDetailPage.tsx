@@ -15,6 +15,13 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { AgentNeuralRing } from '@/features/org/components/AgentNeuralRing';
 import { Activity, ArrowLeft, Brain, Camera, ChevronDown, ChevronRight, Clock, Download, Edit3, Inbox, Loader2, Lock, RotateCcw, Save, Shield, Sliders, Target, X } from 'lucide-react';
+import {
+  ReasoningPatternsFieldset,
+  ReasoningPatternsSummary,
+  patternFlagsFromAgent,
+  emptyPatternFlags,
+  type PatternFlags,
+} from './ReasoningPatterns';
 
 interface AgentVersion {
   snapshot_id: string;
@@ -161,6 +168,7 @@ export function AgentDetailPage() {
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   // connector_ids is an array, so it lives outside the string-valued editForm.
   const [editConnectors, setEditConnectors] = useState<string[]>([]);
+  const [editFlags, setEditFlags] = useState<PatternFlags>(emptyPatternFlags);
   // Fix 9: exportMsg replaced with toast — no local state needed
   const [snapshotMsg, setSnapshotMsg] = useState("");
   const [versionOpen, setVersionOpen] = useState(false);
@@ -232,6 +240,7 @@ export function AgentDetailPage() {
       agentsApi.update(agentId!, {
         ...(editForm as Partial<CreateAgentRequest>),
         connector_ids: editConnectors,
+        ...editFlags,
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["agent", agentId] });
@@ -410,6 +419,7 @@ export function AgentDetailPage() {
                 setEditConnectors(
                   Array.isArray(agent.connector_ids) ? [...(agent.connector_ids as string[])] : [],
                 );
+                setEditFlags(patternFlagsFromAgent(agent));
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-md hover:bg-accent transition-colors"
             >
@@ -435,6 +445,10 @@ export function AgentDetailPage() {
               Personality
             </button>
           </div>
+        </div>
+
+        <div className="mt-3">
+          <ReasoningPatternsSummary agent={agent} />
         </div>
 
         {/* Readiness widget */}
@@ -533,6 +547,7 @@ export function AgentDetailPage() {
                 </div>
               )}
             </div>
+            <ReasoningPatternsFieldset value={editFlags} onChange={setEditFlags} />
             {saveMutation.error && (
               // e.g. 409 ROLLOUT_GATE_FAILED when switching to fully-autonomous
               // on an eval suite whose latest run does not pass.

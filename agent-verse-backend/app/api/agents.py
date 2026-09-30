@@ -10,6 +10,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, model_validator
 
+from app.agent.pattern_flags import (
+    AGENT_PATTERN_FLAG_KEYS,
+    normalize_pattern_flags,
+    pattern_flags_from_record,
+)
 from app.api._deps import require_owned_agent
 from app.intelligence.meta_agent import MetaAgentPlanner
 from app.tenancy.context import TenantContext
@@ -135,6 +140,7 @@ class AgentStore:
                     allowed_collection_ids=list(record.get("allowed_collection_ids", [])),
                     eval_suite_id=record.get("eval_suite_id") or None,
                     policy_ids=list(record.get("policy_ids", [])),
+                    pattern_flags=normalize_pattern_flags(record.get("pattern_flags")),
                     cloned_from=record.get("cloned_from") or None,
                 )
             )
@@ -192,7 +198,10 @@ class AgentStore:
     def _row_to_dict(row: Any) -> dict[str, Any]:
         """Convert an Agent ORM row to a plain dict (same shape as in-memory store)."""
         created_at = getattr(row, "created_at", None)
+        flags = normalize_pattern_flags(getattr(row, "pattern_flags", None))
         return {
+            **flags,
+            "pattern_flags": flags,
             "agent_id": str(row.id),
             "tenant_id": str(row.tenant_id),
             "name": row.name,
@@ -433,6 +442,7 @@ class AgentStore:
                     "allowed_collection_ids",
                     "eval_suite_id",
                     "policy_ids",
+                    "pattern_flags",
                 }
                 updates = {k: v for k, v in data.items() if k in allowed}
                 if not updates:
@@ -512,6 +522,16 @@ class CreateAgentRequest(BaseModel):
     timeout_seconds: int = 300
     domain_context: str = "general"
     domain_metadata: dict[str, Any] = {}
+    # Reasoning-pattern opt-ins (app.agent.pattern_flags.AGENT_PATTERN_FLAG_KEYS).
+    enable_cot: bool = False
+    enable_reflection: bool = False
+    enable_goal_tree: bool = False
+    enable_self_refine: bool = False
+    enable_self_consistency: bool = False
+    enable_tree_of_thoughts: bool = False
+    enable_peer_review: bool = False
+    enable_supervisor: bool = False
+    enable_debate: bool = False
 
     @model_validator(mode="after")
     def _validate_domain_metadata(self) -> CreateAgentRequest:
@@ -535,6 +555,15 @@ class UpdateAgentRequest(BaseModel):
     model_override: str | None = None
     max_iterations: int | None = None
     timeout_seconds: int | None = None
+    enable_cot: bool | None = None
+    enable_reflection: bool | None = None
+    enable_goal_tree: bool | None = None
+    enable_self_refine: bool | None = None
+    enable_self_consistency: bool | None = None
+    enable_tree_of_thoughts: bool | None = None
+    enable_peer_review: bool | None = None
+    enable_supervisor: bool | None = None
+    enable_debate: bool | None = None
 
 
 class CloneAgentRequest(BaseModel):
@@ -735,6 +764,9 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
         "domain_context": body.domain_context,
         "domain_metadata": body.domain_metadata,
     }
+    _flags = normalize_pattern_flags(body.model_dump())
+    record.update(_flags)
+    record["pattern_flags"] = _flags
     agent_id = await _create_agent_record(store, record, tenant_ctx=tenant_ctx)
 
     # FIX 5: auto-create a schedule if trigger_config specifies a cron/interval/event trigger
@@ -920,6 +952,12 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
 
     # Build update dict (only non-None fields)
     update_data = {k: v for k, v in body.model_dump().items() if v is not None}
+    # Pattern flags are stored as one map: merge the given ones over the current.
+    _given_flags = {k: update_data[k] for k in AGENT_PATTERN_FLAG_KEYS if k in update_data}
+    if _given_flags:
+        _merged = normalize_pattern_flags({**pattern_flags_from_record(current), **_given_flags})
+        update_data.update(_merged)
+        update_data["pattern_flags"] = _merged
 
     updated = await store.update_async(agent_id, update_data, tenant_ctx=tenant_ctx)
     if not updated:
@@ -1332,6 +1370,9 @@ async def clone_agent(
         "max_iterations": original.get("max_iterations", 15),
         "timeout_seconds": original.get("timeout_seconds", 300),
     }
+    _clone_flags = normalize_pattern_flags(pattern_flags_from_record(original))
+    clone_data.update(_clone_flags)
+    clone_data["pattern_flags"] = _clone_flags
 
     # Check agent limit before creating the clone
     from app.tenancy.limits import check_agent_limit

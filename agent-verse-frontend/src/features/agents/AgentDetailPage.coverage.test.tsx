@@ -351,7 +351,7 @@ describe('AgentDetailPage — misc edge branches', () => {
     renderPage();
     await screen.findByTestId('agent-name');
     await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
-    const checkbox = await screen.findByRole('checkbox');
+    const checkbox = await screen.findByRole('checkbox', { name: /slack/i });
     expect(checkbox).not.toBeChecked();
     await userEvent.click(checkbox);
     expect(checkbox).toBeChecked();
@@ -623,7 +623,7 @@ describe('AgentDetailPage — default-value fallbacks and pending states', () =>
     expect(select.value).toBe('supervised'); // first <option>, since value defaulted to ""
     // Connector row falls back to rendering its server_id when name is empty.
     expect(screen.getByText('jira')).toBeInTheDocument();
-    const checkbox = screen.getByRole('checkbox');
+    const checkbox = screen.getByRole('checkbox', { name: /jira/i });
     expect(checkbox).not.toBeChecked();
   });
 

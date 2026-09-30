@@ -502,6 +502,8 @@ export interface AgentResponse {
   connector_ids?: string[];
   allowed_collection_ids?: string[];
   description?: string;
+  /** Reasoning-pattern opt-ins (enable_cot, enable_debate, ...), also flattened. */
+  pattern_flags?: Record<string, boolean>;
 }
 
 // ── Agent extended types ──────────────────────────────────────────────────────
@@ -515,6 +517,15 @@ export interface CreateAgentRequest {
   model?: string;
   /** MCP connector server ids the agent may call as tools. */
   connector_ids?: string[];
+  enable_cot?: boolean;
+  enable_reflection?: boolean;
+  enable_goal_tree?: boolean;
+  enable_self_refine?: boolean;
+  enable_self_consistency?: boolean;
+  enable_tree_of_thoughts?: boolean;
+  enable_peer_review?: boolean;
+  enable_supervisor?: boolean;
+  enable_debate?: boolean;
 }
 
 export interface AgentSnapshot {
