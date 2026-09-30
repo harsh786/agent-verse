@@ -17,6 +17,14 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 
+class ConnectorUnavailableError(RuntimeError):
+    """The connector cannot run at all (e.g. its SDK is not installed).
+
+    Raised from ``get_delta`` so the sync fails loudly — returning no documents
+    would be reported as a successful, empty sync.
+    """
+
+
 @dataclass
 class ConnectionHealth:
     """Result of BaseConnector.validate_connection()."""

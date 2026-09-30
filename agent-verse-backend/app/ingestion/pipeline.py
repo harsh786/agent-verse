@@ -175,6 +175,17 @@ class IngestionPipeline:
         # metadata dict is safe and avoids editing source_config.py.
         result.metadata = {}  # type: ignore[attr-defined]
 
+        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
+
+        connector_failure = (raw_doc.metadata or {}).get(CONNECTOR_FAILURE_KEY)
+        if connector_failure:
+            # The connector could not read this document; report it (the sync
+            # records the failure and its reason) — never index an empty stand-in.
+            result.status = "failed"
+            result.error = f"connector: {connector_failure}"
+            result.processing_ms = (time.perf_counter() - start) * 1000
+            return result
+
         try:
             # ── Stage 1: RECEIVE — quota check ────────────────────────────────
             # ``check_doc_quota`` is async for the DB-backed enforcer

@@ -11,6 +11,11 @@ import enum
 import hashlib
 from dataclasses import dataclass, field
 
+# RawDocument.metadata key a connector sets on a document it could not read
+# (download failure, over the size cap). The pipeline fails such a document
+# with that reason (→ DLQ, visible in the job) instead of indexing it.
+CONNECTOR_FAILURE_KEY = "connector_failure"
+
 
 class IngestionStatus(enum.StrEnum):
     """Job completion statuses used by scheduler and job tracker."""

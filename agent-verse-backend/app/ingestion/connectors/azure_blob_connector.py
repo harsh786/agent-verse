@@ -12,7 +12,11 @@ import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+)
 from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_urls
 from app.ingestion.connector_registry import register
 
@@ -173,14 +177,26 @@ class AzureBlobConnector(BaseConnector):
     async def _iter_blobs(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        """Runs inside the pinned egress block (see :func:`_pinned_azure_egress`)."""
-        from app.ingestion.source_config import RawDocument
+        """Runs inside the pinned egress block (see :func:`_pinned_azure_egress`).
+
+        Blobs are processed in ``last_modified`` order and the cursor is the
+        timestamp of the last blob read successfully *before* any failure: a
+        blob that could not be downloaded is reported (the pipeline fails it
+        with the reason → DLQ) and the cursor never moves past it, so the next
+        sync retries it. An oversized blob is reported too (retrying cannot
+        help, so it does not hold the cursor). SDK calls run in a thread.
+        """
+        import asyncio
+
+        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY, RawDocument
 
         try:
             from azure.storage.blob import BlobServiceClient  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("azure-storage-blob not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "azure-storage-blob is not installed; the Azure Blob connector cannot run"
+            ) from exc
 
         conn_str = config.connection_config.get("connection_string", "")
         account_name = config.connection_config.get("account_name", "")
@@ -197,44 +213,79 @@ class AzureBlobConnector(BaseConnector):
             )
         cc = service.get_container_client(container)
 
-        new_cursor = cursor or ""
-        for blob in cc.list_blobs(name_starts_with=prefix):
+        def _list() -> list[Any]:
+            return list(cc.list_blobs(name_starts_with=prefix))
+
+        pending: list[tuple[str, Any]] = []
+        for blob in await asyncio.to_thread(_list):
             if not self._matches(blob.name, config.include_patterns, config.exclude_patterns):
                 continue
             blob_ts = blob.last_modified.isoformat() if blob.last_modified else ""
             if cursor and blob_ts <= cursor:
                 continue
-            # Bounded download. Every blob used to be read whole (readall()),
-            # buffering arbitrarily large objects before the pipeline's size cap
-            # could refuse them. Skip an oversized blob by its declared size, and
+            pending.append((blob_ts, blob))
+        pending.sort(key=lambda item: (item[0], item[1].name))
+
+        cap = int(config.max_doc_size_bytes)
+        new_cursor = cursor or ""
+        read_ok: list[str] = []  # timestamps of blobs read successfully, in order
+        held_below: str | None = None  # earliest timestamp of a failed blob
+
+        def _advance(blob_ts: str) -> str:
+            read_ok.append(blob_ts)
+            if held_below is None:
+                return max(new_cursor, blob_ts)
+            below = [ts for ts in read_ok if ts < held_below]
+            return max([cursor or "", *below])
+
+        def _report(blob: Any, reason: str) -> RawDocument:
+            return RawDocument(
+                doc_id=str(uuid.uuid4()),
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
+                source_url=f"https://{account_name}.blob.core.windows.net/{container}/{blob.name}",
+                content=b"",
+                content_type="application/octet-stream",
+                metadata={
+                    "container": container,
+                    "name": blob.name,
+                    "size": getattr(blob, "size", None),
+                    CONNECTOR_FAILURE_KEY: reason,
+                },
+            )
+
+        for blob_ts, blob in pending:
+            # Bounded download: skip an oversized blob by its declared size and
             # stream the rest — at most cap + 1 bytes — aborting past the cap.
-            cap = int(config.max_doc_size_bytes)
             declared = getattr(blob, "size", None)
-            if isinstance(declared, int) and declared > cap:
-                _log.info(
-                    "azure_blob: skip blob %s: %d bytes exceeds the %d-byte cap",
-                    blob.name,
-                    declared,
-                    cap,
-                )
-                continue
-            try:
-                data = _download_capped(cc, blob.name, cap)
-                if data is None:
-                    _log.info("azure_blob: skip blob %s: exceeds the %d-byte cap", blob.name, cap)
+            too_big = isinstance(declared, int) and declared > cap
+            data: bytes | None = None
+            if not too_big:
+                try:
+                    data = await asyncio.to_thread(_download_capped, cc, blob.name, cap)
+                except Exception as exc:
+                    _log.warning("azure_blob: download failed for blob %s: %s", blob.name, exc)
+                    if held_below is None or blob_ts < held_below:
+                        held_below = blob_ts
+                    below = [ts for ts in read_ok if ts < held_below]
+                    new_cursor = max([cursor or "", *below])
+                    yield _report(blob, f"download failed: {str(exc)[:300]}"), new_cursor
                     continue
-                doc = RawDocument(
-                    doc_id=str(uuid.uuid4()),
-                    source_id=config.source_id,
-                    tenant_id=config.tenant_id,
-                    source_url=f"https://{account_name}.blob.core.windows.net/{container}/{blob.name}",
-                    content=data,
-                    content_type=blob.content_settings.content_type or "application/octet-stream"
-                    if blob.content_settings
-                    else "application/octet-stream",
-                    metadata={"container": container, "name": blob.name, "size": blob.size},
-                )
-                new_cursor = blob_ts or blob.name
-                yield doc, new_cursor
-            except Exception as exc:
-                _log.warning("azure_blob: skip blob %s: %s", blob.name, exc)
+                too_big = data is None
+            if too_big:
+                new_cursor = _advance(blob_ts)
+                yield _report(blob, f"blob exceeds the {cap}-byte size cap"), new_cursor
+                continue
+            doc = RawDocument(
+                doc_id=str(uuid.uuid4()),
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
+                source_url=f"https://{account_name}.blob.core.windows.net/{container}/{blob.name}",
+                content=data or b"",
+                content_type=blob.content_settings.content_type or "application/octet-stream"
+                if blob.content_settings
+                else "application/octet-stream",
+                metadata={"container": container, "name": blob.name, "size": blob.size},
+            )
+            new_cursor = _advance(blob_ts)
+            yield doc, new_cursor
