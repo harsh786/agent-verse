@@ -383,6 +383,38 @@ async def test_list_webhook_events(seeded: dict, factories: tuple) -> None:
     assert b_total == 0 and b_events == []
 
 
+async def test_list_stalled_runs_and_redispatch_stamp(seeded: dict, factories: tuple) -> None:
+    """WF-22: stalled = running/pending with no start/step/re-dispatch activity."""
+    admin_factory, app_factory = factories
+    store = PostgresWorkflowRunStore(app_factory, system_db_factory=admin_factory)
+    tid, wid = seeded["tenant_a"], seeded["workflow_id"]
+    old, fresh, done = (str(uuid.uuid4()) for _ in range(3))
+    for rid in (old, fresh, done):
+        await store.create(run_id=rid, workflow_id=wid, tenant_id=tid)
+        await store.update_status(rid, WorkflowRunStatus.RUNNING, tenant_id=tid)
+    await store.update_status(done, WorkflowRunStatus.COMPLETE, tenant_id=tid)
+    async with admin_factory() as s, s.begin():
+        await s.execute(
+            text(
+                "UPDATE workflow_runs SET started_at = NOW() - interval '2 hours', "
+                " created_at = NOW() - interval '2 hours' "
+                "WHERE id IN (CAST(:a AS uuid), CAST(:c AS uuid))"
+            ),
+            {"a": old, "c": done},
+        )
+
+    stalled = {r["run_id"] for r in await store.list_stalled_runs(stall_seconds=600)}
+    assert old in stalled and fresh not in stalled and done not in stalled
+
+    # Recent step activity makes a run active again...
+    await store.record_step_start(run_id=old, tenant_id=tid, step_id="s1", step_type="transform")
+    assert old not in {r["run_id"] for r in await store.list_stalled_runs(stall_seconds=600)}
+    # ...and so does a re-dispatch stamp (so overlapping sweeps don't resend).
+    await store.mark_stuck_redispatched(tid, fresh)
+    rec = await store.get(tid, fresh)
+    assert rec is not None and "stuck_redispatched_at" in rec["run_metadata"]
+
+
 async def test_webhook_token_version_rotation(seeded: dict) -> None:
     """WF-10: rotation bumps the version kept in trigger_config, per tenant."""
     store: PostgresWorkflowRunStore = seeded["store"]

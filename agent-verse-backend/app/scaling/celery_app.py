@@ -134,6 +134,7 @@ celery_app.conf.update(
         "workflow.cleanup_expired_runs": {"queue": "workflows.maintenance"},
         "workflow.fire_due_workflow_schedules": {"queue": "workflows.maintenance"},
         "workflow.wake_due_timer_waits": {"queue": "workflows.maintenance"},
+        "workflow.redispatch_stuck_runs": {"queue": "workflows.maintenance"},
         "workflow.deliver_workflow_callback": {"queue": "workflows.maintenance"},
         # Legacy dotted-path keys (kept for backwards-compat; do not match the
         # registered task names above, but harmless).
@@ -319,6 +320,13 @@ celery_app.conf.update(
         "workflow-wake-due-timer-waits": {
             "task": "workflow.wake_due_timer_waits",
             "schedule": 30.0,  # every 30 seconds
+            "options": {"queue": "workflows.maintenance"},
+        },
+        # WF-22: re-dispatch runs abandoned by a dead worker (no live lease)
+        # instead of waiting out the 25h broker visibility timeout.
+        "workflow-redispatch-stuck-runs": {
+            "task": "workflow.redispatch_stuck_runs",
+            "schedule": 300.0,  # every 5 minutes
             "options": {"queue": "workflows.maintenance"},
         },
     },

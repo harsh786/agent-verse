@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from datetime import UTC, datetime
 from typing import Any
 
 from app.observability.logging import get_logger
+from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app
 
 _log = get_logger(__name__)
@@ -258,11 +260,45 @@ def execute_workflow_run(
                 mock_overrides=mock_overrides or {},
             )
 
+    # WF-22: one executor per run. A redelivered / re-swept / racing resume task
+    # backs off while another worker holds the run's lease.
+    lease = _acquire_run_lease(run_id)
+    if lease is False:
+        if self.request.retries < _LEASE_BUSY_RETRIES:
+            raise self.retry(countdown=5, max_retries=_LEASE_BUSY_RETRIES)
+        _log.warning("execute_workflow_run_lease_busy_giving_up", run_id=run_id)
+        return
     try:
         _run_async(_execute())
     except Exception as exc:
         _log.error("execute_workflow_run_failed", run_id=run_id, error=str(exc))
         raise
+    finally:
+        if lease is not None and lease is not False:
+            lease.release()
+
+
+_LEASE_BUSY_RETRIES = 12  # ~1 minute of 5s back-offs
+
+
+def _acquire_run_lease(run_id: str) -> Any:
+    """The run's execution lease; ``None`` when there is no Redis to coordinate
+    through (eager/test mode), ``False`` when another worker holds it.
+
+    If Redis cannot be reached the task backs off like a busy lease (fail
+    closed): the stuck-run sweep re-dispatches the run later.
+    """
+    from app.workflow.run_lease import RunLease, lease_client, lease_redis_url
+
+    url = lease_redis_url(str(celery_app.conf.broker_url or ""))
+    if not url:
+        return None
+    try:
+        lease = RunLease(lease_client(url), run_id)
+        return lease if lease.acquire() else False
+    except Exception as exc:
+        _log.warning("workflow_run_lease_unavailable", run_id=run_id, error=str(exc)[:120])
+        return False
 
 
 @celery_app.task(
@@ -346,6 +382,74 @@ def wake_due_timer_waits() -> dict[str, int]:
     except Exception as exc:
         _log.error("wake_due_timer_waits_failed", error=str(exc))
         return {"claimed": 0, "dispatched": 0}
+
+
+def _stall_seconds() -> float:
+    try:
+        return float(os.getenv("WORKFLOW_STUCK_RUN_SECONDS", "600"))
+    except ValueError:
+        return 600.0
+
+
+async def redispatch_stuck_runs_async(
+    runner: Any = None, lease_redis: Any = None, *, stall_seconds: float | None = None
+) -> dict[str, int]:
+    """Re-dispatch runs whose worker died mid-run (WF-22).
+
+    The broker only redelivers an unacked task after its 25-hour visibility
+    timeout (sized for the longest goal, applied to every task), so a crashed
+    worker's workflow run used to sit ``running`` for a day. A stalled run with
+    no live execution lease is re-dispatched; it resumes from its persisted
+    step results (WF-01/WF-14) and the lease keeps it single-executor.
+    """
+    from app.workflow.run_lease import lease_alive, lease_client, lease_redis_url
+
+    counts = {"stalled": 0, "redispatched": 0, "alive": 0}
+    runner = runner or _get_runner()
+    run_store = getattr(runner, "_run_store", None) if runner else None
+    if run_store is None or not hasattr(run_store, "list_stalled_runs"):
+        return counts
+    if lease_redis is None:
+        url = lease_redis_url(str(celery_app.conf.broker_url or ""))
+        if not url:
+            return counts  # no Redis: cannot tell live workers from dead ones
+        lease_redis = lease_client(url)
+    stalled = await run_store.list_stalled_runs(
+        stall_seconds=stall_seconds if stall_seconds is not None else _stall_seconds()
+    )
+    for item in stalled:
+        counts["stalled"] += 1
+        try:
+            if lease_alive(lease_redis, item["run_id"]):
+                counts["alive"] += 1  # a worker is on a long step
+                continue
+            await run_store.mark_stuck_redispatched(item["tenant_id"], item["run_id"])
+            tier = await runner._get_plan_tier(item["tenant_id"])
+            execute_workflow_run.apply_async(
+                args=[item["run_id"], item["workflow_id"], item["tenant_id"]],
+                queue=f"workflows.{tier}",
+            )
+            counts["redispatched"] += 1
+            _log.warning("workflow_stuck_run_redispatched", run_id=item["run_id"])
+        except Exception as exc:
+            _log.error(
+                "workflow_stuck_run_redispatch_failed", run_id=item["run_id"], error=str(exc)
+            )
+    return counts
+
+
+@celery_app.task(name="workflow.redispatch_stuck_runs")
+@beat_task_guard(lock_ttl_seconds=240)
+def redispatch_stuck_runs() -> dict[str, int]:
+    """Beat task (every 5 min) — see :func:`redispatch_stuck_runs_async`."""
+    try:
+        result: dict[str, int] = _run_async(redispatch_stuck_runs_async())
+    except Exception as exc:
+        _log.error("redispatch_stuck_runs_failed", error=str(exc))
+        return {}
+    if result.get("redispatched"):
+        _log.info("workflow_stuck_runs_redispatched", **result)
+    return result
 
 
 @celery_app.task(name="workflow.check_hitl_escalations")

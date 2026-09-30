@@ -719,6 +719,65 @@ class PostgresWorkflowRunStore:
                 for r in rows
             ]
 
+    async def list_stalled_runs(
+        self, *, stall_seconds: float, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Runs ``running``/``pending`` with no activity for ``stall_seconds``
+        (cross-tenant maintenance scan, WF-22).
+
+        Activity = the run's start/creation, its latest step start/finish, or its
+        last stuck re-dispatch. The caller still checks the run's execution
+        lease: a live lease means a worker is on a long step, not dead.
+        """
+        from sqlalchemy import text as sa_text
+
+        from app.db.rls import system_session
+
+        system_db = self._system_factory()
+        async with system_db() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT r.id, r.tenant_id, r.workflow_id FROM workflow_runs r "
+                        "WHERE r.status IN ('running', 'pending') "
+                        " AND NOT COALESCE(r.is_test_run, FALSE) "
+                        " AND GREATEST("
+                        "   COALESCE(r.started_at, r.created_at), "
+                        "   COALESCE((SELECT MAX(COALESCE(s.completed_at, s.started_at)) "
+                        "     FROM workflow_step_results s WHERE s.run_id = r.id), r.created_at), "
+                        "   COALESCE((r.run_metadata->>'stuck_redispatched_at')::timestamptz, "
+                        "     r.created_at)"
+                        " ) < NOW() - make_interval(secs => :stall) "
+                        "ORDER BY r.created_at LIMIT :lim"
+                    ),
+                    {"stall": stall_seconds, "lim": limit},
+                )
+            ).mappings().all()
+            return [
+                {
+                    "run_id": str(r["id"]),
+                    "tenant_id": str(r["tenant_id"]),
+                    "workflow_id": str(r["workflow_id"]) if r["workflow_id"] else "",
+                }
+                for r in rows
+            ]
+
+    async def mark_stuck_redispatched(self, tenant_id: str, run_id: str) -> None:
+        """Stamp a stuck re-dispatch so the run counts as active again."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            await session.execute(
+                sa_text(
+                    "UPDATE workflow_runs SET run_metadata = COALESCE(run_metadata, '{}'::jsonb)"
+                    " || jsonb_build_object('stuck_redispatched_at', NOW()) "
+                    "WHERE id = CAST(:rid AS uuid)"
+                ),
+                {"rid": run_id},
+            )
+            await session.commit()
+
     async def release_timer_claim(self, tenant_id: str, run_id: str) -> None:
         """Undo a claim whose re-dispatch failed: back to ``waiting_timer`` and due
         now, so the next beat scan retries instead of stranding it ``pending``."""

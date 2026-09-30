@@ -22,6 +22,14 @@ import pytest
 import app.workflow.celery_tasks as ct
 
 
+@pytest.fixture(autouse=True)
+def _no_live_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No broker = no run lease (WF-22): these tests must never reach a real
+    Redis (the default broker URL is a developer's localhost)."""
+    monkeypatch.setattr(ct.celery_app.conf, "broker_url", "")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+
+
 # ── _run_async ──────────────────────────────────────────────────────────────────
 
 
