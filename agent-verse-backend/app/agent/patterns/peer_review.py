@@ -140,7 +140,10 @@ class PeerReviewPattern(AgentPattern):
                 f"Output to review:\n{output[:1500]}\n\n"
                 "Evaluate this output and respond with the JSON schema."
             )
-            resp = await provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_PEER_REVIEW_SYSTEM),
@@ -150,7 +153,8 @@ class PeerReviewPattern(AgentPattern):
                     max_tokens=max_tokens,
                     temperature=0.0,
                     response_schema=_REVIEW_SCHEMA,
-                )
+                ),
+                role="peer_review",
             )
             raw = (resp.content or "").strip()
             return PeerReviewResult.from_raw(raw)

@@ -108,7 +108,13 @@ class SelfConsistencyPattern(AgentPattern):
 
         async def _one_sample() -> str:
             try:
-                resp = await provider.complete(
+                from app.providers.guarded_completion import (
+                    complete_decision,
+                    generation_timeout_seconds,
+                )
+
+                resp = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=system_prompt),
@@ -117,7 +123,9 @@ class SelfConsistencyPattern(AgentPattern):
                         model="",
                         max_tokens=max_tokens,
                         temperature=self._temperature,
-                    )
+                    ),
+                    role="self_consistency",
+                    timeout_seconds=generation_timeout_seconds(),
                 )
                 return (resp.content or "").strip()
             except Exception:

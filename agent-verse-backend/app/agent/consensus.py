@@ -193,7 +193,11 @@ class ConsensusVerifier:
                     ],
                     model=model,
                 )
-                resp = await provider.complete(req)
+                from app.providers.guarded_completion import complete_decision
+
+                resp = await complete_decision(
+                    provider, req, role="consensus_verifier", tenant_id=tenant_id or None
+                )
                 parsed = parse_verifier_verdict(resp.content)
                 return VerifierVote(
                     success=parsed["success"],
@@ -311,7 +315,9 @@ async def _run_judge(
             ],
             model="",
         )
-        resp = await judge_provider.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(judge_provider, req, role="consensus_judge")
         parsed = parse_verifier_verdict(resp.content)
         return VerifierVote(
             success=parsed["success"],

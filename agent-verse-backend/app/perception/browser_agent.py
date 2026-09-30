@@ -258,7 +258,17 @@ class BrowserAgent:
                 ],
                 model=_configured_vision_model("claude-opus-4-5"),
             )
-            resp = await self._vision.complete(req)
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                self._vision,
+                req,
+                role="browser_vision",
+                timeout_seconds=generation_timeout_seconds(),
+            )
             return resp.content  # type: ignore[no-any-return]
         except Exception as exc:
             if raise_errors:

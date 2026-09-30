@@ -138,7 +138,18 @@ class FewShotCoTRuntime:
             model="",
             max_tokens=self._max_tokens,
         )
-        response = await self._provider.complete(request)
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        response = await complete_decision(
+            self._provider,
+            request,
+            role="few_shot_cot",
+            tenant_id=tenant_id or None,
+            timeout_seconds=generation_timeout_seconds(),
+        )
         await self._save(ReasoningPhase.GENERATING, "answer_generated")
         try:
             payload = json.loads(response.content)

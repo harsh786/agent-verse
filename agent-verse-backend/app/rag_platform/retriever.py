@@ -113,7 +113,10 @@ class MinimalCitationVerifier:
             "additionalProperties": False,
         }
         try:
-            response = await self.provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            response = await complete_decision(
+                self.provider,
                 CompletionRequest(
                     messages=[
                         Message(
@@ -132,7 +135,8 @@ class MinimalCitationVerifier:
                     # tokens before the JSON; 100 truncated them mid-thought.
                     max_tokens=1024,
                     response_schema=schema,
-                )
+                ),
+                role="rag_citation_verify",
             )
             parsed = _parse_json_object(str(response.content))
             if (
@@ -405,7 +409,13 @@ class RAGRetriever:
         context = "\n\n".join(context_parts)
 
         try:
-            response = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            response = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(
@@ -436,7 +446,10 @@ class RAGRetriever:
                     ],
                     model=resolved.model,
                     max_tokens=1200,
-                )
+                ),
+                role="rag_synthesis",
+                tenant_ctx=tenant_ctx,
+                timeout_seconds=generation_timeout_seconds(),
             )
         except Exception as exc:
             if isinstance(exc, RetrievalStrategyExecutionError):

@@ -138,7 +138,13 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
             item.update({"iteration": "initial"})
         evidence.extend(initial_evidence)
         initial_context = "\n\n".join(item.content for item in retained)
-        response = await provider.complete(
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        response = await complete_decision(
+            provider,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=_FLARE_GENERATE_SYSTEM),
@@ -154,7 +160,9 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
                 model=model,
                 max_tokens=800,
                 temperature=0.3,
-            )
+            ),
+            role="rag_strategy",
+            timeout_seconds=generation_timeout_seconds(),
         )
         answer = response.content.strip()
 
@@ -162,7 +170,13 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
             if not _detect_uncertainty(answer):
                 break
             uncertain_span = _extract_uncertain_claim(answer)
-            follow_up_response = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            follow_up_response = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_FLARE_FOLLOW_UP_SYSTEM),
@@ -171,7 +185,9 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
                     model=model,
                     max_tokens=120,
                     temperature=0.0,
-                )
+                ),
+                role="rag_strategy",
+                timeout_seconds=generation_timeout_seconds(),
             )
             follow_up = follow_up_response.content.strip()
             if not follow_up or follow_up == uncertain_span:
@@ -210,7 +226,13 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
                 }
             )
             context_text = "\n\n".join(item.content for item in retrieved)
-            continuation = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            continuation = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_FLARE_REFINE_SYSTEM),
@@ -228,7 +250,9 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
                     model=model,
                     max_tokens=800,
                     temperature=0.0,
-                )
+                ),
+                role="rag_strategy",
+                timeout_seconds=generation_timeout_seconds(),
             )
             answer = continuation.content.strip()
 
@@ -330,7 +354,13 @@ class FLAREPattern(RAGPattern):
                 raise RuntimeError("FLARE provider circuit is open")
             return ""
         try:
-            resp = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=system_prompt),
@@ -339,7 +369,9 @@ class FLAREPattern(RAGPattern):
                     model=model,
                     max_tokens=max_tokens,
                     temperature=0.3,
-                )
+                ),
+                role="rag_flare",
+                timeout_seconds=generation_timeout_seconds(),
             )
             if cb is not None:
                 cb.record_success()
@@ -380,7 +412,13 @@ class FLAREPattern(RAGPattern):
                     raise RuntimeError("FLARE provider circuit is open")
                 break
             try:
-                refined_resp = await provider.complete(
+                from app.providers.guarded_completion import (
+                    complete_decision,
+                    generation_timeout_seconds,
+                )
+
+                refined_resp = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=_FLARE_REFINE_SYSTEM),
@@ -396,7 +434,9 @@ class FLAREPattern(RAGPattern):
                         model=model,
                         max_tokens=max_tokens,
                         temperature=0.0,
-                    )
+                    ),
+                    role="rag_flare",
+                    timeout_seconds=generation_timeout_seconds(),
                 )
                 if cb is not None:
                     cb.record_success()

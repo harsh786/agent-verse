@@ -222,7 +222,17 @@ class VisionParser:
             system="You are an expert image analyst. Describe the image accurately.",
             max_tokens=500,
         )
-        response = await provider.complete(request)
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        response = await complete_decision(
+            provider,
+            request,
+            role="vision_parse",
+            timeout_seconds=generation_timeout_seconds(),
+        )
         return response.content or ""
 
     async def _describe_with_openai(self, b64_image: str, mime_type: str, prompt: str) -> str:

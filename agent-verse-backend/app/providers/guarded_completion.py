@@ -61,6 +61,12 @@ _scope: contextvars.ContextVar[_ChargeScope | None] = contextvars.ContextVar(
     "agentverse_decision_charge_scope", default=None
 )
 _platform_services: Callable[[], tuple[Any, Any]] | None = None
+# The tenant an HTTP request (TenantMiddleware) or a tenant-serving background
+# job acts for: decision calls made anywhere under it — deep inside library code
+# that never sees a tenant — are budget-checked and charged to that tenant.
+_tenant_scope: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "agentverse_decision_tenant_scope", default=None
+)
 
 
 def set_platform_cost_services(resolver: Callable[[], tuple[Any, Any]] | None) -> None:
@@ -81,6 +87,21 @@ def goal_charge_scope(graph: Any, agent_state: Any, tenant_ctx: Any) -> Iterator
         yield
     finally:
         _scope.reset(token)
+
+
+@contextlib.contextmanager
+def tenant_charge_scope(tenant_ctx: Any) -> Iterator[None]:
+    """Charge decision calls without an explicit tenant to ``tenant_ctx``.
+
+    Entered by ``TenantMiddleware`` for every authenticated request (and by
+    background jobs serving one tenant). An explicit ``tenant_ctx`` /
+    ``tenant_id`` argument and a running goal's scope both take precedence.
+    """
+    token = _tenant_scope.set(tenant_ctx)
+    try:
+        yield
+    finally:
+        _tenant_scope.reset(token)
 
 
 def _timeout(explicit: float | None) -> float:
@@ -111,7 +132,7 @@ def _tenant(tenant_ctx: Any, tenant_id: str | None) -> Any:
         return tenant_ctx
     if tenant_id:
         return SimpleNamespace(tenant_id=str(tenant_id))
-    return None
+    return _tenant_scope.get()
 
 
 def _platform() -> tuple[Any, Any]:
@@ -192,17 +213,21 @@ class GuardedDecisionProvider:
     Every other attribute is delegated to the wrapped provider.
     """
 
+    # complete_decision() on this proxy calls it directly (no double charge).
+    _agentverse_guarded = True
+
     def __init__(
         self,
         provider: Any,
         *,
         role: str,
         tenant_ctx: Any = None,
+        tenant_id: str | None = None,
         goal_id: str | None = None,
     ) -> None:
         self._inner = provider
         self._role = role
-        self._tenant_ctx = tenant_ctx
+        self._tenant_ctx = _tenant(tenant_ctx, tenant_id)
         self._goal_id = goal_id
 
     @property
@@ -238,7 +263,16 @@ async def complete_decision(
     ``charge=False`` is for providers already metered by an outer budget guard
     (the RAG strategy LLM is a ``_BudgetedProvider``), so a call is not charged
     twice; the circuit breaker and timeout still apply.
+
+    A provider that is itself a guarded wrapper (class attribute
+    ``_agentverse_guarded``: :class:`GuardedDecisionProvider`, the reasoning
+    patterns' ``ChargingProvider``, the RAG ``_BudgetedProvider``) already applies
+    the breaker, timeout and its own metering, so it is called directly — code
+    that receives "a provider" can always route through here without charging a
+    wrapped call twice.
     """
+    if getattr(type(provider), "_agentverse_guarded", False):
+        return await provider.complete(request)
     scope = _scope.get()
     tenant = _tenant(tenant_ctx, tenant_id)
     if charge:

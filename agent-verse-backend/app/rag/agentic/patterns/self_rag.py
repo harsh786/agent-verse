@@ -170,13 +170,21 @@ class SelfRAGRuntimeAdapter(SelfRAGRuntimeContract):
         answer = ""
 
         if not should_retrieve:
-            response = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            response = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=request.query)],
                     model=model,
                     max_tokens=800,
                     temperature=0.0,
-                )
+                ),
+                role="rag_strategy",
+                timeout_seconds=generation_timeout_seconds(),
             )
             answer = response.content.strip()
         else:
@@ -200,7 +208,10 @@ class SelfRAGRuntimeAdapter(SelfRAGRuntimeContract):
                     top_k=request.top_k,
                 )
                 context_text = "\n\n".join(item.content for item in retrieved)
-                response = await provider.complete(
+                from app.providers.guarded_completion import complete_decision
+
+                response = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=_GENERATE_WITH_CONTEXT),
@@ -212,7 +223,8 @@ class SelfRAGRuntimeAdapter(SelfRAGRuntimeContract):
                         model=model,
                         max_tokens=800,
                         temperature=0.0,
-                    )
+                    ),
+                    role="rag_strategy",
                 )
                 answer = response.content.strip()
                 try:
@@ -318,7 +330,17 @@ class SelfRAGPattern(RAGPattern):
                 raise RuntimeError("Self-RAG provider circuit is open")
             return None
         try:
-            response = await provider.complete(request)
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            response = await complete_decision(
+                provider,
+                request,
+                role="rag_self_rag",
+                timeout_seconds=generation_timeout_seconds(),
+            )
         except Exception as exc:
             if breaker is not None:
                 breaker.record_failure()

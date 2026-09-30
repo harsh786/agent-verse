@@ -63,7 +63,13 @@ class ClaimDecomposer:
                 max_tokens=300,
                 temperature=0.0,
             )
-            resp = await provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
+                req,
+                role="claim_decomposer",
+            )
             raw = (resp.content or "").strip()
             claims = [c.strip() for c in raw.splitlines() if c.strip() and len(c.strip()) > 10]
             return claims[:20]  # cap to avoid token explosion

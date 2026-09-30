@@ -712,7 +712,7 @@ async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> di
     Returns 3 ranked suggestions with rationale, trigger type, and
     example cron/interval values.
     """
-    _require_tenant(request)
+    tenant_ctx = _require_tenant(request)
     provider = getattr(request.app.state, "llm_provider", None)
     if provider is None:
         # Fallback: return template suggestions without LLM
@@ -761,8 +761,13 @@ async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> di
         '"rationale": "...", "use_case": "..."}]}'
     )
     user_msg = f"Goal: {body.goal_description}\nContext: {body.context or 'none'}"
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
     try:
-        resp = await provider.complete(
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(
+            provider,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=system_prompt),
@@ -770,7 +775,9 @@ async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> di
                 ],
                 model="",
                 max_tokens=600,
-            )
+            ),
+            role="schedule_suggest",
+            tenant_ctx=tenant_ctx,
         )
         raw = (
             resp.content.strip()
@@ -781,6 +788,8 @@ async def suggest_schedule(request: Request, body: SuggestScheduleRequest) -> di
         )
         data = _json.loads(raw)
         suggestions = data.get("suggestions", [])
+    except DecisionBudgetExceededError:
+        raise  # 429 via the app's handler: a budget refusal is not an LLM outage
     except Exception:
         suggestions = []
 

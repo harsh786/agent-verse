@@ -92,8 +92,13 @@ class AgenticChunkingPattern(RAGPattern):
         """Extract atomic propositions from a single chunk."""
         try:
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
 
-            resp = await provider.complete(
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_PROPOSITION_SYSTEM),
@@ -102,7 +107,9 @@ class AgenticChunkingPattern(RAGPattern):
                     model=model,
                     max_tokens=max_tokens,
                     temperature=0.0,
-                )
+                ),
+                role="rag_agentic_chunking",
+                timeout_seconds=generation_timeout_seconds(),
             )
             raw = (resp.content or "").strip()
             props = [

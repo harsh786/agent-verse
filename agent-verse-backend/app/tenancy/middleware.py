@@ -442,7 +442,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
             claims = verify_stream_token(stream_token)
             if claims is not None:
                 request.state.tenant = _stream_token_context(request, claims)
-                return await call_next(request)
+                from app.providers.guarded_completion import tenant_charge_scope
+
+                with tenant_charge_scope(request.state.tenant):
+                    return await call_next(request)
 
         raw_key = _extract_key(request)
         if raw_key is None:
@@ -535,7 +538,11 @@ class TenantMiddleware(BaseHTTPMiddleware):
         if denied is not None:
             return denied
 
-        response = await call_next(request)
+        # LLM decision calls made while serving this request are charged to it.
+        from app.providers.guarded_completion import tenant_charge_scope
+
+        with tenant_charge_scope(tenant_ctx):
+            response = await call_next(request)
 
         # Attach informational X-RateLimit-* headers to the response.
         if rl_limit is not None and rl_remaining is not None and rl_reset is not None:

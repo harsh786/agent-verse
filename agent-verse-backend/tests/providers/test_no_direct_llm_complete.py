@@ -23,126 +23,33 @@ import pathlib
 
 _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 
-_WRAPPER = "guarded wrapper: delegates to the inner provider inside its own metering/tracing"
-_NOT_LLM = "receiver is not an LLM provider"
-_RAG = (
-    "receives the RAG strategy LLM, a _BudgetedProvider (app/rag/gateway.py) that is "
-    "metered by the RAG cost guard and routes through complete_decision(charge=False)"
+_TRACING = (
+    "transparent tracing proxy: adds spans only; every caller reaches it through "
+    "complete_decision / complete_with_failover, which apply budget, breaker and timeout"
 )
-_OWNED = "pending migration: file is owned by a concurrent change (HITL / workflows / insights)"
-_DEBT = "pending migration: known direct call, not yet routed through complete_decision"
+_NOT_LLM = "receiver is not an LLM provider"
+_OWNED = "pending migration in this wave (OPS-05 / PROV-02 / PROV-16 / PROV-25)"
 
 # "<path relative to app/>::<qualname>": (number of .complete( calls, reason)
 ALLOWED: dict[str, tuple[int, str]] = {
-    # ── guarded wrappers / not an LLM provider ────────────────────────────────
-    "agent/nodes/llm_cost.py::ChargingProvider.complete": (1, _WRAPPER),
-    "observability/traced_provider.py::TracedProvider.complete": (1, _WRAPPER),
-    "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _WRAPPER),
+    # ── not a direct LLM spend path ───────────────────────────────────────────
+    "observability/traced_provider.py::TracedProvider.complete": (1, _TRACING),
     "api/goals.py::submit_goal": (1, _NOT_LLM + " (idempotency record)"),
     "scaling/memory_tasks.py::process_due_memories": (1, _NOT_LLM + " (prospective memory)"),
-    # ── RAG strategy runtime adapters (context.llm.provider is _BudgetedProvider) ─
-    "rag/agentic/patterns/agentic.py::AgenticRAGRuntimeAdapter.execute": (1, _RAG),
-    "rag/agentic/patterns/flare.py::FLARERAGRuntimeAdapter.execute": (3, _RAG),
-    "rag/agentic/patterns/modular.py::ModularRAGRuntimeAdapter._expand": (1, _RAG),
-    "rag/agentic/patterns/modular.py::ModularRAGRuntimeAdapter._grade": (1, _RAG),
-    "rag/agentic/patterns/modular.py::ModularRAGRuntimeAdapter._synthesize": (1, _RAG),
-    "rag/agentic/patterns/self_rag.py::SelfRAGRuntimeAdapter.execute": (2, _RAG),
-    "rag/agentic/patterns/speculative.py::SpeculativeRAGRuntimeAdapter.execute.generate_draft": (
-        1,
-        _RAG,
-    ),
-    "rag/agentic/patterns/speculative.py::SpeculativeRAGRuntimeAdapter.execute.verify": (1, _RAG),
-    # ── owned by concurrent changes ───────────────────────────────────────────
-    "agent/debate.py::DebateOrchestrator.run.critique": (1, _OWNED),
-    "agent/debate.py::DebateOrchestrator.run.propose": (1, _OWNED),
-    "agent/debate.py::DebateOrchestrator.run.vote": (1, _OWNED),
-    "agent/supervisor.py::SupervisorAgent._decompose": (1, _OWNED),
-    "agent/supervisor.py::SupervisorAgent._synthesize": (1, _OWNED),
+    # ── pending, owned by later items of this wave ────────────────────────────
+    "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _OWNED),
     "api/insights.py::analyze_failure": (1, _OWNED),
     "api/insights.py::natural_language_query": (1, _OWNED),
-    "api/schedules.py::suggest_schedule": (1, _OWNED),
-    # ── known debt: migrate these next ────────────────────────────────────────
-    "agent/consensus.py::ConsensusVerifier.verify._run_verifier": (1, _DEBT),
-    "agent/consensus.py::_run_judge": (1, _DEBT),
-    "agent/goal_tree.py::_synthesize_goal_tree_results": (1, _DEBT),
-    "agent/goal_tree.py::decompose_goal": (1, _DEBT),
-    "agent/grounding.py::GroundingChecker.check": (1, _DEBT),
-    "agent/nodes/reasoning_mixin.py::ReasoningMixin._node_refine": (1, _DEBT),
-    "agent/patterns/few_shot_cot.py::FewShotCoTRuntime.execute": (1, _DEBT),
-    "agent/patterns/peer_review.py::PeerReviewPattern.execute": (1, _DEBT),
-    "agent/patterns/self_consistency.py::SelfConsistencyPattern.execute_with_evidence._one_sample": (
-        1,
-        _DEBT,
-    ),
-    "agent/patterns/self_refine.py::SelfRefinePattern.execute": (1, _DEBT),
-    "agent/patterns/tree_of_thoughts.py::TreeOfThoughtsPattern._direct_answer": (1, _DEBT),
-    "agent/patterns/tree_of_thoughts.py::TreeOfThoughtsPattern._evaluate_thoughts._eval_one": (
-        1,
-        _DEBT,
-    ),
-    "agent/patterns/tree_of_thoughts.py::TreeOfThoughtsPattern._expand_thought": (1, _DEBT),
-    "agent/patterns/tree_of_thoughts.py::TreeOfThoughtsPattern._generate_thoughts._one_thought": (
-        1,
-        _DEBT,
-    ),
-    "agent/synthesis.py::AnswerSynthesizer._synthesize_with_llm": (1, _DEBT),
-    "agent/workflow_executor.py::WorkflowExecutor._execute_step": (1, _DEBT),
-    "agent/workflow_nodes.py::execute_decision_node": (1, _DEBT),
-    "agent/workflow_planner.py::WorkflowPlanner.plan": (1, _DEBT),
-    "api/collab.py::get_session_insights": (1, _DEBT),
-    "api/model_registry.py::test_model": (1, _DEBT + " (operator model probe)"),
-    "api/skills.py::run_skill_test": (1, _DEBT),
-    "api/skills_runtime.py::execute_skill": (1, _DEBT),
-    "chat/service.py::ChatService._llm_summarize": (1, _DEBT),
-    "chat/service.py::ChatService._merge_summary": (1, _DEBT),
-    "chat/service.py::ChatService.run_qa": (1, _DEBT),
-    "chat/understanding.py::_llm_decompose": (1, _DEBT),
-    "collab/agent_collab.py::AgentCollabSession.synthesize_consensus_llm": (1, _DEBT),
-    "enterprise/simulation.py::SimulationRunner._stub_simulation": (1, _DEBT),
-    "evals/multi_turn_eval.py::MultiTurnEvaluator._score_turn": (1, _DEBT),
-    "ingestion/parsers/vision_parser.py::VisionParser._describe_with_provider": (1, _DEBT),
-    "intelligence/claim_decomposer.py::ClaimDecomposer.decompose": (1, _DEBT),
-    "intelligence/eval_suite.py::LLMJudge.score": (1, _DEBT),
-    "intelligence/nli_checker.py::NLIChecker.check_consistency": (1, _DEBT),
-    "intelligence/self_optimizer_v2.py::SelfOptimizerV2._generate_suggestion": (1, _DEBT),
-    "multimodal/pipeline.py::MultimodalPipeline._describe_image": (1, _DEBT),
-    "ocr/engine.py::OcrEngine._llm_vision_ocr": (1, _DEBT),
-    "ocr/extractors/general.py::LlmStructuredExtractor.extract_async": (1, _DEBT),
-    "orchestration/strategy_executor.py::DistributedStrategyExecutor.__call__.complete": (
-        1,
-        _DEBT,
-    ),
-    "perception/browser_agent.py::BrowserAgent.analyze_screenshot": (1, _DEBT),
-    "proactive/planner.py::LLMProactivePlanner.apropose": (1, _DEBT),
-    "rag/agentic/llm_query_transformer.py::LLMQueryTransformer._call": (1, _DEBT),
-    "rag/agentic/patterns/agentic_chunking.py::AgenticChunkingPattern.extract_propositions": (
-        1,
-        _DEBT + " (legacy pattern API; provider passed in by the caller)",
-    ),
-    "rag/agentic/patterns/flare.py::FLAREPattern.execute": (2, _DEBT + " (legacy pattern API)"),
-    "rag/agentic/patterns/raptor.py::RAPTORPattern.execute": (1, _DEBT + " (legacy pattern API)"),
-    "rag/agentic/patterns/raptor.py::RAPTORPattern.execute._summarize_group": (
-        1,
-        _DEBT + " (legacy pattern API)",
-    ),
-    "rag/agentic/patterns/self_rag.py::SelfRAGPattern._complete_with_breaker": (
-        1,
-        _DEBT + " (legacy pattern API; breaker only, no budget)",
-    ),
-    "rag/agentic/patterns/speculative.py::SpeculativeRAGPattern.execute": (
-        2,
-        _DEBT + " (legacy pattern API)",
-    ),
-    "rag/agentic/query_expander.py::QueryExpander.expand_for_fusion_async": (1, _DEBT),
-    "rag/agentic/query_reformulator.py::QueryReformulator.reformulate_async": (1, _DEBT),
-    "rag/engine.py::rerank_results": (1, _DEBT),
-    "rag/engine.py::retrieve_hyde": (1, _DEBT),
-    "rag/engine.py::retrieve_multi_hop": (1, _DEBT),
-    "rag_platform/reranker.py::CitationVerifier.verify_citations": (1, _DEBT),
-    "rag_platform/reranker.py::Reranker._llm_rerank": (1, _DEBT),
-    "rag_platform/retriever.py::MinimalCitationVerifier._provider_entails": (1, _DEBT),
-    "rag_platform/retriever.py::RAGRetriever.synthesize": (1, _DEBT),
-    "skills_runtime/executor.py::SkillExecutor.execute": (1, _DEBT),
+    "api/model_registry.py::test_model": (1, _OWNED),
+    "api/skills_runtime.py::execute_skill": (1, _OWNED),
+    "chat/service.py::ChatService._llm_summarize": (1, _OWNED),
+    "chat/service.py::ChatService._merge_summary": (1, _OWNED),
+    "chat/service.py::ChatService.run_qa": (1, _OWNED),
+    "chat/understanding.py::_llm_decompose": (1, _OWNED),
+    "multimodal/pipeline.py::MultimodalPipeline._describe_image": (1, _OWNED),
+    "ocr/engine.py::OcrEngine._llm_vision_ocr": (1, _OWNED),
+    "ocr/extractors/general.py::LlmStructuredExtractor.extract_async": (1, _OWNED),
+    "skills_runtime/executor.py::SkillExecutor.execute": (1, _OWNED),
 }
 
 

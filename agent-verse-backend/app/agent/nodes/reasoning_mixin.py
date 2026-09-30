@@ -146,7 +146,13 @@ class ReasoningMixin:
                 "Improve this output following the review checklist."
             )
 
-            resp = await self._executor.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                self._executor,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=SELF_REFINE_SYSTEM),
@@ -155,7 +161,10 @@ class ReasoningMixin:
                     model=_refine_model,
                     max_tokens=2000,
                     temperature=0.0,
-                )
+                ),
+                role="refine",
+                charge=False,
+                timeout_seconds=generation_timeout_seconds(),
             )
 
             await charge_llm_call(

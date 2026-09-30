@@ -927,7 +927,13 @@ async def rerank_results(
             model=model,
             max_tokens=100,
         )
-        resp = await provider.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(
+            provider,
+            req,
+            role="rag_rerank",
+        )
         scores = _json.loads(resp.content.strip())
         if isinstance(scores, list) and len(scores) == len(candidates):
             for i, r in enumerate(candidates):
@@ -991,7 +997,13 @@ async def retrieve_hyde(
             max_tokens=200,
         )
         try:
-            resp = await provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
+                req,
+                role="rag_hyde",
+            )
         except Exception as exc:
             if isinstance(exc, RetrievalStrategyExecutionError):
                 raise
@@ -1113,7 +1125,13 @@ async def retrieve_multi_hop(
             model=model,
             max_tokens=150,
         )
-        resp = await provider.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(
+            provider,
+            req,
+            role="rag_multi_hop",
+        )
         sub_queries: list[str] = _json.loads(resp.content.strip())
         if not isinstance(sub_queries, list):
             raise ValueError("decomposition was not a list")

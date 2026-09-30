@@ -451,7 +451,9 @@ class GroundingChecker:
                     ],
                     model=self._model,
                 )
-                resp = await self._llm.complete(req)
+                from app.providers.guarded_completion import complete_decision
+
+                resp = await complete_decision(self._llm, req, role="grounding")
                 data = _json.loads(resp.content)
                 still_ungrounded: list[str] = data.get("ungrounded", result.ungrounded_claims)
                 _llm_grounded = len(still_ungrounded) == 0

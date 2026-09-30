@@ -309,7 +309,18 @@ class SimulationRunner:
                 used_real_llm = False
                 resp = None
                 try:
-                    resp = await provider.complete(req)
+                    from app.providers.guarded_completion import (
+                        complete_decision,
+                        generation_timeout_seconds,
+                    )
+
+                    resp = await complete_decision(
+                        provider,
+                        req,
+                        role="simulation",
+                        tenant_ctx=tenant_ctx,
+                        timeout_seconds=generation_timeout_seconds(),
+                    )
                     used_real_llm = True
                 except Exception as exc:
                     logger.warning("simulation_llm_failed: %s", exc)

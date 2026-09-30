@@ -165,7 +165,13 @@ class MultiTurnEvaluator:
                 max_tokens=40,
                 temperature=0.0,
             )
-            resp = await self._provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                self._provider,
+                req,
+                role="eval_multi_turn",
+            )
             import json as _json
 
             data = _json.loads((resp.content or "{}").strip())

@@ -31,6 +31,7 @@ async def execute_decision_node(
     context: dict[str, Any],
     *,
     llm_provider: Any = None,
+    tenant_ctx: Any = None,
 ) -> str:
     """
     Execute a decision node. Returns the edge label to follow.
@@ -74,7 +75,14 @@ async def execute_decision_node(
             model="",
         )
         try:
-            resp = await llm_provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                llm_provider,
+                req,
+                role="workflow_decision",
+                tenant_ctx=tenant_ctx,
+            )
             llm_chosen = resp.content.strip().lower()
             # Match to closest option
             for opt in options:

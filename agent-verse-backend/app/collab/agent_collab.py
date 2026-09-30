@@ -95,7 +95,17 @@ class AgentCollabSession:
                 ],
                 model="",
             )
-            resp = await provider.complete(req)
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                provider,
+                req,
+                role="collab_consensus",
+                timeout_seconds=generation_timeout_seconds(),
+            )
             import re
 
             m = re.search(r"\{[\s\S]*\}", resp.content)

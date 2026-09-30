@@ -220,7 +220,10 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
             raise RetrievalStrategyExecutionError(
                 self.strategy.value, "query_expander max_queries is outside the safe bound"
             )
-        response = await context.llm.provider.complete(
+        from app.providers.guarded_completion import complete_decision
+
+        response = await complete_decision(
+            context.llm.provider,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=_EXPAND_SYSTEM),
@@ -232,7 +235,8 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
                 model=context.llm.model,
                 max_tokens=240,
                 temperature=0.0,
-            )
+            ),
+            role="rag_strategy",
         )
         try:
             payload = json.loads(response.content)
@@ -315,7 +319,10 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
         candidates = "\n".join(
             f"[{document.chunk_id}] {document.content[:800]}" for document in documents
         )
-        response = await context.llm.provider.complete(
+        from app.providers.guarded_completion import complete_decision
+
+        response = await complete_decision(
+            context.llm.provider,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=_GRADE_SYSTEM),
@@ -327,7 +334,8 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
                 model=context.llm.model,
                 max_tokens=300,
                 temperature=0.0,
-            )
+            ),
+            role="rag_strategy",
         )
         try:
             payload = json.loads(response.content)
@@ -445,7 +453,13 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
         rendered = "\n\n".join(
             f"[{document.chunk_id}] {document.content}" for document in documents
         )
-        response = await context.llm.provider.complete(
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        response = await complete_decision(
+            context.llm.provider,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=_SYNTHESIZE_SYSTEM),
@@ -457,7 +471,9 @@ class ModularRAGRuntimeAdapter(ModularRAGRuntimeContract):
                 model=context.llm.model,
                 max_tokens=800,
                 temperature=0.0,
-            )
+            ),
+            role="rag_strategy",
+            timeout_seconds=generation_timeout_seconds(),
         )
         answer = response.content.strip()
         if not answer:

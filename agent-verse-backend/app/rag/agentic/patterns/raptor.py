@@ -164,7 +164,13 @@ class RAPTORPattern(RAGPattern):
                     source_ids=source_ids,
                 )
             try:
-                resp = await provider.complete(
+                from app.providers.guarded_completion import (
+                    complete_decision,
+                    generation_timeout_seconds,
+                )
+
+                resp = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=_SUMMARIZE_SYSTEM),
@@ -176,7 +182,9 @@ class RAPTORPattern(RAGPattern):
                         model=model,
                         max_tokens=max_tokens,
                         temperature=0.0,
-                    )
+                    ),
+                    role="rag_raptor",
+                    timeout_seconds=generation_timeout_seconds(),
                 )
                 if cb is not None:
                     cb.record_success()
@@ -241,7 +249,13 @@ class RAPTORPattern(RAGPattern):
                 else (chunks[0].get("content", "") if chunks else "")
             )
         try:
-            resp = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_ANSWER_SYSTEM),
@@ -253,7 +267,9 @@ class RAPTORPattern(RAGPattern):
                     model=model,
                     max_tokens=max_tokens,
                     temperature=0.0,
-                )
+                ),
+                role="rag_raptor",
+                timeout_seconds=generation_timeout_seconds(),
             )
             if cb is not None:
                 cb.record_success()

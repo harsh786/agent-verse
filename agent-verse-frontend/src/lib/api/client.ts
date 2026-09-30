@@ -156,6 +156,25 @@ export class ApiError extends Error {
   }
 }
 
+/** Shown when the backend refused an LLM call because the tenant's budget is spent. */
+export const LLM_BUDGET_EXHAUSTED_MESSAGE =
+  'LLM budget exhausted — no model call was made. Raise the budget or try again later.';
+
+/** True for the backend's 429 `{code: "llm_budget_exhausted"}` refusal. */
+export function isLlmBudgetExhausted(e: unknown): boolean {
+  if (!(e instanceof ApiError) || e.status !== 429) return false;
+  const body = e.body as { code?: unknown } | undefined;
+  return body?.code === 'llm_budget_exhausted';
+}
+
+/** A clear message for a failed LLM-backed action (search, insights, OCR, skills…). */
+export function llmErrorMessage(e: unknown, fallback: string): string {
+  if (isLlmBudgetExhausted(e)) return LLM_BUDGET_EXHAUSTED_MESSAGE;
+  if (e instanceof ApiError) return e.message || `${fallback} (${e.status})`;
+  if (e instanceof Error && e.message) return e.message;
+  return fallback;
+}
+
 /** Public alias for use in feature-level API modules (e.g. civilizationApi). */
 export const apiFetch = request;
 

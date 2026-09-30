@@ -157,8 +157,16 @@ class DistributedStrategyExecutor:
             # providers whenever a provider exposed ``_default_model`` (all of ours)
             # rather than ``default_model``. Empty lets the provider pick its default.
             model = _provider_model(context.provider)
-            response = await context.provider.complete(
-                CompletionRequest(messages=[Message(role="user", content=prompt)], model=model)
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            response = await complete_decision(
+                context.provider,
+                CompletionRequest(messages=[Message(role="user", content=prompt)], model=model),
+                role="strategy",
+                timeout_seconds=generation_timeout_seconds(),
             )
             calls += 1
             tokens += response.total_tokens

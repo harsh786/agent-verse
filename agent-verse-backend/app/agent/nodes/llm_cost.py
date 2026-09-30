@@ -131,7 +131,11 @@ class ChargingProvider:
     Used for reasoning patterns (self-consistency, tree-of-thoughts, peer review,
     supervisor decomposition) that call the provider internally, so their LLM spend
     reaches the tenant budget too. Everything else is delegated unchanged.
+    Each call also gets the per-model circuit breaker and a bounded timeout.
     """
+
+    # complete_decision() on this proxy calls it directly (no double charge).
+    _agentverse_guarded = True
 
     def __init__(
         self, provider: Any, *, graph: Any, role: str, agent_state: Any, tenant_ctx: Any
@@ -146,7 +150,19 @@ class ChargingProvider:
         return getattr(self._inner, name)
 
     async def complete(self, request: Any) -> Any:
-        resp = await self._inner.complete(request)
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        # Breaker + timeout only; charged just below against this goal.
+        resp = await complete_decision(
+            self._inner,
+            request,
+            role=self._role,
+            charge=False,
+            timeout_seconds=generation_timeout_seconds(),
+        )
         await charge_llm_call(
             self._graph,
             resp=resp,

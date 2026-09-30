@@ -351,10 +351,17 @@ async def run_skill_test(skill_id: str, body: SkillTestRequest, request: Request
     import time
 
     from app.providers.base import CompletionRequest, Message
+    from app.providers.guarded_completion import DecisionBudgetExceededError
 
     started = time.monotonic()
     try:
-        resp = await provider.complete(
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        resp = await complete_decision(
+            provider,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=skill["instructions"]),
@@ -362,8 +369,13 @@ async def run_skill_test(skill_id: str, body: SkillTestRequest, request: Request
                 ],
                 model="",
                 max_tokens=1000,
-            )
+            ),
+            role="skill_test",
+            tenant_ctx=tenant_ctx,
+            timeout_seconds=generation_timeout_seconds(),
         )
+    except DecisionBudgetExceededError:
+        raise  # 429 via the app's handler: a budget refusal is not an LLM outage
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Skill test failed: {exc}") from exc
     return {

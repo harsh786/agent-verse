@@ -560,6 +560,17 @@ def _register_error_handlers(app: FastAPI) -> None:
             detail = _scrub_surrogates(jsonable_encoder(exc.errors()))
             return JSONResponse(status_code=422, content={"detail": detail})
 
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
+    @app.exception_handler(DecisionBudgetExceededError)
+    async def _llm_budget_handler(_: Request, exc: DecisionBudgetExceededError) -> JSONResponse:
+        # A refused LLM charge is the tenant's budget, not a server fault: 429 with
+        # a stable code the UI turns into an "LLM budget exhausted" message.
+        return JSONResponse(
+            status_code=429,
+            content={"detail": f"LLM budget exhausted: {exc}", "code": "llm_budget_exhausted"},
+        )
+
     @app.exception_handler(PlatformError)
     async def _platform_error_handler(_: Request, exc: PlatformError) -> JSONResponse:
         if exc.severity.value in {"high", "critical"}:

@@ -134,7 +134,13 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
 
         async def generate_draft(subset: list[Any]) -> Candidate:
             evidence_text = _draft_evidence_text(subset)
-            response = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            response = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_CANDIDATE_SYSTEM),
@@ -146,7 +152,9 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                     model=model,
                     max_tokens=500,
                     temperature=0.7,
-                )
+                ),
+                role="rag_strategy",
+                timeout_seconds=generation_timeout_seconds(),
             )
             text = response.content.strip()
             if not text:
@@ -167,7 +175,10 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
         context_text = "\n\n".join(result.content for result in results)
 
         async def verify(candidate: Candidate) -> Candidate:
-            response = await provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            response = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_VERIFY_SYSTEM),
@@ -198,7 +209,8 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                         },
                         "required": ["score", "supported", "verified_claims"],
                     },
-                )
+                ),
+                role="rag_strategy",
             )
             try:
                 payload = json.loads(response.content)
@@ -347,7 +359,13 @@ class SpeculativeRAGPattern(RAGPattern):
                     raise RuntimeError("Speculative RAG provider circuit is open")
                 break
             try:
-                resp = await provider.complete(
+                from app.providers.guarded_completion import (
+                    complete_decision,
+                    generation_timeout_seconds,
+                )
+
+                resp = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=_CANDIDATE_SYSTEM),
@@ -356,7 +374,9 @@ class SpeculativeRAGPattern(RAGPattern):
                         model=model,
                         max_tokens=max_tokens,
                         temperature=0.7,  # diversity
-                    )
+                    ),
+                    role="rag_speculative",
+                    timeout_seconds=generation_timeout_seconds(),
                 )
                 if cb is not None:
                     cb.record_success()
@@ -406,7 +426,10 @@ class SpeculativeRAGPattern(RAGPattern):
                 verified.append(candidate)
                 continue
             try:
-                resp = await provider.complete(
+                from app.providers.guarded_completion import complete_decision
+
+                resp = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=_VERIFY_SYSTEM),
@@ -429,7 +452,8 @@ class SpeculativeRAGPattern(RAGPattern):
                                 "supported": {"type": "boolean"},
                             },
                         },
-                    )
+                    ),
+                    role="rag_speculative",
                 )
                 if cb is not None:
                     cb.record_success()

@@ -19,7 +19,7 @@ import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Pagination } from '@/components/ui/Pagination';
-import { ApiError, apiFetch } from '@/lib/api/client';
+import { ApiError, apiFetch, llmErrorMessage } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -841,7 +841,7 @@ function SearchTab() {
       return apiFetch<SearchResult[]>(`/knowledge/search?${params.toString()}`);
     },
     onSuccess: (r) => setResults(Array.isArray(r) ? r : []),
-    onError: (e) => toast({ kind: 'error', message: String(e) }),
+    onError: (e) => toast({ kind: 'error', message: llmErrorMessage(e, 'Search failed') }),
   });
 
   function highlightMatch(text: string, q: string): string {

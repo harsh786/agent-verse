@@ -51,7 +51,11 @@ async def decompose_goal(
         ],
         model=model or _configured_default_model("claude-opus-4-8"),
     )
-    resp = await planner.complete(req)
+    from app.providers.guarded_completion import complete_decision
+
+    resp = await complete_decision(
+        planner, req, role="goal_tree", tenant_ctx=tenant_ctx, goal_id=parent_goal_id
+    )
     text = re.sub(r"```(?:json)?\n?", "", resp.content).strip()
     try:
         obj = json.loads(text)
@@ -155,13 +159,21 @@ async def _synthesize_goal_tree_results(
             "Synthesize a clear, concise, actionable answer to the original goal "
             "based on all sub-task results. Be specific."
         )
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
         model = getattr(provider, "_default_model", "")
-        resp = await provider.complete(
+        resp = await complete_decision(
+            provider,
             CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
                 model=model,
                 max_tokens=2000,
-            )
+            ),
+            role="goal_tree_synthesis",
+            timeout_seconds=generation_timeout_seconds(),
         )
         return str(resp.content)
     except Exception as exc:

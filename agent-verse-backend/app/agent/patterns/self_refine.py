@@ -71,7 +71,13 @@ class SelfRefinePattern(AgentPattern):
                 "Improve this output. If it is already perfect, respond with exactly: "
                 "NO_CHANGES_NEEDED"
             )
-            resp = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_SELF_REFINE_SYSTEM),
@@ -80,7 +86,9 @@ class SelfRefinePattern(AgentPattern):
                     model="",
                     max_tokens=max_tokens,
                     temperature=0.0,
-                )
+                ),
+                role="self_refine",
+                timeout_seconds=generation_timeout_seconds(),
             )
             refined = (resp.content or "").strip()
             if refined and not refined.startswith("NO_CHANGES_NEEDED"):

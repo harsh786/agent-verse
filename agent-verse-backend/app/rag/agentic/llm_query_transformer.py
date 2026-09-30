@@ -60,7 +60,13 @@ class LLMQueryTransformer:
             max_tokens=256,
             temperature=0.0,
         )
-        resp = await self._provider.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(
+            self._provider,
+            req,
+            role="rag_query_transform",
+        )
         return (resp.content or "").strip()
 
     def _parse_lines(self, text: str) -> list[str]:

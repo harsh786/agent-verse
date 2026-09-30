@@ -162,7 +162,13 @@ class AgenticRAGRuntimeAdapter(AgenticRAGRuntimeContract):
                 for citation in fallback_result.citations
             )
             decision_evidence = _format_decision_evidence(evidence_contents)
-            response = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            response = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_DECISION_SYSTEM),
@@ -193,7 +199,9 @@ class AgenticRAGRuntimeAdapter(AgenticRAGRuntimeContract):
                             },
                         },
                     },
-                )
+                ),
+                role="rag_strategy",
+                timeout_seconds=generation_timeout_seconds(),
             )
             try:
                 decision = AgenticDecision.from_json(response.content)

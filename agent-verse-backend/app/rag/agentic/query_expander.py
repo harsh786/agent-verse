@@ -57,8 +57,10 @@ class QueryExpander:
             return self.expand_for_fusion(query, max_variants=max_variants)
         try:
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
-            resp = await provider.complete(
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(
@@ -74,7 +76,8 @@ class QueryExpander:
                     model=model,
                     max_tokens=200,
                     temperature=0.7,
-                )
+                ),
+                role="rag_query_expand",
             )
             raw = (resp.content or "").strip()
             variants = [query] + [

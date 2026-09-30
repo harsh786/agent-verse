@@ -206,12 +206,21 @@ Return ONLY the JSON, no other text."""
             from app.providers.base import CompletionRequest, Message
 
             model = getattr(self._provider, "_default_model", "")
-            resp = await self._provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                self._provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model=model,
                     max_tokens=1500,
-                )
+                ),
+                role="workflow_planner",
+                tenant_ctx=tenant_ctx,
+                timeout_seconds=generation_timeout_seconds(),
             )
             text = resp.content.strip()
             json_match = re.search(r"\{.*\}", text, re.DOTALL)

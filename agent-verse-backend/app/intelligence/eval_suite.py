@@ -154,12 +154,16 @@ class LLMJudge:
             )
 
             model = getattr(self._provider, "_default_model", "")
-            resp = await self._provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                self._provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model=model,
                     max_tokens=300,
-                )
+                ),
+                role="eval_judge",
             )
 
             import json

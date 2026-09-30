@@ -76,12 +76,16 @@ class Reranker:
             "Return only a JSON array of 1-indexed indices, most relevant first.\n\n"
             f"Query: {query}\n\nDocuments:\n{document_list}"
         )
-        response = await self._provider.complete(
+        from app.providers.guarded_completion import complete_decision
+
+        response = await complete_decision(
+            self._provider,
             CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
                 model="",
                 max_tokens=100,
-            )
+            ),
+            role="rag_rerank",
         )
         indices = json.loads(response.content.strip())
         reranked = [
@@ -123,7 +127,10 @@ class CitationVerifier:
             context = "\n".join(
                 str(citation.get("content", ""))[:300] for citation in citations[:5]
             )
-            response = await self._provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            response = await complete_decision(
+                self._provider,
                 CompletionRequest(
                     messages=[
                         Message(
@@ -137,7 +144,8 @@ class CitationVerifier:
                     ],
                     model="",
                     max_tokens=200,
-                )
+                ),
+                role="rag_citation_verify",
             )
             result = json.loads(response.content.strip())
             unsupported = result.get("unsupported_claims", [])

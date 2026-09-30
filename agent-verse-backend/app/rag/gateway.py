@@ -319,6 +319,9 @@ class _BudgetedEmbedder:
 
 
 class _BudgetedProvider:
+    # complete_decision() on this proxy calls it directly (already metered).
+    _agentverse_guarded = True
+
     def __init__(
         self,
         provider: Any,

@@ -44,8 +44,10 @@ class QueryReformulator:
             return self.reformulate(query)
         try:
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
-            resp = await provider.complete(
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(
@@ -61,7 +63,8 @@ class QueryReformulator:
                     model=model,
                     max_tokens=150,
                     temperature=0.6,
-                )
+                ),
+                role="rag_query_reformulate",
             )
             raw = (resp.content or "").strip()
             rewrites = [

@@ -257,7 +257,14 @@ class SupervisorAgent:
             model=getattr(self._planner, "_default_model", "claude-opus-4-8"),
         )
         try:
-            resp = await self._planner.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                self._planner,
+                req,
+                role="supervisor",
+                tenant_ctx=tenant_ctx,
+            )
             import json
             import re
 
@@ -309,12 +316,21 @@ class SupervisorAgent:
             from app.providers.base import CompletionRequest, Message
 
             model = getattr(self._planner, "_default_model", "claude-opus-4-8")
-            resp = await self._planner.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                self._planner,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model=model,
                     max_tokens=2000,
-                )
+                ),
+                role="supervisor",
+                tenant_ctx=tenant_ctx,
+                timeout_seconds=generation_timeout_seconds(),
             )
             return resp.content
         except Exception as exc:

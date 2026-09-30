@@ -166,7 +166,17 @@ class AnswerSynthesizer:
         )
         llm = self._llm
         assert llm is not None
-        resp = await llm.complete(req)
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        resp = await complete_decision(
+            llm,
+            req,
+            role="answer_synthesis",
+            timeout_seconds=generation_timeout_seconds(),
+        )
 
         # Extract citations from [Step N] patterns
         citations = []

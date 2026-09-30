@@ -281,7 +281,9 @@ class WorkflowExecutor:
             }
 
             if node_type == "decision":
-                edge = await execute_decision_node(node_cfg, ctx, llm_provider=self._llm_provider)
+                edge = await execute_decision_node(
+                    node_cfg, ctx, llm_provider=self._llm_provider, tenant_ctx=tenant_ctx
+                )
                 step.status = "complete"
                 step.result = str(edge)
                 return {
@@ -402,7 +404,13 @@ class WorkflowExecutor:
 
                 context_text = f"\nPrior context:\n{prior_context}" if prior_context else ""
                 model = getattr(self._provider, "_default_model", "")
-                resp = await self._provider.complete(
+                from app.providers.guarded_completion import (
+                    complete_decision,
+                    generation_timeout_seconds,
+                )
+
+                resp = await complete_decision(
+                    self._provider,
                     CompletionRequest(
                         messages=[
                             Message(
@@ -412,7 +420,11 @@ class WorkflowExecutor:
                         ],
                         model=model,
                         max_tokens=1000,
-                    )
+                    ),
+                    role="workflow_step",
+                    tenant_ctx=tenant_ctx,
+                    charge=False,
+                    timeout_seconds=generation_timeout_seconds(),
                 )
                 if not await self._tool_gate.charge_llm(
                     goal_id=self._goal_id, tenant_ctx=tenant_ctx, resp=resp

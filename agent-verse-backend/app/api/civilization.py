@@ -177,8 +177,11 @@ def _build_orchestrator(
         provider = getattr(request.app.state, "_app_provider", None)
         if provider is not None:
             from app.agent.debate import DebateOrchestrator
+            from app.providers.guarded_completion import GuardedDecisionProvider
 
-            debate_orch = DebateOrchestrator(provider=provider)
+            debate_orch = DebateOrchestrator(
+                provider=GuardedDecisionProvider(provider, role="debate", tenant_id=tenant_id)
+            )
     except Exception:
         pass
 
@@ -190,8 +193,12 @@ def _build_orchestrator(
             from app.agent.supervisor import SupervisorAgent
 
             goal_svc = getattr(request.app.state, "goal_service", None)
+            from app.providers.guarded_completion import GuardedDecisionProvider
+
             supervisor = SupervisorAgent(
-                planner_provider=provider,
+                planner_provider=GuardedDecisionProvider(
+                    provider, role="supervisor", tenant_id=tenant_id
+                ),
                 goal_service=goal_svc,
             )
     except Exception:

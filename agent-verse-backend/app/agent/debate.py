@@ -103,7 +103,17 @@ class DebateOrchestrator:
                 ],
                 model="",
             )
-            resp = await self._provider.complete(req)
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                self._provider,
+                req,
+                role="debate_propose",
+                timeout_seconds=generation_timeout_seconds(),
+            )
             return AgentProposal(agent_id=agent_id, proposal=resp.content)
 
         proposals = list(await asyncio.gather(*[propose(aid) for aid in agent_ids]))
@@ -131,7 +141,17 @@ class DebateOrchestrator:
                         ],
                         model="",
                     )
-                    resp = await self._provider.complete(req)
+                    from app.providers.guarded_completion import (
+                        complete_decision,
+                        generation_timeout_seconds,
+                    )
+
+                    resp = await complete_decision(
+                        self._provider,
+                        req,
+                        role="debate_critique",
+                        timeout_seconds=generation_timeout_seconds(),
+                    )
                     proposer.critique_of[other.agent_id] = resp.content
 
             await asyncio.gather(*[critique(p) for p in proposals])
@@ -170,7 +190,13 @@ class DebateOrchestrator:
                 ],
                 model="",
             )
-            resp = await self._provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                self._provider,
+                req,
+                role="debate_vote",
+            )
             return resp.content.strip()
 
         raw_votes = await asyncio.gather(*[vote(p) for p in proposals])

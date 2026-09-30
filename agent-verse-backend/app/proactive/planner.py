@@ -116,7 +116,10 @@ class LLMProactivePlanner(ProactivePlanner):
         from app.providers.base import CompletionRequest, Message
 
         try:
-            resp = await self._generator.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                self._generator,
                 CompletionRequest(
                     messages=[
                         Message(
@@ -133,7 +136,8 @@ class LLMProactivePlanner(ProactivePlanner):
                     model="",
                     max_tokens=120,
                     temperature=0.3,
-                )
+                ),
+                role="proactive_planner",
             )
             text = (getattr(resp, "content", "") or "").strip()
         except Exception:

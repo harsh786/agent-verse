@@ -198,7 +198,13 @@ class TreeOfThoughtsPattern(AgentPattern):
 
         async def _one_thought(index: int) -> ThoughtNode | None:
             try:
-                resp = await provider.complete(
+                from app.providers.guarded_completion import (
+                    complete_decision,
+                    generation_timeout_seconds,
+                )
+
+                resp = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=_GENERATE_SYSTEM),
@@ -213,7 +219,9 @@ class TreeOfThoughtsPattern(AgentPattern):
                         model="",
                         max_tokens=max_tokens,
                         temperature=0.8,
-                    )
+                    ),
+                    role="tree_of_thoughts",
+                    timeout_seconds=generation_timeout_seconds(),
                 )
                 content = (resp.content or "").strip()
                 if content:
@@ -232,7 +240,10 @@ class TreeOfThoughtsPattern(AgentPattern):
 
         async def _eval_one(thought: ThoughtNode) -> ThoughtNode:
             try:
-                resp = await provider.complete(
+                from app.providers.guarded_completion import complete_decision
+
+                resp = await complete_decision(
+                    provider,
                     CompletionRequest(
                         messages=[
                             Message(role="system", content=_EVALUATE_SYSTEM),
@@ -254,7 +265,8 @@ class TreeOfThoughtsPattern(AgentPattern):
                                 "reason": {"type": "string"},
                             },
                         },
-                    )
+                    ),
+                    role="tree_of_thoughts",
                 )
                 raw = (resp.content or "").strip()
                 try:
@@ -276,7 +288,13 @@ class TreeOfThoughtsPattern(AgentPattern):
         from app.providers.base import CompletionRequest, Message
 
         try:
-            resp = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_EXPAND_SYSTEM),
@@ -292,7 +310,9 @@ class TreeOfThoughtsPattern(AgentPattern):
                     model="",
                     max_tokens=max_tokens,
                     temperature=0.3,
-                )
+                ),
+                role="tree_of_thoughts",
+                timeout_seconds=generation_timeout_seconds(),
             )
             return (resp.content or "").strip()
         except Exception:
@@ -302,13 +322,21 @@ class TreeOfThoughtsPattern(AgentPattern):
         from app.providers.base import CompletionRequest, Message
 
         try:
-            resp = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=f"Solve: {problem[:500]}")],
                     model="",
                     max_tokens=max_tokens,
                     temperature=0.0,
-                )
+                ),
+                role="tree_of_thoughts",
+                timeout_seconds=generation_timeout_seconds(),
             )
             return (resp.content or "").strip()
         except Exception:

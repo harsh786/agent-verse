@@ -881,9 +881,14 @@ Respond with ONLY valid JSON:
                 indent=2,
             )
 
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
             from app.providers.model_defaults import configured_default_model
 
-            response = await provider.complete(
+            response = await complete_decision(
+                provider,
                 CompletionRequest(
                     model=configured_default_model("claude-haiku-3-5"),
                     messages=[
@@ -892,7 +897,9 @@ Respond with ONLY valid JSON:
                     ],
                     max_tokens=500,
                     temperature=0.7,
-                )
+                ),
+                role="self_optimizer",
+                timeout_seconds=generation_timeout_seconds(),
             )
             suggestion = json.loads(response.content.strip())
             if not isinstance(suggestion, dict):

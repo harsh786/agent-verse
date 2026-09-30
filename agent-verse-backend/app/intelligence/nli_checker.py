@@ -151,7 +151,13 @@ class NLIChecker:
                 max_tokens=10,
                 temperature=0.0,
             )
-            resp = await provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
+                req,
+                role="nli_checker",
+            )
             raw = (resp.content or "").strip().upper()
             verdict: NLIVerdict = "NEUTRAL"
             for v in ("ENTAILS", "CONTRADICTS", "NEUTRAL"):

@@ -663,8 +663,13 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
         '"summary": "..."}'
     )
     user_msg = f"Session: {session_name}\n\nTranscript:\n{session_text}"
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
     try:
-        resp = await provider.complete(
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(
+            provider,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=system_prompt),
@@ -672,7 +677,9 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
                 ],
                 model="",
                 max_tokens=800,
-            )
+            ),
+            role="collab_insights",
+            tenant_ctx=tenant,
         )
         raw = (
             resp.content.strip()
@@ -682,6 +689,8 @@ async def get_session_insights(request: Request, session_id: str) -> dict[str, A
             .strip()
         )
         data = json.loads(raw)
+    except DecisionBudgetExceededError:
+        raise  # 429 via the app's handler: a budget refusal is not an LLM outage
     except Exception:
         data = {
             "key_decisions": [],
