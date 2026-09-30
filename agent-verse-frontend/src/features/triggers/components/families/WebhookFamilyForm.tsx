@@ -6,6 +6,26 @@ interface FamilyFormProps {
   onChange: (v: Record<string, unknown>) => void;
 }
 
+/** The signing credential each sender uses (TRG-24: Slack and Teams do not sign
+ *  like a generic HMAC webhook, so the field must ask for the right value). */
+const SECRET_COPY: Record<string, { label: string; hint: string; placeholder: string }> = {
+  default: {
+    label: 'Webhook Secret',
+    hint: 'Used for HMAC-SHA256 signature verification. Leave blank to disable verification.',
+    placeholder: 'whsec_…',
+  },
+  slack_event: {
+    label: 'Slack Signing Secret',
+    hint: "From your Slack app's Basic Information page. Verifies X-Slack-Signature (v0) and the request timestamp.",
+    placeholder: 'Slack signing secret',
+  },
+  teams_webhook: {
+    label: 'Teams Security Token',
+    hint: 'The base64 security token Teams shows when you create the outgoing webhook. Verifies the Authorization: HMAC header.',
+    placeholder: 'Teams security token (base64)',
+  },
+};
+
 export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormProps) {
   function set(key: string, val: unknown) {
     onChange({ ...value, [key]: val });
@@ -14,6 +34,7 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
   const allowedApiKeys = Array.isArray(value.allowed_api_keys)
     ? (value.allowed_api_keys as string[])
     : [];
+  const secretCopy = SECRET_COPY[triggerType] ?? SECRET_COPY.default;
 
   return (
     <div className="space-y-4">
@@ -28,15 +49,12 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
           />
         </Field>
       )}
-      <Field
-        label="Webhook Secret"
-        hint="Used for HMAC-SHA256 signature verification. Leave blank to disable verification."
-      >
+      <Field label={secretCopy.label} hint={secretCopy.hint}>
         <input
           type="password"
           value={(value.webhook_signature_secret as string) ?? ''}
           onChange={(e) => set('webhook_signature_secret', e.target.value)}
-          placeholder="whsec_…"
+          placeholder={secretCopy.placeholder}
           className={inputCls}
           autoComplete="new-password"
         />

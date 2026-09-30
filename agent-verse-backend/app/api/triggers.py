@@ -830,6 +830,9 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         "pagerduty": "x-pagerduty-signature",
         "linear": "linear-signature",
         "sentry": "sentry-hook-signature",
+        # TRG-24: the headers Slack and Teams actually sign with.
+        "slack": "x-slack-signature",
+        "teams": "authorization",
     }
     sig_header = request.headers.get(sig_header_map.get(webhook_type, "x-signature"), "")
 
@@ -926,12 +929,24 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             if sig_header:
                 for candidate in candidates:
                     if await verifier.verify_for_type(
-                        webhook_type, body_bytes, sig_header, candidate
+                        webhook_type,
+                        body_bytes,
+                        sig_header,
+                        candidate,
+                        headers=request.headers,
                     ):
                         verified = True
                         break
             if not verified:
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        if (
+            webhook_type == "slack"
+            and isinstance(body, dict)
+            and body.get("type") == "url_verification"
+        ):
+            # TRG-24: Slack saves an Events API URL only after it echoes the
+            # (signed) challenge; it is a handshake, not an event to fire on.
+            return {"challenge": str(body.get("challenge", ""))}
         matched += 1
         try:
             await dispatcher.dispatch(spec, enriched, caller)

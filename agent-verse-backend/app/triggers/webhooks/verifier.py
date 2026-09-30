@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import logging
 import time
+from collections.abc import Mapping
 
 _log = logging.getLogger(__name__)
 
 # Stripe's own libraries default to a 5-minute timestamp tolerance.
 STRIPE_TOLERANCE_SECONDS = 300
+# Slack: "verify that the request timestamp is within five minutes".
+SLACK_TOLERANCE_SECONDS = 300
 
 
 class WebhookSignatureVerifier:
@@ -93,10 +98,69 @@ class WebhookSignatureVerifier:
         ).hexdigest()
         return any(hmac.compare_digest(expected, sig) for sig in signatures)
 
-    async def verify_for_type(
-        self, webhook_type: str, payload_bytes: bytes, header: str, secret: str
+    def verify_slack(
+        self,
+        payload_bytes: bytes,
+        signature: str,
+        timestamp: str,
+        secret: str,
+        *,
+        tolerance_seconds: int = SLACK_TOLERANCE_SECONDS,
+        now: float | None = None,
     ) -> bool:
-        """Verify with the scheme the sending platform actually uses."""
+        """Verify ``X-Slack-Signature: v0=<hex>`` over ``v0:{timestamp}:{body}``.
+
+        ``timestamp`` is ``X-Slack-Request-Timestamp``; one outside the tolerance
+        is rejected (replay protection, Slack's documented 5 minutes).
+        """
+        if not secret or not signature or not timestamp:
+            return False
+        try:
+            ts = int(timestamp)
+        except ValueError:
+            return False
+        current = time.time() if now is None else now
+        if abs(current - ts) > tolerance_seconds:
+            return False
+        base = f"v0:{timestamp}:".encode() + payload_bytes
+        expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
+    def verify_teams(self, payload_bytes: bytes, authorization: str, secret: str) -> bool:
+        """Verify a Teams outgoing webhook ``Authorization: HMAC <base64>`` header.
+
+        Teams signs the raw body with HMAC-SHA256 keyed by the BASE64-DECODED
+        security token shown when the outgoing webhook is created.
+        """
+        scheme, _, presented = authorization.strip().partition(" ")
+        if not secret or scheme.upper() != "HMAC" or not presented:
+            return False
+        try:
+            key = base64.b64decode(secret, validate=True)
+        except (binascii.Error, ValueError):
+            return False
+        expected = base64.b64encode(hmac.new(key, payload_bytes, hashlib.sha256).digest())
+        return hmac.compare_digest(expected, presented.strip().encode())
+
+    async def verify_for_type(
+        self,
+        webhook_type: str,
+        payload_bytes: bytes,
+        header: str,
+        secret: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> bool:
+        """Verify with the scheme the sending platform actually uses.
+
+        ``headers`` carries the request headers for schemes that sign more than
+        the body (Slack's request timestamp).
+        """
+        if webhook_type == "slack":
+            timestamp = (headers or {}).get("x-slack-request-timestamp", "")
+            return self.verify_slack(payload_bytes, header, timestamp, secret)
+        if webhook_type == "teams":
+            return self.verify_teams(payload_bytes, header, secret)
         if webhook_type == "stripe":
             return self.verify_stripe(payload_bytes, header, secret)
         if webhook_type == "github":

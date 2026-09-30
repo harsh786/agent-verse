@@ -22,6 +22,18 @@ describe('WebhookFamilyForm', () => {
     expect(lastArg(onChange)).toEqual({ description: 'orders-hook' });
   });
 
+  test('slack_event and teams_webhook label the secret as the vendor credential (TRG-24)', () => {
+    const { unmount } = render(
+      <WebhookFamilyForm triggerType="slack_event" value={{}} onChange={vi.fn()} />,
+    );
+    expect(screen.getByText('Slack Signing Secret')).toBeInTheDocument();
+    expect(screen.getByText(/Basic Information/)).toBeInTheDocument();
+    unmount();
+    render(<WebhookFamilyForm triggerType="teams_webhook" value={{}} onChange={vi.fn()} />);
+    expect(screen.getByText('Teams Security Token')).toBeInTheDocument();
+    expect(screen.getByText(/outgoing webhook/i)).toBeInTheDocument();
+  });
+
   test('the webhook secret writes to webhook_signature_secret via the password input', () => {
     const onChange = vi.fn();
     render(<WebhookFamilyForm triggerType="webhook" value={{}} onChange={onChange} />);
