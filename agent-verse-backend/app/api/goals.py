@@ -84,6 +84,48 @@ class GoalRequest(BaseModel):
     pattern_limits: PatternLimits | None = None
 
 
+async def _tenant_decision_provider(request: Request, tenant: TenantContext) -> Any:
+    """The provider debate / supervisor submission modes call: the tenant's own.
+
+    They used ``app.state._app_provider`` unconditionally, so a tenant with its
+    own LLM key had those calls sent to (and paid by) the platform provider,
+    bypassing its vendor and data-handling choice (CORE-08). Same resolution as
+    the goal path: the pinned override, else the tenant's BYOK config read
+    strictly from the durable store, else the app-wide provider. A BYOK config
+    that cannot be built (422) or read (503) refuses the submission — never a
+    silent fallback to platform spend.
+    """
+    from app.providers.tenant_provider import TenantProviderError, build_tenant_provider
+    from app.services.llm_config_store import LLMConfigReadError, get_llm_config_store
+
+    state = request.app.state
+    override = getattr(state, "_llm_provider_override", None)
+    if override is not None:
+        return override
+    store = getattr(state, "llm_config_store", None) or get_llm_config_store()
+    cfg: Any = None
+    if store is not None:
+        try:
+            try:
+                cfg = await store.get_config(tenant.tenant_id, strict=True)
+            except TypeError:  # a store without strict reads (tests/fakes)
+                cfg = await store.get_config(tenant.tenant_id)
+        except LLMConfigReadError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Your LLM provider configuration could not be read; try again shortly.",
+            ) from exc
+    if cfg:
+        try:
+            return build_tenant_provider(dict(cfg), tenant_id=tenant.tenant_id)
+        except TenantProviderError as exc:
+            raise HTTPException(
+                422,  # (the starlette constant name is deprecated)
+                f"Your LLM provider configuration is unusable: {exc}",
+            ) from exc
+    return getattr(state, "_app_provider", None)
+
+
 def _build_multimodal_goal_text(
     goal: str,
     image_url: str | None,
@@ -333,17 +375,19 @@ async def _submit_goal_unguarded(
     # and give those components a provider whose every call is circuit-broken,
     # time-bounded and charged to the tenant (they used to call the raw platform
     # provider: unbilled, unbounded, and ahead of the submission budget check).
+    _decision_provider: Any = None
     if body.workflow_mode in ("debate", "supervisor"):
         preflight = getattr(svc, "_check_budget_preflight", None)
         if preflight is not None:
             pending = preflight(tenant)
             if inspect.isawaitable(pending):
                 await pending
+        _decision_provider = await _tenant_decision_provider(request, tenant)
 
     # ── Debate mode: run multi-agent consensus before goal execution ──────────
     if body.workflow_mode == "debate":
         exec_ctx["debate_rounds"] = body.debate_rounds
-        provider = getattr(request.app.state, "_app_provider", None)
+        provider = _decision_provider
         if provider is not None:
             try:
                 from app.agent.debate import DebateOrchestrator
@@ -374,7 +418,7 @@ async def _submit_goal_unguarded(
         from app.agent.supervisor import SupervisorAgent
         from app.providers.guarded_completion import GuardedDecisionProvider
 
-        provider = getattr(request.app.state, "_app_provider", None)
+        provider = _decision_provider
         goal_svc = _goal_service(request)
         try:
             supervisor = SupervisorAgent(
