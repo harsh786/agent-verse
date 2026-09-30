@@ -60,6 +60,9 @@ class NLTriggerParseError(ValueError):
     pass
 
 
+EXAMPLE_PHRASES = '"every day at midnight", "every Monday", "hourly", "when a webhook is called"'
+
+
 def _cache_key(description: str) -> str:
     # Stable across processes: the builtin ``hash()`` is randomised per process
     # (PYTHONHASHSEED), so the shared Redis cache never hit on another replica.
@@ -110,8 +113,10 @@ class NLTriggerResolver:
     # Public API
     # ------------------------------------------------------------------
 
-    async def resolve(self, description: str) -> TriggerDefinition:
-        """Parse *description* and return a TriggerDefinition."""
+    async def resolve(self, description: str, *, tenant_ctx: Any = None) -> TriggerDefinition:
+        """Parse *description* and return a TriggerDefinition.
+
+        The LLM fallback is budget-checked and charged to ``tenant_ctx``."""
         description = description.strip()
         if not description:
             raise NLTriggerParseError("Empty trigger description")
@@ -127,7 +132,7 @@ class NLTriggerResolver:
             return cached
 
         # 3. LLM path
-        result = await self._llm_parse(description)
+        result = await self._llm_parse(description, tenant_ctx=tenant_ctx)
         await self._cache(description, result)
         return result
 
@@ -167,9 +172,12 @@ class NLTriggerResolver:
         except Exception as exc:
             _log.debug("nl_trigger_cache_write_failed", error=str(exc))
 
-    async def _llm_parse(self, description: str) -> TriggerDefinition:
+    async def _llm_parse(self, description: str, *, tenant_ctx: Any = None) -> TriggerDefinition:
         if self._llm is None:
-            raise NLTriggerParseError("No LLM provider configured for NL trigger resolution")
+            raise NLTriggerParseError(
+                "This phrase needs the AI parser, but no LLM provider is configured. "
+                f"Try a phrase like: {EXAMPLE_PHRASES}"
+            )
 
         prompt = _PROMPT.format(description=description)
         try:
@@ -182,7 +190,13 @@ class NLTriggerResolver:
                 max_tokens=256,
                 temperature=0.0,
             )
-            response = await self._llm.complete(req)
+            # Circuit-broken, budget-checked and charged to the tenant like
+            # every other narrow LLM decision (was an unmetered raw call).
+            from app.providers.guarded_completion import complete_decision
+
+            response = await complete_decision(
+                self._llm, req, role="nl_trigger", tenant_ctx=tenant_ctx
+            )
             raw_text = response.content if hasattr(response, "content") else str(response)
         except Exception as exc:
             raise NLTriggerParseError(f"LLM call failed: {exc}") from exc
@@ -198,5 +212,6 @@ class NLTriggerResolver:
         except Exception as exc:
             _log.warning("nl_trigger_parse_failed", raw=raw_text[:200], error=str(exc))
             raise NLTriggerParseError(
-                f"Failed to parse LLM response into TriggerDefinition: {exc}"
+                f"Could not understand this trigger description ({exc}). "
+                f"Try a phrase like: {EXAMPLE_PHRASES}"
             ) from exc

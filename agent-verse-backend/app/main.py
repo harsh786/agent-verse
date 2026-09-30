@@ -2893,7 +2893,11 @@ def create_app(
         # Without this, decide() only updated the WorkflowHITLRequest itself —
         # the LangGraph checkpoint it belonged to was never resumed.
         _hitl_wf_gateway._resume_callback = _make_workflow_hitl_resume_callback(_wf_runner)
-        _nl_trigger_resolver = NLTriggerResolver()
+        # WF-09: the regex fast path alone 422'd every other phrase; give the
+        # resolver the real LLM (never the canned no-key FakeProvider).
+        _nl_trigger_resolver = NLTriggerResolver(
+            llm_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
+        )
         _system_template_store = SystemTemplateStore()
 
         # workflow_service: wraps workflow_store with full router-compatible interface

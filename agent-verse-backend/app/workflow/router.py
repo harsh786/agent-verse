@@ -490,7 +490,8 @@ async def nl_trigger_preview(body: NLTriggerPreviewRequest, request: Request) ->
     if resolver is None:
         raise HTTPException(status_code=503, detail="NL trigger resolver not configured")
     try:
-        trigger = await resolver.resolve(body.description)
+        # The LLM fallback is charged to (and budget-checked for) the caller.
+        trigger = await resolver.resolve(body.description, tenant_ctx=_get_tenant(request))
         return {"trigger": trigger.model_dump(), "description": body.description}
     except Exception as exc:  # NLTriggerParseError
         raise HTTPException(status_code=422, detail=str(exc)) from exc

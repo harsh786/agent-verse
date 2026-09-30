@@ -16,6 +16,7 @@ import type { WorkflowNodeData } from './nodes/BaseWorkflowNode';
 import { TextAreaField, NumberField, ToggleField } from './config-fields/FormFields';
 import { KeyValueEditor } from './config-fields/KeyValueEditor';
 import { CollapsibleSection } from './config-fields/AdvancedSection';
+import { NLTriggerAssist } from './NLTriggerAssist';
 
 interface StepConfigProps {
   node: Node;
@@ -155,7 +156,7 @@ const CRON_PRESETS: { label: string; value: string }[] = [
 // ── Type-specific config panels ───────────────────────────────────────────────
 
 /** Trigger types the backend can fire (publish refuses the others with a 422). */
-export const SUPPORTED_TRIGGER_TYPES = ['api', 'schedule', 'webhook'] as const;
+const SUPPORTED_TRIGGER_TYPES = ['api', 'schedule', 'webhook'] as const;
 const COMING_SOON_TRIGGERS = [
   { label: 'Event (coming soon)', value: 'event' },
   { label: 'File drop (coming soon)', value: 'file_drop' },
@@ -185,6 +186,8 @@ function TriggerConfig({ data, onUpdate }: PanelProps) {
           ...(unsupported ? [{ label: `${triggerType} (not supported yet)`, value: triggerType }] : []),
         ]}
       />
+
+      <NLTriggerAssist onApply={onUpdate} />
 
       {unsupported && (
         <p className="text-xs text-amber-400 flex items-start gap-1.5" role="alert">
