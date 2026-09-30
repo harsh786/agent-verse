@@ -138,8 +138,32 @@ def _stop_worker(worker: dict[str, Any]) -> None:
     worker["log_file"].close()
 
 
+def _purge_stale_goal_messages(redis_url: str, queues: str) -> None:
+    """Drop goal tasks earlier e2e_full tests left on these Celery queues.
+
+    The session-scoped app enqueues every submitted goal onto ``goals.{plan}``,
+    and the tier runs no worker, so by the time this module starts its pools the
+    queues hold a backlog of other tests' goals. A one-slot main pool would drain
+    that backlog first (running goals this test did not submit, and possibly
+    outlasting the deadline) - which is harness state, not the behaviour under
+    test. Kombu's Redis transport keeps a queue in a list named after it plus one
+    list per priority step (``<queue>\\x06\\x16<n>``).
+    """
+    import redis
+
+    client = redis.Redis.from_url(redis_url)
+    try:
+        for queue in queues.split(","):
+            keys = [queue, *client.scan_iter(match=f"{queue}\x06\x16*")]
+            client.delete(*keys)
+    finally:
+        client.close()
+
+
 @pytest.fixture(scope="module")
 def worker_pools(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
+    # The app fixture exported the test Redis's URL (never the developer's).
+    _purge_stale_goal_messages(os.environ["REDIS_URL"], f"{_MAIN_QUEUES},{_SUBGOAL_QUEUES}")
     workdir = tmp_path_factory.mktemp("supervisorpools")
     (workdir / "e2e_supervisor_boot.py").write_text(_BOOT_MODULE)
     main = _start_worker(workdir, "mainpool", _MAIN_QUEUES, concurrency=1)
