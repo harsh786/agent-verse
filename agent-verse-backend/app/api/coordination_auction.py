@@ -5,6 +5,8 @@ from typing import Any, cast
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from app.coordination.pattern_runs.service import public_record
+
 router = APIRouter(prefix="/api/v1/coordination/sessions", tags=["coordination-auction"])
 
 
@@ -28,8 +30,11 @@ async def get_auction_state(request: Request, session_id: str) -> dict[str, Any]
     tenant_id = _tenant(request)
     records = await request.app.state.auction_repository.list_session(tenant_id, session_id)
     count = await request.app.state.auction_bid_inbox.count(tenant_id, session_id)
+    runs = [public_record("market_auction", item) for item in records]
     return {
-        "items": [item.model_dump(mode="json") for item in records],
+        # One row per allocation a sealed-bid run made (winner, score, fairness).
+        "items": [run["view"]["allocation"] for run in runs if run["view"].get("allocation")],
+        "runs": runs,
         "sealed_bid_count": count,
     }
 

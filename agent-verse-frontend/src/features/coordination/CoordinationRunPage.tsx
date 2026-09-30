@@ -8,6 +8,7 @@ import { GroupChatPanel } from './GroupChatPanel';
 import { MagenticLedgerView } from './MagenticLedgerView';
 import { SwarmTopologyView } from './SwarmTopologyView';
 import { ParentChildTopology } from './ParentChildTopology';
+import { PatternRunPanel } from './PatternRunPanel';
 import { RunTimeline } from './RunTimeline';
 import { SharedTranscript } from './SharedTranscript';
 import { useCoordinationStream } from './useCoordinationStream';
@@ -40,10 +41,14 @@ export function CoordinationRunPage() {
   }
 
   const run = query.data;
+  const lastPhase = (items: Array<Record<string, unknown>> | undefined) => {
+    const phase = items?.[items.length - 1]?.phase;
+    return typeof phase === 'string' ? ` · ${phase}` : '';
+  };
   const patternCounts = [
-    ['MoA layers', run?.moa.items.length ?? 0],
-    ['CAMEL dialogues', run?.camel.items.length ?? 0],
-    ['Generative agents', run?.generative.items.length ?? 0],
+    ['MoA layers', `${run?.moa.items.length ?? 0}`],
+    ['CAMEL dialogues', `${run?.camel.items.length ?? 0}${lastPhase(run?.camel.items)}`],
+    ['Generative agents', `${run?.generative.items.length ?? 0}${lastPhase(run?.generative.items)}`],
   ] as const;
 
   return (
@@ -101,6 +106,12 @@ export function CoordinationRunPage() {
           </section>
 
           <aside className="space-y-6">
+            <section className="rounded-xl border bg-card p-5">
+              <PatternRunPanel
+                sessionId={sessionId}
+                onChanged={() => queryClient.invalidateQueries({ queryKey: ['coordination-run', sessionId] })}
+              />
+            </section>
             <section className="rounded-xl border bg-card p-5">
               <Activity className="mb-3 h-4 w-4 text-[#00D4FF]" aria-hidden="true" />
               <MagenticLedgerView ledger={run.ledger} />

@@ -121,3 +121,29 @@ describe('coordinationApi.transition', () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ expected_version: 5 });
   });
 });
+
+describe('coordinationApi pattern runs', () => {
+  beforeEach(() => {
+    mockApiFetch.mockReset();
+    mockApiFetch.mockResolvedValue({ phase: 'completed' });
+  });
+
+  it('POSTs a pattern run with the caller-held idempotency key', async () => {
+    await coordinationApi.runPattern('s1', 'market_auction', 'Price the task', 'key-1');
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/v1/coordination/sessions/s1/patterns/market_auction/runs',
+      expect.objectContaining({
+        method: 'POST',
+        headers: { 'Idempotency-Key': 'key-1' },
+        body: JSON.stringify({ objective: 'Price the task' }),
+      }),
+    );
+  });
+
+  it('submits a Magentic human-review decision', async () => {
+    await coordinationApi.submitMagenticReview('s1', 'tok', false);
+    const [path, init] = mockApiFetch.mock.calls[0];
+    expect(path).toBe('/api/v1/coordination/sessions/s1/magentic/human-review');
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ token: 'tok', approved: false });
+  });
+});

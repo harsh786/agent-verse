@@ -35,6 +35,7 @@ from app.api.coordination_group_chat import router as coordination_group_chat_ro
 from app.api.coordination_handoffs import router as coordination_handoffs_router
 from app.api.coordination_magentic import router as coordination_magentic_router
 from app.api.coordination_moa import router as coordination_moa_router
+from app.api.coordination_patterns import router as coordination_patterns_router
 from app.api.coordination_swarm import router as coordination_swarm_router
 from app.api.coordination_transcript import router as coordination_transcript_router
 from app.api.costs import router as costs_router
@@ -292,6 +293,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     app.include_router(coordination_camel_router)
     app.include_router(coordination_generative_router)
     app.include_router(coordination_swarm_router)
+    app.include_router(coordination_patterns_router)
     app.include_router(coordination_auction_router)
     app.include_router(connectors_router)
     # Native tools (code execution, file ops, email)

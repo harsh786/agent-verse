@@ -4,6 +4,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.coordination.pattern_runs.service import public_record
+
 router = APIRouter(prefix="/api/v1/coordination/sessions", tags=["coordination-camel"])
 
 
@@ -17,7 +19,7 @@ def _tenant(request: Request) -> str:
 @router.get("/{session_id}/camel", operation_id="get_camel_state")
 async def get_camel_state(request: Request, session_id: str) -> dict[str, Any]:
     records = await request.app.state.camel_repository.list_session(_tenant(request), session_id)
-    return {"items": [item.model_dump(mode="json") for item in records]}
+    return {"items": [public_record("camel", item) for item in records]}
 
 
 __all__ = ["router"]

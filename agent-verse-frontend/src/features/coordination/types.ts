@@ -49,3 +49,24 @@ export interface CoordinationRun {
   swarm: { nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>> };
   auction: CoordinationPage & { sealed_bid_count: number };
 }
+
+export type PatternName =
+  | 'magentic'
+  | 'mixture_of_agents'
+  | 'camel'
+  | 'generative_agents'
+  | 'decentralized_swarm'
+  | 'market_auction';
+
+export interface PatternRunResult {
+  pattern: PatternName;
+  session_id: string;
+  execution_id: string;
+  phase: string;
+  terminal_reason?: string | null;
+  safe_output?: string | null;
+  llm_calls: number;
+  replayed?: boolean;
+  view?: Record<string, unknown>;
+  human_review?: { token: string; reason?: string | null; submit_path: string };
+}

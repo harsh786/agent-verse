@@ -9,6 +9,10 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.coordination.moa.models import MoALayer, MoAProposal
+from app.coordination.state_repository import (
+    InMemoryPatternStateRepository,
+    PostgresPatternStateRepository,
+)
 from app.db.models.coordination import COORDINATION_TABLES
 from app.db.rls import sqlalchemy_rls_context
 
@@ -261,4 +265,19 @@ class PostgresMoARepository:
             return tuple(_proposal_from_row(row) for row in rows)
 
 
-__all__ = ["InMemoryMoARepository", "PostgresMoARepository"]
+class InMemoryMoARunRepository(InMemoryPatternStateRepository):
+    """MoA run records (execution phase, output) beside the layer/proposal rows."""
+
+    pattern = "mixture_of_agents"
+
+
+class PostgresMoARunRepository(PostgresPatternStateRepository):
+    pattern = "mixture_of_agents"
+
+
+__all__ = [
+    "InMemoryMoARepository",
+    "InMemoryMoARunRepository",
+    "PostgresMoARepository",
+    "PostgresMoARunRepository",
+]

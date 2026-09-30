@@ -1322,6 +1322,11 @@ def create_app(
             app.state.coordination_replay = SequenceReplay(PostgresReplayRepository(db_factory))
             app.state.progress_ledger_repository = PostgresProgressLedgerRepository(db_factory)
             app.state.moa_repository = PostgresMoARepository(db_factory)
+            from app.coordination.magentic.repository import PostgresMagenticRunRepository
+            from app.coordination.moa.repository import PostgresMoARunRepository
+
+            app.state.magentic_run_repository = PostgresMagenticRunRepository(db_factory)
+            app.state.moa_run_repository = PostgresMoARunRepository(db_factory)
             from app.routing_runtime.decision_store import PostgresDecisionStore
             from app.routing_runtime.embedding_router import (
                 EmbeddingRouter as CanonicalEmbeddingRouter,
@@ -2735,7 +2740,9 @@ def create_app(
     from app.coordination.ledger.repository import InMemoryProgressLedgerRepository
     from app.coordination.live_bus import CoordinationLiveBus
     from app.coordination.magentic.human_review import MagenticHumanReviewService
-    from app.coordination.moa.repository import InMemoryMoARepository
+    from app.coordination.magentic.repository import InMemoryMagenticRunRepository
+    from app.coordination.moa.repository import InMemoryMoARepository, InMemoryMoARunRepository
+    from app.coordination.pattern_runs.service import PatternRunService
     from app.coordination.service import CoordinationService
     from app.coordination.store import InMemoryCoordinationStore
     from app.coordination.swarm.repository import InMemorySwarmRepository
@@ -2774,6 +2781,11 @@ def create_app(
     app.state.auction_repository = InMemoryAuctionRepository()
     app.state.auction_bid_inbox = InMemorySealedBidInbox()
     app.state.magentic_human_review = MagenticHumanReviewService()
+    app.state.magentic_run_repository = InMemoryMagenticRunRepository()
+    app.state.moa_run_repository = InMemoryMoARunRepository()
+    # ORG-25: drives the coordination patterns and writes their read models; reads
+    # app.state per call so the lifespan's Postgres/Redis swaps apply.
+    app.state.pattern_run_service = PatternRunService(app.state)
     app.state._app_provider = _app_provider
     # Collaboration insights and schedule suggestions read app.state.llm_provider,
     # which nothing set, so they always used their rule-based fallback even with

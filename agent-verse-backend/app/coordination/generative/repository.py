@@ -7,11 +7,11 @@ from app.coordination.state_repository import (
 
 
 class InMemoryGenerativeRepository(InMemoryPatternStateRepository):
-    pass
+    pattern = "generative_agents"
 
 
 class PostgresGenerativeRepository(PostgresPatternStateRepository):
-    pass
+    pattern = "generative_agents"
 
 
 __all__ = ["InMemoryGenerativeRepository", "PostgresGenerativeRepository"]

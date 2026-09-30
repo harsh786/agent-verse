@@ -7,6 +7,8 @@ from typing import Any, cast
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.coordination.pattern_runs.service import PatternRunError
+
 router = APIRouter(prefix="/api/v1/coordination/sessions", tags=["coordination-magentic"])
 
 
@@ -75,11 +77,23 @@ async def submit_human_review(
         )
     except PermissionError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    return {
+    response: dict[str, Any] = {
         "session_id": decision.session_id,
         "approved": decision.approved,
         "safe_note": decision.safe_note,
+        "run": None,
     }
+    runs = getattr(request.app.state, "pattern_run_service", None)
+    if runs is not None:
+        # The consumed decision drives the waiting run: approval grants one more
+        # replan and continues it; rejection closes it as human_rejected.
+        try:
+            response["run"] = await runs.apply_magentic_review(
+                request.state.tenant, session_id, approved=decision.approved
+            )
+        except PatternRunError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+    return response
 
 
 __all__ = ["router"]

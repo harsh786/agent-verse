@@ -4,7 +4,11 @@ import type {
   CoordinationPage,
   CoordinationRun,
   CoordinationSession,
+  PatternName,
+  PatternRunResult,
 } from './types';
+
+export type { PatternName, PatternRunResult } from './types';
 
 const base = (sessionId: string) =>
   `/api/v1/coordination/sessions/${encodeURIComponent(sessionId)}`;
@@ -30,10 +34,24 @@ export const coordinationApi = {
       apiFetch<CoordinationPage>(`${prefix}/moa/layers?after_layer=-1&limit=100`),
       apiFetch<CoordinationPage>(`${prefix}/camel`),
       apiFetch<CoordinationPage>(`${prefix}/generative`),
-      apiFetch<{ nodes: Array<Record<string, unknown>>; edges: Array<Record<string, unknown>> }>(`${prefix}/swarm`),
+      apiFetch<CoordinationRun['swarm']>(`${prefix}/swarm`),
       apiFetch<CoordinationPage & { sealed_bid_count: number }>(`${prefix}/auction`),
     ]);
     return { session, messages, ledger, moa, camel, generative, swarm, auction };
+  },
+  /** Run a coordination pattern; retrying with the same key resumes / replays it. */
+  runPattern(sessionId: string, pattern: PatternName, objective: string, idempotencyKey: string) {
+    return apiFetch<PatternRunResult>(`${base(sessionId)}/patterns/${pattern}/runs`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ objective }),
+    });
+  },
+  submitMagenticReview(sessionId: string, token: string, approved: boolean) {
+    return apiFetch<{ approved: boolean; run: PatternRunResult | null }>(
+      `${base(sessionId)}/magentic/human-review`,
+      { method: 'POST', body: JSON.stringify({ token, approved }) },
+    );
   },
   transition(sessionId: string, command: 'cancel' | 'resume', version: number) {
     return apiFetch(`${base(sessionId)}/${command}`, {

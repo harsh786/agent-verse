@@ -28,6 +28,9 @@ class PatternRecord(BaseModel):
 
 
 class InMemoryPatternStateRepository:
+    # The coordination pattern whose read model this repository holds.
+    pattern: str = ""
+
     def __init__(self) -> None:
         self._records: dict[tuple[str, str, str], PatternRecord] = {}
         self._commands: dict[tuple[str, str], PatternRecord] = {}
@@ -66,16 +69,22 @@ class InMemoryPatternStateRepository:
 
 
 class PostgresPatternStateRepository:
-    """Immutable checkpoint-backed state repository for distributed patterns."""
+    """Immutable checkpoint-backed state repository for distributed patterns.
+
+    Every pattern shares ``strategy_checkpoints``; ``pattern`` (a subclass
+    attribute) scopes reads and writes so one pattern's read model never lists
+    another pattern's executions.
+    """
+
+    pattern: str = ""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = session_factory
 
-    @staticmethod
-    def _command_id(record: PatternRecord) -> str:
+    def _command_id(self, record: PatternRecord) -> str:
         return uuid.uuid5(
             uuid.NAMESPACE_URL,
-            f"{record.tenant_id}:{record.idempotency_key}",
+            f"{record.tenant_id}:{self.pattern}:{record.idempotency_key}",
         ).hex
 
     @staticmethod
@@ -110,6 +119,8 @@ class PostgresPatternStateRepository:
                     await db.execute(
                         select(table)
                         .where(
+                            table.c.tenant_id == record.tenant_id,
+                            table.c.pattern == self.pattern,
                             table.c.session_id == record.session_id,
                             table.c.execution_id == record.execution_id,
                         )
@@ -133,6 +144,7 @@ class PostgresPatternStateRepository:
                     session_id=record.session_id,
                     execution_id=record.execution_id,
                     sequence=record.version,
+                    pattern=self.pattern,
                     state_reference=json.dumps(
                         {
                             "idempotency_key": record.idempotency_key,
@@ -165,7 +177,11 @@ class PostgresPatternStateRepository:
         execution_id: str | None = None,
     ) -> list[PatternRecord]:
         table = COORDINATION_TABLES["strategy_checkpoints"]
-        query = select(table).where(table.c.session_id == session_id)
+        query = select(table).where(
+            table.c.tenant_id == tenant_id,
+            table.c.pattern == self.pattern,
+            table.c.session_id == session_id,
+        )
         if execution_id is not None:
             query = query.where(table.c.execution_id == execution_id)
         query = query.order_by(table.c.execution_id, table.c.sequence.desc())

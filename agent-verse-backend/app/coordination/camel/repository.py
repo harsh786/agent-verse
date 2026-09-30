@@ -7,11 +7,11 @@ from app.coordination.state_repository import (
 
 
 class InMemoryCamelRepository(InMemoryPatternStateRepository):
-    pass
+    pattern = "camel"
 
 
 class PostgresCamelRepository(PostgresPatternStateRepository):
-    pass
+    pattern = "camel"
 
 
 __all__ = ["InMemoryCamelRepository", "PostgresCamelRepository"]

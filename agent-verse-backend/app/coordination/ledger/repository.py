@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from typing import Any
 
@@ -66,7 +67,11 @@ class InMemoryProgressLedgerRepository:
 
 
 def _revision_from_row(row: Any) -> LedgerRevision:
-    return LedgerRevision.model_validate(row.state)
+    # ``progress_ledger_revisions.state`` is a TEXT column (0097): JSON text.
+    state = row.state
+    if isinstance(state, str):
+        state = json.loads(state)
+    return LedgerRevision.model_validate(state)
 
 
 class PostgresProgressLedgerRepository:
@@ -121,7 +126,7 @@ class PostgresProgressLedgerRepository:
                     tenant_id=accepted.tenant_id,
                     session_id=accepted.session_id,
                     objective=accepted.objective,
-                    state=accepted.model_dump(mode="json"),
+                    state=accepted.model_dump_json(),
                     version=accepted.version,
                     created_at=accepted.created_at,
                     updated_at=accepted.created_at,

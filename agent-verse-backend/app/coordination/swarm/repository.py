@@ -7,11 +7,11 @@ from app.coordination.state_repository import (
 
 
 class InMemorySwarmRepository(InMemoryPatternStateRepository):
-    pass
+    pattern = "decentralized_swarm"
 
 
 class PostgresSwarmRepository(PostgresPatternStateRepository):
-    pass
+    pattern = "decentralized_swarm"
 
 
 __all__ = ["InMemorySwarmRepository", "PostgresSwarmRepository"]

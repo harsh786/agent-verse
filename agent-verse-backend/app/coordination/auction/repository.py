@@ -21,11 +21,11 @@ from app.db.rls import sqlalchemy_rls_context
 
 
 class InMemoryAuctionRepository(InMemoryPatternStateRepository):
-    pass
+    pattern = "market_auction"
 
 
 class PostgresAuctionRepository(PostgresPatternStateRepository):
-    pass
+    pattern = "market_auction"
 
 
 class SealedBidReceipt(BaseModel):

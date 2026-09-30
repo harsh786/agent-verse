@@ -123,7 +123,13 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
         "artifact_type",
         "content_reference",
     ),
-    "strategy_checkpoints": ("session_id", "execution_id", "sequence", "state_reference"),
+    "strategy_checkpoints": (
+        "session_id",
+        "execution_id",
+        "sequence",
+        "state_reference",
+        "pattern",
+    ),
     "event_inbox": ("event_id", "consumer_name", "state", "fencing_token"),
     "approval_grants": ("session_id", "action_digest", "nonce_digest", "state"),
     "budget_accounts": ("session_id", "ceiling", "reserved", "committed"),
@@ -299,6 +305,9 @@ NUMERIC_COLUMNS = frozenset(
     {
         "score",
         "cost",
+        # moa_proposals.cost_usd is NUMERIC(18,6) (0101); typed as text here the
+        # Postgres MoA repository's inserts failed with a datatype mismatch.
+        "cost_usd",
         "ceiling",
         "reserved",
         "committed",
