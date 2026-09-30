@@ -819,7 +819,11 @@ export function GoalDetailPage() {
 
   const triggerEvalMutation = useMutation({
     mutationFn: () => goalsApi.triggerEvaluation(goalId!),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal-eval", goalId] }); toast({ kind: "success", message: "Scored!" }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["goal-eval", goalId] });
+      qc.invalidateQueries({ queryKey: ["eval-suggestions", goalId] });
+      toast({ kind: "success", message: "Scored!" });
+    },
   });
 
   // HITL
@@ -1205,6 +1209,15 @@ export function GoalDetailPage() {
             <div>
               <h3 className="text-sm font-semibold">Evaluation Scorecard</h3>
               <p className="text-xs text-muted-foreground mt-0.5">7-dimension quality assessment</p>
+              {triggerEvalMutation.data?.scorer && (
+                <p className="text-[11px] text-muted-foreground mt-0.5" data-testid="eval-scorer">
+                  {triggerEvalMutation.data.scorer === "llm"
+                    ? "Accuracy and coherence scored by the LLM."
+                    : triggerEvalMutation.data.scorer === "partial"
+                      ? "Partly LLM-scored: one judgement fell back to the heuristic."
+                      : "Heuristic scoring: no LLM provider was available to judge accuracy and coherence."}
+                </p>
+              )}
             </div>
             <button
               onClick={() => triggerEvalMutation.mutate()}
@@ -1212,7 +1225,7 @@ export function GoalDetailPage() {
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-primary-foreground hover:opacity-90 disabled:opacity-50"
             >
               {triggerEvalMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />}
-              {evaluation ? "Re-score" : "Run Eval"}
+              {evaluation?.status === "evaluated" ? "Re-score" : "Run Eval"}
             </button>
           </div>
           {evalLoading || triggerEvalMutation.isPending ? (

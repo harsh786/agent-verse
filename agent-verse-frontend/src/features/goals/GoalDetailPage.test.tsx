@@ -846,6 +846,44 @@ describe('GoalDetailPage — additional coverage', () => {
   });
 
   test.each([
+    ['heuristic', /heuristic scoring/i],
+    ['llm', /scored by the llm/i],
+  ])('Run Eval says how it scored (%s) and refetches the scorecard', async (scorer, label) => {
+    const scored = { status: 'evaluated', passed: true, average_score: 0.8, scores: { accuracy: 0.8 }, scorer, persisted: true };
+    let evaluated = false;
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/eval/suggestions')) {
+        return new Response(JSON.stringify({ status: 'not_evaluated', suggestions: [] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/eval') && init?.method === 'POST') {
+        evaluated = true;
+        return new Response(JSON.stringify(scored), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.endsWith('/eval')) {
+        const body = evaluated ? { ...scored, scorer: undefined } : { status: 'not_evaluated' };
+        return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^eval$/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /run eval/i }));
+    expect(await screen.findByText(label)).toBeInTheDocument();
+    const evalGets = fetchMock.mock.calls.filter(
+      ([u, i]) => String(u).endsWith('/eval') && (i as RequestInit | undefined)?.method !== 'POST'
+    );
+    expect(evalGets.length).toBeGreaterThanOrEqual(2);
+    expect((await screen.findAllByText('80%')).length).toBeGreaterThan(0);
+  });
+
+  test.each([
     [503, { error: { code: 'EVAL_STORE_UNAVAILABLE', message: 'eval scorecards are unavailable' } }, /evaluation temporarily unavailable/i],
     [404, { error: { code: 'NOT_FOUND', message: 'Goal not found' } }, /goal not found/i],
   ])('eval tab distinguishes a %s from "no evaluation yet"', async (code, body, expected) => {

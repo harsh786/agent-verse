@@ -7,6 +7,7 @@ scorecard. The existing 13 goal_service test files don't exercise this path.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -153,13 +154,14 @@ async def test_run_eval_goal_not_found_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_run_eval_passes_app_provider_to_score_async() -> None:
-    """run_eval forwards self._app_provider to EvalRunner.score_async."""
-    svc = GoalService()
+    """run_eval forwards the platform provider (app.state._app_provider) to score_async.
+
+    It used to read ``self._app_provider``, which nothing ever set (MEM-20).
+    """
+    mock_provider = MagicMock(name="app_provider")
+    svc = GoalService(app_state=SimpleNamespace(_app_provider=mock_provider))
     record = _record(goal_id="goal-prov")
     svc._goals["goal-prov"] = record
-
-    mock_provider = MagicMock(name="app_provider")
-    svc._app_provider = mock_provider
 
     scorecard = _scorecard_mock(goal_id="goal-prov")
     mock_runner_instance = MagicMock()

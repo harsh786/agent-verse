@@ -63,6 +63,9 @@ class EvalScorecard:
     evidence_completeness: dict[str, bool] = field(default_factory=dict)
     correlation_id: str = ""
     causation_id: str = ""
+    # How the judgement dimensions (accuracy / coherence) were scored:
+    # "llm" (both by the model), "partial" (one fell back), "heuristic" (none).
+    scorer: str = "heuristic"
 
     def average_score(self) -> float:
         if not self.scores:

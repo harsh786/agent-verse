@@ -2184,6 +2184,47 @@ class GoalService:
             raise NotFoundError(f"Goal not found: {goal_id}")
         return loaded
 
+    # ── Eval scoring helpers ──────────────────────────────────────────────────
+
+    def _eval_app_state(self) -> Any:
+        """``app.state`` for the real Starlette app; a mock/plain object as is."""
+        aps: Any = self._app_state
+        try:
+            from starlette.applications import Starlette as _Starlette
+
+            if isinstance(aps, _Starlette):
+                return aps.state
+        except Exception:
+            pass
+        return aps
+
+    @staticmethod
+    def _eval_provider(aps: Any) -> Any:
+        """The platform provider for eval judgements, or None (heuristic scoring).
+
+        The canned FakeProvider is the no-key fallback: its replies are not
+        judgements, so scoring with it would dress defaults up as LLM scores.
+        """
+        provider = getattr(aps, "_app_provider", None) if aps is not None else None
+        if provider is None or isinstance(provider, FakeProvider):
+            return None
+        return provider
+
+    @staticmethod
+    def _eval_steps_from_events(events: list[dict[str, Any]]) -> tuple[list[StepResult], bool]:
+        """Planned steps and the verifier's verdict, as recorded in the goal's events."""
+        steps: list[StepResult] = []
+        verification_success = False
+        for evt in events:
+            if evt.get("type") == "plan_ready":
+                steps.extend(
+                    StepResult(description=str(step_text), status=StepStatus.COMPLETE)
+                    for step_text in evt.get("steps", [])
+                )
+            elif evt.get("type") == "verification_done":
+                verification_success = bool(evt.get("success", False))
+        return steps, verification_success
+
     # ── Eval-scoring "pending" marker, shared across replicas ────────────────
 
     @staticmethod
@@ -2637,14 +2678,7 @@ class GoalService:
                 # never ran (GET /eval stayed 'not_evaluated'). Unwrap to app.state
                 # only for the real Starlette app (a mock/plain object is used as-is,
                 # so unit tests that set _app_state.eval_runner directly still work).
-                _eval_aps: Any = self._app_state
-                try:
-                    from starlette.applications import Starlette as _Starlette
-
-                    if isinstance(self._app_state, _Starlette):
-                        _eval_aps = self._app_state.state
-                except Exception:
-                    pass
+                _eval_aps: Any = self._eval_app_state()
                 eval_runner = getattr(_eval_aps, "eval_runner", None)
                 if eval_runner is not None:
                     tenant_ctx_for_record: TenantContext = (
@@ -2657,19 +2691,7 @@ class GoalService:
                         )
                     )
                     # Build a minimal AgentState from the recorded events.
-                    steps: list[StepResult] = []
-                    verification_success = False
-                    for evt in record.events:
-                        if evt.get("type") == "plan_ready":
-                            for step_text in evt.get("steps", []):
-                                steps.append(
-                                    StepResult(
-                                        description=str(step_text),
-                                        status=StepStatus.COMPLETE,
-                                    )
-                                )
-                        elif evt.get("type") == "verification_done":
-                            verification_success = bool(evt.get("success", False))
+                    steps, verification_success = self._eval_steps_from_events(record.events)
                     agent_state = AgentState(
                         goal_id=goal_id,
                         goal=record.goal_text,
@@ -2684,7 +2706,7 @@ class GoalService:
                         scorecard = await eval_runner.score_and_persist(
                             agent_state,
                             tenant_ctx_for_record,
-                            provider=getattr(_eval_aps, "_app_provider", None),  # on app.state
+                            provider=self._eval_provider(_eval_aps),
                             db=self._db,
                         )
                         self._eval_scores[goal_id] = scorecard
@@ -4729,31 +4751,29 @@ class GoalService:
         return card, average, average >= _pass_threshold()
 
     async def _scorecard_for(self, goal_id: str, tenant_ctx: TenantContext) -> Any:
-        """Cached scorecard, else the persisted one (then cached). None if unscored."""
-        scorecard = self._eval_scores.get(goal_id)
-        if scorecard is not None:
-            return scorecard
+        """The persisted scorecard (Postgres is the record), else this replica's cache.
+
+        Postgres is read first whenever it is configured: a re-score on another
+        replica replaces the persisted row, and a cache-first read kept serving
+        this replica's older scorecard. The cache only answers for goals whose
+        scorecard never reached Postgres (no DB, or its write failed). None if
+        unscored.
+        """
         persisted = await self._persisted_eval(goal_id, tenant_ctx)
-        if persisted is None:
-            return None
-        self._eval_scores[goal_id] = persisted[0]
-        return persisted[0]
+        if persisted is not None:
+            self._eval_scores[goal_id] = persisted[0]
+            return persisted[0]
+        return self._eval_scores.get(goal_id)
 
     async def get_eval(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
-        """Return the eval scorecard for *goal_id*, or a not-evaluated response.
+        """Return the eval scorecard for *goal_id*, or a pending / not-evaluated response.
 
-        This replica's cache first, then the persisted scorecard (Postgres,
-        tenant RLS) — a goal scored on another replica or before a restart used
-        to report "not_evaluated" forever.
+        The persisted scorecard (Postgres, tenant RLS) first — a goal scored or
+        re-scored on another replica or before a restart is served everywhere —
+        then this replica's cache, then the cross-replica "pending" marker.
         """
         await self._aget_read_record(goal_id, tenant_ctx)  # 404 if unknown / wrong tenant
-        scorecard = self._eval_scores.get(goal_id)
-        persisted = None
-        pending = False
-        if scorecard is None:
-            pending = await self._is_eval_pending(goal_id, tenant_ctx.tenant_id)
-            if not pending:
-                persisted = await self._persisted_eval(goal_id, tenant_ctx)
+        persisted = await self._persisted_eval(goal_id, tenant_ctx)
         if persisted is not None:
             card, average, passed = persisted
             self._eval_scores[goal_id] = card
@@ -4765,7 +4785,9 @@ class GoalService:
                 "passed": passed,
                 "iterations": card.iterations,
             }
+        scorecard = self._eval_scores.get(goal_id)
         if scorecard is None:
+            pending = await self._is_eval_pending(goal_id, tenant_ctx.tenant_id)
             return {
                 "goal_id": goal_id,
                 "status": "pending" if pending else "not_evaluated",
@@ -4855,17 +4877,24 @@ class GoalService:
         }
 
     async def run_eval(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
-        """Score a goal on demand and cache the result.
+        """Score a goal on demand, persist the scorecard and return it.
 
-        Unlike ``get_eval`` which returns cached scores, this always runs
-        the EvalRunner and stores the result. Enables the "Run Eval" button.
+        Enables the "Run Eval" button. Judgement dimensions use the platform
+        provider the completion-time scorer uses (``scorer`` in the response
+        says whether the model actually scored them). The scorecard replaces
+        the goal's persisted one, so every replica's GET /eval serves it; a
+        scorecard that cannot be persisted is a 503, not a replica-local result.
         """
         record = await self._aget_read_record(goal_id, tenant_ctx)
 
         # Try to get live AgentState from the record
         state = getattr(record, "agent_state", None)
         if state is None:
-            # Reconstruct minimal state from record data
+            # Reconstruct minimal state from record data. A goal loaded from
+            # Postgres (another replica / worker ran it) has no in-memory events.
+            events = list(record.events) or await self._list_persisted_events(
+                goal_id, tenant_ctx
+            )
             try:
                 goal_status = GoalStatus(record.status.value)
             except (ValueError, AttributeError):
@@ -4876,12 +4905,14 @@ class GoalService:
                 goal=record.goal_text,
                 tenant_ctx=tenant_ctx,
                 status=goal_status,
-                steps=list(record.steps) if getattr(record, "steps", None) else [],
+                steps=list(record.steps)
+                if getattr(record, "steps", None)
+                else self._eval_steps_from_events(events)[0],
                 verification_success=(record.status == record.status.COMPLETE),
                 verification_feedback=record.execution_context.get("verification_feedback", "")
                 if isinstance(record.execution_context, dict)
                 else "",
-                events=list(record.events) if getattr(record, "events", None) else [],
+                events=events,
                 iterations=int(record.execution_context.get("iterations", 1))
                 if isinstance(record.execution_context, dict)
                 else 1,
@@ -4892,15 +4923,33 @@ class GoalService:
 
         from app.intelligence.eval_runner import EvalRunner
 
-        runner = EvalRunner()
-        provider = getattr(self, "_app_provider", None)
+        aps = self._eval_app_state()
+        runner = getattr(aps, "eval_runner", None) or EvalRunner()
         scorecard = await runner.score_async(
             state=state,
             tenant_ctx=tenant_ctx,
-            provider=provider,
+            provider=self._eval_provider(aps),
         )
 
-        # Cache for subsequent GET requests
+        persisted = False
+        if self._db is not None:
+            try:
+                persisted = bool(
+                    await runner.persist_scorecard(
+                        scorecard,
+                        goal_id=goal_id,
+                        tenant_ctx=tenant_ctx,
+                        db=self._db,
+                        replace=True,
+                        strict=True,
+                    )
+                )
+            except Exception as exc:
+                raise ServiceUnavailableError(
+                    "the eval scorecard could not be saved", code="EVAL_STORE_UNAVAILABLE"
+                ) from exc
+
+        # Cache for subsequent GET requests on this replica
         self._eval_scores[goal_id] = scorecard
 
         return {
@@ -4910,6 +4959,8 @@ class GoalService:
             "average_score": scorecard.average_score(),
             "passed": scorecard.passed(),
             "iterations": scorecard.iterations,
+            "scorer": getattr(scorecard, "scorer", "heuristic"),
+            "persisted": persisted,
         }
 
     async def cancel_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:

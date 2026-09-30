@@ -383,6 +383,10 @@ export interface EvalScorecard {
     [key: string]: number | undefined;
   };
   iterations?: number;
+  /** POST /goals/:id/eval only: how accuracy/coherence were judged. */
+  scorer?: "llm" | "partial" | "heuristic";
+  /** POST /goals/:id/eval only: the scorecard was saved for every replica. */
+  persisted?: boolean;
 }
 
 // ── Pattern selection types ────────────────────────────────────────────────────

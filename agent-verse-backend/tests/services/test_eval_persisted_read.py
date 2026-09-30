@@ -120,14 +120,25 @@ async def test_get_eval_db_failure_is_unavailable_not_a_false_not_evaluated() ->
         await svc.get_eval(goal_id, _CTX)
 
 
-async def test_cached_scorecard_is_served_without_a_db_read() -> None:
+async def test_cached_scorecard_answers_when_nothing_is_persisted() -> None:
     svc = GoalService()
     goal_id = await _goal(svc)
-    db = _DB()
-    svc._db = db
+    svc._db = _DB()
     svc._eval_scores[goal_id] = EvalScorecard(goal_id=goal_id, scores={"accuracy": 1.0})
-    assert (await svc.get_eval(goal_id, _CTX))["status"] == "evaluated"
-    assert db.queries == []
+    out = await svc.get_eval(goal_id, _CTX)
+    assert out["status"] == "evaluated" and out["scores"] == {"accuracy": 1.0}
+
+
+async def test_persisted_scorecard_wins_over_a_stale_cached_one() -> None:
+    # MEM-20: a re-score on another replica replaced the persisted row; this
+    # replica's cached scorecard must not keep being served.
+    svc = GoalService()
+    goal_id = await _goal(svc)
+    svc._db = _DB(evaluations_row=(json.dumps({"accuracy": 0.9}), 0.9, True))
+    svc._eval_scores[goal_id] = EvalScorecard(goal_id=goal_id, scores={"accuracy": 0.1})
+    assert (await svc.get_eval(goal_id, _CTX))["scores"] == {"accuracy": 0.9}
+    suggestions = await svc.get_eval_suggestions(goal_id, _CTX)
+    assert suggestions["count"] == 0
 
 
 def test_eval_score_cache_is_bounded() -> None:

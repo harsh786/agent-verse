@@ -226,6 +226,59 @@ class EvalRunner:
             causation_id=str(context.get("causation_id", "")),
         )
 
+    async def _llm_rate(
+        self,
+        prompt: str,
+        provider: Any,
+        *,
+        role: str,
+        tenant_ctx: Any,
+        goal_id: str | None,
+    ) -> float | None:
+        """One charged, circuit-broken 0..1 rating from the model; None on any failure."""
+        try:
+            from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
+                CompletionRequest(
+                    messages=[Message(role="user", content=prompt)],
+                    model="",
+                    max_tokens=10,
+                ),
+                role=role,
+                tenant_ctx=tenant_ctx,
+                goal_id=goal_id,
+            )
+            return min(1.0, max(0.0, float(resp.content.strip())))
+        except Exception:
+            return None
+
+    async def _llm_coherence(
+        self,
+        goal: str,
+        steps: list[Any],
+        provider: Any,
+        *,
+        tenant_ctx: Any = None,
+        goal_id: str | None = None,
+    ) -> float | None:
+        """The model's coherence rating, or None when it was not (or could not be) asked."""
+        if not steps or provider is None:
+            return None
+        step_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps[:10]))
+        prompt = (
+            f"Goal: {goal}\n\nSteps taken:\n{step_text}\n\n"
+            "Rate how logically coherent and relevant the steps are to achieving the goal. "
+            "Score 0.0 (completely irrelevant) to 1.0 (perfectly coherent). "
+            "Reply with ONLY a decimal number."
+        )
+        # Charged to the evaluated goal's tenant and circuit-broken.
+        return await self._llm_rate(
+            prompt, provider, role="eval_coherence", tenant_ctx=tenant_ctx, goal_id=goal_id
+        )
+
     async def _score_coherence(
         self,
         goal: str,
@@ -237,37 +290,55 @@ class EvalRunner:
     ) -> float:
         """Use LLM to rate how logically coherent the steps are relative to the goal.
 
-        Returns a float in [0.0, 1.0].  Conservative default 0.7 on any error.
+        Returns a float in [0.0, 1.0]: 0.5 when there is nothing to ask about,
+        a conservative 0.7 when the model call fails.
         """
         if not steps or provider is None:
             return 0.5
-        try:
-            step_text = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps[:10]))
-            prompt = (
-                f"Goal: {goal}\n\nSteps taken:\n{step_text}\n\n"
-                "Rate how logically coherent and relevant the steps are to achieving the goal. "
-                "Score 0.0 (completely irrelevant) to 1.0 (perfectly coherent). "
-                "Reply with ONLY a decimal number."
-            )
-            from app.providers.base import CompletionRequest, Message
-            from app.providers.guarded_completion import complete_decision
+        rated = await self._llm_coherence(
+            goal, steps, provider, tenant_ctx=tenant_ctx, goal_id=goal_id
+        )
+        return 0.7 if rated is None else rated
 
-            # Charged to the evaluated goal's tenant and circuit-broken; any
-            # failure returns the conservative default below.
-            resp = await complete_decision(
-                provider,
-                CompletionRequest(
-                    messages=[Message(role="user", content=prompt)],
-                    model="",
-                    max_tokens=10,
-                ),
-                role="eval_coherence",
-                tenant_ctx=tenant_ctx,
-                goal_id=goal_id,
+    @staticmethod
+    def _accuracy_heuristic(verification_feedback: str, verification_success: bool) -> float:
+        feedback = (verification_feedback or "").lower()
+        return 1.0 if verification_success else (0.5 if "partial" in feedback else 0.0)
+
+    async def _llm_accuracy(
+        self,
+        goal: str,
+        steps: list[Any],
+        verification_feedback: str,
+        verification_success: bool,
+        provider: Any,
+        *,
+        tenant_ctx: Any = None,
+        goal_id: str | None = None,
+    ) -> float | None:
+        """The model's accuracy rating, or None when it was not (or could not be) asked."""
+        if provider is None:
+            return None
+        step_text = (
+            "\n".join(
+                f"{i + 1}. {getattr(s, 'description', str(s))}" for i, s in enumerate(steps[:10])
             )
-            return min(1.0, max(0.0, float(resp.content.strip())))
-        except Exception:
-            return 0.7  # conservative default on failure
+            or "(no steps)"
+        )
+        verification_note = (
+            f"Verification: {'passed' if verification_success else 'failed'}. "
+            f"Feedback: {verification_feedback or 'none'}"
+        )
+        prompt = (
+            f"Goal: {goal}\n\nSteps taken:\n{step_text}\n\n{verification_note}\n\n"
+            "Rate how accurately the agent achieved the stated goal. "
+            "Score 0.0 (completely wrong/missed the goal) to 1.0 (fully accurate). "
+            "Reply with ONLY a decimal number."
+        )
+        # Charged to the evaluated goal's tenant and circuit-broken.
+        return await self._llm_rate(
+            prompt, provider, role="eval_accuracy", tenant_ctx=tenant_ctx, goal_id=goal_id
+        )
 
     async def _score_accuracy(
         self,
@@ -285,48 +356,18 @@ class EvalRunner:
         Falls back to the heuristic (verification_success) when provider is None
         or when the LLM call fails.  Returns float in [0.0, 1.0].
         """
-        # Compute heuristic so we can return it on fallback
-        feedback = (verification_feedback or "").lower()
-        heuristic = 1.0 if verification_success else (0.5 if "partial" in feedback else 0.0)
-        if provider is None:
-            return heuristic
-        try:
-            step_text = (
-                "\n".join(
-                    f"{i + 1}. {getattr(s, 'description', str(s))}"
-                    for i, s in enumerate(steps[:10])
-                )
-                or "(no steps)"
-            )
-            verification_note = (
-                f"Verification: {'passed' if verification_success else 'failed'}. "
-                f"Feedback: {verification_feedback or 'none'}"
-            )
-            prompt = (
-                f"Goal: {goal}\n\nSteps taken:\n{step_text}\n\n{verification_note}\n\n"
-                "Rate how accurately the agent achieved the stated goal. "
-                "Score 0.0 (completely wrong/missed the goal) to 1.0 (fully accurate). "
-                "Reply with ONLY a decimal number."
-            )
-            from app.providers.base import CompletionRequest, Message
-            from app.providers.guarded_completion import complete_decision
-
-            # Charged to the evaluated goal's tenant and circuit-broken; any
-            # failure returns the conservative default below.
-            resp = await complete_decision(
-                provider,
-                CompletionRequest(
-                    messages=[Message(role="user", content=prompt)],
-                    model="",
-                    max_tokens=10,
-                ),
-                role="eval_accuracy",
-                tenant_ctx=tenant_ctx,
-                goal_id=goal_id,
-            )
-            return min(1.0, max(0.0, float(resp.content.strip())))
-        except Exception:
-            return heuristic  # conservative fallback
+        rated = await self._llm_accuracy(
+            goal,
+            steps,
+            verification_feedback,
+            verification_success,
+            provider,
+            tenant_ctx=tenant_ctx,
+            goal_id=goal_id,
+        )
+        if rated is None:
+            return self._accuracy_heuristic(verification_feedback, verification_success)
+        return rated
 
     async def score_async(
         self,
@@ -335,27 +376,130 @@ class EvalRunner:
         tenant_ctx: TenantContext,
         provider: Any = None,
     ) -> EvalScorecard:
-        """Score asynchronously, replacing heuristic coherence AND accuracy with LLM scoring."""
+        """Score asynchronously, replacing heuristic coherence AND accuracy with LLM scoring.
+
+        ``scorecard.scorer`` records what actually happened: "llm" when both
+        judgement dimensions came from the model, "partial" when one fell back,
+        "heuristic" when neither did (no provider, or every call failed).
+        """
         scorecard = self.score(state=state, tenant_ctx=tenant_ctx)
-        # Replace heuristic coherence with LLM-based coherence
         step_descriptions = [s.description for s in state.steps if s.description]
         _goal_id = str(getattr(state, "goal_id", "") or "") or None
-        coherence = await self._score_coherence(
+        coherence = await self._llm_coherence(
             state.goal, step_descriptions, provider, tenant_ctx=tenant_ctx, goal_id=_goal_id
         )
-        scorecard.scores["coherence"] = coherence
-        # Replace heuristic accuracy with LLM-based accuracy (Task 1)
-        accuracy = await self._score_accuracy(
-            goal=state.goal,
-            steps=state.steps,
-            verification_feedback=state.verification_feedback,
-            verification_success=state.verification_success,
-            provider=provider,
+        accuracy = await self._llm_accuracy(
+            state.goal,
+            state.steps,
+            state.verification_feedback,
+            state.verification_success,
+            provider,
             tenant_ctx=tenant_ctx,
             goal_id=_goal_id,
         )
-        scorecard.scores["accuracy"] = accuracy
+        if coherence is None:
+            # Same defaults as _score_coherence: nothing to ask → 0.5, failed call → 0.7.
+            coherence = 0.5 if not step_descriptions or provider is None else 0.7
+            coherence_by_llm = False
+        else:
+            coherence_by_llm = True
+        scorecard.scores["coherence"] = coherence
+        if accuracy is None:
+            scorecard.scores["accuracy"] = self._accuracy_heuristic(
+                state.verification_feedback, state.verification_success
+            )
+        else:
+            scorecard.scores["accuracy"] = accuracy
+        by_llm = int(coherence_by_llm) + int(accuracy is not None)
+        scorecard.scorer = ("heuristic", "partial", "llm")[by_llm]
         return scorecard
+
+    async def persist_scorecard(
+        self,
+        scorecard: EvalScorecard,
+        *,
+        goal_id: str,
+        tenant_ctx: TenantContext,
+        db: Any,
+        replace: bool = False,
+        strict: bool = False,
+    ) -> bool:
+        """Write *scorecard* to ``evaluations`` under the tenant's RLS context.
+
+        The row identity is deterministic, so a retried completion-time score is
+        a no-op (``replace=False``). An explicit re-score (``replace=True``)
+        overwrites it and bumps ``created_at`` so every replica reads the new
+        scores. Returns True when written; a failure is logged and returns False,
+        or raises when ``strict``.
+        """
+        identity = ":".join(
+            (
+                tenant_ctx.tenant_id,
+                goal_id,
+                scorecard.strategy_execution_id,
+                scorecard.evaluator_version,
+            )
+        )
+        eval_id = uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
+        on_conflict = (
+            "DO UPDATE SET scores = EXCLUDED.scores, "
+            "average_score = EXCLUDED.average_score, passed = EXCLUDED.passed, "
+            "evidence_completeness = EXCLUDED.evidence_completeness, created_at = NOW()"
+            if replace
+            else "DO NOTHING"
+        )
+        try:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                await session.execute(
+                    text(f"""
+                    INSERT INTO evaluations
+                        (id, goal_id, tenant_id, scores, average_score, passed,
+                         primary_strategy_id, primary_strategy_version,
+                         auxiliary_strategy_versions, profile_id, profile_version,
+                         strategy_execution_id, evaluator_version,
+                         evidence_completeness, correlation_id, causation_id, created_at)
+                    VALUES
+                        (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed,
+                         :primary_strategy_id, :primary_strategy_version,
+                         CAST(:auxiliary_strategy_versions AS jsonb), :profile_id,
+                         :profile_version, :strategy_execution_id, :evaluator_version,
+                         CAST(:evidence_completeness AS jsonb), :correlation_id,
+                         :causation_id, NOW())
+                    ON CONFLICT
+                        (tenant_id, goal_id, strategy_execution_id, evaluator_version)
+                    {on_conflict}
+                    """),  # on_conflict is one of the two literals above
+                    {
+                        "id": eval_id,
+                        "gid": goal_id,
+                        "tid": tenant_ctx.tenant_id,
+                        "scores": json.dumps(scorecard.scores),
+                        "avg": round(scorecard.average_score(), 6),
+                        "passed": scorecard.passed(),
+                        "primary_strategy_id": scorecard.primary_strategy_id,
+                        "primary_strategy_version": scorecard.primary_strategy_version,
+                        "auxiliary_strategy_versions": json.dumps(
+                            scorecard.auxiliary_strategy_versions
+                        ),
+                        "profile_id": scorecard.profile_id,
+                        "profile_version": scorecard.profile_version,
+                        "strategy_execution_id": scorecard.strategy_execution_id,
+                        "evaluator_version": scorecard.evaluator_version,
+                        "evidence_completeness": json.dumps(scorecard.evidence_completeness),
+                        "correlation_id": scorecard.correlation_id,
+                        "causation_id": scorecard.causation_id,
+                    },
+                )
+        except Exception as exc:
+            get_logger(__name__).warning("eval_persist_failed", goal_id=goal_id, error=str(exc))
+            if strict:
+                raise
+            return False
+        return True
 
     async def score_and_persist(
         self,
@@ -365,7 +509,7 @@ class EvalRunner:
         provider: Any = None,
         db: Any = None,
     ) -> EvalScorecard:
-        """Score AND persist results to the evaluations table.
+        """Score AND persist results to the evaluations table (idempotent per goal).
 
         Writes to the actual DB schema:
           - scores (JSON)  — full dimension breakdown
@@ -374,66 +518,8 @@ class EvalRunner:
           - created_at (timestamp)
         """
         scorecard = await self.score_async(state=state, tenant_ctx=tenant_ctx, provider=provider)
-
         if db is not None:
-            identity = ":".join(
-                (
-                    tenant_ctx.tenant_id,
-                    state.goal_id,
-                    scorecard.strategy_execution_id,
-                    scorecard.evaluator_version,
-                )
+            await self.persist_scorecard(
+                scorecard, goal_id=state.goal_id, tenant_ctx=tenant_ctx, db=db
             )
-            eval_id = uuid.uuid5(uuid.NAMESPACE_URL, identity).hex
-            try:
-                async with (
-                    db() as session,
-                    session.begin(),
-                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
-                ):
-                    await session.execute(
-                        text("""
-                        INSERT INTO evaluations
-                            (id, goal_id, tenant_id, scores, average_score, passed,
-                             primary_strategy_id, primary_strategy_version,
-                             auxiliary_strategy_versions, profile_id, profile_version,
-                             strategy_execution_id, evaluator_version,
-                             evidence_completeness, correlation_id, causation_id, created_at)
-                        VALUES
-                            (:id, :gid, :tid, CAST(:scores AS json), :avg, :passed,
-                             :primary_strategy_id, :primary_strategy_version,
-                             CAST(:auxiliary_strategy_versions AS jsonb), :profile_id,
-                             :profile_version, :strategy_execution_id, :evaluator_version,
-                             CAST(:evidence_completeness AS jsonb), :correlation_id,
-                             :causation_id, NOW())
-                        ON CONFLICT
-                            (tenant_id, goal_id, strategy_execution_id, evaluator_version)
-                        DO NOTHING
-                        """),
-                        {
-                            "id": eval_id,
-                            "gid": state.goal_id,
-                            "tid": tenant_ctx.tenant_id,
-                            "scores": json.dumps(scorecard.scores),
-                            "avg": round(scorecard.average_score(), 6),
-                            "passed": scorecard.passed(),
-                            "primary_strategy_id": scorecard.primary_strategy_id,
-                            "primary_strategy_version": scorecard.primary_strategy_version,
-                            "auxiliary_strategy_versions": json.dumps(
-                                scorecard.auxiliary_strategy_versions
-                            ),
-                            "profile_id": scorecard.profile_id,
-                            "profile_version": scorecard.profile_version,
-                            "strategy_execution_id": scorecard.strategy_execution_id,
-                            "evaluator_version": scorecard.evaluator_version,
-                            "evidence_completeness": json.dumps(
-                                scorecard.evidence_completeness
-                            ),
-                            "correlation_id": scorecard.correlation_id,
-                            "causation_id": scorecard.causation_id,
-                        },
-                    )
-            except Exception as exc:
-                get_logger(__name__).warning("eval_persist_failed", error=str(exc))
-
         return scorecard
