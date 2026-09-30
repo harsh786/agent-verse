@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -66,6 +67,16 @@ def _make_app(
 _HDR = {"X-API-Key": _VALID_KEY}
 
 
+@pytest.fixture
+def no_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No database at all: no app.state factory AND no global engine to fall back to."""
+
+    def _unavailable() -> Any:
+        raise RuntimeError("no database configured in this test")
+
+    monkeypatch.setattr("app.db.session.get_session_factory", _unavailable)
+
+
 def _assert_single_statement_under_tenant_guc(mock_session: MagicMock, sql_prefix: str) -> None:
     """Exactly one data statement ran, between setting and resetting app.tenant_id."""
     calls = mock_session.execute.await_args_list
@@ -88,20 +99,21 @@ def test_post_consent_requires_auth() -> None:
     assert resp.status_code == 401
 
 
-def test_post_consent_no_db_returns_recorded_with_id() -> None:
-    """POST /compliance/consent returns recorded status with a consent_id even when no DB configured."""
+def test_post_consent_no_db_returns_503(no_database: None) -> None:
+    """Without a database there is nowhere to record consent: 503, never 'recorded'.
+
+    This test used to assert ``recorded`` with no DB configured — it only passed
+    because the endpoint silently fell back to the global engine and wrote the
+    row into whatever Postgres DATABASE_URL defaulted to (the developer's).
+    """
     client = TestClient(_make_app(db_factory=None), raise_server_exceptions=False)
     resp = client.post(
         "/compliance/consent",
         json={"purpose": "analytics", "legal_basis": "consent"},
         headers=_HDR,
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "recorded"
-    assert body["purpose"] == "analytics"
-    assert "consent_id" in body
-    assert len(body["consent_id"]) > 0
+    assert resp.status_code == 503
+    assert "no database configured" in resp.json()["detail"]
 
 
 def test_post_consent_with_db_calls_insert() -> None:
@@ -150,8 +162,16 @@ def test_post_consent_db_exception_returns_503() -> None:
 
 
 def test_post_consent_with_default_legal_basis() -> None:
-    """POST /compliance/consent with no legal_basis uses default 'legitimate_interest'."""
-    client = TestClient(_make_app(db_factory=None), raise_server_exceptions=False)
+    """POST /compliance/consent with no legal_basis stores 'legitimate_interest'."""
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock()
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    session_cm.__aexit__ = AsyncMock(return_value=None)
+    client = TestClient(
+        _make_app(db_factory=MagicMock(return_value=session_cm)),
+        raise_server_exceptions=False,
+    )
     resp = client.post(
         "/compliance/consent",
         json={"purpose": "analytics"},  # no legal_basis → default
@@ -160,6 +180,9 @@ def test_post_consent_with_default_legal_basis() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["purpose"] == "analytics"
+    _assert_single_statement_under_tenant_guc(mock_session, "INSERT INTO consent_records")
+    insert_params = mock_session.execute.await_args_list[1].args[1]
+    assert insert_params["basis"] == "legitimate_interest"
 
 
 # ── DELETE /compliance/consent/{purpose} ─────────────────────────────────────
@@ -172,14 +195,12 @@ def test_delete_consent_requires_auth() -> None:
     assert resp.status_code == 401
 
 
-def test_delete_consent_no_db_returns_revoked() -> None:
-    """DELETE without DB returns revoked status."""
+def test_delete_consent_no_db_returns_503(no_database: None) -> None:
+    """DELETE without a database answers 503 — never a fabricated 'revoked'."""
     client = TestClient(_make_app(db_factory=None), raise_server_exceptions=False)
     resp = client.delete("/compliance/consent/analytics", headers=_HDR)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "revoked"
-    assert body["purpose"] == "analytics"
+    assert resp.status_code == 503
+    assert "no database configured" in resp.json()["detail"]
 
 
 def test_delete_consent_with_db_calls_update() -> None:
