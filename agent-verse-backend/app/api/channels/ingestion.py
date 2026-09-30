@@ -557,6 +557,10 @@ async def create_channel_mapping(request: Request) -> dict:
     routes nothing until an inbound message on that channel carries the code. A
     channel another tenant has verified is refused (409); re-posting an own claim
     issues a fresh code (or reports ``verified``).
+
+    On channels anyone can send to (sms, email, form, meeting, voice) a code
+    proves nothing, so the claim is ``pending_operator_approval`` instead: no
+    code, no routing, until a platform operator approves it (``/admin``).
     """
     from app.api.channels import verification
 
@@ -598,7 +602,9 @@ async def create_channel_mapping(request: Request) -> dict:
 async def verify_channel_mapping(mapping_id: str, request: Request) -> dict:
     """Issue a fresh one-time code for a pending or legacy mapping ("Verify" in the UI).
 
-    A legacy mapping keeps routing while its code is outstanding.
+    A legacy mapping keeps routing while its code is outstanding. Send-only
+    channels (sms, email, ...) cannot be verified by code: 409, awaiting operator
+    approval.
     """
     from app.api.channels import verification
 
@@ -617,6 +623,8 @@ async def verify_channel_mapping(mapping_id: str, request: Request) -> dict:
         raise HTTPException(status_code=404, detail="Channel mapping not found") from None
     except verification.ChannelClaimedError:
         raise HTTPException(status_code=409, detail=_CLAIMED_DETAIL) from None
+    except verification.OperatorApprovalRequiredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return issued.to_response()

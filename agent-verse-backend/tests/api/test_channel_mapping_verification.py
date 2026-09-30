@@ -230,3 +230,111 @@ def test_list_rejects_unknown_status_filter() -> None:
 def test_routing_lookup_only_considers_routable_statuses() -> None:
     assert set(verification.ROUTABLE_STATUSES) == {"verified", "legacy_unverified"}
     assert verification.STATUS_PENDING not in verification.ROUTABLE_STATUSES
+
+
+# ── operator approval for channels where sending proves nothing ───────────
+# A one-time code received on an SMS number / email address (or a public form,
+# or a meeting's participants) only proves someone can SEND there, not that
+# they own it. Such claims wait for a platform operator.
+
+
+@pytest.mark.parametrize("channel_type", ["sms", "email", "form", "meeting", "voice", "SMS"])
+def test_send_only_channels_need_operator_approval(channel_type: str) -> None:
+    assert verification.requires_operator_approval(channel_type)
+
+
+@pytest.mark.parametrize("channel_type", ["slack", "teams", "discord"])
+def test_app_install_channels_are_verified_by_code(channel_type: str) -> None:
+    assert not verification.requires_operator_approval(channel_type)
+
+
+def test_new_statuses_never_route() -> None:
+    for status in (
+        verification.STATUS_PENDING_OPERATOR,
+        verification.STATUS_SUPERSEDED,
+        verification.STATUS_REJECTED,
+    ):
+        assert status in verification.ALL_STATUSES
+        assert status not in verification.ROUTABLE_STATUSES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel_type", ["sms", "email"])
+async def test_a_code_on_a_send_only_channel_verifies_nothing(channel_type: str) -> None:
+    def _no_db() -> Any:
+        raise AssertionError("a send-only channel must not even look for a claim")
+
+    got = await verification.verify_from_inbound(
+        _no_db, channel_type, "+15550100", {"text": "AV-ABCD2345"}
+    )
+    assert got is None
+
+
+def test_pending_operator_instructions_say_awaiting_operator_approval() -> None:
+    issued = verification.IssuedMapping(
+        "m1", "sms", "+15550100", verification.STATUS_PENDING_OPERATOR, None, None
+    )
+    text = issued.to_response()["instructions"]
+    assert "awaiting operator approval" in text.lower()
+    assert "not routed" in text.lower()
+
+
+def test_verify_action_on_a_send_only_channel_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        verification,
+        "reissue_code",
+        AsyncMock(side_effect=verification.OperatorApprovalRequiredError("sms")),
+    )
+    app, _ = _app()
+    resp = TestClient(app).post("/channels/mappings/m1/verify")
+    assert resp.status_code == 409
+    assert "operator approval" in resp.json()["detail"].lower()
+
+
+@pytest.mark.parametrize(
+    "status", ["pending_operator_approval", "superseded", "rejected", "legacy_unverified"]
+)
+def test_list_accepts_the_new_status_filters(status: str) -> None:
+    app, _ = _app(db=None)
+    assert TestClient(app).get(f"/channels/mappings?status={status}").status_code == 200
+
+
+def _admin_client(monkeypatch: pytest.MonkeyPatch, key: str | None) -> TestClient:
+    from app.api.admin import router as admin_router
+
+    if key is None:
+        monkeypatch.delenv("PLATFORM_ADMIN_KEY", raising=False)
+    else:
+        monkeypatch.setenv("PLATFORM_ADMIN_KEY", key)
+    app = FastAPI()
+    app.include_router(admin_router)
+    app.state.system_db_session_factory = None
+    return TestClient(app)
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/admin/channel-mappings/review"),
+        ("post", "/admin/channel-mappings/m1/approve"),
+        ("post", "/admin/channel-mappings/m1/reject"),
+    ],
+)
+def test_operator_review_routes_require_the_admin_key(
+    monkeypatch: pytest.MonkeyPatch, method: str, path: str
+) -> None:
+    client = _admin_client(monkeypatch, "k" * 32)
+    assert getattr(client, method)(path).status_code == 401
+    assert getattr(client, method)(path, headers={"X-Admin-Key": "wrong"}).status_code == 401
+    unconfigured = _admin_client(monkeypatch, None)
+    assert getattr(unconfigured, method)(path, headers={"X-Admin-Key": "x"}).status_code == 503
+
+
+def test_operator_review_without_the_maintenance_db_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _admin_client(monkeypatch, "k" * 32)
+    headers = {"X-Admin-Key": "k" * 32}
+    assert client.get("/admin/channel-mappings/review", headers=headers).status_code == 503
+    assert client.post("/admin/channel-mappings/m1/approve", headers=headers).status_code == 503
+    assert client.post("/admin/channel-mappings/m1/reject", headers=headers).status_code == 503

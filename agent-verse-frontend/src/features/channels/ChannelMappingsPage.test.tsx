@@ -10,6 +10,7 @@ const MAPPINGS = [
   { id: 'm1', channel_type: 'slack', channel_id: 'T12345ABCD', status: 'verified', created_at: '2026-01-01T00:00:00Z' },
   { id: 'm2', channel_type: 'email', channel_id: 'support@company.com', status: 'legacy_unverified' },
   { id: 'm4', channel_type: 'discord', channel_id: 'G-777', status: 'pending_verification' },
+  { id: 'm5', channel_type: 'slack', channel_id: 'T-LEGACY', status: 'legacy_unverified' },
 ];
 
 const ISSUED = {
@@ -33,7 +34,7 @@ function mockFetch(opts: MockOpts = {}) {
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
     if (url.includes('/verify') && method === 'POST') {
-      return json({ ...ISSUED, id: 'm2', channel_type: 'email', status: 'legacy_unverified', verification_code: 'AV-WXYZ6789' });
+      return json({ ...ISSUED, id: 'm5', channel_type: 'slack', status: 'legacy_unverified', verification_code: 'AV-WXYZ6789' });
     }
     if (url.includes('/channels/mappings') && method === 'POST') return json(postBody, postStatus);
     if (url.includes('/channels/mappings')) {
@@ -84,10 +85,56 @@ describe('ChannelMappingsPage', () => {
 
     expect(within(slackRow).getByText(/^Verified$/)).toBeInTheDocument();
     expect(within(slackRow).queryByRole('button', { name: /Verify/i })).not.toBeInTheDocument();
-    expect(within(emailRow).getByText(/Unverified/i)).toBeInTheDocument();
-    expect(within(emailRow).getByRole('button', { name: /Verify/i })).toBeInTheDocument();
+    const legacySlackRow = screen.getByText('T-LEGACY').closest('[data-testid="channel-row"]') as HTMLElement;
+    expect(within(legacySlackRow).getByText(/Unverified/i)).toBeInTheDocument();
+    expect(within(legacySlackRow).getByRole('button', { name: /Verify/i })).toBeInTheDocument();
+    // A legacy email mapping cannot be verified by code: it is under operator review.
+    expect(within(emailRow).getByText(/Under operator review/i)).toBeInTheDocument();
+    expect(within(emailRow).queryByRole('button', { name: /Verify/i })).not.toBeInTheDocument();
     expect(within(discordRow).getByText(/Pending verification/i)).toBeInTheDocument();
     expect(within(discordRow).getByRole('button', { name: /Verify/i })).toBeInTheDocument();
+  });
+
+  // Owner decision: a code only proves someone can SEND to a number/address.
+  test('operator-approval, superseded and rejected mappings show their status and no Verify', async () => {
+    mockFetch({
+      mappings: [
+        { id: 'a', channel_type: 'sms', channel_id: '+15550100', status: 'pending_operator_approval' },
+        { id: 'b', channel_type: 'slack', channel_id: 'T-OLD', status: 'superseded' },
+        { id: 'c', channel_type: 'email', channel_id: 'x@victim.test', status: 'rejected' },
+      ],
+    });
+    renderPage();
+    const row = async (id: string) =>
+      (await screen.findByText(id)).closest('[data-testid="channel-row"]') as HTMLElement;
+    const sms = await row('+15550100');
+    expect(within(sms).getByText(/Awaiting operator approval/i)).toBeInTheDocument();
+    const old = await row('T-OLD');
+    expect(within(old).getByText(/Superseded/i)).toBeInTheDocument();
+    const rejected = await row('x@victim.test');
+    expect(within(rejected).getByText(/Rejected/i)).toBeInTheDocument();
+    for (const r of [sms, old, rejected]) {
+      expect(within(r).queryByRole('button', { name: /Verify/i })).not.toBeInTheDocument();
+    }
+  });
+
+  test('connecting an SMS number says it is awaiting operator approval (no code)', async () => {
+    mockFetch({
+      mappings: [],
+      postBody: {
+        id: 'm9', channel_type: 'sms', channel_id: '+15550100', status: 'pending_operator_approval',
+        verification_code: null, verification_expires_at: null,
+      },
+    });
+    renderPage();
+    await userEvent.click(screen.getByRole('button', { name: /Add Channel/i }));
+    await userEvent.selectOptions(screen.getByRole('combobox'), 'sms');
+    await userEvent.type(screen.getByPlaceholderText('+15551234567'), '+15550100');
+    await userEvent.click(screen.getByRole('button', { name: /Connect Channel/i }));
+    const panel = await screen.findByRole('region', { name: /Awaiting operator approval/i });
+    expect(within(panel).getByText(/only proves someone can send/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/not routed until/i)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: /Verify channel ownership/i })).not.toBeInTheDocument();
   });
 
   test('connecting a channel shows its one-time verification code', async () => {
@@ -104,13 +151,13 @@ describe('ChannelMappingsPage', () => {
   test('Verify on a legacy mapping requests a fresh code for that mapping', async () => {
     const spy = mockFetch();
     renderPage();
-    const emailRow = (await screen.findByText('support@company.com')).closest('[data-testid="channel-row"]') as HTMLElement;
-    await userEvent.click(within(emailRow).getByRole('button', { name: /Verify/i }));
+    const legacyRow = (await screen.findByText('T-LEGACY')).closest('[data-testid="channel-row"]') as HTMLElement;
+    await userEvent.click(within(legacyRow).getByRole('button', { name: /Verify/i }));
     const panel = await screen.findByRole('region', { name: /Verify channel ownership/i });
     expect(within(panel).getByText('AV-WXYZ6789')).toBeInTheDocument();
     expect(within(panel).getByText(/keeps routing/i)).toBeInTheDocument();
     expect(spy.mock.calls.some(([u, i]) =>
-      String(u).includes('/channels/mappings/m2/verify') && (i as RequestInit | undefined)?.method === 'POST',
+      String(u).includes('/channels/mappings/m5/verify') && (i as RequestInit | undefined)?.method === 'POST',
     )).toBe(true);
   });
 

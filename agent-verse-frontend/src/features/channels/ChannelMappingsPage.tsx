@@ -2,15 +2,40 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, ApiError } from '@/lib/api/client';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import { MessageSquare, Plus, CheckCircle, AlertCircle, Clock, ShieldCheck } from 'lucide-react';
+import { MessageSquare, Plus, CheckCircle, AlertCircle, Clock, ShieldCheck, Ban, History, UserCheck } from 'lucide-react';
 
 /**
  * TRG-03: a channel is claimed `pending_verification` and routes nothing until a
  * message on the channel itself carries the one-time code. Mappings created
  * before ownership proof existed are `legacy_unverified`: they keep routing
  * until verified.
+ *
+ * On channels anyone can send to (SMS number, email address, form, meeting,
+ * voice) a code only proves someone can SEND there, not own it: those claims are
+ * `pending_operator_approval` until a platform operator approves (`verified`) or
+ * rejects (`rejected`) them, and legacy ones are under operator review. A legacy
+ * mapping displaced by another organization's proof is kept as `superseded`.
  */
-type MappingStatus = 'pending_verification' | 'verified' | 'legacy_unverified';
+type MappingStatus =
+  | 'pending_verification'
+  | 'verified'
+  | 'legacy_unverified'
+  | 'pending_operator_approval'
+  | 'superseded'
+  | 'rejected';
+
+/** Mirrors backend OPERATOR_APPROVAL_CHANNELS (app/api/channels/verification.py). */
+const OPERATOR_APPROVAL_CHANNELS = new Set(['sms', 'email', 'form', 'meeting', 'voice']);
+
+function needsOperatorApproval(channelType: string): boolean {
+  return OPERATOR_APPROVAL_CHANNELS.has(channelType.toLowerCase());
+}
+
+/** Only a code-verifiable, not-yet-proven mapping offers "Verify". */
+function canRequestCode(m: ChannelMapping): boolean {
+  if (m.needs_remapping || needsOperatorApproval(m.channel_type)) return false;
+  return m.status === 'pending_verification' || m.status === 'legacy_unverified';
+}
 
 interface ChannelMapping {
   id: string;
@@ -61,6 +86,50 @@ function StatusBadge({ mapping }: { mapping: ChannelMapping }) {
       </span>
     );
   }
+  if (mapping.status === 'pending_operator_approval') {
+    return (
+      <span
+        className="flex items-center gap-1 text-xs text-muted-foreground"
+        title="A code only proves someone can send to this channel, so a platform operator reviews the claim. Inbound events are not routed until it is approved."
+      >
+        <UserCheck className="h-3.5 w-3.5" />
+        Awaiting operator approval
+      </span>
+    );
+  }
+  if (mapping.status === 'superseded') {
+    return (
+      <span
+        className="flex items-center gap-1 text-xs text-muted-foreground"
+        title="Another organization proved ownership of this channel. Kept for the record; it no longer routes."
+      >
+        <History className="h-3.5 w-3.5" />
+        Superseded
+      </span>
+    );
+  }
+  if (mapping.status === 'rejected') {
+    return (
+      <span
+        className="flex items-center gap-1 text-xs text-destructive"
+        title="A platform operator rejected this claim. Inbound events are not routed."
+      >
+        <Ban className="h-3.5 w-3.5" />
+        Rejected
+      </span>
+    );
+  }
+  if (mapping.status === 'legacy_unverified' && needsOperatorApproval(mapping.channel_type)) {
+    return (
+      <span
+        className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400"
+        title="Connected before ownership checks existed. It keeps routing while a platform operator reviews it."
+      >
+        <AlertCircle className="h-3.5 w-3.5" />
+        Under operator review
+      </span>
+    );
+  }
   if (mapping.status === 'pending_verification') {
     return (
       <span
@@ -90,6 +159,7 @@ function channelIdLabel(channelType: string): string {
   if (channelType === 'slack') return 'Workspace ID';
   if (channelType === 'email') return 'Email Address';
   if (channelType === 'teams') return 'Microsoft 365 tenant ID';
+  if (channelType === 'sms') return 'Phone Number';
   return 'Channel ID';
 }
 
@@ -97,6 +167,7 @@ function channelIdPlaceholder(channelType: string): string {
   if (channelType === 'slack') return 'T12345ABCD';
   if (channelType === 'email') return 'support@company.com';
   if (channelType === 'teams') return '00000000-0000-0000-0000-000000000000';
+  if (channelType === 'sms') return '+15551234567';
   return 'channel-id';
 }
 
@@ -116,6 +187,7 @@ export function ChannelMappingsPage() {
   const [channelType, setChannelType] = useState('slack');
   const [channelId, setChannelId] = useState('');
   const [issued, setIssued] = useState<IssuedMapping | null>(null);
+  const [awaitingOperator, setAwaitingOperator] = useState<IssuedMapping | null>(null);
 
   const { data: mappings = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['channel-mappings'],
@@ -133,6 +205,7 @@ export function ChannelMappingsPage() {
       setShowAdd(false);
       setChannelId('');
       setIssued(result?.verification_code ? result : null);
+      setAwaitingOperator(result?.status === 'pending_operator_approval' ? result : null);
     },
   });
 
@@ -182,7 +255,7 @@ export function ChannelMappingsPage() {
           </div>
           <p className="mt-2 text-muted-foreground">
             Send this code as a message on the channel itself (for example, post it where the
-            AgentVerse app is installed, or email/text it to the address or number):
+            AgentVerse app is installed):
           </p>
           <p className="mt-2 font-mono text-lg tracking-wider select-all">{issued.verification_code}</p>
           <p className="mt-2 text-xs text-muted-foreground">
@@ -192,6 +265,29 @@ export function ChannelMappingsPage() {
               : 'Inbound events are not routed until the channel is verified.'}
           </p>
           <button onClick={() => setIssued(null)} className="mt-3 text-xs underline">
+            Done
+          </button>
+        </section>
+      )}
+
+      {/* Send-only channel: a platform operator decides */}
+      {awaitingOperator && (
+        <section
+          aria-label="Awaiting operator approval"
+          className="rounded-xl border border-border bg-muted/40 p-4 text-sm"
+        >
+          <div className="flex items-center gap-2 font-medium">
+            <UserCheck className="h-4 w-4 text-primary" />
+            {awaitingOperator.channel_type} <span className="font-mono">{awaitingOperator.channel_id}</span> is awaiting operator approval
+          </div>
+          <p className="mt-2 text-muted-foreground">
+            A code sent to a phone number or email address only proves someone can send to it, not
+            that they own it, so a platform operator reviews this claim.
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Inbound events are not routed until it is approved.
+          </p>
+          <button onClick={() => setAwaitingOperator(null)} className="mt-3 text-xs underline">
             Done
           </button>
         </section>
@@ -241,7 +337,7 @@ export function ChannelMappingsPage() {
                 <div className="text-xs text-muted-foreground font-mono">{m.channel_id}</div>
               </div>
               <StatusBadge mapping={m} />
-              {!m.needs_remapping && m.status !== 'verified' && (
+              {canRequestCode(m) && (
                 <button
                   onClick={() => requestCode.mutate(m.id)}
                   disabled={requestCode.isPending}

@@ -10,6 +10,8 @@ Endpoints:
   POST /admin/tenants/{tenant_id}/keys/revoke — revoke API key
   GET  /admin/usage                   — aggregated platform usage (Postgres)
   GET  /admin/incidents               — 501: guardrail incidents are not persisted
+  GET  /admin/channel-mappings/review — sms/email claims awaiting operator approval
+  POST /admin/channel-mappings/{id}/approve|reject — operator decision (audited)
 """
 
 from __future__ import annotations
@@ -261,3 +263,78 @@ async def get_incidents(request: Request, limit: int = 50) -> dict[str, Any]:
             "serve. Per-goal guardrail blocks appear in each goal's event stream."
         ),
     )
+
+
+# ── Channel-mapping operator review (TRG-03 follow-up) ────────────────────────
+# A one-time code received on an SMS number / email address only proves someone
+# can SEND there, so tenants cannot self-verify those mappings: the claim waits
+# here for a platform operator. Legacy (pre-TRG-03) send-only mappings keep
+# routing and are listed for review too. Every decision is audited on the
+# mapping tenant's trail in the same transaction.
+
+
+class ChannelMappingDecision(BaseModel):
+    operator: str = ""  # who decided (recorded; the admin key itself is shared)
+    reason: str = ""
+
+
+def _mapping_review_db(request: Request) -> Any:
+    db = getattr(request.app.state, "system_db_session_factory", None)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Channel mapping review needs the database")
+    return db
+
+
+@router.get("/channel-mappings/review", dependencies=[Depends(_require_admin)])
+async def list_channel_mapping_review(request: Request) -> dict[str, Any]:
+    """Claims awaiting operator approval + legacy send-only mappings (cross-tenant)."""
+    from app.api.channels import verification
+
+    db = _mapping_review_db(request)
+    try:
+        mappings = await verification.list_operator_review(db)
+    except Exception as exc:
+        logger.error("admin_channel_review_failed", error=str(exc)[:200])
+        raise HTTPException(status_code=503, detail="Channel mapping review unavailable") from exc
+    return {"mappings": mappings, "total": len(mappings)}
+
+
+async def _decide_channel_mapping(
+    request: Request, mapping_id: str, body: ChannelMappingDecision | None, *, approve: bool
+) -> dict[str, Any]:
+    from app.api.channels import verification
+
+    db = _mapping_review_db(request)
+    decision = body or ChannelMappingDecision()
+    try:
+        issued = await verification.operator_decide(
+            db, mapping_id, approve=approve, operator=decision.operator, reason=decision.reason
+        )
+    except verification.MappingNotFoundError:
+        raise HTTPException(status_code=404, detail="Channel mapping not found") from None
+    except verification.NotReviewableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except verification.ChannelClaimedError:
+        raise HTTPException(
+            status_code=409, detail="Channel is already verified by another tenant"
+        ) from None
+    except Exception as exc:
+        logger.error("admin_channel_decision_failed", mapping_id=mapping_id, error=str(exc)[:200])
+        raise HTTPException(status_code=503, detail="Decision could not be saved") from exc
+    return issued.to_response()
+
+
+@router.post("/channel-mappings/{mapping_id}/approve", dependencies=[Depends(_require_admin)])
+async def approve_channel_mapping(
+    mapping_id: str, request: Request, body: ChannelMappingDecision | None = None
+) -> dict[str, Any]:
+    """Approve a claim (or a legacy send-only mapping): it becomes ``verified``."""
+    return await _decide_channel_mapping(request, mapping_id, body, approve=True)
+
+
+@router.post("/channel-mappings/{mapping_id}/reject", dependencies=[Depends(_require_admin)])
+async def reject_channel_mapping(
+    mapping_id: str, request: Request, body: ChannelMappingDecision | None = None
+) -> dict[str, Any]:
+    """Reject a claim (or a legacy send-only mapping): it becomes ``rejected``, no routing."""
+    return await _decide_channel_mapping(request, mapping_id, body, approve=False)
