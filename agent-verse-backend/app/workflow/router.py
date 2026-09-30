@@ -502,28 +502,8 @@ async def nl_trigger_preview(body: NLTriggerPreviewRequest, request: Request) ->
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{workflow_id}/versions", dependencies=_CAN_VIEW)
-async def list_versions(workflow_id: str, request: Request) -> Any:
-    svc = _svc(request)
-    tenant = _get_tenant(request)
-    return await svc.list_versions(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
-
-
-@router.post(
-    "/{workflow_id}/versions/{version}/restore",
-    response_model=WorkflowResponse,
-    dependencies=_CAN_EDIT,
-)
-async def restore_version(workflow_id: str, version: int, request: Request) -> Any:
-    svc = _svc(request)
-    tenant = _get_tenant(request)
-    try:
-        result = await svc.restore_version(
-            tenant_id=tenant.tenant_id, workflow_id=workflow_id, version=version
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return result
+# GET /{workflow_id}/versions and POST .../versions/{version}/restore are served
+# by router_versions.py (they used to be declared here too; one copy was dead).
 
 
 # ---------------------------------------------------------------------------
