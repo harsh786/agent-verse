@@ -842,7 +842,7 @@ async def _mark_sns_confirmed(store: Any, records: list[dict[str, Any]], caller:
 
 
 @router.post("/webhooks/{webhook_type}/{token}")
-async def receive_typed_webhook(webhook_type: str, token: str, request: Request) -> dict[str, Any]:
+async def receive_typed_webhook(webhook_type: str, token: str, request: Request) -> Any:
     """Unified typed webhook endpoint — routes GitHub, Stripe, Jira, etc."""
     body_bytes = await request.body()
     try:
@@ -940,6 +940,19 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             enriched = {**_sns.notification_payload(body), "webhook_type": webhook_type}
     sns_handshakes: list[dict[str, Any]] = []
 
+    # TRG-26: Salesforce outbound messages are SOAP XML (they parsed to {}) and
+    # are redelivered until acknowledged with a SOAP <Ack>true</Ack>.
+    from app.triggers.webhooks import salesforce as _sf
+
+    sf_message_id: str | None = None
+    if webhook_type == "salesforce" and _sf.looks_like_xml(body_bytes):
+        try:
+            sf_payload = _sf.parse_outbound_message(body_bytes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid outbound message: {exc}") from exc
+        enriched = {**sf_payload, "webhook_type": webhook_type}
+        sf_message_id = _sf.message_id(sf_payload) or None
+
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
     matched = 0
     failed = 0
@@ -1004,6 +1017,9 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                 await dispatcher.dispatch(
                     spec, enriched, caller, message_id=str(body.get("MessageId") or "")
                 )
+            elif sf_message_id:
+                # Salesforce redelivers the same notification ids until acked.
+                await dispatcher.dispatch(spec, enriched, caller, message_id=sf_message_id)
             else:
                 await dispatcher.dispatch(spec, enriched, caller)
         except Exception as exc:
@@ -1035,6 +1051,10 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         return {"status": "unsubscribe_acknowledged", "webhook_type": webhook_type}
     if failed == matched:
         raise HTTPException(status_code=503, detail="Webhook could not be dispatched; retry")
+    if webhook_type == "salesforce" and "notifications" in enriched:
+        from fastapi.responses import Response as _Response
+
+        return _Response(content=_sf.ACK_XML, media_type="text/xml")
     return {
         "status": "accepted",
         "webhook_type": webhook_type,
