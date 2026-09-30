@@ -435,9 +435,14 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function uploadErrorMessage(e: unknown): string {
-  if (e instanceof ApiError) return `Upload failed (${e.status}): ${e.message}`;
-  return `Upload failed: ${e instanceof Error ? e.message : String(e)}`;
+function uploadErrorMessage(e: unknown, filename?: string): string {
+  const prefix = filename ? `${filename}: ` : '';
+  if (e instanceof ApiError && e.status === 429) {
+    // Plan document quota or LLM budget: the server says which.
+    return `${prefix}not ingested, limit reached (${e.message}). Raise the plan limit or budget, or free up space.`;
+  }
+  if (e instanceof ApiError) return `${prefix}Upload failed (${e.status}): ${e.message}`;
+  return `${prefix}Upload failed: ${e instanceof Error ? e.message : String(e)}`;
 }
 
 // ── RPA URL Scraper ───────────────────────────────────────────────────────────
@@ -624,8 +629,8 @@ function IngestTab() {
       setQueuedFile(null);
       void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
     },
-    onError: (e) => {
-      const message = uploadErrorMessage(e);
+    onError: (e, file) => {
+      const message = uploadErrorMessage(e, file.name);
       setUploadError(message); // keep the queued file so Retry is one click
       toast({ kind: 'error', message });
     },

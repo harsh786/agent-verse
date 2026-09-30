@@ -405,23 +405,91 @@ def _embedder_unavailable_detail(request: Request | None) -> str:
     return "Embedding provider is unavailable"
 
 
+# Texts per embedding request: a whole upload used to go out as ONE request,
+# which a large file pushed past provider request limits.
+_EMBED_BATCH_SIZE = 64
+# Reserved against the tenant budget per embedding request — the same per-call
+# estimate the RAG cost guard reserves for a retrieval embedding.
+_EMBED_BATCH_COST_USD = 0.0001
+
+
+async def _charge_embedding_batch_or_http(
+    request: Request, *, operation_id: str, batch_index: int
+) -> None:
+    """Reserve one embedding request against the tenant's budget (429 when spent)."""
+    state = request.app.state
+    controller = getattr(state, "redis_cost_controller", None) or getattr(
+        state, "cost_controller", None
+    )
+    if controller is None:
+        return
+    tenant = _require_tenant(request)
+    try:
+        allowed = await controller.check_and_record(
+            goal_id=f"knowledge-ingest:{operation_id}",
+            cost_usd=_EMBED_BATCH_COST_USD,
+            tenant_ctx=tenant,
+            tool_name="knowledge_embedding",
+            attempt_id=f"knowledge-ingest:{operation_id}:{batch_index}",
+        )
+    except Exception as exc:
+        # Fail closed: an unknown budget must not let spend through.
+        raise HTTPException(
+            status_code=503, detail="Budget state could not be verified; embedding refused"
+        ) from exc
+    if not allowed:
+        raise HTTPException(status_code=429, detail="LLM budget exhausted for this tenant")
+
+
 async def _embed_texts_or_http(
     texts: list[str], embedder: Any, *, request: Request | None = None
 ) -> list[list[float]]:
+    """Embed ``texts`` in bounded batches, each charged to the tenant (with ``request``)."""
     if embedder is None:
         raise HTTPException(status_code=503, detail=_embedder_unavailable_detail(request))
     from app.providers.base import embed_texts
 
+    operation_id = _uuid.uuid4().hex
+    embeddings: list[list[float]] = []
+    for batch_index, start in enumerate(range(0, len(texts), _EMBED_BATCH_SIZE)):
+        batch = texts[start : start + _EMBED_BATCH_SIZE]
+        if request is not None:
+            await _charge_embedding_batch_or_http(
+                request, operation_id=operation_id, batch_index=batch_index
+            )
+        try:
+            vectors = await embed_texts(batch, provider=embedder)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Embedding provider is unavailable",
+            ) from exc
+        if len(vectors) != len(batch) or any(not vector for vector in vectors):
+            raise HTTPException(status_code=503, detail="Embedding provider is unavailable")
+        embeddings.extend(vectors)
+    return embeddings
+
+
+async def _enforce_doc_quota_or_http(request: Request, tenant: Any) -> None:
+    """The ingestion document quota connector syncs enforce (pipeline Stage 1).
+
+    Direct ingestion routes skipped it, so a tenant past its plan's document
+    limit could keep uploading. 429 at the limit; an unverifiable quota is a
+    503 (fail closed). No-op until the DB-backed enforcer is wired.
+    """
+    enforcer = getattr(request.app.state, "ingestion_quota", None)
+    if enforcer is None:
+        return
+    from app.ingestion.quota import IngestionQuotaExceededError, call_quota_check
+
     try:
-        embeddings = await embed_texts(texts, provider=embedder)
+        await call_quota_check(enforcer, tenant.tenant_id)
+    except IngestionQuotaExceededError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(
-            status_code=503,
-            detail="Embedding provider is unavailable",
+            status_code=503, detail="Ingestion quota could not be verified; ingestion refused"
         ) from exc
-    if len(embeddings) != len(texts) or any(not embedding for embedding in embeddings):
-        raise HTTPException(status_code=503, detail="Embedding provider is unavailable")
-    return embeddings
 
 
 async def _screen_or_http(
@@ -613,6 +681,7 @@ async def delete_collection(request: Request, collection_id: str) -> None:
 @router.post("/ingest", status_code=status.HTTP_201_CREATED)
 async def ingest_document(request: Request, body: IngestRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
+    await _enforce_doc_quota_or_http(request, tenant_ctx)
     store = _knowledge_store(request)
     # Empty/whitespace content used to answer 201 with chunks_created 0 (and
     # "deduplicated": true) — a success that indexed nothing.
@@ -885,6 +954,8 @@ async def ingest_file(
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
+
+    await _enforce_doc_quota_or_http(request, tenant)
 
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded_file"
@@ -1495,6 +1566,7 @@ async def _ingest_repo_background(
 async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[str, Any]:
     """Ingest an OpenAPI spec — creates a chunk per endpoint."""
     tenant = _require_tenant(request)
+    await _enforce_doc_quota_or_http(request, tenant)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
@@ -1684,6 +1756,7 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
 async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str, Any]:
     """Ingest content from a URL (web page, GitHub file, Confluence page, etc.)."""
     tenant_ctx = _require_tenant(request)
+    await _enforce_doc_quota_or_http(request, tenant_ctx)
     store = _knowledge_store(request)
 
     content, metadata = await _fetch_url_content(body.url, body.source_type)

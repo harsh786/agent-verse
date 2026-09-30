@@ -873,6 +873,18 @@ describe('KnowledgePage – Ingest tab file queue', () => {
     expect(screen.queryByTestId('queued-file')).not.toBeInTheDocument();
   });
 
+  test('a 429 names the file and says the quota / budget limit was reached', async () => {
+    mockFetchWithUpload(() => jsonResponse({ detail: "document quota exceeded for plan 'free': 1000/1000" }, 429));
+    await openIngest();
+    await selectCollection();
+    await userEvent.upload(fileInput(), new File(['hello'], 'notes.txt', { type: 'text/plain' }));
+    await userEvent.click(ingestButton());
+    const alert = await screen.findByTestId('ingest-error');
+    expect(alert).toHaveTextContent(/notes\.txt: not ingested, limit reached/i);
+    expect(alert).toHaveTextContent("document quota exceeded for plan 'free': 1000/1000");
+    expect(screen.getByTestId('queued-file')).toHaveTextContent('notes.txt');
+  });
+
   test('shows the server message for a 415 (e.g. legacy .ppt dropped)', async () => {
     mockFetchWithUpload(() => jsonResponse({ detail: 'Legacy .ppt is not supported; convert to .pptx' }, 415));
     await openIngest();
