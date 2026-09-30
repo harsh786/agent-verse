@@ -432,7 +432,11 @@ async def _submit_goal_unguarded(
             )
             result = await supervisor.run(goal=body.goal, tenant_ctx=tenant)
         except Exception as exc:
-            raise HTTPException(500, f"Supervisor execution failed: {exc}") from exc
+            # Log the detail; never echo exception text (DSNs, hosts, internals).
+            _logger.warning(
+                "supervisor_mode_failed", error_type=type(exc).__name__, error=str(exc)[:300]
+            )
+            raise HTTPException(500, "Supervisor execution failed") from exc
         if not isinstance(result, dict) and len(result.tasks) <= 1:
             # The goal did not decompose into several sub-tasks, so the supervisor
             # ran nothing (it used to answer success=False with no goal at all).

@@ -139,3 +139,20 @@ def test_unreadable_byok_store_is_a_503() -> None:
         resp = _post(_app(_Store(error=LLMConfigReadError("db down")), MagicMock()), "supervisor")
     assert resp.status_code == 503, resp.text
     ran.assert_not_called()
+
+
+def test_supervisor_failure_does_not_echo_the_exception_text() -> None:
+    """CORE-07 (partial): the 500 used to carry str(exc) — internal detail."""
+
+    class _Boom:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, goal: str, tenant_ctx: Any) -> Any:
+            raise RuntimeError("secret-internal-dsn postgresql://user:pw@db/x")
+
+    with patch("app.agent.supervisor.SupervisorAgent", _Boom):
+        resp = _post(_app(_Store(cfg=None), MagicMock()), "supervisor")
+    assert resp.status_code == 500
+    assert "secret-internal-dsn" not in resp.text
+    assert "postgresql://" not in resp.text
