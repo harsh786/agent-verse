@@ -330,6 +330,11 @@ def _raise_retrieval_http_error(exc: Exception) -> None:
     from app.rag.engine import RetrievalStrategyExecutionError
 
     if isinstance(exc, RetrievalStrategyExecutionError):
+        if str(getattr(exc, "reason", "")).startswith("budget_exhausted"):
+            # The tenant's LLM budget is spent: a client-actionable limit, not
+            # an outage.
+            detail = "LLM budget exhausted for this tenant"
+            raise HTTPException(status_code=429, detail=detail) from exc
         # The strategy's own reason ("web_augmented (backend_outage)") tells the
         # caller what to fix; it carries no internal detail. It used to collapse
         # into a bare "Retrieval service is unavailable".
@@ -2164,29 +2169,34 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
         ]
         if not canonical_citations:
             raise HTTPException(status_code=404, detail="No relevant knowledge found")
-        answer = await RAGRetriever(gateway=_retrieval_gateway(request)).synthesize(
+        from app.rag.gateway import post_retrieval_budget
+
+        # Synthesis + per-claim entailment are charged to the tenant and bounded
+        # (timeout + breaker) — they used to call the raw provider.
+        budget = post_retrieval_budget(_retrieval_gateway(request), tenant_ctx, resolved_strategy)
+        retriever = RAGRetriever(gateway=_retrieval_gateway(request))
+        answer = await retriever.synthesize(
             query=body.question,
             tenant_ctx=tenant_ctx,
             strategy=resolved_strategy,
             citations=canonical_citations,
             max_context_chars=body.max_context_chars,
+            budget_context=budget,
         )
-        retriever = RAGRetriever(gateway=_retrieval_gateway(request))
-        verified = await retriever.verify_result(
-            RAGExecutionResult(
-                requested_strategy_id=body.strategy,
-                resolved_strategy_id=resolved_strategy,
-                citations=canonical_citations,
-                retrieval_legs=[
-                    leg for result in results for leg in list(result.get("retrieval_legs", []))
-                ],
-                strategy_trace=[
-                    trace for result in results for trace in list(result.get("strategy_trace", []))
-                ],
-                answer=answer,
-            ),
-            tenant_ctx=tenant_ctx,
+        to_verify = RAGExecutionResult(
+            requested_strategy_id=body.strategy,
+            resolved_strategy_id=resolved_strategy,
+            citations=canonical_citations,
+            retrieval_legs=[
+                leg for result in results for leg in list(result.get("retrieval_legs", []))
+            ],
+            strategy_trace=[
+                trace for result in results for trace in list(result.get("strategy_trace", []))
+            ],
+            answer=answer,
         )
+        to_verify._budget_context = budget
+        verified = await retriever.verify_result(to_verify, tenant_ctx=tenant_ctx)
         if not verified.grounded:
             from app.observability.logging import get_logger as _get_logger
 

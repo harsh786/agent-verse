@@ -521,6 +521,33 @@ describe('KnowledgePage – Ask AI tab (extended)', () => {
     );
   });
 
+  test.each([
+    [429, { detail: 'LLM budget exhausted for this tenant' }, /budget is exhausted/i],
+    [503, { detail: 'Answer synthesis is unavailable' }, /unavailable or timed out/i],
+    [504, { detail: 'Gateway Timeout' }, /unavailable or timed out/i],
+  ])('a %s from /knowledge/chat shows a specific message', async (status, body, expected) => {
+    useToastStore.setState({ toasts: [] });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/knowledge/collections'))
+        return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/knowledge/chat') && method === 'POST')
+        return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-ask'));
+    await userEvent.type(screen.getByTestId('ask-input'), 'a question');
+    await userEvent.click(screen.getByTestId('ask-btn'));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error' && expected.test(t.message))).toBe(true),
+    );
+    // One clear message, not an extra generic "Server error" toast.
+    expect(useToastStore.getState().toasts.some((t) => /^Server error/.test(t.message))).toBe(false);
+  });
+
   test('shows an error toast when asking fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);

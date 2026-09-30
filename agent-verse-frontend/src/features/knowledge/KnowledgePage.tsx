@@ -294,6 +294,20 @@ function AnswerWithCitations({ answer, citations }: { answer: string; citations:
   );
 }
 
+/** A clear message for a failed Ask, instead of the generic error toast. */
+function askErrorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    if (e.status === 429) {
+      return 'Your LLM budget is exhausted, so no answer was generated. Raise the budget or try again later.';
+    }
+    if (e.status === 503 || e.status === 504) {
+      return 'The answer model is unavailable or timed out. Try again in a moment.';
+    }
+    return e.message || `Ask failed (${e.status})`;
+  }
+  return String(e);
+}
+
 function AskAITab() {
   const [question, setQuestion] = useState('');
   const [history, setHistory] = useState<Array<{ q: string; a: RagAnswer }>>([]);
@@ -306,16 +320,17 @@ function AskAITab() {
   });
 
   const askMutation = useMutation({
+    // 503/504 get a specific message below, not the generic "Server error" toast.
     mutationFn: (q: string) => apiFetch<RagAnswer>('/knowledge/chat', {
       method: 'POST',
       body: JSON.stringify({ question: q, collection_ids: selectedCollections, top_k: 5 }),
-    }),
+    }, { silenceServerErrorToast: true }),
     onSuccess: (r, q) => {
       setHistory((h) => [{ q, a: r }, ...h.slice(0, 4)]);
       setQuestion('');
       setTimeout(() => answerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
     },
-    onError: (e) => toast({ kind: 'error', message: String(e) }),
+    onError: (e) => toast({ kind: 'error', message: askErrorMessage(e) }),
   });
 
   // Always the real RAG endpoint (POST /knowledge/chat, scoped by

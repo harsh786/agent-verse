@@ -223,6 +223,33 @@ class _RAGCostGuard:
         ]
 
 
+def post_retrieval_budget(
+    gateway: Any,
+    tenant_context: TenantContext,
+    strategy: RAGStrategy,
+    *,
+    execution_id: str = "",
+) -> _RAGCostGuard:
+    """A RAG cost guard for LLM work a caller does *after* retrieval.
+
+    ``RAGRetriever.retrieve`` reuses the guard of the gateway execution it ran;
+    a route that fans retrieval out itself (``/knowledge/chat`` over
+    ``federated_search``) has no such guard, so its answer synthesis and
+    citation verification used the raw provider — never charged to the tenant,
+    no timeout, no breaker. Providers wrapped by this guard reserve every call
+    against the tenant budget (the gateway's cost controller) and run through
+    ``complete_decision`` with the generation timeout and per-model breaker.
+    """
+    dependencies = getattr(gateway, "dependencies", None)
+    return _RAGCostGuard(
+        getattr(dependencies, "cost_controller", None),
+        execution_id=execution_id or f"rag-{uuid.uuid4().hex}",
+        invocation_id=uuid.uuid4().hex,
+        tenant_context=tenant_context,
+        strategy=strategy,
+    )
+
+
 # Process-wide exact-text embedding cache: short-circuits re-embedding identical
 # query/chunk text (a win SemanticCache can't give — it needs an embedding to look
 # up). Best-effort L1; keyed by (model, whitespace-normalized text).

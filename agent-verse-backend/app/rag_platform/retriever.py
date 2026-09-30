@@ -52,6 +52,11 @@ class MinimalCitationVerifier:
         r"(?:\s*(?:,\s*)?\[(?:\d+(?:\s*,\s*\d+)*)\])*"
     )
 
+    # One provider call per claim: an answer with hundreds of cited sentences
+    # would fan out into hundreds of paid calls. Claims past the cap are never
+    # checked, so the answer is reported ungrounded rather than verified.
+    MAX_ENTAILMENT_CALLS = 24
+
     def __init__(self, *, provider: Any = None, model: str = "") -> None:
         self.provider = provider
         self.model = model.strip()
@@ -164,6 +169,7 @@ class MinimalCitationVerifier:
         unsupported: list[str] = []
         reasons: list[str] = []
         checked = 0
+        entailment_calls = 0
         for claim, references in self._atomic_claims(answer):
             claim_normalized = self._normalize(claim)
             if not claim_normalized:
@@ -179,6 +185,11 @@ class MinimalCitationVerifier:
             evidence_normalized = self._normalize(evidence)
             if claim_normalized == evidence_normalized:
                 continue
+            if entailment_calls >= self.MAX_ENTAILMENT_CALLS:
+                unsupported.append(claim)
+                reasons.append("verification_limit_exceeded")
+                continue
+            entailment_calls += 1
             entailment = await self._provider_entails(claim, evidence)
             if not entailment.grounded:
                 unsupported.extend(entailment.unsupported_claims)
@@ -192,6 +203,8 @@ class MinimalCitationVerifier:
             if "invalid_citation" in reasons
             else "verifier_failure"
             if "verifier_failure" in reasons
+            else "verification_limit_exceeded"
+            if "verification_limit_exceeded" in reasons
             else "unsupported"
         )
         return CitationVerification(
