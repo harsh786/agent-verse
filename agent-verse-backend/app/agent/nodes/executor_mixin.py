@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import dataclasses
 import hashlib
 import inspect
 import json
@@ -114,6 +116,111 @@ _DEDUP_NON_RESULT_PREFIXES = (
     "Action blocked",
     "[Bulkhead",
 )
+
+
+# Outputs that record a refusal (a gate said no) rather than a result. A refused
+# step must never populate the semantic cache, or the refusal — or worse, a
+# partial answer assembled around it — would be replayed to later runs.
+_REFUSAL_MARKERS = (
+    "tool call denied",
+    "denied as destructive",
+    "denied by governance",
+    "denied by agent permission",
+    "requires approval",
+    "requires human approval",
+    "was not executed",
+    "[denied:",
+    "[rejected:",
+)
+
+
+def _is_step_refusal(output: str | None) -> bool:
+    """True when *output* is a governance refusal/skip, not a step result."""
+    text = (output or "").strip()
+    if text.startswith(_DEDUP_NON_RESULT_PREFIXES):
+        return True
+    lowered = text.lower()
+    return any(marker in lowered for marker in _REFUSAL_MARKERS)
+
+
+# ── Governed semantic step cache ────────────────────────────────────────────
+# A step's cached answer is reused only from INSIDE the governed pipeline, after
+# every step-level gate (guardrails, action safety, permission matrix, policy,
+# HITL) has passed. Each entry is an envelope naming the agent and the tools
+# that produced it, so a hit is re-authorised against the tool-level gates
+# (per-agent permissions, grants, policy, risk class) before it is served.
+# Entries without a valid envelope (legacy or foreign writers) are never served.
+_STEP_CACHE_MARKER = "_agentverse_step_cache"
+_STEP_CACHE_VERSION = 1
+
+
+@dataclasses.dataclass
+class _StepCacheScope:
+    """Per-step cache bookkeeping, carried through the pipeline in a contextvar
+    (parallel wave steps each run in their own task, so each gets its own)."""
+
+    prefetched: str | None = None
+    embedding: list[float] | None = None
+    tools: dict[str, str] = dataclasses.field(default_factory=dict)  # name -> server
+    uncacheable: bool = False
+    served: bool = False
+
+
+_STEP_CACHE_SCOPE: contextvars.ContextVar[_StepCacheScope | None] = contextvars.ContextVar(
+    "agentverse_step_cache_scope", default=None
+)
+
+
+def _taint_step_cache() -> None:
+    """Mark the current step's result as never cacheable (a gate refused or a
+    side-effecting path ran)."""
+    scope = _STEP_CACHE_SCOPE.get()
+    if scope is not None:
+        scope.uncacheable = True
+
+
+def _note_step_tool(name: str, server_name: str = "") -> None:
+    """Record a tool the current step dispatched. Only read-only tools keep the
+    step cacheable: replaying a write from cache would report an action that
+    never happened."""
+    scope = _STEP_CACHE_SCOPE.get()
+    if scope is None:
+        return
+    scope.tools[name] = server_name or ""
+    if classify_tool_risk(name, server_name or "") != "read":
+        scope.uncacheable = True
+
+
+def _wrap_step_cache_entry(output: str, agent_id: str, tools: dict[str, str]) -> str:
+    return json.dumps(
+        {
+            _STEP_CACHE_MARKER: _STEP_CACHE_VERSION,
+            "agent_id": agent_id,
+            "tools": [{"name": n, "server": s} for n, s in sorted(tools.items())],
+            "output": output,
+        }
+    )
+
+
+def _unwrap_step_cache_entry(raw: str | None) -> tuple[str, str, dict[str, str]] | None:
+    """Return ``(output, agent_id, tools)`` for a valid envelope, else None."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get(_STEP_CACHE_MARKER) != _STEP_CACHE_VERSION:
+        return None
+    output, agent_id, tools = data.get("output"), data.get("agent_id"), data.get("tools")
+    if not isinstance(output, str) or not isinstance(agent_id, str) or not isinstance(tools, list):
+        return None
+    parsed: dict[str, str] = {}
+    for tool in tools:
+        if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+            return None
+        parsed[tool["name"]] = str(tool.get("server") or "")
+    return output, agent_id, parsed
 
 
 def _log_background_failure(task: Any) -> None:
@@ -491,10 +598,13 @@ class ExecutorMixin:
 
         # ── Batch cache prefetch ────────────────────────────────────────────
         # Embed ALL plan step descriptions at once (single embedding API call)
-        # then batch-check the cache. This way, before the first wave executes,
-        # we already know which steps have cache hits — saving per-step embedding
-        # latency during the hot path.
-        _batch_cache_results: dict[str, str] = {}  # step_desc → cached_response
+        # then batch-check the cache, so the per-step path needs no embedding
+        # call. A prefetched entry is only a CANDIDATE: it is handed to the
+        # governed pipeline, which serves it only after every approval,
+        # permission, policy and guardrail gate passed for that step (it used
+        # to be returned here, before any gate ran).
+        _batch_cache_results: dict[str, str] = {}  # step_desc → raw cache entry
+        _batch_embeddings: dict[str, list[float]] = {}  # step_desc → embedding
         if self._semantic_cache is not None and self._embedder is not None:
             try:
                 from app.providers.base import EmbedRequest as _EmbedReq
@@ -503,6 +613,9 @@ class ExecutorMixin:
                 if _all_descs:
                     _batch_resp = await self._embedder.embed(_EmbedReq(texts=_all_descs))
                     _batch_embs = _batch_resp.embeddings or []
+                    for desc, emb in zip(_all_descs, _batch_embs, strict=False):
+                        if emb:
+                            _batch_embeddings.setdefault(desc, emb)
                     if _batch_embs and hasattr(self._semantic_cache, "get_batch"):
                         _batch_hits = await self._semantic_cache.get_batch(
                             embeddings=_batch_embs,
@@ -510,19 +623,13 @@ class ExecutorMixin:
                         )
                         for desc, hit in zip(_all_descs, _batch_hits, strict=False):
                             if hit is not None:
-                                # Skip cached empty/error/approval/reasoning results so
-                                # they are never served on fresh runs — forces a real
-                                # tool call. Same filter as the write path (defect: read
-                                # was weaker, so a stale "requires approval"/error could
-                                # be served as a fake success).
                                 cached_resp = hit.response if hasattr(hit, "response") else str(hit)
-                                if not _is_uncacheable_output(cached_resp):
-                                    _batch_cache_results[desc] = cached_resp
+                                _batch_cache_results.setdefault(desc, cached_resp)
                         if _batch_cache_results:
                             self._logger.info(
                                 "batch_cache_prefetch",
                                 total=len(_all_descs),
-                                hits=len(_batch_cache_results),
+                                candidates=len(_batch_cache_results),
                             )
             except Exception as _bp_exc:
                 self._logger.debug("batch_cache_prefetch_skipped", error=str(_bp_exc)[:80])
@@ -577,19 +684,13 @@ class ExecutorMixin:
                             output = await self._execute_step_with_loop(
                                 struct_step, agent_state, tenant_ctx
                             )
-                        elif step_desc in _batch_cache_results:
-                            # Batch prefetch hit — serve from pre-fetched cache result
-                            output = _batch_cache_results[step_desc]
-                            await self._emit(
-                                {
-                                    "type": "cache_hit",
-                                    "step": step_desc,
-                                    "source": "batch_prefetch",
-                                }
-                            )
                         elif self._semantic_cache is not None:
                             output = await self._execute_step_with_cache(
-                                step_desc, agent_state, tenant_ctx
+                                step_desc,
+                                agent_state,
+                                tenant_ctx,
+                                prefetched=_batch_cache_results.get(step_desc),
+                                prefetched_embedding=_batch_embeddings.get(step_desc),
                             )
                         else:
                             output = await self._execute_step(step_desc, agent_state, tenant_ctx)
@@ -695,7 +796,13 @@ class ExecutorMixin:
                 async def _run_wave_step(desc: str, sr: StepResult) -> None:
                     try:
                         if self._semantic_cache is not None:
-                            out = await self._execute_step_with_cache(desc, agent_state, tenant_ctx)
+                            out = await self._execute_step_with_cache(
+                                desc,
+                                agent_state,
+                                tenant_ctx,
+                                prefetched=_batch_cache_results.get(desc),
+                                prefetched_embedding=_batch_embeddings.get(desc),
+                            )
                         else:
                             out = await self._execute_step(desc, agent_state, tenant_ctx)
                         async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
@@ -1285,6 +1392,14 @@ class ExecutorMixin:
             await self._emit({"type": "dedup_hit", "step": step})
             return _cached_dup
 
+        # 8-pre-b. Semantic cache — likewise only AFTER every step-level gate, and
+        # re-authorised against the tool-level gates of the tools behind the hit.
+        _cached_answer = await self._serve_governed_cache_hit(
+            step, state, tenant_ctx, step_approved=_step_approved
+        )
+        if _cached_answer is not None:
+            return _cached_answer
+
         # 8. Execute via LLM executor
         recent_outputs = "\n".join(
             (s.output or "")[:_EXECUTOR_CONTEXT_MAX_LENGTH] for s in state.steps[-3:] if s.output
@@ -1835,6 +1950,7 @@ class ExecutorMixin:
             _tn_rejection = _validate_tn(tool_call.tool, _allowed_tools_set)
             if _tn_rejection:
                 raw_output = _tn_rejection
+                _taint_step_cache()
                 raw_output_sanitized = True
                 await self._emit(
                     {
@@ -1974,6 +2090,7 @@ class ExecutorMixin:
                     elif _grant_decision.grant_id:
                         state.context["_authorizing_grant_id"] = _grant_decision.grant_id
                 if _perm_denial is not None:
+                    _taint_step_cache()
                     await self._emit(
                         {
                             "type": "tool_call_blocked_by_agent_permission",
@@ -1989,6 +2106,7 @@ class ExecutorMixin:
                     )
                     raw_output_sanitized = True
                 elif _grant_denial is not None:
+                    _taint_step_cache()
                     # The tool is NOT run. The refusal used to raise and fail the
                     # whole goal — a real model that reached for an ungranted tool
                     # (with the answer already in its retrieved context) killed an
@@ -2009,6 +2127,7 @@ class ExecutorMixin:
                     )
                     raw_output_sanitized = True
                 elif tool_ref is None:
+                    _taint_step_cache()
                     # Tracks whether the civilization spawn branch already handled
                     # this call, so the RPA / "tool not found" fallthrough below
                     # does not clobber its result with a spurious failure.
@@ -2309,6 +2428,7 @@ class ExecutorMixin:
                     tool_risk = _effective_risk
                     # else: falls through to write_high HITL gate below (default-secure)
                     if tool_risk == "destructive":
+                        _taint_step_cache()
                         error = self._sanitize_tool_raw_output(
                             f"Tool '{tool_ref.name}' denied as destructive."
                         )
@@ -2330,6 +2450,7 @@ class ExecutorMixin:
                         raw_output_sanitized = True
                     elif tool_risk == "write_high":
                         if self._hitl_gateway is None or self._autonomy_mode != "supervised":
+                            _taint_step_cache()
                             # Nobody will decide an approval here (no gateway, or a
                             # non-supervised run), so the tool is not dispatched and
                             # no approval request is filed — one used to be filed
@@ -2404,6 +2525,7 @@ class ExecutorMixin:
                                 )
                             # APPROVED: now actually dispatch the tool call
                             await self._emit({"type": "approval_granted", "request_id": req_id})
+                            _note_step_tool(tool_ref.name, tool_ref.server_name)
                             _approved_result = await self._mcp_client.call_tool(
                                 server_id=tool_ref.server_id,
                                 tool_name=tool_ref.name,
@@ -2517,6 +2639,7 @@ class ExecutorMixin:
                                             "tool.name",
                                             tool_call.tool if hasattr(tool_call, "tool") else "",
                                         )
+                                        _note_step_tool(tool_ref.name, tool_ref.server_name)
                                         result = await self._mcp_client.call_tool(
                                             server_id=tool_ref.server_id,
                                             tool_name=tool_ref.name,
@@ -3065,6 +3188,10 @@ class ExecutorMixin:
                 args = {}
             if not name:
                 return None
+            # These extra calls are not re-checked against per-agent permissions
+            # or grants the way the primary call is, so a step that used them is
+            # never cached (a cache hit could not re-authorise them faithfully).
+            _taint_step_cache()
             if _validate_tn(name, allowed_tools_set):
                 return (name, f"[rejected: unknown tool '{name}']")
             tool_ref = _tc_ctx.find_tool(name) if _tc_ctx is not None else None
@@ -3091,6 +3218,7 @@ class ExecutorMixin:
                 return (tool_ref.name, f"[argument validation failed: {'; '.join(_arg_errors)}]")
             _t0 = time.monotonic()
             try:
+                _note_step_tool(tool_ref.name, tool_ref.server_name)
                 result = await self._mcp_client.call_tool(
                     server_id=tool_ref.server_id,
                     tool_name=tool_ref.name,
@@ -3148,72 +3276,176 @@ class ExecutorMixin:
         return [r for r in results if isinstance(r, tuple)]
 
     async def _execute_step_with_cache(
-        self, step: str, state: AgentState, tenant_ctx: TenantContext
+        self,
+        step: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        *,
+        prefetched: str | None = None,
+        prefetched_embedding: list[float] | None = None,
     ) -> str:
+        """Execute a step through the governed pipeline with the semantic cache.
+
+        The cache is consulted INSIDE ``_execute_step_pipeline``, after every
+        step-level gate (guardrails, action safety, permission matrix, policy
+        engine, HITL approval) — a cached answer can never let a step skip
+        governance. A hit is further re-authorised against the tool-level gates
+        for the tools that produced it (see ``_serve_governed_cache_hit``).
+
+        After a real execution the result is stored — tenant-scoped, wrapped in
+        an envelope naming the agent and its tools — only when no gate refused
+        anything, no human approval was involved, every tool it dispatched was
+        read-only, and the output is a real result (not an error, refusal,
+        approval placeholder, empty collection or reasoning text).
         """
-        Execute a step using the world-class semantic cache.
+        scope = _StepCacheScope(prefetched=prefetched, embedding=prefetched_embedding)
+        token = _STEP_CACHE_SCOPE.set(scope)
+        try:
+            raw_output = await self._execute_step(step, state, tenant_ctx)
+        finally:
+            _STEP_CACHE_SCOPE.reset(token)
 
-        True cosine-similarity matching (threshold 0.92) means paraphrases like
-        "Search GitHub for open issues" and "Find open GitHub issues" both hit
-        the same cache entry — no more exact-match-only limitation.
-
-        Flow:
-          1. Embed the step description (single API call, ~50ms)
-          2. L1 lookup: in-process LRU (sub-millisecond, no network)
-          3. L2 lookup: Redis vector scan (cosine similarity, ~5ms)
-          4. Cache MISS → execute step fully → store result in L1+L2
-        """
-        _cache_embedding: list[float] | None = None
-        if self._semantic_cache is not None and self._embedder is not None:
-            try:
-                from app.providers.base import EmbedRequest
-
-                _cache_embed_resp = await self._embedder.embed(EmbedRequest(texts=[step]))
-                _cache_embedding = (
-                    _cache_embed_resp.embeddings[0] if _cache_embed_resp.embeddings else None
-                )
-                if _cache_embedding:
-                    # Use the new true-similarity API
-                    hit = await self._semantic_cache.get_similar(
-                        embedding=_cache_embedding,
-                        tenant_id=tenant_ctx.tenant_id,
-                    )
-                    # Only serve non-empty, non-error responses from cache.
-                    # Same rejection rules as the write path (approval placeholders,
-                    # errors, empty collections, reasoning text) so a poisoned entry
-                    # can never be served as a fake success.
-                    if hit is not None and not _is_uncacheable_output(hit.response):
-                        await self._emit(
-                            {
-                                "type": "cache_hit",
-                                "step": step,
-                                "similarity": round(hit.similarity, 4),
-                                "source": hit.source,
-                                "latency_ms": round(hit.latency_ms, 1),
-                            }
-                        )
-                        return hit.response
-            except Exception as _ce:
-                _cache_embedding = None
-                self._logger.debug("cache_embed_failed", error=str(_ce)[:80])
-
-        raw_output = await self._execute_step(step, state, tenant_ctx)
-
-        # Store result — but never cache error responses, approval placeholders,
-        # empty collections, or plain LLM reasoning text ("I'll call…"), so bad
-        # outputs never poison the cache and get served as a fake success on a
-        # future run. Single source of truth, applied symmetrically on read too.
         if (
             self._semantic_cache is not None
-            and _cache_embedding is not None
+            and not scope.served
+            and not scope.uncacheable
+            and scope.embedding
+            and tenant_ctx.tenant_id
             and not _is_uncacheable_output(raw_output)
+            and not _is_step_refusal(raw_output)
         ):
             with contextlib.suppress(Exception):  # write failures must never block execution
                 await self._semantic_cache.store_async(
-                    embedding=_cache_embedding,
+                    embedding=scope.embedding,
                     query=step,
-                    response=raw_output,
+                    response=_wrap_step_cache_entry(
+                        raw_output, getattr(self, "_agent_id", None) or "", scope.tools
+                    ),
                     tenant_id=tenant_ctx.tenant_id,
                 )
 
         return raw_output
+
+    async def _serve_governed_cache_hit(
+        self,
+        step: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        *,
+        step_approved: bool,
+    ) -> str | None:
+        """Return a cached answer for *step*, or None to execute it for real.
+
+        Called from the pipeline only after every step-level gate passed. A step
+        that needed a human approval, or that is high-risk, is never served (nor
+        stored): its approval covers this execution, and its effects must
+        happen. A hit must be this tenant's (the cache is tenant-namespaced) and
+        this agent's, and every tool that produced it must still be authorised.
+        Anything uncertain is a miss — the real pipeline then enforces.
+        """
+        scope = _STEP_CACHE_SCOPE.get()
+        if scope is None or self._semantic_cache is None:
+            return None
+        if step_approved or _is_high_risk_step(step) or not tenant_ctx.tenant_id:
+            scope.uncacheable = True
+            return None
+        raw = scope.prefetched
+        similarity: float | None = None
+        source = "batch_prefetch"
+        try:
+            if raw is None and self._embedder is not None:
+                if scope.embedding is None:
+                    from app.providers.base import EmbedRequest
+
+                    resp = await self._embedder.embed(EmbedRequest(texts=[step]))
+                    scope.embedding = resp.embeddings[0] if resp.embeddings else None
+                if scope.embedding:
+                    hit = await self._semantic_cache.get_similar(
+                        embedding=scope.embedding, tenant_id=tenant_ctx.tenant_id
+                    )
+                    if hit is not None:
+                        raw = hit.response
+                        similarity = hit.similarity
+                        source = hit.source
+        except Exception as exc:
+            self._logger.debug("cache_lookup_failed", error=str(exc)[:80])
+            return None
+        entry = _unwrap_step_cache_entry(raw)
+        if entry is None:
+            return None
+        output, agent_id, tools = entry
+        if agent_id != (getattr(self, "_agent_id", None) or ""):
+            return None
+        if _is_uncacheable_output(output) or _is_step_refusal(output):
+            return None
+        if not await self._cached_tools_still_authorized(tools, step, state, tenant_ctx):
+            return None
+        scope.served = True
+        event: dict[str, Any] = {"type": "cache_hit", "step": step, "source": source}
+        if similarity is not None:
+            event["similarity"] = round(similarity, 4)
+        await self._emit(event)
+        return output
+
+    async def _cached_tools_still_authorized(
+        self,
+        tools: dict[str, str],
+        step: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        """Re-check the tool-level gates for the tools behind a cached answer.
+
+        Side-effect free (no approval is filed, no daily quota is consumed): any
+        tool that is no longer read-only, is denied or approval-gated by the
+        policy engine / permission matrix / per-agent permissions, or is not
+        covered by a grant makes the hit unusable. Any error fails closed.
+        """
+        if not tools:
+            return True
+        try:
+            agent_id = getattr(self, "_agent_id", None)
+            db = getattr(self, "_db_session_factory", None)
+            agent_rules: Any = ()
+            if agent_id and db is not None:
+                from app.governance.agent_permissions import load_agent_permissions
+
+                agent_rules = await load_agent_permissions(db, tenant_ctx.tenant_id, agent_id)
+            scope_value = _extract_scope_value(step)
+            for name, server in tools.items():
+                if classify_tool_risk(name, server) != "read":
+                    return False
+                if self._policy_engine is not None and (
+                    self._policy_engine.evaluate(tool_name=name, tenant_ctx=tenant_ctx)
+                    != PolicyResult.ALLOW
+                ):
+                    return False
+                if self._permission_matrix is not None and self._permission_matrix.check(
+                    tool_name=name, tenant_ctx=tenant_ctx, scope_value=scope_value
+                ) not in (ActionLevel.ALLOW, ActionLevel.ALLOW_LOG):
+                    return False
+                if agent_rules:
+                    from app.governance.agent_permissions import resolve_level
+
+                    level, rule, _reason = resolve_level(
+                        agent_rules, name, scope_value=scope_value
+                    )
+                    if level is not None and (
+                        level not in (ActionLevel.ALLOW, ActionLevel.ALLOW_LOG)
+                        or getattr(rule, "daily_limit", None)
+                        or getattr(rule, "per_goal_limit", None)
+                    ):
+                        return False
+                decision = await enforce_tool_call(
+                    self._grant_store,
+                    tenant_id=tenant_ctx.tenant_id,
+                    agent_id=agent_id or "",
+                    tool_name=name,
+                    enabled=self._enforce_grants,
+                )
+                if not decision.allowed:
+                    return False
+        except Exception as exc:
+            self._logger.debug("cache_tool_reauth_failed", error=str(exc)[:120])
+            return False
+        return True

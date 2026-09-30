@@ -375,10 +375,13 @@ async def test_execute_step_with_cache_hits_cache():
     cache = SemanticCache(threshold=0.9, ttl_seconds=300)
     tenant = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")
     # Pre-populate using the Redis-backed async set() API (matches what get() looks up)
+    # Seed a governed step-cache entry (the envelope the executor writes).
+    from app.agent.nodes.executor_mixin import _wrap_step_cache_entry
+
     await cache.set_async(
         query="search for information",
         embedding=[0.1, 0.2, 0.3],
-        response="cached answer",
+        response=_wrap_step_cache_entry("cached answer", "", {}),
         tenant_id="t1",
     )
 

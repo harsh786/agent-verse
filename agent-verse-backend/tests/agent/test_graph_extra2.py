@@ -144,10 +144,14 @@ async def test_semantic_cache_hit_emits_event() -> None:
     # Pre-seed: FakeProvider returns same embedding for all texts
     embed_resp = await embedder.embed(EmbedRequest(texts=["search data"]))
     embedding = embed_resp.embeddings[0]
+    # Seed a governed step-cache entry (the envelope the executor writes; bare
+    # strings from other writers are never served as a step result).
+    from app.agent.nodes.executor_mixin import _wrap_step_cache_entry
+
     await cache.set_async(
         query="search data",
         embedding=embedding,
-        response="Cache hit! Found 42 results.",
+        response=_wrap_step_cache_entry("Cache hit! Found 42 results.", "", {}),
         tenant_id=T.tenant_id,
     )
 
