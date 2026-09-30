@@ -196,9 +196,18 @@ def _least_privilege_url(
 # ── The booted application ────────────────────────────────────────────────────
 
 
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
+@pytest_asyncio.fixture(scope="package", loop_scope="session")
 async def app(_migrated_backends: tuple[str, str]) -> AsyncIterator[Any]:
-    """Boot ``create_app(manage_pools=True)`` with its real lifespan running."""
+    """Boot ``create_app(manage_pools=True)`` with its real lifespan running.
+
+    Package-scoped (the backends stay session-scoped): the lifespan binds
+    process-global singletons — e.g. ``guardrails_engine``'s rule repository —
+    to pools that live on the session loop. Session-scoped, it stayed up for
+    every test collected after this package in the same run, so those tests
+    (on their own loops) evaluated guardrails through a pool attached to a
+    different loop, got "rules unavailable", and failed closed. Shutting the
+    lifespan down when the package ends detaches those globals.
+    """
     from asgi_lifespan import LifespanManager
 
     database_url, redis_url = _migrated_backends
@@ -228,7 +237,7 @@ async def app(_migrated_backends: tuple[str, str]) -> AsyncIterator[Any]:
         yield fastapi_app
 
 
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
+@pytest_asyncio.fixture(scope="package", loop_scope="session")
 async def client(app: Any) -> AsyncIterator[Any]:
     """In-process httpx client bound to the booted app."""
     from httpx import ASGITransport, AsyncClient

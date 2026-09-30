@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
 
 from app.providers.fake import FakeProvider
@@ -31,7 +32,7 @@ async def _pgvector_version(kb: object) -> tuple[int, ...]:
     return tuple(int(p) for p in str(v).split(".")[:3]) if v else (0, 0, 0)
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def _seeded_tenant(client: object) -> str:
     email = f"binq-{uuid.uuid4().hex[:12]}@example.com"
     resp = await client.post(  # type: ignore[attr-defined]

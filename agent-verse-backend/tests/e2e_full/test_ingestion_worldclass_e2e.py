@@ -18,6 +18,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+import pytest_asyncio
 
 from app.ingestion.pipeline import IngestionPipeline
 from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
@@ -66,7 +67,7 @@ def _tiny_png() -> bytes:
     )
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def _seeded_tenant(client: object) -> str:
     email = f"ws12-ingest-{uuid.uuid4().hex[:12]}@example.com"
     resp = await client.post(  # type: ignore[attr-defined]
