@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -67,12 +68,20 @@ def _make_session_factory(database_url: str | None = None) -> async_sessionmaker
 # from asyncpg connection pool teardown.
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+# Every engine get_session_factory() built that something still references. A
+# Celery task (run_goal) captures the factory once and reuses it across several
+# _run_async loops, after dispose_task_engine() already reset the singleton, so
+# the loop-end disposal must reach those engines too: a connection they opened in
+# the ending loop would otherwise stay pooled and fail in the next loop ("Event
+# loop is closed" / "attached to a different loop"). Weak, so unused ones go away.
+_task_engines: weakref.WeakSet[AsyncEngine] = weakref.WeakSet()
 
 
 def get_session_factory() -> async_sessionmaker[AsyncSession]:
     global _session_factory, _engine
     if _session_factory is None:
         _engine = _make_engine()
+        _task_engines.add(_engine)
         _session_factory = async_sessionmaker(_engine, expire_on_commit=False, class_=AsyncSession)
     return _session_factory
 
@@ -118,7 +127,11 @@ async def dispose_task_engine() -> None:
     """
     global _engine, _session_factory, _system_engine, _system_session_factory
     if _engine is not None:
-        await _engine.dispose()
+        _task_engines.add(_engine)
+    # Includes engines of factories captured before an earlier reset (see
+    # _task_engines); a disposed engine rebuilds its pool lazily on next use.
+    for engine in list(_task_engines):
+        await engine.dispose()
     if _system_engine is not None:
         await _system_engine.dispose()
     _system_engine = None
