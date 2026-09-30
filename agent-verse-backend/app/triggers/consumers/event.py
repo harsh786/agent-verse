@@ -19,6 +19,8 @@ import logging
 from types import SimpleNamespace
 from typing import Any
 
+from app.triggers.consumers.tenant_ctx import event_tenant_ctx, strip_reserved
+
 _log = logging.getLogger(__name__)
 
 CHANNEL_PREFIX = "trigger:event:"
@@ -34,8 +36,10 @@ async def publish_trigger_event(
     redis: Any, *, event_channel: str, tenant_id: str, payload: dict[str, Any] | None = None
 ) -> None:
     """Publish a custom event that EVENT triggers can fire on. Callers must pass
-    the authenticated ``tenant_id`` (never a client-supplied one)."""
-    body = {**(payload or {}), "tenant_id": tenant_id, "event_channel": event_channel}
+    the authenticated ``tenant_id`` (never a client-supplied one). Reserved keys
+    in the client payload (``tenant_id`` / ``tenant_plan`` / ``event_channel``)
+    are dropped: consumers resolve the plan from the tenant record."""
+    body = {**strip_reserved(payload), "tenant_id": tenant_id, "event_channel": event_channel}
     result = redis.publish(event_channel_name(event_channel), json.dumps(body))
     if hasattr(result, "__await__"):
         await result
@@ -107,6 +111,7 @@ class EventTriggerConsumer:
             _log.warning("event_store_error: %s", exc)
             return
 
+        tenant_ctx: SimpleNamespace | None = None
         for trigger in triggers:
             spec = (
                 trigger.get("spec") if isinstance(trigger, dict) else getattr(trigger, "spec", None)
@@ -115,7 +120,8 @@ class EventTriggerConsumer:
                 continue
             if getattr(spec, "event_channel", "") != event_channel:
                 continue
-            tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=data.get("tenant_plan", "free"))
+            if tenant_ctx is None:  # plan from the tenant record, never the event
+                tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
             try:
                 await self._dispatcher.dispatch(  # type: ignore[attr-defined]
                     spec, data, tenant_ctx, message_id=str(data.get("event_id", "") or "")

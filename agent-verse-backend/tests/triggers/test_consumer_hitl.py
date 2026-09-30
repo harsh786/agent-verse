@@ -97,12 +97,14 @@ class TestHandle:
         store.find_by_type_async = AsyncMock(return_value=[{"spec": spec}])
         dispatcher = AsyncMock()
         dispatcher.dispatch = AsyncMock()
+        # The plan comes from the tenant record (TRG-05), never the event body.
+        dispatcher.resolve_tenant_plan = AsyncMock(return_value="professional")
 
         consumer = HITLTriggerConsumer(trigger_store=store, dispatcher=dispatcher, redis=MagicMock())
         await consumer._handle(
             {
                 "channel": b"hitl.approved",
-                "data": json.dumps({"tenant_id": "t1", "tenant_plan": "pro"}).encode(),
+                "data": json.dumps({"tenant_id": "t1", "tenant_plan": "enterprise"}).encode(),
             }
         )
 
@@ -111,7 +113,8 @@ class TestHandle:
         call_spec, call_data, call_ctx = dispatcher.dispatch.call_args.args
         assert call_spec is spec
         assert call_ctx.tenant_id == "t1"
-        assert call_ctx.plan == "pro"
+        assert call_ctx.plan == "professional"
+        dispatcher.resolve_tenant_plan.assert_awaited_once_with("t1")
 
     @pytest.mark.asyncio
     async def test_rejected_channel_uses_rejected_trigger_type(self) -> None:

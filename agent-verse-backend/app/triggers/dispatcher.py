@@ -107,6 +107,16 @@ class TriggerDispatcher:
         self._quota = TriggerQuotaEnforcer()
         self._redis = redis
 
+    async def resolve_tenant_plan(self, tenant_id: str) -> Any:
+        """The tenant's plan tier from the tenant record (FREE when unknown).
+
+        Event-bus consumers build their tenant context from this instead of the
+        event payload, which a client can partly control (TRG-05).
+        """
+        from app.tenancy.plan_resolver import resolve_tenant_plan
+
+        return await resolve_tenant_plan(tenant_id, db_factory=self._db_factory)
+
     async def dispatch(
         self,
         trigger_spec: TriggerSpec,

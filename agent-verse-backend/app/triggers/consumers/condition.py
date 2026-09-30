@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-from types import SimpleNamespace
 from typing import Any
 
 from app.triggers.condition.evaluator import (
@@ -32,6 +31,7 @@ from app.triggers.condition.evaluator import (
     WindowAggregateEvaluator,
 )
 from app.triggers.consumers.event import CHANNEL_PATTERN, CHANNEL_PREFIX, _decode
+from app.triggers.consumers.tenant_ctx import event_tenant_ctx
 from app.triggers.polling import extract_path
 
 _log = logging.getLogger(__name__)
@@ -134,7 +134,8 @@ class ConditionTriggerConsumer:
                     _log.warning("condition_eval_error type=%s: %s", ttype, exc)
 
     async def _dispatch(self, spec: Any, payload: dict, tenant_id: str) -> None:
-        tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=payload.get("tenant_plan", "free"))
+        # Plan from the tenant record — never the (partly client-supplied) event.
+        tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
         try:
             await self._dispatcher.dispatch(  # type: ignore[attr-defined]
                 spec, payload, tenant_ctx, message_id=str(payload.get("event_id", "") or "")

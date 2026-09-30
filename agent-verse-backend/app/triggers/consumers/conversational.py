@@ -28,6 +28,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.triggers.consumers.event import CHANNEL_PREFIX, _decode, event_channel_name
+from app.triggers.consumers.tenant_ctx import event_tenant_ctx, strip_reserved
 
 _log = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ async def publish_conversational_event(
     redis: Any, *, tenant_id: str, event: dict[str, Any]
 ) -> None:
     """Publish a normalized conversational event onto the EVENT bus (tenant stamped)."""
-    body = {**event, "tenant_id": tenant_id, "conv": True}
+    body = {**strip_reserved(event), "tenant_id": tenant_id, "conv": True}
     result = redis.publish(event_channel_name(CONVERSATIONAL_CHANNEL), json.dumps(body))
     if hasattr(result, "__await__"):
         await result
@@ -240,6 +241,7 @@ class ConversationalTriggerConsumer:
         tenant_id = event.get("tenant_id", "")
         if not tenant_id:
             return
+        tenant_ctx: SimpleNamespace | None = None
         for ttype in _CONV_TYPES:
             try:
                 triggers = await self._store.find_by_type_async(  # type: ignore[attr-defined]
@@ -252,9 +254,8 @@ class ConversationalTriggerConsumer:
                 spec = trig.get("spec") if isinstance(trig, dict) else getattr(trig, "spec", None)
                 if spec is None or not conversational_matches(ttype, spec, event):
                     continue
-                tenant_ctx = SimpleNamespace(
-                    tenant_id=tenant_id, plan=event.get("tenant_plan", "free")
-                )
+                if tenant_ctx is None:  # plan from the tenant record, never the event
+                    tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
                 try:
                     await self._dispatcher.dispatch(  # type: ignore[attr-defined]
                         spec, event, tenant_ctx, message_id=str(event.get("event_id", "") or "")

@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+from types import SimpleNamespace
+
+from app.triggers.consumers.tenant_ctx import event_tenant_ctx
 
 _log = logging.getLogger(__name__)
 
@@ -169,6 +172,7 @@ class ChainTriggerConsumer:
             _log.warning("chain_store_error: %s", exc)
             return
 
+        tenant_ctx: SimpleNamespace | None = None
         for trigger in triggers:
             # ``find_by_type_async`` returns plain dict records (the trigger's
             # TriggerSpec lives under the "spec" key) — ``getattr(trigger, "spec",
@@ -205,13 +209,9 @@ class ChainTriggerConsumer:
                 if score >= threshold:
                     continue
 
-            # Build a simple tenant context from the event data
-            from types import SimpleNamespace
-
-            tenant_ctx = SimpleNamespace(
-                tenant_id=tenant_id,
-                plan=data.get("tenant_plan", "free"),
-            )
+            # Plan from the tenant record — never from the event payload.
+            if tenant_ctx is None:
+                tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
 
             enriched = {**data, "trigger_chain_depth": chain_depth + 1}
             try:

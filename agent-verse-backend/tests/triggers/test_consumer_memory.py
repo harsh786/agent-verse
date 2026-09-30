@@ -91,6 +91,8 @@ class TestHandle:
         store.find_by_type_async = AsyncMock(return_value=[{"spec": spec}])
         dispatcher = AsyncMock()
         dispatcher.dispatch = AsyncMock()
+        # The plan comes from the tenant record (TRG-05), never the event body.
+        dispatcher.resolve_tenant_plan = AsyncMock(return_value="starter")
 
         consumer = MemoryTriggerConsumer(trigger_store=store, dispatcher=dispatcher, redis=MagicMock())
         await consumer._handle(
@@ -102,7 +104,7 @@ class TestHandle:
         call_spec, call_data, call_ctx = dispatcher.dispatch.call_args.args
         assert call_spec is spec
         assert call_ctx.tenant_id == "t1"
-        assert call_ctx.plan == "enterprise"
+        assert call_ctx.plan == "starter"
 
     @pytest.mark.asyncio
     async def test_memory_type_mismatch_skips_dispatch(self) -> None:
