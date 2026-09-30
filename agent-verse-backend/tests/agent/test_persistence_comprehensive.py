@@ -392,7 +392,7 @@ async def test_run_total_timeout_stops_loop() -> None:
     assert success is False
 
 
-async def test_run_escalates_emits_escalating_event() -> None:
+async def test_run_escalation_without_gateway_gives_up_honestly() -> None:
     config = PersistenceConfig(
         max_attempts=10,
         escalate_after_failures=2,
@@ -416,7 +416,11 @@ async def test_run_escalates_emits_escalating_event() -> None:
         event_callback=cb,
     )
     types = {e["type"] for e in events}
-    assert "persistence_escalating" in types
+    # No gateway: the engine says it gives up instead of claiming a human
+    # hand-off that never happens (CORE-14).
+    assert "persistence_gave_up" in types
+    assert "persistence_escalating" not in types
+    assert success is False
 
 
 async def test_run_exception_in_agent_run_records_failure() -> None:

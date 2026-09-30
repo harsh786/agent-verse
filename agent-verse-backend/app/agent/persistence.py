@@ -84,6 +84,9 @@ class PersistenceConfig:
     strategy_version: str = "1.0.0"
     profile_id: str = "legacy"
     profile_version: int = 1
+    # How long an ESCALATE waits for a human to approve more attempts (0 = the
+    # approval gateway's default timeout).
+    escalation_timeout_seconds: float = 0.0
 
     @classmethod
     def from_runtime_profile(cls, profile: Any) -> PersistenceConfig:
@@ -127,10 +130,23 @@ class GoalPersistenceEngine:
     strategies until success, human escalation, or permanent failure.
     """
 
+    # How often a running attempt polls for an operator abort.
+    _ABORT_POLL_SECONDS = 2.0
+
     def __init__(
-        self, config: PersistenceConfig | None = None, db: Any = None, redis: Any = None
+        self,
+        config: PersistenceConfig | None = None,
+        db: Any = None,
+        redis: Any = None,
+        *,
+        hitl_gateway: Any = None,
     ) -> None:
         self._config = config or PersistenceConfig()
+        # ESCALATE asks a human through this gateway whether to keep retrying.
+        self._hitl = hitl_gateway
+        # Attempt number after which the escalation counter restarts (a human
+        # approved more attempts at that point).
+        self._escalation_base = 0
         self._attempts: list[AttemptRecord] = []
         self._db = db  # Optional async session factory for DB persistence
         # Operator controls written by POST /goals/{id}/persistence/{abort,
@@ -189,6 +205,116 @@ class GoalPersistenceEngine:
             except Exception:
                 pass
 
+    async def _run_abortable(self, coro: Any, tenant_id: str, goal_id: str) -> tuple[bool, Any]:
+        """Run one attempt, cancelling it when an operator abort arrives.
+
+        Returns ``(aborted, state)``. Aborts used to be read only between
+        attempts, so a running attempt went on to completion (CORE-14).
+        """
+        if self._redis is None or not goal_id:
+            return False, await coro
+        task = asyncio.ensure_future(coro)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=self._ABORT_POLL_SECONDS)
+                if task in done:
+                    return False, task.result()
+                if await self._take_control("abort", tenant_id, goal_id) is not None:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await task
+                    return True, None
+        except asyncio.CancelledError:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            raise
+
+    async def _escalate(
+        self, goal: str, tenant_ctx: Any, goal_id: str, emit: Any
+    ) -> bool:
+        """Ask a human whether to keep retrying. True = approved, keep going.
+
+        ESCALATE used to emit "escalating to human" and stop — nobody was asked.
+        Now an approval request is filed (durably when the gateway supports it)
+        and awaited; without a gateway the engine says honestly that it gives up.
+        """
+        failures = len(self._attempts)
+        base = {
+            "attempts": failures,
+            "total_cost_usd": self.total_cost_usd,
+        }
+        gateway = self._hitl
+        if gateway is None:
+            await emit(
+                {
+                    "type": "persistence_gave_up",
+                    "reason": (
+                        f"Goal failed {failures} times; no human approver is configured, "
+                        "so retrying stops here"
+                    ),
+                    **base,
+                }
+            )
+            return False
+        action = (
+            f"Persistent goal failed {failures} times — approve to keep retrying: {goal[:300]}"
+        )
+        try:
+            durable = getattr(gateway, "request_approval_async", None)
+            if durable is not None and asyncio.iscoroutinefunction(durable):
+                req_id = str(
+                    await durable(
+                        goal_id=goal_id,
+                        action=action,
+                        risk_level="medium",
+                        tenant_ctx=tenant_ctx,
+                        require_persisted=True,
+                    )
+                )
+            else:
+                req_id = str(
+                    gateway.request_approval(
+                        goal_id=goal_id, action=action, risk_level="medium", tenant_ctx=tenant_ctx
+                    )
+                )
+        except Exception as exc:
+            await emit(
+                {
+                    "type": "persistence_gave_up",
+                    "reason": (
+                        f"Goal failed {failures} times; the escalation could not be filed "
+                        f"({type(exc).__name__}), so retrying stops here"
+                    ),
+                    **base,
+                }
+            )
+            return False
+        await emit(
+            {
+                "type": "persistence_escalating",
+                "request_id": req_id,
+                "reason": (
+                    f"Goal failed {failures} times — waiting for a human to approve more attempts"
+                ),
+                **base,
+            }
+        )
+        timeout = self._config.escalation_timeout_seconds or None
+        status = await gateway.wait_for_approval(req_id, tenant_ctx=tenant_ctx, timeout=timeout)
+        if str(getattr(status, "value", status)) == "approved":
+            await emit({"type": "persistence_escalation_approved", "request_id": req_id, **base})
+            return True
+        await emit(
+            {
+                "type": "persistence_escalation_declined",
+                "request_id": req_id,
+                "status": str(getattr(status, "value", status)),
+                **base,
+            }
+        )
+        return False
+
     @property
     def attempts(self) -> list[AttemptRecord]:
         return list(self._attempts)
@@ -212,7 +338,7 @@ class GoalPersistenceEngine:
         """Choose the next retry strategy based on failure history."""
         failures = self.consecutive_failures
 
-        if attempt_number >= self._config.escalate_after_failures:
+        if attempt_number - self._escalation_base >= self._config.escalate_after_failures:
             return RetryStrategy.ESCALATE
 
         if failures >= self._config.strategy_switch_after or self._strategy_offset:
@@ -478,15 +604,11 @@ class GoalPersistenceEngine:
             strategy = self._pick_strategy(attempt_number)
 
             if strategy == RetryStrategy.ESCALATE:
-                await emit(
-                    {
-                        "type": "persistence_escalating",
-                        "reason": f"Goal failed {len(self._attempts)} times — escalating to human",
-                        "attempts": len(self._attempts),
-                        "total_cost_usd": self.total_cost_usd,
-                    }
-                )
-                break
+                if not await self._escalate(goal, tenant_ctx, goal_id, emit):
+                    break
+                # A human approved more attempts: restart the escalation window.
+                self._escalation_base = attempt_number - 1
+                strategy = self._pick_strategy(attempt_number)
 
             # Wait with exponential backoff (skip on first attempt)
             if attempt_number > 1:
@@ -563,12 +685,36 @@ class GoalPersistenceEngine:
                 # evaluations attach to the real goal row (it used to run with no
                 # goal_id). ``attempt`` isolates the attempt's checkpoint thread so a
                 # retry does not resume the previous attempt's failed state.
-                state = await agent.run(
-                    goal=enriched_goal,
-                    tenant_ctx=tenant_ctx,
-                    event_callback=event_callback,
-                    **_attempt_kwargs(agent, goal_id, attempt_number),
+                aborted, state = await self._run_abortable(
+                    agent.run(
+                        goal=enriched_goal,
+                        tenant_ctx=tenant_ctx,
+                        event_callback=event_callback,
+                        **_attempt_kwargs(agent, goal_id, attempt_number),
+                    ),
+                    tenant_id,
+                    goal_id,
                 )
+                if aborted:
+                    attempt.failure_reason = "aborted"
+                    attempt.ended_at = datetime.now(UTC).isoformat()
+                    await self._write_attempt_end(
+                        attempt_id=_db_attempt_id,
+                        tenant_id=tenant_id,
+                        succeeded=False,
+                        failure_reason="aborted",
+                        iterations=attempt.iterations_used,
+                        cost_usd=attempt.cost_usd,
+                    )
+                    await emit(
+                        {
+                            "type": "persistence_aborted",
+                            "attempts": len(self._attempts),
+                            "during_attempt": attempt_number,
+                        }
+                    )
+                    logger.info("persistent_goal_aborted_mid_attempt", goal_id=goal_id)
+                    return False, self._attempts
                 attempt.ended_at = datetime.now(UTC).isoformat()
                 attempt.iterations_used = getattr(state, "iterations", 0)
                 attempt.cost_usd = getattr(state, "context", {}).get("total_cost_usd", 0.0)

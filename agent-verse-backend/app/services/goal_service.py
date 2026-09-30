@@ -3096,6 +3096,11 @@ class GoalService:
             db=getattr(self, "_db", None),
             # Operator controls (abort / skip-strategy / guidance) live in Redis.
             redis=getattr(self, "_redis", None),
+            # ESCALATE files an approval ("keep retrying?") and waits for it.
+            hitl_gateway=(
+                getattr(self._app_state, "hitl_gateway", None) if self._app_state else None
+            )
+            or self._hitl,
         )
 
         _persist_llm_config = await self._resolve_tenant_llm_config(tenant_ctx)

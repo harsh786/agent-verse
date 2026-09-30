@@ -908,11 +908,20 @@ class _PersistentWorkerRunner:
     worker's terminal bookkeeping is unchanged.
     """
 
-    def __init__(self, inner: Any, *, config: Any, db: Any = None, redis: Any = None) -> None:
+    def __init__(
+        self,
+        inner: Any,
+        *,
+        config: Any,
+        db: Any = None,
+        redis: Any = None,
+        hitl_gateway: Any = None,
+    ) -> None:
         self._inner = inner
         self._config = config
         self._db = db
         self._redis = redis
+        self._hitl = hitl_gateway
 
     async def run(
         self,
@@ -950,7 +959,9 @@ class _PersistentWorkerRunner:
                 last["state"] = state
                 return state
 
-        engine = GoalPersistenceEngine(config=self._config, db=self._db, redis=self._redis)
+        engine = GoalPersistenceEngine(
+            config=self._config, db=self._db, redis=self._redis, hitl_gateway=self._hitl
+        )
         success, attempts = await engine.run(
             goal=goal,
             agent_factory=_Attempt(),
@@ -3347,6 +3358,8 @@ def run_goal(
                     config=_worker_persistence_config(_persist_cfg, float(goal_timeout_s)),
                     db=db_factory,
                     redis=_worker_async_redis(),
+                    # ESCALATE asks a human (durable, cross-replica gateway).
+                    hitl_gateway=_hitl,
                 )
             # Honour workflow_mode like the in-process path: a multi_agent goal
             # runs the static workflow, never a silent single-agent downgrade.
