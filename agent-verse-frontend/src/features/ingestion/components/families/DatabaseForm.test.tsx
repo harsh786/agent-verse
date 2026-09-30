@@ -134,10 +134,12 @@ describe('DatabaseForm', () => {
       expect(screen.queryByText('Account')).not.toBeInTheDocument();
     });
 
-    test('typing the URI calls onChange with merged value', () => {
+    test('typing the URI calls onChange with merged value; the URI is masked', () => {
       const onChange = vi.fn();
       render(<DatabaseForm sourceType="mongodb" value={{ database: 'd1' }} onChange={onChange} />);
-      fireEvent.change(screen.getByPlaceholderText('mongodb+srv://...'), { target: { value: 'mongodb+srv://x' } });
+      const uri = screen.getByPlaceholderText('mongodb+srv://...');
+      expect(uri).toHaveAttribute('type', 'password');
+      fireEvent.change(uri, { target: { value: 'mongodb+srv://x' } });
       expect(lastArg(onChange)).toEqual({ database: 'd1', uri: 'mongodb+srv://x' });
     });
 
@@ -145,10 +147,25 @@ describe('DatabaseForm', () => {
       const onChange = vi.fn();
       render(<DatabaseForm sourceType="mongodb" value={{}} onChange={onChange} />);
       const textboxes = screen.getAllByRole('textbox');
-      fireEvent.change(textboxes[1], { target: { value: 'mydb' } });
+      fireEvent.change(textboxes[0], { target: { value: 'mydb' } });
       expect(lastArg(onChange)).toEqual({ database: 'mydb' });
-      fireEvent.change(textboxes[2], { target: { value: 'users, orders' } });
+      fireEvent.change(textboxes[1], { target: { value: 'users, orders' } });
       expect(lastArg(onChange)).toEqual({ collections_csv: 'users, orders' });
+    });
+
+    test('SRC-MONGO-SYNC: credentials, auth source and TLS fields use the keys the connector reads', () => {
+      const onChange = vi.fn();
+      render(<DatabaseForm sourceType="mongodb" value={{ tls: true }} onChange={onChange} />);
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'p@ss' } });
+      expect(lastArg(onChange)).toEqual({ tls: true, password: 'p@ss' });
+      expect(screen.getByLabelText('Password')).toHaveAttribute('type', 'password');
+      fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'admin' } });
+      expect(lastArg(onChange)).toEqual({ tls: true, auth_source: 'admin' });
+      fireEvent.change(screen.getByLabelText('Client private key (PEM, mutual TLS)'), { target: { value: 'KEY' } });
+      expect(lastArg(onChange)).toEqual({ tls: true, tls_client_private_key: 'KEY' });
+      expect(screen.getByLabelText('Client private key (PEM, mutual TLS)')).toHaveAttribute('data-secret', 'true');
+      fireEvent.change(screen.getByLabelText('CA certificate (PEM, optional)'), { target: { value: 'CA' } });
+      expect(lastArg(onChange)).toEqual({ tls: true, tls_ca_pem: 'CA' });
     });
   });
 });

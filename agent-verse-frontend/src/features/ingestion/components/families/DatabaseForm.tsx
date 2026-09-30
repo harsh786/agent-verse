@@ -1,3 +1,4 @@
+import { SecretInput, TlsFields } from './fields';
 interface FormProps { sourceType: string; value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void; }
 const inputCls = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 function F({ label, children }: { label: string; children: React.ReactNode }) {
@@ -32,9 +33,20 @@ export function DatabaseForm({ sourceType, value, onChange }: FormProps) {
         <F label="Tables (comma-separated)"><input type="text" value={String(value.tables_csv ?? '')} onChange={e => set('tables_csv', e.target.value)} className={inputCls} /></F>
       </>}
       {isMongo && <>
-        <F label="Connection URI"><input type="text" value={String(value.uri ?? '')} onChange={e => set('uri', e.target.value)} placeholder="mongodb+srv://..." className={`${inputCls} font-mono`} /></F>
+        <SecretInput id="mongo-uri" label="Connection URI" value={value.uri} onChange={v => set('uri', v)} placeholder="mongodb+srv://..."
+          hint="mongodb:// or mongodb+srv://. Credentials can go in the fields below instead (no URL-escaping needed)." />
         <F label="Database"><input type="text" value={String(value.database ?? '')} onChange={e => set('database', e.target.value)} className={inputCls} /></F>
-        <F label="Collections (comma-separated)"><input type="text" value={String(value.collections_csv ?? '')} onChange={e => set('collections_csv', e.target.value)} className={inputCls} /></F>
+        <F label="Collections (comma-separated)"><input type="text" value={String(value.collections_csv ?? '')} onChange={e => set('collections_csv', e.target.value)} placeholder="Leave blank for all collections" className={inputCls} /></F>
+        <F label="Username"><input type="text" value={String(value.username ?? '')} onChange={e => set('username', e.target.value)} autoComplete="off" className={inputCls} /></F>
+        <SecretInput id="mongo-password" label="Password" value={value.password} onChange={v => set('password', v)} />
+        <F label="Auth source"><input type="text" value={String(value.auth_source ?? '')} onChange={e => set('auth_source', e.target.value)} placeholder="admin" className={inputCls} /></F>
+        <F label="Auth mechanism"><select value={String(value.auth_mechanism ?? '')} onChange={e => set('auth_mechanism', e.target.value)} className={inputCls}>
+          <option value="">Default (SCRAM)</option><option value="SCRAM-SHA-256">SCRAM-SHA-256</option><option value="SCRAM-SHA-1">SCRAM-SHA-1</option>
+          <option value="PLAIN">PLAIN (LDAP)</option><option value="MONGODB-X509">X.509 client certificate</option>
+        </select></F>
+        <F label="Incremental cursor field"><input type="text" value={String(value.cursor_field ?? '')} onChange={e => set('cursor_field', e.target.value)} placeholder="_id" className={inputCls} /></F>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(value.direct_connection)} onChange={e => set('direct_connection', e.target.checked)} />Direct connection (no replica-set discovery)</label>
+        <TlsFields prefix="mongo" value={value} set={set} />
       </>}
     </div>
   );

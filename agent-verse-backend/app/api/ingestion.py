@@ -368,10 +368,14 @@ async def sync_status(source_id: str, request: Request) -> dict:
     tracker = _get_tracker(request)
     if tracker is None:
         return {"status": "unknown"}
-    jobs = tracker.list_jobs_for_source(source_id)
-    if not jobs:
+    # The durable job row: syncs run in the Celery worker, not in this process.
+    try:
+        latest = await tracker.latest_job(source_id, tenant.tenant_id)
+    except Exception as exc:
+        _log.exception("ingestion_sync_status_read_failed", source_id=source_id)
+        raise HTTPException(status_code=503, detail="Sync status is unavailable") from exc
+    if latest is None:
         return {"status": "never_synced"}
-    latest = max(jobs, key=lambda j: j.created_at)
     import dataclasses
 
     return dataclasses.asdict(latest)

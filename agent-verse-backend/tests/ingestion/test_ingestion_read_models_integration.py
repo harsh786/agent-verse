@@ -301,3 +301,31 @@ async def test_semantic_cache_pgvector_write_through(dbs: SimpleNamespace) -> No
             )
         ).scalar_one()
     assert left == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_status_reads_the_job_the_worker_recorded(dbs: SimpleNamespace) -> None:
+    """SRC-MONGO-SYNC: ``GET /sources/{id}/sync/status`` read the API process's
+    in-memory job list, but the sync runs in a Celery worker — so the job was
+    never visible and the UI showed "never synced" after every sync."""
+    sources = SourceConfigStore(db=dbs.app)
+    src = SourceConfig(
+        source_id=f"src-{uuid.uuid4().hex[:8]}", tenant_id=dbs.a.tenant_id, name="m",
+        family=SourceFamily.NOSQL_DATABASE, source_type="mongodb",
+    )
+    await sources.create(src)
+
+    worker = IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
+    job = await worker.create_job(src, job_id=str(uuid.uuid4()), triggered_by="manual")
+    job.docs_indexed = 7
+    await worker.complete_job(job, error="")
+
+    api = IngestionJobTracker(db=dbs.app, system_db=dbs.maint)  # another process
+    latest = await api.latest_job(src.source_id, dbs.a.tenant_id)
+    assert latest is not None
+    assert latest.job_id == job.job_id
+    assert latest.status == "completed"
+    assert latest.docs_indexed == 7
+    assert latest.triggered_by == "manual"
+    # RLS: tenant B cannot read tenant A's job.
+    assert await api.latest_job(src.source_id, dbs.b.tenant_id) is None

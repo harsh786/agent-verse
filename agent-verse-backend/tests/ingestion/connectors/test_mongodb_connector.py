@@ -1,215 +1,226 @@
-"""Tests for MongoDBConnector — validate_connection, get_delta, cursor field
-handling, and document flattening. pymongo/bson are not installed in the test
-environment, so fake modules are injected into sys.modules for the success
-paths (mirrors tests/knowledge/test_ingestors_coverage.py's pypdf pattern)."""
+"""Unit tests for MongoDBConnector's config handling, cursor and query shape.
+
+The end-to-end behaviour (API -> validate -> sync against a real MongoDB,
+replica-set member egress checks, TLS) lives in
+tests/ingestion/test_mongodb_source_integration.py.
+"""
+
 from __future__ import annotations
 
+import datetime
 import sys
-import types
+from typing import Any
 
 import pytest
+from bson import ObjectId
 
-from app.ingestion.connectors.mongodb_connector import MongoDBConnector, _flatten_doc
+from app.ingestion.base_connector import ConnectorUnavailableError
+from app.ingestion.connectors.mongodb_connector import (
+    MongoDBConnector,
+    _decode_cursor,
+    _encode_cursor,
+    _flatten_doc,
+    _mongo_uri,
+    _page_query,
+    _parse_member,
+    _settings,
+    _single_host_uri,
+)
 from app.ingestion.source_config import SourceConfig
 
 
-def _make_config(conn_config: dict | None = None) -> SourceConfig:
+def _make_config(conn_config: dict[str, Any] | None = None) -> SourceConfig:
     return SourceConfig(
         source_id="src-m",
         tenant_id="t1",
         name="Test Mongo",
-        family="nosql_database",
+        family="nosql_database",  # type: ignore[arg-type]
         source_type="mongodb",
         enabled=True,
-        connection_config=conn_config or {"host": "mongo.test", "database": "db", "collection": "col"},
+        connection_config=conn_config
+        or {"host": "mongo.test", "database": "db", "collection": "col"},
     )
 
 
-class _FakeObjectId:
-    def __init__(self, value="000000000000000000000000"):
-        self.value = str(value)
-
-    def __str__(self):
-        return self.value
-
-    def __repr__(self):
-        return f"ObjectId({self.value!r})"
-
-
-class _FakeCursor:
-    def __init__(self, docs):
-        self._docs = list(docs)
-
-    def sort(self, *a, **kw):
-        return self
-
-    def limit(self, n):
-        self._docs = self._docs[:n]
-        return self
-
-    def __iter__(self):
-        return iter(self._docs)
-
-
-class _FakeCollection:
-    def __init__(self, docs):
-        self._docs = docs
-        self.last_query = None
-
-    def find(self, query):
-        self.last_query = query
-        return _FakeCursor(self._docs)
-
-
-class _FakeDB(dict):
-    def __getitem__(self, name):
-        return self._col
-
-    def __init__(self, col):
-        super().__init__()
-        self._col = col
-
-
-class _FakeAdmin:
-    def __init__(self, command_side_effect=None):
-        self._side_effect = command_side_effect
-
-    def command(self, cmd):
-        if self._side_effect is not None:
-            raise self._side_effect
-        return {"ok": 1}
-
-
-def _install_fake_pymongo(docs=None, ping_side_effect=None):
-    docs = docs or []
-    collection = _FakeCollection(docs)
-
-    class FakeMongoClient:
-        instances: list = []
-
-        def __init__(self, *a, **kw):
-            self.admin = _FakeAdmin(ping_side_effect)
-            FakeMongoClient.instances.append(self)
-
-        def __getitem__(self, name):
-            return _FakeDB(collection)
-
-        def close(self):
-            self.closed = True
-
-    fake_pymongo = types.ModuleType("pymongo")
-    fake_pymongo.MongoClient = FakeMongoClient
-    fake_bson = types.ModuleType("bson")
-    fake_bson.ObjectId = _FakeObjectId
-    sys.modules["pymongo"] = fake_pymongo
-    sys.modules["bson"] = fake_bson
-    return collection, FakeMongoClient
-
-
-@pytest.fixture(autouse=True)
-def _clean_modules():
-    saved_pymongo = sys.modules.get("pymongo")
-    saved_bson = sys.modules.get("bson")
-    yield
-    for name, saved in (("pymongo", saved_pymongo), ("bson", saved_bson)):
-        if saved is not None:
-            sys.modules[name] = saved
-        else:
-            sys.modules.pop(name, None)
-
-
 class TestFlattenDoc:
-    def test_flattens_nested_dict(self):
-        doc = {"a": 1, "b": {"c": 2, "d": [1, 2, 3]}}
-        text = _flatten_doc(doc)
+    def test_flattens_nested_dict(self) -> None:
+        text = _flatten_doc({"a": 1, "b": {"c": 2, "d": [1, 2, 3]}})
         assert "a: 1" in text
         assert "b.c: 2" in text
         assert "b.d[0]: 1" in text
 
-    def test_respects_max_depth(self):
-        # deeply nested — should not raise, just stop recursing past max_depth
+    def test_respects_max_depth(self) -> None:
         doc = {"a": {"b": {"c": {"d": {"e": {"f": {"g": "too deep"}}}}}}}
-        text = _flatten_doc(doc, max_depth=2)
-        assert isinstance(text, str)
+        assert "too deep" not in _flatten_doc(doc, max_depth=2)
 
 
-class TestValidateConnection:
-    async def test_no_library_installed(self):
-        sys.modules.pop("pymongo", None)
-        connector = MongoDBConnector()
-        health = await connector.validate_connection(_make_config())
+class TestSettings:
+    def test_uri_or_host_port_never_a_localhost_default(self) -> None:
+        assert _mongo_uri({"uri": "mongodb://a:1/"}) == "mongodb://a:1/"
+        assert _mongo_uri({"host": "db.x", "port": 27018}) == "mongodb://db.x:27018/"
+        assert _mongo_uri({"host": "h1:1, h2"}) == "mongodb://h1:1,h2:27017/"
+        with pytest.raises(ValueError, match="URI or a host"):
+            _mongo_uri({})
+
+    def test_ui_collections_csv_is_read(self) -> None:
+        s = _settings({"uri": "mongodb://h/", "database": "shop", "collections_csv": "a, b ,"})
+        assert s.collections == ["a", "b"]
+        assert _settings({"uri": "mongodb://h/", "database": "d", "collection": "c"}).collections == ["c"]
+        assert _settings({"uri": "mongodb://h/", "database": "d", "collections": ["x"]}).collections == ["x"]
+        assert _settings({"uri": "mongodb://h/", "database": "d"}).collections == []
+
+    def test_database_falls_back_to_the_uri_path_and_is_required(self) -> None:
+        assert _settings({"uri": "mongodb://h/shop"}).database == "shop"
+        with pytest.raises(ValueError, match="database"):
+            _settings({"uri": "mongodb://h/"})
+
+    def test_credential_fields_are_driver_options_with_admin_auth_source(self) -> None:
+        s = _settings(
+            {"uri": "mongodb://h/shop", "username": "u", "password": "p@ss:/?#", "database": "shop"}
+        )
+        assert s.kwargs["username"] == "u"
+        assert s.kwargs["password"] == "p@ss:/?#"
+        assert s.kwargs["authSource"] == "admin"
+        assert "p@ss" not in s.uri
+
+    def test_explicit_auth_source_wins_and_uri_auth_source_is_kept(self) -> None:
+        s = _settings({"uri": "mongodb://h/", "username": "u", "auth_source": "shop", "database": "d"})
+        assert s.kwargs["authSource"] == "shop"
+        s = _settings({"uri": "mongodb://h/?authSource=ops", "username": "u", "database": "d"})
+        assert "authSource" not in s.kwargs  # the URI's own authSource applies
+
+    @pytest.mark.parametrize(
+        "option",
+        [
+            "tlsCAFile=/etc/ssl/ca.pem",
+            "tlsCertificateKeyFile=/app/secrets/client.pem",
+            "ssl_certfile=/x",
+            "tlsCRLFile=/x",
+            "proxyHost=10.0.0.5",
+            "authMechanismProperties=ENVIRONMENT:azure",
+        ],
+    )
+    def test_uri_options_touching_platform_files_or_proxies_are_refused(self, option: str) -> None:
+        with pytest.raises(ValueError, match="not allowed"):
+            _settings({"uri": f"mongodb://h/?{option}", "database": "d"})
+
+    @pytest.mark.parametrize("mechanism", ["MONGODB-AWS", "MONGODB-OIDC", "GSSAPI"])
+    def test_ambient_credential_mechanisms_are_refused(self, mechanism: str) -> None:
+        with pytest.raises(ValueError, match="not allowed"):
+            _settings({"uri": f"mongodb://h/?authMechanism={mechanism}", "database": "d"})
+        with pytest.raises(ValueError, match="not allowed"):
+            _settings({"uri": "mongodb://h/", "auth_mechanism": mechanism, "database": "d"})
+
+    def test_x509_needs_a_client_certificate(self) -> None:
+        with pytest.raises(ValueError, match="tls_client_cert"):
+            _settings({"uri": "mongodb://h/", "auth_mechanism": "MONGODB-X509", "database": "d"})
+
+    def test_client_cert_and_key_go_together(self) -> None:
+        with pytest.raises(ValueError, match="together"):
+            _settings({"uri": "mongodb://h/", "tls_client_cert": "C", "database": "d"})
+
+    def test_tls_material_enables_tls(self) -> None:
+        s = _settings({"uri": "mongodb://h/", "tls_ca_pem": "CA", "database": "d"})
+        assert s.kwargs["tls"] is True
+        assert "tlsCAFile" not in s.kwargs  # written to a temp file only while connected
+
+    def test_direct_connection_and_load_balanced_skip_member_discovery(self) -> None:
+        assert _settings({"uri": "mongodb://h/", "database": "d"}).discover_members
+        assert not _settings({"uri": "mongodb://h/?directConnection=true", "database": "d"}).discover_members
+        assert not _settings({"uri": "mongodb://h/?loadBalanced=true", "database": "d"}).discover_members
+        assert not _settings(
+            {"uri": "mongodb://h/", "database": "d", "direct_connection": True}
+        ).discover_members
+
+    def test_display_host_carries_no_credentials(self) -> None:
+        s = _settings({"uri": "mongodb://u:secret@h1:1,h2:2/d"})
+        assert s.display_host == "h1:1,h2:2"
+
+
+def test_member_parsing_and_single_host_uri() -> None:
+    assert _parse_member("Mongo-0.Example:27018") == ("mongo-0.example", 27018)
+    assert _parse_member("m1") == ("m1", 27017)
+    assert _parse_member("[::1]:27019") == ("::1", 27019)
+    uri = _single_host_uri("mongodb://u:p@a:1,b:2/db?replicaSet=rs0&tls=true", "b", 2)
+    assert uri == "mongodb://u:p@b:2/db?tls=true"
+
+
+class TestCursor:
+    def _s(self, **cc: Any) -> Any:
+        return _settings({"uri": "mongodb://h/", "database": "d", **cc})
+
+    def test_round_trips_bson_types(self) -> None:
+        s = self._s(cursor_field="updated_at")
+        oid = ObjectId()
+        when = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC)
+        positions = {"orders": {"value": when, "_id": oid}}
+        decoded = _decode_cursor(_encode_cursor(s, positions), s, ["orders"])
+        assert decoded["orders"]["_id"] == oid
+        assert decoded["orders"]["value"].replace(tzinfo=datetime.UTC) == when
+
+    def test_changed_cursor_field_restarts(self) -> None:
+        old = self._s(cursor_field="updated_at")
+        cursor = _encode_cursor(old, {"c": {"value": 1, "_id": 1}})
+        assert _decode_cursor(cursor, self._s(), ["c"]) == {}
+
+    def test_legacy_objectid_cursor_is_honoured_for_a_single_collection(self) -> None:
+        oid = ObjectId()
+        s = self._s()
+        assert _decode_cursor(str(oid), s, ["c"]) == {"c": {"value": oid, "_id": oid}}
+        assert _decode_cursor(str(oid), s, ["a", "b"]) == {}
+
+    def test_unreadable_cursor_is_an_error_not_a_silent_resync(self) -> None:
+        with pytest.raises(ValueError, match="cursor"):
+            _decode_cursor("{not json", self._s(), ["c"])
+
+
+class TestPageQuery:
+    def test_id_cursor(self) -> None:
+        oid = ObjectId()
+        assert _page_query("_id", None) == {}
+        assert _page_query("_id", {"value": oid, "_id": oid}) == {"_id": {"$gt": oid}}
+
+    def test_custom_field_breaks_ties_on_id(self) -> None:
+        oid = ObjectId()
+        query = _page_query("updated_at", {"value": 5, "_id": oid})
+        assert query["$and"][1] == {
+            "$or": [{"updated_at": {"$gt": 5}}, {"updated_at": 5, "_id": {"$gt": oid}}]
+        }
+
+
+class TestMissingDriver:
+    async def test_validate_reports_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setitem(sys.modules, "pymongo", None)
+        health = await MongoDBConnector().validate_connection(_make_config())
         assert health.ok is False
         assert "pymongo" in health.error
 
-    async def test_success(self):
-        _install_fake_pymongo()
-        connector = MongoDBConnector()
-        health = await connector.validate_connection(
-            _make_config({"host": "db.local", "database": "d", "collection": "c"})
-        )
-        assert health.ok is True
-        assert health.metadata["host"] == "db.local"
-
-    async def test_ping_failure(self):
-        _install_fake_pymongo(ping_side_effect=ConnectionError("no route to host"))
-        connector = MongoDBConnector()
-        health = await connector.validate_connection(_make_config())
-        assert health.ok is False
-        assert "no route to host" in health.error
+    async def test_sync_fails_loudly_instead_of_yielding_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setitem(sys.modules, "pymongo", None)
+        with pytest.raises(ConnectorUnavailableError, match="pymongo"):
+            _ = [d async for d in MongoDBConnector().get_delta(_make_config(), None)]
 
 
-class TestGetDelta:
-    async def test_no_library_yields_nothing(self):
-        sys.modules.pop("pymongo", None)
-        sys.modules.pop("bson", None)
-        connector = MongoDBConnector()
-        docs = [d async for d in connector.get_delta(_make_config(), None)]
-        assert docs == []
-
-    async def test_yields_documents_with_default_cursor(self):
-        docs_in = [
-            {"_id": _FakeObjectId("aaa"), "name": "doc1", "value": 10},
-            {"_id": _FakeObjectId("bbb"), "name": "doc2", "value": 20},
-        ]
-        _install_fake_pymongo(docs=docs_in)
-        connector = MongoDBConnector()
-        config = _make_config({"host": "h", "database": "d", "collection": "c", "batch_size": 10})
-        results = [d async for d in connector.get_delta(config, None)]
-
-        assert len(results) == 2
-        doc0, cursor0 = results[0]
-        assert "name: doc1" in doc0.content.decode()
-        assert doc0.metadata["collection"] == "c"
-        doc1, cursor1 = results[1]
-        assert cursor1 == "bbb"  # advances to last doc's _id
-
-    async def test_custom_cursor_field(self):
-        docs_in = [{"_id": _FakeObjectId("x1"), "updated_at": "2026-02-01", "v": 1}]
-        collection, _ = _install_fake_pymongo(docs=docs_in)
-        connector = MongoDBConnector()
-        config = _make_config(
-            {
-                "host": "h",
-                "database": "d",
-                "collection": "c",
-                "cursor_field": "updated_at",
-            }
-        )
-        results = [d async for d in connector.get_delta(config, "2026-01-01")]
-        assert len(results) == 1
-        # query used the custom cursor field, not _id
-        assert collection.last_query == {"updated_at": {"$gt": "2026-01-01"}}
-
-    async def test_default_id_cursor_query(self):
-        collection, _ = _install_fake_pymongo(docs=[])
-        connector = MongoDBConnector()
-        config = _make_config({"host": "h", "database": "d", "collection": "c"})
-        _ = [d async for d in connector.get_delta(config, "aaa")]
-        assert "_id" in collection.last_query
-        assert "$gt" in collection.last_query["_id"]
+async def test_config_errors_are_reported_by_validate() -> None:
+    health = await MongoDBConnector().validate_connection(
+        _make_config({"uri": "mongodb://h/?authMechanism=MONGODB-AWS", "database": "d"})
+    )
+    assert health.ok is False
+    assert "not allowed" in health.error
 
 
-def test_source_type_and_registration():
+def test_pymongo_is_a_core_dependency() -> None:
+    import tomllib
+    from pathlib import Path
+
+    pyproject = tomllib.loads((Path(__file__).resolve().parents[3] / "pyproject.toml").read_text())
+    core = [d.split(">")[0].split("=")[0].strip() for d in pyproject["project"]["dependencies"]]
+    assert "pymongo" in core
+
+
+def test_source_type_and_registration() -> None:
     from app.ingestion.connector_registry import get_connector
 
     assert MongoDBConnector().source_type == "mongodb"

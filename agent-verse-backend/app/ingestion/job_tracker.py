@@ -200,6 +200,71 @@ class IngestionJobTracker:
     def list_jobs_for_source(self, source_id: str) -> list[IngestionJob]:
         return [j for j in self._jobs.values() if j.source_id == source_id]
 
+    async def latest_job(self, source_id: str, tenant_id: str) -> IngestionJob | None:
+        """The newest job of a source — from ``ingestion_jobs`` when DB-backed.
+
+        Syncs run in the Celery worker, so this process's in-memory job list never
+        holds them; reading it made ``GET /sources/{id}/sync/status`` report
+        "never synced" after every sync. Read under the tenant's RLS context.
+        """
+        if self._db is None:
+            jobs = [
+                j for j in self._jobs.values()
+                if j.source_id == source_id and j.tenant_id == tenant_id
+            ]
+            return max(jobs, key=lambda j: j.created_at) if jobs else None
+
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text("""
+                        SELECT id, source_id, tenant_id, status, sync_mode, triggered_by,
+                               started_at, completed_at, docs_discovered, docs_indexed,
+                               docs_skipped, docs_failed, chunks_created, bytes_processed,
+                               tokens_consumed, cursor_before, cursor_after, error_message,
+                               created_at
+                          FROM ingestion_jobs
+                         WHERE source_id = :source_id AND tenant_id = :tenant_id
+                         ORDER BY created_at DESC
+                         LIMIT 1
+                    """),
+                    {"source_id": source_id, "tenant_id": tenant_id},
+                )
+            ).mappings().first()
+        if row is None:
+            return None
+
+        def _ts(value: Any) -> str | None:
+            return value.isoformat() if value is not None else None
+
+        return IngestionJob(
+            job_id=str(row["id"]),
+            source_id=str(row["source_id"]),
+            tenant_id=str(row["tenant_id"]),
+            status=str(row["status"]),
+            sync_mode=str(row["sync_mode"]),
+            triggered_by=str(row["triggered_by"] or ""),
+            started_at=_ts(row["started_at"]),
+            completed_at=_ts(row["completed_at"]),
+            docs_discovered=int(row["docs_discovered"] or 0),
+            docs_indexed=int(row["docs_indexed"] or 0),
+            docs_skipped=int(row["docs_skipped"] or 0),
+            docs_failed=int(row["docs_failed"] or 0),
+            chunks_created=int(row["chunks_created"] or 0),
+            bytes_processed=int(row["bytes_processed"] or 0),
+            tokens_consumed=int(row["tokens_consumed"] or 0),
+            cursor_before=str(row["cursor_before"] or ""),
+            cursor_after=str(row["cursor_after"] or ""),
+            error_message=str(row["error_message"] or ""),
+            created_at=_ts(row["created_at"]) or "",
+        )
+
     # ── DB persistence (no-ops when DB not available) ─────────────────────────
     #
     # Every write below is tenant work: it runs on the application factory, in a

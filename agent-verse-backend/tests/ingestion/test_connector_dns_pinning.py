@@ -162,28 +162,32 @@ async def test_imap_driver_dials_the_checked_address(rebinding: _RebindingResolv
 async def test_mongodb_driver_dials_the_checked_address(rebinding: _RebindingResolver) -> None:
     from app.ingestion.connectors.mongodb_connector import MongoDBConnector
 
-    dialed: list[str] = []
-    pymongo = ModuleType("pymongo")
-    bson = ModuleType("bson")
-    bson.ObjectId = str  # type: ignore[attr-defined]
+    member = "member.rebind-attacker.example"
+    dialed: list[tuple[str, str]] = []
 
     class _Client:
-        def __init__(self, uri: str, **_k: Any) -> None:
-            dialed.append(_dialed(HOST, 27017))
-            self.uri = uri
+        def __init__(self, uri: str, **kw: Any) -> None:
+            self.direct = bool(kw.get("directConnection"))
+            dialed.append(("seed", _dialed(HOST, 27017)))
+            if not self.direct:
+                # The discovering client also dials the member the seed advertised.
+                dialed.append(("member", _dialed(member, 27017)))
+            self.admin = MagicMock()
+            self.admin.command.return_value = {"hosts": [f"{HOST}:27017", f"{member}:27017"]}
 
         def __getitem__(self, _name: str) -> Any:
             db = MagicMock()
-            db.__getitem__.return_value.find.return_value.sort.return_value.limit.return_value = []
+            db.list_collection_names.return_value = ["c"]
+            db.__getitem__.return_value.find.return_value = []
             return db
 
         def close(self) -> None: ...
 
-    pymongo.MongoClient = _Client  # type: ignore[attr-defined]
     cfg = _config("mongodb", host=HOST, port=27017, database="d", collection="c")
-    with patch.dict(sys.modules, {"pymongo": pymongo, "bson": bson}):
+    with patch("pymongo.MongoClient", _Client):
         _ = [d async for d in MongoDBConnector().get_delta(cfg, None)]
-    assert dialed == [PUBLIC]
+    # Seed (discovery + client) and the advertised member: only checked addresses.
+    assert dialed == [("seed", PUBLIC), ("seed", PUBLIC), ("member", PUBLIC)]
 
 
 async def test_postgres_driver_is_handed_the_checked_ip(rebinding: _RebindingResolver) -> None:

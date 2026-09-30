@@ -83,6 +83,8 @@ dependencies = [
     "openpyxl>=3.1.0",
     # RSS/Atom Sources connector (app/ingestion/connectors/rss_connector.py)
     "feedparser>=6.0.0",
+    # MongoDB Sources connector (app/ingestion/connectors/mongodb_connector.py)
+    "pymongo>=4.9",
 ]
 
 [project.scripts]
