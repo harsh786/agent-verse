@@ -957,10 +957,14 @@ Respond with ONLY valid JSON:
                             e.success_metric,
                             e.agent_id,
                             e.candidate_config,
-                            COUNT(CASE WHEN r.arm = 'control'   THEN 1 END) AS ctrl_n,
-                            COUNT(CASE WHEN r.arm = 'candidate' THEN 1 END) AS cand_n,
-                            AVG(CASE WHEN r.arm = 'control'   THEN r.metric_value END) AS ctrl_mean,
-                            AVG(CASE WHEN r.arm = 'candidate' THEN r.metric_value END) AS cand_mean,
+                            COUNT(CASE WHEN r.arm = 'control'   AND r.eval_score IS NOT NULL
+                                       THEN 1 END) AS ctrl_n,
+                            COUNT(CASE WHEN r.arm = 'candidate' AND r.eval_score IS NOT NULL
+                                       THEN 1 END) AS cand_n,
+                            AVG(CASE WHEN r.arm = 'control'   AND r.eval_score IS NOT NULL
+                                     THEN r.metric_value END) AS ctrl_mean,
+                            AVG(CASE WHEN r.arm = 'candidate' AND r.eval_score IS NOT NULL
+                                     THEN r.metric_value END) AS cand_mean,
                             AVG(r.cost_usd) FILTER (WHERE r.arm = 'control')   AS ctrl_cost,
                             AVG(r.cost_usd) FILTER (WHERE r.arm = 'candidate') AS cand_cost,
                             percentile_cont(0.95) WITHIN GROUP (ORDER BY r.latency_ms)
@@ -1165,7 +1169,10 @@ Respond with ONLY valid JSON:
         domain: str | None,
     ) -> None:
         success_metric = DOMAIN_METRICS.get(domain or "", "eval_score")
-        metric_value = eval_score or 0.0
+        # An unscored goal is still recorded (eval_score NULL is the marker) so
+        # the arm's traffic is visible, but the conclusion query only samples
+        # scored rows — a missing score must not count as a 0.0 outcome.
+        metric_value = eval_score if eval_score is not None else 0.0
 
         from sqlalchemy import text as _t
 

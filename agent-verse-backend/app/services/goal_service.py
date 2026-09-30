@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import inspect
 import json
 import os
 import time
@@ -2326,6 +2327,28 @@ class GoalService:
         state = getattr(self._app_state, "state", None)
         return getattr(state, "mcp_client", None) if state is not None else None
 
+    async def _refresh_agent_record(self, agent_id: str | None, tenant_ctx: TenantContext) -> None:
+        """Reload the agent's config from Postgres into the agent store's cache.
+
+        The goal path reads the agent (system_prompt, model_override,
+        connectors ...) from the store's per-replica cache, which only
+        ``sync_from_db`` at startup filled and which never picked up an UPDATE
+        made elsewhere — a self-optimizer winner or an edit handled by another
+        replica reached this replica only after a restart. ``get_async`` reads
+        the row under RLS and refreshes the cache; on a DB error it keeps the
+        cached copy (and logs), so the goal still runs.
+        """
+        if agent_id is None:
+            return
+        store = self._get_agent_store()
+        get_async = getattr(store, "get_async", None) if store is not None else None
+        if get_async is None or not inspect.iscoroutinefunction(get_async):
+            return
+        try:
+            await get_async(agent_id, tenant_ctx=tenant_ctx)
+        except Exception as exc:
+            _svc_logger.warning("agent_refresh_failed", agent_id=agent_id, error=str(exc)[:200])
+
     def _validate_agent_id(self, agent_id: str | None, tenant_ctx: TenantContext) -> None:
         if agent_id is None:
             return
@@ -3878,6 +3901,7 @@ class GoalService:
         with _tracer.start_as_current_span("goal.submit") as span:
             span.set_attribute("tenant_id", tenant_ctx.tenant_id)
             span.set_attribute("goal", goal[:100])
+            await self._refresh_agent_record(agent_id, tenant_ctx)
             self._validate_agent_id(agent_id, tenant_ctx)
 
             # Enforce daily goal limit per plan tier (Redis-backed for multi-process safety)

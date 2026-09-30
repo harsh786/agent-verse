@@ -499,6 +499,28 @@ async def test_self_optimizer_v2_records_experiment_arm_outcome_on_completion() 
 
 
 @pytest.mark.asyncio
+async def test_self_optimizer_v2_records_an_unscored_goal_of_an_experiment_arm() -> None:
+    """MEM-27: a goal that ran inside an experiment arm but produced no eval
+    score is still recorded (eval_score None) instead of silently dropped."""
+    verifier = FakeProvider(responses=['{"success": true, "reason": "great"}'])
+    graph = _make_graph(verifier=verifier)  # no eval runner → no scorecard
+    self_opt_v2 = MagicMock()
+    self_opt_v2.on_goal_completed = AsyncMock()
+    graph._app_state = MagicMock(self_optimizer_v2=self_opt_v2)
+    graph._agent_id = "agent-experiment"
+
+    agent_state = _agent_state("experiment goal")
+    agent_state.context["_experiment_arm"] = "control"
+    agent_state.steps.append(StepResult(description="step", status=StepStatus.COMPLETE, output="ok"))
+
+    await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+    await asyncio.sleep(0)
+
+    self_opt_v2.on_goal_completed.assert_called_once()
+    assert self_opt_v2.on_goal_completed.call_args.kwargs["eval_score"] is None
+
+
+@pytest.mark.asyncio
 async def test_ab_testing_engine_records_cross_goal_result_when_arm_present() -> None:
     """N5: the module-level ABTestingEngine must receive a record for every
     goal that ran inside an experiment arm and produced a real eval score —

@@ -778,21 +778,24 @@ class VerifierMixin:
                         if _eval_score_raw is not None:
                             with contextlib.suppress(Exception):
                                 _eval_score = float(_eval_score_raw)
-                    if _eval_score is not None:
-                        import asyncio as _asyncio
+                    # Recorded whenever an arm was assigned: a goal without an
+                    # eval score is recorded as unscored (eval_score None) rather
+                    # than dropped, so the goal counter and the arm's traffic stay
+                    # truthful; the experiment only samples scored goals.
+                    import asyncio as _asyncio
 
-                        _v2_task = _asyncio.create_task(
-                            _self_opt_v2.on_goal_completed(
-                                tenant_id=tenant_ctx.tenant_id,
-                                agent_id=self._agent_id,
-                                goal_id=agent_state.goal_id,
-                                eval_score=_eval_score,
-                                cost_usd=float(agent_state.context.get("total_cost_usd", 0.0)),
-                                latency_ms=0,
-                            )
+                    _v2_task = _asyncio.create_task(
+                        _self_opt_v2.on_goal_completed(
+                            tenant_id=tenant_ctx.tenant_id,
+                            agent_id=self._agent_id,
+                            goal_id=agent_state.goal_id,
+                            eval_score=_eval_score,
+                            cost_usd=float(agent_state.context.get("total_cost_usd", 0.0)),
+                            latency_ms=0,
                         )
-                        self._background_tasks.add(_v2_task)
-                        _v2_task.add_done_callback(self._background_tasks.discard)
+                    )
+                    self._background_tasks.add(_v2_task)
+                    _v2_task.add_done_callback(self._background_tasks.discard)
             # N5: Record result in module-level ABTestingEngine for cross-goal A/B analysis
             try:
                 from app.optimization.ab_testing import ExperimentType

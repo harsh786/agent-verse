@@ -241,7 +241,9 @@ class AgentStore:
                     # Refresh in-memory cache
                     self._data[(tenant_ctx.tenant_id, agent_id)] = record
                     return record
-                # Row not found in DB → not found
+                # Row not found in DB → not found (and drop a stale cached copy,
+                # e.g. an agent deleted through another replica).
+                self._data.pop((tenant_ctx.tenant_id, agent_id), None)
                 return None
             except Exception as exc:
                 from app.observability.logging import get_logger
