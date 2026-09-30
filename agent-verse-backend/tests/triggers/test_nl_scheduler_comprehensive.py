@@ -112,14 +112,13 @@ async def test_parse_compound_schedules() -> None:
 
 
 async def test_parse_invalid_json_fallback() -> None:
-    """Invalid JSON response should fall back to a ONCE TriggerSpec."""
+    """Invalid JSON with no keyword match yields no spec (TRG-10): the old
+    last resort was a ONCE with no fire_at_iso, which could never fire."""
     provider = FakeProvider(responses=["Not JSON at all!!!"])
     scheduler = NLScheduler(provider=provider)
 
     specs = await scheduler.parse("something unclear")
-    assert len(specs) == 1
-    assert specs[0].trigger_type == TriggerType.ONCE
-    assert specs[0].description == "something unclear"
+    assert specs == []
 
 
 async def test_parse_markdown_code_block_stripped() -> None:

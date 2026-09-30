@@ -32,7 +32,9 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function mockFetch(opts: { schedules?: unknown[]; schedulesPending?: boolean } = {}) {
+function mockFetch(
+  opts: { schedules?: unknown[]; schedulesPending?: boolean; nl?: { body: unknown; status: number } } = {},
+) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -44,6 +46,7 @@ function mockFetch(opts: { schedules?: unknown[]; schedulesPending?: boolean } =
         llm_powered: true,
       });
     if (url.includes('/schedules/analytics')) return json(ANALYTICS);
+    if (url.includes('/nl/schedule') && method === 'POST' && opts.nl) return json(opts.nl.body, opts.nl.status);
     if (url.includes('/nl/schedule') && method === 'POST')
       return json([{ schedule_id: 'sc-1', name: 'PR review', trigger_type: 'cron', cron_expr: '0 9 * * 1-5' }]);
     if (/\/schedules\/[^/]+\/history/.test(url))
@@ -240,6 +243,43 @@ describe('SchedulesPage branches', () => {
     );
     expect(await screen.findByText(/Created schedule/i)).toBeInTheDocument();
     expect(screen.getByText('Run a PR review every weekday at 9 AM')).toBeInTheDocument();
+  });
+
+  async function submitNl(text: string) {
+    renderPage();
+    await screen.findByRole('heading', { name: /schedules/i });
+    await userEvent.click(screen.getByTestId('tab-nl'));
+    await userEvent.type(await screen.findByPlaceholderText(/plain English/i), text);
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+  }
+
+  test('NL scheduler shows each per-spec 422 reason and claims nothing was created (TRG-10)', async () => {
+    mockFetch({
+      nl: {
+        status: 422,
+        body: {
+          detail: {
+            message: 'No schedule was created: the request describes a trigger that cannot fire.',
+            errors: [
+              { index: 1, trigger_type: 's3_event', reason: "Trigger type 's3_event' is not yet supported" },
+              { index: 2, trigger_type: 'once', reason: 'once trigger requires fire_at_iso' },
+            ],
+          },
+        },
+      },
+    });
+    await submitNl('When a file lands in S3, and once later');
+    expect(await screen.findByText(/No schedule was created/)).toBeInTheDocument();
+    expect(screen.getByText(/#2 \(s3_event\): Trigger type 's3_event' is not yet supported/)).toBeInTheDocument();
+    expect(screen.getByText(/#3 \(once\): once trigger requires fire_at_iso/)).toBeInTheDocument();
+    expect(screen.queryByText(/Created schedule/i)).not.toBeInTheDocument();
+  });
+
+  test('NL scheduler explains a budget refusal (TRG-11)', async () => {
+    mockFetch({ nl: { status: 429, body: { detail: 'LLM budget exhausted; cannot parse the schedule' } } });
+    await submitNl('Every day at 9');
+    expect(await screen.findByText(/LLM budget exhausted/)).toBeInTheDocument();
+    expect(screen.getByText(/No schedule was created/)).toBeInTheDocument();
   });
 
   test('clicking a schedule row opens the run-history drawer with runs', async () => {

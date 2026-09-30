@@ -340,7 +340,9 @@ async def stream_session(
                         tenant_ctx=tenant, message=content, agent_id=s.agent_id
                     )
                 except Exception as exc:
-                    error = f"Could not create the schedule: {str(exc)[:200]}"
+                    # Room for the full reason (unsupported type, missing time,
+                    # quota, budget) — TRG-10.
+                    error = f"Could not create the schedule: {str(exc)[:600]}"
             if error:
                 # Do NOT claim the schedule was created when it wasn't — surface it.
                 yield sse_event(

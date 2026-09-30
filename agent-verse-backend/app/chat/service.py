@@ -846,18 +846,38 @@ class ChatService:
         """
         if not self.can_schedule:
             raise RuntimeError("chat scheduling requires nl_scheduler + schedule_store wired")
+        import secrets
+
+        from app.triggers.models import TriggerType
+        from app.triggers.store import create_schedules_atomically
+        from app.triggers.validation import creatable_error
+
         specs = await self._nl_scheduler.parse(message, tenant_ctx=tenant_ctx)
-        ids: list[str] = []
+        # TRG-10: the same gate and plan quota as POST /schedules. This persisted
+        # every parsed spec unchecked, so an unsupported type or a "once" with no
+        # time was stored and never fired, and PLAN_MAX_TRIGGERS was bypassed.
+        if not specs:
+            raise ValueError("no schedule could be understood from the message")
+        plan = str(getattr(tenant_ctx, "plan", "free") or "free")
         for spec in specs:
-            schedule_id = await self._schedule_store.create_async(
-                goal_id=message,
-                spec=spec,
-                tenant_ctx=tenant_ctx,
-                agent_id=agent_id,
-                goal_template=message,
-            )
-            ids.append(str(schedule_id))
-        return ids
+            if spec.trigger_type == TriggerType.WEBHOOK and not spec.webhook_token:
+                spec.webhook_token = secrets.token_hex(16)
+        problems = [
+            f"{spec.trigger_type.value}: {reason}"
+            for spec in specs
+            if (reason := creatable_error(spec, plan=plan)) is not None
+        ]
+        if problems:
+            raise ValueError("; ".join(problems))
+        return await create_schedules_atomically(
+            self._schedule_store,
+            specs,
+            goal_id=message,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id or "",
+            goal_template=message,
+            quota_plan=plan,
+        )
 
     def deliver_result(
         self,

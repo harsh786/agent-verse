@@ -409,8 +409,9 @@ def test_nl_create_schedule_empty():
         json={"command": "unclear command"},
         headers=_HEADERS,
     )
-    assert resp.status_code == 201
-    assert resp.json() == []
+    # TRG-10: nothing understood is an honest 422, not a 201 with no schedule.
+    assert resp.status_code == 422
+    assert "no schedule could be understood" in resp.json()["detail"]["message"]
 
 
 # ---------------------------------------------------------------------------

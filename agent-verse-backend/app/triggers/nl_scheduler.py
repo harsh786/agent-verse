@@ -478,9 +478,15 @@ class NLScheduler:
         tenant_id: str | None = None,
     ) -> list[TriggerSpec]:
         """Parse *description*. The LLM call is charged to the tenant (when given)
-        and circuit-broken; any failure, including a budget refusal, falls back
-        to keyword routing as before."""
-        from app.providers.guarded_completion import complete_decision
+        and circuit-broken; a provider failure or unusable answer falls back to
+        keyword routing. A budget refusal (``DecisionBudgetExceededError``)
+        propagates so the caller can answer honestly instead of silently
+        degrading. Returns ``[]`` when nothing schedulable was understood — the
+        old last resort, a ``once`` with no ``fire_at_iso``, could never fire."""
+        from app.providers.guarded_completion import (
+            DecisionBudgetExceededError,
+            complete_decision,
+        )
 
         # Primary path — LLM (preserves cron_expression, timezone, etc.)
         try:
@@ -510,6 +516,8 @@ class NLScheduler:
                 return [_parse_single(s) for s in obj["schedules"]]
             return [_parse_single(obj)]
 
+        except DecisionBudgetExceededError:
+            raise
         except Exception:
             pass
 
@@ -518,5 +526,4 @@ class NLScheduler:
         if fast is not None:
             return [fast]
 
-        # Last resort
-        return [TriggerSpec(trigger_type=TriggerType.ONCE, description=description)]
+        return []

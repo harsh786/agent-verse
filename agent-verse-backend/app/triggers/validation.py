@@ -51,6 +51,24 @@ def is_trigger_expired(expires_at_iso: object, *, now: datetime | None = None) -
     return expires <= current
 
 
+def creatable_error(spec: TriggerSpec, *, plan: str = "free") -> str | None:
+    """Why *spec* must not be stored, or ``None`` when it can be (TRG-10).
+
+    The one gate every schedule-creating path shares (POST /schedules, NL,
+    chat): the type must have a runtime dispatch path and the configuration
+    must pass :func:`validate_spec`; otherwise the trigger would never fire.
+    """
+    from app.triggers.dispatch_map import is_supported, unsupported_reason
+
+    if not is_supported(spec.trigger_type):
+        return unsupported_reason(spec.trigger_type)
+    try:
+        validate_spec(spec, plan=plan)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     """Validate cross-cutting options + type-specific required fields.
 

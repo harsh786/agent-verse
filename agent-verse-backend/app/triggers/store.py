@@ -1079,3 +1079,42 @@ class ScheduleStore:
         except Exception as exc:
             _log.warning("DB schedule sync failed: %s", exc)
             return 0
+
+
+async def create_schedules_atomically(
+    store: Any,
+    specs: list[TriggerSpec],
+    *,
+    goal_id: str,
+    tenant_ctx: TenantContext,
+    agent_id: str = "",
+    goal_template: str = "",
+    quota_plan: str | None = None,
+) -> list[str]:
+    """Create every spec or none (TRG-10).
+
+    NL and chat requests can yield several schedules; each create enforces
+    ``PLAN_MAX_TRIGGERS`` on its own, so a quota refusal (or an outage) part way
+    through used to leave the first schedules behind. On any failure the ones
+    already created are deleted and the error is re-raised.
+    """
+    created: list[str] = []
+    try:
+        for spec in specs:
+            schedule_id = await store.create_async(
+                goal_id=goal_id,
+                spec=spec,
+                tenant_ctx=tenant_ctx,
+                agent_id=agent_id,
+                goal_template=goal_template,
+                quota_plan=quota_plan,
+            )
+            created.append(str(schedule_id))
+    except BaseException:
+        for schedule_id in created:
+            try:
+                await store.delete_async(schedule_id, tenant_ctx=tenant_ctx)
+            except Exception as exc:
+                _log.warning("schedule batch rollback failed for %s: %s", schedule_id, exc)
+        raise
+    return created

@@ -123,6 +123,10 @@ async def _create_with_quota(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
 
+def _plan_of(tenant_ctx: TenantContext) -> str:
+    return str(getattr(tenant_ctx, "plan", "free") or "free")
+
+
 def _nl_scheduler(request: Request) -> NLScheduler:
     return request.app.state.nl_scheduler  # type: ignore[no-any-return]
 
@@ -232,20 +236,11 @@ async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict
     # any configuration, so an unsupported type (no runtime) or a misconfigured
     # one (a "once" with no fire time, an interval of 0) was stored and then
     # silently never fired.
-    from app.triggers.dispatch_map import is_supported, unsupported_reason
-    from app.triggers.validation import validate_spec
+    from app.triggers.validation import creatable_error
 
-    if not is_supported(spec.trigger_type):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=unsupported_reason(spec.trigger_type),
-        )
-    try:
-        validate_spec(spec, plan=str(getattr(tenant_ctx, "plan", "free") or "free"))
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
-        ) from exc
+    reason = creatable_error(spec, plan=_plan_of(tenant_ctx))
+    if reason is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=reason)
 
     goal_id = body.goal_template or body.agent_id or "unset"
     schedule_id = await _create_with_quota(
@@ -447,27 +442,68 @@ async def nl_create_schedule(request: Request, body: NLScheduleRequest) -> list[
 
     _validate_agent_id(request, body.agent_id, tenant_ctx=tenant_ctx)
 
-    specs = await nl.parse(body.command)
-    created: list[dict[str, Any]] = []
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+    from app.triggers.quota import TriggerQuotaExceeded
+    from app.triggers.store import create_schedules_atomically
+    from app.triggers.validation import creatable_error
 
+    # TRG-11: the parse is an LLM call charged to (and budget-checked for) the
+    # tenant; it ran with no tenant, so every NL schedule parse was free.
+    try:
+        specs = await nl.parse(body.command, tenant_ctx=tenant_ctx)
+    except DecisionBudgetExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"LLM budget exhausted; cannot parse the schedule: {exc}",
+        ) from exc
+
+    # TRG-10: the same gate as POST /schedules, for every spec, before anything
+    # is stored — an unsupported type or a misconfigured spec (a "once" with no
+    # fire time) used to be stored and silently never fire.
     for spec in specs:
         if spec.trigger_type == TriggerType.WEBHOOK:
             # Persisted on the schedules row, so it resolves on every replica.
             spec.webhook_token = secrets.token_hex(16)
-
-        schedule_id = await _create_with_quota(
-            store,
-            tenant_ctx,
-            goal_id=body.command,
-            spec=spec,
-            agent_id=body.agent_id,
-            goal_template=body.command,
+    errors = [
+        {"index": i, "trigger_type": str(spec.trigger_type.value), "reason": reason}
+        for i, spec in enumerate(specs)
+        if (reason := creatable_error(spec, plan=_plan_of(tenant_ctx))) is not None
+    ]
+    if not specs or errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "message": (
+                    "No schedule was created: "
+                    + (
+                        "the request describes a trigger that cannot fire."
+                        if errors
+                        else "no schedule could be understood from the request."
+                    )
+                ),
+                "errors": errors,
+            },
         )
 
-        rec = store.get(schedule_id, tenant_ctx=tenant_ctx) or {}
-        created.append(_record_to_dict(rec))
+    try:
+        schedule_ids = await _durable(
+            create_schedules_atomically(
+                store,
+                specs,
+                goal_id=body.command,
+                tenant_ctx=tenant_ctx,
+                agent_id=body.agent_id,
+                goal_template=body.command,
+                quota_plan=_plan_of(tenant_ctx),
+            )
+        )
+    except TriggerQuotaExceeded as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
 
-    return created
+    return [
+        _record_to_dict(store.get(schedule_id, tenant_ctx=tenant_ctx) or {})
+        for schedule_id in schedule_ids
+    ]
 
 
 # ---------------------------------------------------------------------------

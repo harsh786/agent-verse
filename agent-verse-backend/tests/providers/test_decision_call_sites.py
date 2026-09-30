@@ -243,14 +243,17 @@ async def test_nl_scheduler_charges_the_tenant(recorder: _Recorder) -> None:
     assert call.role == "nl_scheduler" and call.tenant == "t-sched"
 
 
-async def test_nl_scheduler_budget_refusal_falls_back_to_keywords(recorder: _Recorder) -> None:
+async def test_nl_scheduler_budget_refusal_is_raised(recorder: _Recorder) -> None:
+    """TRG-11: a budget refusal is surfaced (the route answers 429), not
+    silently degraded to keyword routing."""
+    from app.providers.guarded_completion import DecisionBudgetExceededError
     from app.triggers.nl_scheduler import NLScheduler
 
     recorder.refuse = True
-    specs = await NLScheduler(_DirectCallForbidden()).parse(  # type: ignore[arg-type]
-        "every day at 9am", tenant_id="t"
-    )
-    assert specs  # keyword routing / ONCE fallback, as before
+    with pytest.raises(DecisionBudgetExceededError):
+        await NLScheduler(_DirectCallForbidden()).parse(  # type: ignore[arg-type]
+            "every day at 9am", tenant_id="t"
+        )
 
 
 # ── Goal classifier (orchestration + agent) ───────────────────────────────────

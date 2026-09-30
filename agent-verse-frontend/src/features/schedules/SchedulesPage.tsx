@@ -19,7 +19,7 @@ import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Pagination } from '@/components/ui/Pagination';
 import { toast } from '@/stores/toast';
-import { apiFetch } from '@/lib/api/client';
+import { ApiError, apiFetch } from '@/lib/api/client';
 import { fireErrorMessage } from '@/features/triggers/hooks';
 
 // TODO(scale): GET /schedules returns the full list with no server-side
@@ -665,6 +665,29 @@ function AIAdvisorTab({ onUseTemplate }: { onUseTemplate: (s: AISuggestion) => v
 
 // ── NL Scheduler Tab ──────────────────────────────────────────────────────────
 
+/**
+ * Explain a refused NL schedule request. The backend creates nothing when any
+ * parsed spec cannot fire (422, with a reason per spec), when the LLM budget is
+ * exhausted (429/402), or when the plan's trigger quota is full (403).
+ */
+function describeNlError(e: unknown): string {
+  if (!(e instanceof ApiError)) return `Error: ${String(e)}`;
+  const detail = (e.body as { detail?: unknown } | undefined)?.detail;
+  const errors =
+    detail && typeof detail === 'object'
+      ? (detail as { errors?: Array<{ index: number; trigger_type: string; reason: string }> }).errors
+      : undefined;
+  if (e.status === 422 && Array.isArray(errors) && errors.length > 0) {
+    return [
+      e.message,
+      ...errors.map((x) => `• #${x.index + 1} (${x.trigger_type}): ${x.reason}`),
+    ].join('\n');
+  }
+  if (e.status === 429 || e.status === 402) return `${e.message}\nNo schedule was created.`;
+  if (e.status === 403) return `Trigger quota reached: ${e.message}\nNo schedule was created.`;
+  return `Error: ${e.message}`;
+}
+
 function NLSchedulerTab() {
   const qc = useQueryClient();
   const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string }>>([]);
@@ -698,8 +721,12 @@ function NLSchedulerTab() {
       setInput('');
       void qc.invalidateQueries({ queryKey: ['schedules'] });
     },
-    onError: (e) => {
-      setMessages((m) => [...m, { role: 'assistant', content: `Error: ${String(e)}` }]);
+    onError: (e, command) => {
+      setMessages((m) => [
+        ...m,
+        { role: 'user', content: command },
+        { role: 'assistant', content: describeNlError(e) },
+      ]);
     },
   });
 
