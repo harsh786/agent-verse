@@ -3030,7 +3030,20 @@ def run_goal(
                 # means tool calls are denied (enforce_tool_call has no grants).
                 logger.warning("worker_governance_wire_failed: %s", _gov_exc)
 
+            # MEM-02: the same DB-wired memory services the API path gets
+            # (episodic, procedural, tool reliability) — built by one helper.
+            _worker_memory_services: dict[str, Any] = {}
+            try:
+                from app.memory.runtime_services import build_memory_graph_services
+
+                _worker_memory_services = build_memory_graph_services(
+                    db_factory, _embedder_for_graph
+                )
+            except Exception as _wm_exc:
+                logger.warning("worker_memory_services_wire_failed: %s", _wm_exc)
+
             _worker_graph_services: dict[str, Any] = dict(
+                **_worker_memory_services,
                 planner=provider,
                 executor=provider,
                 verifier=_verifier_for_graph,

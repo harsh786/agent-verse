@@ -207,3 +207,24 @@ def test_worker_graph_gets_the_tenant_bulkhead(worker: dict[str, Any]) -> None:
     _run()
 
     assert worker["graphs"][-1]._bulkhead_registry is not None
+
+
+def test_worker_graph_receives_episodic_procedural_and_tool_reliability(
+    worker: dict[str, Any],
+) -> None:
+    """MEM-02: queued goals get the same memory services as the API path."""
+    from app.memory.episodic import EpisodicMemoryStore
+    from app.memory.procedural import ProceduralMemoryStore
+    from app.memory.tool_reliability import ToolReliabilityStore
+
+    worker["with_context"]({})
+
+    _run()
+
+    graph = worker["graphs"][-1]
+    assert isinstance(graph._tool_reliability_store, ToolReliabilityStore)
+    assert isinstance(graph._episodic_memory, EpisodicMemoryStore)
+    assert isinstance(graph._procedural_memory, ProceduralMemoryStore)
+    # DB-wired (the worker's session factory), not a per-process cache.
+    assert graph._tool_reliability_store._db is not None
+    assert graph._procedural_memory._db is not None

@@ -1895,18 +1895,16 @@ def create_app(
             except Exception as _ab_exc:
                 logger.warning("ab_testing_engine_wire_failed", error=str(_ab_exc))
 
-            # Wire Episodic and Procedural memory stores
+            # Wire Episodic and Procedural memory stores (same helper as the
+            # Celery worker, so both run paths get the same service set).
             try:
-                from app.memory.episodic import EpisodicMemoryStore
-                from app.memory.procedural import ProceduralMemoryStore
+                from app.memory.runtime_services import build_memory_graph_services
 
-                _episodic_memory = EpisodicMemoryStore(
-                    db_factory=db_factory,
-                    embedder=app.state.embedder if hasattr(app.state, "embedder") else None,
+                _mem_services = build_memory_graph_services(
+                    db_factory, getattr(app.state, "embedder", None)
                 )
-                _procedural_memory = ProceduralMemoryStore(db_factory=db_factory)
-                app.state.episodic_memory = _episodic_memory
-                app.state.procedural_memory = _procedural_memory
+                app.state.episodic_memory = _mem_services["episodic_memory"]
+                app.state.procedural_memory = _mem_services["procedural_memory"]
                 logger.info("episodic_procedural_memory_wired")
             except Exception as _ep_exc:
                 logger.warning("episodic_procedural_memory_wire_failed", error=str(_ep_exc))
