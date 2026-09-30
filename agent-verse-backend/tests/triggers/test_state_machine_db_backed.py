@@ -359,16 +359,19 @@ async def test_create_instance_async_overwrites_existing_row(
 
 
 @pytest.mark.asyncio
-async def test_create_instance_async_db_failure_still_returns_instance(
+async def test_create_instance_async_db_failure_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """TRG-38: an instance that was not persisted is never handed back."""
+    from app.triggers.state_machine import StateMachineStoreUnavailableError
+
     defn = _defn()
     session = FakeSession(raise_on_call_index=0)
     sm = StateMachine()
     sm._db_factory = session
     monkeypatch.setattr(sm, "get_definition_async", AsyncMock(return_value=defn))
-    inst = await sm.create_instance_async("m1", "e1", "t1")
-    assert inst.current_state == "pending"  # constructed before the DB write attempt
+    with pytest.raises(StateMachineStoreUnavailableError):
+        await sm.create_instance_async("m1", "e1", "t1")
 
 
 # ── get_instance_async ───────────────────────────────────────────────────────
@@ -513,9 +516,12 @@ async def test_transition_async_updates_existing_row(monkeypatch: pytest.MonkeyP
 
 
 @pytest.mark.asyncio
-async def test_transition_async_row_missing_still_returns_result(
+async def test_transition_async_row_missing_raises_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """TRG-38: a vanished row is not reported as a transition."""
+    from app.triggers.state_machine import StateMachineInstanceNotFoundError
+
     defn = _defn()
     instance = StateMachineInstance(
         instance_id="i1", machine_id="m1", tenant_id="t1", entity_id="e1",
@@ -527,15 +533,18 @@ async def test_transition_async_row_missing_still_returns_result(
     monkeypatch.setattr(sm, "get_instance_async", AsyncMock(return_value=instance))
     monkeypatch.setattr(sm, "get_definition_async", AsyncMock(return_value=defn))
 
-    result = await sm.transition_async("m1", "e1", "complete", "t1")
-    assert result["transitioned"] is True
-    session.commit.assert_awaited_once()
+    with pytest.raises(StateMachineInstanceNotFoundError):
+        await sm.transition_async("m1", "e1", "complete", "t1")
+    session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_transition_async_db_failure_still_returns_result(
+async def test_transition_async_db_failure_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """TRG-38: a failed write is an error, not transitioned=True."""
+    from app.triggers.state_machine import StateMachineStoreUnavailableError
+
     defn = _defn()
     instance = StateMachineInstance(
         instance_id="i1", machine_id="m1", tenant_id="t1", entity_id="e1",
@@ -547,6 +556,5 @@ async def test_transition_async_db_failure_still_returns_result(
     monkeypatch.setattr(sm, "get_instance_async", AsyncMock(return_value=instance))
     monkeypatch.setattr(sm, "get_definition_async", AsyncMock(return_value=defn))
 
-    result = await sm.transition_async("m1", "e1", "complete", "t1")
-    assert result["transitioned"] is True
-    assert result["to_state"] == "completed"
+    with pytest.raises(StateMachineStoreUnavailableError):
+        await sm.transition_async("m1", "e1", "complete", "t1")

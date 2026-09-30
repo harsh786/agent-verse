@@ -12,6 +12,21 @@ from app.observability.logging import get_logger
 
 _log = logging.getLogger(__name__)
 
+# The EVENT-bus channel STATE_TRANSITION triggers (ConditionTriggerConsumer)
+# listen on for committed transitions.
+STATE_TRANSITION_CHANNEL = "trigger:event:state_machine.transition"
+
+
+class StateMachineStoreUnavailableError(RuntimeError):
+    """The durable instance store could not be read or written (API → 503).
+
+    Raised instead of reporting a transition that never persisted.
+    """
+
+
+class StateMachineInstanceNotFoundError(LookupError):
+    """The instance row to transition does not exist (API → 404)."""
+
 
 @dataclass
 class StateDefinition:
@@ -74,6 +89,37 @@ class StateMachine:
         # When None (tests / no-DB dev) the async methods fall back to the
         # in-memory dicts above.
         self._db_factory: Any = None
+        # Async Redis for the STATE_TRANSITION event, published by the store
+        # itself after a transition commits (bound by the lifespan; None → no
+        # event is published).
+        self._event_redis: Any = None
+
+    def set_event_redis(self, redis: Any) -> None:
+        self._event_redis = redis
+
+    async def _publish_transition(
+        self, tenant_id: str, machine_id: str, entity_id: str, result: dict
+    ) -> bool:
+        """Publish a COMMITTED transition on the trigger EVENT bus."""
+        if self._event_redis is None:
+            return False
+        import json
+
+        event = {
+            "tenant_id": tenant_id,
+            "event_type": "state_machine.transition",
+            "state_machine_id": machine_id,
+            "entity_id": entity_id,
+            "state": result.get("to_state", ""),
+            "from_state": result.get("from_state", ""),
+            "event": result.get("event", ""),
+        }
+        try:
+            await self._event_redis.publish(STATE_TRANSITION_CHANNEL, json.dumps(event))
+            return True
+        except Exception as exc:
+            _log.warning("state_transition_publish_failed: %s", exc)
+            return False
 
     def define(self, defn: StateMachineDefinition) -> None:
         """Register a state machine definition."""
@@ -390,7 +436,11 @@ class StateMachine:
                     instance.instance_id = existing.instance_id
                 await session.commit()
         except Exception as exc:
+            # Never hand back an instance that was not persisted.
             get_logger(__name__).warning("state_machine_create_inst_db_failed", error=str(exc))
+            raise StateMachineStoreUnavailableError(
+                f"state machine instance could not be saved: {exc}"
+            ) from exc
         return instance
 
     async def get_instance_async(
@@ -441,10 +491,23 @@ class StateMachine:
         tenant_id: str,
         payload: dict | None = None,
     ) -> dict:
-        """Async transition — loads/saves the instance from DB when wired."""
+        """Async transition — loads/saves the instance from DB when wired.
+
+        Reports ``transitioned=True`` only for a transition that was durably
+        saved: a failed write raises :class:`StateMachineStoreUnavailableError`
+        and a vanished row :class:`StateMachineInstanceNotFoundError`. The
+        STATE_TRANSITION trigger event is published here, after the commit, so
+        every caller (not just the REST route) fires those triggers;
+        ``trigger_event_published`` says whether it went out.
+        """
         db = self._db_factory
         if db is None:
-            return self.transition(machine_id, entity_id, event, tenant_id, payload=payload)
+            result = self.transition(machine_id, entity_id, event, tenant_id, payload=payload)
+            if result.get("transitioned"):
+                result["trigger_event_published"] = await self._publish_transition(
+                    tenant_id, machine_id, entity_id, result
+                )
+            return result
 
         instance = await self.get_instance_async(entity_id, tenant_id)
         if instance is None:
@@ -495,13 +558,21 @@ class StateMachine:
                         )
                     )
                 ).scalar_one_or_none()
-                if row is not None:
-                    row.current_state = new_state
-                    row.history = [*list(row.history or []), history_entry]
-                    row.status = new_status
+                if row is None:
+                    raise StateMachineInstanceNotFoundError(
+                        f"state machine instance {entity_id!r} not found"
+                    )
+                row.current_state = new_state
+                row.history = [*list(row.history or []), history_entry]
+                row.status = new_status
                 await session.commit()
+        except StateMachineInstanceNotFoundError:
+            raise
         except Exception as exc:
             get_logger(__name__).warning("state_machine_transition_db_failed", error=str(exc))
+            raise StateMachineStoreUnavailableError(
+                f"state machine transition could not be saved: {exc}"
+            ) from exc
 
         _log.info(
             "state_machine_transition machine=%s entity=%s %s --(%s)--> %s",
@@ -511,9 +582,13 @@ class StateMachine:
             event,
             new_state,
         )
-        return {
+        result: dict[str, Any] = {
             "from_state": old_state,
             "to_state": new_state,
             "event": event,
             "transitioned": True,
         }
+        result["trigger_event_published"] = await self._publish_transition(
+            tenant_id, machine_id, entity_id, result
+        )
+        return result

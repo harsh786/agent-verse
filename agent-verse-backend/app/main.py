@@ -2119,6 +2119,9 @@ def create_app(
                 # memory.created publisher for MEMORY_CREATED triggers.
                 if hasattr(_long_term_memory, "set_event_redis"):
                     _long_term_memory.set_event_redis(redis_for_runtime)
+                # STATE_TRANSITION trigger events, published by the registry
+                # after each committed transition.
+                _state_machine_registry.set_event_redis(redis_for_runtime)
 
                 # ── G-19: OrgEventPublisher — publish org.approval.* SSE events ────
                 # Without this, OrgRealtimeManager's APPROVAL_REQUESTED/GRANTED/REJECTED/TIMEOUT
