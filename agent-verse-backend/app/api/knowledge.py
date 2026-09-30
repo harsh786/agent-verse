@@ -9,7 +9,7 @@ import json
 import os
 import uuid as _uuid
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from fastapi import (
     APIRouter,
@@ -3093,6 +3093,32 @@ class EmailIngestRequest(BaseModel):
 _LEGACY_MAX_TOTAL_BYTES = 50 * 1024 * 1024
 
 
+def _raise_upstream_error(exc: Exception) -> NoReturn:
+    """A generic 502 for a failed upstream (Notion / Drive / mail server) call.
+
+    These handlers returned HTTP 500 with ``detail=str(exc)``, echoing driver /
+    upstream / internal error text to the caller. The cause is logged with a
+    correlation id that the response carries instead.
+    """
+    from app.observability.logging import get_logger as _get_logger
+
+    correlation_id = _uuid.uuid4().hex
+    _get_logger(__name__).warning(
+        "legacy_ingest_upstream_error",
+        correlation_id=correlation_id,
+        error_type=type(exc).__name__,
+        error=str(exc)[:500],
+    )
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "error": "upstream_error",
+            "message": "The source could not be read; see server logs",
+            "correlation_id": correlation_id,
+        },
+    ) from exc
+
+
 class NotionIngestRequest(BaseModel):
     api_key: SecretStr = Field(..., description="Notion integration token")
     page_id: str | None = None
@@ -3171,7 +3197,7 @@ async def ingest_email(
             detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
         ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_upstream_error(exc)
 
 
 @router.post("/ingest/notion")
@@ -3261,7 +3287,7 @@ async def ingest_notion(
             detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
         ) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_upstream_error(exc)
 
 
 @router.post(
@@ -3339,6 +3365,10 @@ async def ingest_gdrive_folder(
                 content = await asyncio.to_thread(
                     connector.download_file, fid, mime, max_bytes=remaining
                 )
+                if content is None:
+                    # A type the connector cannot read (it used to be "empty").
+                    skipped.append({"file_id": fid, "filename": fname, "reason": "unsupported"})
+                    continue
                 size = len(content.encode("utf-8"))
                 if size > remaining:
                     truncated = True
@@ -3389,4 +3419,4 @@ async def ingest_gdrive_folder(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        _raise_upstream_error(exc)

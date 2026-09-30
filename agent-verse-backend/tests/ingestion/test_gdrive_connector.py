@@ -183,12 +183,12 @@ class TestGDriveConnectorDownloadFile:
         service.files.return_value.get_media.assert_called_once_with(fileId="f1")
         assert content == "downloaded file body"
 
-    def test_unsupported_mime_returns_empty_string(self) -> None:
+    def test_unsupported_mime_returns_none(self) -> None:
         connector = GDriveConnector(credentials=object())
         service = MagicMock()
         with patch.object(GDriveConnector, "_build_service", return_value=service):
             content = connector.download_file("f1", "application/octet-stream")
-        assert content == ""
+        assert content is None  # unsupported, not "empty" (KB-12)
         service.files.return_value.get_media.assert_not_called()
         service.files.return_value.export_media.assert_not_called()
 

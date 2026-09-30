@@ -122,8 +122,13 @@ class GDriveConnector:
                 break
         return files if max_files is None else files[:max_files]
 
-    def download_file(self, file_id: str, mime_type: str, max_bytes: int | None = None) -> str:
+    def download_file(
+        self, file_id: str, mime_type: str, max_bytes: int | None = None
+    ) -> str | None:
         """Download or export a Drive file and return its content as a string.
+
+        Returns ``None`` for a type this connector cannot read (it used to return
+        ``""``, so an unsupported file was reported as an empty one).
 
         Raises ``ValueError`` once more than ``max_bytes`` have been downloaded
         (the whole file used to be buffered in memory, however large).
@@ -137,8 +142,7 @@ class GDriveConnector:
         elif mime_type in self._DIRECT_DOWNLOAD_MIMES:
             request = service.files().get_media(fileId=file_id)
         else:
-            # Unsupported type — return empty string
-            return ""
+            return None  # unsupported type
 
         from googleapiclient.http import MediaIoBaseDownload  # type: ignore[import-untyped]
 
@@ -209,8 +213,8 @@ class GDriveSourceConnector(BaseConnector):
             if modified:
                 new_cursor = max(new_cursor, modified)
             content = client.download_file(file_id, mime)
-            if not content.strip():
-                continue
+            if content is None or not content.strip():
+                continue  # unsupported type, or no text
             doc = RawDocument(
                 doc_id=str(uuid.uuid4()),
                 source_id=config.source_id,

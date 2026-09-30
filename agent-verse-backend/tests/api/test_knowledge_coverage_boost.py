@@ -803,7 +803,7 @@ def test_ingest_email_success() -> None:
     assert body["source"] == "email"
 
 
-def test_ingest_email_exception_returns_500() -> None:
+def test_ingest_email_exception_returns_generic_502() -> None:
     client = _client()
     with patch(
         "app.ingestion.orchestrator.IngestionOrchestrator",
@@ -814,7 +814,7 @@ def test_ingest_email_exception_returns_500() -> None:
             json={"raw_email": "Subject: Hi\n\nBody", "collection_id": "col-1"},
             headers=_auth(),
         )
-    assert resp.status_code == 500
+    assert resp.status_code == 502  # generic upstream error, no raw text (KB-12)
 
 
 def test_ingest_notion_requires_page_or_database() -> None:
@@ -879,7 +879,7 @@ def test_ingest_notion_database_id_success() -> None:
     assert fake_orch.ingest.await_count == 1
 
 
-def test_ingest_notion_exception_returns_500() -> None:
+def test_ingest_notion_exception_returns_generic_502() -> None:
     client = _client()
     with patch(
         "app.ingestion.connectors.notion_connector.NotionConnector",
@@ -890,7 +890,7 @@ def test_ingest_notion_exception_returns_500() -> None:
             json={"api_key": "secret", "page_id": "page-1", "collection_id": "col-1"},
             headers=_auth(),
         )
-    assert resp.status_code == 500
+    assert resp.status_code == 502  # generic upstream error, no raw text (KB-12)
 
 
 def test_ingest_gdrive_folder_success() -> None:
@@ -963,7 +963,7 @@ def test_ingest_gdrive_folder_file_error_collected() -> None:
     assert detail["failed"][0]["file_id"] == "f1"
 
 
-def test_ingest_gdrive_folder_exception_returns_500() -> None:
+def test_ingest_gdrive_folder_exception_returns_generic_502() -> None:
     client = _client()
     with patch(
         "app.ingestion.connectors.gdrive_connector.GDriveConnector",
@@ -978,7 +978,7 @@ def test_ingest_gdrive_folder_exception_returns_500() -> None:
             },
             headers=_auth(),
         )
-    assert resp.status_code == 500
+    assert resp.status_code == 502  # generic upstream error, no raw text (KB-12)
 
 
 # ---------------------------------------------------------------------------
