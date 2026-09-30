@@ -114,7 +114,9 @@ def _build_worker_runner() -> Any:
             )
 
         _wf_mcp_client = MCPClient(
-            MCPRegistry(_wf_redis), secret_resolver=_wf_resolve_secret, redis=_wf_redis
+            MCPRegistry(_wf_redis, auto_provision_builtins=True),
+            secret_resolver=_wf_resolve_secret,
+            redis=_wf_redis,
         )
     except Exception as _mcp_exc:
         _log.warning("worker_runner_mcp_client_unavailable", error=str(_mcp_exc)[:120])

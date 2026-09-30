@@ -1523,7 +1523,7 @@ def publish_mission_deliverable(
                     ref, store=secret_store, tenant_ctx=tctx
                 )
 
-            registry = MCPRegistry(redis_client)
+            registry = MCPRegistry(redis_client, auto_provision_builtins=True)
             mcp_client = MCPClient(
                 registry,
                 secret_resolver=_resolve_secret,
@@ -2466,7 +2466,7 @@ def run_goal(
                 ref, store=secret_store, tenant_ctx=tenant_ctx
             )
 
-        registry = MCPRegistry(redis_client)
+        registry = MCPRegistry(redis_client, auto_provision_builtins=True)
         # Wire the LLM provider so SelfHealingToolCaller can fix argument errors
         # real_provider is captured from the outer run_goal() scope via closure
         mcp_client = MCPClient(

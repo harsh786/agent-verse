@@ -1036,7 +1036,7 @@ def create_app(
             redis_for_runtime: Any = None
             if real_redis is not None:
                 redis_for_runtime = real_redis
-                app.state.mcp_registry = MCPRegistry(redis=real_redis)
+                app.state.mcp_registry = MCPRegistry(redis=real_redis, auto_provision_builtins=True)
                 app.state.connector_secret_store = RedisConnectorSecretStore(
                     redis=real_redis,
                     vault=get_vault(),

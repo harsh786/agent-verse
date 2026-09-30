@@ -12,6 +12,7 @@ any shared mutable state.
 from __future__ import annotations
 
 import enum
+import logging
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -90,8 +91,12 @@ class MCPRegistry:
         redis: Any Redis-compatible async client (accepts Any to avoid import coupling).
     """
 
-    def __init__(self, redis: Any) -> None:
+    def __init__(self, redis: Any, *, auto_provision_builtins: bool = False) -> None:
         self._redis = redis
+        # Production registries (API lifespan, Celery workers) set this so a tenant
+        # created after startup (signup, SSO JIT) still gets the credential-free
+        # built-ins the lifespan only wired for tenants that existed at boot.
+        self._auto_provision_builtins = auto_provision_builtins
 
     @staticmethod
     def register_builtin_handler(server_id: str, handler: Any) -> None:
@@ -108,6 +113,30 @@ class MCPRegistry:
 
     def _index_key(self, tenant_id: str) -> str:
         return f"mcp:server_ids:{tenant_id}"
+
+    def _builtins_marker_key(self, tenant_id: str) -> str:
+        return f"mcp:builtins_provisioned:{tenant_id}"
+
+    async def _ensure_builtins(self, tenant_ctx: TenantContext) -> None:
+        """Insert-if-absent the credential-free built-ins once per tenant.
+
+        The marker lives in the shared Redis, so it holds across replicas and
+        workers, and a built-in the tenant later removes is not re-added here.
+        A failure is logged and retried on the next listing (marker unset).
+        """
+        marker = self._builtins_marker_key(tenant_ctx.tenant_id)
+        if await self._redis.get(marker):
+            return
+        from app.mcp.servers.registry_wiring import register_builtin_servers
+
+        try:
+            await register_builtin_servers(self, tenant_ctx)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "builtin_lazy_provision_failed tenant=%s error=%s", tenant_ctx.tenant_id, exc
+            )
+            return
+        await self._redis.set(marker, "1")
 
     async def register(
         self,
@@ -158,6 +187,8 @@ class MCPRegistry:
         self, *, tenant_ctx: TenantContext
     ) -> list[tuple[str, MCPServerConfig]]:
         """Return all servers with their registry IDs for this tenant."""
+        if self._auto_provision_builtins:
+            await self._ensure_builtins(tenant_ctx)
         ids: set[str] = await self._redis.smembers(self._index_key(tenant_ctx.tenant_id))
         servers: list[tuple[str, MCPServerConfig]] = []
         for server_id in ids:

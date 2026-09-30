@@ -35,6 +35,20 @@ def _add(a: float | int | None, b: float | int | None) -> float | int:
     return (a or 0) + (b or 0)
 
 
+def _last_write(a: Any, b: Any) -> Any:
+    """Run-control keys: the most recent write wins, and ``None`` is a real value.
+
+    Sequentially this is exactly the plain-channel behaviour (HITL resume moves
+    WAITING_HITL -> RUNNING, a fresh re-dispatch clears ``paused_by`` to None).
+    Its purpose is concurrency: after a step fails (default ``on_failure: pause``)
+    every step of the next superstep sees ``paused_by`` and also writes
+    ``status: PAUSED``; with no reducer two such writes raised InvalidUpdateError
+    and the run died with a LangGraph message instead of pausing on the step that
+    failed. Concurrent writers here write the same halt, so order is immaterial.
+    """
+    return b
+
+
 class WorkflowRunControlSignal(Exception):  # noqa: N818
     """Base for cooperative run-control halts raised between steps.
 
@@ -96,18 +110,19 @@ class WorkflowState(TypedDict, total=False):
     vars: Annotated[dict[str, Any], _merge_dict]  # read via {{vars.X}}
 
     # ── Execution state ───────────────────────────────────────────────────
-    status: WorkflowRunStatus
-    current_step_id: str | None
-    completed_branch: str | None  # last conditional branch taken
-    error: str | None
-    error_step_id: str | None
+    # Run-control keys use _last_write so parallel steps can settle together.
+    status: Annotated[WorkflowRunStatus, _last_write]
+    current_step_id: Annotated[str | None, _last_write]
+    completed_branch: Annotated[str | None, _last_write]  # last conditional branch taken
+    error: Annotated[str | None, _last_write]
+    error_step_id: Annotated[str | None, _last_write]
 
     # ── HITL ─────────────────────────────────────────────────────────────
-    hitl_request_id: str | None  # pending HITLWorkflowRequest UUID
-    hitl_action: str | None  # chosen action id
-    hitl_note: str | None
-    hitl_reviewer: str | None
-    hitl_form_data: dict[str, Any] | None  # custom form submission
+    hitl_request_id: Annotated[str | None, _last_write]  # pending HITLWorkflowRequest UUID
+    hitl_action: Annotated[str | None, _last_write]  # chosen action id
+    hitl_note: Annotated[str | None, _last_write]
+    hitl_reviewer: Annotated[str | None, _last_write]
+    hitl_form_data: Annotated[dict[str, Any] | None, _last_write]  # custom form submission
 
     # ── foreach progress ─────────────────────────────────────────────────
     # step_id → {"current": N, "total": M, "failed": K}
@@ -119,9 +134,9 @@ class WorkflowState(TypedDict, total=False):
     step_timings: Annotated[dict[str, int], _merge_dict]  # step_id → duration_ms
 
     # ── Operator control ─────────────────────────────────────────────────
-    paused_by: str | None  # user_id who operator-paused
-    paused_at: str | None  # ISO timestamp
-    pause_reason: str | None
+    paused_by: Annotated[str | None, _last_write]  # user_id who operator-paused
+    paused_at: Annotated[str | None, _last_write]  # ISO timestamp
+    pause_reason: Annotated[str | None, _last_write]
 
     # ── Test run ─────────────────────────────────────────────────────────
     is_test_run: bool

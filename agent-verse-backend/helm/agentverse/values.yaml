@@ -39,7 +39,9 @@ worker:
     tag: "latest"
   replicas: 2
   concurrency: 4
-  queues: "goals,schedules,maintenance"
+  # Must cover every queue celery_app.py routes to (plan-routed goals.* and
+  # workflows.*), or those tasks sit unconsumed. Mirrors infra/helm/agentverse.
+  queues: "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
   resources:
     requests:
       cpu: 300m
