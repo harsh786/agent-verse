@@ -136,7 +136,8 @@ class HandoffService:
             tenant_id, record.civilization_id, record.target_agent_id
         ):
             raise PermissionError("handoff target membership is no longer active")
-        if hashlib.sha256(token.encode()).hexdigest() != record.acceptance_token_digest:
+        supplied = hashlib.sha256(token.encode()).hexdigest()
+        if not hmac.compare_digest(supplied, record.acceptance_token_digest):
             raise PermissionError("invalid one-time acceptance token")
         if not bool(await self._invoke(self._authorize_target, record)):
             raise PermissionError("target authorization denied")

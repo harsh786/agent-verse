@@ -129,3 +129,37 @@ async def test_nonmember_bad_token_and_membership_change_fail_closed() -> None:
             "tenant", requested.handoff_id, token="token", expected_version=1,
             idempotency_key="accept-after-change"
         )
+
+
+@pytest.mark.asyncio
+async def test_accept_compares_token_digests_in_constant_time(monkeypatch) -> None:
+    """HANDOFF-CT: the acceptance-token check must use hmac.compare_digest."""
+    import app.coordination.handoffs.service as service_module
+
+    compared: list[tuple[str, str]] = []
+    real = service_module.hmac.compare_digest
+
+    def spy(a: str, b: str) -> bool:
+        compared.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(service_module.hmac, "compare_digest", spy)
+    service = HandoffService(InMemoryHandoffRepository(), membership=Membership())
+    requested = await service.request(
+        tenant_id="tenant", session_id="session", civilization_id="civilization",
+        source_agent_id="source", target_agent_id="target", task_summary="task",
+        remaining_budget_usd=1, deadline=datetime.now(UTC) + timedelta(minutes=1),
+        acceptance_token="token", idempotency_key="ct",
+    )
+    with pytest.raises(PermissionError, match="token"):
+        await service.accept(
+            "tenant", requested.handoff_id, token="wrong", expected_version=1,
+            idempotency_key="ct-bad",
+        )
+    assert compared and compared[-1][1] == requested.acceptance_token_digest
+    accepted = await service.accept(
+        "tenant", requested.handoff_id, token="token", expected_version=1,
+        idempotency_key="ct-ok",
+    )
+    assert accepted.state is HandoffState.ACCEPTED
+    assert len(compared) == 2
