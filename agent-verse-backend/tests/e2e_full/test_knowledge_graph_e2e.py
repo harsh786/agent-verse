@@ -78,6 +78,35 @@ def _build_source_and_doc(tenant_id: str, collection_id: str, content: str) -> A
     return source, raw_doc
 
 
+async def _document_chunk_ids(
+    app: Any, tenant_id: str, collection_id: str, document_id: str
+) -> set[str]:
+    """Ids of the chunks stored for ``document_id`` (read under the tenant's RLS)."""
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with (
+        app.state.db_session_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
+        dim = (
+            await session.execute(
+                text("SELECT embedding_dim FROM knowledge_collections WHERE id = :cid"),
+                {"cid": collection_id},
+            )
+        ).scalar_one()
+        rows = await session.execute(
+            text(
+                f"SELECT id FROM knowledge_chunks_{int(dim)} "
+                "WHERE collection_id = :cid AND document_id = :did"
+            ),
+            {"cid": collection_id, "did": document_id},
+        )
+        return {str(r[0]) for r in rows}
+
+
 async def _make_collection(client: Any) -> str:
     resp = await client.post(
         "/knowledge/collections",
@@ -129,7 +158,12 @@ async def test_document_ingestion_populates_tenant_knowledge_graph(
     assert matching, f"extracted entity {person!r} not present in KG nodes: {nodes_body}"
     node = matching[0]
     assert node["node_type"] == "entity"
-    assert node["source_id"].startswith(f"{raw_doc.doc_id}:"), node
+    # KB-29: auto-populated nodes are stamped with the id of the chunk they were
+    # extracted from (what GraphRAG seeds its graph lookup with), no longer the
+    # legacy "<doc_id>:<idx>". It must be one of THIS document's stored chunks.
+    doc_chunk_ids = await _document_chunk_ids(app, tenant_id, collection_id, raw_doc.doc_id)
+    assert doc_chunk_ids, f"no stored chunks for document {raw_doc.doc_id}"
+    assert node["source_id"] in doc_chunk_ids, (node, doc_chunk_ids)
 
     # A dedicated node lookup returns the same node plus its edge list (empty
     # here — deterministic extraction produces no relations — but the endpoint
