@@ -813,6 +813,34 @@ async def validate_condition(body: ValidateConditionRequest) -> dict[str, Any]:
 # ── Typed webhook ingest ──────────────────────────────────────────────────────
 
 
+async def _mark_sns_confirmed(store: Any, records: list[dict[str, Any]], caller: Any) -> None:
+    """Record ``sns_subscription_confirmed_at`` so the UI can show the SNS
+    subscription as confirmed (TRG-25). Best effort: the confirmation itself
+    already succeeded at AWS."""
+    import dataclasses
+    from datetime import UTC, datetime
+
+    update = getattr(store, "update_async", None)
+    if update is None:
+        return
+    confirmed_at = datetime.now(UTC).isoformat()
+    for rec in records:
+        spec = rec.get("spec")
+        schedule_id = str(rec.get("schedule_id") or "")
+        if not schedule_id or not dataclasses.is_dataclass(spec) or isinstance(spec, type):
+            continue
+        try:
+            await update(
+                schedule_id,
+                tenant_ctx=caller,
+                spec=dataclasses.replace(spec, sns_subscription_confirmed_at=confirmed_at),
+            )
+        except Exception as exc:
+            logger.warning(
+                "sns_confirmed_state_not_saved", schedule_id=schedule_id, error=str(exc)[:200]
+            )
+
+
 @router.post("/webhooks/{webhook_type}/{token}")
 async def receive_typed_webhook(webhook_type: str, token: str, request: Request) -> dict[str, Any]:
     """Unified typed webhook endpoint — routes GitHub, Stripe, Jira, etc."""
@@ -895,6 +923,23 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
     caller = await _webhook_tenant_ctx(request, tenant_id)
 
+    # TRG-25: CloudWatch alarms arrive through SNS. Every SNS message is signed
+    # by AWS; the SubscriptionConfirmation must be confirmed (or no alarm is ever
+    # delivered) and a Notification wraps the alarm JSON in ``Message``.
+    from app.triggers.webhooks import sns as _sns
+
+    sns_type = str(body.get("Type")) if webhook_type == "cloudwatch" and _sns.is_sns_message(
+        body
+    ) else ""
+    if sns_type:
+        try:
+            await _sns.verify_sns_message(body)
+        except _sns.SNSVerificationError as exc:
+            raise HTTPException(status_code=401, detail=f"Invalid SNS message: {exc}") from exc
+        if sns_type == "Notification":
+            enriched = {**_sns.notification_payload(body), "webhook_type": webhook_type}
+    sns_handshakes: list[dict[str, Any]] = []
+
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
     matched = 0
     failed = 0
@@ -948,8 +993,19 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             # (signed) challenge; it is a handshake, not an event to fire on.
             return {"challenge": str(body.get("challenge", ""))}
         matched += 1
+        if sns_type and sns_type != "Notification":
+            # A subscription handshake, not an alarm: nothing to fire.
+            if isinstance(trigger, dict):
+                sns_handshakes.append(trigger)
+            continue
         try:
-            await dispatcher.dispatch(spec, enriched, caller)
+            if sns_type:
+                # SNS redelivers until it gets a 2xx: dedup on its MessageId.
+                await dispatcher.dispatch(
+                    spec, enriched, caller, message_id=str(body.get("MessageId") or "")
+                )
+            else:
+                await dispatcher.dispatch(spec, enriched, caller)
         except Exception as exc:
             # Was suppressed and still answered "accepted", so the platform never
             # redelivered an event that fired nothing.
@@ -963,6 +1019,20 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
 
     if not matched:
         raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
+    if sns_type == "SubscriptionConfirmation":
+        try:
+            await _sns.confirm_subscription(body)
+        except _sns.SNSVerificationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            # 5xx so SNS retries the confirmation.
+            raise HTTPException(
+                status_code=502, detail="Could not confirm the SNS subscription; retry"
+            ) from exc
+        await _mark_sns_confirmed(store, sns_handshakes, caller)
+        return {"status": "subscription_confirmed", "webhook_type": webhook_type}
+    if sns_type == "UnsubscribeConfirmation":
+        return {"status": "unsubscribe_acknowledged", "webhook_type": webhook_type}
     if failed == matched:
         raise HTTPException(status_code=503, detail="Webhook could not be dispatched; retry")
     return {

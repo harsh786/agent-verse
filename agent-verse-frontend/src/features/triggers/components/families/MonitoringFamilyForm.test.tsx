@@ -38,6 +38,24 @@ describe('MonitoringFamilyForm', () => {
     expect(lastArg(onChange)).toEqual({ cloudwatch_metric: 'Duration' });
   });
 
+  test('cloudwatch explains the SNS setup and shows the subscription state (TRG-25)', () => {
+    const { unmount } = render(
+      <MonitoringFamilyForm triggerType="cloudwatch" value={{}} onChange={vi.fn()} />,
+    );
+    expect(screen.getByText(/SNS topic/)).toBeInTheDocument();
+    expect(screen.getByText(/HTTPS subscription/)).toBeInTheDocument();
+    expect(screen.getByText(/Awaiting SNS subscription confirmation/)).toBeInTheDocument();
+    unmount();
+    render(
+      <MonitoringFamilyForm
+        triggerType="cloudwatch"
+        value={{ sns_subscription_confirmed_at: '2026-09-30T12:00:00+00:00' }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/SNS subscription confirmed/)).toBeInTheDocument();
+  });
+
   test('log_pattern type renders the regex + stream fields', () => {
     const onChange = vi.fn();
     render(<MonitoringFamilyForm triggerType="log_pattern" value={{}} onChange={onChange} />);

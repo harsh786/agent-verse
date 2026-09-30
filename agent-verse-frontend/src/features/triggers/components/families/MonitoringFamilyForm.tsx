@@ -29,6 +29,25 @@ export function MonitoringFamilyForm({ triggerType, value, onChange }: FamilyFor
       </Field>
       {triggerType === 'cloudwatch' && (
         <>
+          {/* TRG-25: CloudWatch reaches HTTPS only through SNS; the endpoint
+              confirms the subscription itself and records when it did. */}
+          <div className="rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
+            <p className="font-medium text-foreground">Connect CloudWatch through SNS</p>
+            <ol className="list-decimal pl-4 space-y-0.5">
+              <li>Create (or pick) an SNS topic and set it as the alarm&apos;s action.</li>
+              <li>Add an HTTPS subscription to the topic with this trigger&apos;s webhook URL.</li>
+              <li>The subscription is confirmed automatically on the first SNS request.</li>
+            </ol>
+            <p>Leave the webhook secret blank: SNS messages are verified by their AWS signature.</p>
+            {value.sns_subscription_confirmed_at ? (
+              <p className="text-emerald-600 dark:text-emerald-400">
+                SNS subscription confirmed{' '}
+                {new Date(String(value.sns_subscription_confirmed_at)).toLocaleString()}
+              </p>
+            ) : (
+              <p className="text-amber-600 dark:text-amber-400">Awaiting SNS subscription confirmation</p>
+            )}
+          </div>
           <Field label="CloudWatch Namespace" hint="e.g. AWS/EC2, AWS/Lambda">
             <input
               type="text"

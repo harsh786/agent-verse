@@ -187,6 +187,7 @@ export interface TriggerSpec {
   log_stream?: string;
   cloudwatch_namespace?: string;
   cloudwatch_metric?: string;
+  sns_subscription_confirmed_at?: string; // server-set when the SNS subscription is confirmed
   sentry_project?: string;
   sentry_environment?: string;
   // ── H: Polling / Streaming / Market ──

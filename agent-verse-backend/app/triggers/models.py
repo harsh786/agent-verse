@@ -205,6 +205,9 @@ class TriggerSpec:
     log_stream: str = ""
     cloudwatch_namespace: str = ""
     cloudwatch_metric: str = ""
+    # Set by the server when the SNS subscription feeding a cloudwatch trigger
+    # is confirmed (TRG-25); shown in the UI.
+    sns_subscription_confirmed_at: str = ""
     sentry_project: str = ""
     sentry_environment: str = ""
 

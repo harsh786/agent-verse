@@ -142,7 +142,9 @@ def test_verifier_units() -> None:
     v = WebhookSignatureVerifier()
     body = b'{"a":1}'
     h: Any = _slack_headers(body)
-    assert v.verify_slack(body, h["X-Slack-Signature"], h["X-Slack-Request-Timestamp"], SLACK_SECRET)
+    assert v.verify_slack(
+        body, h["X-Slack-Signature"], h["X-Slack-Request-Timestamp"], SLACK_SECRET
+    )
     assert not v.verify_slack(body, h["X-Slack-Signature"], "not-a-ts", SLACK_SECRET)
     assert not v.verify_slack(body, h["X-Slack-Signature"], h["X-Slack-Request-Timestamp"], "")
     auth = _teams_headers(body)["Authorization"]
