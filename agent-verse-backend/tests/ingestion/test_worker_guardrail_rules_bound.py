@@ -84,6 +84,8 @@ class _Store:
         self.chunks.extend(chunks)
         return [c.chunk_id for c in chunks]
 
+    def add_change_listener(self, _listener: Any) -> None: ...
+
 
 class _Embedder:
     async def embed(self, request: Any) -> Any:
