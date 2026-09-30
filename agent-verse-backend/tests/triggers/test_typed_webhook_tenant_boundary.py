@@ -34,13 +34,13 @@ class _Store:
         self._triggers = triggers
         self.queried: list[str] = []
 
-    async def find_tenant_by_webhook_token(self, token: str, *, system_db: Any = None) -> Any:
+    async def find_tenant_by_webhook_token(self, token: str, **_k: Any) -> Any:
         owners = {
             tid for tid, specs in self._triggers.items() for s in specs if s.webhook_token == token
         }
         return owners.pop() if len(owners) == 1 else None
 
-    async def find_by_type_async(self, trigger_type: str, *, tenant_id: str) -> list[Any]:
+    async def find_by_type_async(self, trigger_type: str, *, tenant_id: str, **_k: Any) -> list[Any]:
         self.queried.append(tenant_id)
         return self._triggers.get(tenant_id, [])
 

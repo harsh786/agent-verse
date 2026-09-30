@@ -913,12 +913,20 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
 
     if len(token) < _MIN_WEBHOOK_TOKEN_LEN:
         raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
+    from app.triggers.store import ScheduleStoreUnavailableError
+
     finder = getattr(store, "find_tenant_by_webhook_token", None)
-    tenant_id = (
-        await finder(token, system_db=getattr(request.app.state, "system_db_session_factory", None))
-        if finder is not None
-        else None
-    )
+    try:
+        tenant_id = (
+            await finder(
+                token, system_db=getattr(request.app.state, "system_db_session_factory", None)
+            )
+            if finder is not None
+            else None
+        )
+    except ScheduleStoreUnavailableError as exc:
+        # TRG-27: an outage is a retryable 503, never a (permanent) 404.
+        raise HTTPException(status_code=503, detail="Webhook triggers unavailable; retry") from exc
     if not tenant_id:
         raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
     caller = await _webhook_tenant_ctx(request, tenant_id)
@@ -953,7 +961,10 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         enriched = {**sf_payload, "webhook_type": webhook_type}
         sf_message_id = _sf.message_id(sf_payload) or None
 
-    triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
+    try:
+        triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id, strict=True)
+    except ScheduleStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Webhook triggers unavailable; retry") from exc
     matched = 0
     failed = 0
     for trigger in triggers:

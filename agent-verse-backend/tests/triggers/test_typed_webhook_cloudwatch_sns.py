@@ -92,10 +92,10 @@ class _Store:
         self.spec = TriggerSpec(trigger_type=TriggerType.CLOUDWATCH, webhook_token=TOK)
         self.updated: list[TriggerSpec] = []
 
-    async def find_tenant_by_webhook_token(self, token: str, *, system_db: Any = None) -> Any:
+    async def find_tenant_by_webhook_token(self, token: str, **_k: Any) -> Any:
         return "t1" if token == TOK else None
 
-    async def find_by_type_async(self, trigger_type: str, *, tenant_id: str) -> list[Any]:
+    async def find_by_type_async(self, trigger_type: str, *, tenant_id: str, **_k: Any) -> list[Any]:
         assert trigger_type == "cloudwatch"
         return [{"schedule_id": "s-cw", "spec": self.spec, "goal_template": "Investigate"}]
 

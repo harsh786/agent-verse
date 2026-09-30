@@ -847,28 +847,35 @@ class ScheduleStore:
         """Resolve the tenant owning a webhook token — the PRE-AUTH lookup for
         third-party typed-webhook delivery, where the caller has no API key.
 
-        In-memory records are checked first with ``hmac.compare_digest``. A token
-        registered by more than one tenant (the in-memory map does not enforce
-        the DB's unique index) is ambiguous and resolves to nobody. On a miss
-        (trigger created on another replica), the ``schedules`` row is looked up
-        through ``system_db`` — the maintenance/BYPASSRLS factory, the only one
-        that can see a row before its tenant is known — and the stored token is
-        re-confirmed in constant time. Only the tenant id leaves this method;
-        callers do all further work under that tenant.
+        With ``system_db`` — the maintenance/BYPASSRLS factory, the only one that
+        can see a row before its tenant is known — the indexed
+        ``schedules.webhook_token`` lookup is the ONLY source (TRG-27): it used
+        to be preceded by a linear compare against every cached schedule, and a
+        DB error fell back to this replica's cache, answering 404 (permanent to
+        senders) for a live trigger. A DB error now raises
+        :class:`ScheduleStoreUnavailableError` (the caller answers 503). The
+        stored token is re-confirmed in constant time. Without a DB (in-memory
+        mode) the cache is authoritative and is searched; a token held by more
+        than one tenant there is ambiguous and resolves to nobody. Only the
+        tenant id leaves this method.
         """
         import hmac
 
         if not token:
             return None
+        if system_db is not None:
+            return await self._db_find_tenant_by_webhook_token(token, system_db)
         owners: set[str] = set()
         for (tid, _), rec in self._data.items():
             stored = str(getattr(rec.get("spec"), "webhook_token", "") or "")
             if stored and hmac.compare_digest(stored.encode(), token.encode()):
                 owners.add(tid)
-        if len(owners) == 1:
-            return owners.pop()
-        if owners or system_db is None:
-            return None
+        return owners.pop() if len(owners) == 1 else None
+
+    @staticmethod
+    async def _db_find_tenant_by_webhook_token(token: str, system_db: Any) -> str | None:
+        import hmac
+
         try:
             from sqlalchemy import text
 
@@ -886,7 +893,7 @@ class ScheduleStore:
                 ).fetchone()
         except Exception as exc:
             _log.warning("webhook token lookup failed: %s", exc)
-            return None
+            raise ScheduleStoreUnavailableError(f"webhook token lookup failed: {exc}") from exc
         if row is None:
             return None
         if not hmac.compare_digest(str(row[1] or "").encode(), token.encode()):
@@ -898,9 +905,13 @@ class ScheduleStore:
         trigger_type: str | None = None,
         *,
         tenant_id: str,
+        strict: bool = False,
         **_: object,
     ) -> list[dict[str, Any]]:
         """Async version of find_by_type for use in consumers.
+
+        ``strict`` raises :class:`ScheduleStoreUnavailableError` on a DB outage
+        instead of falling back to this replica's cache (TRG-27).
 
         Accepts both positional and keyword ``trigger_type`` for ergonomics.
 
@@ -911,7 +922,7 @@ class ScheduleStore:
         """
         if trigger_type is None:
             return []
-        fetched = await self._db_fetch_tenant(tenant_id, trigger_type=trigger_type)
+        fetched = await self._db_fetch_tenant(tenant_id, trigger_type=trigger_type, strict=strict)
         if fetched is not None:
             return [rec for rec in fetched if not rec.get("paused", False)]
         return self.find_by_type(trigger_type, tenant_id=tenant_id)
