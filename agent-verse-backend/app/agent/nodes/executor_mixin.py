@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import time
 from typing import Any
@@ -21,7 +22,7 @@ from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_a
 from app.agent.tool_risk import classify_tool_risk
 from app.governance.audit import AuditEvent
 from app.governance.grants import enforce_tool_call
-from app.governance.hitl import ApprovalStatus
+from app.governance.hitl import ApprovalStatus, HITLDeliveryError
 from app.governance.permissions import ActionLevel
 from app.governance.policies import PolicyResult
 from app.intelligence.explainability import DecisionTrace
@@ -282,14 +283,15 @@ class ExecutorMixin:
         # APPROVAL: a persisted per-agent approval rule must actually block.
         if self._hitl_gateway is None:
             return "agent permission requires approval but no approval gateway is configured"
-        req_id = str(
-            self._hitl_gateway.request_approval(
+        try:
+            req_id = await self._file_approval_request(
                 goal_id=state.goal_id,
                 action=f"{tool_name}: {step}"[:500],
                 risk_level="high",
                 tenant_ctx=tenant_ctx,
             )
-        )
+        except PermissionError as exc:
+            return str(exc)  # not durable, so nobody could approve it: deny
         await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
         final_status = await self._hitl_gateway.wait_for_approval(
             req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
@@ -909,6 +911,43 @@ class ExecutorMixin:
             )
         return None
 
+    async def _file_approval_request(
+        self, *, goal_id: str, action: str, risk_level: str, tenant_ctx: TenantContext
+    ) -> str:
+        """File an approval request that is durable before anyone waits on it.
+
+        CORE-02: the sync ``request_approval`` persisted the row fire-and-forget,
+        so when the write failed the request lived in one process's memory — the
+        approver's replica never saw it and the goal waited the full timeout.
+        A gateway that offers ``request_approval_async`` awaits the write; if it
+        cannot be made durable the step fails now, closed, with a clear error.
+        """
+        gateway = self._hitl_gateway
+        if gateway is None:  # callers check first; never wait on nothing
+            raise PermissionError("No approval gateway is configured; the step was not executed.")
+        durable = getattr(gateway, "request_approval_async", None)
+        if durable is not None and inspect.iscoroutinefunction(durable):
+            try:
+                return str(
+                    await durable(
+                        goal_id=goal_id,
+                        action=action,
+                        risk_level=risk_level,
+                        tenant_ctx=tenant_ctx,
+                        require_persisted=True,
+                    )
+                )
+            except HITLDeliveryError as exc:
+                raise PermissionError(
+                    f"Approval request for '{action[:120]}' could not be persisted, so no "
+                    f"approver can see it; the step was not executed ({exc})."
+                ) from exc
+        return str(
+            gateway.request_approval(
+                goal_id=goal_id, action=action, risk_level=risk_level, tenant_ctx=tenant_ctx
+            )
+        )
+
     async def _execute_step(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str:
         """Run the governed per-step pipeline and record its real output for dedup."""
         output = await self._execute_step_pipeline(step, state, tenant_ctx)
@@ -995,13 +1034,11 @@ class ExecutorMixin:
                 record_tool_call(tool_name, "policy", "approval_required", 0.0)
                 raise _asp_denial or PermissionError(f"Step '{step}' requires approval.")
             # Supervised with a gateway: block until a human decides.
-            req_id = str(
-                self._hitl_gateway.request_approval(
-                    goal_id=state.goal_id,
-                    action=step,
-                    risk_level="high",
-                    tenant_ctx=tenant_ctx,
-                )
+            req_id = await self._file_approval_request(
+                goal_id=state.goal_id,
+                action=step,
+                risk_level="high",
+                tenant_ctx=tenant_ctx,
             )
             await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
             approval_started = time.monotonic()
@@ -1170,13 +1207,11 @@ class ExecutorMixin:
                     raise _policy_denial or PermissionError(
                         f"Tool '{tool_name}' requires approval by policy."
                     )
-                req_id = str(
-                    self._hitl_gateway.request_approval(
-                        goal_id=state.goal_id,
-                        action=step,
-                        risk_level="high",
-                        tenant_ctx=tenant_ctx,
-                    )
+                req_id = await self._file_approval_request(
+                    goal_id=state.goal_id,
+                    action=step,
+                    risk_level="high",
+                    tenant_ctx=tenant_ctx,
                 )
                 await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
                 approval_started = time.monotonic()
@@ -1206,13 +1241,11 @@ class ExecutorMixin:
             if _gate7_denial is not None or self._hitl_gateway is None:
                 record_tool_call(tool_name, "policy", "approval_required", 0.0)
                 raise _gate7_denial or PermissionError(f"Step '{step}' requires approval.")
-            req_id = str(
-                self._hitl_gateway.request_approval(
-                    goal_id=state.goal_id,
-                    action=step,
-                    risk_level="high",
-                    tenant_ctx=tenant_ctx,
-                )
+            req_id = await self._file_approval_request(
+                goal_id=state.goal_id,
+                action=step,
+                risk_level="high",
+                tenant_ctx=tenant_ctx,
             )
             # Actually BLOCK until a human approves or rejects
             await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
@@ -2310,13 +2343,11 @@ class ExecutorMixin:
                             raw_output = error
                             raw_output_sanitized = True
                         else:
-                            req_id = str(
-                                self._hitl_gateway.request_approval(
-                                    goal_id=state.goal_id,
-                                    action=tool_ref.name,
-                                    risk_level=tool_risk,
-                                    tenant_ctx=tenant_ctx,
-                                )
+                            req_id = await self._file_approval_request(
+                                goal_id=state.goal_id,
+                                action=tool_ref.name,
+                                risk_level=tool_risk,
+                                tenant_ctx=tenant_ctx,
                             )
                             await self._emit(
                                 {

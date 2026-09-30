@@ -214,6 +214,7 @@ class HITLGateway:
         # cross-tenant warm scan at startup (under the API's NOBYPASSRLS role it
         # could not see any rows anyway).
         self._requests: dict[tuple[str, str], ApprovalRequest] = {}
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._timeout = timeout_seconds
         self._notification_service: Any = None
         self._db_session_factory: Any = db_session_factory
@@ -239,49 +240,81 @@ class HITLGateway:
 
         Also sets ``_expires_at_dt`` for in-process timeout enforcement.
         """
-        from datetime import UTC, timedelta
+        req = self._new_request(
+            goal_id=goal_id,
+            action=step_description or action,  # accept either param name
+            risk_level=risk_level,
+            tenant_ctx=tenant_ctx,
+            required_approvers=required_approvers,
+        )
+        # Persist to DB in the background (legacy sync callers). Agent gates use
+        # request_approval_async, which awaits the write before anyone waits.
+        if self._db_session_factory is not None:
+            self._spawn_background(
+                self._db_persist_approval_request(req, tenant_ctx.tenant_id)
+            )
+        self._notify_approval_required(req, tenant_ctx.tenant_id)
+        return req  # ApprovalRequest: awaitable + string-compatible via __str__/__eq__/__hash__
 
-        _action = step_description or action  # accept either param name
+    def _new_request(
+        self,
+        *,
+        goal_id: str,
+        action: str,
+        risk_level: str,
+        tenant_ctx: TenantContext,
+        required_approvers: int,
+    ) -> ApprovalRequest:
+        """Build a request, cache it locally, and stamp its expiry."""
+        from datetime import timedelta
+
         req = ApprovalRequest(
             goal_id=goal_id,
-            action=_action,
+            action=action,
             risk_level=risk_level,
             required_approvers=required_approvers,
         )
         req._expires_at_dt = datetime.now(UTC) + timedelta(seconds=self._timeout)
         self._requests[(tenant_ctx.tenant_id, req.request_id)] = req
+        return req
 
-        # Persist to DB (fire-and-forget, Fix 4)
-        if self._db_session_factory is not None:
-            import asyncio as _aio
+    def _spawn_background(self, coro: Any) -> None:
+        """Run *coro* as a referenced background task whose failure is logged.
 
-            try:
-                loop = _aio.get_running_loop()
-                _task = loop.create_task(  # noqa: RUF006
-                    self._db_persist_approval_request(req, tenant_ctx.tenant_id)
+        A bare ``loop.create_task`` result can be garbage-collected mid-flight
+        and its exception was never observed.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            coro.close()  # no running loop: nothing can run it
+            return
+        task = loop.create_task(coro)
+        self._background_tasks.add(task)
+
+        def _done(t: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning(
+                    "hitl_background_task_failed", error=str(t.exception())[:200]
                 )
-            except RuntimeError:
-                pass  # No running loop (shouldn't happen in async context)
 
-        # Dispatch notification (fire and forget)
-        if self._notification_service is not None:
-            import asyncio as _aio
+        task.add_done_callback(_done)
 
-            try:
-                loop = _aio.get_running_loop()
-                _task = loop.create_task(  # noqa: RUF006
-                    self._notification_service.notify_approval_required(
-                        request_id=req.request_id,
-                        goal_id=goal_id,
-                        action=_action,
-                        risk_level=risk_level,
-                        tenant_id=tenant_ctx.tenant_id,
-                    )
-                )
-            except RuntimeError:
-                pass  # No running loop (shouldn't happen in async context)
-
-        return req  # ApprovalRequest: awaitable + string-compatible via __str__/__eq__/__hash__
+    def _notify_approval_required(self, req: ApprovalRequest, tenant_id: str) -> None:
+        if self._notification_service is None:
+            return
+        self._spawn_background(
+            self._notification_service.notify_approval_required(
+                request_id=req.request_id,
+                goal_id=req.goal_id,
+                action=req.action,
+                risk_level=req.risk_level,
+                tenant_id=tenant_id,
+            )
+        )
 
     async def _db_update_resolution(
         self,
@@ -517,8 +550,14 @@ class HITLGateway:
         when an approval was actually observed.
         """
         req = self._requests.get((tenant_ctx.tenant_id, request_id))
+        if req is None and self._db_session_factory is not None:
+            # Raised on another replica (or this process restarted): Postgres is
+            # the source of truth, so an id missing locally is not a rejection.
+            req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
         if req is None:
             return ApprovalStatus.REJECTED
+        if req.status != ApprovalStatus.PENDING:
+            return req.status
 
         timeout_s = timeout if timeout is not None else self._timeout
         loop = asyncio.get_running_loop()
@@ -537,11 +576,18 @@ class HITLGateway:
             tasks.append(redis_task)
 
         try:
-            done, _pending = await asyncio.wait(
-                tasks,
-                timeout=timeout_s,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
+            if redis_task is None and self._db_session_factory is not None:
+                # No Redis channel: a decision taken on another replica only
+                # reaches this waiter through Postgres, so poll it alongside
+                # the local event (the waiter used to know only its process).
+                await self._wait_local_or_db(req, request_id, tenant_ctx, local_task, deadline)
+                done: set[asyncio.Task[Any]] = set()
+            else:
+                done, _pending = await asyncio.wait(
+                    tasks,
+                    timeout=timeout_s,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
             # If Redis BLPOP resolved first, update local status from the payload (C6.2)
             redis_failed = False
@@ -872,23 +918,29 @@ class HITLGateway:
         be written, drop the request and raise :class:`HITLDeliveryError`
         instead of returning an id nobody else can see.
         """
-        req = self.request_approval(
+        req = self._new_request(
             goal_id=goal_id,
-            action=action,
-            step_description=step_description,
+            action=step_description or action,
             risk_level=risk_level,
             tenant_ctx=tenant_ctx,
             required_approvers=required_approvers,
-            context=context,
         )
+        # Persisted exactly once, awaited (request_approval also scheduled a
+        # background write, so every async request used to be inserted twice).
         if not require_persisted:
             await self._db_persist_approval_request(req, tenant_ctx.tenant_id)
-            return str(req.request_id)
-        try:
-            await self._db_persist_approval_request(req, tenant_ctx.tenant_id, raise_errors=True)
-        except Exception as exc:
-            self._requests.pop((tenant_ctx.tenant_id, req.request_id), None)
-            raise HITLDeliveryError(f"approval request could not be persisted: {exc}") from exc
+        else:
+            try:
+                await self._db_persist_approval_request(
+                    req, tenant_ctx.tenant_id, raise_errors=True
+                )
+            except Exception as exc:
+                self._requests.pop((tenant_ctx.tenant_id, req.request_id), None)
+                raise HITLDeliveryError(
+                    f"approval request could not be persisted: {exc}"
+                ) from exc
+        # Notify only once the request exists for every replica.
+        self._notify_approval_required(req, tenant_ctx.tenant_id)
         return str(req.request_id)
 
     async def _db_fetch_request(self, request_id: str, tenant_id: str) -> Any:
