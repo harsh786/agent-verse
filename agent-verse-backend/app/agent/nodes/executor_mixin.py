@@ -223,6 +223,27 @@ def _unwrap_step_cache_entry(raw: str | None) -> tuple[str, str, dict[str, str]]
     return output, agent_id, parsed
 
 
+# LLM-generated template values that must never reach a real MCP server.
+_PLACEHOLDER_ARG_PATTERNS = (
+    "your_organization",
+    "your_repository",
+    "your_org",
+    "your_repo",
+    "your_project",
+    "your_workspace",
+    "your_team",
+    "your_board",
+    "<organization>",
+    "<repository>",
+    "<repo>",
+    "{organization}",
+    "{repository}",
+    "{repo}",
+    "example.com",
+    "placeholder",
+)
+
+
 def _log_background_failure(task: Any) -> None:
     """Done-callback: retrieve and log a fire-and-forget task's exception."""
     if task.cancelled():
@@ -413,6 +434,167 @@ class ExecutorMixin:
         counts[tool_name] = int(counts.get(tool_name, 0)) + 1
         await self._emit({"type": "approval_granted", "request_id": req_id})
         return None
+
+    async def _guard_tool_args(
+        self,
+        tool_name: str,
+        arguments: Any,
+        step: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+    ) -> None:
+        """Tool-argument guardrails for ONE tool call; raises PermissionError.
+
+        Used for the primary call and every parallel extra call of a turn.
+        GuardrailEngine v2 (app state) then Guardrails 2.0 TOOL_ARGS; an engine
+        error fails closed on high-risk work (SAFE-4).
+        """
+        _guardrail_engine_v2 = (
+            getattr(self._app_state, "guardrail_engine", None) if self._app_state else None
+        )
+        if _guardrail_engine_v2 is not None:
+            try:
+                from app.intelligence.guardrail_engine import GuardrailContext as _GCtx
+
+                _ge_ctx = _GCtx(
+                    tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
+                    goal_id=state.goal_id or "",
+                    agent_id=self._agent_id or "",
+                    domain=getattr(tenant_ctx, "domain_context", "general")
+                    if tenant_ctx
+                    else "general",
+                )
+                _ge_args_result = await _guardrail_engine_v2.evaluate_tool_args(
+                    tool_name=tool_name,
+                    arguments=arguments or {},
+                    context=_ge_ctx,
+                )
+                if not _ge_args_result.allowed:
+                    _ge_viol = (
+                        _ge_args_result.violations[0] if _ge_args_result.violations else None
+                    )
+                    raise PermissionError(
+                        f"Guardrail blocked tool call '{tool_name}': "
+                        f"{_ge_viol.matched_pattern if _ge_viol else 'policy violation'}"
+                    )
+            except PermissionError:
+                raise
+            except Exception as _ge_exc:
+                self._logger.warning("guardrail_engine_v2_pre_check_failed", error=str(_ge_exc))
+                # SAFE-4 (P0-15): an errored guardrail check must not read as
+                # "allowed" on high-risk work — fail closed.
+                if _guardrail_should_fail_closed(step, state.context.get("_risk_level")):
+                    raise PermissionError(
+                        f"Guardrail check errored on high-risk tool "
+                        f"'{tool_name}'; failing closed."
+                    ) from _ge_exc
+
+        # Guardrail check: tool_args (Guardrails 2.0)
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
+            try:
+                _g2_args_str = (
+                    json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
+                )
+                _g2_args_result = await guardrails_engine.evaluate(
+                    content=_g2_args_str,
+                    layer=GuardrailLayer.TOOL_ARGS,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_id=getattr(state, "goal_id", None),
+                    step_description=step,
+                )
+                if _g2_args_result.get("blocked"):
+                    _g2_viol_name = (_g2_args_result.get("violations") or [{}])[0].get(
+                        "rule_name", "policy"
+                    )
+                    raise PermissionError(f"Tool call blocked by guardrail: {_g2_viol_name}")
+            except PermissionError:
+                raise
+            except Exception as _g2_exc:
+                # SAFE-4 (P0-15): fail closed on high-risk work when the
+                # guardrail engine errors instead of silently allowing.
+                if _guardrail_should_fail_closed(step, state.context.get("_risk_level")):
+                    raise PermissionError(
+                        f"Guardrail (tool_args) errored on high-risk step "
+                        f"'{tool_name}'; failing closed."
+                    ) from _g2_exc
+
+    async def _tool_policy_gate(
+        self,
+        *,
+        tool_name: str,
+        step: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        already_checked: str | None = None,
+    ) -> str | None:
+        """Tenant tool policy for the tool a call ACTUALLY targets.
+
+        Returns None to allow or a denial reason (the call is not run). The
+        step-level check only sees a tool name guessed from the step text, so it
+        is skipped here only for that same name (already enforced, and any
+        approval already granted). REQUIRE_APPROVAL blocks on a human decision
+        in a supervised run (raising PermissionError unless APPROVED) and is a
+        denial everywhere else. An evaluation error fails closed.
+        """
+        if self._policy_engine is None or not tool_name or tool_name == already_checked:
+            return None
+        try:
+            result = self._policy_engine.evaluate(tool_name=tool_name, tenant_ctx=tenant_ctx)
+        except Exception as exc:
+            return f"tool policy could not be evaluated ({type(exc).__name__}); failing closed"
+        if result == PolicyResult.DENY:
+            record_tool_call(tool_name, "policy", "denied", 0.0)
+            return "denied by tenant tool policy"
+        if result == PolicyResult.REQUIRE_APPROVAL:
+            denial = self._approval_unawaitable_error(
+                step, f"tenant policy on tool '{tool_name}'"
+            )
+            if denial is not None or self._hitl_gateway is None:
+                record_tool_call(tool_name, "policy", "approval_required", 0.0)
+                return str(denial or f"tool '{tool_name}' requires approval by policy")
+            await self._await_tool_approval(
+                tool_name=tool_name,
+                action=f"{tool_name}: {step}"[:500],
+                risk_level="high",
+                state=state,
+                tenant_ctx=tenant_ctx,
+            )
+        return None
+
+    async def _await_tool_approval(
+        self,
+        *,
+        tool_name: str,
+        action: str,
+        risk_level: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+    ) -> None:
+        """File a durable approval for one tool call and block on the decision.
+
+        Raises PermissionError unless a human explicitly APPROVED it.
+        """
+        if self._hitl_gateway is None:
+            raise PermissionError(f"Tool '{tool_name}' requires approval; no gateway.")
+        req_id = await self._file_approval_request(
+            goal_id=state.goal_id, action=action, risk_level=risk_level, tenant_ctx=tenant_ctx
+        )
+        await self._emit(
+            {"type": "waiting_approval", "request_id": req_id, "action": action,
+             "tool": tool_name}
+        )
+        started = time.monotonic()
+        final_status = await self._hitl_gateway.wait_for_approval(
+            req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+        )
+        record_approval_wait(time.monotonic() - started)
+        if final_status == ApprovalStatus.REJECTED:
+            raise PermissionError(f"Tool '{tool_name}' was rejected by human approver.")
+        if final_status == ApprovalStatus.TIMED_OUT:
+            raise PermissionError(f"Tool '{tool_name}' approval timed out.")
+        if final_status != ApprovalStatus.APPROVED:
+            raise PermissionError(f"Tool '{tool_name}' was not approved ({final_status}).")
+        await self._emit({"type": "approval_granted", "request_id": req_id})
 
     async def _reserve_daily_permission_call(
         self, tenant_ctx: TenantContext, agent_id: str, tool_name: str, rule: Any
@@ -1308,7 +1490,10 @@ class ExecutorMixin:
             except Exception:
                 pass
 
-        # 6b. Policy engine check (glob-based policies)
+        # 6b. Policy engine check (glob-based policies). This sees the tool name
+        # guessed from the step text; the tool the model actually calls is
+        # checked again at dispatch (``_tool_policy_gate``) unless it is this one.
+        _step_policy_tool = tool_name
         if self._policy_engine is not None:
             policy_result = self._policy_engine.evaluate(tool_name=tool_name, tenant_ctx=tenant_ctx)
             if policy_result == PolicyResult.DENY:
@@ -1967,79 +2152,9 @@ class ExecutorMixin:
                 )
                 tool_call = None  # prevent dispatch
         if tool_call is not None:
-            # GuardrailEngine v2: evaluate tool arguments BEFORE the MCP call
-            _guardrail_engine_v2 = (
-                getattr(self._app_state, "guardrail_engine", None) if self._app_state else None
-            )
-            if _guardrail_engine_v2 is not None:
-                try:
-                    from app.intelligence.guardrail_engine import GuardrailContext as _GCtx
-
-                    _ge_ctx = _GCtx(
-                        tenant_id=tenant_ctx.tenant_id if tenant_ctx else "",
-                        goal_id=state.goal_id or "",
-                        agent_id=self._agent_id or "",
-                        domain=getattr(tenant_ctx, "domain_context", "general")
-                        if tenant_ctx
-                        else "general",
-                    )
-                    _ge_args_result = await _guardrail_engine_v2.evaluate_tool_args(
-                        tool_name=tool_name,
-                        arguments=tool_call.arguments or {},
-                        context=_ge_ctx,
-                    )
-                    if not _ge_args_result.allowed:
-                        _ge_viol = (
-                            _ge_args_result.violations[0] if _ge_args_result.violations else None
-                        )
-                        raise PermissionError(
-                            f"Guardrail blocked tool call '{tool_name}': "
-                            f"{_ge_viol.matched_pattern if _ge_viol else 'policy violation'}"
-                        )
-                except PermissionError:
-                    raise
-                except Exception as _ge_exc:
-                    self._logger.warning("guardrail_engine_v2_pre_check_failed", error=str(_ge_exc))
-                    # SAFE-4 (P0-15): an errored guardrail check must not read as
-                    # "allowed" on high-risk work — fail closed.
-                    if _guardrail_should_fail_closed(
-                        step, state.context.get("_risk_level")
-                    ):
-                        raise PermissionError(
-                            f"Guardrail check errored on high-risk tool "
-                            f"'{tool_name}'; failing closed."
-                        ) from _ge_exc
-
-            # Guardrail check: tool_args (Guardrails 2.0)
-            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
-                try:
-                    _g2_args_str = (
-                        json.dumps(tool_call.arguments)
-                        if isinstance(tool_call.arguments, dict)
-                        else str(tool_call.arguments)
-                    )
-                    _g2_args_result = await guardrails_engine.evaluate(
-                        content=_g2_args_str,
-                        layer=GuardrailLayer.TOOL_ARGS,
-                        tenant_id=tenant_ctx.tenant_id,
-                        goal_id=getattr(state, "goal_id", None),
-                        step_description=step,
-                    )
-                    if _g2_args_result.get("blocked"):
-                        _g2_viol_name = (_g2_args_result.get("violations") or [{}])[0].get(
-                            "rule_name", "policy"
-                        )
-                        raise PermissionError(f"Tool call blocked by guardrail: {_g2_viol_name}")
-                except PermissionError:
-                    raise
-                except Exception as _g2_exc:
-                    # SAFE-4 (P0-15): fail closed on high-risk work when the
-                    # guardrail engine errors instead of silently allowing.
-                    if _guardrail_should_fail_closed(step, state.context.get("_risk_level")):
-                        raise PermissionError(
-                            f"Guardrail (tool_args) errored on high-risk step "
-                            f"'{tool_name}'; failing closed."
-                        ) from _g2_exc
+            # Tool-argument guardrails BEFORE the MCP call (shared with the
+            # parallel extra-call path, so every call of a turn is checked).
+            await self._guard_tool_args(tool_name, tool_call.arguments, step, state, tenant_ctx)
 
             tool_call_started = time.monotonic()
             if self._mcp_client is None:
@@ -2070,14 +2185,26 @@ class ExecutorMixin:
                 # Persisted per-agent permissions (agent_permissions): these were
                 # written by PUT /agents/{id}/permissions but never enforced.
                 _perm_tool_name = tool_ref.name if tool_ref is not None else tool_call.tool
-                _perm_denial = await self._agent_permission_gate(
-                    state=state, tenant_ctx=tenant_ctx, tool_name=_perm_tool_name, step=step
+                # Tenant tool policy on the tool actually being called.
+                _pol_denial = await self._tool_policy_gate(
+                    tool_name=_perm_tool_name,
+                    step=step,
+                    state=state,
+                    tenant_ctx=tenant_ctx,
+                    already_checked=_step_policy_tool,
+                )
+                _perm_denial = (
+                    None
+                    if _pol_denial is not None
+                    else await self._agent_permission_gate(
+                        state=state, tenant_ctx=tenant_ctx, tool_name=_perm_tool_name, step=step
+                    )
                 )
                 # Grantex governance gate (mandatory, opt-in): an agent may only
                 # run a tool it holds a covering, active, unrevoked grant for.
                 # Pass-through until enforcement is enabled for the deploy.
                 _grant_denial = None
-                if tool_ref is not None and _perm_denial is None:
+                if tool_ref is not None and _perm_denial is None and _pol_denial is None:
                     _grant_decision = await enforce_tool_call(
                         self._grant_store,
                         tenant_id=tenant_ctx.tenant_id,
@@ -2089,7 +2216,22 @@ class ExecutorMixin:
                         _grant_denial = _grant_decision
                     elif _grant_decision.grant_id:
                         state.context["_authorizing_grant_id"] = _grant_decision.grant_id
-                if _perm_denial is not None:
+                if _pol_denial is not None:
+                    _taint_step_cache()
+                    await self._emit(
+                        {
+                            "type": "tool_call_blocked_by_policy",
+                            "tool": _perm_tool_name,
+                            "reason": _pol_denial,
+                        }
+                    )
+                    raw_output = self._sanitize_tool_raw_output(
+                        f"Tool call denied: '{_perm_tool_name}' is blocked by tenant policy "
+                        f"({_pol_denial}). Do not call it again; complete the step with the "
+                        "information already available or other permitted tools."
+                    )
+                    raw_output_sanitized = True
+                elif _perm_denial is not None:
                     _taint_step_cache()
                     await self._emit(
                         {
@@ -2582,29 +2724,11 @@ class ExecutorMixin:
                             # V5: Placeholder argument guard — prevent LLM-generated
                             # placeholder values (e.g. "your_organization/your_repository")
                             # from reaching real MCP servers.
-                            _placeholder_patterns = (
-                                "your_organization",
-                                "your_repository",
-                                "your_org",
-                                "your_repo",
-                                "your_project",
-                                "your_workspace",
-                                "your_team",
-                                "your_board",
-                                "<organization>",
-                                "<repository>",
-                                "<repo>",
-                                "{organization}",
-                                "{repository}",
-                                "{repo}",
-                                "example.com",
-                                "placeholder",
-                            )
                             _ph_hits = [
                                 f"{k}={v!r}"
                                 for k, v in (tool_call.arguments or {}).items()
                                 if isinstance(v, str)
-                                and any(p in v.lower() for p in _placeholder_patterns)
+                                and any(p in v.lower() for p in _PLACEHOLDER_ARG_PATTERNS)
                             ]
                             if _ph_hits:
                                 _ph_msg = (
@@ -2865,6 +2989,7 @@ class ExecutorMixin:
                     state,
                     tenant_ctx,
                     locals().get("_allowed_tools_set") or set(),
+                    policy_checked_tool=_step_policy_tool,
                 )
                 for _en, _eo in _extra_outputs:
                     raw_output = f"{raw_output or ''}\n\n[parallel tool: {_en}]\n{_eo}"
@@ -2887,6 +3012,8 @@ class ExecutorMixin:
                             tenant_id=getattr(tenant_ctx, "tenant_id", None),
                             kind="parallel",
                         )
+            except PermissionError:
+                raise  # a refused extra call fails the step like the primary one
             except Exception as _pb_exc:  # pragma: no cover - defensive
                 self._logger.warning("parallel_tool_dispatch_failed", error=str(_pb_exc)[:120])
 
@@ -3154,13 +3281,12 @@ class ExecutorMixin:
         state: AgentState,
         tenant_ctx: TenantContext,
         allowed_tools_set: set[str],
+        policy_checked_tool: str | None = None,
     ) -> list[tuple[str, str]]:
         """Strategy B — run the *additional* tool calls of one executor turn
-        concurrently, each through the core safety gates (name validation, tool
-        lookup, risk gate honoring the per-connector auto_approve opt-in, argument
-        validation, dispatch, output sanitization). The first tool call is handled
-        by the full primary path; this is only reached for models whose profile
-        opts into parallel tool calls.
+        concurrently, each through the same gates as the primary call (see
+        ``_one``). The first tool call is handled by the full primary path; this
+        is only reached for models whose profile opts into parallel tool calls.
 
         Returns ``(tool_name, sanitized_output)`` pairs. A failure in one call
         never sinks the batch — its error is captured and the others proceed.
@@ -3181,22 +3307,87 @@ class ExecutorMixin:
         )
         _tc_ctx = state.context.get("tool_context")
 
-        async def _one(stc: dict[str, Any]) -> tuple[str, str] | None:
+        # Tool-call budget: the extra calls count against the goal's budget like
+        # the primary call (which is already recorded on the step). Slots are
+        # assigned in call order before anything runs concurrently.
+        _budget = int(getattr(self, "_tool_call_budget", _DEFAULT_TOOL_CALL_BUDGET))
+        _used = sum(len(s.tool_calls or []) for s in state.steps)
+        _remaining = None if _budget <= 0 else max(_budget - _used, 0)
+
+        async def _deny(name: str, kind: str, reason: str, text: str) -> tuple[str, str]:
+            _taint_step_cache()
+            await self._emit(
+                {"type": f"tool_call_blocked_by_{kind}", "tool": name, "reason": reason,
+                 "parallel": True}
+            )
+            record_tool_call(name, kind, "denied", 0.0)
+            return (name, self._sanitize_tool_raw_output(text))
+
+        async def _one(index: int, stc: dict[str, Any]) -> tuple[str, str] | None:
+            """One extra call through the SAME gates as the primary call: name
+            validation, budget, argument guardrails, tool policy, per-agent
+            permissions, grants, risk class (destructive denied; write_high
+            approved by a human in supervised mode, refused otherwise), argument
+            validation and the placeholder guard. A refusal is reported in the
+            step output; a guardrail block or a rejected approval raises
+            PermissionError, exactly as it does for the primary call."""
             name = stc.get("name") or stc.get("tool_name", "")
             args = stc.get("input") or stc.get("arguments") or {}
             if not isinstance(args, dict):
                 args = {}
             if not name:
                 return None
-            # These extra calls are not re-checked against per-agent permissions
-            # or grants the way the primary call is, so a step that used them is
-            # never cached (a cache hit could not re-authorise them faithfully).
-            _taint_step_cache()
             if _validate_tn(name, allowed_tools_set):
+                _taint_step_cache()
                 return (name, f"[rejected: unknown tool '{name}']")
+            if _remaining is not None and index >= _remaining:
+                return await _deny(
+                    name, "budget", "tool-call budget reached",
+                    f"Tool call denied: '{name}' was not run — the goal's tool-call budget "
+                    f"({_budget}) is spent. Answer from the information already gathered.",
+                )
+            await self._guard_tool_args(name, args, step, state, tenant_ctx)
             tool_ref = _tc_ctx.find_tool(name) if _tc_ctx is not None else None
             if tool_ref is None:
+                _taint_step_cache()
                 return (name, f"[tool not found: '{name}']")
+            pol_denial = await self._tool_policy_gate(
+                tool_name=tool_ref.name,
+                step=step,
+                state=state,
+                tenant_ctx=tenant_ctx,
+                already_checked=policy_checked_tool,
+            )
+            if pol_denial is not None:
+                return await _deny(
+                    tool_ref.name, "policy", pol_denial,
+                    f"Tool call denied: '{tool_ref.name}' is blocked by tenant policy "
+                    f"({pol_denial}). Do not call it again.",
+                )
+            perm_denial = await self._agent_permission_gate(
+                state=state, tenant_ctx=tenant_ctx, tool_name=tool_ref.name, step=step
+            )
+            if perm_denial is not None:
+                return await _deny(
+                    tool_ref.name, "agent_permission", perm_denial,
+                    f"Tool call denied: '{tool_ref.name}' is not permitted for this agent "
+                    f"({perm_denial}). Do not call it again.",
+                )
+            grant = await enforce_tool_call(
+                self._grant_store,
+                tenant_id=tenant_ctx.tenant_id,
+                agent_id=self._agent_id or "",
+                tool_name=tool_ref.name,
+                enabled=self._enforce_grants,
+            )
+            if not grant.allowed:
+                return await _deny(
+                    tool_ref.name, "grant", str(grant.reason),
+                    f"Tool call denied: '{tool_ref.name}' is not granted to this agent "
+                    f"({grant.reason}). Do not call it again.",
+                )
+            if grant.grant_id:
+                state.context["_authorizing_grant_id"] = grant.grant_id
             # Risk gate — same rules as the primary path (per-connector opt-in).
             risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
             eff = resolve_effective_tool_risk(
@@ -3206,16 +3397,39 @@ class ExecutorMixin:
                 allow_fa_write_high=_allow_fa_write_high,
             )
             if eff == "destructive":
-                return (tool_ref.name, f"[denied: '{tool_ref.name}' is destructive]")
+                return await _deny(
+                    tool_ref.name, "risk", "destructive",
+                    f"[denied: '{tool_ref.name}' is destructive]",
+                )
             if eff == "write_high":
-                # Not opted in — mirror the primary path's non-supervised behavior.
-                return (
-                    tool_ref.name,
-                    f"High-risk tool '{tool_ref.name}' requires approval (non-supervised mode).",
+                if self._hitl_gateway is None or self._autonomy_mode != "supervised":
+                    # Nobody will decide an approval here: not run, none filed.
+                    return await _deny(
+                        tool_ref.name, "risk", "approval required",
+                        f"High-risk tool '{tool_ref.name}' requires approval "
+                        "(non-supervised mode); it was not executed.",
+                    )
+                # Supervised: block until a human decides (raises unless APPROVED).
+                await self._await_tool_approval(
+                    tool_name=tool_ref.name, action=tool_ref.name, risk_level=eff,
+                    state=state, tenant_ctx=tenant_ctx,
                 )
             _arg_errors = _validate_args(args, getattr(tool_ref, "input_schema", None) or {})
             if _arg_errors:
+                _taint_step_cache()
                 return (tool_ref.name, f"[argument validation failed: {'; '.join(_arg_errors)}]")
+            _ph_hits = [
+                f"{k}={v!r}"
+                for k, v in args.items()
+                if isinstance(v, str) and any(p in v.lower() for p in _PLACEHOLDER_ARG_PATTERNS)
+            ]
+            if _ph_hits:
+                _taint_step_cache()
+                return (
+                    tool_ref.name,
+                    f"[PLACEHOLDER ARGUMENTS DETECTED] '{tool_ref.name}' was called with "
+                    f"placeholder values: {', '.join(_ph_hits)}; it was not executed.",
+                )
             _t0 = time.monotonic()
             try:
                 _note_step_tool(tool_ref.name, tool_ref.server_name)
@@ -3271,8 +3485,13 @@ class ExecutorMixin:
             return (tool_ref.name, out)
 
         results = await _asyncio.gather(
-            *[_one(stc) for stc in extra_tcs], return_exceptions=True
+            *[_one(i, stc) for i, stc in enumerate(extra_tcs)], return_exceptions=True
         )
+        # A guardrail block or a rejected / timed-out approval fails the step,
+        # exactly as it does for the primary call (never swallowed).
+        for r in results:
+            if isinstance(r, PermissionError):
+                raise r
         return [r for r in results if isinstance(r, tuple)]
 
     async def _execute_step_with_cache(
