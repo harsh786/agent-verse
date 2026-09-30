@@ -75,7 +75,8 @@ class TestTelegramWebhook:
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
         mock.assert_awaited_once()
-        (command,), _ = mock.await_args
+        (command, state), _ = mock.await_args
+        assert state is client.app.state  # TRG-43: the request's app, not app.main.app
         assert command.text == "do the thing"
         assert command.actor_channel == "telegram"
 
@@ -142,7 +143,8 @@ class TestSlackEvents:
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
         mock.assert_awaited_once()
-        (command,), _ = mock.await_args
+        (command, state), _ = mock.await_args
+        assert state is client.app.state  # TRG-43: the request's app, not app.main.app
         assert command.text == "/goal ship it"
 
     def test_skips_processing_when_no_text(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -350,7 +352,8 @@ class TestGenericWebhook:
         assert r.status_code == 200
         assert r.json()["status"] == "queued"
         mock.assert_awaited_once()
-        (command,), _ = mock.await_args
+        (command, state), _ = mock.await_args
+        assert state is client.app.state  # TRG-43: the request's app, not app.main.app
         assert "critical" in command.text.lower()
 
 
@@ -543,13 +546,11 @@ class TestProcessCommandEndToEnd:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         goal_service = SimpleNamespace(submit_goal=AsyncMock())
-        from app.main import app as fastapi_app
-
-        monkeypatch.setattr(fastapi_app.state, "goal_service", goal_service, raising=False)
+        state = SimpleNamespace(goal_service=goal_service)
         reply_mock = AsyncMock()
         monkeypatch.setattr(gw, "_reply_to_channel", reply_mock)
 
-        resp = await gw._process_command(_cmd(tenant_id=""))
+        resp = await gw._process_command(_cmd(tenant_id=""), state)
 
         assert resp.status == "accepted"
         assert resp.requires_action is False
@@ -568,11 +569,10 @@ class TestProcessCommandEndToEnd:
             create_collection_async=AsyncMock(return_value="coll-1"),
         )
         goal_service = SimpleNamespace(submit_goal=AsyncMock(return_value={"goal_id": "g-999"}))
-        from app.main import app as fastapi_app
-
-        monkeypatch.setattr(fastapi_app.state, "goal_service", goal_service, raising=False)
-        monkeypatch.setattr(fastapi_app.state, "ingestion_pipeline", pipeline, raising=False)
-        monkeypatch.setattr(fastapi_app.state, "knowledge_store", ks, raising=False)
+        # TRG-43: the request's own app state, not the global app.main.app.
+        state = SimpleNamespace(
+            goal_service=goal_service, ingestion_pipeline=pipeline, knowledge_store=ks
+        )
         reply_mock = AsyncMock()
         monkeypatch.setattr(gw, "_reply_to_channel", reply_mock)
 
@@ -581,7 +581,7 @@ class TestProcessCommandEndToEnd:
             text="summarize the quarter",
             files=[CommandFile(filename="a.txt", content_type="text/plain", data=b"hello")],
         )
-        resp = await gw._process_command(cmd)
+        resp = await gw._process_command(cmd, state)
 
         assert resp.mission_id == "g-999"
         assert "Ingested 1 document" in resp.text
@@ -594,15 +594,13 @@ class TestProcessCommandEndToEnd:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         goal_service = SimpleNamespace(submit_goal=AsyncMock(return_value={"goal_id": "g-1"}))
-        from app.main import app as fastapi_app
-
-        monkeypatch.setattr(fastapi_app.state, "goal_service", goal_service, raising=False)
-        monkeypatch.setattr(fastapi_app.state, "ingestion_pipeline", None, raising=False)
-        monkeypatch.setattr(fastapi_app.state, "knowledge_store", None, raising=False)
+        state = SimpleNamespace(
+            goal_service=goal_service, ingestion_pipeline=None, knowledge_store=None
+        )
         monkeypatch.setattr(gw, "_reply_to_channel", AsyncMock())
 
         cmd = _cmd(tenant_id=TID, text="respond now", urgency="urgent")
-        await gw._process_command(cmd)
+        await gw._process_command(cmd, state)
 
         assert goal_service.submit_goal.await_args.kwargs["priority"] == "high"
 
@@ -612,14 +610,11 @@ class TestProcessCommandEndToEnd:
         """``/callback ...`` text (a button press echoed back by the adapter)
         must never be forwarded to goal submission as if it were a user request."""
         goal_service = SimpleNamespace(submit_goal=AsyncMock())
-        from app.main import app as fastapi_app
-
-        monkeypatch.setattr(fastapi_app.state, "goal_service", goal_service, raising=False)
-        monkeypatch.setattr(fastapi_app.state, "ingestion_pipeline", None, raising=False)
+        state = SimpleNamespace(goal_service=goal_service, ingestion_pipeline=None)
         monkeypatch.setattr(gw, "_reply_to_channel", AsyncMock())
 
         cmd = _cmd(tenant_id=TID, text="/callback approve:123")
-        resp = await gw._process_command(cmd)
+        resp = await gw._process_command(cmd, state)
 
         goal_service.submit_goal.assert_not_awaited()
         assert resp.mission_id is None

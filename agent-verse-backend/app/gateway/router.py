@@ -363,9 +363,14 @@ async def _reply_to_channel(command: OrgCommand, text: str) -> None:
         _log.warning("gateway.reply_failed", error=str(exc)[:120])
 
 
-async def _process_command(command: OrgCommand) -> OrgResponse:
+async def _process_command(command: OrgCommand, state: Any = None) -> OrgResponse:
     """Turn an inbound chat command into real platform work: ingest any attached
-    documents into knowledge, submit the text as a goal, and reply to the chat."""
+    documents into knowledge, submit the text as a goal, and reply to the chat.
+
+    ``state`` is the receiving app's ``request.app.state`` (passed by each route);
+    it used to be read off the global ``app.main.app``, which is a different app
+    from the one serving the request in multi-app setups and tests.
+    """
     with _tracer.start_as_current_span("gateway.process_command") as span:
         span.set_attribute("channel", command.actor_channel)
         span.set_attribute("org_id", command.org_id)
@@ -377,13 +382,6 @@ async def _process_command(command: OrgCommand) -> OrgResponse:
             has_files=bool(command.files),
             text_preview=command.text[:60],
         )
-
-        try:
-            from app.main import app as _fastapi_app
-
-            state = _fastapi_app.state
-        except Exception:
-            state = None
 
         ctx, tenant_id = _tenant_ctx_for(command)
 
@@ -459,7 +457,7 @@ async def telegram_webhook(
     command = await _telegram.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
-        background_tasks.add_task(_process_command, command)
+        background_tasks.add_task(_process_command, command, request.app.state)
 
     return {"status": "ok"}
 
@@ -500,7 +498,7 @@ async def slack_events(
     command = await _slack.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
-        background_tasks.add_task(_process_command, command)
+        background_tasks.add_task(_process_command, command, request.app.state)
 
     return {"status": "ok"}
 
@@ -559,7 +557,7 @@ async def whatsapp_webhook(
     command = await _whatsapp.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
-        background_tasks.add_task(_process_command, command)
+        background_tasks.add_task(_process_command, command, request.app.state)
 
     return {"status": "ok"}
 
@@ -587,7 +585,7 @@ async def teams_messages(
     command = await _teams.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
     if command.text:
-        background_tasks.add_task(_process_command, command)
+        background_tasks.add_task(_process_command, command, request.app.state)
 
     return {"type": "message", "text": ""}
 
@@ -975,7 +973,7 @@ async def generic_webhook(
     tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _webhook.normalize(raw, tenant_id=tenant_id, org_id=org_id)
 
-    background_tasks.add_task(_process_command, command)
+    background_tasks.add_task(_process_command, command, request.app.state)
     return {"command_id": command.command_id, "status": "queued"}
 
 

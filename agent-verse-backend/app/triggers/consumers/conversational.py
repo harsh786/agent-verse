@@ -13,10 +13,12 @@ triggers against it:
   * SMS_INBOUND      — inbound phone matches ``phone_number_filter``.
   * VOICE_TRANSCRIPT — a voice transcript arrived (optional phone filter).
   * FORM_SUBMISSION  — the event's ``form_id`` matches ``form_id``.
+  * EMAIL_ARRIVAL    — any inbound email (optional sender filter).
+  * DISCORD_EVENT    — any Discord interaction (channel scoping applies).
+  * MEETING_ENDED    — ``POST /channels/meeting/ended`` (Zoom / Teams / Google
+    Meet relay) fired; optional ``meeting_platform`` filter.
 
-``meeting_ended`` has no inbound endpoint, so it is NOT promoted (stays
-unsupported). Firing is tenant-scoped and dispatched through the governed
-TriggerDispatcher.
+Firing is tenant-scoped and dispatched through the governed TriggerDispatcher.
 """
 
 from __future__ import annotations
