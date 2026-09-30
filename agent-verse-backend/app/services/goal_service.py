@@ -1203,6 +1203,11 @@ class GoalService:
 
         from app.db.rls import sqlalchemy_rls_context
 
+        # The patterns the runtime actually runs are also the goal's patterns_used
+        # column (it used to hold the requested profile, even on the legacy path).
+        patterns: list[str] | None = None
+        if key == "strategy_execution" and isinstance(value, dict):
+            patterns = [str(p) for p in value.get("patterns") or ()]
         try:
             async with (
                 self._db() as session,
@@ -1218,6 +1223,14 @@ class GoalService:
                     ),
                     {"key": key, "value": json.dumps(value), "g": goal_id, "t": tenant_id},
                 )
+                if patterns is not None:
+                    await session.execute(
+                        _sql(
+                            "UPDATE goals SET patterns_used = CAST(:p AS jsonb) "
+                            "WHERE id = :g AND tenant_id = :t"
+                        ),
+                        {"p": json.dumps(patterns), "g": goal_id, "t": tenant_id},
+                    )
         except Exception as exc:
             _svc_logger.warning(
                 "goal_context_merge_failed", goal_id=goal_id, key=key, error=str(exc)
@@ -1958,10 +1971,12 @@ class GoalService:
                 {"strategy_id": item.strategy_id, "reason_code": item.reason_code}
                 for item in profile.rejected_alternatives
             ],
-            "patterns_used": [
-                profile.primary_strategy.strategy_id,
-                *(item.strategy_id for item in profile.auxiliary_strategies),
-            ],
+            # Nothing has run yet: patterns_used is filled from strategy_execution
+            # (what the runtime actually runs — see _db_merge_context_key). It used
+            # to be the REQUESTED profile for every goal, legacy-path ones included,
+            # so reports claimed patterns that never ran (CORE-21). The request
+            # itself stays in runtime_profile_snapshot.
+            "patterns_used": [],
             "rag_strategy_used": profile.rag_strategy.strategy,
         }
         return {
@@ -4195,8 +4210,13 @@ class GoalService:
                     agent_config=record.execution_context.get("strategy_runtime"),
                 )
                 record.execution_context["pattern_selection"] = _pattern_selection
-            except Exception:
-                pass
+            except Exception as _ps_exc:
+                _svc_logger.warning(
+                    "pattern_selection_summary_failed",
+                    goal_id=goal_id,
+                    error_type=type(_ps_exc).__name__,
+                    error=str(_ps_exc)[:200],
+                )
 
             # Agent Runtime 2.0: auto-create AgentExecutionPlan + AgentRunTrace per goal
             try:

@@ -47,7 +47,8 @@ async def test_profile_data_is_json_safe_and_legacy_by_default(
     columns = data["columns"]
     assert columns["runtime_profile_id"] == data["context"]["profile_id"]
     assert columns["runtime_profile_version"] == 2
-    assert columns["patterns_used"][0] == "react"
+    # Nothing ran yet: filled from strategy_execution later (CORE-21).
+    assert columns["patterns_used"] == []
     assert columns["runtime_profile_snapshot"]["tenant_id"] == TENANT.tenant_id
 
 
@@ -170,7 +171,7 @@ async def test_submission_persists_profile_columns_under_tenant_rls(
     assert goal.runtime_profile_version == 2
     assert goal.strategy_registry_revision.startswith("sha256:")
     assert goal.runtime_profile_snapshot["goal_id"] == goal.id
-    assert goal.patterns_used[0] == "react"
+    assert goal.patterns_used == []  # a dry run executes nothing (CORE-21)
     assert goal.rag_strategy_used
     json.dumps(goal.execution_context)
     # The insert ran after the tenant's RLS GUC was set on the same session.
