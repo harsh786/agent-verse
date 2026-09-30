@@ -31,6 +31,7 @@ from app.workflow.registry import StepTypeRegistry
 from app.workflow.state import (
     StepStatus,
     WorkflowCancelled,
+    WorkflowConfigurationError,
     WorkflowPaused,
     WorkflowRunStatus,
     WorkflowState,
@@ -384,6 +385,15 @@ class WorkflowCompiler:
                     last_exc = TimeoutError(
                         f"step {step.id!r} exceeded timeout {step.timeout}"
                     )
+                except WorkflowConfigurationError as exc:
+                    # A wiring problem: record the failed step and fail the run.
+                    if persist:
+                        await self._record_step_finish(
+                            run_store, state, step, StepStatus.FAILED, None, str(exc)
+                        )
+                    with contextlib.suppress(Exception):
+                        exc.workflow_step_id = step.id  # type: ignore[attr-defined]
+                    raise
                 except Exception as exc:  # routed per step.on_failure below
                     last_exc = exc
                     if not self._should_retry(step.retry, exc):

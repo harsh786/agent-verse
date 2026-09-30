@@ -62,6 +62,14 @@ class WorkflowRunControlSignal(Exception):  # noqa: N818
     """
 
 
+class WorkflowConfigurationError(RuntimeError):
+    """The engine is missing something a step needs (e.g. no approval gateway).
+
+    Not retried and not subject to ``on_failure``: waiting or skipping cannot
+    fix a wiring problem, so the run fails with this message.
+    """
+
+
 class WorkflowCancelled(WorkflowRunControlSignal):
     """An operator cancelled the run (via the API); abort remaining steps."""
 

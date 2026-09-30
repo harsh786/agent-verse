@@ -8,7 +8,7 @@ from typing import Any, Literal
 from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition
-from app.workflow.state import WorkflowRunStatus, WorkflowState
+from app.workflow.state import WorkflowConfigurationError, WorkflowRunStatus, WorkflowState
 
 _log = get_logger(__name__)
 
@@ -117,9 +117,17 @@ class HITLStepNode:
                 priority=self._compute_priority(state),
                 timeout_action=self.step.timeout_action,
             )
-        else:
-            # Test mode — use step_id as the request_id
+        elif state.get("is_test_run"):
+            # Sandbox/test run — no approval record; use step_id as the request_id
             request_id = self.step.id
+        else:
+            # Old bug: a real run silently entered "test mode" here, created no
+            # approval anyone could act on, and waited forever.
+            _log.error("hitl_step_no_gateway", step_id=self.step.id, run_id=state.get("run_id"))
+            raise WorkflowConfigurationError(
+                f"Approval step {self.step.id!r} cannot run: no approval gateway is "
+                "configured for the workflow engine, so nobody could approve it"
+            )
 
         _log.info(
             "hitl_step_suspended",
