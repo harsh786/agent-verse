@@ -65,6 +65,34 @@ def test_interval_extracts_seconds() -> None:
     assert spec.interval_seconds == 30
 
 
+@pytest.mark.parametrize(
+    ("description", "cron"),
+    [
+        ("every weekday at 9am", "0 9 * * 1-5"),
+        ("every day at midnight", "0 0 * * *"),
+        ("every day at 9 AM UTC", "0 9 * * *"),
+        ("every monday at 6:30 pm send the report", "30 18 * * 1"),
+        ("run on this cron 0 9 * * 1-5", "0 9 * * 1-5"),
+        ("every hour", "0 * * * *"),
+        ("every day", ""),  # no time given: nothing is guessed (the spec is refused)
+    ],
+)
+def test_keyword_cron_is_derived_only_when_unambiguous(description: str, cron: str) -> None:
+    """TRG-10: a keyword-routed cron used to carry no expression at all and was
+    stored as a trigger that could never fire. The fallback now derives the
+    expression when the phrasing pins it down, and leaves it empty otherwise
+    (so validation refuses it instead of guessing)."""
+    spec = _keyword_route(description)
+    assert spec is not None and spec.trigger_type == TriggerType.CRON
+    assert spec.cron_expression == cron
+
+
+def test_every_n_minutes_is_an_interval() -> None:
+    spec = _keyword_route("every 15 minutes check the queue")
+    assert spec is not None and spec.trigger_type == TriggerType.INTERVAL
+    assert spec.interval_seconds == 900
+
+
 def test_unmatched_description_returns_none_for_llm_path() -> None:
     # A genuinely novel phrasing must NOT be force-fit by the fast path — it
     # returns None so the LLM (slow) path can handle it.

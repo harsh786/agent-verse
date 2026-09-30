@@ -420,7 +420,7 @@ async def test_nl_schedule_creates_schedule(client_and_key):
         json={"command": "every day at 9 AM UTC"},
         headers={"X-API-Key": key},
     )
-    assert r.status_code == 201
+    assert r.status_code == 201, r.text
     assert isinstance(r.json(), list)
     assert len(r.json()) >= 1
 

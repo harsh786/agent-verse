@@ -51,9 +51,11 @@ def test_parse_single_defaults_to_once_on_unknown_type() -> None:
         _parse_single({"trigger_type": "unknown_type"})
 
 
-def test_parse_single_empty_object_defaults_to_once() -> None:
-    spec = _parse_single({})
-    assert spec.trigger_type == TriggerType.ONCE
+def test_parse_single_without_a_trigger_type_is_rejected() -> None:
+    """TRG-10: an answer naming no trigger type used to default to a time-less
+    ONCE (a trigger that never fires); parse() now falls back to keywords."""
+    with pytest.raises(ValueError, match="trigger_type"):
+        _parse_single({})
 
 
 # ── NLScheduler.parse — single schedules ─────────────────────────────────────

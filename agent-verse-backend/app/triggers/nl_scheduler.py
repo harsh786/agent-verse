@@ -377,10 +377,81 @@ _NL_SCHEDULER_SYSTEM = (
 )
 
 
+_LITERAL_CRON = re.compile(r"(?<!\S)(?:[\d*/,\-]+\s+){4}[\d*/,\-]+(?!\S)")
+_EVERY_N = re.compile(r"\bevery\s+(\d+)\s*(minute|hour)s?\b", re.I)
+_AT_TIME = re.compile(r"\bat\s+(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?\b", re.I)
+_DAY_NAMES = {
+    "sunday": 0,
+    "monday": 1,
+    "tuesday": 2,
+    "wednesday": 3,
+    "thursday": 4,
+    "friday": 5,
+    "saturday": 6,
+}
+
+
+def _keyword_cron(description: str) -> str:
+    """A cron expression the phrasing pins down exactly, else ``""`` (TRG-10).
+
+    The keyword fallback produced a ``cron`` spec with NO expression, which was
+    stored and never fired. Only unambiguous phrasings are converted — a literal
+    5-field cron, "every hour", or a day spec ("every day", "every weekday",
+    "every monday") plus a time ("at 9am", "at 18:30", "midnight", "noon").
+    Anything else stays empty so validation refuses it rather than guessing.
+    """
+    from croniter import croniter
+
+    literal = _LITERAL_CRON.search(description)
+    if literal and croniter.is_valid(literal.group(0).strip()):
+        return literal.group(0).strip()
+    text = description.lower()
+    if re.search(r"\bevery\s+hour\b|\bhourly\b", text):
+        return "0 * * * *"
+    hour: int | None = None
+    minute = 0
+    if re.search(r"\bmidnight\b", text):
+        hour = 0
+    elif re.search(r"\bnoon\b", text):
+        hour = 12
+    elif m := _AT_TIME.search(text):
+        hour, minute = int(m.group(1)), int(m.group(2) or 0)
+        meridiem = m.group(3)
+        if meridiem and not 1 <= hour <= 12:
+            return ""
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+    if hour is None or not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return ""
+    day = next((d for name, d in _DAY_NAMES.items() if name in text), None)
+    if re.search(r"\bweekdays?\b", text):
+        dow = "1-5"
+    elif day is not None:
+        dow = str(day)
+    elif re.search(r"\bevery\s+day\b|\bdaily\b|\beach\s+day\b|\bnightly\b|\bevery\s+night\b", text):
+        dow = "*"
+    else:
+        return ""
+    return f"{minute} {hour} * * {dow}"
+
+
 def _keyword_route(description: str) -> TriggerSpec | None:
     """Fast path: return TriggerSpec if a keyword rule matches."""
     for pattern, trigger_type, extra in _KEYWORD_RULES:
         if pattern.search(description):
+            if trigger_type == TriggerType.CRON:
+                # "every 15 minutes" matched the cron rule but is an interval.
+                if every := _EVERY_N.search(description):
+                    unit = 60 if every.group(2).lower() == "minute" else 3600
+                    return TriggerSpec(
+                        trigger_type=TriggerType.INTERVAL,
+                        interval_seconds=int(every.group(1)) * unit,
+                    )
+                return TriggerSpec(
+                    trigger_type=TriggerType.CRON, cron_expression=_keyword_cron(description)
+                )
             kwargs: dict = {"trigger_type": trigger_type}
             # Extract cron-like patterns
             if trigger_type == TriggerType.INTERVAL:
@@ -396,7 +467,11 @@ def _keyword_route(description: str) -> TriggerSpec | None:
 
 
 def _parse_single(obj: dict) -> TriggerSpec:
-    raw_type = str(obj.get("trigger_type", "once"))
+    if not isinstance(obj, dict) or not obj.get("trigger_type"):
+        # An answer that names no trigger type is not a schedule; defaulting it
+        # to a time-less "once" stored a trigger that never fires (TRG-10).
+        raise ValueError("LLM answer has no trigger_type")
+    raw_type = str(obj["trigger_type"])
     # Raises ValueError for unknown types (callers must handle)
     ttype = TriggerType(raw_type)
 
