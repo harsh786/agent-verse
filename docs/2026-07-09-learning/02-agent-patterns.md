@@ -1,16 +1,16 @@
 # AgentVerse Agent Patterns — Complete Reference
 
-This document covers every agent pattern shipped in AgentVerse, explaining what each one does, why it exists, when to use it, exactly how it is implemented, and how to monitor it in production. Read this alongside `app/agent/graph.py`, `app/agent/pattern_assembler.py`, and the individual files under `app/agent/patterns/`.
+This document covers every agent pattern shipped in AgentVerse, explaining what each one does, why it exists, when to use it, exactly how it is implemented, and how to monitor it in production. Read this alongside `app/agent/graph.py`, `app/orchestration/pattern_selector.py`, and the individual files under `app/agent/patterns/`.
 
 ---
 
 ## How Patterns Are Selected
 
-Before executing a single LLM call, AgentVerse automatically selects which patterns to activate. The entry point is `PatternAssembler.assemble()` in `app/agent/pattern_assembler.py:200`.
+Before executing a single LLM call, AgentVerse automatically selects which patterns to activate. The entry point is `PatternAssembler.assemble()` in `app/orchestration/pattern_selector.py:200`.
 
 ### GoalProperties → PatternConfig
 
-`PatternAssembler` receives a `GoalProperties` struct (complexity, domain, risk level, reversibility, multi-step, is_generative, requires_web, time_sensitivity) plus the agent's stored config dict. It walks a priority-ordered list of `Rule` objects at `app/agent/pattern_assembler.py:34` — there are currently **19 rules** spanning four priority tiers: CRITICAL, HIGH, MEDIUM, and LOW.
+`PatternAssembler` receives a `GoalProperties` struct (complexity, domain, risk level, reversibility, multi-step, is_generative, requires_web, time_sensitivity) plus the agent's stored config dict. It walks a priority-ordered list of `Rule` objects at `app/orchestration/pattern_selector.py:34` — there are currently **19 rules** spanning four priority tiers: CRITICAL, HIGH, MEDIUM, and LOW.
 
 Each rule has a predicate lambda. When the predicate matches it appends patterns to one of four buckets:
 
@@ -21,7 +21,7 @@ Each rule has a predicate lambda. When the predicate matches it appends patterns
 | `multi_agent_patterns` | single_agent, goal_tree, supervisor |
 | `safety_patterns` | hitl, rollback, guardrails, consensus_verification |
 
-**CRITICAL rules are inviolable**: the `force_no_hitl` agent config key is intentionally ignored when risk is CRITICAL or HIGH (`app/agent/pattern_assembler.py:245`). Safety patterns can only be added, never removed.
+**CRITICAL rules are inviolable**: the `force_no_hitl` agent config key is intentionally ignored when risk is CRITICAL or HIGH (`app/orchestration/pattern_selector.py:245`). Safety patterns can only be added, never removed.
 
 `react` is always forced to position zero in `reasoning_patterns` (`pattern_assembler.py:247–251`). Every goal therefore always runs ReAct as the base loop.
 
@@ -1378,7 +1378,7 @@ enable_my_pattern: bool = Field(default=False, description="Enable MyPattern for
 
 ### Step 4: Add the PatternAssembler rule
 
-In `app/agent/pattern_assembler.py`, add to `_RULES`:
+In `app/orchestration/pattern_selector.py`, add to `_RULES`:
 
 ```python
 Rule(

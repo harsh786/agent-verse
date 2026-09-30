@@ -250,6 +250,8 @@ _BUILTIN_TOOL_RISK: dict[str, str] = {
     "extract_document": "read",
     "save_artifact": "write_low",
     "knowledge.ingest": "write_low",
+    # Sends the task (and any context) to an external agent: approval-gated.
+    "a2a_delegate_task": "write_high",
 }
 
 # RPA tools declare their own risk vocabulary (read / low / high). Read-only ones map

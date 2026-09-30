@@ -1,7 +1,7 @@
 """Comprehensive tests for all agent patterns (30+ tests).
 
 Tests every pattern: init, execute, error handling, max_iterations,
-DynamicGraphAssembler, PatternAssembler, PatternSelector.
+DynamicGraphAssembler, PatternSelector.
 """
 from __future__ import annotations
 
@@ -367,10 +367,6 @@ class TestSupervisorPattern:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestDynamicGraphAssembler:
-    def test_import_via_patterns_module(self) -> None:
-        from app.agent.patterns.dynamic_graph_assembler import DynamicGraphAssembler
-        assert DynamicGraphAssembler is not None
-
     def test_assemble_builds_graph(self) -> None:
         from app.agent.dynamic_graph import DynamicGraphAssembler
         from app.agent.pattern_config import PatternConfig
@@ -425,58 +421,6 @@ class TestDynamicGraphAssembler:
         edges = DynamicGraphAssembler()._wire_edges(config)
         assert isinstance(edges, dict)
         assert "plan" in edges
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PatternAssembler
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestPatternAssembler:
-    def test_assemble_simple_goal(self) -> None:
-        from app.agent.pattern_assembler import PatternAssembler
-        from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
-        props = GoalProperties(
-            complexity=Complexity.SIMPLE,
-            domain=Domain.OPERATIONAL,
-            risk=RiskLevel.LOW,
-        )
-        config = PatternAssembler().assemble(props, {})
-        assert "react" in config.reasoning_patterns
-        assert config.max_iterations <= 25
-
-    def test_assemble_expert_adds_cot(self) -> None:
-        from app.agent.pattern_assembler import PatternAssembler
-        from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
-        props = GoalProperties(
-            complexity=Complexity.EXPERT,
-            domain=Domain.TECHNICAL,
-            risk=RiskLevel.LOW,
-        )
-        config = PatternAssembler().assemble(props, {})
-        assert "chain_of_thought" in config.reasoning_patterns
-        assert config.max_iterations >= 25
-
-    def test_assemble_critical_risk_adds_hitl(self) -> None:
-        from app.agent.pattern_assembler import PatternAssembler
-        from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
-        props = GoalProperties(
-            complexity=Complexity.SIMPLE,
-            domain=Domain.OPERATIONAL,
-            risk=RiskLevel.CRITICAL,
-        )
-        config = PatternAssembler().assemble(props, {})
-        assert "hitl" in config.safety_patterns
-
-    def test_assemble_always_starts_with_react(self) -> None:
-        from app.agent.pattern_assembler import PatternAssembler
-        from app.agent.pattern_config import Complexity, Domain, GoalProperties, RiskLevel
-        props = GoalProperties(
-            complexity=Complexity.COMPLEX,
-            domain=Domain.ANALYTICAL,
-            risk=RiskLevel.LOW,
-        )
-        config = PatternAssembler().assemble(props, {})
-        assert config.reasoning_patterns[0] == "react"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -790,7 +790,7 @@ class PatternConfig:
     assembly_latency_ms: float = 0.0
 ```
 
-### 5.3 `app/agent/goal_classifier.py`
+### 5.3 `app/orchestration/goal_classifier.py`
 
 ```python
 """Goal classifier — determines properties of a goal for pattern assembly."""
@@ -922,7 +922,7 @@ class GoalClassifier:
 goal_classifier = GoalClassifier()
 ```
 
-### 5.4 `app/agent/pattern_assembler.py`
+### 5.4 `app/orchestration/pattern_selector.py`
 
 ```python
 """Pattern assembler — maps GoalProperties to PatternConfig."""
@@ -1050,8 +1050,8 @@ pattern_assembler = PatternAssembler()
 # In submit_goal(), BEFORE creating the GoalRecord:
 
 # 1. Fast classify (always)
-from app.agent.goal_classifier import goal_classifier
-from app.agent.pattern_assembler import pattern_assembler
+from app.orchestration.goal_classifier import GoalClassifier
+from app.orchestration.pattern_selector import PatternSelector
 
 fast_props = goal_classifier.classify_fast(goal)
 

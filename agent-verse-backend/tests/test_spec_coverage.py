@@ -26,7 +26,7 @@ SPEC_MODULES = [
     "app.agent.patterns.self_refine", "app.agent.patterns.self_consistency",
     "app.agent.patterns.tree_of_thoughts", "app.agent.patterns.supervisor",
     "app.agent.patterns.debate", "app.agent.patterns.goal_tree",
-    "app.agent.patterns.consensus", "app.agent.patterns.dynamic_graph_assembler",
+    "app.agent.patterns.consensus",
     # Layer 4
     "app.rag.agentic.retriever_tool", "app.rag.agentic.source_inventory",
     "app.rag.agentic.query_reformulator", "app.rag.agentic.query_expander",

@@ -1,5 +1,7 @@
 # AgentVerse Core Dynamic Orchestration — Master Prompt Plan
 
+> **Status note (2026-09-30, CORE-23):** this document predates the removal of unwired modules it references — `app/agent/pattern_assembler.py`, `app/agent/goal_classifier.py`, `app/agent/semantic_entropy.py`, `app/agent/errors.py`, `app/agent/patterns/dynamic_graph_assembler.py` and `app/orchestration/workflow_compatibility.py` no longer exist. The live equivalents are `app/orchestration/goal_classifier.py`, `app/orchestration/pattern_selector.py` and `app/agent/dynamic_graph.py`.
+
 **Date:** 2026-07-07  
 **Status:** Architecture prompt plan, ready for implementation planning  
 **Scope:** Backend core runtime, frontend visibility surfaces, infra/runtime gates, tests, and agentic coding support

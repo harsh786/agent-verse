@@ -202,7 +202,7 @@ classifier's own confidence.</p>
 <section class="code">
 <h4>In AgentVerse</h4>
 <ul class="filelist">
-<li><code>app/agent/goal_classifier.py</code><span class="note">two-tier classifier</span></li>
+<li><code>app/orchestration/goal_classifier.py</code><span class="note">two-tier classifier</span></li>
 <li><code>app/agent/pattern_config.py</code><span class="note">GoalProperties, Complexity, Domain, RiskLevel</span></li>
 <li><code>app/orchestration/goal_classifier.py</code><span class="note">orchestration-side classification for strategy selection</span></li>
 </ul>
@@ -281,7 +281,7 @@ the console can show the operator why this goal got a jury and the last one did 
 <section class="code">
 <h4>In AgentVerse</h4>
 <ul class="filelist">
-<li><code>app/agent/pattern_assembler.py</code><span class="note">the rule table + assemble()</span></li>
+<li><code>app/orchestration/pattern_selector.py</code><span class="note">the rule table + assemble()</span></li>
 <li><code>app/agent/dynamic_graph.py</code><span class="note">DynamicGraphAssembler</span></li>
 <li><code>app/orchestration/pattern_selector.py</code><span class="note">strategy-level selection</span></li>
 <li><code>app/orchestration/runtime_profile_builder.py</code><span class="note">binds the config to a runtime profile</span></li>
@@ -2187,7 +2187,7 @@ measured improvement on your own eval set.</p>
 </section>
 <section class="code">
 <h4>In AgentVerse</h4>
-<p>This decision procedure <em>is</em> the rule table in <code>app/agent/pattern_assembler.py</code>,
+<p>This decision procedure <em>is</em> the rule table in <code>app/orchestration/pattern_selector.py</code>,
 plus <code>app/orchestration/pattern_selector.py</code> for strategy-level choices and
 <code>app/orchestration/compatibility.py</code> for rejecting combinations that cannot coexist.
 <code>app/observability/pattern_trace.py</code> records what was chosen so the choice can be reviewed

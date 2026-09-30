@@ -12,6 +12,7 @@ from typing import Any
 
 def get_builtin_server_configs() -> list[dict]:
     """Return configurations for all built-in MCP server wrappers."""
+    from app.agent.tools import a2a_call
     from app.mcp.servers import (
         acoustic_server,
         # ── New servers (wave 2) ─────────────────────────────────────────────
@@ -424,6 +425,17 @@ def get_builtin_server_configs() -> list[dict]:
             "tool_definitions": utility_server.TOOL_DEFINITIONS,
             "handler": utility_server.call_tool,
             "requires_env": [],
+        },
+        # ── Outbound A2A delegation (tenant-registered agent only) ────────────
+        # Calls the endpoint of the tenant's OWN "A2A Agent" connector; its
+        # requires_env keeps it off every tenant's surface until registered.
+        {
+            "server_id": a2a_call.SERVER_ID,
+            "name": a2a_call.SERVER_NAME,
+            "description": a2a_call.SERVER_DESCRIPTION,
+            "tool_definitions": a2a_call.TOOL_DEFINITIONS,
+            "handler": a2a_call.call_tool,
+            "requires_env": list(a2a_call.REQUIRES_ENV),
         },
         # ── CRM & Sales ───────────────────────────────────────────────────────
         {

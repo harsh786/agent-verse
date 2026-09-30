@@ -266,7 +266,7 @@ Best for:
 Patterns can be selected manually or assembled dynamically using:
 
 - `app/agent/pattern_config.py`
-- `app/agent/pattern_assembler.py`
+- `app/orchestration/pattern_selector.py`
 - `app/agent/dynamic_graph.py`
 
 The system can choose pattern combinations based on goal properties such as:

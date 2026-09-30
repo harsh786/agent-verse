@@ -1,5 +1,7 @@
 # AgentVerse Agentic OS — Implementation Specification (Phases 14–25)
 
+> **Status note (2026-09-30, CORE-23):** this document predates the removal of unwired modules it references — `app/agent/pattern_assembler.py`, `app/agent/goal_classifier.py`, `app/agent/semantic_entropy.py`, `app/agent/errors.py`, `app/agent/patterns/dynamic_graph_assembler.py` and `app/orchestration/workflow_compatibility.py` no longer exist. The live equivalents are `app/orchestration/goal_classifier.py`, `app/orchestration/pattern_selector.py` and `app/agent/dynamic_graph.py`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Complete the evaluation framework, observability, artifact system, identity/secrets, event bus, multi-tenancy, SDK, CLI, production deployment, reliability layer, compliance, and world-class UI — making AgentVerse a genuine production Agentic OS.

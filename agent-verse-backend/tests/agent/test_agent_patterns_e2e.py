@@ -327,30 +327,6 @@ def test_debate_pattern_registered() -> None:
 # ── Dynamic pattern assembly ──────────────────────────────────────────────────
 
 
-def test_pattern_assembler_selects_patterns_for_expert_goal() -> None:
-    """Expert + analytical goal should include react + higher-level reasoning patterns."""
-    from app.agent.pattern_assembler import PatternAssembler
-    from app.agent.pattern_config import Complexity, Domain, GoalProperties
-
-    assembler = PatternAssembler()
-    props = GoalProperties(complexity=Complexity.EXPERT, domain=Domain.ANALYTICAL)
-    config = assembler.assemble(props, {})
-    assert len(config.reasoning_patterns) >= 1
-    assert "react" in config.reasoning_patterns
-
-
-def test_pattern_assembler_safety_rules_always_apply() -> None:
-    """Critical risk goals always get guardrails and HITL."""
-    from app.agent.pattern_assembler import PatternAssembler
-    from app.agent.pattern_config import GoalProperties, RiskLevel
-
-    assembler = PatternAssembler()
-    props = GoalProperties(risk=RiskLevel.CRITICAL)
-    config = assembler.assemble(props, {})
-    assert "guardrails" in config.safety_patterns
-    assert "hitl" in config.safety_patterns
-
-
 def test_dynamic_graph_assembler_translates_all_patterns() -> None:
     """DynamicGraphAssembler creates graph with all requested pattern nodes."""
     from app.agent.dynamic_graph import DynamicGraphAssembler

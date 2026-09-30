@@ -49,8 +49,11 @@ increasing latency on the common (already-grounded) path.
   numeric-exact rule; abstention path returns INSUFFICIENT DATA. → new `app/agent/grounding_policy.py`.
 - T4 `tests/agent/test_citation_gate.py` — synthesis with an uncited claim is
   rejected/stripped; every kept claim's `[Step N]` truly contains evidence. → wire `citation_manager`.
-- T5 `tests/agent/test_semantic_entropy.py` (marked slow) — high-entropy sample set
-  flagged ungrounded; low-entropy passes. → new `app/agent/semantic_entropy.py`, cost-gated.
+- T5 (not started) — a semantic-entropy signal: high-entropy sample set flagged
+  ungrounded; low-entropy passes; cost-gated. An unwired prototype
+  (`app/agent/semantic_entropy.py` + its test) was deleted in CORE-23 because
+  nothing called it; this item needs a fresh implementation wired into the
+  grounding path, not a revival of that module.
 - T6 `tests/agent/test_grounding_routing.py` — grounding policy failure feeds
   `consecutive_ungrounded` and routes to `rag_remediate`/replan.
 

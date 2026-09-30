@@ -1,11 +1,9 @@
-"""ModelOrchestrator end-to-end: classify→assemble→select pipeline."""
+"""ModelOrchestrator: PatternConfig → model assignment."""
 from __future__ import annotations
 
 import pytest
 
-from app.agent.goal_classifier import goal_classifier
-from app.agent.pattern_assembler import pattern_assembler
-from app.agent.pattern_config import Complexity
+from app.agent.pattern_config import Complexity, GoalProperties, PatternConfig, RiskLevel
 from app.ai_router.model_orchestrator import ModelOrchestrator
 
 
@@ -15,9 +13,9 @@ def orchestrator():
 
 
 def test_simple_goal_gets_low_cost_models(orchestrator):
-    goal = "list all open Jira tickets"
-    props = goal_classifier.classify_fast(goal)
-    cfg = pattern_assembler.assemble(props, agent_config={})
+    cfg = PatternConfig(goal_properties=GoalProperties(
+        complexity=Complexity.SIMPLE, risk=RiskLevel.LOW
+    ))
     assignment = orchestrator.select_models(cfg)
     assert assignment.quality_tier == "low"
     assert assignment.planner is not None
@@ -30,9 +28,7 @@ def test_simple_goal_gets_low_cost_models(orchestrator):
 
 
 def test_critical_goal_gets_high_quality_models(orchestrator):
-    goal = "delete all records from the production database"
-    props = goal_classifier.classify_fast(goal)
-    cfg = pattern_assembler.assemble(props, agent_config={})
+    cfg = PatternConfig(goal_properties=GoalProperties(risk=RiskLevel.CRITICAL))
     assignment = orchestrator.select_models(cfg)
     assert assignment.quality_tier in ("medium", "high")
     assert "mini" not in assignment.verifier.lower()

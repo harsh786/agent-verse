@@ -55,8 +55,8 @@ class _CompletingProvider(FakeProvider):
         elif "success" in props:
             content = '{"success": true, "reason": "answered from the knowledge base"}'
         elif '"relevance"' in messages_text:
-            # The default runtime profile routes this factual-QA goal to the
-            # "corrective" RAG strategy (app/agent/pattern_assembler.py), whose
+            # The RAG gateway (app/rag/gateway.py) routes this factual-QA goal to
+            # the "corrective" RAG strategy, whose
             # grade_evidence (app/rag/agentic/patterns/corrective.py) grades
             # retrieved passages via an un-schema'd completion request and
             # expects back exactly {"relevance": [<one float per passage>]}.

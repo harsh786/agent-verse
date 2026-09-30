@@ -511,7 +511,7 @@
 
 ---
 
-### 30. `app/agent/pattern_assembler.py` — PatternAssembler
+### 30. `app/orchestration/pattern_selector.py` — PatternSelector (the former `PatternAssembler` was removed in CORE-23)
 
 **Responsibility:** Applies `_RULES` (ordered rule list) against `GoalRuntimeProfile` to determine which LangGraph feature flags to set: `enable_cot`, `enable_reflection`, `enable_self_refine`, `enable_tree_of_thoughts`, `enable_peer_review`, etc.
 

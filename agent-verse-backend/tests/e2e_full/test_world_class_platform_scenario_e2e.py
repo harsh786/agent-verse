@@ -116,9 +116,9 @@ class _IncidentProvider(FakeProvider):
             content = '{"success": true, "reason": "containment recommendation issued"}'
         elif '"relevance"' in messages_text:
             # Some goal phrasings in this scenario (e.g. the trigger-fired
-            # "Re-audit ..." follow-up) are classified ANALYTICAL/HIGH-risk by
-            # app/agent/pattern_assembler.py and routed to the "corrective" RAG
-            # strategy, whose grade_evidence (app/rag/agentic/patterns/
+            # "Re-audit ..." follow-up) are routed by the RAG gateway
+            # (app/rag/gateway.py) to the "corrective" RAG strategy, whose
+            # grade_evidence (app/rag/agentic/patterns/
             # corrective.py) grades retrieved passages via an un-schema'd
             # completion expecting exactly {"relevance": [<float per passage>]}
             # — see test_rag_goal_retrieval_e2e.py's _CompletingProvider for the

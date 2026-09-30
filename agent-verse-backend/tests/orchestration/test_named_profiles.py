@@ -62,7 +62,3 @@ def test_security_runtime_profile_importable():
     assert "gdpr" in p.compliance_tags
     json.dumps(p.to_dict())
 
-
-def test_dynamic_graph_assembler_at_spec_location():
-    from app.agent.patterns.dynamic_graph_assembler import DynamicGraphAssembler
-    assert DynamicGraphAssembler is not None

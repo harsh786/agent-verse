@@ -46,10 +46,3 @@ def test_dynamic_graph_translates_legacy_config_and_calls_graph_factory(monkeypa
     assert profile.primary_strategy.strategy_id == "react"
     assert graph.runtime_profile is profile
 
-
-def test_workflow_mode_translation_is_registry_owned() -> None:
-    from app.orchestration.workflow_compatibility import strategy_for_workflow_mode
-
-    assert strategy_for_workflow_mode("single_agent") == "react"
-    assert strategy_for_workflow_mode("workflow") == "workflow_dag"
-    assert strategy_for_workflow_mode("dag") == "workflow_dag"
