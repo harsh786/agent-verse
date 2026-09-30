@@ -260,6 +260,12 @@ STRATEGY_TOKENS_TOTAL = Counter(
     labelnames=("family", "strategy"),
     registry=REGISTRY,
 )
+RERANK_DEGRADED_TOTAL = Counter(
+    "agentverse_rerank_degraded_total",
+    "Default-path reranks that failed and passed results through unranked.",
+    labelnames=("reason",),
+    registry=REGISTRY,
+)
 COORDINATION_EVENT_TOTAL = Counter(
     "agentverse_coordination_event_total",
     "Coordination lifecycle events by bounded type and status.",

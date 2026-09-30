@@ -183,6 +183,11 @@ class RerankPolicy:
 
         # 3. Resolve + apply strategy (AUTO chooses cross-encoder vs SCORE).
         effective, reason = self._resolve_strategy()
+        if effective == RerankStrategy.LLM:
+            # There is no LLM reranker: 'llm' runs the cross-encoder. Report the
+            # reranker that actually ran (it used to be reported as 'llm').
+            effective = RerankStrategy.CROSS_ENCODER
+            reason = "llm reranking is not implemented; the cross-encoder was used"
         self.last_strategy_used = effective
         self.last_reason = reason
 
@@ -196,8 +201,6 @@ class RerankPolicy:
             filtered = rrf_fuse([filtered], k=60)
         elif effective == RerankStrategy.CROSS_ENCODER:
             filtered = self._cross_encoder_rerank(filtered, query)
-        elif effective == RerankStrategy.LLM:
-            filtered = self._llm_rerank_sync(filtered, query)
 
         # 4. Cap per source
         if self._max_per_source > 0:
@@ -509,7 +512,3 @@ class RerankPolicy:
 
         scored.sort(key=lambda c: c["score"], reverse=True)
         return scored
-
-    def _llm_rerank_sync(self, chunks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-        """Cross-encoder reranking (uses sentence-transformers when available, else TF-IDF)."""
-        return self._cross_encoder_rerank(chunks, query)

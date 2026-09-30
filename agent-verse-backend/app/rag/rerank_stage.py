@@ -110,8 +110,20 @@ async def apply_default_rerank(
             )
         else:
             reranked = policy.rerank(chunk_dicts, query, query_embedding=query_embedding)
-    except Exception as exc:  # pragma: no cover - defensive; honest passthrough
-        logger.debug("default_rerank_failed_passthrough", error=str(exc)[:120])
+    except Exception as exc:
+        # Honest passthrough, but visible: this used to be a DEBUG line only, so
+        # a broken reranker silently degraded every retrieval.
+        from app.observability.metrics import RERANK_DEGRADED_TOTAL
+
+        RERANK_DEGRADED_TOTAL.labels(reason="rerank_error").inc()
+        logger.warning(
+            "default_rerank_failed_passthrough",
+            strategy=strategy.value,
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
+        )
+        for result in results:
+            result.source_metadata = {**(result.source_metadata or {}), "rerank_degraded": True}
         return results
 
     effective = (policy.last_strategy_used or strategy).value
