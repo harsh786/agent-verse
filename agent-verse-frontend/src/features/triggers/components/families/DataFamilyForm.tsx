@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api/client';
+import { useAuthStore } from '@/stores/auth';
 import type { TriggerType } from '../../types';
+import { planAwarePollIntervalSeconds, planMinIntervalSeconds } from '../../planFloors';
 
 interface FamilyFormProps {
   triggerType: TriggerType;
@@ -12,6 +14,11 @@ export function DataFamilyForm({ triggerType, value, onChange }: FamilyFormProps
   function set(key: string, val: unknown) {
     onChange({ ...value, [key]: val });
   }
+
+  // Omitted, the backend polls every max(300s, plan floor); pre-fill that value.
+  const plan = (useAuthStore((s) => s.plan) || 'free').toLowerCase();
+  const pollFloor = planMinIntervalSeconds(plan);
+  const pollDefault = planAwarePollIntervalSeconds(plan);
 
   // null = unknown (not loaded / failed): fall back to free text; the backend
   // still rejects a non-allowlisted table with a 422 naming the allowed ones.
@@ -152,11 +159,15 @@ export function DataFamilyForm({ triggerType, value, onChange }: FamilyFormProps
               className={inputCls}
             />
           </Field>
-          <Field label="Poll Interval (seconds)">
+          <Field
+            label="Poll Interval (seconds)"
+            hint={`Your ${plan} plan polls at most every ${pollFloor / 60} min; left unchanged, ${pollDefault}s is used.`}
+          >
             <input
               type="number"
-              min={60}
-              value={(value.poll_interval_seconds as number) ?? 300}
+              aria-label="Poll Interval (seconds)"
+              min={pollFloor}
+              value={(value.poll_interval_seconds as number) ?? pollDefault}
               onChange={(e) => set('poll_interval_seconds', Number(e.target.value))}
               className={inputCls}
             />

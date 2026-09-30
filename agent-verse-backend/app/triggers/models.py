@@ -21,6 +21,7 @@ Families:
 from __future__ import annotations
 
 import enum
+from collections.abc import Collection
 from dataclasses import dataclass, field
 
 
@@ -218,6 +219,8 @@ class TriggerSpec:
     poll_body: dict = field(default_factory=dict)
     poll_jsonpath: str = ""  # JSONPath to extract value for comparison
     poll_expected_value: str = ""
+    # When the caller omits it, the create gates resolve it to
+    # max(this default, plan floor) — see apply_plan_interval_defaults.
     poll_interval_seconds: int = 300
     graphql_endpoint: str = ""
     graphql_subscription_query: str = ""
@@ -264,6 +267,36 @@ def plan_min_interval_seconds(plan: str) -> int:
     """The plan's minimum schedule interval; an unknown plan gets FREE's floor."""
     key = str(getattr(plan, "value", plan) or "free").lower()
     return PLAN_MIN_SCHEDULE_INTERVAL_SECONDS.get(key, PLAN_MIN_SCHEDULE_INTERVAL_SECONDS["free"])
+
+
+# The api_poll spec default (the dataclass default of poll_interval_seconds).
+API_POLL_DEFAULT_INTERVAL_SECONDS = 300
+
+# Types whose interval field has a spec default that a plan floor may exceed:
+# type -> (field, spec default). Omitting the field must not make a spec invalid
+# on a stricter plan, so an omitted value resolves per plan. (cron/interval have
+# no default; a missing value there is a configuration error.)
+PLAN_AWARE_INTERVAL_DEFAULTS: dict[str, tuple[str, int]] = {
+    "api_poll": ("poll_interval_seconds", API_POLL_DEFAULT_INTERVAL_SECONDS),
+}
+
+
+def apply_plan_interval_defaults(
+    spec: TriggerSpec, plan: str, *, explicit_fields: Collection[str]
+) -> None:
+    """Resolve an interval the caller did not set to ``max(default, plan floor)``.
+
+    A field named in *explicit_fields* is never rewritten: an explicit interval
+    below the floor stays so validation refuses it with the reason.
+    """
+    tt = spec.trigger_type
+    entry = PLAN_AWARE_INTERVAL_DEFAULTS.get(str(getattr(tt, "value", tt)))
+    if entry is None:
+        return
+    field_name, default = entry
+    if field_name in explicit_fields:
+        return
+    setattr(spec, field_name, max(default, plan_min_interval_seconds(plan)))
 
 
 def check_plan_interval(seconds: float, plan: str) -> None:

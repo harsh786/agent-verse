@@ -1,12 +1,16 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { useAuthStore } from '@/stores/auth';
 import { DataFamilyForm } from './DataFamilyForm';
 
 function lastArg(fn: ReturnType<typeof vi.fn>): Record<string, unknown> {
   return fn.mock.calls.at(-1)![0] as Record<string, unknown>;
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  useAuthStore.setState({ plan: '' });
+});
 
 describe('DataFamilyForm', () => {
   test('db_row_change offers the allowlisted tables as a select (TRG-08)', async () => {
@@ -83,11 +87,26 @@ describe('DataFamilyForm', () => {
     const urlInput = screen.getByPlaceholderText('https://api.example.com/status');
     fireEvent.change(urlInput, { target: { value: 'https://svc/health' } });
     expect(lastArg(onChange)).toEqual({ poll_url: 'https://svc/health' });
-    // Interval field defaults to 300s.
-    expect(screen.getByDisplayValue('300')).toBeInTheDocument();
+    // No plan known → FREE's 15-min floor is the pre-filled default.
+    expect(screen.getByDisplayValue('900')).toBeInTheDocument();
+  });
+
+  test('api_poll pre-fills the plan-aware default interval', () => {
+    useAuthStore.setState({ plan: 'free' });
+    const { unmount } = render(
+      <DataFamilyForm triggerType="api_poll" value={{}} onChange={vi.fn()} />,
+    );
+    expect(screen.getByLabelText('Poll Interval (seconds)')).toHaveValue(900);
+    expect(screen.getByText(/free plan polls at most every 15 min/)).toBeInTheDocument();
+    unmount();
+
+    useAuthStore.setState({ plan: 'enterprise' });
+    render(<DataFamilyForm triggerType="api_poll" value={{}} onChange={vi.fn()} />);
+    expect(screen.getByLabelText('Poll Interval (seconds)')).toHaveValue(300);
   });
 
   test('api_poll method select, jsonpath, expected value, and interval all report edits', () => {
+    useAuthStore.setState({ plan: 'enterprise' });
     const onChange = vi.fn();
     render(<DataFamilyForm triggerType="api_poll" value={{}} onChange={onChange} />);
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'POST' } });

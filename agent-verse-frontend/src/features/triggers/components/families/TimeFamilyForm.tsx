@@ -1,5 +1,6 @@
 import { useAuthStore } from '@/stores/auth';
 import type { TriggerType } from '../../types';
+import { planMinIntervalSeconds } from '../../planFloors';
 
 interface FamilyFormProps {
   triggerType: TriggerType;
@@ -7,21 +8,13 @@ interface FamilyFormProps {
   onChange: (v: Record<string, unknown>) => void;
 }
 
-/** Mirrors backend PLAN_MIN_SCHEDULE_INTERVAL_SECONDS (app/triggers/models.py). */
-const PLAN_MIN_SCHEDULE_INTERVAL_SECONDS: Record<string, number> = {
-  free: 900,
-  starter: 300,
-  professional: 60,
-  enterprise: 60,
-};
-
 export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps) {
   function set(key: string, val: unknown) {
     onChange({ ...value, [key]: val });
   }
 
   const plan = (useAuthStore((s) => s.plan) || 'free').toLowerCase();
-  const minSeconds = PLAN_MIN_SCHEDULE_INTERVAL_SECONDS[plan] ?? PLAN_MIN_SCHEDULE_INTERVAL_SECONDS.free;
+  const minSeconds = planMinIntervalSeconds(plan);
   const planFloor = (triggerType === 'cron' || triggerType === 'interval' || triggerType === 'business_calendar') && (
     <p className="text-xs text-muted-foreground">
       Your {plan} plan runs a schedule at most every {minSeconds / 60} min; a shorter schedule is refused.

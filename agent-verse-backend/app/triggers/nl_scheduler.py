@@ -27,7 +27,7 @@ from typing import Any
 
 from app.providers.base import CompletionRequest, LLMProvider, Message
 from app.providers.model_defaults import configured_default_model as _configured_default_model
-from app.triggers.models import TriggerSpec, TriggerType
+from app.triggers.models import TriggerSpec, TriggerType, apply_plan_interval_defaults
 
 # ── Keyword routing: (pattern, TriggerType, {extra_spec_fields}) ──────────────
 # Ordered from most-specific to least-specific.
@@ -466,7 +466,7 @@ def _keyword_route(description: str) -> TriggerSpec | None:
     return None
 
 
-def _parse_single(obj: dict) -> TriggerSpec:
+def _parse_single(obj: dict, plan: str | None = None) -> TriggerSpec:
     if not isinstance(obj, dict) or not obj.get("trigger_type"):
         # An answer that names no trigger type is not a schedule; defaulting it
         # to a time-less "once" stored a trigger that never fires (TRG-10).
@@ -532,7 +532,16 @@ def _parse_single(obj: dict) -> TriggerSpec:
     for field in field_map:
         if obj.get(field) is not None:
             kwargs[field] = obj[field]
-    return TriggerSpec(**kwargs)
+    spec = TriggerSpec(**kwargs)
+    if plan is not None:
+        # An interval the answer omitted resolves per plan; a stated one is kept
+        # (and refused by the create gate when it is below the plan floor).
+        apply_plan_interval_defaults(spec, plan, explicit_fields=set(kwargs))
+    return spec
+
+
+def _tenant_plan(tenant_ctx: Any) -> str:
+    return str(getattr(tenant_ctx, "plan", "free") or "free")
 
 
 class NLScheduler:
@@ -563,6 +572,10 @@ class NLScheduler:
             complete_decision,
         )
 
+        # Without a tenant context the plan is unknown: FREE's floor is the
+        # conservative default (valid on every plan).
+        plan = _tenant_plan(tenant_ctx)
+
         # Primary path — LLM (preserves cron_expression, timezone, etc.)
         try:
             req = CompletionRequest(
@@ -588,8 +601,8 @@ class NLScheduler:
                 raise ValueError("non-json response") from None
 
             if "schedules" in obj and isinstance(obj["schedules"], list):
-                return [_parse_single(s) for s in obj["schedules"]]
-            return [_parse_single(obj)]
+                return [_parse_single(s, plan) for s in obj["schedules"]]
+            return [_parse_single(obj, plan)]
 
         except DecisionBudgetExceededError:
             raise
@@ -599,6 +612,7 @@ class NLScheduler:
         # Fallback — keyword routing (no LLM calls needed)
         fast = _keyword_route(description)
         if fast is not None:
+            apply_plan_interval_defaults(fast, plan, explicit_fields=())
             return [fast]
 
         return []

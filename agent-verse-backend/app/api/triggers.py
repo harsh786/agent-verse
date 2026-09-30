@@ -226,6 +226,17 @@ def _build_spec(req: TriggerSpecRequest) -> TriggerSpec:
     return TriggerSpec(**kwargs)
 
 
+def _build_spec_for_plan(req: TriggerSpecRequest, plan: str) -> TriggerSpec:
+    """``_build_spec`` + plan-aware defaults for intervals the caller omitted
+    (an api_poll with no interval gets ``max(spec default, plan floor)``)."""
+    from app.triggers.models import apply_plan_interval_defaults
+
+    spec = _build_spec(req)
+    explicit = {k for k, v in (req.model_extra or {}).items() if v is not None}
+    apply_plan_interval_defaults(spec, plan, explicit_fields=explicit)
+    return spec
+
+
 def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
     spec: TriggerSpec | None = rec.get("spec")
     out = {
@@ -319,7 +330,7 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
     if store is None:
         raise HTTPException(status_code=503, detail="Trigger store unavailable")
 
-    spec = _build_spec(body.spec)
+    spec = _build_spec_for_plan(body.spec, str(getattr(tenant_ctx, "plan", "free") or "free"))
 
     # Push-webhook triggers: the path token now authenticates third-party
     # delivery on its own, so it must be strong. Client-chosen tokens were
@@ -742,7 +753,9 @@ async def update_trigger(
 
     new_spec: TriggerSpec | None = None
     if body.spec is not None:
-        new_spec = _build_spec(body.spec)
+        new_spec = _build_spec_for_plan(
+            body.spec, str(getattr(tenant_ctx, "plan", "free") or "free")
+        )
         from app.triggers.dispatch_map import is_supported, unsupported_reason
 
         if not is_supported(new_spec.trigger_type):
