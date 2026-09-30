@@ -55,6 +55,28 @@ class Candidate:
     verified_claims: list[str] | None = None
 
 
+# Characters of evidence one speculative draft prompt may carry (~3k tokens).
+# The whole subset used to be concatenated with no bound.
+MAX_DRAFT_EVIDENCE_CHARS = 12_000
+
+
+def _draft_evidence_text(subset: list[Any]) -> str:
+    """The subset's evidence, each item a fair share of the budget, never over it."""
+    if not subset:
+        return ""
+    share = max(500, MAX_DRAFT_EVIDENCE_CHARS // len(subset))
+    parts: list[str] = []
+    used = 0
+    for item in subset:
+        remaining = MAX_DRAFT_EVIDENCE_CHARS - used - (2 if parts else 0)
+        if remaining <= 0:
+            break
+        content = str(item.content)[: min(share, remaining)]
+        parts.append(content)
+        used += len(content) + (2 if len(parts) > 1 else 0)
+    return "\n\n".join(parts)
+
+
 class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
     """Canonical speculative adapter with concurrent drafting and retrieval."""
 
@@ -111,7 +133,7 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
         subsets = [results[i::subset_count] for i in range(subset_count)]
 
         async def generate_draft(subset: list[Any]) -> Candidate:
-            evidence_text = "\n\n".join(item.content for item in subset)
+            evidence_text = _draft_evidence_text(subset)
             response = await provider.complete(
                 CompletionRequest(
                     messages=[

@@ -77,6 +77,12 @@ def _merge_unique_dicts(
     return [by_value[key] for key in sorted(by_value)]
 
 
+# Collections one federated request may search (the route refuses more with
+# 422), and how many are searched at once.
+MAX_FEDERATED_COLLECTIONS = 20
+FEDERATED_FAN_OUT = 5
+
+
 async def federated_search(
     query: str,
     collection_ids: list[str],
@@ -112,20 +118,27 @@ async def federated_search(
     if not collection_ids:
         return []
 
+    if len(collection_ids) > MAX_FEDERATED_COLLECTIONS:
+        raise ValueError(
+            f"at most {MAX_FEDERATED_COLLECTIONS} collections can be searched at once"
+        )
     fetch_k = per_collection_k if per_collection_k is not None else top_k * 2
+    # The fan-out used to gather every collection at once, unbounded.
+    slots = asyncio.Semaphore(FEDERATED_FAN_OUT)
 
     # ------------------------------------------------------------------ #
     # Parallel fetch — one coroutine per collection                       #
     # ------------------------------------------------------------------ #
     async def _search_one(cid: str) -> list[dict[str, Any]]:
-        result = await gateway.execute(
-            tenant_ctx,
-            query=query,
-            collection_id=cid,
-            strategy_id=strategy,
-            top_k=fetch_k,
-            filters=filters or {},
-        )
+        async with slots:
+            result = await gateway.execute(
+                tenant_ctx,
+                query=query,
+                collection_id=cid,
+                strategy_id=strategy,
+                top_k=fetch_k,
+                filters=filters or {},
+            )
         if not isinstance(result, RAGExecutionResult):
             raise TypeError("Retrieval gateway must return RAGExecutionResult")
         retrieval_legs = [leg.model_dump(mode="json") for leg in result.retrieval_legs]
