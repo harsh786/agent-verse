@@ -30,16 +30,21 @@ logger = get_logger(__name__)
 def _setup_sigterm() -> None:
     """Register a SIGTERM handler so Celery workers shut down gracefully.
 
-    LangGraph writes a checkpoint after every completed step, so the last
-    durable state is always safe when the process exits here.
+    WF-15: the log used to claim a LangGraph checkpoint was written, but worker
+    goals run on the in-memory MemorySaver, which persists nothing. It now names
+    the checkpointer actually in use, so operators know what survives.
     """
 
     def _handler(sig: int, frame: Any) -> None:
         import logging as _stdlib_logging
 
+        kind = _worker_checkpointer_kind()
         _stdlib_logging.getLogger(__name__).warning(
-            "SIGTERM received — Celery worker shutting down; "
-            "LangGraph checkpoint written after last completed step"
+            "SIGTERM received — Celery worker shutting down; checkpointer=%s (%s)",
+            kind,
+            "durable"
+            if kind != "MemorySaver"
+            else "not durable: in-flight goal state is lost; acks_late redelivers the goal",
         )
         raise SystemExit(0)
 
@@ -89,6 +94,13 @@ def _get_sync_redis() -> Any:
 # Set once per worker process by _setup_worker_checkpointer (worker_init signal).
 # None → AgentGraph falls back to MemorySaver (state lost on worker restart).
 _WORKER_CHECKPOINTER: Any = None
+
+
+def _worker_checkpointer_kind() -> str:
+    """The checkpointer worker goals actually use (None → AgentGraph's MemorySaver)."""
+    return type(_WORKER_CHECKPOINTER).__name__ if _WORKER_CHECKPOINTER is not None else (
+        "MemorySaver"
+    )
 
 
 @_worker_init.connect

@@ -77,6 +77,23 @@ _RM_COMMAND_PATTERN = re.compile(r"\brm\b")
 # to avoid circular imports from mixin modules.
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: E402
 
+
+def _checkpointer_fallback(checkpointer: Any, reason: str) -> None:
+    """Warn (log + metric) that an unusable checkpointer is replaced by the
+    in-memory MemorySaver — goal state then does not survive the process."""
+    from app.observability.logging import get_logger as _get_logger
+
+    _get_logger(__name__).warning(
+        "agent_checkpointer_fallback_to_memory",
+        checkpointer=type(checkpointer).__name__,
+        reason=reason,
+    )
+    with contextlib.suppress(Exception):
+        from app.observability.metrics import record_checkpointer_fallback
+
+        record_checkpointer_fallback(reason)
+
+
 # ---------------------------------------------------------------------------
 # AgentGraph — thin orchestrator, all node logic lives in nodes/
 # ---------------------------------------------------------------------------
@@ -271,14 +288,18 @@ class AgentGraph(
         # aget_tuple().  The sync RedisSaver doesn't implement it, causing
         # NotImplementedError inside the Celery worker.  Fall back to MemorySaver
         # which is always async-safe.
+        # WF-15: the swap used to be silent, so a deployment could believe its
+        # goals were durably checkpointed while nothing survived the process.
         try:
             import inspect
 
             _aget = getattr(self._checkpointer, "aget_tuple", None)
             if _aget is not None and not inspect.iscoroutinefunction(_aget):
                 # Sync implementation — replace with in-memory checkpointer
+                _checkpointer_fallback(self._checkpointer, "sync_only")
                 self._checkpointer = MemorySaver()
         except Exception:
+            _checkpointer_fallback(self._checkpointer, "inspection_failed")
             self._checkpointer = MemorySaver()
         self._bulkhead_registry = bulkhead_registry
         self._cost_tracker = cost_tracker

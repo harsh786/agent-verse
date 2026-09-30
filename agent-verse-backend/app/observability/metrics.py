@@ -266,6 +266,12 @@ COORDINATION_EVENT_TOTAL = Counter(
     labelnames=("event", "status"),
     registry=REGISTRY,
 )
+CHECKPOINTER_FALLBACK_TOTAL = Counter(
+    "agentverse_checkpointer_fallback_total",
+    "Agent graphs that replaced an unusable checkpointer with in-memory MemorySaver.",
+    labelnames=("reason",),
+    registry=REGISTRY,
+)
 COORDINATION_HANDOFF_DURATION = Histogram(
     "agentverse_coordination_handoff_duration_seconds",
     "Accepted handoff latency.",
@@ -377,6 +383,12 @@ def record_strategy_execution(
     STRATEGY_TOKENS_TOTAL.labels(family=family_label, strategy=strategy_label).inc(
         _non_negative(float(tokens))
     )
+
+
+def record_checkpointer_fallback(reason: str) -> None:
+    """An agent graph fell back to a non-durable in-memory checkpointer."""
+    label = reason if reason in ("sync_only", "inspection_failed") else "other"
+    CHECKPOINTER_FALLBACK_TOTAL.labels(reason=label).inc()
 
 
 def record_coordination_event(event: str, status: str) -> None:
