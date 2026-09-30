@@ -1,6 +1,6 @@
 """Unit tests for the pure missed-fire catch-up helpers in app.scaling.tasks.
 
-These exercise ``_cron_missed_runs_utc`` and ``_rrule_missed_runs_utc`` directly
+These exercise ``_cron_missed_runs_utc`` directly
 as pure functions — no Celery task, no fake Redis, no monkeypatching of the whole
 ``fire_due_schedules.run()``. That full-task mocking approach is brittle and was
 the cause of a previously reverted attempt; here we test the maths in isolation.
@@ -15,7 +15,6 @@ import pytest
 from app.scaling.tasks import (
     _MISSED_FIRE_CAP,
     _cron_missed_runs_utc,
-    _rrule_missed_runs_utc,
 )
 
 
@@ -87,52 +86,3 @@ def test_cron_invalid_expression_raises() -> None:
     # croniter raises CroniterBadCronError, a ValueError subclass.
     with pytest.raises(ValueError):
         _cron_missed_runs_utc("NOT-A-CRON", None, _dt(2026, 1, 1, 0, 0))
-
-
-# ── _rrule_missed_runs_utc ────────────────────────────────────────────────────
-
-
-def test_rrule_new_schedule_fires_only_most_recent_occurrence() -> None:
-    pytest.importorskip("dateutil")
-    runs = _rrule_missed_runs_utc(
-        "DTSTART:20260101T000000\nRRULE:FREQ=HOURLY",
-        None,
-        _dt(2026, 1, 1, 3, 30),
-    )
-    assert runs == [_dt(2026, 1, 1, 3, 0)]
-
-
-def test_rrule_fires_every_missed_occurrence_since_last_fired() -> None:
-    pytest.importorskip("dateutil")
-    runs = _rrule_missed_runs_utc(
-        "DTSTART:20260101T000000\nRRULE:FREQ=HOURLY",
-        _dt(2026, 1, 1, 0, 0),
-        _dt(2026, 1, 1, 3, 30),
-    )
-    assert runs == [
-        _dt(2026, 1, 1, 1, 0),
-        _dt(2026, 1, 1, 2, 0),
-        _dt(2026, 1, 1, 3, 0),
-    ]
-
-
-def test_rrule_nothing_due_returns_empty() -> None:
-    pytest.importorskip("dateutil")
-    runs = _rrule_missed_runs_utc(
-        "DTSTART:20260101T000000\nRRULE:FREQ=HOURLY",
-        _dt(2026, 1, 1, 3, 0),
-        _dt(2026, 1, 1, 3, 30),
-    )
-    assert runs == []
-
-
-def test_rrule_missed_runs_are_bounded_by_cap() -> None:
-    pytest.importorskip("dateutil")
-    runs = _rrule_missed_runs_utc(
-        "DTSTART:20260101T000000\nRRULE:FREQ=MINUTELY",
-        _dt(2026, 1, 1, 0, 0),
-        _dt(2026, 1, 1, 5, 0),
-    )
-    assert len(runs) == _MISSED_FIRE_CAP
-    assert runs == sorted(runs)
-    assert runs[-1] == _dt(2026, 1, 1, 5, 0)

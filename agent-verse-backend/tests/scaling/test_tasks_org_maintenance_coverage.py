@@ -15,7 +15,6 @@ All DB/Redis/LLM boundaries are faked in-process — no real Postgres/Redis.
 
 from __future__ import annotations
 
-import datetime
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -1446,78 +1445,6 @@ class TestDeltaReingestFiles:
         assert result["docs_indexed"] == 1
         assert result["docs_skipped"] == 0
         assert result["docs_failed"] == 0
-
-
-# ── _solar_due_run_utc (solar-event schedule firing edge cases) ─────────────
-
-
-class TestSolarDueRunUtc:
-    def test_astral_unavailable_returns_none(self):
-        """astral is not a hard dependency of the worker — if it isn't
-
-        installed, a solar-event schedule must be skipped (with the caller
-        logging a warning) rather than crashing the beat loop.
-        """
-        from app.scaling.tasks import _solar_due_run_utc
-
-        now = datetime.datetime(2024, 6, 21, 12, 0, 0)
-        # astral is genuinely not installed in this environment, so this
-        # exercises the real ImportError branch, not a simulated one.
-        assert _solar_due_run_utc({"solar_event": "sunrise"}, now) is None
-
-    def _install_fake_astral(self, monkeypatch, events: dict[str, datetime.datetime]):
-        import sys
-        import types
-
-        fake_astral = types.ModuleType("astral")
-
-        class _FakeLocationInfo:
-            def __init__(self, *, latitude: float, longitude: float) -> None:
-                self.latitude = latitude
-                self.longitude = longitude
-                self.observer = object()
-
-        fake_astral.LocationInfo = _FakeLocationInfo  # type: ignore[attr-defined]
-
-        fake_astral_sun = types.ModuleType("astral.sun")
-
-        def _fake_sun(observer, *, date, tzinfo):
-            return events
-
-        fake_astral_sun.sun = _fake_sun  # type: ignore[attr-defined]
-
-        monkeypatch.setitem(sys.modules, "astral", fake_astral)
-        monkeypatch.setitem(sys.modules, "astral.sun", fake_astral_sun)
-
-    def test_known_solar_event_applies_offset(self, monkeypatch: pytest.MonkeyPatch):
-        from app.scaling.tasks import _solar_due_run_utc
-
-        sunrise = datetime.datetime(2024, 6, 21, 5, 30, 0, tzinfo=datetime.UTC)
-        self._install_fake_astral(monkeypatch, {"sunrise": sunrise})
-
-        now = datetime.datetime(2024, 6, 21, 12, 0, 0)
-        result = _solar_due_run_utc(
-            {
-                "solar_event": "SUNRISE",  # case-insensitive
-                "solar_latitude": 51.5,
-                "solar_longitude": -0.12,
-                "solar_offset_seconds": 600,
-            },
-            now,
-        )
-
-        assert result == datetime.datetime(2024, 6, 21, 5, 40, 0)
-
-    def test_unknown_solar_event_raises(self, monkeypatch: pytest.MonkeyPatch):
-        from app.scaling.tasks import _solar_due_run_utc
-
-        self._install_fake_astral(
-            monkeypatch, {"sunrise": datetime.datetime(2024, 6, 21, 5, 30, 0, tzinfo=datetime.UTC)}
-        )
-
-        now = datetime.datetime(2024, 6, 21, 12, 0, 0)
-        with pytest.raises(ValueError, match="unknown solar_event"):
-            _solar_due_run_utc({"solar_event": "midnight_snack"}, now)
 
 
 # ── _count_tenant_rows (DB_ROW_CHANGE trigger, allowlist-gated) ─────────────

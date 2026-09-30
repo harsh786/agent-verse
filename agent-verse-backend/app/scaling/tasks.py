@@ -4199,95 +4199,6 @@ def _cron_missed_runs_utc(
     return runs
 
 
-def _rrule_missed_runs_utc(
-    rrule_string: str,
-    last_fired_utc: datetime.datetime | None,
-    now_utc: datetime.datetime,
-    cap: int = _MISSED_FIRE_CAP,
-) -> list[datetime.datetime]:
-    """rrule analogue of :func:`_cron_missed_runs_utc`.
-
-    ``rrule_string`` is an iCalendar RRULE (optionally with a ``DTSTART`` line),
-    parsed by :func:`dateutil.rrule.rrulestr`. A naive ``DTSTART`` is treated as
-    UTC. Semantics (window, never-fired backfill, cap) match the cron helper.
-
-    Raises if dateutil is unavailable or the rule is unparseable.
-    """
-    from dateutil import rrule as _rrule
-
-    rule = _rrule.rrulestr(rrule_string)
-    dtstart = getattr(rule, "_dtstart", None)
-    aware = dtstart is not None and dtstart.tzinfo is not None
-
-    def _as_arg(dt: datetime.datetime | None) -> datetime.datetime | None:
-        if dt is None:
-            return None
-        naive = _norm_utc_naive(dt)
-        assert naive is not None
-        if aware:
-            return naive.replace(tzinfo=datetime.UTC).astimezone(dtstart.tzinfo)
-        return naive
-
-    now_arg = _as_arg(now_utc)
-    last_arg = _as_arg(last_fired_utc)
-    assert now_arg is not None
-
-    if last_arg is None:
-        occ = rule.before(now_arg, inc=True)
-        if occ is None:
-            return []
-        result = _norm_utc_naive(occ)
-        return [result] if result is not None else []
-
-    runs: list[datetime.datetime] = []
-    for occ in rule.between(last_arg, now_arg, inc=True):
-        occ_naive = _norm_utc_naive(occ)
-        last_naive = _norm_utc_naive(last_arg)
-        if occ_naive is None or last_naive is None:
-            continue
-        if occ_naive > last_naive:
-            runs.append(occ_naive)
-    if len(runs) > cap:
-        runs = runs[-cap:]
-    return runs
-
-
-def _solar_due_run_utc(
-    sched: dict[str, Any],
-    now_utc: datetime.datetime,
-) -> datetime.datetime | None:
-    """Compute today's solar-event fire time (UTC-naive) for a solar schedule.
-
-    Reads ``solar_event`` (sunrise|sunset|dawn|dusk|noon), ``solar_latitude``,
-    ``solar_longitude`` and ``solar_offset_seconds`` from the schedule payload.
-    Returns ``None`` when astral is unavailable in this worker (so the caller can
-    warn instead of firing silently). Raises on a malformed solar event name.
-    """
-    try:
-        from astral import LocationInfo
-        from astral.sun import sun as _astral_sun
-    except ImportError:
-        return None
-
-    now_naive = _norm_utc_naive(now_utc)
-    assert now_naive is not None
-    lat = float(sched.get("solar_latitude", 0.0) or 0.0)
-    lon = float(sched.get("solar_longitude", 0.0) or 0.0)
-    event = str(sched.get("solar_event", "sunrise") or "sunrise").lower()
-    offset = int(sched.get("solar_offset_seconds", 0) or 0)
-
-    location = LocationInfo(latitude=lat, longitude=lon)
-    events = _astral_sun(
-        location.observer,
-        date=now_naive.date(),
-        tzinfo=datetime.UTC,
-    )
-    if event not in events:
-        raise ValueError(f"unknown solar_event {event!r}")
-    fire_time = events[event] + datetime.timedelta(seconds=offset)
-    return _norm_utc_naive(fire_time)
-
-
 def _naive(dt: datetime.datetime) -> datetime.datetime:
     return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
@@ -4342,7 +4253,7 @@ def _interval_due_slot_utc(
     wall-clock-based key would differ between the two runs and the Redis
     dedup (keyed on that value) would never see a collision — letting the same
     interval firing dispatch twice. Bucketing to a fixed epoch-aligned slot
-    ("this interval's slot"), like the cron/rrule slot helpers already do, keeps
+    ("this interval's slot"), like the cron slot helper already does, keeps
     the key identical across concurrent, near-simultaneous evaluations.
     """
     if interval_seconds <= 0:
@@ -5185,47 +5096,6 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                             logger.warning("Cron parse error for %s: %s", key, cron_exc)
                             continue
                         fired += dispatch_missed_slots(key, sched, missed, kind="cron")
-
-                # ── RRULE schedules (iCalendar recurrence) ────────────────────
-                elif trigger_type == "rrule":
-                    rrule_string = sched.get("rrule_string", "")
-                    if rrule_string:
-                        last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
-                        try:
-                            missed = _rrule_missed_runs_utc(rrule_string, last_fired_dt, now)
-                        except Exception as rrule_exc:
-                            logger.warning("rrule parse error for %s: %s", key, rrule_exc)
-                            continue
-                        fired += dispatch_missed_slots(key, sched, missed, kind="rrule")
-
-                # ── SOLAR schedules (sunrise/sunset) ──────────────────────────
-                elif trigger_type == "solar":
-                    try:
-                        solar_run = _solar_due_run_utc(sched, now)
-                    except Exception as solar_exc:
-                        logger.warning("solar computation error for %s: %s", key, solar_exc)
-                        continue
-                    if solar_run is None:
-                        # astral unavailable in the worker — surface, do not fire silently
-                        logger.warning(
-                            "solar schedule %s skipped: astral unavailable in worker", key
-                        )
-                        continue
-                    last_fired_dt = _schedule_datetime(sched.get("last_fired_at"))
-                    if solar_run <= now and (last_fired_dt is None or last_fired_dt < solar_run):
-                        goal_kwargs = advance_and_dispatch_schedule(
-                            key,
-                            sched,
-                            fired_at=solar_run,
-                            fire_instance_id=solar_run.isoformat(),
-                        )
-                        if goal_kwargs is not None:
-                            fired += 1
-                            logger.info(
-                                "Fired solar schedule %s for tenant %s",
-                                key,
-                                goal_kwargs["tenant_id"],
-                            )
 
                 # ── INTERVAL schedules ────────────────────────────────────────
                 elif trigger_type == "interval":

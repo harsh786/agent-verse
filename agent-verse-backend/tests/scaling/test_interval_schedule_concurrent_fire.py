@@ -4,9 +4,9 @@
 key from ``fire_instance_id`` (passed through to
 ``app.triggers.dedup.derive_idempotency_key`` as ``scheduled_fire_time``, then
 checked atomically against Redis by ``TriggerDispatcher._is_duplicate``). Every
-other time-based trigger type (cron, rrule, business_calendar, once,
-relative_delay, deadline, solar) derives this key from a deterministic slot
-computed from the schedule's own state (last_fired_at + cron/rrule math), so
+other time-based trigger type (cron, business_calendar, once,
+relative_delay, deadline) derives this key from a deterministic slot
+computed from the schedule's own state (last_fired_at + cron math), so
 two concurrent evaluations of the same due schedule compute the *same* key and
 the second is deduped.
 
