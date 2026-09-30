@@ -61,11 +61,13 @@ async def _seed(
             ("candidate", 0.95, cand_cost, cand_latency),
         ):
             for i in range(25):
+                # Scored goals: since MEM-27 an unscored completion is recorded
+                # with eval_score NULL and the conclusion samples scored rows only.
                 await s.execute(
                     text(
                         "INSERT INTO improvement_results (experiment_id, tenant_id, arm, "
-                        "metric_value, metric_name, cost_usd, latency_ms) "
-                        "VALUES (:e, :t, :arm, :m, 'eval_score', :c, :l)"
+                        "metric_value, metric_name, eval_score, cost_usd, latency_ms) "
+                        "VALUES (:e, :t, :arm, :m, 'eval_score', :m, :c, :l)"
                     ),
                     # Small spread so the posterior is decisive but not degenerate.
                     {"e": exp_id, "t": tenant_id, "arm": arm, "m": metric + (i % 3) * 0.001,
