@@ -1,0 +1,172 @@
+"""Merge the per-group recert files into certification-matrix.json + open-gaps.md.
+
+Run from the repo root:  python3 docs/audits/2026-09-29-recert/merge.py
+Any baseline feature missing from every group file is emitted as NOT_RECERTIFIED so gaps are visible.
+"""
+
+import collections
+import datetime
+import glob
+import json
+import os
+import re
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASELINE = os.path.join(HERE, "..", "2026-09-29-reaudit", "certification-matrix.json")
+
+AREA_TITLES = {
+    "agent-core": "Agent core",
+    "providers-routing": "Providers and routing",
+    "services-reliability": "Services and reliability",
+    "tools-connectors": "Tools and connectors",
+    "tenancy-security": "Tenancy and security",
+    "governance": "Governance",
+    "knowledge": "Knowledge",
+    "workflows-triggers": "Workflows and triggers",
+    "memory-intelligence": "Memory and intelligence",
+    "org-collab": "Org OS and collaboration",
+    "frontend-sdks": "Frontend and SDKs",
+    "enterprise-ops": "Enterprise and ops",
+    "critic": "Critic (cross-cutting / unclaimed)",
+}
+# Features the owner parked for a later pass (2026-09-29): carried forward, not re-certified.
+PARKED = {
+    "Org Brain autonomous loop and ambient team collaboration",
+    "Unified Chat (sessions, messages, streaming, QA and goal turns, memories, templates, "
+    "connected services, artifacts, folders, search, code execution)",
+}
+STATUS_ORDER = ["FAIL", "NOT_RECERTIFIED", "PARKED", "BLOCKED", "PARTIAL", "NOT_IMPLEMENTED", "PASS"]
+SEV_RE = re.compile(r"\[(critical|high|medium|low)\]|severity:\s*(critical|high|medium|low)", re.I)
+
+
+def severity(text: str) -> str:
+    m = SEV_RE.search(text)
+    return (m.group(1) or m.group(2)).lower() if m else ""
+
+
+def main() -> None:
+    base = json.load(open(BASELINE))
+    base_by_name = {f["feature"]: f for f in base["features"]}
+    areas = list(dict.fromkeys(f["area"] for f in base["features"]))
+
+    recert: dict[str, dict] = {}
+    codes = set()
+    for path in sorted(glob.glob(os.path.join(HERE, "g*.json"))):
+        doc = json.load(open(path))
+        codes.add(doc.get("code", "?"))
+        for f in doc["features"]:
+            f["group"] = doc["group"]
+            recert[f["feature"]] = f
+
+    features = []
+    for b in base["features"]:
+        r = recert.pop(b["feature"], None)
+        if r is None:
+            parked = b["feature"] in PARKED
+            r = {
+                "status": "PARKED" if parked else "NOT_RECERTIFIED",
+                "evidence": ("Parked by the owner for a later pass; " if parked else
+                             "No recert agent output for this feature; ")
+                + "previous result and gaps carried forward unverified.",
+                "verified_fixed": [],
+                "still_open": b.get("open_gaps", []) + b.get("new_defects", []),
+                "new_defects": [],
+                "tests_run": [],
+                "group": None,
+            }
+        features.append({
+            "area": b["area"],
+            "feature": b["feature"],
+            "baseline_status": b.get("baseline_status"),
+            "previous_status": b["status"],
+            **{k: v for k, v in r.items() if k not in ("area", "feature", "previous_status")},
+        })
+    # Entries a group added beyond the baseline (e.g. per-trigger-type rows in g06).
+    for r in recert.values():
+        features.append({"baseline_status": None, **r})
+
+    out = {
+        "generated": datetime.date.today().isoformat(),
+        "code": "287cb90f7",
+        "recert_file_codes": sorted(codes),
+        "baseline_code": base["code"],
+        "features": features,
+    }
+    json.dump(out, open(os.path.join(HERE, "certification-matrix.json"), "w"), indent=1,
+              ensure_ascii=False)
+
+    core = [f for f in features if f["feature"] in base_by_name]
+    extra = [f for f in features if f["feature"] not in base_by_name]
+    counts = collections.Counter(f["status"] for f in core)
+    prev_counts = collections.Counter(f["previous_status"] for f in core)
+    extra_counts = collections.Counter(f["status"] for f in extra)
+    moves = collections.Counter((f["previous_status"], f["status"]) for f in core
+                                if f["previous_status"] != f["status"])
+    n_fixed = sum(len(f.get("verified_fixed", [])) for f in features)
+    n_open = sum(len(f.get("still_open", [])) for f in features)
+    n_new = sum(len(f.get("new_defects", [])) for f in features)
+    new_sev = collections.Counter(severity(d) or "unrated" for f in features
+                                  for d in f.get("new_defects", []))
+
+    def fmt(c: collections.Counter) -> str:
+        return " · ".join(f"{c.get(s, 0)} {s}" for s in STATUS_ORDER if c.get(s, 0) or s != "NOT_RECERTIFIED")
+
+    L = [
+        "# Open gaps and new defects, per feature (post-wave-7 re-certification)",
+        "",
+        f"Generated by `merge.py` from the per-group files in this folder ({out['generated']}). "
+        f"Code: `main` at `287cb90f7` (waves 7A–7D merged); baseline matrix at `{base['code']}`.",
+        "Every item names the current `file:line`. Work top-down: FAIL first, then `[high]`, then `[medium]`.",
+        "",
+        f"**{len(core)} baseline features:** {fmt(counts)}",
+        f"(before wave 7: {fmt(prev_counts)})",
+        "",
+        f"**{len(extra)} additional per-trigger-type / channel rows (g06):** {fmt(extra_counts)}",
+        "",
+        f"Items: **{n_fixed} verified fixed**, **{n_open} still open**, **{n_new} new defects** "
+        f"({', '.join(f'{v} {k}' for k, v in new_sev.most_common())}).",
+        "",
+        "## Status changes",
+        "",
+        "| previous → new | features |",
+        "|---|---|",
+    ]
+    for (p, n), c in sorted(moves.items(), key=lambda kv: -kv[1]):
+        L.append(f"| {p} → {n} | {c} |")
+    L += ["", "## Most severe new defects", ""]
+    for sev in ("critical", "high"):
+        for f in features:
+            for d in f.get("new_defects", []):
+                if severity(d) == sev:
+                    L.append(f"- **[{sev}]** {f['feature']} — {d}")
+    L.append("")
+
+    by_area = collections.defaultdict(list)
+    for f in features:
+        by_area[f["area"]].append(f)
+    for area in areas + [a for a in by_area if a not in areas]:
+        L += [f"## {AREA_TITLES.get(area, area)}", ""]
+        for f in sorted(by_area[area], key=lambda f: STATUS_ORDER.index(f["status"])
+                        if f["status"] in STATUS_ORDER else 9):
+            prev = f.get("previous_status") or "new"
+            L.append(f"### [{f['status']}] {f['feature']}  _(was {prev})_")
+            L.append("")
+            if f.get("evidence"):
+                L += [f"_{f['evidence']}_", ""]
+            for d in f.get("new_defects", []):
+                L.append(f"- [ ] NEW {d}")
+            for g in f.get("still_open", []):
+                L.append(f"- [ ] {g}")
+            if f.get("verified_fixed"):
+                L.append(f"- {len(f['verified_fixed'])} item(s) verified fixed (see matrix)")
+            L.append("")
+    open(os.path.join(HERE, "open-gaps.md"), "w").write("\n".join(L))
+
+    missing = [f["feature"] for f in core if f["status"] == "NOT_RECERTIFIED"]
+    print(f"core={len(core)} extra={len(extra)} counts={dict(counts)} extra={dict(extra_counts)}")
+    print(f"fixed={n_fixed} open={n_open} new={n_new} sev={dict(new_sev)}")
+    print(f"missing ({len(missing)}):", missing)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,324 @@
+{
+  "group": "g09-enterprise",
+  "code": "287cb90f7",
+  "features": [
+    {
+      "area": "enterprise-ops",
+      "feature": "Compliance and data-subject rights (GDPR v1/v2, SOC2/HIPAA status, contracts, consent, DPDP)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No compliance code changed in wave 7 (app/enterprise/compliance.py, compliance_v2.py and the compliance routes are byte-identical to a4d172588). v2 checks run under sqlalchemy_rls_context (compliance_v2.py:89,166,268) and targeted tests pass, but every baseline gap is still present, and the sync export also reads agents/schedules from replica-local caches.",
+      "verified_fixed": [],
+      "still_open": [
+        "Sync export reports 'ready' on incomplete data → app/enterprise/compliance.py:265 (status set before collection), :307-310 goal DB error only logged, :340 audit capped at entries[:100], :381 knowledge_collections hardcoded []",
+        "Side-effecting GET /enterprise/compliance/export creates+persists a request → app/api/enterprise.py:116-124",
+        "Async export LIMIT 10000 on goals/audit_log (silent truncation) → app/scaling/tasks.py:6207,6217; audit read failure silently becomes [] (:6222-6223)",
+        "compliance_certifications/tenant_settings have no in-app writer (only SELECT at app/enterprise/compliance_v2.py:442; RLS migration b4c5d6e7f8a9 grants tenant READ only) → SOC2/HIPAA/GDPR-retention controls pass only via manual SQL",
+        "compliance_v2 helpers catch all exceptions without a savepoint (e.g. compliance_v2.py:326-328,341-342,452-453) → one failed query aborts the transaction and cascades into false 'fail' controls",
+        "Residency hardcoded us-east-1/eu-west-1 → compliance.py:483-484; /compliance/regions compares residency.get('region') while the key is primary_region → app/api/enterprise.py:188-195; retention_sweep counts only in-memory _export_requests → compliance.py:454-465",
+        "ComplianceChecker(db_factory=None) bound unconditionally → app/main.py:729,2819; without pools GET /enterprise/compliance/{fw} calls None() → 500 not 503 (enterprise.py:1812-1814 only checks checker is None)",
+        "GET /enterprise/contracts swallows DB errors into [] → app/api/enterprise.py:1887-1891",
+        "Process-local _export_requests cache/retention report per replica → compliance.py:72,388,454-465"
+      ],
+      "new_defects": [
+        "app/enterprise/compliance.py:347,357 — sync GDPR export reads agents via AgentStore.list_all and schedules via ScheduleStore.list_all, both pure in-memory cache reads (app/api/agents.py:336, app/triggers/store.py:817); on a replica that has not hydrated the tenant the export omits them yet is marked 'ready' [severity: medium]",
+        "app/enterprise/compliance.py:287-296,378-388 — sync export SELECTs every goal of the tenant with no LIMIT/paging inside the HTTP request and persists the whole payload as one JSONB row; a tenant with millions of goals exhausts API memory/timeouts (the async task has the opposite problem, a silent 10000 cap) [severity: medium]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/enterprise/test_compliance_endpoint_gaps.py tests/enterprise/test_compliance_services.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 28 passed",
+        "uv run pytest tests/enterprise/test_compliance_v2_hipaa_rls.py tests/enterprise/test_compliance_requests_rls.py tests/enterprise/test_compliance_tables_rls_context.py tests/enterprise/test_compliance_download.py -q --no-cov -p no:cacheprovider -m \"not slow and not integration\" → 22 passed, 2 deselected (integration: BLOCKED, Docker/colima not started per instructions)"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Enterprise SSO and provisioning (SAML 2.0, SCIM 2.0)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Wave 7D (2d9d9d074) only pinned the /saml/test outbound probe to public_async_client (enterprise.py:2226-2237), closing the DNS-rebinding window. ACS stays public and fail-closed, SCIM fails closed on an unreadable config (enterprise.py:2310-2313) and filters are strict. A verified SAML assertion still ends in an honest 501 with no session or JIT user, and SCIM exposes only /Users.",
+      "verified_fixed": [],
+      "still_open": [
+        "No SAML session issuance / JIT provisioning; a valid assertion returns 501 → app/api/enterprise.py:2134-2210 (501 at :2195,:2203)",
+        "SP-initiated GET /enterprise/saml/login requires a tenant API key → app/api/enterprise.py:2087-2090 (_require_tenant)",
+        "SCIM exposes only /Users; no /Groups, /ServiceProviderConfig, /Schemas, /ResourceTypes → app/api/enterprise.py:2319-2360",
+        "Permissive defaults when no scim_configs row (allow_user_create/update True) → app/api/enterprise.py:2304-2309 (minor; token provisioning is admin-only :2369-2370)",
+        "500 responses leak raw exception text → app/api/enterprise.py:2083 ('SAML configuration failed: {exc}'), :2131, :2201, :2395 ('Token provisioning failed: {exc}')",
+        "POST /enterprise/saml/test is tenant-level (not admin) and echoes raw error text → app/api/enterprise.py:2217-2220, :2258 ('Invalid XML: {exc}'), :2266 ('Connection failed: {exc}'); outbound fetch is now SSRF-guarded and pinned"
+      ],
+      "new_defects": [
+        "app/auth/scim_handler.py:214-232 — SCIM list_users clamps count only from below (max(count,0)) and applies it as LIMIT, so ?count=100000000 loads the tenant's whole user table in one response; RFC 7644 lets the server cap count (ServiceProviderConfig maxResults) [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/auth/test_scim_handler.py tests/api/test_saml_acs_public.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 26 passed",
+        "uv run pytest tests/auth/test_scim_filter.py tests/auth/test_saml_provider.py tests/auth/test_saml_not_installed.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 34 passed",
+        "Missing test: no end-to-end SAML login producing a usable session (feature is 501)"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Simulation sandbox (mock-tool runs) and Lab",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No simulation/lab code changed in wave 7. The real provider is injected, runs persist to simulation_runs under RLS, /lab/run starts a real run and comparison/live are honest 501s (app/api/lab.py:38-48). But discovery failures are still swallowed, cost is a placeholder, the streaming path builds an AgentGraph with no cost controller, and a pipeline crash is reported as a completed stub run.",
+      "verified_fixed": [],
+      "still_open": [
+        "GET /enterprise/simulation/available-tools swallows MCP discovery errors (except: pass) into {tools: [], total: 0} 200 → app/api/enterprise.py:240-253 (the /lab/tools twin correctly 503s, app/api/lab.py:86-90)",
+        "cost_estimate/cost_usd = len(steps)*0.001 placeholder, not token cost → app/enterprise/simulation.py:242,253,374,381,450,456",
+        "Streaming agent_id resolution via sync agent_store.get with errors swallowed → app/api/enterprise.py:295-304",
+        "No-LLM streaming emits a keyword stub plan ending in simulation_complete final_status='complete' (flagged only by used_real_llm=False) → app/enterprise/simulation.py:425-459"
+      ],
+      "new_defects": [
+        "app/enterprise/simulation.py:473-480 — run_streaming builds AgentGraph with only planner/executor/verifier/mcp_client (no cost_controller, policy_engine or audit_log, unlike start() at :190-199), so every streamed simulation (up to 30 steps of real planner/executor/verifier LLM calls) bypasses the tenant budget and policy evaluation [severity: medium]",
+        "app/enterprise/simulation.py:264-272,358-395 — when the full AgentGraph pipeline raises, start() falls back to _stub_simulation, which marks the run status 'completed' / outcome 'success (simulated)' with keyword-stub steps; the crash is only logged, so a broken pipeline is reported as a successful simulation (and used_real_llm=provider is not None at :375,:390 is True even when the LLM call failed at :314-316) [severity: medium]",
+        "app/enterprise/simulation.py:403 + app/api/enterprise.py:291-304 — run_streaming accepts agent_override but never reads it, so the agent_id/agent_config the caller selects is always ignored (not only on error) [severity: low]",
+        "app/api/enterprise.py:203-205 — SimulationRequest.goal has no max_length (the stream model caps it at 10000), so POST /enterprise/simulation forwards arbitrarily large goals to the planner LLM [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/enterprise/test_simulation_wiring.py tests/api/test_lab_api.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 19 passed",
+        "uv run pytest tests/enterprise/test_simulation_run_store_db.py tests/enterprise/test_real_simulation.py -q --no-cov -p no:cacheprovider -m \"not slow and not integration\" → 14 passed",
+        "Missing test: no test asserts the streaming path charges cost or that a pipeline exception is surfaced as failed"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Red-team adversarial testing",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No red-team code changed in wave 7. POST /enterprise/red-team still runs the fixed _ADVERSARIAL_CASES list through the regex GuardrailChecker.check_goal only (red_team.py:77-111); it never exercises the agent, tools, verifier or the tenant's own policies (tenant_ctx is unused). BehavioralRedTeamRunner and red_team_corpus have no importer, and reports live in a per-process dict.",
+      "verified_fixed": [],
+      "still_open": [
+        "Endpoint runs only regex check_goal → app/api/enterprise.py:340-356, app/enterprise/red_team.py:77-111 (tenant_ctx accepted but unused, so tenant guardrail/policy config is not tested)",
+        "BehavioralRedTeamRunner not wired to any route → app/enterprise/red_team.py:118 (grep finds no importer outside the module)",
+        "app/enterprise/red_team_corpus.py has no app importer",
+        "Reports in-memory only; get_report unrouted and ignores tenant_ctx → app/enterprise/red_team.py:74,110-115 (per-replica, lost on restart)",
+        "self._reports grows without bound (never evicted) → app/enterprise/red_team.py:111"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/enterprise/test_red_team_comprehensive.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 35 passed",
+        "Missing test: no behavioural red-team test that drives a real goal through the agent/tool/verifier path"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Agent template marketplace (v2 DB-backed plus legacy v1)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No marketplace v1/v2 service code changed in wave 7. The v2 DB path under RLS (built-in visibility, SECURITY DEFINER counters, installs/domain counts, honest bundle reports, review listing) still holds and its unit tests pass. All secondary gaps remain, and the list endpoint degrades to the built-in catalogue on any DB error.",
+      "verified_fixed": [],
+      "still_open": [
+        "Required-connector check is dead: AgentStore has no list_connectors (hasattr guard) and errors are swallowed → app/enterprise/marketplace_v2.py:1776-1792",
+        "sort_by accepted but never passed to list_templates (ORDER BY is fixed install_count DESC) → app/api/enterprise.py:539,543-550, app/enterprise/marketplace_v2.py:1534; no uninstall endpoint",
+        "v1 publish_version swallows DB errors and returns success → app/enterprise/marketplace.py:356-361; get_version_history returns [] on db None/error (:363-368)",
+        "No admin approve/reject endpoint for 'pending' templates (marketplace_v2.py:1608 sets pending; no UPDATE of review_status anywhere in app/), so medium+ risk templates never become visible to other tenants",
+        "Low: embed_marketplace_templates counts only WHERE embedding IS NULL (app/scaling/tasks.py:6637); search is FTS only (marketplace_v2.py:1521-1527)",
+        "test_marketplace_rls_integration.py (real Postgres) → BLOCKED: Docker/colima not started per instructions"
+      ],
+      "new_defects": [
+        "app/enterprise/marketplace_v2.py:1551-1583 — any DB error in list_templates is logged and answered 200 from the built-in in-memory catalogue only, silently hiding every tenant-published/community template (and reporting a smaller total) instead of 503 [severity: medium]",
+        "app/api/enterprise.py:536-538 + app/enterprise/marketplace_v2.py:1529-1537 — page/page_size are unvalidated: page_size=10000000 returns the whole catalogue in one query, and page<=0 yields a negative OFFSET that Postgres rejects, which then falls into the built-in-only fallback above [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/enterprise/test_marketplace_v2.py tests/enterprise/test_marketplace_installs_and_counts.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 28 passed",
+        "tests/enterprise/test_marketplace_rls_integration.py → BLOCKED (needs Docker/testcontainers; not started per instructions)"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Marketplace monetization (paid templates, Stripe Connect)",
+      "previous_status": "FAIL",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": "Wave 7C (3f2f7d678) removed the charge path: POST /marketplace/monetization/purchase/{id} now answers 501 for any paid template before Stripe is touched (app/api/marketplace_monetization.py:177-208), so buyers can no longer be charged for nothing. Purchase completion, install gating and author payouts still do not exist, so paid templates are honestly unimplemented rather than faked; set-price and Connect onboarding persist real state.",
+      "verified_fixed": [
+        "Real PaymentIntent created with no completion path (buyer charged for nothing) → purchase is refused with 501 before any Stripe call (app/api/marketplace_monetization.py:200-208; 3f2f7d678; tests test_paid_purchase_is_501_even_without_stripe / test_paid_purchase_never_charges_the_buyer)",
+        "Every click creating another PaymentIntent (no dedupe/self-purchase check) → moot: no PaymentIntent is created any more (marketplace_monetization.py:200-208)"
+      ],
+      "still_open": [
+        "No payment_intent.succeeded handler anywhere in app/ (only the docstring at marketplace_monetization.py:6); purchase completion NOT_IMPLEMENTED",
+        "Install/deploy never checks price_usd or purchases (no price/purchase reference in app/enterprise/marketplace_v2.py install() :1731+), so a template an author priced via /set-price still installs free for every tenant",
+        "No Connect transfer_data/application_fee; revenue_share_pct stored (marketplace_monetization.py:84-90) but never applied",
+        "onboarding_complete / total_earned_usd never updated (no account.updated handling in app/)"
+      ],
+      "new_defects": [
+        "app/api/marketplace_monetization.py:100-127 — /onboard-author has no admin/role check and never reuses an existing stripe_account_id, so any tenant member can create a new real Stripe Express account on every call (overwriting the stored id at :141-147); return_url is caller-supplied and used verbatim as Stripe's redirect target [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/api/test_marketplace_monetization_endpoints.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 16 passed (mocked DB/Stripe; no real payment provider called)"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Domain solutions catalog",
+      "previous_status": "NOT_IMPLEMENTED",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": "No change in wave 7 (no commits to app/api/solutions.py). The API serves a static catalogue, and POST /solutions/{slug}/install returns status 'planned' and creates nothing. The frontend has no caller.",
+      "verified_fixed": [],
+      "still_open": [
+        "Install is a stub returning 'planned' with 200 (creates nothing) rather than 501 → app/api/solutions.py:33-56",
+        "Install takes tenant_id from the request body, not the auth context (echoed only; no write) → app/api/solutions.py:29-30,48"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/api/test_solutions_api.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 9 passed"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Goal/tool/cost/agent/eval analytics",
+      "previous_status": "PARTIAL",
+      "status": "FAIL",
+      "evidence": "No analytics code changed in wave 7. The API layer still uses _require_tenant and would 503, but the aggregator swallows DB errors and treats an EMPTY DB result as 'no DB', falling back to GoalService._goals with no tenant filter. A direct probe (DB returning 0 rows for tenant-A, one tenant-B goal in memory) shows tenant-A receiving tenant-B's goal count, cost, tool names and agent ids, so tenant isolation is broken.",
+      "verified_fixed": [],
+      "still_open": [
+        "_get_goals_from_db swallows every DB error into [] and goal_metrics falls back to replica-local goal_service._goals → app/analytics/aggregator.py:108-110,164-181; /analytics/goals never 503s on a DB fault",
+        "DB path ignores agent_id (filter only in memory path :141-142), leaves avg_duration_s/avg_cost_usd/total_cost_usd at 0 and counts total=len(LIMIT 10000) → app/analytics/aggregator.py:92,164-176",
+        "tool/cost/model/agent DB queries fall back to in-memory data or {} on error → app/analytics/aggregator.py:286-289,351-356,390-392,488-492"
+      ],
+      "new_defects": [
+        "app/analytics/aggregator.py:128-145 (used by :164-181, :205-207, :289, :356, :397, :492) — the in-memory fallback _get_all_goals reads every tenant's goals in GoalService._goals with no tenant_id filter, and the fallback fires not only on DB error but whenever the tenant's DB result is empty (`if db_rows:` / `if results:`). Probe: tenant-A with no goals got total=1, total_cost_usd=12.5, tools ['b_private_crm.export'], agents ['b-secret-agent'] from tenant-B via goal_metrics/tool_metrics_db/agent_metrics_db — a cross-tenant leak on every new or idle tenant's /analytics/goals|tools|costs|agents [severity: high]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/api/test_analytics_comprehensive.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 17 passed (no test covers an empty-DB tenant alongside another tenant's in-memory goals)",
+        "Direct probe /private/tmp/.../scratchpad/g09/probe_analytics.py (GoalAnalyticsAggregator with a 0-row DB for tenant-A and a tenant-B goal in _goals) → tenant-A goal_metrics total=1 cost=12.5; tools=['b_private_crm.export']; agents=['b-secret-agent']"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Billing and subscriptions (Razorpay, legacy Stripe, plan changes)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Wave 7C (c0f713faa) added customer.subscription.updated and invoice.payment_failed handling. Both read the LIVE subscription from Stripe (503 if unreachable, so Stripe retries) and set free for past_due/unpaid/canceled/incomplete_expired/paused or restore metadata.plan for active/trialing (app/api/billing.py:745-825,893-904). update_plan writes Postgres and invalidates the shared Redis caches. Still no subscription record or cancel/downgrade API, and checkout.completed/subscription.deleted are applied without that live-state reconciliation.",
+      "verified_fixed": [
+        "Stripe webhook ignored customer.subscription.updated / invoice.payment_failed so past_due kept the paid plan → handled via _sync_plan_from_subscription against the live subscription (app/api/billing.py:788-825,893-904; c0f713faa; tests/api/test_billing_stripe_webhook.py)"
+      ],
+      "still_open": [
+        "No subscription record/period data and no cancel/downgrade endpoint → app/api/billing.py:137-157 (status 'not_tracked', current_period_end None)",
+        "Mock order/verify and demo invoices behind allow_mock_payments/development → app/api/billing.py:249-265,492-519,572-596 (create-order writes a mock order even when allow_mock_payments is False; verify then 503s)",
+        "allow_mock_payments has no production guard → app/core/config.py:471-477 (no validator; only a log warning at billing.py:592-598); if set in production with Razorpay unconfigured, create-order + verify-payment upgrade any tenant for free [low]",
+        "Checkout returns 500 'Billing error: {exc}' with raw Stripe exception text → app/api/billing.py:236; also 502 'Payment service error: {exc}' at :537, :612, :622"
+      ],
+      "new_defects": [
+        "app/api/billing.py:869-891 — checkout.session.completed and customer.subscription.deleted still act on the event payload, not the live subscription, although the new helper's own docstring (:752-756) notes Stripe does not guarantee order: a checkout.session.completed retried after a 503 and delivered after the deletion re-upgrades a cancelled tenant, and deleting an old subscription downgrades a tenant to free even while a newer active subscription exists [severity: medium]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/api/test_billing_stripe_webhook.py tests/api/test_billing_endpoints.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 64 passed (Stripe/Razorpay mocked; no real payment provider called)"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "GST tax invoicing (India)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No GST code changed in wave 7. Issuance is platform-admin-gated with hmac.compare_digest (gst_billing.py:66-71), the INSERT runs under the billed tenant's RLS context, and a persist failure returns 503 (:121-160). The placeholder seller GSTIN, random non-sequential invoice numbers (also over the 16-character Rule 46 limit and with a calendar-year FY label) and the 3-entry SAC table remain.",
+      "verified_fixed": [],
+      "still_open": [
+        "seller_gstin defaults to placeholder 27AAAAA0000A1Z5 with no production guard → app/core/config.py:484 (used at app/api/gst_billing.py:88)",
+        "Invoice numbers end in a random uuid suffix, not a sequential series → app/api/gst_billing.py:74-76",
+        "SAC lookup is a hardcoded 3-entry table → app/api/gst_billing.py:198-208",
+        "Invoice not linked to a payment/billing_orders record → app/api/gst_billing.py:99-156",
+        "Invoice number like 'AV/2026-27/ABCD/1A2B3C' (22 chars) exceeds the 16-char GST Rule 46 limit, and the FY label uses the calendar year so Jan-Mar invoices get the next FY → app/api/gst_billing.py:76 [medium]"
+      ],
+      "new_defects": [
+        "app/api/gst_billing.py:96-97 — CGST and SGST are each round(gst_total/2, 2), so for odd-paisa totals CGST+SGST differs from total_gst_amount by 0.01 on the issued tax invoice [severity: low]",
+        "app/api/gst_billing.py:163-170 — GET /gst/invoices has an unbounded caller-controlled limit and silently returns [] when the DB is not configured, instead of 503 [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/api/test_gst_billing_behavioral.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 8 passed"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Usage metering (UsageService)",
+      "previous_status": "PASS",
+      "status": "PASS",
+      "evidence": "Metering producers still hold after wave 7's run_goal rework. The API path meters in GoalService._dispatch_event → _meter_usage (goal_service.py:2729,2800-2825). The worker path meters tool_call_complete events (tasks.py:2084-2089) and terminal statuses via meter_worker_goal (:2125-2154, :3455). Goal records use deterministic ids with ON CONFLICT (id) DO NOTHING (usage_service.py:87-122,256) and flush under the RLS context. 7B's atomic claim keeps a redelivered finished goal from re-metering.",
+      "verified_fixed": [],
+      "still_open": [
+        "Low: no Postgres-backed test of the usage_records insert/rollup (tests/services/test_usage_metering_hooks.py is mocked); integration run BLOCKED (Docker not started)",
+        "Low: tool_call records use random ids (usage_service.py:69), so a Celery redelivery re-meters tool calls; a worker flush failure drops the record after logging (tasks.py:443-457 throwaway UsageService per call, usage_metering.py:48-54)"
+      ],
+      "new_defects": [
+        "app/services/usage_metering.py:66-79 — if the cost-breakdown read fails the goal is recorded with 0 tokens / $0 under its deterministic id; because inserts are ON CONFLICT DO NOTHING and nothing retries, that goal's LLM token usage is permanently under-metered (logged only) [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/services/test_usage_metering_hooks.py tests/services/test_usage_service.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 17 passed"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Cost analytics, budgets and per-goal cost breakdown",
+      "previous_status": "PASS",
+      "status": "PARTIAL",
+      "evidence": "GET /goals/{goal_id}/cost-metrics still 404s unless the caller owns the goal and reads the durable tenant-scoped breakdown with a 503 on failure (app/observability/cost_breakdown_api.py:13-42). The budget comes from the enforcing cost controller with a 503 (app/api/goals.py:566-579). Wave 7B's llm_cost.py change now charges goal-tree sub-agents to the parent goal. But the aggregate GET /goals/cost-metrics reads goal counts through GoalService.get_metrics, which queries the FORCE-RLS goals table without setting the tenant GUC.",
+      "verified_fixed": [],
+      "still_open": [
+        "tests/costs/test_cost_ledger_rls.py (real Postgres) → BLOCKED: Docker/colima not started per instructions"
+      ],
+      "new_defects": [
+        "app/services/goal_service.py:4469-4491 — get_metrics (feeding GET /goals/cost-metrics and the dashboard) opens `async with self._db() as session` with no sqlalchemy_rls_context; goals is FORCE ROW LEVEL SECURITY with USING (tenant_id = current_setting('app.tenant_id', true)) (migration 0004_goals.py:72-77), so under the NOBYPASSRLS API role the COUNT query matches zero rows and completed/failed/active/success_rate/avg_latency are always 0 (the row exists, so no fallback fires) [severity: medium]",
+        "app/services/goal_service.py:4533-4534 — any get_metrics DB error is logged and answered from this replica's in-memory _goals, so multi-replica dashboards silently show per-replica counts instead of 503 [severity: low]",
+        "app/agent/nodes/llm_cost.py:54-57 (wave 7B) — goal-tree sub-agents now charge and ledger the parent goal, so GET /goals/{child_id}/cost-metrics for a sub-goal always shows an empty $0 breakdown; spend is only visible on the parent [severity: low]",
+        "app/observability/cost_breakdown_api.py:25-31 — an exception from goal_service.get_goal (e.g. DB outage) is mapped to 404 'Goal not found' instead of 503 [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/observability/test_cost_breakdown_api.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 7 passed",
+        "tests/costs/test_cost_ledger_rls.py → BLOCKED (needs Docker/testcontainers)",
+        "Missing test: no least-privilege (NOBYPASSRLS) test of GET /goals/cost-metrics or /goals/metrics goal counts"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Observability API and telemetry pipeline (logs, metrics, traces)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No observability code changed in wave 7 (no commits to app/observability or app/api/observability.py). The tenant log feed (bound-tenant only, redacted, bounded Redis stream with MAXLEN and TTL, log_store.py:104-161) and the SQL metrics under RLS hold, and the goal trace is an honest 501. The Redis log backend is still wired only in the API lifespan, so worker-run goal logs never reach /observability/logs, and SLO/AlertRouter still have no production caller.",
+      "verified_fixed": [],
+      "still_open": [
+        "Only the API lifespan calls log_store.set_redis (app/main.py:2159-2166); nothing in app/scaling/ does, so feed_tenant_log_store (app/observability/logging.py:63-104) in Celery workers falls back to worker memory (_append_memory, log_store.py:124,127-138) and those logs never appear in /observability/logs or its SSE stream",
+        "Goal trace is 501 on the multi-process path; the span timeline is process-local → app/observability/tracing.py:42-44 (InMemoryRunTimelineStore)",
+        "platform_slo_tracker (app/observability/slo_tracker.py) and AlertRouter (app/observability/alert_router.py) have no production callers (grep outside their modules finds none)"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/api/test_observability.py tests/observability/test_log_feed.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 50 passed",
+        "Missing test: no test that a Celery-worker log line reaches the shared Redis log stream"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "Health, readiness, public status page and SLA",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "The ed4dd728d ReadinessGate still holds after wave 7: submit_goal runs _readiness_preflight (goal_service.py:3805 → :2055-2062), which uses live postgres/redis registry probes with a timeout plus provider/BYOK status and fails closed on a readiness exception (:2024-2053; flag default on, runtime_flags.py:34,74,100). /status is honest. There is still no liveness/readiness split: every manifest points livenessProbe at /health, which 503s on a dependency outage. The SLA is a static table.",
+      "verified_fixed": [],
+      "still_open": [
+        "No separate liveness endpoint: /health (app/api/system.py:16-27) 503s when postgres/redis is down, and it is the livenessProbe in infra/k8s/backend-deployment.yaml:54-56, infra/helm/agentverse/templates/app-workloads.yaml:89-91 and helm/agentverse/templates/deployment.yaml:67-69, so a DB outage restarts every API pod",
+        "HealthRegistry is seeded only with postgres/redis; no Celery/MCP/LLM checks (LLM/embedder judged by configuration presence) → app/runtime_readiness/health_probe.py:83-100",
+        "SLA is a static per-plan table with no uptime measurement or credit computation → app/api/sla.py:13-64",
+        "Every goal submission runs fresh postgres/redis probes with no cached health (per-submit latency and DB/Redis load at high QPS) → app/services/goal_service.py:3805, app/runtime_readiness/health_probe.py:83-94 [low]"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/services/test_readiness_gate_wiring.py tests/observability/test_health.py tests/api/test_public_status_api.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 22 passed (419 s under concurrent load)"
+      ]
+    },
+    {
+      "area": "enterprise-ops",
+      "feature": "agentverse CLI (app/cli/main.py)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No CLI commits in wave 7. The bd7a8d5c6 fixes hold: logs uses GET /goals/{id}/timeline, and the config file is created 0600 via os.open in a 0700 directory (main.py:86-102). --watch still opens one SSE stream with no reconnect, and HTTP errors print raw tracebacks.",
+      "verified_fixed": [],
+      "still_open": [
+        "_stream_goal opens one SSE stream with no reconnect/Last-Event-ID and ignores goal_cancelled → app/cli/main.py:144-178",
+        "Client-only CLI: no migration, tenant-admin or maintenance commands → app/cli/main.py:75-430",
+        "raise_for_status without handling, so HTTP errors print a raw traceback → app/cli/main.py:60,71,115,133,196,205,226"
+      ],
+      "new_defects": [
+        "app/cli/main.py:147-176 — _stream_goal never checks the stream's HTTP status and returns normally when the stream ends without a terminal event, so `watch` with a revoked key (401), an unknown goal (404) or a dropped connection prints nothing and exits 0, indistinguishable from success in scripts [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/cli/test_main_comprehensive.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 57 passed"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,274 @@
+{
+ "group": "g10a-critic",
+ "code": "287cb90f7",
+ "features": [
+  {
+   "area": "critic",
+   "feature": "Proactive outreach engine (app/proactive)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No code change since a4d172588 (only an unrelated one-line nl_scheduler change in chat/service.py). POST /v1/proactive/signals is tenant-scoped from auth and the wired audit writes; but the engine is still built without count/preference providers and delivery uses the in-memory principal->session map. The external channel push is not wired at all.",
+   "verified_fixed": [],
+   "still_open": [
+    "No count_provider/count_recorder \u2192 cap is per-process self._sent \u2192 app/bootstrap/routers.py:213, app/proactive/engine.py:72-89",
+    "No preferences_provider \u2192 default ProactivePreferences() (no opt-out, no quiet hours) for everyone \u2192 app/proactive/engine.py:64, app/bootstrap/routers.py:213",
+    "deliver_proactive uses in-memory _principal_sessions, not chat_principal_sessions; channel push errors suppressed while engine reports delivered=True \u2192 app/chat/service.py:1001-1016",
+    "SignalBus in-process only (limited impact) \u2192 app/proactive/signals.py"
+   ],
+   "new_defects": [
+    "app/chat/service.py:1014-1016 + :786 \u2014 ChatService._channel_deliver is never configured anywhere in app/ (no caller passes channel_deliver=), so a signal with channel='telegram'/'slack' never reaches the external channel yet POST /v1/proactive/signals returns delivered=true [severity: medium]",
+    "app/proactive/engine.py:72,111 + app/chat/service.py:410 \u2014 the daily cap and principal->session map are keyed by principal_id only (no tenant); two tenants that pass the same principal_id share one cap on a replica [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/proactive -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 15 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Skills: composable instruction packs and Skills Runtime",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/api/skills_runtime.py and app/skills_runtime/ are unchanged since a4d172588. The no-provider 503 still holds. Enablement, execution log, version history and the tenant disable switch are all still module or process state. The legacy per-skill execute route also bypasses the disable switch and makes an unmetered LLM call.",
+   "verified_fixed": [],
+   "still_open": [
+    "_enabled_skills module dict: per-replica and lost on restart \u2192 app/api/skills_runtime.py:43,513,521",
+    "_executions/_skill_versions unpersisted; versions keyed by skill_id not tenant \u2192 app/api/skills_runtime.py:42,44,595,632,669",
+    "Tenant skill disable (ScopedPermissionChecker._disabled) is process-local, so a disabled skill still runs on other replicas and after a restart \u2192 app/skills_runtime/executor.py:90-100,123; app/api/skills_runtime.py:427-446",
+    "No e2e_full test runs skills under the least-privilege app role"
+   ],
+   "new_defects": [
+    "app/api/skills_runtime.py:527-560 \u2014 POST /skills-runtime/{skill_id}/execute never consults permission_checker or _enabled_skills, so a skill disabled via /permissions/disable or /{id}/disable still runs through this route (only /runtime/execute goes through SkillExecutor's check) [severity: medium]",
+    "app/api/skills_runtime.py:560 and app/skills_runtime/executor.py (SkillExecutor.execute) \u2014 both call provider.complete directly on the platform _app_provider, with no budget charge, breaker or BYOK. They are allowlisted as _DEBT in tests/providers/test_no_direct_llm_complete.py:95,149, so tenants can drive uncharged LLM spend [severity: medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_skills_runtime.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 41 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Builder (site/app generation)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/api/builder.py is unchanged since a4d172588. POST /builder/projects submits a real goal and passes 429/402/404 through (503 only when nothing started). Project status, preview and assets are auth-gated honest 501s. The returned project_id/workspace_id are never persisted.",
+   "verified_fixed": [],
+   "still_open": [
+    "Live preview and project status are NOT IMPLEMENTED (501); nothing links goal artifacts to project_id/workspace_id, so the generated site cannot be served \u2192 app/api/builder.py:110-150",
+    "POST /builder/projects returns a project_id/workspace_id that no store records (only execution_context on the goal), so the only way to track the build is GET /goals/{goal_id} \u2192 app/api/builder.py:56-107"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_builder_preview.py tests/api/test_builder_submit_errors.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 10 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Goal templates (/templates)",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "app/api/templates.py is unchanged since a4d172588. The DB store runs each call in one RLS transaction (_tenant_session :220). A list failure is a 503 with no phantom built-ins (:573-578), and instantiate validates required {{param}}s (422) before submitting through GoalService. The RLS-transaction test passes.",
+   "verified_fixed": [],
+   "still_open": [
+    "Low: a broken content pack still yields [] built-ins (logged at ERROR, not surfaced); seeding is best-effort and retried per tenant via the per-process _seeded_tenants set \u2192 app/api/templates.py:97-100,315-319",
+    "Low: GET /templates has no pagination (unbounded per-tenant SELECT) \u2192 app/api/templates.py:431-441; get/update/delete/instantiate let DB errors surface as a generic 500 instead of 503 \u2192 :609-650"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_templates.py tests/api/test_templates_comprehensive2.py tests/api/test_templates_extra2.py tests/api/test_templates_rls_transaction.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 59 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Goal API sub-features not in inventory (ghost-run, batch, lineage, attempts, feedback, explain, traces)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The only change in app/api/goals.py since a4d172588 is 337e78e6f (wave 7B): debate/supervisor submission now runs a budget preflight and charges its LLM calls through GuardedDecisionProvider (tests pass). The earlier fixes still hold: feedback 404/503, ghost-run 503 when all strategies fail, and batch lookup errors reported as 'unknown'. None of the batch, lineage, attempts, traces or calibration gaps changed.",
+   "verified_fixed": [
+    "(adjacent, 337e78e6f) debate/supervisor LLM calls in the submit request are budget-checked and charged \u2192 app/api/goals.py:329-383"
+   ],
+   "still_open": [
+    "POST /goals/batch returns a random uuid batch_id (app/api/goals.py:988,1018), but GET /goals/batch/{batch_id}/status splits it as comma-separated goal ids (:1032-1033). Polling the returned id yields one 'not_found', which counts as done, so all_complete=true at once (:1045-1047)",
+    "lineage/attempts/traces swallow DB exceptions into empty or root-only results (app/api/goals.py:1101-1102,1163-1164,1231-1232); lineage/attempts skip the goal-existence check (:1106-1110,:1206-1210)",
+    "feedback calibration writes the in-process _default_calibration_store._records (app/api/goals.py:1305-1318; app/intelligence/verifier_calibration.py:38,198), so it is replica-local; the ghost-run docstring still says 'always returns HTTP 202' (:906)",
+    "No test covers the batch submit\u2192status round trip, lineage or attempts"
+   ],
+   "new_defects": [
+    "app/api/goals.py:1094 \u2014 traces map a stored confidence of 0.0 (the column default, migration 0009) to 0.5 via 'if r[3] else 0.5', inventing mid confidence [severity: low]",
+    "app/api/goals.py:982-1016 \u2014 BatchGoalRequest.max_parallel is ignored; up to 100 goals are submitted sequentially inside one HTTP request [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_goals_honest_responses.py tests/api/test_ghost_run.py tests/api/test_feedback.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 13 passed",
+    "uv run pytest tests/api/test_goals_pattern_modes_guarded.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 5 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Goal replay and timeline",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "app/api/replay.py is unchanged since a4d172588. Every read runs under sqlalchemy_rls_context with an explicit tenant_id filter (:46-106). Retention-expired history is flagged via history_expired/retention_days (:185-208), and errors are 503/500 with no exception text (:217-226). The unit tests pass. The real-Postgres RLS test was not re-run (Docker not allowed this pass), but the code has not changed since it last passed.",
+   "verified_fixed": [],
+   "still_open": [
+    "Low: replay loads every goal_events, goal_steps and decision_traces row for the goal with no LIMIT or pagination, so a very long goal loads its whole history into one response \u2192 app/api/replay.py:60-97"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_replay.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 5 passed",
+    "uv run pytest tests/api/test_replay_comprehensive.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 16 passed",
+    "tests/api/test_replay_rls.py \u2192 BLOCKED (integration marker, testcontainers Postgres; Docker/colima must not be started in this pass)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Insights API",
+   "previous_status": "FAIL",
+   "status": "PARTIAL",
+   "evidence": "35d7c73c6 (wave 7C) rewrote estimate, agent-health, query and benchmarks as SQLAlchemy Core over ORM tables. Duration is completed_at-created_at, cost comes from goal_cost_breakdowns, and similarity uses pg_trgm on goal_text. Tenant reads run under RLS; benchmarks use the BYPASSRLS system session and need at least 5 tenants. No DB gives 501, a DB error 503, no data null. test_insights_real_schema.py checks every referenced column against the ORM. The invented 0.82/0.7 defaults are gone. Remaining: unindexed full-window scans, unmetered LLM calls in analysis/query, and a graph endpoint that swallows errors.",
+   "verified_fixed": [
+    "benchmarks run cross-tenant on a plain RLS session \u2192 now system_db_session_factory + system_session (row_security off) with a >=5-tenant floor, app/api/insights.py:899-924 (35d7c73c6)",
+    "estimate pgvector query + fallback sharing one session, except\u2192defaults \u2192 one RLS transaction, DB error is 503, no rows gives nulls/confidence 'none', app/api/insights.py:289-302,326-361 (35d7c73c6)",
+    "[high] estimate selected nonexistent goals.cost_usd/duration_s/embedding \u2192 Core statement over real columns (duration from completed_at-created_at, cost from goal_cost_breakdowns), app/api/insights.py:92-138; column existence asserted by tests/api/test_insights_real_schema.py (35d7c73c6)",
+    "[medium] agent health selected absent columns and returned 0.7 on every axis \u2192 real aggregates, null per axis when there is no data, app/api/insights.py:141-186,816-870 (35d7c73c6)"
+   ],
+   "still_open": [
+    "tests/integration/test_insights_postgres.py (real Postgres, NOBYPASSRLS role) not run \u2192 BLOCKED: integration marker needs Docker/testcontainers, which may not be started in this pass"
+   ],
+   "new_defects": [
+    "app/api/insights.py:116-134 \u2014 estimate computes similarity(goal_text, :goal) for every goal the tenant finished in 180 days; no migration creates a gin_trgm_ops index on goals.goal_text and similarity()>= cannot use one anyway (needs the % operator), so each call is a per-tenant sequential scan. For a tenant with millions of goals this is seconds per estimate [severity: medium]",
+    "app/api/insights.py:97-104,196 \u2014 _goal_cost_subquery sums the tenant's entire goal_cost_breakdowns ledger (no time bound) before the join, and benchmarks aggregate the whole cross-tenant ledger on every call with no caching [severity: medium]",
+    "app/api/insights.py:578,692 \u2014 analyze_failure and natural_language_query call provider.complete directly on the platform provider (uncharged, no breaker). They are allowlisted as 'pending' in tests/providers/test_no_direct_llm_complete.py:61-62 [severity: medium]",
+    "app/api/insights.py:377-380 \u2014 GET /insights/graph/{goal_id} turns any get_events error (including NotFound and DB outage) into an empty start-only graph with 200 [severity: low]",
+    "app/api/insights.py:702,746 \u2014 an LLM-parsed 'days' is not bounded; a huge value makes timedelta raise OverflowError, giving a 500 [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_insights.py tests/api/test_insights_comprehensive.py tests/api/test_insights_extra.py tests/api/test_insights_real_schema.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 98 passed",
+    "uv run pytest tests/api/test_insights_graph.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 5 passed",
+    "tests/integration/test_insights_postgres.py \u2192 BLOCKED (integration; Docker not started by instruction)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Training data export",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "app/api/training_export.py is unchanged since a4d172588. Both endpoints resolve the tenant (:23-35). The DB path runs RLS-scoped queries over evaluations/eval_scorecards/goals plus goal_steps, and a DB error is a 503 (:53-63). The POST export needs a write-capable role through scope_enforcement's unregistered-write guard (app/auth/scope_enforcement.py:596-613). Only low-severity gaps remain.",
+   "verified_fixed": [],
+   "still_open": [
+    "[low] GET /intelligence/export-training-data/preview (goal text and step tools) has no registered scope, so any read-only key in the tenant can read it \u2192 app/api/training_export.py:66; app/auth/scope_enforcement.py:597-613",
+    "[low] every DB-path example reports model 'unknown'; the model is never recorded \u2192 app/api/training_export.py:245",
+    "tests/integration/test_billing_dsr_rls_integration.py not run \u2192 BLOCKED (integration; Docker not started by instruction)"
+   ],
+   "new_defects": [
+    "app/api/training_export.py:84-97 \u2014 preview accepts min_score down to 0.0, but the histogram buckets start at 0.80, so every score below 0.85 (including 0.1) is counted in '0.80-0.85' [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_training_export_comprehensive.py tests/api/test_training_export_comprehensive2.py tests/api/test_training_export_sources.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 41 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Golden datasets (eval promotion)",
+   "previous_status": "FAIL",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "730a7ce19 (wave 7C) replaced every stub with an auth-gated honest 501 that points callers to /ai-ops/datasets and /enterprise eval suites (app/api/golden_datasets.py:48-76). Nothing now fabricates ids or 'promoted', and no frontend page calls the routes (grep of agent-verse-frontend/src finds none). The fake success is gone, but the feature itself is absent: the migration-0076 tables are never written or read.",
+   "verified_fixed": [
+    "Every endpoint was fake success (list [], fabricated ids, 'promoted') \u2192 all four routes raise 501 after a 401 tenant check, app/api/golden_datasets.py:48-76 (730a7ce19)",
+    "[medium] promote-goal answered 'promoted' for any goal id, including another tenant's \u2192 now 501 without touching the id, app/api/golden_datasets.py:71-76 (730a7ce19)",
+    "[low] tests locked in the stub responses \u2192 tests/api/test_golden_datasets.py now asserts 401/501 (730a7ce19)"
+   ],
+   "still_open": [
+    "Golden-dataset promotion is not implemented: golden_datasets/golden_dataset_items (migration 0076_golden_datasets.py) are never written or read by any eval runner \u2192 app/api/golden_datasets.py:1-16"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_golden_datasets.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 8 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Agent definitions lifecycle (/agents CRUD, versions, snapshots, clone, export)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/api/agents.py is unchanged since a4d172588. Core CRUD stays DB-authoritative: update_async writes the DB first and 503s on failure, and cross-tenant tests pass. The snapshot, version and rollback gaps are all still present. Reads also still fall back to the per-replica cache on DB errors, for list as well as get.",
+   "verified_fixed": [],
+   "still_open": [
+    "_save_snapshot_to_db swallows every exception, so POST /agents/{id}/snapshot returns the snapshot as saved when it was not \u2192 app/api/agents.py:28-56 (called at :1173). _load_snapshots_from_db returns [] on error (:59-82), which restarts version numbering and makes GET /versions (:1144) look empty",
+    "Rollback ignores update_async's bool result and always reports 'rolled_back' (for example, when the agent was deleted in between) \u2192 app/api/agents.py:1206-1207",
+    "get_async falls back to the replica cache on any DB error \u2192 app/api/agents.py:245-251",
+    "Snapshot version = len(existing)+1 races under concurrent snapshots, and there is no unique (tenant_id, agent_id, version) constraint (0025_agent_snapshots.py has none; no later migration adds one) \u2192 app/api/agents.py:1161-1169"
+   ],
+   "new_defects": [
+    "app/api/agents.py:293-301 \u2014 AgentStore.list_async swallows DB errors and returns this replica's partial cache, so GET /agents and export silently return a subset during a DB outage [severity: medium]",
+    "app/api/agents.py:1306-1307 \u2014 POST /agents/{id}/clone checks the plan's agent limit against store.list_all(), which is this replica's in-memory cache (:336-337), not count_async as create does (:712). A fresh replica sees about 0 agents, so a tenant can clone past its plan limit [severity: medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_agent_store_honest_writes.py tests/api/test_agents_api.py tests/api/test_agents_cross_tenant.py tests/api/test_agents_comprehensive.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 83 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Agent Runtime 2.0 API (/agent-runtime)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/agent_runtime/ and app/api/agent_runtime.py are unchanged since a4d172588. The bounded LRU plus tenant-namespaced Redis store is in place, and submit_goal creates plan and trace (goal_service.py:4085-4112). Wave 7B's worker rewrite (f9337a862, 2d8ea71f7) did not touch the agent runtime. Trace completion is still only in _dispatch_event, so worker-run goals never finish their trace, and cost/token fields are never written.",
+   "verified_fixed": [],
+   "still_open": [
+    "Trace success/failure is updated only in _dispatch_event (app/services/goal_service.py:2541-2553, 2667-2679). The Celery\u2192SSE bridge sets record.status at goal_service.py:823-842 and never calls agent_runtime_store.update_trace; app/scaling/tasks.py has no agent_runtime reference (grep). Worker-run goals' traces never record success, failure or duration",
+    "Trace update errors are swallowed with bare 'except Exception: pass' \u2192 app/services/goal_service.py:2552-2553, 2678-2679",
+    "[medium] AgentRunTrace total_cost_usd/total_tokens/role_calls/model_selections are never written by any runtime path (grep finds no assignment outside models.py), so GET /agent-runtime/traces/{id} reports $0 and 0 tokens \u2192 app/agent_runtime/models.py:82-88",
+    "[low] POST /plans and /traces accept any goal_id without checking the goal exists in the tenant \u2192 app/api/agent_runtime.py:28-90,116-130",
+    "[low] /strategies is a static list that ignores the strategy registry \u2192 app/api/agent_runtime.py:153-190",
+    "[low] Redis failures degrade silently to the per-process copy; traces not durable (Redis TTL 7d, no Postgres) \u2192 app/agent_runtime/store.py:121-147"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/agent_runtime tests/api/test_phase6_7_rag_runtime.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 27 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Memory 2.0 API (/memory-v2)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/api/memory_v2.py is unchanged since a4d172588. The DB is authoritative, with RLS on every path, 503 on errors and FOR UPDATE on PATCH/DELETE/consolidate. Conflicts are still a process-local, unbounded dict. Wave 7D's MEMORY_WRITE screening (e8d4dfe7b) covered app/api/memory.py only. /memory-v2 writes unscreened rows into the same long_term_memory table that agent recall reads, and those rows stay recallable after a 'GDPR' soft delete.",
+   "verified_fixed": [],
+   "still_open": [
+    "_conflicts is process-local and never persisted: list and resolve are per-replica and lost on restart \u2192 app/api/memory_v2.py:65,319-343,671",
+    "[low] _conflicts grows without bound per tenant (no cap or TTL) \u2192 app/api/memory_v2.py:65,671",
+    "[low] every POST re-reads up to _V2_SCAN_LIMIT=5000 memories and runs an O(N) Python word-overlap scan \u2192 app/api/memory_v2.py:69,253-272"
+   ],
+   "new_defects": [
+    "app/api/memory_v2.py:94-110,253-274 \u2014 POST/PATCH /memory-v2 insert into long_term_memory without the MEMORY_WRITE guardrail that e8d4dfe7b added to /memory (app/api/memory.py:70-90,143). PII, secrets or injected instructions are stored unscreened and reach agents through canonical keyword recall (app/memory/long_term.py:722-755 has no memory_type filter) [severity: medium]",
+    "app/api/memory_v2.py:557-585 + :80-91 \u2014 DELETE '(GDPR compliant)' only rewrites lifecycle_state inside the JSON content column, keeping the original text. Canonical recall (app/memory/long_term.py:213,754) filters neither memory_type='memory_v2' nor lifecycle, so a deleted v2 memory is still recalled into agent context and retained in plaintext [severity: medium]",
+    "app/api/memory_v2.py:317 \u2014 GET /memory-v2 returns total=len(page), not the tenant's total count [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_memory_v2_db_authoritative.py tests/api/test_phase10_11_ai_ops_memory.py tests/memory_v2 -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 34 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Platform admin (cross-tenant, X-Admin-Key)",
+   "previous_status": "FAIL",
+   "status": "PARTIAL",
+   "evidence": "9d0d98383 (wave 7C) fixed both fake-data endpoints. /admin/usage now aggregates goals/tenants on the BYPASSRLS system session (501 with no DB, 503 on error), and /admin/incidents is an honest 501. PUT plan stays durable and the key check is constant-time. Tenant list and detail still read the per-process TenantService._tenants cache. A direct probe shows detail's usage is always {}: app.state.cost_controller is the in-memory CostController, which has no get_budget_status.",
+   "verified_fixed": [
+    "[medium] /admin/usage read nonexistent GoalService._active_goals (always 0) \u2192 Core aggregates over goals/tenants via system_db_session_factory + system_session, app/api/admin.py:163-241 (9d0d98383); tests/integration/test_admin_usage_postgres.py added",
+    "[medium] /admin/incidents read nonexistent guardrail_engine._incidents (always []) \u2192 honest 501 stating incidents are not persisted, app/api/admin.py:244-259 (9d0d98383)"
+   ],
+   "still_open": [
+    "Tenant list and detail read in-process TenantService._tenants, not the DB, so tenants created on another replica after startup are missing or stale, and list pagination/search cover only this replica \u2192 app/api/admin.py:74,106",
+    "Tenant detail swallows cost-controller errors into usage {}. It is worse than logged before: app.state.cost_controller is CostController() (app/main.py:584,2734), which has no get_budget_status (probe: hasattr \u2192 False; only RedisCostController defines it, app/governance/cost.py:529). Detail usage is therefore ALWAYS {}; tests/api/test_admin_api.py:116-151 mock the method and hide this [severity: medium] \u2192 app/api/admin.py:109-116",
+    "tests/integration/test_admin_usage_postgres.py not run \u2192 BLOCKED (integration; Docker not started by instruction); no integration test covers list/detail"
+   ],
+   "new_defects": [
+    "app/api/admin.py:1-12 \u2014 the module docstring advertises POST /admin/tenants/{id}/keys/revoke (no such route) and says admin is 'NOT protected by the standard tenant middleware', but /admin is not in _BYPASS_PREFIXES (app/tenancy/middleware.py:70-110), so callers also need a tenant API key [severity: low]",
+    "app/api/admin.py:170-195,224-227 \u2014 /admin/usage runs three whole-table aggregates over goals (count, FILTER counts and GROUP BY status with no time bound) on every call; at millions of goals each dashboard load is a full scan [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_admin_api.py tests/api/test_admin_gated_identity_ops.py -q --no-cov -p no:cacheprovider -m \"not slow\" \u2192 31 passed",
+    "probe: uv run python -c 'from app.governance.cost import CostController; print(hasattr(CostController(),\"get_budget_status\"))' \u2192 False",
+    "tests/integration/test_admin_usage_postgres.py \u2192 BLOCKED (integration; Docker not started by instruction)"
+   ]
+  }
+ ]
+}

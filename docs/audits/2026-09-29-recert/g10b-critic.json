@@ -1,0 +1,307 @@
+{
+ "group": "g10b-critic",
+ "code": "287cb90f7",
+ "features": [
+  {
+   "area": "critic",
+   "feature": "Login session management (/auth/sessions)",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "app/api/sessions.py is byte-identical since a4d172588: every endpoint returns 401 unauthenticated, else an honest 501 (sessions.py:27-50). Mounted via guarded registry (bootstrap/routers.py:99). No frontend caller (grep src/ for auth/sessions: none). No session recording or enforcement exists.",
+   "verified_fixed": [],
+   "still_open": [
+    "No login-session recording and no per-request enforcement; all three endpoints answer 501 \u2192 app/api/sessions.py:27-50 (unchanged since a4d172588)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_sessions_not_implemented.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 12 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Sandbox goal submission (/sandbox)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/api/sandbox.py and app/enterprise/simulation.py are unchanged since a4d172588. POST /sandbox/goals really runs SimulationRunner.start (full AgentGraph with MockMCPClient; all executor tool calls go through self._mcp_client, executor_mixin.py:2339,2465,3029), dry-run fallback is honestly labelled (sandbox.py:59-84), router mounted via guarded registry (bootstrap/routers.py:100). Static /config, fabricated cost and a silent stub fallback on pipeline crash remain.",
+   "verified_fixed": [],
+   "still_open": [
+    "GET /sandbox/config hardcodes 'Cost is simulated' / 'Results are deterministic mock data' even when used_real_llm=True \u2192 app/api/sandbox.py:87-102",
+    "Separate surface from /enterprise/simulation and /lab/run \u2192 app/api/sandbox.py (unchanged)",
+    "(prev new defect) cost_estimate/cost_usd is fabricated len(steps)*0.001 even with real LLM calls \u2192 app/enterprise/simulation.py:242,253,374,381"
+   ],
+   "new_defects": [
+    "app/enterprise/simulation.py:265-273 \u2014 any exception in the full AgentGraph run is logged at warning and the goal is silently re-run through the keyword stub, which always returns status 'completed' / outcome 'success (simulated)' (:367,386); POST /sandbox/goals then answers executed=True, mode 'mock_tool_run' for a run whose real pipeline crashed (swallowed exception reporting success) [severity: medium]",
+    "app/enterprise/simulation.py:375,390 \u2014 stub sets used_real_llm = provider is not None, ignoring the local used_real_llm flag that is False when provider.complete raised (:309-315), so a keyword-planned run is reported as real-LLM (reached via /enterprise/simulation callers that pass provider) [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_sandbox_api.py tests/enterprise/test_simulation*.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 146 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Multimodal asset ingestion (/multimodal)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The PDF fake-success defect is fixed (87a685320): _extract_pdf now raises PdfExtractionError and ingest_pdf marks the job failed with the reason, covered by a regression test. The same placeholder-as-content pattern survives for images, the in-process job cache keeps every upload (up to 25 MB) with no eviction, and the vision LLM call is not charged.",
+   "verified_fixed": [
+    "_extract_pdf placeholder spans reported as 'completed' \u2192 now raises PdfExtractionError for missing pypdf / bad base64 / parse error / text-free PDF and ingest_pdf sets status 'failed' + error (app/multimodal/pipeline.py:470-512, 137-146; 87a685320; tests/multimodal/test_multimodal_api.py:136-165)",
+    "source_base64 persisted to the job store \u2192 the Redis payload strips it (app/multimodal/job_store.py:52-55); but see new defect about the in-process copy"
+   ],
+   "still_open": [
+    "pipeline.set_provider() mutates the shared app.state pipeline on every request \u2192 app/api/multimodal.py:45-47"
+   ],
+   "new_defects": [
+    "app/multimodal/pipeline.py:441-442 \u2014 with no vision-capable provider _describe_image returns the placeholder '[Image content - vision provider not configured]', which ingest_image (:103-116) stores as the span content with confidence 0.9 and status 'completed' \u2014 the same fake-success pattern just fixed for PDFs, and the placeholder gets embedded as if it described the image [severity: medium]",
+    "app/multimodal/job_store.py:99-100,93 \u2014 save() always writes the full job object (including source_base64, up to 25 MB, set at pipeline.py:92,134) into a per-process dict that is never evicted (only delete() pops it), even when Redis is wired; at volume each replica grows without bound until OOM [severity: medium]",
+    "app/multimodal/pipeline.py:449-467 \u2014 the vision description calls self._provider.complete directly, with no cost_controller or guarded completion, so image ingestion LLM spend is never charged to the tenant budget (grep cost/budget in api/multimodal.py and pipeline.py: none) [severity: medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/multimodal/ tests/test_multimodal_router.py tests/api/test_phase3_4_multimodal.py tests/api/test_multimodal_goals.py tests/api/test_goals_multimodal_attachments.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 109 passed",
+    "tests/e2e_full/test_multimodal_e2e.py \u2192 BLOCKED (needs Docker/colima; not started per instructions)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "OCR document extraction (/ocr)",
+   "previous_status": "PASS",
+   "status": "PARTIAL",
+   "evidence": "app/api/ocr.py, app/ocr and app/tools/ocr_tool.py are unchanged since a4d172588. The guardrail fix holds: persist_to_kb passes request= (ocr.py:134-136), and the router mounts through the guarded registry (bootstrap/routers.py:114). But a deeper read finds that vision-OCR failures are swallowed into empty text with HTTP 200 and that the vision LLM calls bypass tenant cost control, so this drops to PARTIAL.",
+   "verified_fixed": [
+    "persist_to_kb carries request= so tenant RAG_INGEST guardrails run \u2192 app/api/ocr.py:131-136 (b3ef0907d), still present",
+    "Router mounted via _include_guarded \u2192 app/bootstrap/routers.py:114 (df515a292), still present"
+   ],
+   "still_open": [
+    "POST /ocr/batch turns a per-item exception into None with no per-item reason (failed count is reported) \u2192 app/api/ocr.py:333-335,340-346",
+    "POST /ocr/batch accepts persist_to_kb/collection_id per document (OcrRequest) but _extract_one never persists and silently returns kb_persisted=false \u2192 app/api/ocr.py:280-332"
+   ],
+   "new_defects": [
+    "app/ocr/engine.py:359-361,336-337 \u2014 _llm_vision_ocr turns any provider error (or no resolvable provider) into ('', 0.0) and the caller keeps going: a provider outage makes /ocr/extract answer 200 with empty raw_text, and in a multi-page PDF (engine.py:109) only the failed pages are silently dropped, so persist_to_kb indexes a partial document as if it were complete [severity: medium]",
+    "app/ocr/engine.py:326-334,358 + app/api/ocr.py:169-170,307-308 \u2014 the API reads app.state.provider, which nothing sets (grep: no 'state.provider =' in app/), so every call falls back to a fresh resolve_provider() per page. The vision LLM call is therefore made with neither the tenant's configured/BYOK provider nor the cost controller, and OCR spend is never charged to the tenant budget [severity: medium]",
+    "app/api/ocr.py:179 \u2014 the multipart upload is read fully into memory (and base64-inflated at :189/:194) before ocr_tool's 10 MB check (app/tools/ocr_tool.py:115-130), so there is no early size cap on the upload path [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/ocr/ tests/api/test_ocr_api.py tests/api/test_ocr_persist_kb.py tests/workflow/test_steps/test_ocr_step_security.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 114 passed",
+    "tests/e2e_full/test_ocr_agent_tool_e2e.py \u2192 BLOCKED (needs Docker/colima; not started per instructions)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Public status page router is never mounted",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "Unchanged since a4d172588 and still correct. public_status.router is included at app/bootstrap/routers.py:406-411 and is the only /status* path in app.openapi() (probe: ['/status']). It reads the real app.state.health registry (postgres/redis checks from pools.py:131-132), returns only up/down, and reports degraded when failed_routers is non-empty (public_status.py:21-54). StatusPage throws on !r.ok.",
+   "verified_fixed": [
+    "Router mounted \u2192 app/bootstrap/routers.py:406-411 (df515a292), re-confirmed by an openapi probe",
+    "StatusPage surfaces non-2xx responses \u2192 agent-verse-frontend/src/features/status/StatusPage.tsx:25-28 (df515a292)"
+   ],
+   "still_open": [
+    "(prev low) HealthRegistry.run has no per-check timeout or cache (app/observability/health.py:34-59), and _default_pg_ping does pool.acquire() with no timeout (app/core/pools.py:58-60). Each anonymous GET /status (auth bypass at tenancy/middleware.py:430) takes a live pool connection, and a saturated pool or hung dependency hangs /status instead of reporting 'degraded' [low]",
+    "(prev low) e2e/status-page.spec.ts:1-29 asserts only heading, button and non-401, never the backend payload [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_public_status_api.py tests/bootstrap/test_guarded_routers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 10 passed",
+    "npx vitest run src/features/status/StatusPage.test.tsx \u2192 8 passed",
+    "probe: create_app().openapi() paths starting with /status \u2192 ['/status']"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Data lifecycle and retention maintenance (app/lifecycle + beat tasks)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Retention now fails loudly: execute_retention_policy and create_guardrail_partitions call _fail_task_on_errors, which raises on any per-table or partition error (tasks.py:5596-5625, 6521-6522; 12ca5eaa9, already in baseline code, so the baseline gap was stale). Batched deletes and tenant legal-hold exemption hold (tasks.py:5639-5694). But the knowledge-chunk expiry ignores legal holds, the document-expiry task still swallows errors, and the five policy modules are still dead.",
+   "verified_fixed": [
+    "Per-table 'error: ...' strings / top-level {'error'} made the retention task always succeed \u2192 _fail_task_on_errors raises RuntimeError so Celery records FAILURE (app/scaling/tasks.py:5603,5607-5625; 12ca5eaa9; tests/scaling/test_maintenance_tasks_fail_loudly.py:17-41)",
+    "_ensure_future_partitions returned {'error'} instead of raising \u2192 create_guardrail_partitions calls _fail_task_on_errors on its result (app/scaling/tasks.py:6521-6522; 12ca5eaa9)"
+   ],
+   "still_open": [
+    "app/lifecycle archive_policy, deletion_receipt, export_policy, legal_hold_policy and retention_policy still have zero importers outside app/lifecycle; only deletion_orchestrator is used (main.py:2361,2739; tasks.py:6821) (rg app/)"
+   ],
+   "new_defects": [
+    "app/rag/retention.py:61-96,122-125 \u2014 expire_knowledge_chunks (called from expire_stale_documents, tasks.py:6775-6777) deletes expired knowledge_chunks_<dim> rows and their derived graph nodes/edges for every tenant with no legal-hold exemption, while the sibling documents DELETE applies _TENANT_HOLD_EXEMPT (tasks.py:~6725). A tenant under an active tenant-wide legal hold therefore still loses its expiring knowledge base [severity: medium]",
+    "app/scaling/tasks.py:6798-6799 \u2014 _expire_stale_documents catches every exception and returns {'status':'error'}; expire_stale_documents (:6676-6681) returns it without _fail_task_on_errors (whose check keys on 'error', but the result is never passed to it), so a broken document or knowledge retention run is recorded as Celery SUCCESS [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/lifecycle/test_lifecycle.py tests/lifecycle/test_deletion_orchestrator_mocked.py tests/lifecycle/test_deletion_guard.py tests/scaling/test_maintenance_tasks_fail_loudly.py tests/scaling/test_maintenance_rls_fix.py tests/scaling/test_celery_maintenance_real.py -q --no-cov -p no:cacheprovider -m 'not slow and not integration' \u2192 94 passed",
+    "tests/lifecycle/test_deletion_cascade.py, tests/scaling/test_document_retention_graph_cascade.py, tests/e2e_full/test_partition_maintenance_e2e.py \u2192 BLOCKED (need Docker/testcontainers; colima not started per instructions)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Maintenance tasks not claimed by any area",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "scan_cost_anomalies is unchanged since a4d172588 (no commits touch it). Three more beat-scheduled maintenance tasks (celery_app.py:269-283) turn out to be no-ops that report success: conclude_stale_experiments queries columns that do not exist, embed_marketplace_templates only counts rows, and the anomaly scan discards what it finds. Their unit tests mock the DB and Redis, so none of this is caught.",
+   "verified_fixed": [],
+   "still_open": [
+    "scan_cost_anomalies uses blocking redis.keys('cost:daily:*') (O(N)), caps at 50 tenants per run from an unordered set (so the same subset may be picked every hour), and does per-tenant 'except Exception: pass' \u2192 app/scaling/tasks.py:6601-6614",
+    "(prev low) returns tenants_scanned=len(tenant_ids) although at most 50 are scanned \u2192 app/scaling/tasks.py:6617"
+   ],
+   "new_defects": [
+    "app/scaling/tasks.py:6608-6612 \u2014 scan_cost_anomalies only counts detect_anomaly() results (a read-only snapshot, intelligence/cost_tracker.py:392-396): nothing is persisted, notified or alerted, so the hourly 'anomaly scan' beat has no observable effect beyond a return value [severity: medium]",
+    "app/scaling/tasks.py:6655-6666 \u2014 conclude_stale_experiments UPDATEs 'WHERE ... wins + losses >= 20' but prompt_variants has win_count/loss_count (migrations/versions/0029_prompt_variants.py:20-21). Every daily run raises UndefinedColumn, which is caught into {'status':'error'} and recorded as Celery SUCCESS. Even if fixed it only bumps updated_at, and it runs on the app role with no RLS context against a FORCE RLS table (f2a3b4c5d6e7:47-60), so it would match 0 rows [severity: medium]",
+    "app/scaling/tasks.py:6623-6642 \u2014 embed_marketplace_templates (beat every 15 min) only SELECT COUNT(*)s templates WHERE embedding IS NULL and never embeds anything, yet returns status 'ok' [severity: low]",
+    "app/scaling/tasks.py:6596-6620 \u2014 the Redis client from aioredis.from_url is closed only on the success path (no finally), so each failed hourly run leaks a connection pool in the worker [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/evals/test_self_improvement_feedback.py tests/scaling/test_maintenance_tasks_success_paths.py tests/scaling/test_erasure_jobs_rls.py tests/scaling/test_tasks_extra3.py -q --no-cov -p no:cacheprovider -m 'not slow and not integration' \u2192 68 passed (success_paths mocks the session, so the wrong column names are not caught)",
+    "tests/e2e_full/test_system_jobs_maintenance_role_e2e.py, tests/integration/test_billing_dsr_rls_integration.py \u2192 BLOCKED (need Docker/testcontainers; colima not started per instructions)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Unwired trigger-family implementations (TriggerType families F/G/H/I)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "POST /schedules still applies is_supported and validate_spec (schedules.py:232-249); the probe confirms POST /schedules {trigger_type:'geofence'} \u2192 422. The dead process-local webhook-token map is gone (5a6d78ecf). But POST /nl/schedule has no such guard: the probe 'when the truck enters the warehouse geofence' \u2192 201 with a stored geofence schedule that can never fire. The ten UNSUPPORTED types and the data/, monitoring/ and advanced/ packages are still unwired.",
+   "verified_fixed": [
+    "(prev new defect) process-local app.state._webhook_tokens written but never read \u2192 removed; tokens resolve from the persisted schedules row on any replica (app/api/schedules.py:259-261,450-452; 5a6d78ecf; rg '_webhook_tokens' app/ \u2192 none)",
+    "POST /schedules rejects unsupported TriggerTypes and validates the spec \u2192 app/api/schedules.py:232-249 (0d52e3caa); probe: geofence \u2192 422"
+   ],
+   "still_open": [
+    "app/triggers/data/, monitoring/ and advanced/ have zero importers outside their packages, and iot/geofence.py and iot/sensor.py are unimported by any runtime path (rg app/)",
+    "geofence, google_sheets, graphql_subscription, log_pattern, mqtt, price_threshold, s3_event, sensor_threshold, sharepoint and websocket_message classify as UNSUPPORTED (probe of TRIGGER_DISPATCH; app/triggers/dispatch_map.py:127-139) and have no runtime"
+   ],
+   "new_defects": [
+    "app/api/schedules.py:437-465 \u2014 POST /nl/schedule stores every NLScheduler spec via _create_with_quota without the is_supported/validate_spec guard that POST /schedules has (:232-249), and NLScheduler emits all ten UNSUPPORTED types (nl_scheduler.py:263-337: S3_EVENT, GOOGLE_SHEETS, SHAREPOINT, LOG_PATTERN, GRAPHQL_SUBSCRIPTION, WEBSOCKET_MESSAGE, PRICE_THRESHOLD, MQTT, GEOFENCE, SENSOR_THRESHOLD). Probe: 'when the truck enters the warehouse geofence' \u2192 201 [geofence], a schedule reported as created that silently never fires [severity: medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers/test_trigger_type_coverage.py tests/triggers/data/test_consumers.py tests/triggers/monitoring/test_parsers.py tests/triggers/test_advanced.py tests/api/test_schedules_api.py tests/api/test_schedules_cross_replica.py tests/api/test_schedule_webhook_fires.py -q --no-cov -p no:cacheprovider -m 'not slow and not integration' \u2192 187 passed",
+    "probe /private/tmp/claude-501/g10b/probe_nl.py (test app from tests/api/test_schedules_api.py + real NLScheduler(FakeProvider)) \u2192 /nl/schedule 201 ['geofence']; /schedules geofence 422",
+    "tests/e2e_full/test_trigger_families_e2e.py \u2192 BLOCKED (needs Docker; colima not started per instructions)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Unwired gateway channel adapters and webhook delivery",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The only gateway change since a4d172588 is SSRF hardening of chat file downloads: public_async_client + request_public, pinned per hop (router.py:239-259). Live channel paths stay signature-gated and config/status stay honest 501s (router.py:938-980). The Email and VoiceWebhook adapters, WebhookDeliverySystem and OutboundWebhookService are still unwired.",
+   "verified_fixed": [],
+   "still_open": [
+    "EmailChannelAdapter (app/gateway/channels/email.py) has no importer; VoiceWebhookAdapter (app/gateway/channels/voice_webhook.py) is referenced only as a string key in gateway/auth.py:13,45 and rate_limiter.py:49, never imported",
+    "WebhookDeliverySystem (app/gateway/webhook_delivery.py) is referenced only by the equally dead OutboundWebhookService (app/services/webhook_service.py), which has zero importers",
+    "Per-org gateway channel config/status is not implemented (honest 501) \u2192 app/gateway/router.py:938-980",
+    "(prev low) Telegram/WhatsApp tenant bindings are deploy-time env only (ChannelRegistry.from_env) with no per-tenant DB store \u2192 app/bootstrap/routers.py:263"
+   ],
+   "new_defects": [
+    "app/gateway/router.py:250-256 \u2014 _download_command_file buffers the whole response (r.content) with no size cap or Content-Length check; the SSRF pinning bounds the host, not the bytes, so an attachment URL from a bound channel (e.g. a large Discord/Slack file) is loaded fully into worker memory [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/gateway/channels/test_discord.py tests/gateway/channels/test_email.py tests/gateway/channels/test_voice_webhook.py tests/gateway/test_webhook_delivery.py tests/api/test_ingestion_channels_endpoints.py tests/gateway/test_gateway_config_not_faked.py tests/gateway/test_file_download_pinned.py tests/gateway/test_router_endpoints.py -q --no-cov -p no:cacheprovider -m 'not slow and not integration' \u2192 166 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Dual-mode identity linking (app/identity)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/identity is unchanged since a4d172588 (no commits). The lifespan swaps in IdentityService(PostgresIdentityStore) (RLS-scoped via sqlalchemy_rls_context) and attaches it to the chat service (main.py:1384-1400). resolve_principal is called only from chat/service.py:1598, link_identity has no caller, and the first-contact race remains.",
+   "verified_fixed": [],
+   "still_open": [
+    "link_identity() has no caller outside app/identity (rg app/), so cross-channel principal unification has no entry point \u2192 app/identity/service.py:100-125",
+    "First-contact race: get_link miss \u2192 create_principal \u2192 create_link ON CONFLICT DO NOTHING (app/identity/repository.py:67-83). The losing concurrent request returns an orphan principal whose link was never stored (app/identity/service.py:81-98), and link_identity likewise returns a link that may not have been stored (:115-125)",
+    "No e2e_full test for cross-channel continuity under RLS",
+    "Stale comment 'In-memory now; a Postgres-backed store swaps in with the identity_links migration' although main.py:1392 already swaps it \u2192 app/bootstrap/routers.py:244-246"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/identity/test_identity_service.py tests/identity/test_repository_unit.py -q --no-cov -p no:cacheprovider -m 'not slow and not integration' \u2192 13 passed",
+    "tests/identity/test_identity_repo_integration.py \u2192 BLOCKED (needs Docker/testcontainers; colima not started per instructions)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Data classification and redaction (app/data_classification)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/data_classification is unchanged since a4d172588. The only live classifier use is still few_shot_cot.py:17. state_runtime/state_context.py (classifier at :88) has no importer, redaction.py has no importer, and runtime_flags.data_classification is defined but never read (rg '\\.data_classification\\b' \u2192 none). The strategy catalogue honestly lists it as planned (strategy_registry.py:1463-1466).",
+   "verified_fixed": [],
+   "still_open": [
+    "Not applied on the main executor or result pipeline; the only live use is few-shot CoT \u2192 app/agent/patterns/few_shot_cot.py:17",
+    "app/state_runtime/state_context.py:88 has no importer (rg state_context/StateContext outside the file \u2192 none), so that path is dead",
+    "app/data_classification/redaction.py has no importer outside the package, and runtime_flags.data_classification (app/core/runtime_flags.py:31,72,98, default True) is never read, suggesting a control that is on when nothing enforces it"
+   ],
+   "new_defects": [
+    "app/tenancy/domain_role_templates.py:1-21 \u2014 DOMAIN_ROLE_TEMPLATES documents 'POST /api/auth/roles/from-template' and ABAC conditions such as {'data_classification_lte': 'PHI'} for the healthcare phi_reader role, but the module has zero importers and nothing evaluates data_classification_lte (rg app/). That regulated-industry data-class ABAC is advertised in code but does not exist [severity: low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/data_classification/ -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 11 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Canonical routing runtime (app/routing_runtime)",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "app/routing_runtime is unchanged since a4d172588 (no commits). main.py:1285-1300 (Postgres) and 2616-2625 (in-memory) still build the canonical model, skill and embedding routers plus the decision store onto app.state. rg finds no reader of canonical_*_router or routing_decision_store outside main.py, so no request path routes through them.",
+   "verified_fixed": [],
+   "still_open": [
+    "canonical_{model,skill,embedding}_router and routing_decision_store are set on app.state but never read \u2192 app/main.py:1292-1300, 2621-2625 (rg outside main.py \u2192 none)",
+    "app/routing_runtime/tool_router.py and optimizer.py have zero importers (rg app/)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/routing_runtime/ -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 9 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Orphan top-level runtime packages (zero importers outside their own package)",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "Unchanged since a4d172588. rg 'app\\.<pkg>' outside each package: explainability_runtime, recovery, capabilities, collaboration_runtime and ai_ops \u2192 none; provenance, plan_runtime and sandbox_runtime \u2192 only app/orchestration/strategy_registry.py (adapter_path strings, honestly marked planned/not_available). The ai_ops API uses AIOpsStore (app/evals/ai_ops_store.py) wired in the lifespan (main.py:2382-2388), with the module dicts as a no-DB fallback only.",
+   "verified_fixed": [
+    "The ai_ops API's module dicts are not the production path: app.state.ai_ops_store = AIOpsStore(db_factory) (app/main.py:2382-2388), and each handler branches on _store(request) (app/api/ai_ops.py:36-38, 94-140, 356-363) \u2014 still true"
+   ],
+   "still_open": [
+    "app/provenance, explainability_runtime, recovery, capabilities, plan_runtime, sandbox_runtime, collaboration_runtime and app/ai_ops (models.py) are never imported by a runtime path; provenance, plan_runtime and sandbox_runtime appear only as strategy_registry.py adapter strings (rg app/)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/provenance/test_provenance_ledger.py tests/explainability_runtime/test_explainability.py tests/recovery/test_recovery.py tests/plan_runtime/test_plan_runtime.py tests/sandbox_runtime/test_sandbox_runtime.py tests/collaboration_runtime/test_collaboration_runtime.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 48 passed"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Minor routers missing from inventory",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The guarded router registry and the /status mount hold (bootstrap/routers.py:118-152, 406-411). The only enterprise.py change is SAML-test SSRF pinning (public_async_client, enterprise.py:2226-2237). Data residency is still fabricated per tenant and still shown by EnterprisePage (EnterprisePage.tsx:20,575 via client.ts:2086,2246). /compliance/regions still keys on a non-existent field.",
+   "verified_fixed": [],
+   "still_open": [
+    "get_data_residency hardcodes primary_region 'us-east-1' and backup_region 'eu-west-1' for every tenant regardless of deployment \u2192 app/enterprise/compliance.py:477-489",
+    "/compliance/regions compares residency.get('region'), a key the residency dict does not have, so us-east-1 is always listed twice (once as the residency dict, once as a region entry) \u2192 app/api/enterprise.py:189-197",
+    "GET /v1/health always returns ok and /v1/info is static \u2192 app/api/v1/router.py:8-19 (cosmetic)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/bootstrap/test_guarded_routers.py tests/api/test_artifacts.py tests/api/test_policy_rules.py tests/governance/test_policy_rules.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 36 passed",
+    "tests/api/test_public_status_api.py \u2192 6 passed (run under the /status feature in this group)"
+   ]
+  },
+  {
+   "area": "critic",
+   "feature": "Frontend feature folders with no inventory entry",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No changes since a4d172588 to the obsidian, onboarding, notifications, simulation or status feature folders, or to their e2e specs. The route-existence contract test still passes (c245b4eaf). StatusPage error handling holds. The e2e specs still ignore backend payloads, and SimulationPage still renders the stub's fabricated +$0.0010 per-step cost.",
+   "verified_fixed": [
+    "StatusPage checks r.ok and /status is mounted \u2192 agent-verse-frontend/src/features/status/StatusPage.tsx:25-28; app/bootstrap/routers.py:406-411 (df515a292)",
+    "Route-existence contract: tests/frontend/test_api_contract.py:332 fails on any literal frontend API call with no backend route (c245b4eaf); passes at HEAD"
+   ],
+   "still_open": [
+    "e2e/status-page.spec.ts never asserts backend data, so it passes on any response \u2192 agent-verse-frontend/e2e/status-page.spec.ts:1-29",
+    "No payload-level backend-contract verification for the other pages; only route existence, plus unit tests and e2e with mocked routes",
+    "(prev low) the SimulationPage live feed (SimulationPage.tsx:292-295) shows the stub's hardcoded cost_increment 0.001 per step (app/enterprise/simulation.py:450,456), and the real-graph path emits no cost_increment (:496-498 default 0.0)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/frontend/test_api_contract.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 3 passed, 1 skipped (no exceptions registered)",
+    "npx vitest run (Obsidian, Onboarding, NotificationCenter, SimulationPage, StatusPage tests) \u2192 first run under heavy concurrent load: 75 passed, 1 failed (flaky, unidentified); rerun: 76 passed",
+    "e2e/status-page.spec.ts, e2e/onboarding.spec.ts, e2e/obsidian.spec.ts \u2192 not run (Playwright needs the running stack)"
+   ]
+  }
+ ]
+}
