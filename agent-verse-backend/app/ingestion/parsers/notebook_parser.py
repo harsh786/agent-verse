@@ -16,11 +16,17 @@ class NotebookParser:
     Markdown cells are extracted as prose sections.
     """
 
-    def parse(self, content: str, *, filename: str = "") -> str:
+    def parse(self, content: str, *, filename: str = "", strict: bool = False) -> str:
+        """Cell text of the notebook. An invalid notebook returns the raw content,
+        or with ``strict`` raises ``ValueError`` (never index raw notebook JSON)."""
         try:
             nb = json.loads(content)
-        except json.JSONDecodeError as exc:
+            if not isinstance(nb, dict):
+                raise ValueError("a notebook is a JSON object")
+        except (json.JSONDecodeError, ValueError) as exc:
             _log.warning("notebook_parse_error filename=%s: %s", filename, exc)
+            if strict:
+                raise ValueError(f"not a readable notebook: {exc}") from exc
             return content
 
         cells = nb.get("cells", [])

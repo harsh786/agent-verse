@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agent.tokenizer import count_tokens
+from app.ingestion.parser_registry import DocumentParseError
 from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfig
 
 # Guardrails 2.0 integration
@@ -246,6 +247,11 @@ class IngestionPipeline:
             except Exception as e:
                 _log.debug("pipeline_stage=classify mime_error doc=%s: %s", raw_doc.doc_id, e)
             if content_type is None:
+                # The file name / signature before sniffing decoded text: a
+                # Parquet/Avro/notebook sent as octet-stream used to be sniffed
+                # as TEXT/JSON and indexed as raw bytes / raw notebook JSON.
+                content_type = self._classify_by_name_or_signature(raw_doc)
+            if content_type is None:
                 try:
                     content_type = self._classifier.classify(
                         raw_doc.content.decode("utf-8", errors="replace")
@@ -268,6 +274,12 @@ class IngestionPipeline:
                 )
                 if parse_meta:
                     result.metadata.update(parse_meta)  # type: ignore[attr-defined]
+            except DocumentParseError as e:
+                # A binary / structured document that cannot be parsed fails; its
+                # bytes are never decoded and indexed as text instead.
+                result.status = "failed"
+                result.error = f"parse_failed: {e}"
+                return result
             except Exception as e:
                 _log.warning("pipeline_stage=parse error doc=%s: %s", raw_doc.doc_id, e)
                 # Try decoding raw bytes as text fallback
@@ -605,16 +617,38 @@ class IngestionPipeline:
         return text, True
 
     def _quality_score(self, text: str) -> float:
-        """Compute a quality score 0.0-1.0 for the text."""
+        """The checker's graded 0.0-1.0 score (so ``min_quality_score`` means
+        something); 0.0 when the checker fails — it used to be a binary
+        1.0 / 0.1 and 1.0 on a checker error, which passed everything."""
         try:
             from app.ingestion.quality_checks import QualityChecker
 
             checker = QualityChecker(min_length=_MIN_TEXT_LENGTH)
-            result = checker.check(text)
-            return 1.0 if result.passed else 0.1
+            return float(checker.check(text).quality_score)
+        except Exception as exc:
+            _log.warning("pipeline_stage=quality checker_failed: %s", exc)
+            return 0.0
+
+    def _classify_by_name_or_signature(self, raw_doc: RawDocument) -> Any:
+        """ContentType from the document's file name or byte signature, or None."""
+        from urllib.parse import urlsplit
+
+        from app.ingestion.content_classifier import ContentType
+
+        metadata = raw_doc.metadata or {}
+        for name in (
+            raw_doc.title,
+            str(metadata.get("name") or metadata.get("filename") or ""),
+            urlsplit(raw_doc.source_url or "").path,
+        ):
+            if name and "." in name.rsplit("/", 1)[-1]:
+                by_name = self._classifier.classify_by_filename(name)
+                if by_name != ContentType.TEXT:
+                    return by_name
+        try:
+            return self._classifier.classify_bytes(raw_doc.content)
         except Exception:
-            # If quality check is unavailable, pass everything
-            return 1.0
+            return None
 
     def _chunk(
         self,

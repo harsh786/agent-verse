@@ -10,6 +10,14 @@ if TYPE_CHECKING:
     from app.providers.base import LLMProvider
 
 
+class DocumentParseError(ValueError):
+    """A document in a binary / structured format could not be parsed.
+
+    The document fails with this reason; its raw bytes are never indexed as
+    text instead (which is what the UTF-8 fallback used to do).
+    """
+
+
 class TextParser:
     def parse(self, content: str, **kwargs: object) -> list[str]:
         """Split into paragraphs for semantic chunking."""
@@ -162,7 +170,8 @@ class ParserRegistry:
             ContentType.PARQUET: _ParquetBridge(ParquetParser()),
             ContentType.AVRO: _AvroBridge(AvroParser()),
             ContentType.LATEX: _LaTeXBridge(LaTeXParser()),
-            ContentType.NOTEBOOK: TextParser(),  # Notebook parser handles .ipynb via pipeline Stage 5  # noqa: E501
+            # Byte-native in parse_bytes_async (never parsed as plain text).
+            ContentType.NOTEBOOK: TextParser(),
         }
 
     def get_parser(self, content_type: ContentType) -> TextParser:
@@ -219,6 +228,27 @@ class ParserRegistry:
         name = filename or "document"
 
         try:
+            if ct in (ContentType.PARQUET, ContentType.AVRO):
+                return self._parse_columnar(content, ct, name), meta
+            if ct == ContentType.NOTEBOOK:
+                from app.ingestion.parsers.notebook_parser import NotebookParser
+
+                try:
+                    text = NotebookParser().parse(
+                        content.decode("utf-8", errors="strict"), filename=name, strict=True
+                    )
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise DocumentParseError(str(exc)[:200]) from exc
+                return text, meta
+            if ct == ContentType.JSON:
+                from app.ingestion.parsers.json_parser import JSONParser as RealJSONParser
+
+                text, report = RealJSONParser().parse_with_report(
+                    content.decode("utf-8", errors="replace"),
+                    is_jsonl=name.lower().endswith(".jsonl"),
+                )
+                meta.update(report)
+                return text, meta
             if ct == ContentType.PDF:
                 return await self._parse_pdf(content, name, meta, ocr_engine, vision_provider)
             if ct == ContentType.DOCX:
@@ -244,12 +274,33 @@ class ParserRegistry:
                 return await self._parse_audio(content, name, mime_type, meta)
             if ct == ContentType.VIDEO:
                 return await self._parse_video(content, name, meta)
+        except DocumentParseError:
+            raise
         except Exception as exc:  # never leak binary garbage on unexpected failure
             meta["parse_error"] = str(exc)[:200]
             return "", meta
 
         # Generic str-based parsers (TEXT, MARKDOWN, CODE, HTML, JSON, EXCEL, …)
         return self.parse(content, ct), meta
+
+    @staticmethod
+    def _parse_columnar(content: bytes, ct: ContentType, name: str) -> str:
+        """Parquet / Avro from the raw bytes (the old bridges got a lossy UTF-8
+        round-trip, failed, and the raw ``PAR1...`` bytes were indexed)."""
+        if ct == ContentType.PARQUET:
+            from app.ingestion.parsers.parquet_parser import ParquetParser
+
+            text = ParquetParser().parse(content, filename=name)
+        else:
+            from app.ingestion.parsers.avro_parser import AvroParser
+
+            text = AvroParser().parse(content, filename=name)
+        if not text.strip():
+            raise DocumentParseError(
+                f"{ct.value} file could not be parsed (invalid file, or the "
+                f"{'pyarrow' if ct == ContentType.PARQUET else 'fastavro'} package is missing)"
+            )
+        return text
 
     def _parse_docx(
         self, content: bytes, name: str, meta: dict[str, object]

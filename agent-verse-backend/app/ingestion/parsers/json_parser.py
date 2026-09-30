@@ -39,6 +39,15 @@ def _flatten(obj: object, prefix: str = "", depth: int = 0) -> list[str]:
 class JSONParser:
     """Parse JSON/JSONL into readable key:value text."""
 
+    def parse_with_report(
+        self, content: str, *, is_jsonl: bool = False
+    ) -> tuple[str, dict[str, int]]:
+        """:meth:`parse` plus ``{"jsonl_lines_skipped": n}`` when JSON Lines had
+        lines that are not JSON (they used to be dropped without a trace)."""
+        self._skipped = 0
+        text = self.parse(content, is_jsonl=is_jsonl)
+        return text, ({"jsonl_lines_skipped": self._skipped} if self._skipped else {})
+
     def parse(self, content: str, *, is_jsonl: bool = False) -> str:
         """Flatten a JSON document, or JSON Lines, into ``path: value`` lines.
 
@@ -57,6 +66,7 @@ class JSONParser:
                 _log.warning("json_parse_error: %s", exc)
                 return content
         parts: list[str] = []
+        skipped = 0
         for i, line in enumerate(text.splitlines()):
             line = line.strip()
             if not line:
@@ -64,7 +74,13 @@ class JSONParser:
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
+                skipped += 1
                 continue
             parts.append(f"Record {i + 1}: " + ", ".join(_flatten(obj)))
-        # Not JSON at all: keep the text rather than lose it.
-        return "\n".join(parts) if parts else content
+        if not parts:
+            # Not JSON at all: keep the text rather than lose it.
+            return content
+        self._skipped = skipped
+        if skipped:
+            _log.warning("jsonl_lines_skipped count=%d", skipped)
+        return "\n".join(parts)

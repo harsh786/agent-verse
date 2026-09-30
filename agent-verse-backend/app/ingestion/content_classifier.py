@@ -87,6 +87,13 @@ _MIME_MAP: dict[str, ContentType] = {
     "application/msword": ContentType.DOCX,
     "text/csv": ContentType.CSV,
     "text/tab-separated-values": ContentType.CSV,
+    "application/vnd.apache.parquet": ContentType.PARQUET,
+    "application/x-parquet": ContentType.PARQUET,
+    "application/parquet": ContentType.PARQUET,
+    "application/avro": ContentType.AVRO,
+    "application/x-avro": ContentType.AVRO,
+    "avro/binary": ContentType.AVRO,
+    "application/x-ipynb+json": ContentType.NOTEBOOK,
 }
 
 _CODE_PATTERNS = re.compile(
@@ -108,6 +115,20 @@ class ContentClassifier:
         if _MARKDOWN_PATTERN.search(content[:500]):
             return ContentType.MARKDOWN
         return ContentType.TEXT
+
+    def classify_bytes(self, content: bytes) -> ContentType | None:
+        """Recognise formats by their signature (connectors often send
+        ``application/octet-stream``); None when nothing is recognised."""
+        if len(content) >= 8 and content[:4] == b"PAR1" and content[-4:] == b"PAR1":
+            return ContentType.PARQUET
+        if content[:4] == b"Obj\x01":
+            return ContentType.AVRO
+        if content[:5] == b"%PDF-":
+            return ContentType.PDF
+        head = content[:8192].lstrip()
+        if head[:1] == b"{" and b'"nbformat"' in head and b'"cells"' in content:
+            return ContentType.NOTEBOOK
+        return None
 
     def classify_by_filename(self, filename: str) -> ContentType:
         import os
