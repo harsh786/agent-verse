@@ -31,7 +31,14 @@ _CORE_FAMILY_SPECS = [
     {"trigger_type": "interval", "interval_seconds": 3600, "description": "hourly"},
     {"trigger_type": "once", "fire_at_iso": "2035-01-01T00:00:00Z", "description": "new year"},
     {"trigger_type": "webhook", "description": "inbound webhook"},
-    {"trigger_type": "api_poll", "poll_url": "https://example.com/status", "description": "poll"},
+    # poll_interval_seconds defaults to 300s, below the free plan's 15-min
+    # schedule floor (TRG-16/TRG-33); the shared e2e_full tenant is free-plan.
+    {
+        "trigger_type": "api_poll",
+        "poll_url": "https://example.com/status",
+        "poll_interval_seconds": 900,
+        "description": "poll",
+    },
 ]
 
 

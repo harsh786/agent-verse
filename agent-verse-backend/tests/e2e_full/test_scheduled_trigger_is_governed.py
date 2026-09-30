@@ -36,7 +36,9 @@ async def _create_cron_trigger(tenant_client: Any) -> str:
                 "trigger_type": "cron",
                 "name": "ws4-scheduled",
                 "description": "a scheduled cron trigger",
-                "cron_expression": "*/5 * * * *",
+                # Every 15 min: the free plan's minimum schedule interval
+                # (TRG-16); the shared e2e_full session tenant is free-plan.
+                "cron_expression": "*/15 * * * *",
                 "timezone": "UTC",
             },
             "goal_template": "Scheduled maintenance sweep",
