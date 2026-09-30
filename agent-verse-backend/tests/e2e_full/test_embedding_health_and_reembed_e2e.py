@@ -115,23 +115,34 @@ async def test_embedding_health_is_tenant_scoped(app: Any, client: Any) -> None:
     )
 
 
-@pytest.fixture
-def _dimension_matched_embedder(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Make the embedding router return vectors of the collection's dimension.
+def _install_embedder(monkeypatch: pytest.MonkeyPatch, dim: int) -> None:
+    """Make the worker's ``resolve_embedder()`` return a ``dim``-wide embedder.
 
-    With no provider key configured the router falls back to a 384-d fake, and
-    the task (correctly) refuses to write 384-d vectors into a 1536-d column.
-    What these tests exercise is the task's table resolution, tenant scoping,
-    pagination and write path — not the provider — so the provider is stubbed to
-    agree with the collection. The refusal itself is covered separately.
+    KB-25: the task builds the deployment embedder itself (it used the global
+    embedding router, whose provider is never set in the worker). What these
+    tests exercise is table resolution, tenant scoping, pagination and the write
+    path — not a real provider.
     """
-    from app.embedding.router import embedding_router
+    from app.providers.base import EmbedResponse
+    from app.providers.embedder_factory import EmbedderResolution
 
-    async def _embed(texts: list[str], provider: str = "", model: str = "") -> list[list[float]]:
-        return [[0.9 - 0.0001 * i] * 1536 for i, _ in enumerate(texts)]
+    class _Embedder:
+        async def embed(self, request: Any) -> EmbedResponse:
+            return EmbedResponse(
+                embeddings=[[0.9 - 0.0001 * i] * dim for i, _ in enumerate(request.texts)]
+            )
 
-    monkeypatch.setattr(embedding_router, "embed_texts", _embed)
-    return embedding_router
+    monkeypatch.setattr(
+        "app.providers.embedder_factory.resolve_embedder",
+        lambda settings=None: EmbedderResolution(
+            embedder=_Embedder(), provider="e2e", model=f"fake-{dim}", dimension=dim
+        ),
+    )
+
+
+@pytest.fixture
+def _dimension_matched_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_embedder(monkeypatch, 1536)
 
 
 async def test_re_embed_collection_actually_rewrites_vectors(
@@ -187,28 +198,21 @@ async def test_re_embed_collection_actually_rewrites_vectors(
     assert after != before, "re-embed reported success but no vector changed"
 
 
-async def test_re_embed_refuses_a_dimension_changing_model(
+async def test_re_embed_refuses_an_unsupported_dimension(
     app: Any, tenant_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A model of a different dimension is refused, not half-applied.
+    """A model whose width has no chunk table is refused, not half-applied.
 
-    Those rows belong in a different knowledge_chunks_<dim> table entirely, so
-    rewriting them in place is impossible — the column would reject the vector
-    mid-batch, leaving the collection split between two embedding models.
+    (A move to another SUPPORTED width is a real re-embed now — KB-25; it is
+    covered on Postgres in tests/rag/test_reembed_integration.py.)
     """
     from app.scaling.tasks import re_embed_collection_async
 
     tenant_id, collection_id = await _collection_with_chunks(app, tenant_client, 2)
 
-    # A provider producing 384-d vectors, while the collection is 1536-d. (There
-    # is no silent 384-d fake fallback any more: with no provider the task fails
-    # with "no embedding provider configured" — a separate, honest refusal.)
-    from app.embedding.router import embedding_router
-
-    async def _embed_384(texts: list[str], provider: str = "", model: str = "") -> list[list[float]]:
-        return [[0.1] * 384 for _ in texts]
-
-    monkeypatch.setattr(embedding_router, "embed_texts", _embed_384)
+    # A provider producing 384-d vectors: no knowledge_chunks_384 table exists,
+    # so the run is refused before anything is written.
+    _install_embedder(monkeypatch, 384)
     result = await re_embed_collection_async(tenant_id, collection_id)
     assert result["re_embedded"] == 0
     assert "dimension" in result["error"] or "-dim" in result["error"]
@@ -235,7 +239,9 @@ async def test_re_embed_is_tenant_scoped_and_batched(
     mine = await _tasks.re_embed_collection_async(tenant_id, collection_id)
     assert mine["re_embedded"] == 3
 
-    source = inspect.getsource(_tasks.re_embed_collection_async)
+    from app.rag import reembed as _reembed
+
+    source = inspect.getsource(_reembed)
     assert "fetchall()" not in source or "LIMIT" in source, (
         "re-embed loads the whole collection into memory; at millions of chunks "
         "that is an OOM, not a backfill"

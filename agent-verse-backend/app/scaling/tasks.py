@@ -7486,145 +7486,91 @@ def discover_and_tick_civilizations() -> dict:
 async def re_embed_collection_async(
     tenant_id: str,
     collection_id: str,
-    model_key: str = "openai/text-embedding-3-small",
+    model_key: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
-    """Re-embed every chunk in a collection with ``model_key``.
+    """Re-embed every chunk of a collection with the deployment's embedder (KB-25).
 
-    Four things were wrong with the previous implementation, and all four were
-    invisible because the whole body sat inside ``except Exception: return
-    {"error": ...}`` — which Celery records as a *successful* task:
+    The embedder is built here from :func:`resolve_embedder` — the ONE embedder
+    queries are embedded with. (This used the global ``embedding_router``, whose
+    provider is never set in the worker, and refused any dimension change.) The
+    job itself lives in :mod:`app.rag.reembed`: same-dimension rewrites happen in
+    place; a new dimension moves the rows to the matching chunk table and flips
+    the collection only once every row is re-embedded.
 
-    * It queried ``knowledge_chunks``, a table that has never existed in this
-      schema. Chunks live in ``knowledge_chunks_<dim>`` (migration 0062), so
-      every invocation raised UndefinedTable and this task has never re-embedded
-      a single chunk.
-    * It never set the RLS GUC, so even against the right table it would match
-      zero rows under the app's own least-privilege role.
-    * It loaded the entire collection with one ``fetchall()``. At a million
-      documents that is an OOM, not a backfill. Now keyset-paginated by ``id``
-      and committed per batch, so an interrupted run resumes cheaply and a
-      partial run leaves consistent rows behind.
-    * Its UPDATE matched on bare ``id`` with no tenant or collection predicate.
-
-    A model whose dimension differs from the collection's is refused rather than
-    half-applied: the rows would belong in a different table entirely, which is a
-    migration, not a backfill.
+    ``model_key`` is an optional guard: when given it must name the configured
+    embedder, otherwise the run is refused (vectors from another model would not
+    match query vectors). Progress is written to Redis for
+    ``GET /knowledge/collections/{id}/re-embed``; completion publishes
+    ``knowledge.updated``. Returns ``{"error": ...}`` on failure — the Celery
+    entry point turns that into a failed task.
     """
-    from sqlalchemy import text
+    import json
 
-    from app.db.rls import sqlalchemy_rls_context
+    import redis.asyncio as aioredis
+
     from app.db.session import get_session_factory as _get_fresh_db
-    from app.embedding.router import embedding_router
-    from app.rag.store import _chunk_table
+    from app.providers.base import EmbedRequest
+    from app.providers.embedder_factory import resolve_embedder
+    from app.rag import reembed
 
-    batch_size = 50
-
+    job = job_id or uuid.uuid4().hex
+    redis_client: Any = None
     try:
-        # Inside the try: building the session factory can itself fail (no DB
-        # configured), and that has to come back as the same error dict rather
-        # than escaping as an unhandled task exception.
-        db = _get_fresh_db()
-        async with (
-            db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
-            crow = (
-                await session.execute(
-                    text(
-                        "SELECT embedding_dim FROM knowledge_collections "
-                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
-                    ),
-                    {"cid": collection_id, "tid": tenant_id},
-                )
-            ).fetchone()
-        if crow is None:
-            return {"collection_id": collection_id, "re_embedded": 0, "model": model_key}
-        dimension = int(crow[0])
-        table = _chunk_table(dimension)
+        redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+    except Exception as exc:
+        logger.warning("re_embed_progress_redis_unavailable", error=str(exc))
+    progress = reembed.ReembedProgress(redis_client, tenant_id, collection_id, job)
+    embedder: Any = None
+    try:
+        resolution = resolve_embedder()
+        embedder = resolution.embedder
+        if embedder is None:
+            raise reembed.ReembedError(f"no embedding provider: {resolution.reason()}")
+        resolved_key = f"{resolution.provider}/{resolution.model}"
+        if model_key and model_key not in (resolved_key, resolution.model):
+            raise reembed.ReembedError(
+                f"requested model {model_key!r} is not the configured embedder "
+                f"({resolved_key}); re-embedding with it would not match query vectors"
+            )
 
-        parts = model_key.split("/", 1)
-        provider = parts[0] if len(parts) == 2 else "openai"
-        model = parts[1] if len(parts) == 2 else model_key
+        async def _embed(texts: list[str]) -> list[list[float]]:
+            response = await embedder.embed(EmbedRequest(texts=texts))
+            return [list(vec) for vec in response.embeddings]
 
-        count = 0
-        cursor: str | None = None
-        while True:
-            async with (
-                db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
-                # Keyset pagination: stable under concurrent writes and needs no
-                # growing OFFSET scan as the collection gets large.
-                rows = (
-                    await session.execute(
-                        text(
-                            f"SELECT id, content FROM {table} "
-                            "WHERE collection_id = :cid AND tenant_id = :tid "
-                            # id is TEXT on these tables (migration 0068
-                            # recreated them), so the keyset compares as text.
-                            "  AND (CAST(:after AS text) IS NULL OR id > CAST(:after AS text)) "
-                            "ORDER BY id LIMIT :lim"
-                        ),
+        result = await reembed.re_embed_collection(
+            db=_get_fresh_db(),
+            embed=_embed,
+            model_key=resolved_key,
+            tenant_id=tenant_id,
+            collection_id=collection_id,
+            progress=progress,
+        )
+        await progress.update(
+            status="completed",
+            finished_at=datetime.datetime.now(UTC).isoformat(),
+            processed=result["re_embedded"],
+            dimension=result["dimension"],
+            previous_dimension=result["previous_dimension"],
+        )
+        if redis_client is not None:
+            try:
+                await redis_client.publish(
+                    "knowledge.updated",
+                    json.dumps(
                         {
-                            "cid": collection_id,
-                            "tid": tenant_id,
-                            "after": cursor,
-                            "lim": batch_size,
-                        },
-                    )
-                ).fetchall()
-                if not rows:
-                    break
-
-                texts = [str(row[1] or "") for row in rows]
-                embeddings = await embedding_router.embed_texts(
-                    texts, provider=provider, model=model
-                )
-                if len(embeddings) != len(rows):
-                    raise RuntimeError(
-                        f"embedder returned {len(embeddings)} vectors for {len(rows)} chunks"
-                    )
-                for row, vec in zip(rows, embeddings, strict=True):
-                    if len(vec) != dimension:
-                        raise RuntimeError(
-                            f"model {model_key} produces {len(vec)}-dim vectors but "
-                            f"collection {collection_id} is {dimension}-dim; "
-                            "re-embedding to a new dimension is a migration, not a backfill"
-                        )
-                    await session.execute(
-                        text(
-                            f"UPDATE {table} SET embedding = CAST(:vec AS vector) "
-                            "WHERE id = :id AND collection_id = :cid AND tenant_id = :tid"
-                        ),
-                        {
-                            "vec": "[" + ",".join(f"{v:.9g}" for v in vec) + "]",
-                            "id": row[0],
-                            "cid": collection_id,
-                            "tid": tenant_id,
-                        },
-                    )
-                    count += 1
-                cursor = str(rows[-1][0])
-
-        if count:
-            # Record the model the vectors were actually produced with, so a
-            # later ReembeddingPolicy.should_reembed comparison is meaningful.
-            async with (
-                db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
-                await session.execute(
-                    text(
-                        "UPDATE knowledge_collections SET embedder = :m, updated_at = now() "
-                        "WHERE id = :cid AND tenant_id = :tid"
+                            "event": "collection_re_embedded",
+                            "tenant_id": tenant_id,
+                            "collection_id": collection_id,
+                            "chunks_re_embedded": result["re_embedded"],
+                            "model": result["model"],
+                            "dimension": result["dimension"],
+                        }
                     ),
-                    {"m": model_key, "cid": collection_id, "tid": tenant_id},
                 )
-
-        return {"collection_id": collection_id, "re_embedded": count, "model": model_key}
+            except Exception as exc:
+                logger.warning("re_embed_publish_failed", error=str(exc))
+        return {**result, "job_id": job}
     except Exception as exc:
         logger.error(
             "re_embed_collection_failed",
@@ -7632,19 +7578,45 @@ async def re_embed_collection_async(
             tenant_id=tenant_id,
             error=str(exc),
         )
-        return {"error": str(exc), "collection_id": collection_id, "re_embedded": 0}
+        await progress.update(
+            status="failed",
+            error=str(exc)[:500],
+            finished_at=datetime.datetime.now(UTC).isoformat(),
+        )
+        return {
+            "error": str(exc),
+            "collection_id": collection_id,
+            "re_embedded": 0,
+            "job_id": job,
+        }
+    finally:
+        if redis_client is not None:
+            with contextlib.suppress(Exception):
+                await reembed.release_lock(redis_client, tenant_id, collection_id, job)
+            with contextlib.suppress(Exception):
+                await redis_client.aclose()
+        close = getattr(embedder, "aclose", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                await close()
 
 
 @celery_app.task(name="app.scaling.tasks.re_embed_collection", queue="maintenance")
 def re_embed_collection(
     tenant_id: str,
     collection_id: str,
-    model_key: str = "openai/text-embedding-3-small",
+    model_key: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
-    """Celery entry point for :func:`re_embed_collection_async`."""
-    return _run_async(
-        re_embed_collection_async(tenant_id, collection_id, model_key)
-    )
+    """Celery entry point for :func:`re_embed_collection_async`.
+
+    A failed re-embed fails the task (it used to return an error dict that
+    Celery recorded as a success).
+    """
+    result = _run_async(re_embed_collection_async(tenant_id, collection_id, model_key, job_id))
+    if "error" in result:
+        raise RuntimeError(f"re-embed of collection {collection_id} failed: {result['error']}")
+    return cast("dict[Any, Any]", result)
 
 
 # ---------------------------------------------------------------------------

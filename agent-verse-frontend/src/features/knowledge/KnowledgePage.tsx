@@ -54,6 +54,70 @@ function HealthGauge({ score }: { score: number }) {
   );
 }
 
+// ── Re-embed (KB-25) ──────────────────────────────────────────────────────────
+
+interface ReembedProgress {
+  status: 'never_run' | 'queued' | 'running' | 'completed' | 'failed';
+  job_id?: string; processed?: number; total?: number | null; dimension?: number; error?: string;
+}
+
+function reembedErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 409) return 'A re-embed of this collection is already running.';
+  if (e instanceof ApiError && e.status === 403) return 'Only admins can re-embed a collection.';
+  if (e instanceof ApiError) return `Re-embed could not be started (${e.status}): ${e.message}`;
+  return 'Re-embed could not be started.';
+}
+
+/** Re-embed a collection with the deployment's current embedder, with job progress. */
+function ReembedControl({ collectionId }: { collectionId: string }) {
+  const qc = useQueryClient();
+  const [watching, setWatching] = useState(false);
+  const { data: progress } = useQuery<ReembedProgress>({
+    queryKey: ['collection-reembed', collectionId],
+    queryFn: () => apiFetch(`/knowledge/collections/${collectionId}/re-embed`, undefined, { silenceServerErrorToast: true }),
+    enabled: watching,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      return s === 'queued' || s === 'running' ? 1000 : false;
+    },
+  });
+  const mutation = useMutation({
+    mutationFn: () => apiFetch<{ job_id: string }>(`/knowledge/collections/${collectionId}/re-embed`, { method: 'POST' }),
+    onSuccess: () => {
+      setWatching(true);
+      void qc.invalidateQueries({ queryKey: ['collection-reembed', collectionId] });
+      toast({ kind: 'success', message: 'Re-embed queued.' });
+    },
+    onError: (e) => {
+      if (e instanceof ApiError && e.status === 409) setWatching(true);
+      toast({ kind: 'error', message: reembedErrorMessage(e) });
+    },
+  });
+  const busy = mutation.isPending || progress?.status === 'queued' || progress?.status === 'running';
+  let label: string | null = null;
+  if (watching && progress) {
+    if (progress.status === 'queued') label = 'Re-embed queued…';
+    else if (progress.status === 'running') label = `Re-embedding… ${progress.processed ?? 0}/${progress.total ?? '?'} chunks`;
+    else if (progress.status === 'completed') label = `Re-embedded ${progress.processed ?? 0} chunks${progress.dimension ? ` (${progress.dimension}-d)` : ''}`;
+    else if (progress.status === 'failed') label = `Re-embed failed: ${progress.error ?? 'unknown error'}`;
+  }
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <button data-testid={`reembed-collection-${collectionId}`} onClick={() => mutation.mutate()} disabled={busy}
+        title="Re-embed every chunk with the current embedding model"
+        className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 disabled:opacity-50">
+        <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} /> Re-embed
+      </button>
+      {label && (
+        <span data-testid={`reembed-status-${collectionId}`}
+          className={`text-[10px] truncate ${progress?.status === 'failed' ? 'text-red-500' : 'text-muted-foreground'}`}>
+          {label}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ── Collections Tab ───────────────────────────────────────────────────────────
 
 function CollectionsTab() {
@@ -168,6 +232,7 @@ function CollectionsTab() {
                   <ChevronRight className={`h-3.5 w-3.5 transition-transform ${expanded === c.collection_id ? 'rotate-90' : ''}`} />
                   {expanded === c.collection_id ? 'Hide stats' : 'View stats'}
                 </button>
+                <ReembedControl collectionId={c.collection_id} />
                 <button data-testid={`delete-collection-${c.collection_id}`} onClick={() => setDeleteCollectionId(c.collection_id)}
                   className="p-1.5 text-muted-foreground hover:text-red-500 rounded">
                   <Trash2 className="h-3.5 w-3.5" />

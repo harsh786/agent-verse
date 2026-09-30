@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 from fastapi import (
     APIRouter,
     BackgroundTasks,
+    Depends,
     File,
     Form,
     HTTPException,
@@ -72,6 +73,7 @@ from app.rag.store import (
 )
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
+from app.tenancy.rbac import require_role
 
 if TYPE_CHECKING:
     from app.rag.indexing import IndexingDependency
@@ -3094,6 +3096,91 @@ async def sync_collection(
         "queued": queued,
         "already_running": already_running,
     }
+
+
+def _runtime_redis(request: Request) -> Any:
+    return getattr(request.app.state, "_redis", None)
+
+
+@router.post("/collections/{collection_id}/re-embed", status_code=202)
+async def re_embed_collection_route(
+    collection_id: str,
+    request: Request,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Re-embed a collection with the deployment's configured embedder (admin, KB-25).
+
+    Enqueues the ``re_embed_collection`` maintenance task; progress is read with
+    ``GET /knowledge/collections/{id}/re-embed`` and completion is published on
+    ``knowledge.updated``. One run per collection at a time (409 while one is
+    queued or running). Needs Redis for the lock and progress — 503 without it.
+    """
+    from app.rag import reembed
+
+    tenant = _require_tenant(request)
+    await _owned_collection_or_404(request, collection_id, tenant)
+    redis = _runtime_redis(request)
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Re-embedding requires Redis")
+    job_id = _uuid.uuid4().hex
+    try:
+        acquired = await reembed.acquire_lock(redis, tenant.tenant_id, collection_id, job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Re-embed lock is unavailable") from exc
+    if not acquired:
+        current = await reembed.read_progress(redis, tenant.tenant_id, collection_id)
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "A re-embed of this collection is already running",
+                    "progress": current},
+        )
+    progress = reembed.ReembedProgress(redis, tenant.tenant_id, collection_id, job_id)
+    await progress.update(status="queued")
+    from app.scaling.tasks import re_embed_collection
+
+    try:
+        re_embed_collection.apply_async(
+            kwargs={
+                "tenant_id": tenant.tenant_id,
+                "collection_id": collection_id,
+                "job_id": job_id,
+            },
+            queue="maintenance",
+        )
+    except Exception as exc:
+        with suppress(Exception):
+            await reembed.release_lock(redis, tenant.tenant_id, collection_id, job_id)
+        await progress.update(status="failed", error="could not be queued")
+        _log_knowledge_error("re_embed_enqueue_failed", collection_id, exc)
+        raise HTTPException(
+            status_code=503, detail="Re-embed could not be queued; try again shortly"
+        ) from exc
+    return {"status": "queued", "job_id": job_id, "collection_id": collection_id}
+
+
+@router.get("/collections/{collection_id}/re-embed")
+async def re_embed_collection_status(collection_id: str, request: Request) -> dict[str, Any]:
+    """Latest re-embed progress for a collection (``never_run`` when none is recorded)."""
+    from app.rag import reembed
+
+    tenant = _require_tenant(request)
+    await _owned_collection_or_404(request, collection_id, tenant)
+    redis = _runtime_redis(request)
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Re-embed progress requires Redis")
+    try:
+        current = await reembed.read_progress(redis, tenant.tenant_id, collection_id)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Re-embed progress is unavailable") from exc
+    return current or {"status": "never_run", "collection_id": collection_id}
+
+
+def _log_knowledge_error(event: str, collection_id: str, exc: Exception) -> None:
+    from app.observability.logging import get_logger as _get_logger
+
+    _get_logger(__name__).warning(
+        event, collection_id=collection_id, error_type=type(exc).__name__, error=str(exc)[:300]
+    )
 
 
 # ---------------------------------------------------------------------------

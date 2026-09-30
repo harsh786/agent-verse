@@ -625,130 +625,135 @@ class TestRenderPublishArgs:
 
 
 class TestReEmbedCollection:
-    """re_embed_collection queried ``knowledge_chunks``, a table that has never
-    existed (chunks live in ``knowledge_chunks_<dim>``), ran without RLS context,
-    updated by bare ``id``, and slurped the whole collection with one
-    ``fetchall()`` — all inside a broad except that returned an error dict while
-    Celery recorded the task as successful. These pin the corrected contract.
+    """KB-25: the task builds the deployment embedder itself (``resolve_embedder``;
+    the global ``embedding_router`` it used has no provider in the worker),
+    reports progress in Redis, publishes ``knowledge.updated`` on completion,
+    releases its lock, and a failure fails the Celery task (an error dict used to
+    be recorded as a success). The SQL job is covered on real Postgres in
+    ``tests/rag/test_reembed_integration.py``.
     """
 
     @staticmethod
-    def _routing_session(*, dim=1536, pages):
-        """A session that answers the collection lookup, then paginated batches.
+    def _resolution(embedder=None, *, provider="dedicated", model="m-1024"):
+        from app.providers.embedder_factory import EmbedderResolution
 
-        ``pages`` is a list of row-lists; each is returned by one keyset query,
-        and an empty final page ends the loop.
-        """
-        page_iter = iter([*pages, []])
-        statements = []
-
-        async def _execute(stmt, params=None):
-            sql = str(stmt)
-            statements.append((sql, dict(params or {})))
-            if "set_config" in sql:
-                return MagicMock()
-            if "FROM knowledge_collections" in sql:
-                return MagicMock(fetchone=MagicMock(return_value=(dim,)))
-            if sql.strip().startswith("SELECT id, content"):
-                return MagicMock(fetchall=MagicMock(return_value=next(page_iter)))
-            return MagicMock()
-
-        session = _make_session(execute_side_effect=None)
-        session.execute = AsyncMock(side_effect=_execute)
-        session.statements = statements
-        return session
-
-    def test_unknown_collection_returns_zero(self):
-        from app.scaling.tasks import re_embed_collection
-
-        async def _execute(stmt, params=None):
-            if "set_config" in str(stmt):
-                return MagicMock()
-            return MagicMock(fetchone=MagicMock(return_value=None))
-
-        session = _make_session(execute_side_effect=None)
-        session.execute = AsyncMock(side_effect=_execute)
-
-        with patch("app.db.session.get_session_factory", return_value=_make_db_factory(session)):
-            result = re_embed_collection(tenant_id="t1", collection_id="c1")
-
-        assert result == {
-            "collection_id": "c1",
-            "re_embedded": 0,
-            "model": "openai/text-embedding-3-small",
-        }
-
-    def test_success_re_embeds_all_chunks_under_rls_and_tenant_scope(self):
-        from app.scaling.tasks import re_embed_collection
-
-        session = self._routing_session(pages=[[("id-1", "hello"), ("id-2", "world")]])
-
-        with (
-            patch("app.db.session.get_session_factory", return_value=_make_db_factory(session)),
-            patch(
-                "app.embedding.router.embedding_router.embed_texts",
-                new=AsyncMock(return_value=[[0.1] * 1536, [0.3] * 1536]),
-            ),
-        ):
-            result = re_embed_collection(
-                tenant_id="t1", collection_id="c1", model_key="openai/text-embedding-3-small"
-            )
-
-        assert result == {
-            "collection_id": "c1",
-            "re_embedded": 2,
-            "model": "openai/text-embedding-3-small",
-        }
-
-        sql_by_kind = {"rls": [], "select": [], "update": []}
-        for sql, params in session.statements:
-            if "set_config" in sql:
-                sql_by_kind["rls"].append(params)
-            elif sql.strip().startswith("SELECT id, content"):
-                sql_by_kind["select"].append((sql, params))
-            elif sql.strip().startswith("UPDATE knowledge_chunks_"):
-                sql_by_kind["update"].append((sql, params))
-
-        assert any(p.get("tid") == "t1" for p in sql_by_kind["rls"]), (
-            "no RLS context set — under the app's own least-privilege role this "
-            "matches zero rows and still reports success"
+        return EmbedderResolution(
+            embedder=embedder, provider=provider if embedder else "", model=model
         )
-        assert sql_by_kind["select"], "never read the dimension-specific chunk table"
-        for sql, _params in sql_by_kind["select"]:
-            assert "knowledge_chunks_1536" in sql
-            assert "LIMIT" in sql, "reads the whole collection in one go"
-        assert len(sql_by_kind["update"]) == 2
-        for sql, params in sql_by_kind["update"]:
-            assert "knowledge_chunks_1536" in sql
-            assert params["tid"] == "t1" and params["cid"] == "c1", (
-                "UPDATE is not scoped to the tenant and collection"
-            )
 
-    def test_dimension_mismatch_is_refused_not_half_applied(self):
+    @staticmethod
+    def _embedder(dim=1024):
+        from app.providers.base import EmbedResponse
+
+        embedder = MagicMock()
+
+        async def _embed(request):
+            return EmbedResponse(embeddings=[[0.1] * dim for _ in request.texts])
+
+        embedder.embed = AsyncMock(side_effect=_embed)
+        embedder.aclose = AsyncMock()
+        return embedder
+
+    def _run(self, *, resolution, job_result=None, job_error=None, model_key=None):
+        import json
+
+        from app.rag import reembed
         from app.scaling.tasks import re_embed_collection
+        from tests.rag.reembed_fakes import FakeRedis
 
-        session = self._routing_session(pages=[[("id-1", "hello")]])
+        redis = FakeRedis()
+        redis.data[reembed.lock_key("t1", "c1")] = "job-1"
+        seen: dict[str, Any] = {}
+
+        async def _job(**kwargs):
+            seen.update(kwargs)
+            seen["vectors"] = await kwargs["embed"](["a", "b"])
+            if job_error is not None:
+                raise job_error
+            return job_result
 
         with (
-            patch("app.db.session.get_session_factory", return_value=_make_db_factory(session)),
-            patch(
-                "app.embedding.router.embedding_router.embed_texts",
-                # 384-d vectors for a 1536-d collection: those rows belong in a
-                # different table entirely.
-                new=AsyncMock(return_value=[[0.1] * 384]),
-            ),
+            patch("app.providers.embedder_factory.resolve_embedder", return_value=resolution),
+            patch("redis.asyncio.from_url", return_value=redis),
+            patch("app.db.session.get_session_factory", return_value=MagicMock()),
+            patch.object(reembed, "re_embed_collection", side_effect=_job),
         ):
-            result = re_embed_collection(tenant_id="t1", collection_id="c1")
+            try:
+                out: Any = re_embed_collection(
+                    tenant_id="t1", collection_id="c1", model_key=model_key, job_id="job-1"
+                )
+            except RuntimeError as exc:
+                out = exc
+        progress = json.loads(redis.data[reembed.progress_key("t1", "c1")])
+        return out, redis, progress, seen
 
-        assert result["re_embedded"] == 0
-        assert "-dim" in result["error"]
+    def test_success_uses_the_resolved_embedder_and_reports_completion(self):
+        import json
 
-    def test_exception_returns_error_dict(self):
-        from app.scaling.tasks import re_embed_collection
+        from app.rag import reembed
 
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")):
-            result = re_embed_collection(tenant_id="t1", collection_id="c1")
+        embedder = self._embedder()
+        out, redis, progress, seen = self._run(
+            resolution=self._resolution(embedder),
+            job_result={
+                "collection_id": "c1",
+                "re_embedded": 3,
+                "model": "dedicated/m-1024",
+                "dimension": 1024,
+                "previous_dimension": 768,
+            },
+        )
+        assert out["re_embedded"] == 3 and out["job_id"] == "job-1"
+        assert seen["model_key"] == "dedicated/m-1024"
+        assert seen["tenant_id"] == "t1" and seen["collection_id"] == "c1"
+        assert seen["vectors"] == [[0.1] * 1024, [0.1] * 1024]  # the resolved embedder ran
+        assert progress["status"] == "completed" and progress["dimension"] == 1024
+        channel, message = redis.published[0]
+        assert channel == "knowledge.updated"
+        assert json.loads(message)["collection_id"] == "c1"
+        assert reembed.lock_key("t1", "c1") not in redis.data  # lock released
+        embedder.aclose.assert_awaited()
 
+    def test_no_embedder_fails_the_task_and_records_why(self):
+        out, redis, progress, _seen = self._run(resolution=self._resolution(None))
+        assert isinstance(out, RuntimeError)
+        assert "no embedding provider" in str(out)
+        assert progress["status"] == "failed"
+        assert redis.published == []
+
+    def test_a_model_other_than_the_configured_embedder_is_refused(self):
+        out, _redis, progress, seen = self._run(
+            resolution=self._resolution(self._embedder()), model_key="openai/other-model"
+        )
+        assert isinstance(out, RuntimeError)
+        assert "not the configured embedder" in str(out)
+        assert progress["status"] == "failed"
+        assert seen == {}  # the job never started
+
+    def test_a_job_failure_fails_the_task_and_releases_the_lock(self):
+        from app.rag import reembed
+
+        out, redis, progress, _seen = self._run(
+            resolution=self._resolution(self._embedder()),
+            job_error=reembed.ReembedError("model produces 384-dim vectors"),
+        )
+        assert isinstance(out, RuntimeError)
+        assert "384" in progress["error"]
+        assert reembed.lock_key("t1", "c1") not in redis.data
+
+    def test_async_entry_returns_an_error_dict(self):
+        import asyncio
+
+        from app.scaling.tasks import re_embed_collection_async
+
+        with (
+            patch(
+                "app.providers.embedder_factory.resolve_embedder",
+                return_value=self._resolution(None),
+            ),
+            patch("redis.asyncio.from_url", side_effect=RuntimeError("no redis")),
+        ):
+            result = asyncio.run(re_embed_collection_async("t1", "c1"))
         assert "error" in result
         assert result["re_embedded"] == 0
 
