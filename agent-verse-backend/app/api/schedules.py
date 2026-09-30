@@ -390,7 +390,10 @@ async def resume_schedule(request: Request, schedule_id: str) -> dict[str, Any]:
 @router.post("/{schedule_id}/fire", status_code=202)
 async def fire_schedule_now(request: Request, schedule_id: str) -> dict[str, Any]:
     """Manually fire a REST or webhook schedule."""
+    from app.api.triggers import _require_trigger_permission
+
     tenant = _require_tenant(request)
+    role = _require_trigger_permission(tenant, "fire")  # TRG-12: the caller's real role
     store = _schedule_store(request)
     rec = await _get_or_404(store, schedule_id, tenant)
     spec = rec.get("spec")
@@ -411,6 +414,7 @@ async def fire_schedule_now(request: Request, schedule_id: str) -> dict[str, Any
             _spec_for_dispatch(rec),
             {"manual_fire_id": _uuid.uuid4().hex, "source": "manual"},
             tenant,
+            caller_role=role,
         )
         skip_reason = getattr(event, "skip_reason", None)
         if skip_reason:

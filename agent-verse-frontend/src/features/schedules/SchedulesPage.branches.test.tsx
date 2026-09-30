@@ -133,6 +133,27 @@ describe('SchedulesPage branches', () => {
     );
   });
 
+  // TRG-12: a role that may not fire gets the server's 403 reason, not a
+  // misleading "cannot fire this schedule type" message.
+  test('run-now surfaces a 403 role denial from the server', async () => {
+    const { useToastStore } = await import('@/stores/toast');
+    useToastStore.setState({ toasts: [] });
+    const base = mockFetch();
+    const inner = base.getMockImplementation()!;
+    base.mockImplementation(async (input, init) => {
+      if (/\/schedules\/[^/]+\/fire/.test(String(input)))
+        return json({ detail: "Role 'viewer' is not permitted to perform 'fire' on triggers" }, 403);
+      return inner(input, init);
+    });
+    renderPage();
+    await userEvent.click(await screen.findByTestId('run-now-btn-sched-hook'));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) =>
+        t.kind === 'error' && /not permitted to perform 'fire'/.test(t.message),
+      )).toBe(true),
+    );
+  });
+
   test('deleting a schedule confirms then sends DELETE', async () => {
     const spy = mockFetch();
     renderPage();

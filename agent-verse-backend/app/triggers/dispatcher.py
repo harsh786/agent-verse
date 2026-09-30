@@ -20,7 +20,7 @@ from app.triggers.events import SimulatedTriggerResult, TriggerEvent
 from app.triggers.models import TriggerSpec
 from app.triggers.quota import TriggerQuotaEnforcer
 from app.triggers.rate_limiter import TriggerRateLimiter
-from app.triggers.rbac import check_permission
+from app.triggers.rbac import SYSTEM_ROLE, check_permission
 
 _log = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class TriggerDispatcher:
         tenant_ctx: object,
         *,
         simulation: bool = False,
-        caller_role: str = "operator",
+        caller_role: str = SYSTEM_ROLE,
         scheduled_fire_time: str | None = None,
         source_goal_id: str | None = None,
         completion_event_id: str | None = None,
@@ -132,6 +132,11 @@ class TriggerDispatcher:
         txn_id: str | None = None,
     ) -> TriggerEvent | SimulatedTriggerResult:
         """Execute the 12-step dispatch pipeline, auditing suppressed fires.
+
+        ``caller_role`` is a trigger-matrix role (``app.triggers.rbac``). Automated
+        fires (beat, event-bus consumers, authenticated webhooks) run as
+        ``system``; a MANUAL fire must pass ``trigger_role(tenant_ctx)`` — the
+        default used to be ``operator``, so the RBAC step never denied anyone.
 
         Every skip outcome (RBAC, payload size, dedup, rate limit, circuit open,
         bulkhead full, condition false) used to be returned to the caller and
@@ -186,7 +191,7 @@ class TriggerDispatcher:
         tenant_ctx: object,
         *,
         simulation: bool = False,
-        caller_role: str = "operator",
+        caller_role: str = SYSTEM_ROLE,
         scheduled_fire_time: str | None = None,
         source_goal_id: str | None = None,
         completion_event_id: str | None = None,

@@ -1,6 +1,7 @@
 """RBAC permission matrix for trigger operations.
 
-5 roles x 8 operations = 40 cells, all explicitly defined.
+6 roles x 8 operations = 48 cells, all explicitly defined. ``system`` is the
+role of automated fires; manual fires map the caller via :func:`trigger_role`.
 Operations: create | read | update | delete | fire | pause | resume | view_dlq
 """
 
@@ -59,9 +60,38 @@ TRIGGER_PERMISSION_MATRIX: dict[str, dict[str, bool]] = {
         "resume": False,
         "view_dlq": False,
     },
+    # Automated fires (schedules, event-bus consumers, token/HMAC-authenticated
+    # webhooks): the platform firing a trigger its owner configured.
+    "system": {
+        "create": False,
+        "read": False,
+        "update": False,
+        "delete": False,
+        "fire": True,
+        "pause": False,
+        "resume": False,
+        "view_dlq": False,
+    },
 }
 
+SYSTEM_ROLE = "system"
+
 VALID_OPERATIONS = frozenset(TRIGGER_PERMISSION_MATRIX["admin"].keys())
+
+
+def trigger_role(tenant_ctx: object) -> str:
+    """Map an authenticated caller's platform roles onto this matrix.
+
+    The most privileged matching role wins. A key with no roles at all is a
+    legacy key (``api_key``; the scope middleware already gates its writes).
+    Any other role set without admin/developer/operator — viewer, approver,
+    agent, custom roles — maps to ``viewer`` so it is denied by default.
+    """
+    roles = {str(r) for r in (getattr(tenant_ctx, "roles", ()) or ())}
+    for role in ("admin", "developer", "operator"):
+        if role in roles:
+            return role
+    return "api_key" if not roles else "viewer"
 
 
 class TriggerPermissionDenied(Exception):  # noqa: N818

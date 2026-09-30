@@ -20,6 +20,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Pagination } from '@/components/ui/Pagination';
 import { toast } from '@/stores/toast';
 import { apiFetch } from '@/lib/api/client';
+import { fireErrorMessage } from '@/features/triggers/hooks';
 
 // TODO(scale): GET /schedules returns the full list with no server-side
 // pagination (verified against the backend route). We page the loaded list
@@ -216,7 +217,9 @@ function SchedulesTab({ advisorPrefill, onAdvisorPrefillUsed }: SchedulesTabProp
   const fireMutation = useMutation({
     mutationFn: (id: string) => apiFetch(`/schedules/${id}/fire`, { method: 'POST' }),
     onSuccess: () => toast({ kind: 'success', message: 'Fired!' }),
-    onError: () => toast({ kind: 'error', message: 'Cannot fire this schedule type manually.' }),
+    // Show the server's reason (403 role denial, 400 type not manually
+    // fireable, 409 suppressed, …) instead of guessing.
+    onError: (err) => toast({ kind: 'error', message: fireErrorMessage(err) }),
   });
 
   // Fix 2: Parallelize bulk operations with Promise.allSettled

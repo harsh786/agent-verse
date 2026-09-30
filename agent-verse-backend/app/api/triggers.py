@@ -27,6 +27,18 @@ def _require_tenant(request: Request) -> TenantContext:
     return ctx  # type: ignore[return-value]
 
 
+def _require_trigger_permission(tenant_ctx: Any, operation: str) -> str:
+    """The caller's trigger-matrix role; 403 when it may not ``operation``."""
+    from app.triggers.rbac import TriggerPermissionDenied, check_permission, trigger_role
+
+    role = trigger_role(tenant_ctx)
+    try:
+        check_permission(role, operation)
+    except TriggerPermissionDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return role
+
+
 def _get_store(request: Request) -> Any:
     return getattr(request.app.state, "schedule_store", None)
 
@@ -419,6 +431,7 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
     from app.triggers.dlq import RETRY_DELAYS
 
     tenant_ctx = _require_tenant(request)
+    role = _require_trigger_permission(tenant_ctx, "fire")  # a retry re-fires
     db = _get_db(request)
     if db is None:
         raise HTTPException(status_code=503, detail="DLQ storage unavailable")
@@ -474,6 +487,7 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
                 _spec_for_dispatch(rec),
                 raw_payload,
                 tenant_ctx,
+                caller_role=role,
                 message_id=f"dlq-retry:{dlq_id}:{attempt}",
             )
         except Exception as exc:
@@ -601,6 +615,7 @@ async def simulate_trigger(
 async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest) -> dict[str, Any]:
     """Fire a trigger immediately, creating a real goal."""
     tenant_ctx = _require_tenant(request)
+    role = _require_trigger_permission(tenant_ctx, "fire")
     store = _get_store(request)
     rec = await _store_get(store, schedule_id, tenant_ctx)
     if rec is None:
@@ -616,7 +631,11 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
         raise HTTPException(status_code=503, detail="Dispatcher unavailable")
 
     event = await dispatcher.dispatch(
-        spec, sample, tenant_ctx, scheduled_fire_time=getattr(body, "scheduled_fire_time", None)
+        spec,
+        sample,
+        tenant_ctx,
+        caller_role=role,
+        scheduled_fire_time=getattr(body, "scheduled_fire_time", None),
     )
     return {
         "goal_id": getattr(event, "goal_id", None),  # WT-2/G3: field is goal_id

@@ -3,6 +3,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
+import { toast } from '@/stores/toast';
 import type {
   Trigger,
   CreateTriggerRequest,
@@ -138,7 +139,18 @@ export function useFireTriggerNow() {
         body: JSON.stringify({ payload }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: TRIGGER_KEYS.list() }),
+    onError: (err) => toast({ kind: 'error', message: fireErrorMessage(err) }),
   });
+}
+
+/** Human-readable reason a manual fire was refused (403 = the caller's role). */
+export function fireErrorMessage(err: unknown): string {
+  const status = (err as { status?: number } | null)?.status;
+  const reason = err instanceof Error && err.message ? err.message : '';
+  if (status === 403) {
+    return reason || 'Your role is not permitted to fire triggers (operator or admin required).';
+  }
+  return reason ? `Fire failed: ${reason}` : 'Fire failed.';
 }
 
 export function useRetryDLQEntry() {
