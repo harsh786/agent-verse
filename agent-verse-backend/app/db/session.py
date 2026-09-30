@@ -15,15 +15,16 @@ from sqlalchemy.ext.asyncio import (
 from app.core.config import get_settings
 
 
-def _make_engine(database_url: str | None = None) -> AsyncEngine:
-    settings = get_settings()
-    url = database_url or settings.database_url
+def _server_settings(settings: object) -> dict[str, str]:
+    """Server-side safety timeouts, sent as asyncpg startup parameters (per-connection GUCs).
 
-    # Server-side safety timeouts (asyncpg applies these as per-connection GUCs).
-    # idle_in_transaction_session_timeout reclaims connections a cancelled request
-    # left mid-transaction (custom BaseHTTPMiddleware cancels the task on client
-    # disconnect without rolling back) — otherwise they leak and eventually
-    # exhaust the pool, causing the intermittent request hangs / "blips".
+    idle_in_transaction_session_timeout reclaims connections a cancelled request
+    left mid-transaction (custom BaseHTTPMiddleware cancels the task on client
+    disconnect without rolling back) — otherwise they leak and eventually
+    exhaust the pool, causing the intermittent request hangs / "blips".
+    A PgBouncer in front must list every key here in ignore_startup_parameters,
+    or it refuses the connection (see infra/docker-compose.yml).
+    """
     server_settings: dict[str, str] = {}
     idle_ms = int(getattr(settings, "db_idle_in_transaction_timeout_ms", 30_000) or 0)
     if idle_ms > 0:
@@ -31,6 +32,13 @@ def _make_engine(database_url: str | None = None) -> AsyncEngine:
     stmt_ms = int(getattr(settings, "db_statement_timeout_ms", 60_000) or 0)
     if stmt_ms > 0:
         server_settings["statement_timeout"] = str(stmt_ms)
+    return server_settings
+
+
+def _make_engine(database_url: str | None = None) -> AsyncEngine:
+    settings = get_settings()
+    url = database_url or settings.database_url
+    server_settings = _server_settings(settings)
 
     connect_args: dict[str, object] = {"statement_cache_size": 0}
     if server_settings:

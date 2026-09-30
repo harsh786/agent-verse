@@ -126,7 +126,12 @@ services:
       CLIENT_IDLE_TIMEOUT: "0"
       LOG_CONNECTIONS: "0"
       LOG_DISCONNECTIONS: "0"
-      IGNORE_STARTUP_PARAMETERS: "extra_float_digits"
+      # Every asyncpg startup parameter the app sends (app/db/session.py
+      # _server_settings) must be listed, or PgBouncer refuses the connection
+      # ("unsupported startup parameter"). In transaction mode those GUCs can't be
+      # pinned to a shared server connection anyway; long transactions still use
+      # SET LOCAL.
+      IGNORE_STARTUP_PARAMETERS: "extra_float_digits,statement_timeout,idle_in_transaction_session_timeout"
     ports:
       - "6432:6432"
     depends_on:

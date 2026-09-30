@@ -27,6 +27,10 @@ class HealthCheck:
 @dataclass(slots=True)
 class HealthRegistry:
     checks: list[HealthCheck] = field(default_factory=list)
+    # Each check is bounded: /health is the liveness probe, and one dependency
+    # awaiting a dead connection (e.g. Redis OOM-killed under a live process)
+    # used to hang every probe instead of reporting that dependency down.
+    check_timeout_s: float = 5.0
 
     def register(self, check: HealthCheck) -> None:
         self.checks.append(check)
@@ -38,8 +42,13 @@ class HealthRegistry:
 
         async def _run_one(hc: HealthCheck) -> tuple[str, dict[str, Any]]:
             try:
-                await hc.check()
+                await asyncio.wait_for(hc.check(), timeout=self.check_timeout_s)
                 return hc.name, {"status": "up"}
+            except TimeoutError:
+                logger.warning(
+                    "health_check_timed_out", check=hc.name, timeout_s=self.check_timeout_s
+                )
+                return hc.name, {"status": "down", "error": "timed out"}
             except Exception as exc:  # surface any failure as "down"
                 # The report is served by the unauthenticated GET /health. It used
                 # to carry ``str(exc)``, leaking DSNs (with credentials), internal
