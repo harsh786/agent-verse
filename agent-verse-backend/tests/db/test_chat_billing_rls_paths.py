@@ -137,30 +137,6 @@ async def test_ab_without_tenant_never_touches_db() -> None:
     assert session.statements == [] and session.guc_calls == []
 
 
-# ── benchmark_runs ─────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_benchmark_persist_and_load_are_tenant_scoped() -> None:
-    from app.intelligence.benchmarking import GLOBAL_TENANT, BenchmarkRun, BenchmarkStore
-
-    session = RecordingSession()
-    store = BenchmarkStore(db_session_factory=factory_for(session))
-    await store.record_run_async(BenchmarkRun(suite_name="s", score=0.4, tenant_id=TID))
-    await store.record_run_async(BenchmarkRun(suite_name="s", score=0.4))  # global
-    [(sql, params)] = session.statements
-    assert "INSERT INTO benchmark_runs" in sql and params["tid"] == TID
-    assert session.guc_calls[0] == TID
-
-    session2 = RecordingSession()
-    store2 = BenchmarkStore(db_session_factory=factory_for(session2))
-    await store2.load_history_from_db("s", tenant_id=TID)
-    [(sql, params)] = session2.statements
-    assert "tenant_id = ANY(:tids)" in sql
-    assert params["tids"] == [TID, GLOBAL_TENANT]
-    _assert_scoped(session2)
-
-
 # ── cost_ledger (analytics) ────────────────────────────────────────────────────
 
 

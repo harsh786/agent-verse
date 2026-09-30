@@ -189,6 +189,42 @@ class VerifierCalibrationStore:
             )
         return int(getattr(result, "rowcount", 0) or 0)
 
+    async def afalse_confirm_rate(self, tenant_id: str) -> dict[str, Any]:
+        """The tenant's false-confirm rate from ``verifier_calibration`` (every replica's
+        verdicts), under RLS. Without a DB, this process's buffer. A DB error raises.
+        """
+        if self._db is None:
+            return self.false_confirm_rate(tenant_id)
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text("""
+                        SELECT
+                            COUNT(*) FILTER (WHERE actual_outcome IS NOT NULL),
+                            COUNT(*) FILTER (WHERE verifier_verdict AND actual_outcome = FALSE),
+                            COUNT(*) FILTER (WHERE NOT verifier_verdict AND actual_outcome)
+                        FROM verifier_calibration WHERE tenant_id = :tid
+                    """),
+                    {"tid": tenant_id},
+                )
+            ).fetchone()
+        total, fps, fns = (int(v or 0) for v in (row or (0, 0, 0)))
+        rate = fps / total if total else 0.0
+        return {
+            "rate": rate,
+            "total": total,
+            "false_positives": fps,
+            "false_negatives": fns,
+            "target_rate": 0.02,
+            "on_target": rate <= 0.02,
+        }
+
     def false_confirm_rate(self, tenant_id: str | None = None) -> dict[str, Any]:
         """Compute false-confirm rate across this process's resolved records.
 

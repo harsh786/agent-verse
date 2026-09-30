@@ -276,8 +276,8 @@ async def test_ab_results_are_tenant_scoped(factories: tuple) -> None:
 
 @pytest.mark.asyncio
 async def test_benchmark_runs_tenant_rows_plus_global_read(factories: tuple) -> None:
-    from app.intelligence.benchmarking import GLOBAL_TENANT, BenchmarkRun, BenchmarkStore
-
+    # The BenchmarkStore that wrote this table was dead code (MEM-33) and was
+    # removed; the table's policies are still exercised directly.
     admin_factory, app_factory = factories
     async with admin_factory() as s, s.begin():
         await s.execute(
@@ -286,18 +286,26 @@ async def test_benchmark_runs_tenant_rows_plus_global_read(factories: tuple) -> 
                 "VALUES ('global-row', 'global', 'suite-x', 0.5) ON CONFLICT DO NOTHING"
             )
         )
+    async with app_factory() as s, s.begin(), sqlalchemy_rls_context(s, TENANT_A):
+        await s.execute(
+            text(
+                "INSERT INTO benchmark_runs (id, tenant_id, suite_name, score) "
+                "VALUES ('a-row', :t, 'suite-x', 0.8)"
+            ),
+            {"t": TENANT_A},
+        )
 
-    store = BenchmarkStore(db_session_factory=app_factory)
-    await store.record_run_async(BenchmarkRun(suite_name="suite-x", score=0.8, tenant_id=TENANT_A))
-    # A global run through the tenant-scoped store is not persisted.
-    await store.record_run_async(
-        BenchmarkRun(suite_name="suite-x", score=0.1, tenant_id=GLOBAL_TENANT)
-    )
+    async def _scores(tenant: str) -> list[float]:
+        async with app_factory() as s, s.begin(), sqlalchemy_rls_context(s, tenant):
+            rows = (
+                await s.execute(
+                    text("SELECT score FROM benchmark_runs WHERE suite_name = 'suite-x'")
+                )
+            ).fetchall()
+        return sorted(float(r[0]) for r in rows)
 
-    a_rows = await store.load_history_from_db("suite-x", tenant_id=TENANT_A)
-    assert sorted(r["score"] for r in a_rows) == [0.5, 0.8]
-    b_rows = await store.load_history_from_db("suite-x", tenant_id=TENANT_B)
-    assert [r["score"] for r in b_rows] == [0.5]
+    assert await _scores(TENANT_A) == [0.5, 0.8]
+    assert await _scores(TENANT_B) == [0.5]
 
     # The global-read policy is SELECT-only: tenants cannot forge global rows.
     with pytest.raises(Exception, match="row-level security"):

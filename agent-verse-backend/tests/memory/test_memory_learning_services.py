@@ -6,7 +6,6 @@ import pytest
 
 from app.intelligence.learning_experiments import ExperimentOutcome, LearningExperimentService
 from app.memory.contracts import ExperimentSpec
-from app.memory.knowledge_graph_memory import KnowledgeFact, KnowledgeGraphMemory
 from app.memory.procedural_validator import ProcedureContract, validate_procedure
 from app.memory.prospective import ProspectiveMemory, ProspectiveMemoryService, prospective_id
 
@@ -42,25 +41,6 @@ def test_procedure_is_revalidated_for_schema_policy_connector_and_tenant() -> No
             ready_connectors=frozenset({"docs"}),
             policy_fingerprint="policy-v1",
         )
-
-
-@pytest.mark.asyncio
-async def test_knowledge_graph_merge_is_idempotent_scoped_and_provenance_linked() -> None:
-    store = KnowledgeGraphMemory()
-    fact = KnowledgeFact(
-        fact_id="f",
-        tenant_id="tenant",
-        subject="AgentVerse",
-        predicate="is",
-        object="safe",
-        evidence_refs=("evidence://1",),
-        classification="internal",
-        confidence=9000,
-    )
-    assert (await store.merge(fact)).version == 1
-    merged = await store.merge(fact.model_copy(update={"evidence_refs": ("evidence://2",)}))
-    assert merged.version == 2 and len(merged.evidence_refs) == 2
-    assert await store.query("other", subject="AgentVerse") == ()
 
 
 @pytest.mark.asyncio

@@ -72,6 +72,10 @@ async def test_feedback_from_another_process_updates_the_persisted_verdict() -> 
         # The final verdict (a false confirm) carries the human outcome.
         assert [tuple(r) for r in rows] == [(1, False, None), (2, True, False)]
 
+        # Any replica reports the same false-confirm rate from the table.
+        rate = await VerifierCalibrationStore(factory).afalse_confirm_rate(tenant_id)
+        assert rate["total"] == 1 and rate["false_positives"] == 1
+
         # Another tenant's feedback cannot touch the row.
         assert (
             await api.record_actual_outcome_by_goal(

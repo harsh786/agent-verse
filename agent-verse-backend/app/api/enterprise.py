@@ -1356,6 +1356,27 @@ async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, A
     return runs
 
 
+@intelligence_router.get("/calibration")
+async def get_verifier_calibration(request: Request) -> dict[str, Any]:
+    """The verifier's false-confirm rate for the caller's tenant.
+
+    A false confirm is a verdict of success that human feedback marked wrong.
+    Read from ``verifier_calibration`` under RLS, so it covers goals verified on
+    every replica and worker (target: 2%).
+    """
+    ctx = _require_tenant(request)
+    from app.intelligence.verifier_calibration import _default_calibration_store
+
+    store = getattr(request.app.state, "calibration_store", None) or _default_calibration_store
+    try:
+        report: dict[str, Any] = await store.afalse_confirm_rate(ctx.tenant_id)
+    except Exception as exc:
+        raise HTTPException(
+            503, "Verifier calibration is unavailable: database query failed"
+        ) from exc
+    return report
+
+
 @intelligence_router.get("/eval/dimensions")
 async def get_eval_dimensions(request: Request) -> dict[str, Any]:
     """Return all 7 evaluation dimension names produced by EvalRunner."""
