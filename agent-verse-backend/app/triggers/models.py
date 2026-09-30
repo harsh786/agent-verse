@@ -246,16 +246,68 @@ class TriggerSpec:
     version: int = 1
 
 
+# TRG-16: the shortest gap a plan may schedule between fires (cron and
+# interval). The beat ticks every 60s, so 60s is the effective platform floor.
+PLAN_MIN_SCHEDULE_INTERVAL_SECONDS: dict[str, int] = {
+    "free": 900,
+    "starter": 300,
+    "professional": 60,
+    "enterprise": 60,
+}
+
+# Enough consecutive occurrences to expose a short gap hidden in a sparse
+# expression (e.g. "0,1 9 * * *" fires twice a minute apart once a day).
+_CRON_GAP_SAMPLES = 64
+
+
+def plan_min_interval_seconds(plan: str) -> int:
+    """The plan's minimum schedule interval; an unknown plan gets FREE's floor."""
+    key = str(getattr(plan, "value", plan) or "free").lower()
+    return PLAN_MIN_SCHEDULE_INTERVAL_SECONDS.get(key, PLAN_MIN_SCHEDULE_INTERVAL_SECONDS["free"])
+
+
+def check_plan_interval(seconds: float, plan: str) -> None:
+    """Raise ``ValueError`` when *seconds* is below the plan's floor."""
+    floor = plan_min_interval_seconds(plan)
+    if seconds < floor:
+        key = str(getattr(plan, "value", plan) or "free").lower()
+        actual = f"{int(seconds) // 60} min" if seconds >= 60 else f"{int(seconds)} s"
+        raise ValueError(
+            f"The {key} plan allows a schedule to run at most every {floor // 60} min; "
+            f"this one would run every {actual}"
+        )
+
+
+def min_cron_gap_seconds(expression: str) -> float:
+    """Shortest gap between consecutive fires of *expression* (sampled)."""
+    from datetime import datetime
+
+    from croniter import croniter
+
+    it = croniter(expression, datetime(2026, 1, 5, 0, 0))  # a Monday, 00:00
+    prev = it.get_next(datetime)
+    gap = float("inf")
+    for _ in range(_CRON_GAP_SAMPLES):
+        nxt = it.get_next(datetime)
+        gap = min(gap, (nxt - prev).total_seconds())
+        prev = nxt
+    return gap
+
+
 def validate_cron(expression: str, plan: str = "free") -> None:
     """Validate a cron expression and check plan-tier minimum interval.
 
     Raises ValueError if the expression is invalid or violates plan limits.
+    croniter is a hard dependency: when it cannot be imported the expression
+    is refused (it used to accept any string).
     """
     try:
         from croniter import croniter
-
+    except ImportError as exc:
+        raise ValueError("cron validation is unavailable (croniter not installed)") from exc
+    try:
         croniter(expression)
-    except ImportError:
-        pass  # croniter not installed — skip validation
+        gap = min_cron_gap_seconds(expression)
     except Exception as exc:
         raise ValueError(f"Invalid cron expression '{expression}': {exc}") from exc
+    check_plan_interval(gap, plan)

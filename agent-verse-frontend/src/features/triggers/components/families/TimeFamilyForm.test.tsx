@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { useAuthStore } from '@/stores/auth';
 import { TimeFamilyForm } from './TimeFamilyForm';
 
 /** Grab the object the component most recently handed to onChange. */
@@ -72,6 +73,16 @@ describe('TimeFamilyForm', () => {
     fireEvent.change(cron, { target: { value: '0 10 * * *' } });
     expect(lastArg(onChange)).toEqual({ cron_expression: '0 10 * * *' });
     expect(screen.getByDisplayValue('UTC')).toBeInTheDocument();
+  });
+
+  test("cron and interval show the plan's minimum interval (TRG-16)", () => {
+    useAuthStore.setState({ plan: 'free' });
+    const { unmount } = render(<TimeFamilyForm triggerType="cron" value={{}} onChange={vi.fn()} />);
+    expect(screen.getByText(/free plan runs a schedule at most every 15 min/i)).toBeInTheDocument();
+    unmount();
+    useAuthStore.setState({ plan: 'enterprise' });
+    render(<TimeFamilyForm triggerType="interval" value={{}} onChange={vi.fn()} />);
+    expect(screen.getByText(/enterprise plan runs a schedule at most every 1 min/i)).toBeInTheDocument();
   });
 
   test('the shared Max Firings field is a numeric field on every type', () => {

@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-from app.triggers.models import TriggerSpec, validate_cron
+from app.triggers.models import TriggerSpec, check_plan_interval, validate_cron
 
 _PRIORITIES = {"high", "normal", "low"}
 
@@ -171,6 +171,8 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     elif v == "interval":
         if spec.interval_seconds <= 0:
             raise ValueError("interval trigger requires interval_seconds > 0")
+        # TRG-16: the same per-plan floor as cron.
+        check_plan_interval(spec.interval_seconds, plan)
     elif v == "once":
         if not spec.fire_at_iso.strip():
             raise ValueError("once trigger requires fire_at_iso")
