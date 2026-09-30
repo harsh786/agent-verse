@@ -6291,8 +6291,24 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_CIV_TICK_EXPIRES_S = 30  # one discovery interval (beat: civilization-discovery-every-30s)
+_CIV_TICK_PENDING_TTL_S = 120  # self-heals if a worker dies before clearing the marker
+
+
+def _civ_tick_pending_key(civilization_id: str) -> str:
+    return f"civ:tick:pending:{civilization_id}"
+
+
 @celery_app.task(name="app.scaling.tasks.civilization_tick")
 def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
+    try:
+        return _civilization_tick(civilization_id, tenant_id)
+    finally:
+        with contextlib.suppress(Exception):
+            _get_sync_redis().delete(_civ_tick_pending_key(civilization_id))
+
+
+def _civilization_tick(civilization_id: str, tenant_id: str) -> dict:
     """Periodic tick for a civilization — breach check, auto-retire, learning step."""
 
     async def _run() -> dict:
@@ -7048,11 +7064,32 @@ def discover_and_tick_civilizations() -> dict:
                 )
             ).fetchall()
 
-        count = 0
-        for row in rows:
-            civilization_tick.delay(row[0], row[1])
+        # Back-pressure: at most one queued tick per civilization, and a tick that
+        # waited longer than one discovery interval expires unexecuted. Without it
+        # the maintenance queue grew without bound (2,699 civilizations every 30 s
+        # reached 3.17M messages / 4 GB and got Redis OOM-killed).
+        redis_client = None
+        try:
+            redis_client = _get_sync_redis()
+        except Exception as exc:
+            logger.warning("civilization_tick_pending_marker_unavailable", error=str(exc))
+        count = skipped = 0
+        for civ_id, tenant_id in rows:
+            if redis_client is not None:
+                try:
+                    claimed = redis_client.set(
+                        _civ_tick_pending_key(civ_id), "1", nx=True, ex=_CIV_TICK_PENDING_TTL_S
+                    )
+                except Exception:
+                    claimed = True  # marker store down: fall back to expiry alone
+                if not claimed:
+                    skipped += 1
+                    continue
+            civilization_tick.apply_async(
+                args=[civ_id, tenant_id], expires=_CIV_TICK_EXPIRES_S
+            )
             count += 1
-        return {"civilizations_ticked": count}
+        return {"civilizations_ticked": count, "skipped_pending": skipped}
 
     try:
         return cast("dict[Any, Any]", _run_async(_run()))

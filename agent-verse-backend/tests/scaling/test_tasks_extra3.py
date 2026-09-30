@@ -290,9 +290,11 @@ class TestDetectStuckGoals:
         mock_cm.__aexit__ = AsyncMock(return_value=False)
         mock_factory = MagicMock(return_value=mock_cm)
         with patch("app.db.session.get_system_session_factory", return_value=mock_factory), \
-             patch("app.scaling.tasks.civilization_tick.delay") as delay:
+             patch("app.scaling.tasks._get_sync_redis", return_value=None), \
+             patch("app.scaling.tasks.civilization_tick.apply_async") as enqueue:
             result = discover_and_tick_civilizations()
-        delay.assert_called_once_with("c1", "t1")
+        enqueue.assert_called_once()
+        assert enqueue.call_args.kwargs["args"] == ["c1", "t1"]
         sqls = [str(c.args[0]) for c in mock_session.execute.await_args_list]
         assert "row_security" in sqls[0]
         assert result["civilizations_ticked"] == 1
