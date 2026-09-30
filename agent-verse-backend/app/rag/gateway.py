@@ -305,7 +305,8 @@ class _BudgetedEmbedder:
         from app.embedding.usage import approx_tokens, record_embedding_usage
 
         await record_embedding_usage(
-            self._guard._tenant_context.tenant_id,
+            # Best-effort accounting: never fail a retrieval over it.
+            str(getattr(getattr(self._guard, "_tenant_context", None), "tenant_id", "") or ""),
             str(getattr(response, "model", "") or model),
             int(getattr(response, "total_tokens", 0) or 0) or approx_tokens(texts),
         )
