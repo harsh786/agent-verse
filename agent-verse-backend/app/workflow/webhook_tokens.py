@@ -56,9 +56,20 @@ def _unb64(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def make_webhook_token(tenant_id: str, workflow_id: str) -> str:
-    """Return a stable, signed token encoding (tenant_id, workflow_id)."""
-    payload = f"{tenant_id}:{workflow_id}".encode()
+_VERSION_SEP = "#v"
+
+
+def make_webhook_token(tenant_id: str, workflow_id: str, version: int = 0) -> str:
+    """Return a stable, signed token encoding (tenant_id, workflow_id, version).
+
+    ``version`` is the workflow's webhook token version (bumped by rotation);
+    version 0 keeps the original token format, so URLs issued before rotation
+    existed stay valid until the first rotation.
+    """
+    text = f"{tenant_id}:{workflow_id}"
+    if version:
+        text += f"{_VERSION_SEP}{int(version)}"
+    payload = text.encode()
     sig = hmac.new(_secret(), payload, hashlib.sha256).digest()[:16]
     return f"{_b64(payload)}.{_b64(sig)}"
 
@@ -73,15 +84,33 @@ def callback_signing_secret(tenant_id: str, workflow_id: str) -> str:
     return hmac.new(_secret(), msg, hashlib.sha256).hexdigest()
 
 
-def verify_webhook_token(token: str) -> tuple[str, str] | None:
-    """Return (tenant_id, workflow_id) if the token's signature is valid, else None."""
+def verify_webhook_token_versioned(token: str) -> tuple[str, str, int] | None:
+    """Return (tenant_id, workflow_id, version) for a validly signed token.
+
+    The caller must still compare ``version`` with the workflow's current token
+    version — a rotated-out token has a valid signature but an old version.
+    """
     try:
         payload_b64, sig_b64 = token.split(".", 1)
         payload = _unb64(payload_b64)
         expected = hmac.new(_secret(), payload, hashlib.sha256).digest()[:16]
         if not hmac.compare_digest(_unb64(sig_b64), expected):
             return None
-        tenant_id, workflow_id = payload.decode().split(":", 1)
-        return tenant_id, workflow_id
+        text = payload.decode()
+        version = 0
+        head, sep, tail = text.rpartition(_VERSION_SEP)
+        if sep and tail.isdigit():
+            text, version = head, int(tail)
+        tenant_id, workflow_id = text.split(":", 1)
+        return tenant_id, workflow_id, version
     except Exception:
         return None
+
+
+def verify_webhook_token(token: str) -> tuple[str, str] | None:
+    """Return (tenant_id, workflow_id) if the token's signature is valid, else None.
+
+    Signature only — use :func:`verify_webhook_token_versioned` to also enforce
+    rotation."""
+    resolved = verify_webhook_token_versioned(token)
+    return (resolved[0], resolved[1]) if resolved else None

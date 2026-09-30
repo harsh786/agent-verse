@@ -226,13 +226,29 @@ class WorkflowService:
         if result is None:
             return None
 
+        hook = await self.webhook_trigger(tenant_id, workflow_id)
+        result["webhook_token"] = hook["webhook_token"]
+        result["webhook_path"] = hook["webhook_path"]
+        result["webhook_url"] = hook["webhook_url"]
+        _log.info("workflow.published", tenant_id=tenant_id, workflow_id=workflow_id)
+        return result
+
+    # ── Webhook token (rotation) ──────────────────────────────────────────────
+
+    async def webhook_token_version(self, tenant_id: str, workflow_id: str) -> int:
+        """Current token version (0 when never rotated / no ACL-capable store)."""
+        getter = getattr(self._run_store, "get_webhook_token_version", None)
+        if getter is None:
+            return 0
+        return int(await getter(tenant_id, workflow_id))
+
+    async def webhook_trigger(self, tenant_id: str, workflow_id: str) -> dict[str, str]:
+        """The workflow's current inbound webhook token / path / URL."""
         from app.workflow.webhook_tokens import make_webhook_token
 
-        token = make_webhook_token(tenant_id, workflow_id)
+        version = await self.webhook_token_version(tenant_id, workflow_id)
+        token = make_webhook_token(tenant_id, workflow_id, version)
         path = f"/wf-hooks/{token}"
-        result["webhook_token"] = token
-        result["webhook_path"] = path
-
         base = ""
         try:
             from app.core.config import get_settings
@@ -240,9 +256,23 @@ class WorkflowService:
             base = (get_settings().workflow_webhook_base_url or "").rstrip("/")
         except Exception:
             base = ""
-        result["webhook_url"] = f"{base}{path}" if base else path
-        _log.info("workflow.published", tenant_id=tenant_id, workflow_id=workflow_id)
-        return result
+        return {
+            "webhook_token": token,
+            "webhook_path": path,
+            "webhook_url": f"{base}{path}" if base else path,
+        }
+
+    async def rotate_webhook_token(self, tenant_id: str, workflow_id: str) -> dict[str, str]:
+        """Invalidate every issued webhook URL and return the new one.
+
+        Old bug: tokens were a stateless HMAC of (tenant, workflow) with no
+        version, so a leaked URL worked forever."""
+        rotate = getattr(self._run_store, "rotate_webhook_token", None)
+        if rotate is None:
+            raise RuntimeError("webhook token rotation needs the persistent run store")
+        await rotate(tenant_id, workflow_id)
+        _log.info("workflow.webhook_token_rotated", tenant_id=tenant_id, workflow_id=workflow_id)
+        return await self.webhook_trigger(tenant_id, workflow_id)
 
     async def unpublish(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         """Unpublish a workflow (status published → draft)."""

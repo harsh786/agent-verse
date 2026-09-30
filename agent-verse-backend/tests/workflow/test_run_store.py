@@ -383,6 +383,21 @@ async def test_list_webhook_events(seeded: dict, factories: tuple) -> None:
     assert b_total == 0 and b_events == []
 
 
+async def test_webhook_token_version_rotation(seeded: dict) -> None:
+    """WF-10: rotation bumps the version kept in trigger_config, per tenant."""
+    store: PostgresWorkflowRunStore = seeded["store"]
+    tid, wid = seeded["tenant_a"], seeded["workflow_id"]
+    assert await store.get_webhook_token_version(tid, wid) == 0
+    assert await store.rotate_webhook_token(tid, wid) == 1
+    assert await store.rotate_webhook_token(tid, wid) == 2
+    assert await store.get_webhook_token_version(tid, wid) == 2
+    # RLS: another tenant can neither read nor rotate it.
+    assert await store.get_webhook_token_version(seeded["tenant_b"], wid) == 0
+    with pytest.raises(KeyError):
+        await store.rotate_webhook_token(seeded["tenant_b"], wid)
+    assert await store.get_webhook_token_version(tid, wid) == 2
+
+
 async def test_webhook_dlq_lifecycle(seeded: dict, factories: tuple) -> None:
     """WF-07: a dead-lettered delivery is retried with backoff, counted, and
     ends succeeded or dead — never retried forever."""

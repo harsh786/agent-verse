@@ -75,6 +75,7 @@ def _client(runner: Any) -> TestClient:
     svc.get = AsyncMock(
         return_value={"status": "published", "definition": {"triggers": [{"type": "webhook"}]}}
     )
+    svc.webhook_token_version = AsyncMock(return_value=0)
     app.state.workflow_service = svc
     app.state.workflow_runner = runner
     return TestClient(app)

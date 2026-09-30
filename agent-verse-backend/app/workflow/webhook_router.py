@@ -8,17 +8,91 @@ The token both identifies the workflow and proves the caller holds the URL that
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.observability.logging import get_logger
+from app.workflow.runner import WorkflowValidationError
 from app.workflow.trigger_extract import extract_triggers
-from app.workflow.webhook_tokens import verify_webhook_token
+from app.workflow.webhook_tokens import verify_webhook_token_versioned
 
 _log = get_logger(__name__)
 router = APIRouter(prefix="/wf-hooks", tags=["workflow-webhooks"])
+
+# Largest accepted webhook body (matches the runner's trigger payload limit).
+MAX_WEBHOOK_BODY_BYTES = 1_048_576
+# Headers senders use to identify a delivery (retries repeat the same value).
+_DELIVERY_ID_HEADERS = (
+    "idempotency-key",
+    "x-delivery-id",
+    "x-request-id",
+    "x-github-delivery",
+    "x-webhook-id",
+)
+_limiters: dict[int, Any] = {}
+
+
+async def _read_capped_body(request: Request, cap: int) -> bytes:
+    """The request body, or 413 once it exceeds ``cap`` bytes (streamed, so an
+    oversized body is never buffered whole)."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > cap:
+        raise HTTPException(status_code=413, detail=f"Webhook body exceeds {cap} bytes")
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > cap:
+            raise HTTPException(status_code=413, detail=f"Webhook body exceeds {cap} bytes")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _delivery_key(request: Request) -> str | None:
+    for header in _DELIVERY_ID_HEADERS:
+        value = (request.headers.get(header) or "").strip()
+        if value:
+            return f"webhook:{value[:200]}"
+    return None
+
+
+async def _enforce_rate_limit(
+    request: Request, runner: Any, *, tenant_id: str, workflow_id: str
+) -> None:
+    """429 once this workflow's webhook exceeds its plan's per-minute limit.
+
+    Shared across replicas through Redis (the app's rate-limit client); a leaked
+    URL can no longer launch unlimited billed runs."""
+    from app.tenancy.context import PLAN_LIMITS, PlanTier
+    from app.tenancy.rate_limiter import RateLimiter
+
+    plan = "free"
+    tier_of = getattr(runner, "_get_plan_tier", None)
+    if tier_of is not None:
+        try:
+            plan = str(await tier_of(tenant_id))
+        except Exception:
+            plan = "free"
+    try:
+        limit = PLAN_LIMITS[PlanTier(plan)].requests_per_minute
+    except (KeyError, ValueError):
+        limit = PLAN_LIMITS[PlanTier.FREE].requests_per_minute
+    redis = getattr(request.app.state, "_rate_limiter_redis", None)
+    limiter = _limiters.get(limit)
+    if limiter is None or getattr(limiter, "_redis", None) is not redis:
+        limiter = RateLimiter(redis, limit=limit, window_seconds=60)
+        _limiters[limit] = limiter
+    key = SimpleNamespace(tenant_id=f"wfhook:{tenant_id}:{workflow_id}")
+    if not await limiter.check(tenant_ctx=key):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Webhook rate limit exceeded ({limit} deliveries per minute)",
+            headers={"Retry-After": "60"},
+        )
 
 
 @router.post("/{token}")
@@ -28,16 +102,19 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
     The JSON body (if any) becomes the run ``inputs``, so a webhook can carry a
     payload the workflow's steps reference via ``{{inputs.*}}``.
     """
-    resolved = verify_webhook_token(token)
+    resolved = verify_webhook_token_versioned(token)
     if resolved is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook token"
         )
-    tenant_id, workflow_id = resolved
+    tenant_id, workflow_id, token_version = resolved
 
+    # Size cap before parsing anything (a leaked URL must not be a way to push
+    # arbitrarily large bodies into run inputs).
+    raw = await _read_capped_body(request, MAX_WEBHOOK_BODY_BYTES)
     try:
-        body = await request.json()
-    except Exception:
+        body = json.loads(raw) if raw.strip() else {}
+    except ValueError:
         body = {}
     inputs: dict[str, Any] = body if isinstance(body, dict) else {"payload": body}
 
@@ -45,6 +122,17 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
     svc = getattr(request.app.state, "workflow_service", None)
     if runner is None or svc is None:
         raise HTTPException(status_code=503, detail="Workflow engine not available")
+
+    # Rotation: a token minted before the latest rotation is revoked.
+    try:
+        current_version = await svc.webhook_token_version(tenant_id, workflow_id)
+    except Exception as exc:
+        _log.error("workflow_webhook_version_check_failed", error=str(exc))
+        raise HTTPException(status_code=503, detail="Webhook token could not be checked") from exc
+    if token_version != current_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Webhook token has been revoked"
+        )
 
     wf = await svc.get(tenant_id=tenant_id, workflow_id=workflow_id)
     if wf is None:
@@ -59,6 +147,15 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
     if not any(t.get("type") in ("webhook", "api") for t in triggers):
         raise HTTPException(status_code=400, detail="Workflow has no webhook/api trigger")
 
+    await _enforce_rate_limit(request, runner, tenant_id=tenant_id, workflow_id=workflow_id)
+
+    # Sender retries carry the same delivery id: dedupe on it through the run
+    # store's (tenant, workflow, idempotency_key) unique index — across replicas.
+    idempotency_key = _delivery_key(request)
+    extra: dict[str, Any] = {}
+    if idempotency_key and getattr(runner, "_run_store", None) is not None:
+        extra["idempotency_key"] = idempotency_key
+
     # Fire the run tagged as webhook-triggered (not the generic "api" default),
     # passing the body as both inputs and the raw trigger payload so a
     # ``trigger_transform`` can map webhook fields into inputs if configured.
@@ -69,7 +166,11 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
             inputs=inputs,
             trigger_type="webhook",
             trigger_payload=inputs,
+            **extra,
         )
+    except WorkflowValidationError as exc:
+        # The payload itself is unacceptable: retrying it can never succeed.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         return await _dead_letter(
             runner,

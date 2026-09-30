@@ -81,6 +81,7 @@ def _client(wf: dict | None, run_id: str = "run-xyz") -> tuple[TestClient, Async
     app.include_router(webhook_router)
     svc = AsyncMock()
     svc.get = AsyncMock(return_value=wf)
+    svc.webhook_token_version = AsyncMock(return_value=0)  # never rotated
     runner = AsyncMock()
     runner.run = AsyncMock(return_value=run_id)
     app.state.workflow_service = svc

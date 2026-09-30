@@ -642,23 +642,40 @@ async def get_webhook_trigger(workflow_id: str, request: Request) -> dict[str, A
     out: dict[str, Any] = {"workflow_id": workflow_id, "published": published}
     if not published:
         return out
-    from app.workflow.webhook_tokens import callback_signing_secret, make_webhook_token
+    from app.workflow.webhook_tokens import callback_signing_secret
 
-    token = make_webhook_token(tenant.tenant_id, workflow_id)
-    path = f"/wf-hooks/{token}"
-    base = ""
-    try:
-        from app.core.config import get_settings
-
-        base = (get_settings().workflow_webhook_base_url or "").rstrip("/")
-    except Exception:
-        base = ""
+    hook = await svc.webhook_trigger(tenant.tenant_id, workflow_id)
     out.update(
         {
-            "webhook_path": path,
-            "webhook_url": f"{base}{path}" if base else path,
+            "webhook_path": hook["webhook_path"],
+            "webhook_url": hook["webhook_url"],
             "callback_signature_header": "X-AgentVerse-Signature",
             "callback_signing_secret": callback_signing_secret(tenant.tenant_id, workflow_id),
         }
     )
     return out
+
+
+@router.post(
+    "/{workflow_id}/webhook/rotate",
+    tags=["workflow-webhooks"],
+    dependencies=_CAN_EDIT,
+)
+async def rotate_webhook_token(workflow_id: str, request: Request) -> dict[str, Any]:
+    """Revoke the workflow's webhook URL and issue a new one (old URLs get 401)."""
+    svc = _svc(request)
+    tenant = _get_tenant(request)
+    item = await svc.get(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    try:
+        hook = await svc.rotate_webhook_token(tenant.tenant_id, workflow_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Workflow not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "workflow_id": workflow_id,
+        "webhook_path": hook["webhook_path"],
+        "webhook_url": hook["webhook_url"],
+    }

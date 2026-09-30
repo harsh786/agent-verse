@@ -1119,6 +1119,48 @@ class PostgresWorkflowRunStore:
             ).mappings().first()
             return self._stats_row(row)
 
+    # ── Webhook token version (workflow_definitions.trigger_config) ───────────
+    async def get_webhook_token_version(self, tenant_id: str, workflow_id: str) -> int:
+        """The workflow's current webhook token version (0 = never rotated)."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT COALESCE((trigger_config->>'webhook_token_version')::int, 0) "
+                        "FROM workflow_definitions WHERE id = CAST(:wid AS uuid)"
+                    ),
+                    {"wid": workflow_id},
+                )
+            ).first()
+            return int(row[0]) if row else 0
+
+    async def rotate_webhook_token(self, tenant_id: str, workflow_id: str) -> int:
+        """Bump the token version (invalidating every earlier URL); return it."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "UPDATE workflow_definitions SET trigger_config = jsonb_set("
+                        " COALESCE(trigger_config, '{}'::jsonb), '{webhook_token_version}', "
+                        " to_jsonb(COALESCE((trigger_config->>'webhook_token_version')::int, 0)"
+                        " + 1)), updated_at = NOW() "
+                        "WHERE id = CAST(:wid AS uuid) "
+                        "RETURNING (trigger_config->>'webhook_token_version')::int"
+                    ),
+                    {"wid": workflow_id},
+                )
+            ).first()
+            await session.commit()
+            if row is None:
+                raise KeyError(f"workflow definition {workflow_id!r} not found")
+            return int(row[0])
+
     # ── Webhook events (workflow_webhook_events) ──────────────────────────────
     async def record_webhook_failure(
         self,

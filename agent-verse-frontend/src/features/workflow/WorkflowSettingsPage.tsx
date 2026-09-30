@@ -286,10 +286,30 @@ function NotificationsPanel({ wf: _wf }: { wf: WEWorkflow }) {
 // the backend. It used to print /api/v1/webhooks/workflows/{id} — a route that
 // does not exist — and claimed replay protection the endpoint does not have.
 function WebhookPanel({ wf }: { wf: WEWorkflow }) {
+  const qc = useQueryClient();
+  const [rotateError, setRotateError] = useState<string | null>(null);
+  const [rotated, setRotated] = useState(false);
   const { data, isLoading, isError } = useQuery({
     queryKey: ['workflow-engine', 'webhook', wf.id],
     queryFn: () => workflowEngineApi.getWebhook(wf.id),
   });
+  const rotateMutation = useMutation({
+    mutationFn: () => workflowEngineApi.rotateWebhook(wf.id),
+    onMutate: () => {
+      setRotateError(null);
+      setRotated(false);
+    },
+    onSuccess: () => {
+      setRotated(true);
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'webhook', wf.id] });
+    },
+    onError: (err: unknown) => setRotateError(workflowErrorMessage(err, 'rotate the token of')),
+  });
+  const rotate = () => {
+    if (window.confirm('Rotate the webhook token? The current URL stops working immediately.')) {
+      rotateMutation.mutate();
+    }
+  };
   const url = data?.webhook_url
     ? data.webhook_url.startsWith('http')
       ? data.webhook_url
@@ -306,7 +326,26 @@ function WebhookPanel({ wf }: { wf: WEWorkflow }) {
           ) : isError ? (
             <p className="text-xs text-rose-400">Could not load the webhook URL.</p>
           ) : url ? (
-            <code className="text-xs text-sky-400 font-mono break-all">{url}</code>
+            <div className="space-y-2">
+              <code className="text-xs text-sky-400 font-mono break-all">{url}</code>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={rotate}
+                  disabled={rotateMutation.isPending || !hasWorkflowAccess(wf.access, 'editor')}
+                  className="px-3 py-1 rounded-lg border border-white/15 hover:border-white/30
+                             text-xs text-[#F1F5F9]/70 disabled:opacity-50"
+                >
+                  Rotate token
+                </button>
+                {rotated && (
+                  <span className="text-xs text-emerald-400">
+                    New URL issued — the old one now answers 401.
+                  </span>
+                )}
+              </div>
+              {rotateError && <p className="text-xs text-rose-400" role="alert">{rotateError}</p>}
+            </div>
           ) : (
             <p className="text-xs text-[#F1F5F9]/40">
               Publish this workflow to get its webhook URL.
@@ -319,6 +358,13 @@ function WebhookPanel({ wf }: { wf: WEWorkflow }) {
           webhook or api trigger. Run-completion callbacks are signed with HMAC-SHA256 in the{' '}
           <code>{data?.callback_signature_header ?? 'X-AgentVerse-Signature'}</code> header.
         </p>
+        <ul className="text-xs text-[#F1F5F9]/30 space-y-0.5" aria-label="Webhook responses">
+          <li><code>202 queued_for_retry</code> — accepted but the run could not start yet; it is retried.</li>
+          <li><code>401</code> — invalid or rotated token.</li>
+          <li><code>413</code> — body larger than 1 MB.</li>
+          <li><code>429</code> — more deliveries per minute than your plan allows; retry after a minute.</li>
+          <li>Send a stable <code>Idempotency-Key</code> or <code>X-Delivery-Id</code> header so retries never start a second run.</li>
+        </ul>
         <WebhookDeliveries wf={wf} />
       </div>
     </div>

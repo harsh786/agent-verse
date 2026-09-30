@@ -3242,6 +3242,13 @@ export const workflowEngineApi = {
   validate: (id: string) =>
     request<{ valid: boolean; errors: string[] }>(`${V1}/workflows/${id}/validate`, { method: 'POST', body: '{}' }),
 
+  /** Revoke the webhook URL and issue a new one (old URLs answer 401). */
+  rotateWebhook: (id: string) =>
+    request<{ workflow_id: string; webhook_path: string; webhook_url: string }>(
+      `${V1}/workflows/${id}/webhook/rotate`,
+      { method: 'POST', body: '{}' },
+    ),
+
   /** Dead-lettered webhook deliveries (runs that could not be started). */
   listWebhookEvents: (id: string, params?: { page?: number; per_page?: number }) => {
     const qs = new URLSearchParams();

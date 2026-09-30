@@ -11,12 +11,15 @@ from unittest.mock import AsyncMock
 
 from tests.workflow.test_router import make_app
 
+from app.workflow.service import WorkflowService
 from app.workflow.webhook_tokens import verify_webhook_token
 
 
 def test_published_workflow_returns_verifiable_wf_hooks_url() -> None:
     svc = AsyncMock()
     svc.get.return_value = {"id": "wf-1", "status": "published"}
+    # Real token minting (version 0: no persistent store, never rotated).
+    svc.webhook_trigger.side_effect = WorkflowService(store=None).webhook_trigger
     client = make_app(svc)
     resp = client.get("/api/v1/workflows/wf-1/webhook")
     assert resp.status_code == 200

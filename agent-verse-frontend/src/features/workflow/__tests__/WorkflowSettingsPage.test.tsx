@@ -17,6 +17,7 @@ vi.mock('../../../lib/api/client', () => ({
     addPermission: vi.fn(),
     removePermission: vi.fn(),
     listWebhookEvents: vi.fn(),
+    rotateWebhook: vi.fn(),
   },
 }));
 
@@ -139,6 +140,43 @@ describe('WorkflowSettingsPage', () => {
     });
     expect(screen.queryByText(/api\/v1\/webhooks\/workflows/)).not.toBeInTheDocument();
     expect(workflowEngineApi.getWebhook).toHaveBeenCalledWith('wf-1');
+  });
+
+  // WF-10: the webhook URL can be revoked.
+  it('rotating the webhook token asks for confirmation and shows the new URL', async () => {
+    vi.mocked(workflowEngineApi.getWebhook)
+      .mockResolvedValueOnce({ workflow_id: 'wf-1', published: true, webhook_url: '/wf-hooks/old.tok' })
+      .mockResolvedValue({ workflow_id: 'wf-1', published: true, webhook_url: '/wf-hooks/new.tok' });
+    vi.mocked(workflowEngineApi.rotateWebhook).mockResolvedValue({
+      workflow_id: 'wf-1', webhook_path: '/wf-hooks/new.tok', webhook_url: '/wf-hooks/new.tok',
+    });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }));
+    await screen.findByText(`${window.location.origin}/wf-hooks/old.tok`);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate token' }));
+
+    expect(confirm).toHaveBeenCalled();
+    await waitFor(() => expect(workflowEngineApi.rotateWebhook).toHaveBeenCalledWith('wf-1'));
+    expect(await screen.findByText(`${window.location.origin}/wf-hooks/new.tok`)).toBeInTheDocument();
+    expect(screen.getByText(/old one now answers 401/i)).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it('does not rotate when the confirmation is cancelled', async () => {
+    vi.mocked(workflowEngineApi.getWebhook).mockResolvedValue({
+      workflow_id: 'wf-1', published: true, webhook_url: '/wf-hooks/old.tok',
+    });
+    vi.mocked(workflowEngineApi.rotateWebhook).mockClear();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Rotate token' }));
+    expect(workflowEngineApi.rotateWebhook).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   // WF-07: dead-lettered deliveries are visible with status, retries and error.
