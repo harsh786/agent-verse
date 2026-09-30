@@ -2794,6 +2794,16 @@ async def ingest_document_into_collection(
                 detail=f"LLM budget exhausted — cannot build the strategy index: {exc}",
             ) from exc
         _gl(__name__).exception("ingest_document_failed: %s: %s", type(exc).__name__, exc)
+        from app.providers.circuit_breaker import ProviderCircuitOpenError
+
+        if isinstance(exc, ProviderCircuitOpenError):
+            # The strategy-index model's breaker is open: a model outage, not a
+            # storage one (both used to read "Knowledge persistence is unavailable").
+            raise HTTPException(
+                status_code=503, detail="The indexing model is unavailable; retry later"
+            ) from exc
+        if isinstance(exc, TimeoutError):
+            raise HTTPException(status_code=504, detail="The indexing model timed out") from exc
         if isinstance(exc, IndexingProviderError):
             # The RAPTOR/agentic-chunking model returned unusable output: an
             # upstream model failure, not a storage outage (it used to be

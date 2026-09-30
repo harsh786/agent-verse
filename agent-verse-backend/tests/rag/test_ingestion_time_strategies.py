@@ -327,7 +327,7 @@ async def test_pipeline_rejects_incomplete_individual_completion_batch() -> None
         ),
     )
 
-    with pytest.raises(RuntimeError, match="incomplete batch"):
+    with pytest.raises(RuntimeError, match="returned 0 results for 1 inputs"):
         await pipeline.index_document(
             collection_id="collection-1",
             document_id="document-1",

@@ -12,6 +12,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+class ProviderCircuitOpenError(RuntimeError):
+    """The provider's circuit is open (too many recent failures): fail fast."""
+
+
 class ProviderCircuitBreaker:
     """Per-provider circuit breaker to prevent cascading LLM failures."""
 
@@ -83,7 +87,7 @@ async def call_with_circuit_breaker(
     without hitting a broken downstream provider.
     """
     if _provider_cb.is_open(provider_name):
-        raise RuntimeError(
+        raise ProviderCircuitOpenError(
             f"LLM provider circuit open for {provider_name}. Too many recent failures."
         )
 
