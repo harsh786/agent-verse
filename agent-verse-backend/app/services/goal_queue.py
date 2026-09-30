@@ -44,6 +44,7 @@ class CeleryGoalTaskQueue:
         goal_template: str = "",
         plan: str = "free",
         trigger_chain_depth: int = 0,
+        source_trigger_id: str = "",
     ) -> str:
         from app.scaling.celery_app import PLAN_QUEUE_MAP
         from app.scaling.tasks import run_goal
@@ -54,6 +55,8 @@ class CeleryGoalTaskQueue:
         extra: dict[str, Any] = (
             {"trigger_chain_depth": int(trigger_chain_depth)} if trigger_chain_depth else {}
         )
+        if source_trigger_id:
+            extra["source_trigger_id"] = source_trigger_id
         result: Any = run_goal.apply_async(
             kwargs={
                 **extra,

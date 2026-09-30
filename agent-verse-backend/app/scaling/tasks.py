@@ -1909,6 +1909,7 @@ def run_goal(
     goal_template: str = "",
     plan: str = "free",
     trigger_chain_depth: int = 0,
+    source_trigger_id: str = "",
 ) -> dict[str, Any]:
     """Run a goal worker task and return its local result.
 
@@ -2074,6 +2075,7 @@ def run_goal(
                             status="complete" if _chain_channel == "goal.completed" else "failed",
                             tenant_plan=getattr(plan, "value", str(plan)),
                             trigger_chain_depth=trigger_chain_depth,
+                            source_trigger_id=source_trigger_id,
                         ),
                     )
                     _chain_published.add(_chain_channel)

@@ -84,10 +84,6 @@ _CONFIG_EXCLUDE: frozenset[str] = frozenset({
     "event_channel", "fire_at_iso", "condition", "description", "goal_template",
     "webhook_signature_secret", "webhook_signature_secret_previous",
     "webhook_signature_grace_until",
-    # agent_id is a first-class Schedule column / record field and is echoed into
-    # the redis payload explicitly; keep it out of the config JSONB to avoid
-    # duplicating the referenced-agent id (bound onto the spec's watch_agent_id).
-    "watch_agent_id",
 })
 
 
@@ -176,10 +172,17 @@ def bind_refs_to_spec(spec: TriggerSpec, *, agent_id: str = "", goal_template: s
     goal template) routes to that agent and runs the agent's own goal on EVERY
     trigger type — not just the handful whose consumer happened to read the record.
 
+    The referenced agent is the agent to RUN, bound as the ``agent_id`` instance
+    attribute (like ``trigger_id``; it is a first-class Schedule column, so it is
+    not persisted in the config JSONB). It is never folded onto
+    ``watch_agent_id``: for goal-event triggers that field is the SOURCE filter
+    ("only goals run by this agent"), and conflating the two made "when any goal
+    completes, run agent X" watch only X's goals and re-fire on its own goal.
+
     An explicit spec-level value always wins over the record-level ref.
     """
-    if agent_id and not (getattr(spec, "watch_agent_id", "") or "").strip():
-        spec.watch_agent_id = agent_id
+    if agent_id and not (getattr(spec, "agent_id", "") or "").strip():
+        spec.agent_id = agent_id  # type: ignore[attr-defined]
     if goal_template and not (getattr(spec, "goal_template", "") or "").strip():
         spec.goal_template = goal_template
 

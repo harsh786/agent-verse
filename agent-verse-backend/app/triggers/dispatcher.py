@@ -53,6 +53,32 @@ def _payload_for_audit(payload: Any) -> dict[str, Any]:
     }
 
 
+# Trigger types fired by a goal's own lifecycle event. On these ``watch_agent_id``
+# is the SOURCE filter (whose goals to watch), never the agent to run, and the
+# created goal is stamped with the trigger's id so its completion cannot re-fire
+# the same trigger.
+_GOAL_EVENT_TRIGGER_TYPES = frozenset({"goal_completed", "goal_failed", "goal_score_below"})
+
+
+def _trigger_type_value(spec: object) -> str:
+    tt = getattr(spec, "trigger_type", "")
+    return str(getattr(tt, "value", tt) or "")
+
+
+def _run_agent_id(spec: object) -> str:
+    """The agent a firing routes its goal to (``""`` = auto-route).
+
+    ``agent_id`` is the trigger's referenced agent. ``watch_agent_id`` is still
+    honoured as the run target for non-goal-event types (the beat path and
+    legacy specs carry the referenced agent there), but on goal-event triggers
+    it only filters which goals are watched.
+    """
+    agent = str(getattr(spec, "agent_id", "") or "")
+    if agent or _trigger_type_value(spec) in _GOAL_EVENT_TRIGGER_TYPES:
+        return agent
+    return str(getattr(spec, "watch_agent_id", "") or "")
+
+
 def _chain_depth(payload: object) -> int:
     """``trigger_chain_depth`` from a chained event payload (0 when absent/bad)."""
     if not isinstance(payload, dict):
@@ -293,11 +319,7 @@ class TriggerDispatcher:
             # configured goal (so a trigger can simply reference an agent without
             # re-authoring a goal) → a generic default.
             _template = (trigger_spec.goal_template or "").strip()
-            _ref_agent = (
-                getattr(trigger_spec, "agent_id", "")
-                or getattr(trigger_spec, "watch_agent_id", "")
-                or ""
-            )
+            _ref_agent = _run_agent_id(trigger_spec)
             if not _template and _ref_agent:
                 _template = self._agent_goal_template(_ref_agent, tenant_ctx)
             goal_text = self._render_template(
@@ -517,17 +539,19 @@ class TriggerDispatcher:
         # Only chained firings carry a depth (keeps the create_goal call shape
         # unchanged for every other trigger family).
         extra: dict[str, Any] = {"trigger_chain_depth": chain_depth} if chain_depth else {}
+        # Goal-event triggers stamp the created goal with their own id; the goal's
+        # lifecycle event carries it back so ChainTriggerConsumer never re-fires
+        # this trigger on a goal it created.
+        if _trigger_type_value(spec) in _GOAL_EVENT_TRIGGER_TYPES:
+            trigger_id = str(getattr(spec, "trigger_id", "") or "")
+            if trigger_id:
+                extra["source_trigger_id"] = trigger_id
         try:
             result = await self._goal_service.create_goal(
                 tenant_ctx=tenant_ctx,
                 goal_text=goal_text,
-                # Route the fired goal to the agent the trigger references. The
-                # create form sets `agent_id`; `watch_agent_id` is the legacy
-                # event-watch field — honor either so referencing an agent works.
-                agent_id=(
-                    getattr(spec, "agent_id", "") or getattr(spec, "watch_agent_id", "")
-                )
-                or None,
+                # Route the fired goal to the agent the trigger references.
+                agent_id=_run_agent_id(spec) or None,
                 idempotency_key=idempotency_key,
                 **extra,
             )

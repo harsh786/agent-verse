@@ -2856,6 +2856,7 @@ class GoalService:
             tenant_plan=plan,
             trigger_chain_depth=int(record.execution_context.get("trigger_chain_depth", 0) or 0),
             score=score,
+            source_trigger_id=str(record.execution_context.get("source_trigger_id", "") or ""),
         )
         try:
             await self._redis.publish(channel, payload)
@@ -3747,6 +3748,7 @@ class GoalService:
         idempotency_key: str | None = None,
         priority: str = "normal",
         trigger_chain_depth: int = 0,
+        source_trigger_id: str = "",
     ) -> dict[str, Any]:
         """Trigger-facing adapter over :meth:`submit_goal` (WT-1 / P0-5).
 
@@ -3768,6 +3770,9 @@ class GoalService:
                 # Chain depth of the event that created this goal; re-published
                 # on its own completion so chains are bounded (MAX_CHAIN_DEPTH).
                 "trigger_chain_depth": int(trigger_chain_depth or 0),
+                # The goal-event trigger that created this goal; re-published on
+                # its lifecycle event so that trigger never re-fires on it.
+                **({"source_trigger_id": source_trigger_id} if source_trigger_id else {}),
             },
         )
 
@@ -4206,6 +4211,11 @@ class GoalService:
                     _chain_kw: dict[str, Any] = (
                         {"trigger_chain_depth": _chain_depth} if _chain_depth else {}
                     )
+                    _source_trigger = str(
+                        (execution_context or {}).get("source_trigger_id", "") or ""
+                    )
+                    if _source_trigger:
+                        _chain_kw["source_trigger_id"] = _source_trigger
                     self._task_queue.enqueue_goal(
                         goal_id=goal_id,
                         tenant_id=tenant_ctx.tenant_id,

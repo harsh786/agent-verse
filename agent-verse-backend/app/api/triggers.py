@@ -240,9 +240,11 @@ def _spec_for_dispatch(rec: dict[str, Any]) -> TriggerSpec:
     if not (getattr(spec, "goal_template", "") or "").strip():
         with contextlib.suppress(Exception):
             spec.goal_template = rec.get("goal_template", "") or ""
-    if not (getattr(spec, "watch_agent_id", "") or "").strip():
+    # The record's agent is the agent to RUN — never the goal-event source filter
+    # (``watch_agent_id``), see ``bind_refs_to_spec``.
+    if not (getattr(spec, "agent_id", "") or "").strip():
         with contextlib.suppress(Exception):
-            spec.watch_agent_id = rec.get("agent_id", "") or ""
+            spec.agent_id = rec.get("agent_id", "") or ""  # type: ignore[attr-defined]
     # trigger_id drives the dispatcher's per-trigger idempotency key; without the
     # real schedule id every manual fire dedups as "unknown" against other
     # triggers. Bind it here so the fire/simulate paths match the beat path.

@@ -28,10 +28,13 @@ def _tenant() -> TenantContext:
 # ── store binds record-level refs onto the spec ───────────────────────────────
 
 
-def test_bind_refs_sets_watch_agent_and_goal_template():
+def test_bind_refs_sets_run_agent_and_goal_template():
     spec = TriggerSpec(trigger_type=TriggerType.CRON)
     bind_refs_to_spec(spec, agent_id="agent-7", goal_template="do the thing")
-    assert spec.watch_agent_id == "agent-7"
+    # The referenced agent is the agent to RUN — never the goal-event source
+    # filter (watch_agent_id), see TRG-04.
+    assert spec.agent_id == "agent-7"
+    assert spec.watch_agent_id == ""
     assert spec.goal_template == "do the thing"
 
 
@@ -56,7 +59,7 @@ def test_store_create_makes_agent_only_spec_self_contained():
     assert rec is not None
     # The referenced agent id is now readable off the spec itself, so every
     # dispatch path (consumers, beat, API) can route to it.
-    assert rec["spec"].watch_agent_id == "agent-42"
+    assert rec["spec"].agent_id == "agent-42"
 
 
 def test_store_create_binds_trigger_id_for_idempotency():

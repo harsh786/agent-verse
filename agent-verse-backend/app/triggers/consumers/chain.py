@@ -46,11 +46,14 @@ def build_chain_event(
     tenant_plan: str = "free",
     trigger_chain_depth: int = 0,
     score: float | None = None,
+    source_trigger_id: str = "",
 ) -> str:
     """JSON payload for a goal lifecycle channel.
 
     ``completion_event_id`` is deterministic (goal + channel) so the same terminal
     event relayed twice maps to one dispatcher idempotency key.
+    ``source_trigger_id`` is the goal-event trigger that created this goal (if
+    any); the consumer never re-fires that trigger on it.
     """
     payload: dict[str, object] = {
         "tenant_id": tenant_id,
@@ -63,6 +66,8 @@ def build_chain_event(
     }
     if score is not None:
         payload["score"] = score
+    if source_trigger_id:
+        payload["source_trigger_id"] = source_trigger_id
     return json.dumps(payload)
 
 
@@ -152,6 +157,7 @@ class ChainTriggerConsumer:
         goal_id = data.get("goal_id", "")
         agent_id = data.get("agent_id", "")
         score = data.get("score", 1.0)
+        source_trigger_id = str(data.get("source_trigger_id", "") or "")
 
         # Find all enabled triggers of this type for this tenant
         try:
@@ -176,7 +182,18 @@ class ChainTriggerConsumer:
             # HITLTriggerConsumer / MemoryTriggerConsumer) fixes the extraction.
             spec = trigger.get("spec", trigger) if isinstance(trigger, dict) else trigger
 
-            # Filter by watch_agent_id / watch_goal_id if set
+            # Self-chain guard: never fire a trigger on a goal it created itself.
+            trigger_id = str(
+                getattr(spec, "trigger_id", "")
+                or (trigger.get("schedule_id", "") if isinstance(trigger, dict) else "")
+                or ""
+            )
+            if source_trigger_id and trigger_id == source_trigger_id:
+                continue
+
+            # Filter by watch_agent_id / watch_goal_id if set. watch_agent_id is
+            # the SOURCE filter (whose goals to watch); the agent the trigger
+            # runs is the spec's separate agent_id.
             if getattr(spec, "watch_agent_id", "") and spec.watch_agent_id != agent_id:
                 continue
             if getattr(spec, "watch_goal_id", "") and spec.watch_goal_id != goal_id:

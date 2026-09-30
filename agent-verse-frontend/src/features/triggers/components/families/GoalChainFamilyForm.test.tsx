@@ -26,6 +26,13 @@ describe('GoalChainFamilyForm', () => {
     expect(lastArg(onChange)).toEqual({ description: 'x', watch_goal_id: 'goal-42' });
   });
 
+  // TRG-04: the watched (source) agent is a filter, distinct from the agent to run.
+  test('labels the agent field as a watch filter, separate from the agent to run', () => {
+    render(<GoalChainFamilyForm triggerType="goal_completed" value={{}} onChange={vi.fn()} />);
+    expect(screen.getByText('Watch goals from agent (optional)')).toBeInTheDocument();
+    expect(screen.getByText(/Run as agent/)).toBeInTheDocument();
+  });
+
   test('editing watch agent id merges into value', () => {
     const onChange = vi.fn();
     render(<GoalChainFamilyForm triggerType="goal_failed" value={{}} onChange={onChange} />);

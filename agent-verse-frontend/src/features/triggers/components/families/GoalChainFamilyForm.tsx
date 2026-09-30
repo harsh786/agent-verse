@@ -22,7 +22,10 @@ export function GoalChainFamilyForm({ triggerType, value, onChange }: FamilyForm
           className={inputCls}
         />
       </Field>
-      <Field label="Watch Agent ID (optional)">
+      <Field
+        label="Watch goals from agent (optional)"
+        hint="Only fire for goals run by this agent — blank matches every agent. The agent this trigger runs is chosen separately under “Run as agent”."
+      >
         <input
           type="text"
           value={(value.watch_agent_id as string) ?? ''}
