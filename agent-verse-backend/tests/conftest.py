@@ -407,5 +407,7 @@ def _beat_guard_lock(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyP
     """
     if request.module.__name__.endswith("test_beat_guard"):
         return
+    import app.scaling.beat_guard as beat_guard  # string paths need it imported first
+
     locks = _GuardLocks()
-    monkeypatch.setattr("app.scaling.beat_guard._guard_client", lambda *_a, **_k: locks)
+    monkeypatch.setattr(beat_guard, "_guard_client", lambda *_a, **_k: locks)
