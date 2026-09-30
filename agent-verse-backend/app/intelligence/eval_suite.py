@@ -636,66 +636,74 @@ async def get_golden_tasks(*, eval_suite_id: str, tenant_id: str, db: Any) -> li
     ]
 
 
+# Pass rate an agent's attached eval suite must reach on its latest completed
+# run before the agent may run fully-autonomous.
+ROLLOUT_MIN_PASS_RATE = 0.8
+
+
 async def check_agent_rollout_gate(
     *,
-    agent_id: str,
-    eval_suite_id: str,
+    agent_id: str | None,
+    eval_suite_id: str | None,
     tenant_id: str,
     db: Any,
-    min_pass_rate: float = 0.8,
-) -> dict:
-    """Check if an agent meets the eval pass rate required for production rollout."""
-    from sqlalchemy import text
+    min_pass_rate: float = ROLLOUT_MIN_PASS_RATE,
+) -> dict[str, Any]:
+    """Does the agent's eval suite pass well enough for fully-autonomous rollout?
 
-    async with (
-        db() as session,
-        sqlalchemy_rls_context(session, tenant_id),
-    ):
-        row = (
-            await session.execute(
-                text("""
-                    SELECT AVG(average_score) as avg_score,
-                           COUNT(*) as run_count,
-                           SUM(CASE WHEN average_score >= 0.8 THEN 1 ELSE 0 END) as passing
-                    FROM evaluations e
-                    JOIN goals g ON e.goal_id = g.id
-                    WHERE g.agent_id = :aid AND g.tenant_id = :tid
-                      AND e.created_at > NOW() - INTERVAL '30 days'
-                """),
-                {"aid": agent_id, "tid": tenant_id},
-            )
-        ).fetchone()
+    Reads the NAMED suite's latest completed run (the tenant's
+    ``eval_suite_results`` under RLS; the store's in-memory runs without a DB)
+    and compares its pass rate with ``min_pass_rate``. It used to ignore the
+    suite and average every evaluation of the agent's goals against a
+    hard-coded 0.8. A store error propagates: callers fail closed.
+    """
+    from app.intelligence.eval_suite_store import EvalSuiteStore
 
-    if not row or not row[1]:
-        return {
-            "gate_passed": False,
-            "reason": (
-                "No evaluation data found. Run eval suite before enabling fully-autonomous mode."
-            ),
-            "run_count": 0,
-            "pass_rate": 0.0,
-            "avg_score": 0.0,
-        }
-
-    run_count = int(row[1] or 0)
-    passing = int(row[2] or 0)
-    pass_rate = passing / run_count if run_count > 0 else 0.0
-    avg_score = float(row[0] or 0)
-    gate_passed = pass_rate >= min_pass_rate and run_count >= 5
-
-    return {
-        "gate_passed": gate_passed,
-        "reason": (
-            f"Pass rate {pass_rate:.1%} meets {min_pass_rate:.1%} threshold"
-            if gate_passed
-            else (
-                f"Pass rate {pass_rate:.1%} below {min_pass_rate:.1%} threshold "
-                f"(need at least "
-                f"{max(0, round(min_pass_rate * run_count) - passing)} more passing runs)"
-            )
-        ),
-        "run_count": run_count,
-        "pass_rate": pass_rate,
-        "avg_score": avg_score,
+    report: dict[str, Any] = {
+        "agent_id": agent_id,
+        "eval_suite_id": eval_suite_id or None,
         "min_pass_rate_required": min_pass_rate,
+        "gate_passed": False,
+        "run_id": None,
+        "run_at": None,
+        "run_count": 0,
+        "total_tasks": 0,
+        "passed_tasks": 0,
+        "pass_rate": 0.0,
     }
+    if not eval_suite_id:
+        report["reason"] = "No eval suite is attached to this agent."
+        return report
+    store = EvalSuiteStore(db, tenant_id)
+    if await store.get(eval_suite_id) is None:
+        report["reason"] = f"Eval suite {eval_suite_id} not found."
+        return report
+    runs = await store.list_runs(eval_suite_id)
+    completed = [r for r in runs if r.get("status") == "completed"]
+    report["run_count"] = len(completed)
+    if not completed:
+        report["reason"] = (
+            f"Eval suite {eval_suite_id} has no completed run. "
+            "Run it before enabling fully-autonomous mode."
+        )
+        return report
+    latest = completed[0]  # list_runs is newest-first
+    total = int(latest.get("total") or 0)
+    pass_rate = float(latest.get("pass_rate") or 0.0)
+    report.update(
+        run_id=latest.get("run_id"),
+        run_at=latest.get("run_at"),
+        total_tasks=total,
+        passed_tasks=int(latest.get("passed") or 0),
+        pass_rate=pass_rate,
+    )
+    if total == 0:
+        report["reason"] = f"The latest run of eval suite {eval_suite_id} had no tasks."
+        return report
+    report["gate_passed"] = pass_rate >= min_pass_rate
+    verdict = "meets" if report["gate_passed"] else "is below"
+    report["reason"] = (
+        f"Latest run of eval suite {eval_suite_id}: pass rate {pass_rate:.1%} "
+        f"{verdict} the {min_pass_rate:.1%} threshold."
+    )
+    return report

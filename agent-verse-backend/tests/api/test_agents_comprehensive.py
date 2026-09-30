@@ -139,7 +139,9 @@ def test_create_agent_fully_autonomous_without_eval_suite_fails() -> None:
     assert resp.status_code == 422
 
 
-def test_create_agent_fully_autonomous_with_eval_suite_succeeds() -> None:
+def test_create_agent_fully_autonomous_with_unrun_eval_suite_is_gated() -> None:
+    # An attached suite is not enough: its latest run must pass the rollout
+    # gate (MEM-22; the passing path is in test_agent_rollout_gate_enforced).
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/agents",
@@ -150,8 +152,8 @@ def test_create_agent_fully_autonomous_with_eval_suite_succeeds() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 201
-    assert resp.json()["autonomy_mode"] == "fully-autonomous"
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "ROLLOUT_GATE_FAILED"
 
 
 def test_create_agent_legal_context_requires_bar_number() -> None:

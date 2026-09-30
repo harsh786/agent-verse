@@ -1,6 +1,5 @@
 """Tests for P2.6 golden tasks and rollout gate."""
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -51,20 +50,9 @@ def test_check_rollout_gate_exists():
 async def test_rollout_gate_fails_without_data():
     from app.intelligence.eval_suite import check_agent_rollout_gate
 
-    # Build a proper async context manager mock
-    mock_execute_result = MagicMock()
-    mock_execute_result.fetchone = lambda: (None, 0, 0)
-
-    mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_execute_result)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=None)
-
-    # db() must return the context manager directly (not as a coroutine)
-    mock_db = MagicMock(return_value=mock_session)
-
+    # No DB → the eval-suite store's in-memory mode; the suite has never run.
     result = await check_agent_rollout_gate(
-        agent_id="a1", eval_suite_id="s1", tenant_id="t1", db=mock_db
+        agent_id="a1", eval_suite_id="s1", tenant_id="t-golden-gate", db=None
     )
     assert result["gate_passed"] is False
     assert result["run_count"] == 0

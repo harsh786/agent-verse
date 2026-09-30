@@ -533,6 +533,13 @@ export function AgentDetailPage() {
                 </div>
               )}
             </div>
+            {saveMutation.error && (
+              // e.g. 409 ROLLOUT_GATE_FAILED when switching to fully-autonomous
+              // on an eval suite whose latest run does not pass.
+              <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+                {saveMutation.error instanceof Error ? saveMutation.error.message : String(saveMutation.error)}
+              </p>
+            )}
             <div className="flex justify-end">
               <button
                 onClick={() => saveMutation.mutate()}
@@ -838,12 +845,15 @@ export function AgentDetailPage() {
           variant="float"
         />
           ) : (() => {
-            // Backend returns { gate_passed, reason, run_count, pass_rate, avg_score, agent_id }
+            // Backend returns { gate_passed, reason, eval_suite_id, min_pass_rate_required,
+            // pass_rate (latest completed suite run), run_count (completed runs), agent_id }
             const raw = rolloutGate as any;
             const gatePassed: boolean = raw.gate_passed ?? raw.gate_status === 'passed';
             const passRate: number = raw.pass_rate ?? 0;
             const runCount: number = raw.run_count ?? 0;
-            const avgScore: number = raw.avg_score ?? 0;
+            const threshold: number | null =
+              typeof raw.min_pass_rate_required === 'number' ? raw.min_pass_rate_required : null;
+            const suiteId: string | null = raw.eval_suite_id ?? null;
             const reason: string = raw.reason ?? '';
             const conditions: string[] = Array.isArray(raw.conditions) ? raw.conditions : [];
 
@@ -852,6 +862,9 @@ export function AgentDetailPage() {
                 <div className="flex items-center gap-3">
                   <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold ${gatePassed ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
                     {gatePassed ? '✓ Gate passed' : '✗ Gate blocked'}
+                  </span>
+                  <span className="text-xs text-muted-foreground" data-testid="rollout-suite">
+                    Eval suite: {suiteId ?? 'none attached'}
                   </span>
                 </div>
                 <div className="grid grid-cols-3 gap-3 text-sm">
@@ -864,8 +877,10 @@ export function AgentDetailPage() {
                     <p className="font-semibold text-lg">{runCount}</p>
                   </div>
                   <div className="bg-muted/40 rounded-lg p-3">
-                    <p className="text-xs text-muted-foreground">Avg score</p>
-                    <p className="font-semibold text-lg">{(avgScore * 100).toFixed(0)}%</p>
+                    <p className="text-xs text-muted-foreground">Threshold</p>
+                    <p className="font-semibold text-lg">
+                      {threshold == null ? '—' : `${(threshold * 100).toFixed(0)}%`}
+                    </p>
                   </div>
                 </div>
                 {reason && (

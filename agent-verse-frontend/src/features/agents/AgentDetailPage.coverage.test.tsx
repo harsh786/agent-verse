@@ -695,7 +695,7 @@ describe('AgentDetailPage — default-value fallbacks and pending states', () =>
     expect(screen.getByText('2')).toBeInTheDocument();
   });
 
-  test('rollout gate tab falls back to 0 for missing pass_rate/run_count/avg_score', async () => {
+  test('rollout gate tab falls back to 0 / — for missing pass_rate/run_count/threshold', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes('/rollout-gate')) return json({ gate_passed: true });
@@ -708,7 +708,8 @@ describe('AgentDetailPage — default-value fallbacks and pending states', () =>
     await userEvent.click(screen.getByRole('tab', { name: /rollout gate/i }));
     expect(await screen.findByText(/Gate passed/i)).toBeInTheDocument();
     expect(screen.getByText('0.0%')).toBeInTheDocument();
-    expect(screen.getByText('0%')).toBeInTheDocument();
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.getByTestId('rollout-suite')).toHaveTextContent(/none attached/i);
   });
 });
 

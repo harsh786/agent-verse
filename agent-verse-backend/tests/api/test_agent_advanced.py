@@ -202,8 +202,8 @@ def test_fully_autonomous_requires_eval_suite():
     assert r.status_code == 422, f"fully-autonomous without eval_suite must return 422, got: {r.text}"
 
 
-def test_fully_autonomous_with_eval_suite_is_allowed():
-    """fully-autonomous + eval_suite_id should create the agent successfully."""
+def test_fully_autonomous_with_unrun_eval_suite_is_gated():
+    """fully-autonomous needs the attached suite's latest run to pass (409 otherwise)."""
     app = _make_app()
     c, h = _signup(app)
     if not h:
@@ -220,8 +220,7 @@ def test_fully_autonomous_with_eval_suite_is_allowed():
         },
         headers=h,
     )
-    assert r.status_code in (200, 201), f"Expected success: {r.text}"
-    assert r.json().get("autonomy_mode") == "fully-autonomous"
+    assert r.status_code == 409, f"Expected the rollout gate to refuse: {r.text}"
 
 
 def test_bounded_autonomous_does_not_require_eval_suite():

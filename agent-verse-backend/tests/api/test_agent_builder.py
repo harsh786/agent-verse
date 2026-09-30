@@ -176,7 +176,8 @@ def test_fully_autonomous_requires_eval_suite():
     assert r.status_code == 422, f"Expected 422, got {r.status_code}: {r.text}"
 
 
-def test_fully_autonomous_with_eval_suite_passes():
+def test_fully_autonomous_with_unrun_eval_suite_is_gated():
+    # MEM-22: the attached suite must have a passing latest run.
     app = _make_app()
     c, h = _signup(app)
     if not h:
@@ -186,7 +187,7 @@ def test_fully_autonomous_with_eval_suite_passes():
         json={"name": "Safe", "autonomy_mode": "fully-autonomous", "eval_suite_id": "suite-abc"},
         headers=h,
     )
-    assert r.status_code in (200, 201), f"Should be created: {r.text}"
+    assert r.status_code == 409, f"Should be refused by the rollout gate: {r.text}"
 
 
 # ---------------------------------------------------------------------------

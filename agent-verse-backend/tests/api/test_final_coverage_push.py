@@ -2543,22 +2543,11 @@ class TestEvalSuiteWave4:
 
     @pytest.mark.asyncio
     async def test_check_agent_rollout_gate_empty_result(self) -> None:
-        """Lines 497-503: check_agent_rollout_gate with empty DB result."""
+        """check_agent_rollout_gate for a suite that does not exist is closed."""
         from app.intelligence.eval_suite import check_agent_rollout_gate
 
-        mock_result = MagicMock()
-        mock_result.fetchone = MagicMock(return_value=None)
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-
-        def _db():
-            return mock_session
-
         result = await check_agent_rollout_gate(
-            agent_id="a1", eval_suite_id="s1", tenant_id="t1", db=_db
+            agent_id="a1", eval_suite_id="s1", tenant_id="t-final-push-gate", db=None
         )
         assert result["gate_passed"] is False
         assert result["run_count"] == 0

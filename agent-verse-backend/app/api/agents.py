@@ -706,6 +706,10 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
                 "Attach an eval suite with passing results first."
             ),
         )
+    if body.autonomy_mode == "fully-autonomous" and body.eval_suite_id:
+        await _enforce_rollout_gate(
+            request, tenant_ctx, agent_id=None, eval_suite_id=body.eval_suite_id
+        )
     # FIX 6: use list_async (DB-backed) for accurate cross-replica limit check
     from app.tenancy.limits import check_agent_limit
 
@@ -893,6 +897,15 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
         raise HTTPException(
             status_code=422,
             detail="fully-autonomous mode requires eval_suite_id",
+        )
+    # Becoming fully-autonomous (or changing the suite that vouches for it)
+    # requires the suite's latest completed run to pass the rollout gate.
+    if new_autonomy == "fully-autonomous" and (
+        current.get("autonomy_mode") != "fully-autonomous"
+        or new_eval_suite != current.get("eval_suite_id")
+    ):
+        await _enforce_rollout_gate(
+            request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite)
         )
 
     # Build update dict (only non-None fields)
@@ -1451,14 +1464,66 @@ async def exchange_agent_token(
     return {"token": token, "expires_at": exp, "token_type": "Bearer"}
 
 
+async def _rollout_gate_report(
+    request: Request,
+    tenant_ctx: TenantContext,
+    *,
+    agent_id: str | None,
+    eval_suite_id: str | None,
+    min_pass_rate: float | None = None,
+) -> dict[str, Any]:
+    """The rollout-gate report for *eval_suite_id*; 503 when it cannot be computed."""
+    from app.intelligence.eval_suite import ROLLOUT_MIN_PASS_RATE, check_agent_rollout_gate
+
+    try:
+        return await check_agent_rollout_gate(
+            agent_id=agent_id,
+            eval_suite_id=eval_suite_id,
+            tenant_id=tenant_ctx.tenant_id,
+            db=getattr(request.app.state, "db_session_factory", None),
+            min_pass_rate=ROLLOUT_MIN_PASS_RATE if min_pass_rate is None else min_pass_rate,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "ROLLOUT_GATE_UNAVAILABLE",
+                "message": "The rollout gate could not be evaluated; try again.",
+            },
+        ) from exc
+
+
+async def _enforce_rollout_gate(
+    request: Request, tenant_ctx: TenantContext, *, agent_id: str | None, eval_suite_id: str
+) -> None:
+    """Refuse (409, with the gate report) to make an agent fully-autonomous on a failing suite."""
+    report = await _rollout_gate_report(
+        request, tenant_ctx, agent_id=agent_id, eval_suite_id=eval_suite_id
+    )
+    if not report["gate_passed"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ROLLOUT_GATE_FAILED",
+                "message": f"Rollout gate failed: {report['reason']}",
+                "gate": report,
+            },
+        )
+
+
 @router.get("/{agent_id}/rollout-gate")
 async def check_rollout_gate(
     request: Request,
     agent_id: str,
     eval_suite_id: str = "",
-    min_pass_rate: float = 0.8,
+    min_pass_rate: float = Query(default=0.8, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
-    """Check if an agent meets the eval pass rate required for production rollout."""
+    """Whether the agent's eval suite passes well enough for fully-autonomous rollout.
+
+    Reads the named suite's (default: the agent's attached suite) latest
+    completed run. The same check is enforced when an agent is created as, or
+    switched to, fully-autonomous.
+    """
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
     agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
@@ -1467,29 +1532,15 @@ async def check_rollout_gate(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
-
-    db = getattr(store, "_db", None)
-    if db is None:
-        return {
-            "gate_passed": False,
-            "reason": "No database available. Connect a DB to use the rollout gate.",
-            "run_count": 0,
-            "pass_rate": 0.0,
-            "avg_score": 0.0,
-            "agent_id": agent_id,
-        }
-
-    from app.intelligence.eval_suite import check_agent_rollout_gate
-
-    result = await check_agent_rollout_gate(
+    report = await _rollout_gate_report(
+        request,
+        tenant_ctx,
         agent_id=agent_id,
-        eval_suite_id=eval_suite_id or agent.get("eval_suite_id", ""),
-        tenant_id=tenant_ctx.tenant_id,
-        db=db,
+        eval_suite_id=eval_suite_id or agent.get("eval_suite_id") or "",
         min_pass_rate=min_pass_rate,
     )
-    result["agent_id"] = agent_id
-    return result
+    report["agent_id"] = agent_id
+    return report
 
 
 @router.get("/{agent_id}/readiness")

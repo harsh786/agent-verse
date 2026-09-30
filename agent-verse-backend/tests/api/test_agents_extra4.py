@@ -1087,7 +1087,7 @@ def test_exchange_token_invalid_jwt_no_exp() -> None:
 # ---------------------------------------------------------------------------
 
 def test_rollout_gate_no_db() -> None:
-    """Lines 1220-1228: rollout gate returns gate_passed=False with no DB."""
+    """Without an attached eval suite the rollout gate is closed (and says why)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     agent = _create_agent(client)
 
@@ -1095,7 +1095,7 @@ def test_rollout_gate_no_db() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["gate_passed"] is False
-    assert "No database available" in body["reason"]
+    assert "eval suite" in body["reason"].lower()
 
 
 def test_rollout_gate_agent_not_found() -> None:

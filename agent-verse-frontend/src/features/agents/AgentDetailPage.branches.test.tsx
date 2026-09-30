@@ -196,4 +196,49 @@ describe('AgentDetailPage branches', () => {
     expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.getByText(/Enough successful runs/i)).toBeInTheDocument();
   });
+
+  test('rollout gate tab names the eval suite and the threshold it was held to', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/rollout-gate'))
+        return json({
+          gate_passed: false, pass_rate: 0.6, run_count: 3, eval_suite_id: 'suite-regress',
+          min_pass_rate_required: 0.8, reason: 'Latest run of eval suite suite-regress: pass rate 60.0% is below the 80.0% threshold.',
+        });
+      if (url.includes('/goals')) return json({ goals: [] });
+      if (url.includes('/connectors') || url.includes('/credentials')) return json([]);
+      return json(AGENT);
+    });
+    renderPage();
+    await screen.findByTestId('agent-name');
+    await userEvent.click(screen.getByRole('tab', { name: /rollout gate/i }));
+    expect(await screen.findByText(/Gate blocked/i)).toBeInTheDocument();
+    expect(screen.getByTestId('rollout-suite')).toHaveTextContent('suite-regress');
+    expect(screen.getByText('Threshold')).toBeInTheDocument();
+    expect(screen.getByText('80%')).toBeInTheDocument();
+  });
+
+  test('switching to fully-autonomous surfaces the 409 rollout-gate refusal', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/agents/agent-001') && method === 'PUT')
+        return json({
+          detail: {
+            code: 'ROLLOUT_GATE_FAILED',
+            message: 'Rollout gate failed: Eval suite suite-x has no completed run.',
+            gate: { gate_passed: false, eval_suite_id: 'suite-x', min_pass_rate_required: 0.8 },
+          },
+        }, 409);
+      if (url.includes('/goals')) return json({ goals: [] });
+      if (url.includes('/connectors') || url.includes('/credentials') || url.includes('/readiness')) return json([]);
+      return json(AGENT);
+    });
+    renderPage();
+    await screen.findByTestId('agent-name');
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    await userEvent.selectOptions(screen.getByDisplayValue('supervised'), 'fully-autonomous');
+    await userEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no completed run/i);
+  });
 });
