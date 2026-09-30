@@ -28,6 +28,7 @@ It exposes the two methods Stage 6 needs:
 
 from __future__ import annotations
 
+import bisect
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -169,17 +170,42 @@ _RULES: tuple[_Rule, ...] = (
         ),
         group=1,
     ),
-    # Phones last: E.164 / Indian mobile / North-American formats.
+    # Phones last: E.164 / Indian mobile / North-American formats. Whether a
+    # match really is a phone number also depends on its context — see
+    # _phone_ok (a bare digit run is an order / part number unless the text
+    # around it says it is a phone number).
     _Rule(
         "PHONE",
         _rx(
             r"(?<![\w+])(?:\+\d{1,3}[\s.-]?)?(?:\(\d{2,4}\)[\s.-]?)?"
             r"\d{2,5}(?:[\s.-]?\d{3,5}){1,2}(?![\w-])"
         ),
-        lambda v: 10 <= len(_digits(v)) <= 15
-        and (v.lstrip().startswith(("+", "(")) or _digits(v)[0] in "6789"),
+        lambda v: 10 <= len(_digits(v)) <= 15,
     ),
 )
+
+_PHONE_CONTEXT = re.compile(
+    r"\b(?:phone|tel|telephone|mobile|mob|cell|call|whatsapp|sms|text|fax|contact|ph)\b\W{0,3}"
+    r"(?:\w+\W{1,3}){0,2}$",
+    re.IGNORECASE,
+)
+
+
+def _phone_ok(text: str, start: int, value: str) -> bool:
+    """A formatted number (``+``/``(`` prefix, a 3-3-4 North-American or 5-5
+    Indian-mobile grouping) is a phone number; anything else only with phone
+    context before it
+    ("Call 9876543210", "Mobile: 98765..."). The rule used to redact every bare
+    digit run starting 6-9, corrupting order and part numbers."""
+    stripped = value.strip()
+    if stripped.startswith(("+", "(")):
+        return True
+    if re.fullmatch(r"\d{3}[\s.-]\d{3}[\s.-]\d{4}", stripped):
+        return True  # North-American 415-555-2671
+    digits = _digits(stripped)
+    if re.search(r"\d[\s.-]\d", stripped) and len(digits) == 10 and digits[0] in "6789":
+        return True  # Indian mobile 98765 43210
+    return bool(_PHONE_CONTEXT.search(text[max(0, start - 40) : start]))
 
 
 @dataclass(frozen=True)
@@ -198,26 +224,42 @@ class RegexPIIAnalyzer:
         return self._find(text)
 
     def redact(self, text: str) -> str:
-        """Return *text* with every identifier replaced by ``[REDACTED:<CATEGORY>]``."""
-        out = text
-        for f in sorted(self._find(text), key=lambda f: f.start, reverse=True):
-            out = f"{out[: f.start]}[REDACTED:{f.category}]{out[f.end :]}"
-        return out
+        """Return *text* with every identifier replaced by ``[REDACTED:<CATEGORY>]``.
+
+        One pass over the sorted findings (findings never overlap). It used to
+        rebuild the whole string once per finding — O(len * findings).
+        """
+        parts: list[str] = []
+        cursor = 0
+        for f in sorted(self._find(text), key=lambda f: f.start):
+            parts.append(text[cursor : f.start])
+            parts.append(f"[REDACTED:{f.category}]")
+            cursor = f.end
+        parts.append(text[cursor:])
+        return "".join(parts)
 
     @staticmethod
     def _find(text: str) -> list[PIIFinding]:
-        taken: list[tuple[int, int]] = []
+        # Disjoint claimed spans kept sorted by start: an overlap check is two
+        # neighbour comparisons (it used to scan every earlier finding).
+        starts: list[int] = []
+        ends: list[int] = []
         findings: list[PIIFinding] = []
         for rule in _RULES:
             for m in rule.pattern.finditer(text):
                 start, end = m.span(rule.group)
                 if start < 0:
                     continue
-                if any(start < e and end > s for s, e in taken):
+                i = bisect.bisect_right(starts, start)
+                if (i > 0 and ends[i - 1] > start) or (i < len(starts) and starts[i] < end):
                     continue  # already covered by a more specific identifier
-                if rule.validator is not None and not rule.validator(m.group(rule.group)):
+                value = m.group(rule.group)
+                if rule.validator is not None and not rule.validator(value):
                     continue
-                taken.append((start, end))
+                if rule.category == "PHONE" and not _phone_ok(text, start, value):
+                    continue
+                starts.insert(i, start)
+                ends.insert(i, end)
                 findings.append(PIIFinding(rule.category, start, end))
         return findings
 
