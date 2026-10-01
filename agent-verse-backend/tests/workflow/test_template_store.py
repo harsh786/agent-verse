@@ -42,6 +42,21 @@ def test_get_nonexistent_raises(store: SystemTemplateStore) -> None:
         store.get("this-does-not-exist")
 
 
+def test_list_all_returns_every_template_as_dicts(store: SystemTemplateStore) -> None:
+    """TEMPLATES-LIST-ALL: the gallery/marketplace feed WorkflowService reads."""
+    items = store.list_all()
+    assert {t["slug"] for t in items} == set(store.all_slugs())
+    scores = [t["popularity_score"] for t in items]
+    assert scores == sorted(scores, reverse=True)
+    assert all(t["definition"] for t in items)
+
+
+def test_get_by_slug(store: SystemTemplateStore) -> None:
+    got = store.get_by_slug("kyc-automation")
+    assert got is not None and got["slug"] == "kyc-automation"
+    assert store.get_by_slug("this-does-not-exist") is None
+
+
 def test_list_no_filter_returns_all(store: SystemTemplateStore) -> None:
     items, total = store.list()
     assert total == 26

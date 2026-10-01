@@ -111,6 +111,16 @@ class SystemTemplateStore:
         start = (page - 1) * per_page
         return items[start : start + per_page], total
 
+    def list_all(self) -> list[dict[str, Any]]:
+        """Every template as a dict (most popular first) — the gallery/marketplace feed."""
+        items = sorted(self._load().values(), key=lambda t: t.popularity_score, reverse=True)
+        return [t.to_dict() for t in items]
+
+    def get_by_slug(self, slug: str) -> dict[str, Any] | None:
+        """One template as a dict, or ``None`` when no template has that slug."""
+        template = self._load().get(slug)
+        return template.to_dict() if template is not None else None
+
     def categories(self) -> list[dict[str, Any]]:
         """Return distinct categories with item counts."""
         catalog = self._load()

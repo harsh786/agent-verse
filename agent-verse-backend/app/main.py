@@ -1763,7 +1763,9 @@ def create_app(
                 app.state.workflow_runner = _wf_runner_db
                 if _workflow_store is not None:
                     app.state.workflow_service = _WFService(
-                        _workflow_store, run_store=_wf_run_store
+                        _workflow_store,
+                        run_store=_wf_run_store,
+                        template_store=getattr(app.state, "template_store_we", None),
                     )
                 # WS-3: rebind the HITL resume callback to the DB/Celery-backed
                 # runner that just replaced the in-memory one — otherwise an
@@ -3087,7 +3089,9 @@ def create_app(
         # workflow_service: wraps workflow_store with full router-compatible interface
         from app.workflow.service import WorkflowService as _WorkflowService
 
-        app.state.workflow_service = _WorkflowService(app.state.workflow_store)
+        app.state.workflow_service = _WorkflowService(
+            app.state.workflow_store, template_store=_system_template_store
+        )
         app.state.workflow_runner = _wf_runner
         app.state.workflow_compiler = _wf_compiler
         app.state.hitl_workflow_gateway = _hitl_wf_gateway

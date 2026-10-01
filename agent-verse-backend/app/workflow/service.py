@@ -151,16 +151,29 @@ def diff_definitions(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]
 class WorkflowService:
     """Full-featured workflow service used by app/workflow/router.py."""
 
-    def __init__(self, store: Any, run_store: Any | None = None) -> None:
+    def __init__(
+        self, store: Any, run_store: Any | None = None, template_store: Any | None = None
+    ) -> None:
         """
         Args:
             store: _WorkflowStore instance from app.api.workflows (already on
                    app.state.workflow_store). Provides create/list/get/update/delete.
             run_store: WorkflowRunStore (PostgresWorkflowRunStore) for run/step
                    queries. When ``None`` the run-query methods return empty results.
+            template_store: SystemTemplateStore serving the template gallery and
+                   marketplace. ``None`` = the bundled YAML catalog.
         """
         self._store = store
         self._run_store = run_store
+        self._template_store = template_store
+
+    def _templates(self) -> Any:
+        """The system template catalog (static YAML shipped with the app)."""
+        if self._template_store is None:
+            from app.workflow.template_store import SystemTemplateStore
+
+            self._template_store = SystemTemplateStore()
+        return self._template_store
 
     # ── Basic CRUD (delegated to _WorkflowStore) ─────────────────────────────
 
@@ -693,33 +706,23 @@ class WorkflowService:
         page: int = 1,
         per_page: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Return workflow templates from SystemTemplateStore if wired."""
-        from app.main import app as _app
+        """Return the system workflow templates (most popular first).
 
-        template_store = getattr(getattr(_app, "state", None), "template_store_we", None)
-        if template_store is None:
-            return [], 0
-        try:
-            all_templates = await template_store.list_all()
-            if category:
-                all_templates = [t for t in all_templates if t.get("category") == category]
-            total = len(all_templates)
-            start = (page - 1) * per_page
-            return all_templates[start : start + per_page], total
-        except Exception as exc:
-            _log.warning("workflow.service.list_templates_failed", error=str(exc))
-            return [], 0
+        Used to look the store up on the global ``app.main.app`` and call a
+        ``list_all()`` that did not exist; the swallowed AttributeError made the
+        gallery always empty. A broken catalog now raises instead of answering
+        an empty page.
+        """
+        all_templates: list[dict[str, Any]] = self._templates().list_all()
+        if category:
+            all_templates = [t for t in all_templates if t.get("category") == category]
+        total = len(all_templates)
+        start = (page - 1) * per_page
+        return all_templates[start : start + per_page], total
 
     async def get_template(self, slug: str) -> dict[str, Any] | None:
-        from app.main import app as _app
-
-        template_store = getattr(getattr(_app, "state", None), "template_store_we", None)
-        if template_store is None:
-            return None
-        try:
-            return await template_store.get_by_slug(slug)
-        except Exception:
-            return None
+        template: dict[str, Any] | None = self._templates().get_by_slug(slug)
+        return template
 
     async def instantiate_template(
         self,
@@ -731,9 +734,12 @@ class WorkflowService:
         template = await self.get_template(slug)
         if not template:
             raise ValueError(f"Template '{slug}' not found")
+        # The router passes the request body as ``overrides``; honour its name.
+        overrides = kwargs.get("overrides") or {}
+        override_name = overrides.get("name") if isinstance(overrides, dict) else None
         return await self.create(
             tenant_id=tenant_id,
-            name=name or template.get("name", slug),
+            name=name or override_name or template.get("name", slug),
             description=template.get("description", ""),
             definition=template.get("definition", {}),
             labels=template.get("labels", []),
@@ -1017,16 +1023,7 @@ class WorkflowService:
         """The workflow marketplace is the gallery of installable system
         templates. Backed by the real SystemTemplateStore; filtered by category
         and free-text ``q`` (name/description/tags)."""
-        from app.main import app as _app
-
-        template_store = getattr(getattr(_app, "state", None), "template_store_we", None)
-        if template_store is None:
-            return [], 0
-        try:
-            templates = await template_store.list_all()
-        except Exception as exc:  # pragma: no cover - defensive
-            _log.warning("workflow.service.marketplace_list_failed", error=str(exc))
-            return [], 0
+        templates: list[dict[str, Any]] = self._templates().list_all()
         if category:
             templates = [t for t in templates if t.get("category") == category]
         if q:
