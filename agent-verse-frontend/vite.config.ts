@@ -111,6 +111,11 @@ export default defineConfig(({ command, mode }) => {
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     exclude: ["e2e/**", "node_modules/**", "**/dist/**"],
+    // Smoke tests dynamically import whole feature pages; the first import in a
+    // file transforms the page's module graph, which exceeds the 5 s default
+    // when the machine is busy (parallel suites, agents). Assertions keep their
+    // own short waitFor timeouts.
+    testTimeout: 30_000,
   },
   };
 });
