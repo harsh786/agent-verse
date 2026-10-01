@@ -241,7 +241,7 @@ class TestToolReliabilityDBPaths:
         """Lines 74-81: DB returns a row → parse it."""
         from app.memory.tool_reliability import ToolReliabilityStore
 
-        row = (8, 2, 500.0, datetime.now(UTC))  # success, failure, latency, last_used_at
+        row = (8, 2, 500.0, datetime.now(UTC), None, None)  # +blacklisted_at, blacklist_reason
         db = _MockDB(rows=[row])
         store = ToolReliabilityStore(db_session_factory=db)
         result = await store.get_reliability(tenant_id="t1", tool_name="api_tool")
@@ -252,7 +252,8 @@ class TestToolReliabilityDBPaths:
 
     @pytest.mark.asyncio
     async def test_get_reliability_db_no_row_falls_to_cache(self):
-        """DB returns no row → falls back to in-memory cache."""
+        """DB is authoritative when wired (MEM-01): no row means no recorded calls,
+        whatever this process's cache holds."""
         from app.memory.tool_reliability import ToolReliabilityStore
 
         db = _MockDB(rows=[])  # no rows
@@ -265,7 +266,7 @@ class TestToolReliabilityDBPaths:
             "total_latency_ms": 400.0,
         }
         result = await store.get_reliability(tenant_id="t1", tool_name="my_tool")
-        assert result["success_count"] == 3
+        assert result["success_count"] == 0
 
     @pytest.mark.asyncio
     async def test_get_unreliable_tools_db_returns_rows(self):
@@ -273,8 +274,8 @@ class TestToolReliabilityDBPaths:
         from app.memory.tool_reliability import ToolReliabilityStore
 
         rows = [
-            ("flaky_webhook", 3, 7, 0.3),  # 30% success rate
-            ("slow_api", 4, 6, 0.4),        # 40% success rate
+            ("flaky_webhook", 3, 7, 300.0, datetime.now(UTC), None, None),  # 30% success
+            ("slow_api", 4, 6, 400.0, datetime.now(UTC), None, None),  # 40% success
         ]
         db = _MockDB(rows=rows)
         store = ToolReliabilityStore(db_session_factory=db)

@@ -883,7 +883,15 @@ async def test_readiness_sanitizes_disconnected_probe() -> None:
     assert "private-host" not in readiness.reason
 
 
-async def test_api_discovery_exposes_exactly_ready_core_capabilities() -> None:
+async def test_api_discovery_exposes_exactly_ready_core_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ColBERT readiness depends on whether this machine has the checkpoint cached
+    # (the API/worker prefetch downloads it); pin "not cached" so the set is stable.
+    def _no_cached_checkpoint(**_: object) -> str:
+        raise FileNotFoundError("checkpoint not cached")
+
+    monkeypatch.setattr("app.rag.readiness.snapshot_download", _no_cached_checkpoint)
     tenant = TenantContext(
         tenant_id="tenant-1", api_key_id="key-1", plan="enterprise"
     )

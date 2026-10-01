@@ -382,10 +382,10 @@ def test_get_experiments() -> None:
 
 def test_get_suggestions() -> None:
     optimizer = MagicMock()
-    optimizer.list_suggestions.return_value = []
+    optimizer.alist_suggestions = AsyncMock(return_value=[])
     client = TestClient(_make_app(self_optimizer=optimizer), raise_server_exceptions=False)
     resp = client.get("/intelligence/suggestions", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 200
 
 
 def test_apply_suggestion() -> None:

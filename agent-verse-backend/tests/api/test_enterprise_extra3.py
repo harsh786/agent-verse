@@ -594,7 +594,7 @@ def test_list_suggestions() -> None:
     suggestion.applied = False
 
     opt = MagicMock()
-    opt.list_suggestions = MagicMock(return_value=[suggestion])
+    opt.alist_suggestions = AsyncMock(return_value=[suggestion])
 
     client = TestClient(_make_app(self_optimizer=opt), raise_server_exceptions=False)
     resp = client.get("/intelligence/suggestions", headers=_headers())
@@ -619,7 +619,7 @@ def test_apply_suggestion_not_found() -> None:
 def test_reject_suggestion_not_found() -> None:
     """reject_suggestion → 404 when not found."""
     opt = MagicMock()
-    opt.reject_suggestion = MagicMock(return_value=False)
+    opt.areject_suggestion = AsyncMock(return_value=False)
 
     client = TestClient(_make_app(self_optimizer=opt), raise_server_exceptions=False)
     resp = client.post("/intelligence/suggestions/bad-id/reject", headers=_headers())
@@ -1398,7 +1398,7 @@ def test_list_suggestions_applied_filter() -> None:
     sg.applied = True
 
     opt = MagicMock()
-    opt.list_suggestions = MagicMock(return_value=[sg])
+    opt.alist_suggestions = AsyncMock(return_value=[sg])
 
     client = TestClient(_make_app(self_optimizer=opt), raise_server_exceptions=False)
     resp = client.get("/intelligence/suggestions?applied=true", headers=_headers())
