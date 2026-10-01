@@ -546,6 +546,16 @@ def _scrub_surrogates(value: Any) -> Any:
     return value
 
 
+def _chat_byok_resolver(app_state: Any) -> Any:
+    """tenant_id -> the tenant's own (BYOK) chat provider, None when it has none."""
+    from app.providers.tenant_provider import resolve_tenant_byok_provider
+
+    async def _resolve(tenant_id: str) -> Any:
+        return await resolve_tenant_byok_provider(app_state, tenant_id)
+
+    return _resolve
+
+
 def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(
@@ -1491,6 +1501,7 @@ def create_app(
                 app.state.chat_service.attach_engine(
                     goal_service=_goal_svc_with_db,
                     answer_generator=resolve_llm_provider(app.state),
+                    provider_resolver=_chat_byok_resolver(app.state),
                     repository=_chat_repo,
                     personalization_store=PostgresPersonalizationStore(db_factory),
                     identity_service=_identity_svc,
@@ -2685,6 +2696,7 @@ def create_app(
         app.state.chat_service.attach_engine(
             goal_service=_goal_svc,
             answer_generator=resolve_llm_provider(app.state),
+            provider_resolver=_chat_byok_resolver(app.state),
         )
     from app.coordination.pattern_runs.goal_bridge import CoordinationGoalBridge
     from app.orchestration.graph_factory import GraphFactory

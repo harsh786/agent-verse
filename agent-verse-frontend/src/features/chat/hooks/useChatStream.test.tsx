@@ -57,3 +57,17 @@ describe('useChatStream accumulation', () => {
     expect(result.current.events).toHaveLength(0);
   });
 });
+
+describe('useChatStream budget refusal', () => {
+  it('names an exhausted LLM budget instead of a generic stream error', async () => {
+    const { LLM_BUDGET_EXHAUSTED_MESSAGE } = await import('@/lib/api/client');
+    const { result } = renderHook(() => useChatStream('s1'));
+    act(() => result.current.startStream('m1'));
+    await waitFor(() => expect(MockES.instances).toHaveLength(1));
+    act(() => MockES.instances[0].emit({
+      type: 'error', code: 'llm_budget_exhausted', message: 'LLM budget exhausted (x)',
+    }));
+    expect(result.current.error).toBe(LLM_BUDGET_EXHAUSTED_MESSAGE);
+    expect(result.current.isStreaming).toBe(false);
+  });
+});

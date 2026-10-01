@@ -108,10 +108,16 @@ def _fallback_decompose(message: str) -> list[Action]:
     return [_classify_clause(p) for p in parts]
 
 
-async def decompose(message: str, *, llm: Any = None) -> list[Action]:
-    """Decompose *message* into an ordered list of actions (LLM-first, regex fallback)."""
+async def decompose(
+    message: str, *, llm: Any = None, tenant_id: str | None = None
+) -> list[Action]:
+    """Decompose *message* into an ordered list of actions (LLM-first, regex fallback).
+
+    The LLM call is charged to ``tenant_id`` (a budget refusal falls back to the
+    deterministic split, spending nothing).
+    """
     if llm is not None:
-        actions = await _llm_decompose(message, llm)
+        actions = await _llm_decompose(message, llm, tenant_id=tenant_id)
         if actions:
             return actions
     return _fallback_decompose(message)
@@ -128,18 +134,24 @@ _LLM_SYSTEM = (
 )
 
 
-async def _llm_decompose(message: str, llm: Any) -> list[Action] | None:
+async def _llm_decompose(
+    message: str, llm: Any, *, tenant_id: str | None = None
+) -> list[Action] | None:
     from app.providers.base import CompletionRequest, Message
+    from app.providers.guarded_completion import complete_decision
 
     try:
-        resp = await llm.complete(
+        resp = await complete_decision(
+            llm,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=_LLM_SYSTEM),
                     Message(role="user", content=message),
                 ],
                 model="", max_tokens=400, temperature=0.0,
-            )
+            ),
+            role="chat_understanding",
+            tenant_id=tenant_id,
         )
         raw = (getattr(resp, "content", "") or "").strip()
     except Exception:

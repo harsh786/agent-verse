@@ -102,6 +102,31 @@ def _normalise(name: str) -> str:
     return _ALIASES.get(key, key)
 
 
+async def resolve_tenant_byok_provider(app_state: Any, tenant_id: str) -> Any | None:
+    """The tenant's own LLM provider (BYOK), ``None`` when it has none configured.
+
+    Order: the pinned ``_llm_provider_override``, else the tenant's config read
+    STRICTLY from the durable store. Raises ``LLMConfigReadError`` when the config
+    cannot be read and :class:`TenantProviderError` when it exists but is unusable:
+    callers must refuse rather than fall back to platform spend.
+    """
+    from app.services.llm_config_store import get_llm_config_store
+
+    override = getattr(app_state, "_llm_provider_override", None)
+    if override is not None:
+        return override
+    store = getattr(app_state, "llm_config_store", None) or get_llm_config_store()
+    if store is None:
+        return None
+    try:
+        cfg = await store.get_config(tenant_id, strict=True)
+    except TypeError:  # a store without strict reads (tests/fakes)
+        cfg = await store.get_config(tenant_id)
+    if not cfg:
+        return None
+    return build_tenant_provider(dict(cfg), tenant_id=tenant_id)
+
+
 def build_tenant_provider(
     cfg: dict[str, Any] | None,
     *,

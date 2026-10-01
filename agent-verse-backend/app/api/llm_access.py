@@ -25,34 +25,25 @@ async def tenant_llm_provider(
     request: Request, tenant: Any, *, fallback_attr: str = "_app_provider"
 ) -> Any:
     """The tenant's provider (BYOK), else ``app.state.<fallback_attr>`` (may be None)."""
-    from app.providers.tenant_provider import TenantProviderError, build_tenant_provider
-    from app.services.llm_config_store import LLMConfigReadError, get_llm_config_store
+    from app.providers.tenant_provider import (
+        TenantProviderError,
+        resolve_tenant_byok_provider,
+    )
+    from app.services.llm_config_store import LLMConfigReadError
 
     state = request.app.state
-    override = getattr(state, "_llm_provider_override", None)
-    if override is not None:
-        return override
-    store = getattr(state, "llm_config_store", None) or get_llm_config_store()
-    cfg: Any = None
-    if store is not None:
-        try:
-            try:
-                cfg = await store.get_config(tenant.tenant_id, strict=True)
-            except TypeError:  # a store without strict reads (tests/fakes)
-                cfg = await store.get_config(tenant.tenant_id)
-        except LLMConfigReadError as exc:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "Your LLM provider configuration could not be read; try again shortly.",
-            ) from exc
-    if cfg:
-        try:
-            provider = build_tenant_provider(dict(cfg), tenant_id=tenant.tenant_id)
-        except TenantProviderError as exc:
-            raise HTTPException(
-                422,  # (the starlette constant name is deprecated)
-                f"Your LLM provider configuration is unusable: {exc}",
-            ) from exc
-        if provider is not None:
-            return provider
+    try:
+        provider = await resolve_tenant_byok_provider(state, tenant.tenant_id)
+    except LLMConfigReadError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Your LLM provider configuration could not be read; try again shortly.",
+        ) from exc
+    except TenantProviderError as exc:
+        raise HTTPException(
+            422,  # (the starlette constant name is deprecated)
+            f"Your LLM provider configuration is unusable: {exc}",
+        ) from exc
+    if provider is not None:
+        return provider
     return getattr(state, fallback_attr, None)

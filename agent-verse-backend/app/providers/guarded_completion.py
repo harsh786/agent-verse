@@ -246,6 +246,46 @@ async def _charge(
         raise DecisionBudgetExceededError("tenant LLM budget exhausted by this call")
 
 
+async def preflight_decision(
+    *, role: str, tenant_ctx: Any = None, tenant_id: str | None = None
+) -> None:
+    """Budget preflight for an LLM call that cannot go through :func:`complete_decision`.
+
+    For streamed answers (chat): refuse BEFORE any token is generated when the
+    tenant (or goal) is out of budget or the call cannot be attributed. Pair it
+    with :func:`charge_streamed` after the stream.
+    """
+    del role
+    scope = _scope.get()
+    tenant = _tenant(tenant_ctx, tenant_id)
+    _require_attribution(scope, tenant)
+    await _preflight(scope, tenant)
+
+
+async def charge_streamed(
+    resp: Any,
+    *,
+    role: str,
+    model: str = "",
+    tenant_ctx: Any = None,
+    tenant_id: str | None = None,
+    goal_id: str | None = None,
+) -> None:
+    """Charge a streamed call's usage (``resp``: ``input_tokens`` / ``output_tokens`` /
+    ``model``) to the goal / tenant budget and ledger, like :func:`complete_decision`.
+
+    Raises :class:`DecisionBudgetExceededError` when this call exhausted the budget.
+    """
+    await _charge(
+        _scope.get(),
+        _tenant(tenant_ctx, tenant_id),
+        resp=resp,
+        role=role,
+        model=model,
+        goal_id=goal_id,
+    )
+
+
 class GuardedDecisionProvider:
     """Provider proxy whose every ``complete`` goes through :func:`complete_decision`.
 

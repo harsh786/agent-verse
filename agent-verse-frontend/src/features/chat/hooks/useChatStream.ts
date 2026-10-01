@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { chatApi } from '@/lib/api/chat';
+import { LLM_BUDGET_EXHAUSTED_MESSAGE } from '@/lib/api/client';
 import type { SSEEvent } from '../types/chat.types';
 
 export interface StreamState {
@@ -132,7 +133,9 @@ export function useChatStream(
             ...prev,
             isStreaming: false,
             reconnecting: false,
-            error: (event.message as string) ?? 'Stream error',
+            error: event.code === 'llm_budget_exhausted'
+              ? LLM_BUDGET_EXHAUSTED_MESSAGE
+              : (event.message as string) ?? 'Stream error',
             currentEvent: event,
             events,
           }));

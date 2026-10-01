@@ -17,6 +17,7 @@ import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 from app.chat.context import ConversationContext
@@ -419,6 +420,10 @@ class ChatService:
         # real AgentGraph; ``answer_generator`` produces real QA answers.
         self._goal_service = goal_service
         self._answer_generator = answer_generator
+        # Optional async hook: tenant_id -> the tenant's own (BYOK) provider or
+        # None. Raises when a BYOK config exists but cannot be read/used, so a
+        # turn fails closed instead of silently spending on the platform key.
+        self._provider_resolver: Any = None
         # Optional async hook: (query, tenant_id) -> list[str] of relevant memories,
         # recalled per QA turn and injected into the LLM context (Phase 1).
         self._memory_recall = memory_recall
@@ -754,6 +759,7 @@ class ChatService:
         personalization_store: Any = None,
         identity_service: Any = None,
         channel_deliver: Any = None,
+        provider_resolver: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -785,6 +791,16 @@ class ChatService:
             self._identity = identity_service
         if channel_deliver is not None:
             self._channel_deliver = channel_deliver
+        if provider_resolver is not None:
+            self._provider_resolver = provider_resolver
+
+    async def _qa_provider(self, tenant_id: str) -> Any:
+        """The provider a tenant's chat LLM calls use: its BYOK one, else the platform's."""
+        if self._provider_resolver is not None:
+            byok = await self._provider_resolver(tenant_id)
+            if byok is not None:
+                return byok
+        return self._answer_generator
 
     @staticmethod
     def _principal_id(tenant_id: str, user_id: str | None = None) -> str:
@@ -1304,7 +1320,9 @@ class ChatService:
             # keep only the recent window verbatim (replaces the static placeholder).
             old = history[: -self._ctx.MAX_TURNS]
             recent = history[-self._ctx.MAX_TURNS :]
-            summary = await self._summarize_history(old, session_id=session_id)
+            summary = await self._summarize_history(
+                old, session_id=session_id, tenant_id=tenant_id
+            )
             turns = self._ctx.build_for_qa(recent, session_system_prompt=system_prompt)
             if summary:
                 turns = [
@@ -1368,11 +1386,45 @@ class ChatService:
         request = CompletionRequest(messages=chat_msgs, model="", max_tokens=1024)
 
         yield sse_event(ChatEventType.MESSAGE_STARTED, session_id=session_id, message_id=message_id)
+        from app.providers.guarded_completion import (
+            DecisionBudgetExceededError,
+            charge_streamed,
+            complete_decision,
+            preflight_decision,
+        )
+
+        # PROV-02: the tenant's own provider (BYOK) and a budget preflight BEFORE
+        # any token is generated; chat used to be free, unmetered platform spend.
+        try:
+            generator = await self._qa_provider(tenant_id)
+            await preflight_decision(role="chat_qa", tenant_id=tenant_id)
+        except DecisionBudgetExceededError as exc:
+            yield sse_event(
+                ChatEventType.ERROR,
+                session_id=session_id,
+                message_id=message_id,
+                code="llm_budget_exhausted",
+                message=f"LLM budget exhausted, so no answer was generated ({exc}).",
+            )
+            yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
+            return
+        except Exception as exc:  # BYOK config unreadable / unusable: never the platform key
+            _logger.warning("chat_qa_provider_unavailable", error=str(exc)[:200])
+            yield sse_event(
+                ChatEventType.ERROR,
+                session_id=session_id,
+                message_id=message_id,
+                code="llm_provider_unavailable",
+                message="Your LLM provider configuration could not be used. Please check it.",
+            )
+            yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
+            return
         parts: list[str] = []
         stall_timeout = _llm_stall_timeout_seconds()
         stalled = False
         provider_failed = False
-        streamer = getattr(self._answer_generator, "stream_complete", None)
+        streamed = False
+        streamer = getattr(generator, "stream_complete", None)
         try:
             if callable(streamer):
                 # Split reasoning-model output: chain-of-thought → collapsible
@@ -1381,6 +1433,7 @@ class ChatService:
                 # keep this SSE connection (and the client waiting on it) open
                 # forever — there is no timeout at the provider-call layer for
                 # this path (unlike the agent loop's circuit breaker).
+                streamed = True
                 source = _iter_with_stall_timeout(streamer(request), stall_timeout)
                 async for kind, chunk in _split_reasoning_stream(source):
                     if kind == "reasoning":
@@ -1393,7 +1446,14 @@ class ChatService:
             else:
                 # Provider without a streaming API — one-shot complete().
                 resp = await asyncio.wait_for(
-                    self._answer_generator.complete(request), timeout=stall_timeout
+                    complete_decision(
+                        generator,
+                        request,
+                        role="chat_qa",
+                        tenant_id=tenant_id,
+                        timeout_seconds=stall_timeout,
+                    ),
+                    timeout=stall_timeout,
                 )
                 text = getattr(resp, "content", "") or ""
                 clean = _strip_reasoning(text)
@@ -1427,6 +1487,22 @@ class ChatService:
                 message="The language model request failed. Please try again.",
             )
         answer = _strip_reasoning("".join(parts))
+        if streamed and parts:
+            # Streams carry no usage object: charge an estimate (≈4 chars/token) of
+            # the prompt and of everything generated, so the turn reaches the
+            # tenant budget and the ledger. A refusal here only stops later turns.
+            prompt_chars = sum(len(str(m.content)) for m in chat_msgs)
+            usage = SimpleNamespace(
+                model=str(getattr(generator, "_default_model", "") or ""),
+                input_tokens=max(1, prompt_chars // 4),
+                output_tokens=max(1, len("".join(parts)) // 4),
+            )
+            try:
+                await charge_streamed(usage, role="chat_qa", tenant_id=tenant_id)
+            except DecisionBudgetExceededError:
+                _logger.info("chat_qa_budget_exhausted_by_turn", session_id=session_id)
+            except Exception as exc:
+                _logger.warning("chat_qa_charge_failed", error=str(exc)[:200])
         if not provider_failed and (answer or not stalled):
             await self.asave_message(
                 session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
@@ -1434,7 +1510,11 @@ class ChatService:
         yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
 
     async def _summarize_history(
-        self, messages: list[dict[str, Any]], *, session_id: str | None = None
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        session_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> str:
         """LLM-summarize an older slice of a long conversation (Phase 1), cached.
 
@@ -1455,11 +1535,13 @@ class ChatService:
                 if prev_count == len(messages):
                     return prev_summary  # exact cache hit — nothing new to summarize
                 if 0 < prev_count < len(messages):
-                    merged = await self._merge_summary(prev_summary, messages[prev_count:])
+                    merged = await self._merge_summary(
+                        prev_summary, messages[prev_count:], tenant_id=tenant_id
+                    )
                     if merged:
                         self._rolling_summary[session_id] = (len(messages), merged)
                     return merged or prev_summary
-            summary = await self._llm_summarize(messages)
+            summary = await self._llm_summarize(messages, tenant_id=tenant_id)
             if summary:
                 self._rolling_summary[session_id] = (len(messages), summary)
             return summary
@@ -1470,14 +1552,16 @@ class ChatService:
         cached = self._summary_cache.get(cache_key)
         if cached is not None:
             return cached
-        summary = await self._llm_summarize(messages)
+        summary = await self._llm_summarize(messages, tenant_id=tenant_id)
         if summary:
             if len(self._summary_cache) >= 512:
                 self._summary_cache.pop(next(iter(self._summary_cache)), None)
             self._summary_cache[cache_key] = summary
         return summary
 
-    async def _llm_summarize(self, messages: list[dict[str, Any]]) -> str:
+    async def _llm_summarize(
+        self, messages: list[dict[str, Any]], *, tenant_id: str | None = None
+    ) -> str:
         """Raw LLM summarization of a message slice (no caching)."""
         from app.providers.base import CompletionRequest, Message
 
@@ -1498,12 +1582,19 @@ class ChatService:
             temperature=0.0,
         )
         try:
-            resp = await self._answer_generator.complete(request)
+            from app.providers.guarded_completion import complete_decision
+
+            generator = await self._qa_provider(tenant_id) if tenant_id else self._answer_generator
+            resp = await complete_decision(
+                generator, request, role="chat_summary", tenant_id=tenant_id
+            )
             return (getattr(resp, "content", "") or "").strip()
         except Exception:
             return ""
 
-    async def _merge_summary(self, prior: str, new_messages: list[dict[str, Any]]) -> str:
+    async def _merge_summary(
+        self, prior: str, new_messages: list[dict[str, Any]], *, tenant_id: str | None = None
+    ) -> str:
         """Update a running summary with only the newer messages (incremental)."""
         from app.providers.base import CompletionRequest, Message
 
@@ -1528,7 +1619,12 @@ class ChatService:
             temperature=0.0,
         )
         try:
-            resp = await self._answer_generator.complete(request)
+            from app.providers.guarded_completion import complete_decision
+
+            generator = await self._qa_provider(tenant_id) if tenant_id else self._answer_generator
+            resp = await complete_decision(
+                generator, request, role="chat_summary", tenant_id=tenant_id
+            )
             return (getattr(resp, "content", "") or "").strip()
         except Exception:
             return ""
@@ -1549,7 +1645,7 @@ class ChatService:
         ]
         if not history:
             return 0
-        summary = await self._summarize_history(history)
+        summary = await self._summarize_history(history, tenant_id=tenant_id)
         if not summary:
             return 0
         with contextlib.suppress(Exception):
@@ -1785,7 +1881,11 @@ class ChatService:
             decompose,
         )
 
-        actions = await decompose(message, llm=self._answer_generator)
+        try:
+            _understanding_llm = await self._qa_provider(tenant_id)
+        except Exception:  # BYOK unusable: deterministic understanding, no platform spend
+            _understanding_llm = None
+        actions = await decompose(message, llm=_understanding_llm, tenant_id=tenant_id)
         replies: list[str] = []
         executed: list[str] = []
         for act in actions:
