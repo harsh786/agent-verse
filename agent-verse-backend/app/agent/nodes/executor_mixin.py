@@ -16,6 +16,7 @@ from app.agent.nodes.planner_mixin import GRANTED_TOOLS_KEY
 from app.agent.prompts import (
     EXECUTOR_SYSTEM,
 )
+from app.agent.risk_classifier import assess_step_risk
 from app.agent.sanitization import (
     _EXECUTOR_CONTEXT_MAX_LENGTH,
 )
@@ -1620,12 +1621,20 @@ class ExecutorMixin:
                 _step_approved = True
                 await self._emit({"type": "approval_granted", "request_id": req_id})
 
-        # 7. HITL gate — a high-risk step (deploy/delete/prod/...) needs an explicit
-        # approval unless one was already granted for this step above. It used to
-        # be skipped when no gateway was wired, and outside supervised mode it filed
-        # a request and ran the step anyway.
-        if not _step_approved and _is_high_risk_step(step):
-            _gate7_denial = self._approval_unawaitable_error(step, "high-risk step")
+        # 7. HITL gate — a high-risk step needs an explicit approval unless one was
+        # already granted for this step above. It used to be skipped when no gateway
+        # was wired, and outside supervised mode it filed a request and ran the step
+        # anyway. Risk is classified on the step's normalised verbs and targets, the
+        # GOAL's intent and the targeted tool's risk metadata — not on the surface
+        # words a planner happened to pick ("Remove" for "delete", RW-20).
+        _gate7_risk = (
+            None
+            if _step_approved
+            else assess_step_risk(step, goal=state.goal, tool_name=tool_name)
+        )
+        if _gate7_risk is not None and _gate7_risk.high_risk:
+            _gate7_reason = f"high-risk step: {_gate7_risk.summary()}"[:300]
+            _gate7_denial = self._approval_unawaitable_error(step, _gate7_reason)
             if _gate7_denial is not None or self._hitl_gateway is None:
                 record_tool_call(tool_name, "policy", "approval_required", 0.0)
                 raise _gate7_denial or PermissionError(f"Step '{step}' requires approval.")
@@ -1636,7 +1645,14 @@ class ExecutorMixin:
                 tenant_ctx=tenant_ctx,
             )
             # Actually BLOCK until a human approves or rejects
-            await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
+            await self._emit(
+                {
+                    "type": "waiting_approval",
+                    "request_id": req_id,
+                    "action": step,
+                    "risk_reasons": list(_gate7_risk.reasons),
+                }
+            )
             approval_started = time.monotonic()
             final_status = await self._hitl_gateway.wait_for_approval(
                 req_id, tenant_ctx=tenant_ctx

@@ -263,3 +263,62 @@ def test_high_risk_vocabulary_matches_destructive_steps(step: str) -> None:
 )
 def test_high_risk_vocabulary_ignores_substring_false_positives(step: str) -> None:
     assert not _is_high_risk_step(step)
+
+
+# ── HIGH-RISK-GATE-WORDING (RW-20): rephrased / vague steps still gate ──────
+
+_RW20_GOAL = (
+    "Delete the stale staging records (env=staging and last_used before 2026) from the "
+    "demo list and report which record IDs were removed and which remain."
+)
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "Step 3: Remove those identified stale staging records from the list.",
+        "Step 3: Purge the stale entries.",
+        "Step 3: Handle the stale entries.",  # vague: gated by the goal's intent
+    ],
+)
+async def test_rephrased_destructive_step_waits_for_approval_in_supervised(step: str) -> None:
+    executor = FakeProvider(responses=["done"])
+    hitl = _spy_gateway()
+    graph = _graph(executor, hitl_gateway=hitl, autonomy_mode="supervised")
+    events = _collect(graph)
+    state = _state(step)
+    state.goal = _RW20_GOAL
+
+    await graph._execute_step(step, state, T)
+
+    hitl.wait_for_approval.assert_awaited()  # type: ignore[attr-defined]
+    waiting = [e for e in events if e.get("type") == "waiting_approval"]
+    assert waiting and waiting[0].get("action") == step
+    assert waiting[0].get("risk_reasons"), "the approval must say why the step is risky"
+
+
+@pytest.mark.parametrize("mode", NON_SUPERVISED)
+async def test_rephrased_destructive_step_is_denied_outside_supervised(mode: str) -> None:
+    executor = FakeProvider(responses=["removed"])
+    hitl = _spy_gateway()
+    graph = _graph(executor, hitl_gateway=hitl, autonomy_mode=mode)
+    step = "Step 3: Remove those identified stale staging records from the list."
+    state = _state(step)
+    state.goal = _RW20_GOAL
+
+    with pytest.raises(PermissionError, match="supervised"):
+        await graph._execute_step(step, state, T)
+    assert executor.call_history == []
+
+
+async def test_read_only_step_of_destructive_goal_runs_without_approval() -> None:
+    executor = FakeProvider(responses=["rec-101 and rec-103 are stale"])
+    hitl = _spy_gateway()
+    graph = _graph(executor, hitl_gateway=hitl, autonomy_mode="supervised")
+    step = "Step 2: Identify records where env equals staging and last_used is before 2026."
+    state = _state(step)
+    state.goal = _RW20_GOAL
+
+    await graph._execute_step(step, state, T)
+
+    hitl.wait_for_approval.assert_not_awaited()  # type: ignore[attr-defined]

@@ -9,30 +9,18 @@ import json
 import re
 from typing import Any
 
-# Constants used by helpers
-_HIGH_RISK_KEYWORDS = frozenset(
-    ("deploy", "delete", "drop", "prod", "production", "destroy", "wipe", "truncate")
-)
-_RM_COMMAND_PATTERN = re.compile(r"\brm\b")
-# The same vocabulary matched as words, not substrings: a plain ``in`` test
-# flagged "product", "productivity" and "dropdown" as high risk, and a step that
-# needs approval is now denied outside supervised mode (CORE-01), so those false
-# positives would fail ordinary goals. A keyword must start a word — underscores,
-# hyphens and camelCase still separate words, so ``github_delete_repo`` and
-# ``deleteUser`` match — and inflections (deploying, deleted, dropped) count.
-_HIGH_RISK_PATTERN = re.compile(
-    r"(?<![a-z])(?:"
-    r"deploy|delet|destroy|truncat|production"
-    r"|drop(?:s|ped|ping)?(?![a-z])"
-    r"|prod(?![a-z])"
-    r"|wip(?:e|es|ed|ing)(?![a-z])"
-    r")"
-)
-
 
 def _is_high_risk_step(step: str) -> bool:
-    lowered = step.lower()
-    return bool(_HIGH_RISK_PATTERN.search(lowered)) or bool(_RM_COMMAND_PATTERN.search(lowered))
+    """True when ``step`` needs an explicit human approval.
+
+    Delegates to the normalised verb/target classifier (``app.agent.risk_classifier``):
+    the original eight-keyword regex let a planner's rephrasing ("Remove those
+    records" for "delete") run ungated (RW-20). Words, not substrings, are
+    matched, so "product" / "dropdown" / "perform" stay benign.
+    """
+    from app.agent.risk_classifier import is_high_risk_text
+
+    return is_high_risk_text(step)
 
 
 def resolve_effective_tool_risk(

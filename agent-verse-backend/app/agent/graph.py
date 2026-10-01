@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
-import re
 import uuid
 from collections.abc import Awaitable, Callable, Hashable
 from typing import Any, cast
@@ -64,13 +63,13 @@ from app.agent.nodes.rag_mixin import RAGMixin
 from app.agent.nodes.reasoning_mixin import ReasoningMixin
 from app.agent.nodes.routing_mixin import RoutingMixin
 from app.agent.nodes.verifier_mixin import VerifierMixin
+from app.agent.risk_classifier import HIGH_RISK_VOCABULARY
 
 EventCallback = Callable[[dict[str, Any]], Awaitable[None]]
 _DEFAULT_MAX_ITERATIONS = 100
-_HIGH_RISK_KEYWORDS = frozenset(
-    ("deploy", "delete", "drop", "prod", "production", "destroy", "wipe", "truncate")
-)
-_RM_COMMAND_PATTERN = re.compile(r"\brm\b")
+# The step-gate vocabulary that is high risk on its own; the gate itself is
+# ``app.agent.risk_classifier.assess_step_risk`` (verbs + targets + goal intent).
+_HIGH_RISK_KEYWORDS = HIGH_RISK_VOCABULARY
 
 
 # GraphState and RetrievalEntryPointError now live in graph_types
