@@ -2592,6 +2592,15 @@ def create_app(
             finally:
                 await _startup.cancel_all()
                 await stop_voice_runtime()
+                # HITL rejection subscriber + Celery event bridge (Redis pub/sub).
+                _gs_stop = getattr(app.state, "goal_service", None)
+                if _gs_stop is not None and hasattr(_gs_stop, "stop_background_subscribers"):
+                    try:
+                        await _gs_stop.stop_background_subscribers()
+                    except Exception as _gs_stop_exc:
+                        logger.warning(
+                            "goal_service_subscribers_stop_failed", error=str(_gs_stop_exc)
+                        )
                 # WT-4: Stop the trigger consumers (cancel + await all tasks).
                 _tc = getattr(app.state, "trigger_consumers", None)
                 if _tc is not None:

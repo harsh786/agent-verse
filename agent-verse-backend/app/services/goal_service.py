@@ -153,6 +153,8 @@ def _agent_grants_enforced() -> bool:
 # TTL for completed/failed/cancelled goals in the in-memory cache.
 # They are safe to evict because they are already persisted in the DB.
 _COMPLETED_GOAL_TTL_SECONDS = 3600  # 1 hour
+# Delay before a crashed background Redis subscriber is restarted.
+_SUBSCRIBER_RESTART_DELAY_S = 5.0
 _EVICTION_INTERVAL_SECONDS = 60  # evict at most once every 60 seconds
 
 
@@ -634,6 +636,11 @@ class GoalService:
         self._db_tasks: set[asyncio.Future[None]] = set()
         # Background tasks set (used for Celery SSE bridge, etc.)
         self._background_tasks: set[Any] = set()
+        # HITL rejection subscriber: strongly held (a bare create_task was
+        # garbage-collected while running), restarted if it exits, cancelled by
+        # stop_background_subscribers() on shutdown.
+        self._hitl_rejection_task: asyncio.Task[None] | None = None
+        self._subscribers_stopping = False
         # Agent store reference — set externally after construction (H-4)
         self._agent_store: Any = None
         # Logger for use in methods
@@ -719,16 +726,60 @@ class GoalService:
     # ── P1.3: HITL rejection subscriber ──────────────────────────────────────
 
     def start_hitl_rejection_subscriber(self, redis_url: str) -> None:
-        """Start the HITL rejection note subscriber as a background asyncio task."""
+        """Start (once) the supervised HITL rejection note subscriber task."""
+        current = self._hitl_rejection_task
+        if current is not None and not current.done():
+            return
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                self._subscribe_hitl_rejections(redis_url),
-                name="hitl-rejection-subscriber",
-            )
-            _svc_logger.info("hitl_rejection_subscriber_scheduled", redis_url=redis_url[:30])
+            asyncio.get_running_loop()
         except RuntimeError:
             _svc_logger.warning("hitl_rejection_subscriber_no_loop")
+            return
+        self._subscribers_stopping = False
+        self._spawn_hitl_rejection_task(redis_url)
+        _svc_logger.info("hitl_rejection_subscriber_scheduled", redis_url=redis_url[:30])
+
+    def _spawn_hitl_rejection_task(self, redis_url: str) -> None:
+        task = asyncio.get_running_loop().create_task(
+            self._subscribe_hitl_rejections(redis_url), name="hitl-rejection-subscriber"
+        )
+        self._hitl_rejection_task = task
+        self._background_tasks.add(task)
+
+        def _on_done(done: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done)
+            if self._subscribers_stopping or done.cancelled():
+                return
+            exc = done.exception()
+            _svc_logger.warning(
+                "hitl_rejection_subscriber_exited_restarting",
+                error=str(exc) if exc else "returned",
+            )
+            # Restart after a short delay, still strongly held.
+            restart = asyncio.get_running_loop().create_task(
+                self._restart_hitl_rejection_subscriber(redis_url),
+                name="hitl-rejection-subscriber-restart",
+            )
+            self._background_tasks.add(restart)
+            restart.add_done_callback(self._background_tasks.discard)
+
+        task.add_done_callback(_on_done)
+
+    async def _restart_hitl_rejection_subscriber(self, redis_url: str) -> None:
+        await asyncio.sleep(_SUBSCRIBER_RESTART_DELAY_S)
+        if not self._subscribers_stopping:
+            self._spawn_hitl_rejection_task(redis_url)
+
+    async def stop_background_subscribers(self) -> None:
+        """Shutdown: cancel the Redis subscribers (HITL rejections, Celery bridge)."""
+        self._subscribers_stopping = True
+        tasks = [t for t in self._background_tasks if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+        self._hitl_rejection_task = None
 
     async def _subscribe_hitl_rejections(self, redis_url: str) -> None:
         """Subscribe to HITL rejection notifications and store note for next plan cycle."""
