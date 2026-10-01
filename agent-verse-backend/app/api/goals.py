@@ -291,10 +291,19 @@ def _invalid_strategy_detail(registry: Any, requested: str) -> dict[str, Any]:
     if registry is not None:
         from app.orchestration.execution_drivers import goal_execution_driver
 
-        valid = sorted(
-            c.strategy_id for c in registry.list_all() if goal_execution_driver(c) is not None
-        )
-        known = registry.get(requested) is not None
+        # Building the detail must never turn the 422 into a 500: a registry that
+        # can't enumerate or look up (partial fakes, store outage) just yields a
+        # detail without the list.
+        try:
+            valid = sorted(
+                c.strategy_id for c in registry.list_all() if goal_execution_driver(c) is not None
+            )
+        except Exception:
+            valid = []
+        try:
+            known = registry.get(requested) is not None
+        except Exception:
+            known = False
     if known:
         message = (
             f"strategy '{requested}' is registered but has no goal execution driver, "
