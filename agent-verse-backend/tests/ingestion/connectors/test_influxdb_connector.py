@@ -100,7 +100,7 @@ def _clean_influxdb_module():
 class TestValidateConnection:
     async def test_no_library_installed_returns_unhealthy(self):
         """Real environment lacks influxdb-client — exercises the ImportError branch."""
-        sys.modules.pop("influxdb_client", None)
+        sys.modules["influxdb_client"] = None  # simulate a server without it
         connector = InfluxDBConnector()
         health = await connector.validate_connection(_make_config())
         assert health.ok is False
@@ -139,7 +139,7 @@ class TestValidateConnection:
 
 class TestGetDelta:
     async def test_no_library_yields_nothing(self):
-        sys.modules.pop("influxdb_client", None)
+        sys.modules["influxdb_client"] = None  # simulate a server without it
         connector = InfluxDBConnector()
         docs = [d async for d in connector.get_delta(_make_config(), None)]
         assert docs == []

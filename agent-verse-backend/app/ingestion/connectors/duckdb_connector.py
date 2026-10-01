@@ -80,13 +80,21 @@ def _open_confined(duckdb: Any, db_setting: str, tenant_id: str) -> tuple[Any, s
         db_path = _confine(db_setting, root, what="database")
         read_only = True
     config = {
-        "enable_external_access": False,
-        "allowed_directories": [str(root) + "/"],
         "autoinstall_known_extensions": False,
         "autoload_known_extensions": False,
-        "lock_configuration": True,
     }
     con = duckdb.connect(db_path, read_only=read_only, config=config)
+    # The real DuckDB (>= 1.1) refuses allowed_directories before the database is
+    # started, and refuses to change it once external access is off — so it is set
+    # here, in this order, and the configuration is then locked for the tenant SQL.
+    allowed = (str(root) + "/").replace("'", "''")
+    try:
+        con.execute(f"SET allowed_directories = ['{allowed}']")
+        con.execute("SET enable_external_access = false")
+        con.execute("SET lock_configuration = true")
+    except Exception:
+        con.close()
+        raise
     return con, db_path
 
 

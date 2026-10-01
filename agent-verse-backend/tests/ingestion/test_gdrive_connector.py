@@ -75,9 +75,13 @@ class _FakeMediaIoBaseDownload:
 
 class TestGDriveConnectorBuildService:
     def test_import_error_without_libraries(self) -> None:
-        # googleapiclient is genuinely not installed in this environment.
+        # Simulate a server without googleapiclient (the dev env ships it).
         connector = GDriveConnector(credentials=object())
-        with pytest.raises(ImportError, match="google-api-python-client"):
+        blocked = {"googleapiclient": None, "googleapiclient.discovery": None}
+        with (
+            patch.dict(sys.modules, blocked),
+            pytest.raises(ImportError, match="google-api-python-client"),
+        ):
             connector._build_service()
 
     def test_cached_service_is_reused(self) -> None:

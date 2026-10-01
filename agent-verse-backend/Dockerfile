@@ -14,7 +14,12 @@ WORKDIR /app
 # Avoid BuildKit-only RUN --mount syntax so this image builds on Minikube/Colima
 # Docker daemons that do not ship with buildx.
 COPY pyproject.toml uv.lock /app/
-RUN uv sync --frozen --no-install-project --no-dev --extra browser --extra ocr --extra sandbox
+# `connectors` = the ingestion connector SDKs the Sources UI offers. google-api-python-
+# client bundles ~110 MB of discovery documents for every Google API; the gdrive
+# connector only builds Drive v3 (static discovery), so the rest are dropped.
+RUN uv sync --frozen --no-install-project --no-dev --extra browser --extra ocr --extra sandbox --extra connectors \
+    && find /app/.venv/lib/python3.12/site-packages/googleapiclient/discovery_cache/documents \
+        -type f ! -name 'drive.v3.json' -delete
 
 
 FROM python:3.12-slim-bookworm AS runtime

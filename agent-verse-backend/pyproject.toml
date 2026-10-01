@@ -120,6 +120,29 @@ saml = ["python3-saml>=1.16.0"]
 sandbox = [
     "docker>=7.1",
 ]
+# Runtime SDKs of the ingestion connectors the Sources UI offers (shipped in the
+# image: see Dockerfile). boto3, asyncpg, redis, pymongo, feedparser, httpx and
+# snowflake-connector-python are core dependencies. app/ingestion/connector_sdks.py
+# maps each connector to the modules it needs; tests/ingestion/test_connector_sdks.py
+# keeps the two in sync.
+connectors = [
+    "neo4j>=5.20",
+    "clickhouse-connect>=0.8",
+    "azure-storage-blob>=12.20",
+    "influxdb-client>=1.40",
+    "google-cloud-bigquery>=3.25",
+    "google-cloud-storage>=2.18",
+    "google-cloud-pubsub>=2.23",
+    "google-api-python-client>=2.140",
+    "google-auth>=2.30",
+    "confluent-kafka>=2.5",
+    "PyMySQL>=1.1",
+    "duckdb>=1.1",
+    # The connector uses the 1.x callback API (mqtt.Client() / on_connect(rc)).
+    "paho-mqtt>=1.6.1,<2",
+    # The connector calls the static YouTubeTranscriptApi.get_transcript (removed in 1.x).
+    "youtube-transcript-api>=0.6.2,<1.0",
+]
 
 # Install all optional: pip install "agent-verse-backend[voyage,gemini,browser]"
 
@@ -141,9 +164,9 @@ dev = [
     "pyarrow>=17.0.0",
     "fastavro>=1.9.0",
     "beautifulsoup4>=4.12.0",
-    "neo4j>=5.20",
-    "clickhouse-connect>=0.8",
-    "azure-storage-blob>=12.20",
+    # Every connector SDK, so the connector tests (and the container tests) run
+    # against the real libraries the image ships.
+    "agent-verse-backend[connectors]",
 ]
 
 [build-system]

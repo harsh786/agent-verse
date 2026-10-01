@@ -27,6 +27,17 @@ def _root_path() -> pathlib.Path:
     return (pathlib.Path(get_settings().duckdb_data_root) / "t1").resolve()
 
 
+def _assert_tenant_sql(con: MagicMock, sql: str) -> None:
+    """``sql`` is the only statement after the three sandboxing SETs."""
+    statements = [c.args[0] for c in con.execute.call_args_list]
+    assert statements[:3] == [
+        f"SET allowed_directories = ['{_root_path()}/']",
+        "SET enable_external_access = false",
+        "SET lock_configuration = true",
+    ]
+    assert statements[3:] == [sql]
+
+
 def _config(**cc: Any) -> SourceConfig:
     return SourceConfig(
         source_id="src-duckdb",
@@ -56,7 +67,7 @@ async def test_validate_connection_ok() -> None:
 
     assert health.ok is True
     assert health.metadata == {"database": ":memory:"}
-    con.execute.assert_called_once_with("SELECT 1")
+    _assert_tenant_sql(con, "SELECT 1")
     con.close.assert_called_once()
 
 
@@ -105,7 +116,7 @@ async def test_get_delta_file_mode_builds_query_and_yields_docs() -> None:
     with patch.dict("sys.modules", {"duckdb": fake_mod}):
         docs = [d async for d in DuckDBConnector().get_delta(cfg, "5")]
 
-    con.execute.assert_called_once_with(
+    _assert_tenant_sql(con, 
         f"SELECT * FROM '{_root_path()}/data.parquet' WHERE \"id\" > '5' LIMIT 500"
     )
     assert len(docs) == 2
@@ -133,7 +144,7 @@ async def test_get_delta_query_mode_replaces_cursor_placeholder() -> None:
     with patch.dict("sys.modules", {"duckdb": fake_mod}):
         docs = [d async for d in DuckDBConnector().get_delta(cfg, "10")]
 
-    con.execute.assert_called_once_with("SELECT * FROM t WHERE x > 10")
+    _assert_tenant_sql(con, "SELECT * FROM t WHERE x > 10")
     assert len(docs) == 1
 
 
@@ -149,7 +160,7 @@ async def test_get_delta_query_mode_default_query() -> None:
     with patch.dict("sys.modules", {"duckdb": fake_mod}):
         docs = [d async for d in DuckDBConnector().get_delta(_config(), None)]
 
-    con.execute.assert_called_once_with("SELECT 1")
+    _assert_tenant_sql(con, "SELECT 1")
     assert docs == []
 
 
@@ -171,11 +182,17 @@ async def test_connect_disables_external_access_and_locks_config() -> None:
 
     _, kwargs = fake_mod.connect.call_args
     conf = kwargs["config"]
-    assert conf["enable_external_access"] is False
-    assert conf["lock_configuration"] is True
     assert conf["autoinstall_known_extensions"] is False
     assert conf["autoload_known_extensions"] is False
-    assert conf["allowed_directories"] == [str(_root_path()) + "/"]
+    # Sandboxed right after connect, in the order real DuckDB accepts, before any
+    # tenant SQL runs.
+    statements = [c.args[0] for c in con.execute.call_args_list]
+    assert statements[:3] == [
+        f"SET allowed_directories = ['{_root_path()}/']",
+        "SET enable_external_access = false",
+        "SET lock_configuration = true",
+    ]
+    assert statements[3] == "SELECT * FROM read_csv('/etc/passwd')"
 
 
 @pytest.mark.asyncio

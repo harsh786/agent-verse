@@ -73,7 +73,7 @@ def _mock_async_client(get_impl):
 
 class TestValidateConnection:
     async def test_no_library_installed(self):
-        sys.modules.pop("youtube_transcript_api", None)
+        sys.modules["youtube_transcript_api"] = None  # simulate a server without it
         connector = YouTubeConnector()
         health = await connector.validate_connection(_make_config())
         assert health.ok is False
@@ -96,7 +96,7 @@ class TestValidateConnection:
 
 class TestGetDelta:
     async def test_no_library_yields_nothing(self):
-        sys.modules.pop("youtube_transcript_api", None)
+        sys.modules["youtube_transcript_api"] = None  # simulate a server without it
         connector = YouTubeConnector()
         docs = [d async for d in connector.get_delta(_make_config(), None)]
         assert docs == []
