@@ -40,7 +40,10 @@ from typing import Any
 
 from app.coordination.patterns.common import InMemoryPatternCheckpointStore
 from app.intelligence.cost_tracker import calculate_cost
-from app.orchestration.execution_drivers import STRATEGY_RUNNER_STRATEGIES
+from app.orchestration.execution_drivers import (
+    COORDINATION_PATTERN_STRATEGIES,
+    STRATEGY_RUNNER_STRATEGIES,
+)
 from app.orchestration.strategy_context_store import StrategyGoalContextStore
 from app.orchestration.strategy_contracts import StrategyCheckpoint, StrategyExecutionRequest
 from app.orchestration.strategy_runner import ExecutionMetrics, StrategyRunOutput
@@ -57,6 +60,14 @@ _DECOMPOSE_MAX_STEPS = 4
 
 class UnsupportedStrategyError(RuntimeError):
     """A strategy has a real adapter but no wired execution driver yet (see module docstring)."""
+
+    reason_code = "strategy_execution_not_implemented"
+
+
+class CoordinationRuntimeUnavailableError(UnsupportedStrategyError):
+    """A coordination-pattern goal reached an executor with no pattern runtime wired."""
+
+    reason_code = "coordination_runtime_unavailable"
 
 
 class BudgetExceededError(RuntimeError):
@@ -100,8 +111,12 @@ class DistributedStrategyExecutor:
         *,
         context_store: StrategyGoalContextStore,
         cost_controller: Callable[[], Any] | Any = None,
+        pattern_bridge: Any = None,
     ) -> None:
         self._context_store = context_store
+        # Runs magentic / MoA / CAMEL / generative / swarm / auction goals on a
+        # coordination session (app.coordination.pattern_runs.goal_bridge).
+        self._pattern_bridge = pattern_bridge
         # A cost controller (or a zero-arg getter, so the lifespan's Redis-backed
         # swap is picked up). Every LLM call is charged to the goal/tenant budget.
         self._cost_controller = cost_controller
@@ -146,6 +161,14 @@ class DistributedStrategyExecutor:
                 "no goal context registered for "
                 f"context_snapshot_ref={request.context_snapshot_ref!r}"
             )
+
+        if strategy_id in COORDINATION_PATTERN_STRATEGIES:
+            if self._pattern_bridge is None:
+                raise CoordinationRuntimeUnavailableError(
+                    f"no coordination pattern runtime wired for: {strategy_id}"
+                )
+            output: StrategyRunOutput = await self._pattern_bridge.run(request, context, cancelled)
+            return output
 
         calls = 0
         tokens = 0

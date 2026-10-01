@@ -57,7 +57,21 @@ AGENT_GRAPH_STRATEGY_FLAGS: Mapping[str, str | None] = MappingProxyType(
 # DISTRIBUTED strategies whose StrategyRunner executor has a genuine goal driver
 # (see app/orchestration/strategy_executor.py). Every other DISTRIBUTED strategy is denied
 # at admission with ``strategy_execution_not_implemented``.
-STRATEGY_RUNNER_STRATEGIES: frozenset[str] = frozenset({"supervisor", "goal_tree", "debate"})
+# The coordination patterns run through the coordination pattern runtime
+# (app.coordination.pattern_runs) on a coordination session created for the goal.
+COORDINATION_PATTERN_STRATEGIES: frozenset[str] = frozenset(
+    {
+        "magentic",
+        "mixture_of_agents",
+        "camel",
+        "generative_agents",
+        "decentralized_swarm",
+        "market_auction",
+    }
+)
+STRATEGY_RUNNER_STRATEGIES: frozenset[str] = (
+    frozenset({"supervisor", "goal_tree", "debate"}) | COORDINATION_PATTERN_STRATEGIES
+)
 
 # Sentinel the selector emits for "no multi-agent coordination" — not a strategy.
 SINGLE_AGENT = "single_agent"

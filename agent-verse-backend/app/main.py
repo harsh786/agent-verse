@@ -2699,6 +2699,7 @@ def create_app(
             goal_service=_goal_svc,
             answer_generator=resolve_llm_provider(app.state),
         )
+    from app.coordination.pattern_runs.goal_bridge import CoordinationGoalBridge
     from app.orchestration.graph_factory import GraphFactory
     from app.orchestration.strategy_certification import CertificationEvaluator
     from app.orchestration.strategy_context_store import StrategyGoalContextStore
@@ -2734,6 +2735,9 @@ def create_app(
         app.state.strategy_registry,
         executor=DistributedStrategyExecutor(
             context_store=app.state.strategy_goal_context_store,
+            # GOAL-STRATEGIES: coordination-pattern goals run on a coordination
+            # session through the pattern runtime (reads app.state per call).
+            pattern_bridge=CoordinationGoalBridge(lambda: app.state),
             # Getter: the lifespan swaps in the Redis-backed controller later.
             cost_controller=lambda: (
                 getattr(app.state, "redis_cost_controller", None)

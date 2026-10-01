@@ -75,13 +75,18 @@ class PatternLLM:
         tenant_ctx: Any,
         pattern: str,
         max_calls: int,
+        goal_id: str | None = None,
     ) -> None:
         self._provider = provider
         self._tenant_ctx = tenant_ctx
         self._pattern = pattern
         self._max_calls = max_calls
+        # Inside a goal every call is charged to that goal's budget (and a denial
+        # raises DecisionBudgetExceededError), not only to the tenant's daily one.
+        self._goal_id = goal_id
         self.calls = 0
         self.tokens = 0
+        self.cost_usd = 0.0
 
     async def text(
         self,
@@ -108,10 +113,18 @@ class PatternLLM:
             ),
             role=f"coordination_{self._pattern}_{step}",
             tenant_ctx=self._tenant_ctx,
+            goal_id=self._goal_id,
         )
-        self.tokens += int(getattr(response, "input_tokens", 0) or 0) + int(
-            getattr(response, "output_tokens", 0) or 0
-        )
+        input_tokens = int(getattr(response, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(response, "output_tokens", 0) or 0)
+        self.tokens += input_tokens + output_tokens
+        try:
+            from app.intelligence.cost_tracker import calculate_cost
+
+            served = str(getattr(response, "model", "") or model or provider_model(target))
+            self.cost_usd += float(calculate_cost(served, input_tokens, output_tokens))
+        except Exception:  # cost is reported, the charge itself happened above
+            pass
         return str(getattr(response, "content", "") or "").strip()
 
     async def json(self, prompt: str, *, step: str, max_tokens: int = 800) -> dict[str, Any]:

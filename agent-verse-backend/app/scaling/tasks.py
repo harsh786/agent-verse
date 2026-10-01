@@ -3089,10 +3089,31 @@ def run_goal(
             # including any downgrade — is recorded on the goal.
             from app.orchestration.profiled_graph import build_profiled_graph
 
+            def _worker_coordination_loop() -> Any:
+                # GOAL-STRATEGIES: a profile whose primary is a coordination pattern
+                # (magentic, MoA, CAMEL, generative, swarm, auction) runs on the
+                # pattern runtime against Postgres here too, instead of a downgrade.
+                import redis.asyncio as _aioredis_coord
+
+                from app.coordination.pattern_runs.goal_bridge import (
+                    build_worker_distributed_loop,
+                )
+
+                return build_worker_distributed_loop(
+                    _worker_profile,
+                    db_factory=db_factory,
+                    provider=real_provider,
+                    cost_controller=_cost,
+                    hitl_gateway=_hitl,
+                    redis=_aioredis_coord.from_url(REDIS_URL, decode_responses=True),
+                    agent_id=agent_id,
+                )
+
             _agent_runner, _worker_strategy_execution = build_profiled_graph(
                 _worker_profile,
                 _worker_graph_services,
                 dict(_worker_pattern_flags),
+                distributed_loop_builder=_worker_coordination_loop,
             )
             if _worker_profile_downgrade:
                 _worker_strategy_execution.setdefault("downgrades", []).append(

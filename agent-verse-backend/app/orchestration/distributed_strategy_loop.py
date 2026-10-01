@@ -76,6 +76,8 @@ class DistributedStrategyLoop:
                 provider=self.provider,
                 initial_context=initial_context or {},
                 tenant_ctx=tenant_ctx,
+                event_callback=event_callback,
+                limits=profile.effective_limits,
             ),
         )
         try:

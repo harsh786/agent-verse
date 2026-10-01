@@ -358,10 +358,13 @@ class StrategyRunner:
                 next_action=output.next_action,
                 rationale=output.safe_rationale_summary,
             )
-        except Exception:
+        except Exception as exc:
+            # A strategy may name why it failed (e.g. a coordination pattern's
+            # terminal reason); anything else is a generic execution failure.
+            reason = getattr(exc, "reason_code", None)
             return self._result(
                 ExecutionTerminalState.FAILED,
-                reason_codes=("execution_failed",),
+                reason_codes=(str(reason),) if reason else ("execution_failed",),
             )
         finally:
             await self._invoke(self._release_budget, request)

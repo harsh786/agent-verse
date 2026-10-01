@@ -30,6 +30,10 @@ class StrategyGoalContext:
     initial_context: dict[str, Any] = field(default_factory=dict)
     # Tenant the goal runs for — lets the executor charge LLM spend to its budget.
     tenant_ctx: Any = None
+    # The goal's event sink (progress events reach the goal's SSE / event log) and
+    # its effective PatternLimits (bounds a coordination pattern run up front).
+    event_callback: Any = None
+    limits: Any = None
 
 
 class StrategyGoalContextStore:

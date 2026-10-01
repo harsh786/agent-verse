@@ -143,18 +143,21 @@ def test_catalogue_marks_non_admitted_strategies_experimental() -> None:
     assert by_id["guardrails"]["availability"] == "cross_cutting"
     assert by_id["prospective_memory"]["availability"] == "not_available"
 
-    readiness = api.get("/strategies/magentic/readiness", headers={"X-API-Key": "valid"})
+    readiness = api.get("/strategies/group_chat/readiness", headers={"X-API-Key": "valid"})
     assert readiness.json()["ready"] is False
     assert readiness.json()["availability"] == "experimental"
+    # GOAL-STRATEGIES: coordination patterns run on the pattern runtime.
+    assert by_id["magentic"]["availability"] == "available"
+    assert by_id["magentic"]["execution_driver"] == "strategy_runner"
 
 
 def test_override_without_goal_execution_driver_is_422() -> None:
-    """ReWOO / CodeAct / magentic have adapter logic but no goal driver: accepting them
+    """ReWOO / CodeAct / group_chat have adapter logic but no goal driver: accepting them
     would run a plain ReAct loop under their name."""
     service = AsyncMock()
     service.submit_goal.return_value = {"id": "goal-1", "status": "planning"}
     api = client(service)
-    for strategy_id in ("rewoo", "codeact", "magentic"):
+    for strategy_id in ("rewoo", "codeact", "group_chat"):
         response = api.post(
             "/goals",
             headers={"X-API-Key": "valid"},

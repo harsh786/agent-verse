@@ -182,11 +182,7 @@ async def test_wired_executor_is_idempotent_per_goal() -> None:
     [
         "autogpt",
         "babyagi",
-        "camel",
         "group_chat",
-        "magentic",
-        "mixture_of_agents",
-        "market_auction",
     ],
 )
 @pytest.mark.asyncio
@@ -219,3 +215,26 @@ async def test_missing_goal_context_fails_rather_than_fabricating_an_answer() ->
     result = await runner.run(_request(strategy_id="supervisor"), _limits())
 
     assert result.terminal_state is ExecutionTerminalState.FAILED
+
+
+@pytest.mark.parametrize("strategy_id", ["camel", "magentic", "mixture_of_agents", "market_auction"])
+@pytest.mark.asyncio
+async def test_coordination_patterns_without_a_runtime_fail_not_fake(strategy_id: str) -> None:
+    """GOAL-STRATEGIES: admitted now, but an executor with no pattern runtime wired
+    fails the goal with an explicit reason instead of fabricating an answer."""
+    assert strategy_id in SUPPORTED_DISTRIBUTED_STRATEGIES
+    store = StrategyGoalContextStore()
+    runner = StrategyRunner(
+        build_default_registry(),
+        executor=DistributedStrategyExecutor(context_store=store),
+        admission=default_distributed_admission,
+    )
+    req = _request(strategy_id=strategy_id, idempotency_key=f"no-runtime-{strategy_id}")
+    await store.put(
+        req.context_snapshot_ref,
+        StrategyGoalContext(goal_text="g", provider=object()),
+    )
+    result = await runner.run(req, _limits())
+    assert result.terminal_state is ExecutionTerminalState.FAILED
+    assert result.answer is None
+    assert "coordination_runtime_unavailable" in result.trace_summary.reason_codes

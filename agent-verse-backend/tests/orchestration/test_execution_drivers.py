@@ -121,7 +121,9 @@ def test_driver_table_names_only_registered_strategies() -> None:
         ("lats", None),
         ("codeact", None),
         ("program_of_thought", None),
-        ("magentic", None),
+        # GOAL-STRATEGIES: coordination patterns run on the pattern runtime.
+        ("magentic", ExecutionDriver.STRATEGY_RUNNER),
+        ("market_auction", ExecutionDriver.STRATEGY_RUNNER),
         ("consensus", None),
         ("scratchpad", None),
         ("workflow_dag", None),
@@ -241,8 +243,9 @@ def test_pattern_catalogue_marks_undriven_patterns_unavailable() -> None:
     by_id = {item["id"]: item for item in summary["available_patterns"]}
     assert by_id["react"]["available"] is True
     assert by_id["supervisor"]["available"] is True
-    for strategy_id in ("rewoo", "lats", "codeact", "magentic", "consensus", "scratchpad"):
+    for strategy_id in ("rewoo", "lats", "codeact", "consensus", "scratchpad"):
         assert by_id[strategy_id]["available"] is False, strategy_id
+    assert by_id["magentic"]["available"] is True
 
 
 def test_distributed_profile_copy_compiles_locally_for_nodes_the_kernel_has() -> None:

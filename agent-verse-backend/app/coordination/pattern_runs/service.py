@@ -35,6 +35,8 @@ from app.providers.guarded_completion import DecisionBudgetExceededError
 
 logger = structlog.get_logger(__name__)
 
+Observer = Callable[[dict[str, Any]], Awaitable[None]]
+
 _NAMESPACE = uuid.UUID("0b9f7c52-9d1e-4c55-8a6f-3e2d1c0b9a87")
 TERMINAL_PHASES = frozenset({"completed", "failed", "cancelled"})
 
@@ -118,13 +120,19 @@ class PatternRunService:
         max_rounds: int,
         options: dict[str, Any],
         idempotency_key: str,
+        goal_id: str | None = None,
+        max_calls: int | None = None,
+        observer: Observer | None = None,
+        provider: Any = None,
     ) -> dict[str, Any]:
+        """Run *pattern*; ``goal_id``/``max_calls`` bind it to a goal's budget and
+        limits, ``observer`` receives every published frame (goal progress)."""
         spec = PATTERNS.get(pattern)
         if spec is None:
             raise UnknownPatternError(f"unknown coordination pattern: {pattern}")
         repository = self.repository(pattern)
         tenant_id = str(tenant_ctx.tenant_id)
-        self._provider()
+        self._provider(provider)
         await self._require_active_session(tenant_ctx, session_id)
         members = tuple(dict.fromkeys(p.strip()[:100] for p in participants if p.strip()))
         members = members or spec.default_participants
@@ -138,14 +146,16 @@ class PatternRunService:
             "participants": list(members),
             "max_rounds": max_rounds,
             "options": options,
+            "goal_id": goal_id,
+            "max_calls": min(spec.max_calls, max_calls) if max_calls else spec.max_calls,
         }
         execution_id = execution_id_for(tenant_id, session_id, pattern, idempotency_key)
         document = await RunDocument(
             repository, tenant_id=tenant_id, session_id=session_id, execution_id=execution_id
         ).load()
         if document.exists:
-            stored = {k: v for k, v in document.config.items() if k in config}
-            if stored != config:
+            common = config.keys() & document.config.keys()
+            if any(document.config[key] != config[key] for key in common):
                 raise PatternSessionError("Idempotency-Key reused with a different run request")
             if document.view.get("phase") in TERMINAL_PHASES | {"awaiting_human"}:
                 return await self._result(tenant_ctx, pattern, document, replay=True)
@@ -153,10 +163,18 @@ class PatternRunService:
             if pattern == "magentic":
                 await self._require_no_ledger(tenant_id, session_id)
             await document.create(config)
-        return await self._execute(tenant_ctx, pattern, document)
+        return await self._execute(
+            tenant_ctx, pattern, document, observer=observer, provider=provider
+        )
 
     async def apply_magentic_review(
-        self, tenant_ctx: Any, session_id: str, *, approved: bool
+        self,
+        tenant_ctx: Any,
+        session_id: str,
+        *,
+        approved: bool,
+        observer: Observer | None = None,
+        provider: Any = None,
     ) -> dict[str, Any] | None:
         """Continue (approved) or close (rejected) the run awaiting human review."""
         tenant_id = str(tenant_ctx.tenant_id)
@@ -186,18 +204,32 @@ class PatternRunService:
                 checkpoint=checkpoint,
                 view={**document.view, "phase": "replanning", "terminal_reason": None},
             )
-            return await self._execute(tenant_ctx, "magentic", document)
+            return await self._execute(
+                tenant_ctx, "magentic", document, observer=observer, provider=provider
+            )
         return None
 
     async def _execute(
-        self, tenant_ctx: Any, pattern: str, document: RunDocument
+        self,
+        tenant_ctx: Any,
+        pattern: str,
+        document: RunDocument,
+        *,
+        observer: Observer | None = None,
+        provider: Any = None,
     ) -> dict[str, Any]:
-        provider = self._provider()
+        provider = self._provider(provider)
         spec = PATTERNS[pattern]
         config = document.config
         tenant_id = str(tenant_ctx.tenant_id)
-        llm = PatternLLM(provider, tenant_ctx=tenant_ctx, pattern=pattern, max_calls=spec.max_calls)
-        publish = self._publisher(tenant_id, document.session_id)
+        llm = PatternLLM(
+            provider,
+            tenant_ctx=tenant_ctx,
+            pattern=pattern,
+            max_calls=int(config.get("max_calls") or spec.max_calls),
+            goal_id=config.get("goal_id"),
+        )
+        publish = self._publisher(tenant_id, document.session_id, observer)
         transcript = getattr(self._state, "transcript_service", None)
         if transcript is None:
             raise PatternRuntimeUnavailableError("transcript service unavailable")
@@ -232,6 +264,8 @@ class PatternRunService:
                 "terminal_reason": outcome.terminal_reason,
                 "safe_output": outcome.safe_output,
                 "llm_calls": int(document.view.get("llm_calls", 0)) + llm.calls,
+                "llm_tokens": int(document.view.get("llm_tokens", 0)) + llm.tokens,
+                "cost_usd": round(float(document.view.get("cost_usd", 0.0)) + llm.cost_usd, 6),
             }
         )
         await publish(_event(pattern, document, outcome.phase))
@@ -257,11 +291,19 @@ class PatternRunService:
         }
         return await drivers[pattern]()
 
-    def _provider(self) -> Any:
+    def _provider(self, override: Any = None) -> Any:
         # app.state.llm_provider is None when only the no-key FakeProvider is wired:
-        # canned output must never be presented as a pattern run.
-        provider = getattr(self._state, "llm_provider", None)
-        if provider is None:
+        # canned output must never be presented as a pattern run. A goal passes its
+        # own (tenant-resolved) provider, under the same rule.
+        from app.providers.fake import FakeProvider
+
+        provider = override if override is not None else getattr(self._state, "llm_provider", None)
+        inner = getattr(provider, "inner", provider)
+        if (
+            provider is None
+            or isinstance(provider, FakeProvider)
+            or isinstance(inner, FakeProvider)
+        ):
             raise PatternRuntimeUnavailableError(
                 "no real LLM provider is configured; coordination patterns cannot run"
             )
@@ -290,9 +332,14 @@ class PatternRunService:
             raise PatternSessionError("this session already has a Magentic ledger")
 
     def _publisher(
-        self, tenant_id: str, session_id: str
+        self, tenant_id: str, session_id: str, observer: Observer | None = None
     ) -> Callable[[dict[str, Any]], Awaitable[None]]:
         async def publish(frame: dict[str, Any]) -> None:
+            if observer is not None:
+                try:
+                    await observer(frame)
+                except Exception as exc:  # progress reporting never breaks the run
+                    logger.warning("pattern_run_observer_failed", error=str(exc)[:200])
             bus = getattr(self._state, "coordination_live_bus", None)
             if bus is None:
                 return
@@ -354,6 +401,8 @@ def _public_document(pattern: str, document: RunDocument) -> dict[str, Any]:
         "objective": document.config.get("objective"),
         "participants": document.config.get("participants", []),
         "llm_calls": view.get("llm_calls", 0),
+        "llm_tokens": view.get("llm_tokens", 0),
+        "cost_usd": view.get("cost_usd", 0.0),
         "view": view,
         "checkpoint": checkpoint,
     }
