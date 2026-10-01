@@ -20,6 +20,15 @@ from app.tenancy.context import PlanTier, TenantContext
 
 # ── utilities ─────────────────────────────────────────────────────────────────
 
+# SSO subject -> tenant lookups are cached this long in Redis. Short: a tenant
+# deactivated out-of-band (not via ``deactivate_tenant``) stops authenticating
+# within this window on every pod.
+_SSO_CACHE_TTL_S = 30
+
+
+def _sso_cache_key(sso_sub: str) -> str:
+    return f"sso_sub:{hashlib.sha256(sso_sub.encode()).hexdigest()}"
+
 
 def _hash_key(raw_key: str) -> str:
     """SHA-256 hex digest of a raw API key.  The raw key is never stored."""
@@ -746,22 +755,39 @@ class TenantService:
     # ── SSO JIT provisioning ──────────────────────────────────────────────────
 
     async def get_tenant_by_sso_sub(self, *, sso_sub: str) -> dict[str, Any] | None:
-        """Find a tenant by their SSO subject identifier (Keycloak sub claim).
+        """Find the ACTIVE tenant owned by an SSO subject (Keycloak ``sub`` claim).
+
+        With a DB wired the database is authoritative: this pod's memory is never
+        consulted (it used to answer first, so a deactivated tenant's SSO users
+        kept logging in on the pod that provisioned it). The DB answer — tenant
+        plus its primary API key id — is cached in Redis for
+        ``_SSO_CACHE_TTL_S`` seconds and that entry is deleted on deactivation.
 
         Raises on a DB error: answering ``None`` made the caller JIT-provision a
         second tenant for an existing SSO user on any DB blip.
         """
-        for tenant in self._tenants.values():
-            if tenant.get("sso_sub") == sso_sub:
-                return tenant
-
         if self._db is None:
+            # No-DB (tests / dev) build: memory is the only store there is.
+            for tenant in self._tenants.values():
+                if tenant.get("sso_sub") == sso_sub:
+                    return tenant if tenant.get("is_active", True) else None
             return None
+
+        cached = await self._sso_cache_get(sso_sub)
+        if cached is not None:
+            return cached
+        rec = await self._db_tenant_by_sso_sub(sso_sub)
+        if rec is not None:
+            await self._sso_cache_set(sso_sub, rec)
+        return rec
+
+    async def _db_tenant_by_sso_sub(self, sso_sub: str) -> dict[str, Any] | None:
+        """Active tenant for *sso_sub* plus its oldest active API key id (both
+        indexed lookups: ``uq_tenants_sso_sub``, ``api_keys.tenant_id``)."""
         from sqlalchemy import text
 
-        # tenants has no RLS; the column is plan_tier (this read ``plan``, so the
-        # lookup always raised and was swallowed).
-        async with self._db() as session:
+        async with self._db() as session, session.begin():
+            # tenants has no RLS; the column is plan_tier.
             row = (
                 await session.execute(
                     text(
@@ -771,38 +797,145 @@ class TenantService:
                     {"sub": sso_sub},
                 )
             ).fetchone()
-        if not row:
-            return None
-        return {
-            "tenant_id": str(row[0]),
+            if not row:
+                return None
+            tenant_id = str(row[0])
+            # api_keys is RLS-scoped: read it as the tenant itself.
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            key_row = (
+                await session.execute(
+                    text(
+                        "SELECT id FROM api_keys WHERE tenant_id = :tid AND is_active "
+                        "AND (expires_at IS NULL OR expires_at > now()) "
+                        "ORDER BY created_at ASC, id ASC LIMIT 1"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchone()
+        rec: dict[str, Any] = {
+            "tenant_id": tenant_id,
             "name": row[1],
             "email": row[2],
             "plan": row[3],
             "sso_sub": row[4],
         }
+        if key_row:
+            rec["api_key_id"] = str(key_row[0])
+        return rec
+
+    async def _sso_cache_get(self, sso_sub: str) -> dict[str, Any] | None:
+        if self._redis is None:
+            return None
+        import json as _json
+
+        try:
+            raw = await self._redis.get(_sso_cache_key(sso_sub))
+            if raw:
+                data = _json.loads(raw)
+                if isinstance(data, dict) and data.get("tenant_id"):
+                    return data
+        except Exception as exc:  # the DB below stays authoritative
+            logging.getLogger(__name__).debug("sso_cache_read_failed: %s", exc)
+        return None
+
+    async def _sso_cache_set(self, sso_sub: str, rec: dict[str, Any]) -> None:
+        if self._redis is None:
+            return
+        import json as _json
+
+        with suppress(Exception):  # caching is best-effort
+            await self._redis.setex(_sso_cache_key(sso_sub), _SSO_CACHE_TTL_S, _json.dumps(rec))
 
     async def get_key_by_sso_sub(self, *, sso_sub: str) -> dict[str, Any] | None:
-        """Return the primary API key record associated with an SSO subject.
+        """Return the primary API key record of the active tenant owned by *sso_sub*.
 
-        The tenant dict created by ``create_tenant_from_sso`` stores the initial
-        ``api_key_id``. This method retrieves that key record so callers can use
-        a real, persisted key_id instead of a ghost ``sso:{sub}`` string.
+        Resolved through :meth:`get_tenant_by_sso_sub` (DB-authoritative when a DB
+        is wired), so every pod gets the real persisted key id — this used to be
+        memory-only, and pods that had not provisioned the tenant issued
+        contexts with a ghost ``sso:{sub}`` id.
         """
-        for tenant in self._tenants.values():
-            if tenant.get("sso_sub") == sso_sub:
-                key_id = tenant.get("api_key_id")
-                if not key_id:
-                    return None
-                key_rec = self._keys.get(key_id)
-                if key_rec:
-                    return {"key_id": key_id, **key_rec}
-                # Return minimal record using tenant data
-                return {
-                    "key_id": key_id,
-                    "tenant_id": tenant.get("tenant_id", ""),
-                    "sso_sub": sso_sub,
-                }
-        return None
+        tenant = await self.get_tenant_by_sso_sub(sso_sub=sso_sub)
+        if tenant is None:
+            return None
+        key_id = tenant.get("api_key_id")
+        if not key_id:
+            return None
+        key_rec = self._keys.get(key_id) if self._db is None else None
+        if key_rec:
+            return {**key_rec, "key_id": key_id}
+        return {
+            "key_id": key_id,
+            "tenant_id": tenant.get("tenant_id", ""),
+            "sso_sub": sso_sub,
+        }
+
+    async def deactivate_tenant(self, tenant_id: str) -> None:
+        """Deactivate *tenant_id* and drop every shared auth cache entry for it.
+
+        The DB write is the source of truth (API-key and SSO resolution filter on
+        ``tenants.is_active``); the Redis entries that could still answer for the
+        tenant — ``tenant:{id}``, the SSO lookup and each ``api_key:{hash}`` — are
+        deleted so the change applies on every pod on the next request. A failed
+        delete is reported (503, retryable: the DB update is idempotent) rather
+        than leaving the tenant usable for a cache TTL.
+        """
+        sso_sub: str | None = None
+        key_hashes: list[str] = []
+        if self._db is not None:
+            from sqlalchemy import text
+
+            async with self._db() as session, session.begin():
+                row = (
+                    await session.execute(
+                        text(
+                            "UPDATE tenants SET is_active = false, updated_at = now() "
+                            "WHERE id = :tid RETURNING sso_sub"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                ).fetchone()
+                if row is None:
+                    raise NotFoundError(f"Tenant not found: {tenant_id}")
+                sso_sub = row[0]
+                await session.execute(
+                    text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+                )
+                hashes = await session.execute(
+                    text("SELECT key_hash FROM api_keys WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+                key_hashes = [str(h) for h in hashes.scalars().all()]
+        tenant = self._tenants.get(tenant_id)
+        if tenant is None and self._db is None:
+            raise NotFoundError(f"Tenant not found: {tenant_id}")
+        if tenant is not None:
+            tenant["is_active"] = False
+            sso_sub = sso_sub or tenant.get("sso_sub")
+        for kid in self._tenant_keys.get(tenant_id, []):
+            key = self._keys.get(kid)
+            if key is not None:
+                key["is_active"] = False
+                if key.get("key_hash"):
+                    key_hashes.append(str(key["key_hash"]))
+
+        if self._redis is None:
+            return
+        cache_keys = [f"tenant:{tenant_id}", *(f"api_key:{h}" for h in sorted(set(key_hashes)))]
+        if sso_sub:
+            cache_keys.append(_sso_cache_key(sso_sub))
+        try:
+            await self._redis.delete(*cache_keys)
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "tenant_deactivate_cache_invalidation_failed tenant=%s: %s", tenant_id, exc
+            )
+            raise KeyStoreUnavailableError(
+                "Tenant deactivated in the database but the shared auth cache could not "
+                "be invalidated; retry the deactivation.",
+                cause=exc,
+            ) from exc
 
     async def create_tenant_from_sso(
         self,

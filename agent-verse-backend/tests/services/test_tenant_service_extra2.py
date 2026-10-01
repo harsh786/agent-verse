@@ -286,6 +286,12 @@ async def test_get_tenant_by_sso_sub_db_lookup():
     mock_session.execute = AsyncMock(return_value=MagicMock(fetchone=MagicMock(return_value=mock_row)))
 
     @asynccontextmanager
+    async def _begin():
+        yield None
+
+    mock_session.begin = MagicMock(side_effect=lambda: _begin())
+
+    @asynccontextmanager
     async def _db():
         yield mock_session
 
@@ -301,6 +307,12 @@ async def test_get_tenant_by_sso_sub_db_exception():
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
+
+    @asynccontextmanager
+    async def _begin():
+        yield None
+
+    mock_session.begin = MagicMock(side_effect=lambda: _begin())
 
     @asynccontextmanager
     async def _db():
@@ -438,6 +450,12 @@ async def test_sync_from_db_exception_returns_zero():
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
+
+    @asynccontextmanager
+    async def _begin():
+        yield None
+
+    mock_session.begin = MagicMock(side_effect=lambda: _begin())
 
     @asynccontextmanager
     async def _db():
