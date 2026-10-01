@@ -110,49 +110,23 @@ def _setup() -> tuple[CredentialVault, _Redis, _Db]:
     return old, redis, db
 
 
-async def test_rotation_reencrypts_redis_and_postgres() -> None:
-    old, redis, db = _setup()
-    new = CredentialVault(master_key=NEW)
-    result = await rotate_master_key(old=old, new=new, redis=redis, system_db=lambda: db)
-    assert result["status"] == "complete", result
-    assert result["redis_connector_secrets"] == 1
-    assert result["postgres_tenant_llm_keys"] == 2
-    assert new.decrypt(redis.data["mcp:connector_secrets:t1:srv:token"]) == "conn-secret"
-    assert new.decrypt(db.rows["t1"]) == "sk-tenant-1"
-    assert any("INSERT INTO vault_key_versions" in s for s in db.statements)
-    assert db.statements[0].strip() == "SET LOCAL row_security = off"
-
-
-async def test_failing_scan_reports_failed_and_writes_nothing() -> None:
-    old, _redis, db = _setup()
-    redis = _Redis({}, fail_scan=True)
-    before = dict(db.rows)
+async def test_failing_redis_scan_reports_failed() -> None:
+    old, _redis, _db = _setup()
     result = await rotate_master_key(
-        old=old, new=CredentialVault(master_key=NEW), redis=redis, system_db=lambda: db
+        old=old, new=CredentialVault(master_key=NEW), redis=_Redis({}, fail_scan=True)
     )
-    assert result["status"] == "failed"
-    assert db.rows == before  # nothing half-rotated
+    assert result["status"] == "failed" and result["previous_keys_retirable"] is False
 
 
-async def test_undecryptable_postgres_row_fails_the_rotation() -> None:
-    old, redis, db = _setup()
-    db.rows["t3"] = CredentialVault(master_key="some-other-key").encrypt("x")
-    before_redis = dict(redis.data)
-    result = await rotate_master_key(
-        old=old, new=CredentialVault(master_key=NEW), redis=redis, system_db=lambda: db
-    )
-    assert result["status"] == "failed"
-    assert redis.data == before_redis
-
-
-async def test_postgres_write_failure_rolls_back_and_reports_failed() -> None:
+async def test_rotation_reencrypts_redis_stores() -> None:
+    """Redis-only run (no DB wired). Every Postgres store is covered against real
+    Postgres + Redis in tests/integration/test_vault_rotate_all_stores_pg.py."""
     old, redis, _db = _setup()
-    db = _Db({"t1": old.encrypt("a")}, fail_update=True)
-    before = dict(db.rows)
-    result = await rotate_master_key(
-        old=old, new=CredentialVault(master_key=NEW), redis=redis, system_db=lambda: db
-    )
-    assert result["status"] == "failed" and db.rows == before
+    new = CredentialVault(master_key=NEW)
+    result = await rotate_master_key(old=old, new=new, redis=redis)
+    assert result["status"] == "complete", result
+    assert result["stores"]["connector_secrets"]["rotated"] == 1
+    assert new.decrypt(redis.data["mcp:connector_secrets:t1:srv:token"]) == "conn-secret"
 
 
 def test_previous_keys_decrypt_during_rotation() -> None:

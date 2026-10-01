@@ -208,10 +208,19 @@ class CredentialVault:
         # Encrypt with the current key; decrypt with it or any previous key
         # (VAULT_PREVIOUS_MASTER_KEYS) so every replica reads both old and new
         # ciphertext while ``agentverse vault-rotate`` re-encrypts the stores.
-        keys = [Fernet(_derive_fernet_key(master_key))]
+        primary_key = _derive_fernet_key(master_key)
+        # Non-reversible identifier of the encryption key (rotation checkpoints).
+        self._fingerprint = hashlib.sha256(b"agentverse-vault-fp:" + primary_key).hexdigest()[:16]
+        keys = [Fernet(primary_key)]
         keys += [Fernet(_derive_fernet_key(k)) for k in previous_master_keys if k]
         self._fernet: Any = MultiFernet(keys) if len(keys) > 1 else keys[0]
         self._key: bytes | None = None  # populated only by from_byok()
+
+    def fingerprint(self) -> str:
+        """Identifier of the key this vault encrypts with (never the key itself)."""
+        return getattr(self, "_fingerprint", "") or hashlib.sha256(
+            b"agentverse-vault-fp:" + (self._key or b"")
+        ).hexdigest()[:16]
 
     def encrypt(self, plaintext: str) -> str:
         """Encrypt *plaintext* and return a URL-safe ciphertext string."""
@@ -288,116 +297,36 @@ def _cached_vault(master_key: str, previous: tuple[str, ...]) -> CredentialVault
 
 # ── Offline master-key rotation (``agentverse vault-rotate``) ──────────────────
 
-_REDIS_CONNECTOR_SECRETS = "mcp:connector_secrets:*"
-# Ciphertext stores this rotation does NOT re-encrypt: they stay readable through
-# VAULT_PREVIOUS_MASTER_KEYS, so keep the old key there until they are migrated.
-_NOT_REENCRYPTED_STORES = (
-    "connector OAuth tokens",
-    "ingestion source credentials",
-    "trigger/webhook secrets",
-    "sealed memories",
-    "the Redis LLM-config cache (re-filled from Postgres)",
-)
-
 
 async def rotate_master_key(
-    *, old: CredentialVault, new: CredentialVault, redis: Any = None, system_db: Any = None
+    *,
+    old: CredentialVault,
+    new: CredentialVault,
+    redis: Any = None,
+    system_db: Any = None,
+    tenant_db: Any = None,
+    dry_run: bool = False,
+    batch_size: int = 200,
+    progress: Any = None,
+    rotation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Re-encrypt every known ciphertext store from ``old`` to ``new``.
+    """Re-encrypt every ciphertext store from ``old`` to ``new``.
 
-    Covers the Redis connector secrets and ``tenant_llm_configs.encrypted_key``
-    (and records a ``vault_key_versions`` row). Everything is decrypted FIRST; any
-    scan, decrypt or write error makes the result ``status: "failed"`` (never a
-    success after a swallowed error). Postgres is rewritten in one transaction
-    under the maintenance role (``system_db`` = the system session factory);
-    Redis is written in one pipeline after the Postgres commit.
-
-    Run it with the old key still configured as a previous key on every replica
-    (``VAULT_PREVIOUS_MASTER_KEYS``) so reads keep working throughout.
+    See :mod:`app.providers.vault_rotation`: all Postgres stores per tenant (RLS,
+    batched, checkpointed, idempotent) plus the Redis stores; ``status`` is
+    ``complete`` only when every value opens with the new key, after which
+    ``VAULT_PREVIOUS_MASTER_KEYS`` can be retired.
     """
-    result: dict[str, Any] = {
-        "status": "failed",
-        "redis_connector_secrets": 0,
-        "postgres_tenant_llm_keys": 0,
-        "errors": [],
-        "not_reencrypted_stores": list(_NOT_REENCRYPTED_STORES),
-    }
-    redis_pairs: list[tuple[Any, str]] = []
-    try:
-        if redis is not None:
-            async for key in redis.scan_iter(match=_REDIS_CONNECTOR_SECRETS, count=200):
-                raw = await redis.get(key)
-                if not raw:
-                    continue
-                text_value = raw.decode() if isinstance(raw, bytes) else str(raw)
-                redis_pairs.append((key, new.encrypt(old.decrypt(text_value))))
-    except Exception as exc:
-        result["errors"].append(f"redis: {type(exc).__name__}: {str(exc)[:200]}")
-        _vault_log.error("vault_rotation_failed stage=redis error=%s", exc)
-        return result
+    from app.providers.vault_rotation import rotate_all_stores
 
-    if system_db is not None:
-        try:
-            import hashlib as _hashlib
-            import uuid as _uuid
-
-            from sqlalchemy import text
-
-            from app.db.rls import system_session
-
-            async with system_db() as session, session.begin(), system_session(session):
-                rows = (
-                    await session.execute(
-                        text(
-                            "SELECT tenant_id, encrypted_key FROM tenant_llm_configs "
-                            "WHERE encrypted_key IS NOT NULL AND encrypted_key <> ''"
-                        )
-                    )
-                ).fetchall()
-                rewritten = [(str(r[0]), new.encrypt(old.decrypt(str(r[1])))) for r in rows]
-                for tenant_id, ciphertext in rewritten:
-                    await session.execute(
-                        text(
-                            "UPDATE tenant_llm_configs SET encrypted_key = :k "
-                            "WHERE tenant_id = :t"
-                        ),
-                        {"k": ciphertext, "t": tenant_id},
-                    )
-                await session.execute(
-                    text(
-                        "UPDATE vault_key_versions SET is_current = FALSE, retired_at = NOW() "
-                        "WHERE is_current = TRUE"
-                    )
-                )
-                probe = new.encrypt("agentverse-vault-key-version")
-                await session.execute(
-                    text(
-                        "INSERT INTO vault_key_versions (id, key_hash, activated_at, is_current) "
-                        "VALUES (:id, :hash, NOW(), TRUE)"
-                    ),
-                    {
-                        "id": _uuid.uuid4().hex,
-                        "hash": _hashlib.sha256(probe.encode()).hexdigest()[:16] + "...",
-                    },
-                )
-            result["postgres_tenant_llm_keys"] = len(rewritten)
-        except Exception as exc:
-            result["errors"].append(f"postgres: {type(exc).__name__}: {str(exc)[:200]}")
-            _vault_log.error("vault_rotation_failed stage=postgres error=%s", exc)
-            return result
-
-    if redis_pairs:
-        try:
-            pipe = redis.pipeline()
-            for key, value in redis_pairs:
-                pipe.set(key, value)
-            await pipe.execute()
-        except Exception as exc:
-            # Postgres is already on the new key; both keys stay readable through
-            # VAULT_PREVIOUS_MASTER_KEYS, so re-running the rotation is safe.
-            result["errors"].append(f"redis write: {type(exc).__name__}: {str(exc)[:200]}")
-            _vault_log.error("vault_rotation_failed stage=redis_write error=%s", exc)
-            return result
-    result["redis_connector_secrets"] = len(redis_pairs)
-    result["status"] = "complete"
-    return result
+    return await rotate_all_stores(
+        old=old,
+        new=new,
+        rotation_id=rotation_id or new.fingerprint(),
+        system_db=system_db,
+        tenant_db=tenant_db,
+        redis=redis,
+        dry_run=dry_run,
+        batch_size=batch_size,
+        progress=progress,
+    )

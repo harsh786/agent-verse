@@ -462,15 +462,21 @@ def vault_rotate(
         "VAULT_NEW_MASTER_KEY",
         help="Name of the env var holding the NEW master key (never pass keys on argv).",
     ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Count what would change; write nothing."
+    ),
+    batch_size: int = typer.Option(200, min=1, max=10_000, help="Rows per transaction."),
 ) -> None:
-    """Re-encrypt stored secrets from the current vault master key to a new one.
+    """Re-encrypt EVERY stored secret from the current vault master key to a new one.
 
-    Offline, operator-run, against the deployment's Postgres (maintenance role,
-    MAINTENANCE_DATABASE_URL) and Redis. Procedure: set the new key in
-    ``new_key_env``, run this, then deploy with VAULT_MASTER_KEY=<new> and
-    VAULT_PREVIOUS_MASTER_KEYS=<old> until every store listed under
-    ``not_reencrypted_stores`` has been migrated. Exits 1 unless every step
-    succeeded.
+    Offline, operator-run, against the deployment's Postgres (tenant rows under
+    each tenant's RLS context via DATABASE_URL; checkpoints and key versions via
+    MAINTENANCE_DATABASE_URL) and Redis. Batched, resumable (re-run with the same
+    new key continues from the last checkpoint) and idempotent. Progress is
+    printed as JSON lines on stderr. Procedure: set the new key in ``new_key_env``,
+    deploy with VAULT_MASTER_KEY=<new> and VAULT_PREVIOUS_MASTER_KEYS=<old>, run
+    this until it reports ``complete`` (``previous_keys_retirable: true``), then
+    drop VAULT_PREVIOUS_MASTER_KEYS. Exits 1 unless complete (or a clean dry run).
     """
     import asyncio
 
@@ -481,8 +487,11 @@ def vault_rotate(
         typer.echo(f"Error: {new_key_env} must hold a master key of at least 32 chars", err=True)
         raise typer.Exit(1)
 
+    def _progress(event: dict) -> None:  # type: ignore[type-arg]
+        typer.echo(json.dumps(event), err=True)
+
     async def _run() -> dict:  # type: ignore[type-arg]
-        from app.db.session import get_system_session_factory
+        from app.db.session import get_session_factory, get_system_session_factory
 
         redis_client = None
         redis_url = os.environ.get("REDIS_URL", "")
@@ -495,11 +504,15 @@ def vault_rotate(
             new=CredentialVault(master_key=new_key),
             redis=redis_client,
             system_db=get_system_session_factory(),
+            tenant_db=get_session_factory(),
+            dry_run=dry_run,
+            batch_size=batch_size,
+            progress=_progress,
         )
 
     result = asyncio.run(_run())
     typer.echo(json.dumps(result, indent=2))
-    if result.get("status") != "complete":
+    if result.get("status") not in ("complete", "dry_run") or result.get("unreadable"):
         raise typer.Exit(1)
 
 

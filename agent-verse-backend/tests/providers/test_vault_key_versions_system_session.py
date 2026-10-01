@@ -63,15 +63,11 @@ class _RowSession(_Session):
 
 
 async def test_rotation_records_key_version_inside_system_session() -> None:
+    from app.providers.vault_rotation import _record_key_version
+
     session = _RowSession()
+    await _record_key_version(lambda: session, "fp-new")
 
-    result = await rotate_master_key(
-        old=CredentialVault(master_key="a" * 32),
-        new=CredentialVault(master_key="n" * 32),
-        system_db=lambda: session,
-    )
-
-    assert result["status"] == "complete"
     sqls = [s for s, _ in session.statements]
     assert all(in_tx for _, in_tx in session.statements), "must run in one transaction"
     assert sqls[0].strip() == "SET LOCAL row_security = off"
@@ -83,7 +79,7 @@ async def test_rotation_records_key_version_inside_system_session() -> None:
 async def test_rotation_under_api_role_fails_loudly_and_reports_failed() -> None:
     """Passed the NOBYPASSRLS API factory by mistake, the rotation fails and says
     so (it used to report rotation_complete after the swallowed failure)."""
-    session = _RowSession(fail_on="UPDATE vault_key_versions")
+    session = _RowSession(fail_on="vault_rotation_checkpoints")
 
     result = await rotate_master_key(
         old=CredentialVault(master_key="a" * 32),
