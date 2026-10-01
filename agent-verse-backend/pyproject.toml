@@ -195,6 +195,8 @@ markers = [
     "slow: tests that hit real LLM providers (opt-in)",
     "real_openai: tests that call the real OpenAI API (requires OPENAI_API_KEY)",
     "smoke: E2E smoke tests that require a running backend at localhost:8000",
+    "real_world: real-world scenarios against the live local Docker stack (opt-in: AGENTVERSE_REAL_WORLD=1, see scripts/run_real_world.sh)",
+    "scenario(name): the real-world scenario id a test verifies (report grouping)",
     "e2e_full: full-stack e2e tests booting create_app(manage_pools=True) against real Postgres+Redis (testcontainers or infra/docker-compose.e2e.yml)"]
 filterwarnings = [
     "error",

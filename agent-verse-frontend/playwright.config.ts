@@ -11,7 +11,8 @@ export default defineConfig({
   // testMatch '**/*.spec.ts', which swept them in, so ~146 tests failed for no
   // reason other than "no backend is listening". Run them with:
   //   npx playwright test --config=playwright.real-e2e.config.ts
-  testIgnore: ['**/real-e2e/**'],
+  // e2e/real-world has its own config too (playwright.real-world.config.ts, live stack).
+  testIgnore: ['**/real-e2e/**', '**/real-world/**'],
 
   /** Global per-test timeout (ms). Increase for slow CI runners. */
   timeout: 30_000,
