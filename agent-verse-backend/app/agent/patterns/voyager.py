@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.coordination.patterns.common import invoke
 from app.memory.procedural_validator import ProcedureContract
+from app.memory.voyager_skills import VoyagerSkillStore
 from app.orchestration.strategy_adapters import ExecutionTier
 
 
@@ -27,12 +28,34 @@ class VoyagerState(BaseModel):
     terminal_reason: str | None = None
 
 
+_SKILL_LIBRARY: VoyagerSkillStore | None = None
+
+
+def default_skill_library() -> VoyagerSkillStore:
+    """The skill library voyager publishes into when none is injected.
+
+    One governed library per process, so every run publishes into the same
+    store and skill versions stay immutable across runs. It is NOT durable or
+    shared across replicas — which is one reason voyager stays denied at
+    StrategyRunner admission (``strategy_execution_not_implemented``) until a
+    persistent skill store is wired in via ``skill_store=``.
+    """
+    global _SKILL_LIBRARY
+    if _SKILL_LIBRARY is None:
+        _SKILL_LIBRARY = VoyagerSkillStore()
+    return _SKILL_LIBRARY
+
+
 @dataclass(frozen=True, slots=True)
 class VoyagerAdapter:
     strategy_id: str = "voyager"
     execution_tier: ExecutionTier = ExecutionTier.DISTRIBUTED
 
     def create_runtime(self, **kwargs: Any) -> VoyagerRuntime:
+        # The runner's executor builds runtimes as create_runtime(checkpoint_store=...);
+        # VoyagerRuntime also needs its skill library, which used to be missing
+        # (TypeError) — supply the governed default unless one is injected.
+        kwargs.setdefault("skill_store", default_skill_library())
         return VoyagerRuntime(**kwargs)
 
 
