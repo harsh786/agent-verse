@@ -822,28 +822,10 @@ class VerifierMixin:
                     )
                     self._background_tasks.add(_v2_task)
                     _v2_task.add_done_callback(self._background_tasks.discard)
-            # N5: Record result in module-level ABTestingEngine for cross-goal A/B analysis
-            try:
-                from app.optimization.ab_testing import ExperimentType
-                from app.optimization.ab_testing import ab_testing_engine as _abt_eng
-
-                if _abt_eng is not None and _eval_score is not None and tenant_ctx is not None:
-                    import asyncio as _n5_asyncio
-
-                    _abt_asyncio_task = _n5_asyncio.ensure_future(
-                        _abt_eng.record_result_async(
-                            goal_id=agent_state.goal_id,
-                            experiment_type=ExperimentType.RAG_STRATEGY,
-                            arm_id=agent_state.context.get("_experiment_arm", "control"),
-                            score=float(_eval_score),
-                            tenant_id=tenant_ctx.tenant_id,
-                        )
-                    )
-                    if hasattr(self, "_background_tasks"):
-                        self._background_tasks.add(_abt_asyncio_task)
-                        _abt_asyncio_task.add_done_callback(self._background_tasks.discard)
-            except Exception:
-                pass
+            # MEM-29: no ABTestingEngine record here. It filed every goal as a
+            # RAG_STRATEGY result under the SelfOptimizerV2 arm (or "control"),
+            # yet nothing assigns ABTestingEngine arms or reads its stats — the
+            # telemetry was mislabelled. SelfOptimizerV2 records its own arms above.
         else:
             scorecard = None
             # FIX: On permanent failure (retry=False), roll back all registered actions

@@ -523,45 +523,6 @@ async def test_self_optimizer_v2_records_an_unscored_goal_of_an_experiment_arm()
     assert self_opt_v2.on_goal_completed.call_args.kwargs["eval_score"] is None
 
 
-@pytest.mark.asyncio
-async def test_ab_testing_engine_records_cross_goal_result_when_arm_present() -> None:
-    """N5: the module-level ABTestingEngine must receive a record for every
-    goal that ran inside an experiment arm and produced a real eval score —
-    this is the data source for cross-goal statistical-significance
-    analysis of RAG-strategy experiments."""
-    mock_eval = MagicMock(spec=EvalRunner)
-    mock_scorecard = MagicMock()
-    mock_scorecard.average_score.return_value = 0.77
-    mock_eval.score_and_persist = AsyncMock(return_value=mock_scorecard)
-
-    verifier = FakeProvider(responses=['{"success": true, "reason": "great"}'])
-    graph = _make_graph(verifier=verifier, eval_runner=mock_eval)
-    # The N5 ab_testing_engine record only runs once ``_eval_score`` has been
-    # computed, which only happens inside the H-2 SelfOptimizerV2 branch
-    # (guarded on self_optimizer_v2 + agent_id + experiment arm being
-    # present) — so those must be wired even though this test only asserts
-    # on the downstream ABTestingEngine call.
-    graph._app_state = MagicMock(self_optimizer_v2=MagicMock(on_goal_completed=AsyncMock()))
-    graph._agent_id = "agent-ab"
-
-    agent_state = _agent_state("ab test goal")
-    agent_state.context["_experiment_arm"] = "arm-x"
-    agent_state.steps.append(StepResult(description="step", status=StepStatus.COMPLETE, output="ok"))
-
-    mock_abt = MagicMock()
-    mock_abt.record_result_async = AsyncMock()
-    with patch("app.optimization.ab_testing.ab_testing_engine", mock_abt):
-        await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
-        await asyncio.sleep(0)
-
-    mock_abt.record_result_async.assert_called_once()
-    _, abt_kwargs = mock_abt.record_result_async.call_args
-    assert abt_kwargs["goal_id"] == agent_state.goal_id
-    assert abt_kwargs["arm_id"] == "arm-x"
-    assert abt_kwargs["score"] == 0.77
-    assert abt_kwargs["tenant_id"] == T.tenant_id
-
-
 # ===========================================================================
 # PromptOptimizer A/B feedback loop (BUG 4)
 # ===========================================================================
@@ -817,3 +778,36 @@ async def test_guardrail_final_output_gate_error_fails_open_on_normal_risk_goal(
         result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
 
     assert result["agent_state"].cited_answer != "[Output redacted by guardrail policy]"
+
+
+@pytest.mark.asyncio
+async def test_verify_writes_no_mislabelled_ab_testing_telemetry() -> None:
+    """MEM-29: every verified goal was recorded in ABTestingEngine as a
+    RAG_STRATEGY result under the SelfOptimizerV2 arm (or a default "control"),
+    though nothing assigns ABTestingEngine arms or reads its stats. No record
+    is written now; SelfOptimizerV2 keeps recording its own experiment."""
+    mock_eval = MagicMock(spec=EvalRunner)
+    scorecard = MagicMock()
+    scorecard.average_score.return_value = 0.9
+    mock_eval.score_and_persist = AsyncMock(return_value=scorecard)
+    graph = _make_graph(
+        verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}']),
+        eval_runner=mock_eval,
+    )
+    so_v2 = MagicMock()
+    so_v2.on_goal_completed = AsyncMock()
+    graph._app_state = MagicMock(self_optimizer_v2=so_v2)
+    graph._agent_id = "agent-1"
+    agent_state = _agent_state("an experiment goal")
+    agent_state.context["_experiment_arm"] = "candidate-arm"
+    agent_state.context["eval_scorecard"] = {"average_score": 0.9}
+    agent_state.steps.append(StepResult(description="s", status=StepStatus.COMPLETE, output="ok"))
+
+    with patch(
+        "app.optimization.ab_testing.ab_testing_engine.record_result_async", new=AsyncMock()
+    ) as recorded:
+        await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+        await asyncio.sleep(0)
+
+    recorded.assert_not_called()
+    so_v2.on_goal_completed.assert_awaited_once()
