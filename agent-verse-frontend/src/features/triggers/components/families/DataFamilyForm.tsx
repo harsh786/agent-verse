@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { apiFetch } from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
 import type { TriggerType } from '../../types';
-import { planAwarePollIntervalSeconds, planMinIntervalSeconds } from '../../planFloors';
+import { planAwarePollIntervalSeconds, planMinIntervalSeconds, usePlanFloors } from '../../planFloors';
 
 interface FamilyFormProps {
   triggerType: TriggerType;
@@ -17,8 +17,9 @@ export function DataFamilyForm({ triggerType, value, onChange }: FamilyFormProps
 
   // Omitted, the backend polls every max(300s, plan floor); pre-fill that value.
   const plan = (useAuthStore((s) => s.plan) || 'free').toLowerCase();
-  const pollFloor = planMinIntervalSeconds(plan);
-  const pollDefault = planAwarePollIntervalSeconds(plan);
+  const floors = usePlanFloors();
+  const pollFloor = planMinIntervalSeconds(plan, floors);
+  const pollDefault = planAwarePollIntervalSeconds(plan, floors);
 
   // null = unknown (not loaded / failed): fall back to free text; the backend
   // still rejects a non-allowlisted table with a 422 naming the allowed ones.

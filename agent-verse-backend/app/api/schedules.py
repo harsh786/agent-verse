@@ -289,6 +289,26 @@ async def list_db_row_change_tables(request: Request) -> dict[str, list[str]]:
     return {"tables": sorted(db_row_change_allowlist())}
 
 
+@router.get("/plan-floors")
+async def get_plan_floors(request: Request) -> dict[str, Any]:
+    """The schedule minimums the backend enforces, per plan (Settings-driven:
+    SCHEDULE_MIN_INTERVAL_<PLAN>_S), so the trigger forms show and pre-fill the
+    real floors instead of a frontend copy. Declared before ``/{schedule_id}``."""
+    _require_tenant(request)
+    from app.triggers.models import (
+        API_POLL_DEFAULT_INTERVAL_SECONDS,
+        PLAN_MIN_SCHEDULE_INTERVAL_SECONDS,
+        plan_min_interval_seconds,
+    )
+
+    return {
+        "plan_min_interval_seconds": {
+            plan: plan_min_interval_seconds(plan) for plan in PLAN_MIN_SCHEDULE_INTERVAL_SECONDS
+        },
+        "api_poll_default_interval_seconds": API_POLL_DEFAULT_INTERVAL_SECONDS,
+    }
+
+
 # Declared BEFORE ``/{schedule_id}``: FastAPI matches routes in order, so the
 # parameterized route used to swallow GET /schedules/analytics (→ 404).
 @router.get("/analytics")
