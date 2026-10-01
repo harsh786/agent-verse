@@ -394,3 +394,123 @@ class PostgresChatRepository:
                     {"sid": session_id, "t": tenant_id, "ts": after_created_at},
                 )
             return ids
+
+    # ── Artifacts (chat_artifacts, ORG-42) ────────────────────────────────────
+    # Generated documents (kind='document', retention via expires_at) and saved
+    # session artifacts (kind='snippet', deleted with their session). Every read
+    # excludes expired rows, so a document past retention is gone even before the
+    # purge task removes the row.
+
+    async def put_artifact(
+        self,
+        *,
+        artifact_id: str,
+        tenant_id: str,
+        kind: str,
+        title: str,
+        mime: str,
+        content: bytes,
+        language: str | None = None,
+        session_id: str | None = None,
+        message_id: str | None = None,
+        expires_at: datetime | None = None,
+    ) -> None:
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            await s.execute(
+                text(
+                    "INSERT INTO chat_artifacts "
+                    "(id, tenant_id, kind, session_id, message_id, title, mime, language, "
+                    "content, size_bytes, expires_at) "
+                    "VALUES (:id, :t, :kind, :sid, :mid, :title, :mime, :lang, :c, :n, :exp)"
+                ),
+                {
+                    "id": artifact_id,
+                    "t": tenant_id,
+                    "kind": kind,
+                    "sid": session_id,
+                    "mid": message_id,
+                    "title": title,
+                    "mime": mime,
+                    "lang": language,
+                    "c": content,
+                    "n": len(content),
+                    "exp": expires_at,
+                },
+            )
+
+    async def get_artifact(
+        self, artifact_id: str, tenant_id: str, *, kind: str | None = None
+    ) -> dict[str, Any] | None:
+        sql = (
+            "SELECT * FROM chat_artifacts WHERE id = :id AND tenant_id = :t "
+            "AND (expires_at IS NULL OR expires_at > now())"
+        )
+        params: dict[str, Any] = {"id": artifact_id, "t": tenant_id}
+        if kind is not None:
+            sql += " AND kind = :kind"
+            params["kind"] = kind
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            row = (await s.execute(text(sql), params)).mappings().one_or_none()
+            return dict(row) if row is not None else None
+
+    async def list_session_artifacts(
+        self, session_id: str, tenant_id: str, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """A session's saved artifacts, oldest first, bounded by ``limit``."""
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            rows = (
+                (
+                    await s.execute(
+                        text(
+                            "SELECT * FROM chat_artifacts "
+                            "WHERE tenant_id = :t AND session_id = :sid AND kind = 'snippet' "
+                            "ORDER BY created_at, id LIMIT :lim"
+                        ),
+                        {"t": tenant_id, "sid": session_id, "lim": max(1, min(limit, 1000))},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            return [dict(r) for r in rows]
+
+    async def update_session_artifact(
+        self, artifact_id: str, session_id: str, tenant_id: str, content: bytes
+    ) -> dict[str, Any] | None:
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                (
+                    await s.execute(
+                        text(
+                            "UPDATE chat_artifacts SET content = :c, size_bytes = :n, "
+                            "updated_at = now() "
+                            "WHERE id = :id AND tenant_id = :t AND session_id = :sid "
+                            "AND kind = 'snippet' RETURNING *"
+                        ),
+                        {
+                            "c": content,
+                            "n": len(content),
+                            "id": artifact_id,
+                            "t": tenant_id,
+                            "sid": session_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            return dict(row) if row is not None else None
+
+    async def delete_session_artifact(
+        self, artifact_id: str, session_id: str, tenant_id: str
+    ) -> bool:
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            result = await s.execute(
+                text(
+                    "DELETE FROM chat_artifacts "
+                    "WHERE id = :id AND tenant_id = :t AND session_id = :sid "
+                    "AND kind = 'snippet'"
+                ),
+                {"id": artifact_id, "t": tenant_id, "sid": session_id},
+            )
+            return (result.rowcount or 0) > 0

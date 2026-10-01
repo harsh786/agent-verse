@@ -19,7 +19,7 @@ async def test_download_artifact_returns_bytes_with_disposition() -> None:
         tenant_id = me.get("tenant_id") or me.get("id")
         assert tenant_id
 
-        aid = app.state.chat_artifact_store.put(
+        aid = await app.state.chat_artifact_store.put(
             tenant_id=tenant_id, content=b"%PDF-1.4 body", mime="application/pdf", filename="r.pdf"
         )
         resp = await c.get(f"/chat/artifacts/{aid}/download")
@@ -31,6 +31,16 @@ async def test_download_artifact_returns_bytes_with_disposition() -> None:
         # Unknown artifact -> 404.
         missing = await c.get("/chat/artifacts/nope/download")
         assert missing.status_code == 404
+
+        # A storage outage is a 503, never "not found" and never driver text.
+        class _Down:
+            async def get(self, *a: object, **k: object) -> None:
+                raise ConnectionError("asyncpg: connection refused")
+
+        app.state.chat_artifact_store = _Down()
+        down = await c.get(f"/chat/artifacts/{aid}/download")
+        assert down.status_code == 503
+        assert "asyncpg" not in down.text
 
 
 @pytest.mark.asyncio

@@ -2096,6 +2096,84 @@ class ChatService:
         del self._artifacts[artifact_id]
         return True
 
+    # ── Durable artifact CRUD (ORG-42) ────────────────────────────────────────
+    # With a repository attached (the lifespan path) session artifacts live in
+    # ``chat_artifacts`` under RLS: every replica sees them and they survive a
+    # restart. The sync methods above remain the in-memory/unit-test path.
+
+    @staticmethod
+    def _artifact_from_row(row: dict[str, Any]) -> _Artifact:
+        return _Artifact(
+            id=str(row["id"]),
+            session_id=str(row["session_id"]),
+            tenant_id=str(row["tenant_id"]),
+            message_id=row.get("message_id"),
+            title=str(row["title"]),
+            language=str(row.get("language") or ""),
+            content=bytes(row["content"]).decode("utf-8", errors="replace"),
+            created_at=row.get("created_at") or _now(),
+            updated_at=row.get("updated_at") or _now(),
+        )
+
+    async def acreate_artifact(
+        self,
+        session_id: str,
+        tenant_id: str,
+        title: str,
+        language: str,
+        content: str,
+        message_id: str | None = None,
+    ) -> _Artifact:
+        if self._repository is None:
+            return self.create_artifact(
+                session_id, tenant_id, title, language, content, message_id
+            )
+        artifact_id = _hex()
+        await self._repository.put_artifact(
+            artifact_id=artifact_id,
+            tenant_id=tenant_id,
+            kind="snippet",
+            title=title,
+            mime="text/plain; charset=utf-8",
+            language=language,
+            content=content.encode("utf-8"),
+            session_id=session_id,
+            message_id=message_id,
+        )
+        row = await self._repository.get_artifact(artifact_id, tenant_id, kind="snippet")
+        if row is None:
+            raise RuntimeError("chat artifact was not readable after insert")
+        return self._artifact_from_row(row)
+
+    async def alist_artifacts(self, session_id: str, tenant_id: str) -> list[_Artifact]:
+        if self._repository is None:
+            return self.list_artifacts(session_id, tenant_id)
+        rows = await self._repository.list_session_artifacts(session_id, tenant_id)
+        return [self._artifact_from_row(r) for r in rows]
+
+    async def aupdate_artifact(
+        self, artifact_id: str, session_id: str, tenant_id: str, content: str
+    ) -> _Artifact | None:
+        if self._repository is None:
+            a = self._artifacts.get(artifact_id)
+            if a is None or a.session_id != session_id:
+                return None
+            return self.update_artifact(artifact_id, tenant_id, content)
+        row = await self._repository.update_session_artifact(
+            artifact_id, session_id, tenant_id, content.encode("utf-8")
+        )
+        return self._artifact_from_row(row) if row is not None else None
+
+    async def adelete_artifact(self, artifact_id: str, session_id: str, tenant_id: str) -> bool:
+        if self._repository is None:
+            a = self._artifacts.get(artifact_id)
+            if a is None or a.session_id != session_id:
+                return False
+            return self.delete_artifact(artifact_id, tenant_id)
+        return bool(
+            await self._repository.delete_session_artifact(artifact_id, session_id, tenant_id)
+        )
+
     # ── Search ────────────────────────────────────────────────────────────────
 
     def search_messages(

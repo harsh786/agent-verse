@@ -33,8 +33,11 @@ from app.chat.stream import (
     stream_goal_progress,
 )
 from app.chat.templates import BUILT_IN_TEMPLATES, TemplateStore
+from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -102,15 +105,20 @@ class CreateFolderRequest(BaseModel):
     color: str = "#6366f1"
 
 
+# A saved session artifact (code/text snippet) is capped; generated documents are
+# capped by ChatArtifactStore.
+_MAX_SNIPPET_CHARS = 1_000_000
+
+
 class CreateArtifactRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=500)
-    language: str = "text"
-    content: str = ""
-    message_id: str | None = None
+    language: str = Field(default="text", max_length=64)
+    content: str = Field(default="", max_length=_MAX_SNIPPET_CHARS)
+    message_id: str | None = Field(default=None, max_length=64)
 
 
 class UpdateArtifactRequest(BaseModel):
-    content: str
+    content: str = Field(..., max_length=_MAX_SNIPPET_CHARS)
 
 
 class SearchRequest(BaseModel):
@@ -209,9 +217,18 @@ async def download_artifact(artifact_id: str, request: Request) -> Response:
     """Download a chat-generated document (Phase 4), tenant-scoped."""
     tenant = _tenant(request)
     store = getattr(request.app.state, "chat_artifact_store", None)
-    art = store.get(artifact_id, tenant.tenant_id) if store is not None else None
+    if store is None:
+        raise HTTPException(status_code=503, detail="Artifact storage is not available")
+    try:
+        art = await store.get(artifact_id, tenant.tenant_id)
+    except Exception as exc:
+        # A storage outage is not "not found" (and never leaks driver text).
+        logger.warning("chat_artifact_read_failed", error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="Artifact storage is unavailable; retry"
+        ) from exc
     if art is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+        raise HTTPException(status_code=404, detail="Artifact not found or expired")
     return Response(
         content=art.content,
         media_type=art.mime,
@@ -543,7 +560,7 @@ async def create_artifact(
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    a = svc.create_artifact(
+    a = await svc.acreate_artifact(
         session_id, tenant.tenant_id, body.title, body.language, body.content, body.message_id
     )
     return {"id": a.id, "title": a.title, "language": a.language, "content": a.content}
@@ -553,7 +570,7 @@ async def create_artifact(
 async def list_artifacts(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    artifacts = svc.list_artifacts(session_id, tenant.tenant_id)
+    artifacts = await svc.alist_artifacts(session_id, tenant.tenant_id)
     return {
         "artifacts": [
             {"id": a.id, "title": a.title, "language": a.language, "content": a.content}
@@ -568,7 +585,7 @@ async def update_artifact(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    a = svc.update_artifact(artifact_id, tenant.tenant_id, body.content)
+    a = await svc.aupdate_artifact(artifact_id, session_id, tenant.tenant_id, body.content)
     if not a:
         raise HTTPException(status_code=404, detail="Artifact not found")
     return {"id": a.id, "title": a.title, "language": a.language, "content": a.content}
@@ -580,7 +597,7 @@ async def update_artifact(
 async def delete_artifact(session_id: str, artifact_id: str, request: Request) -> None:
     tenant = _tenant(request)
     svc = _svc(request)
-    ok = svc.delete_artifact(artifact_id, tenant.tenant_id)
+    ok = await svc.adelete_artifact(artifact_id, session_id, tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Artifact not found")
 

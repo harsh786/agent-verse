@@ -7411,6 +7411,23 @@ def purge_expired_artifacts() -> dict:
     return _run_async(_run())
 
 
+@celery_app.task(name="agentverse.maintenance.purge_expired_chat_artifacts")
+def purge_expired_chat_artifacts() -> dict:
+    """Delete chat-generated documents past retention (ORG-42), in bounded batches.
+
+    Cross-tenant, so it runs on the BYPASSRLS maintenance factory; a failure raises
+    so Celery records it instead of reporting zero rows purged.
+    """
+
+    async def _run() -> dict:
+        from app.chat.artifact_store import purge_expired_chat_artifacts as _purge
+        from app.db.session import get_system_session_factory
+
+        return {"purged_count": await _purge(get_system_session_factory())}
+
+    return _run_async(_run())
+
+
 @celery_app.task(name="agentverse.compliance.run_gdpr_export", bind=True, max_retries=1)
 def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
     """Async GDPR data export job — runs in background worker.

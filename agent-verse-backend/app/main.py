@@ -1591,6 +1591,12 @@ def create_app(
 
                 _chat_repo = PostgresChatRepository(db_factory)
                 app.state.chat_repository = _chat_repo
+                # Generated documents go to chat_artifacts (ORG-42). The same store
+                # object is captured by the generate_document skill, so it is
+                # upgraded in place rather than replaced.
+                _chat_artifacts = getattr(app.state, "chat_artifact_store", None)
+                if _chat_artifacts is not None:
+                    _chat_artifacts.attach_repository(_chat_repo)
                 # Durable personalization + identity stores (Phase 11 / Phase 3),
                 # swapping the in-memory defaults for Postgres-backed ones.
                 _identity_svc = IdentityService(PostgresIdentityStore(db_factory))

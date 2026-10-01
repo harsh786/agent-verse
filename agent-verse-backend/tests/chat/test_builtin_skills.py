@@ -125,7 +125,7 @@ async def test_generate_document_skill_stores_and_returns_ref() -> None:
     out = await skill.handler(tenant_id="t1", content="Hello report", fmt="pdf", filename="r.pdf")
     assert out["filename"] == "r.pdf" and out["mime"] == "application/pdf"
     assert out["download_url"].endswith("/download")
-    stored = store.get(out["artifact_id"], "t1")
+    stored = await store.get(out["artifact_id"], "t1")
     assert stored is not None and stored.content[:4] == b"%PDF"
     assert skill.scope == "documents:write"
 

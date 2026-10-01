@@ -300,6 +300,12 @@ celery_app.conf.update(
             "schedule": 86400,  # daily
             "options": {"queue": "maintenance"},
         },
+        # ORG-42: generated chat documents past their retention window.
+        "purge-expired-chat-artifacts-hourly": {
+            "task": "agentverse.maintenance.purge_expired_chat_artifacts",
+            "schedule": 3600,
+            "options": {"queue": "maintenance"},
+        },
         "civilization-discovery-every-30s": {
             "task": "app.scaling.tasks.discover_and_tick_civilizations",
             "schedule": 30,

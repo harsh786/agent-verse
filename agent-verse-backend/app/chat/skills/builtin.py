@@ -98,13 +98,18 @@ def build_generate_document_skill(artifact_store: Any) -> ChatSkill:
     async def handler(
         tenant_id: str, content: str, fmt: str = "pdf", filename: str | None = None
     ) -> dict[str, Any]:
+        from app.chat.artifact_store import ChatArtifactTooLargeError
         from app.chat.documents import generate_document, mime_for
 
         data = generate_document(content, fmt)
         name = filename or f"document.{fmt.lower()}"
-        artifact_id = artifact_store.put(
-            tenant_id=tenant_id, content=data, mime=mime_for(fmt), filename=name
-        )
+        try:
+            artifact_id = await artifact_store.put(
+                tenant_id=tenant_id, content=data, mime=mime_for(fmt), filename=name
+            )
+        except ChatArtifactTooLargeError as exc:
+            # An honest refusal the turn can show; nothing was stored.
+            return {"error": "document_too_large", "detail": str(exc)}
         return {
             "artifact_id": artifact_id,
             "filename": name,
