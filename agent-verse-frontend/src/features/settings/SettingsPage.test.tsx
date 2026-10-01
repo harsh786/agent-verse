@@ -123,6 +123,16 @@ describe('SettingsPage – LLM Provider section', () => {
     expect(screen.getByText('claude-opus-4-5')).toBeInTheDocument();
   });
 
+  test('non-admin callers cannot open the LLM editor (SVC-31)', async () => {
+    makeSettingsFetch({
+      llmConfig: { provider: 'openai', default_model: 'gpt-4o', masked_key: '****', can_edit: false },
+    });
+    renderSettingsPage('llm');
+    await waitFor(() => expect(screen.getByText('openai')).toBeInTheDocument());
+    expect(screen.getByText(/only tenant admins can change/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
+  });
+
   test('shows edit form when Edit button is clicked', async () => {
     makeSettingsFetch({
       llmConfig: { provider: 'openai', model: 'gpt-4o', api_key: '' },

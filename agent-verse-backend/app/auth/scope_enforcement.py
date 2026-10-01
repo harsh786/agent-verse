@@ -75,6 +75,10 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("PATCH", "/tenants/me"): "tenancy:write",
     ("POST", "/tenants/me"): "tenancy:write",
     ("DELETE", "/tenants/me"): "tenancy:write",
+    # PUT /tenants/me/llm and /me/llm-config replace the tenant's BYOK provider
+    # key and base_url (where all its prompts go); unregistered, any operator
+    # key passed the unregistered-write fallback.
+    ("PUT", "/tenants/me/llm"): "tenancy:write",
     # Templates (goal templates)
     # TRG-36: a caller links ITS OWN Slack identity (any role may; what the link
     # can do in Slack is re-checked against the key's live scopes per action).

@@ -16,7 +16,9 @@ from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-_CTX = TenantContext(tenant_id="tid-test", plan=PlanTier.STARTER, api_key_id="kid-1")
+_CTX = TenantContext(
+    tenant_id="tid-test", plan=PlanTier.STARTER, api_key_id="kid-1", roles=("admin",)
+)
 _VALID_KEY = "ak_test_abc123"
 
 

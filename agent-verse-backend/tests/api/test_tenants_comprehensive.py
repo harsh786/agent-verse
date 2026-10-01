@@ -13,7 +13,9 @@ from app.core.errors import ConflictError, NotFoundError
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
-_CTX = TenantContext(tenant_id="tid-tenants", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
+_CTX = TenantContext(
+    tenant_id="tid-tenants", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1", roles=("admin",)
+)
 _VALID_KEY = "av_test_tenants_comp"
 
 

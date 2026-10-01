@@ -11,7 +11,9 @@ from app.api.tenants import router as tenants_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
-_CTX = TenantContext(tenant_id="tid-p1", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p1")
+_CTX = TenantContext(
+    tenant_id="tid-p1", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p1", roles=("admin",)
+)
 _KEY = "ak_phase1_test_key"
 _HEADERS = {"X-API-Key": _KEY}
 

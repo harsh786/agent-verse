@@ -342,6 +342,52 @@ def _safe_llm_view(tenant_id: str, cfg: dict[str, Any] | None) -> dict[str, Any]
     return {"tenant_id": tenant_id, **safe, "configured": True}
 
 
+def _can_edit_llm(ctx: TenantContext) -> bool:
+    from app.tenancy.rbac import has_role
+
+    return has_role(ctx, "admin")
+
+
+def _check_llm_base_url(base_url: str) -> None:
+    from app.providers.tenant_provider import (
+        TenantProviderError,
+        _assert_tenant_base_url_allowed,
+    )
+
+    try:
+        _assert_tenant_base_url_allowed(base_url)
+    except TenantProviderError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _audit_llm_change(
+    request: Request,
+    ctx: TenantContext,
+    *,
+    provider: str,
+    base_url: str | None,
+    key_changed: bool,
+) -> None:
+    """Record a tenant LLM provider change (who, provider, base_url — never the key)."""
+    from app.governance.audit import AuditEvent
+    from app.governance.permissions import ActionLevel
+
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is None:
+        return
+    audit_log.record(
+        AuditEvent(
+            goal_id="tenant_settings",
+            tool_name="tenant.llm_config",
+            action_level=ActionLevel.ALLOW_LOG,
+            outcome="updated",
+            api_key_id=ctx.api_key_id,
+            note=f"provider={provider} base_url={base_url or ''} key_changed={key_changed}",
+        ),
+        tenant_ctx=ctx,
+    )
+
+
 async def _save_llm_config(
     request: Request,
     tenant_id: str,
@@ -389,7 +435,7 @@ async def get_llm_config(
 ) -> JSONResponse:
     """Return the current LLM provider config for this tenant (key never exposed)."""
     cfg = await _read_llm_config(request, ctx.tenant_id)
-    return JSONResponse(_safe_llm_view(ctx.tenant_id, cfg))
+    return JSONResponse({**_safe_llm_view(ctx.tenant_id, cfg), "can_edit": _can_edit_llm(ctx)})
 
 
 @router.put("/me/llm", status_code=200)
@@ -397,23 +443,19 @@ async def set_llm_config(
     body: LLMProviderConfig,
     request: Request,
     ctx: TenantContext = Depends(_require_tenant),
+    _: None = Depends(require_role("admin")),
 ) -> JSONResponse:
     """Configure the LLM provider for this tenant. The API key is stored encrypted.
+
+    Admin only: the provider key and base_url decide where every prompt (goal
+    data, tool outputs) is sent. Each change is written to the audit trail.
 
     Durable in Postgres (tenant_llm_configs) with Redis as a cache. It used to
     be kept in this replica's memory (which the goal path read) plus Redis, so
     the provider applied only on the replica that handled this request.
     """
     if body.base_url:
-        from app.providers.tenant_provider import (
-            TenantProviderError,
-            _assert_tenant_base_url_allowed,
-        )
-
-        try:
-            _assert_tenant_base_url_allowed(body.base_url)
-        except TenantProviderError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _check_llm_base_url(body.base_url)
     # PROV-15: the tenant's own vault key when it set one, else the platform vault.
     from app.providers.tenant_vault import TenantVaultError, encrypt_tenant_secret
 
@@ -433,6 +475,9 @@ async def set_llm_config(
         base_url=body.base_url,
         masked_key=masked_key,
     )
+    _audit_llm_change(
+        request, ctx, provider=body.provider, base_url=body.base_url, key_changed=True
+    )
     return JSONResponse(
         {
             "tenant_id": ctx.tenant_id,
@@ -451,11 +496,14 @@ async def set_llm_config(
 async def get_tenant_llm_config(request: Request) -> dict:
     """The tenant's LLM configuration without secrets (same record as /me/llm)."""
     tenant = _require_tenant(request)
-    return _safe_llm_view(tenant.tenant_id, await _read_llm_config(request, tenant.tenant_id))
+    cfg = await _read_llm_config(request, tenant.tenant_id)
+    return {**_safe_llm_view(tenant.tenant_id, cfg), "can_edit": _can_edit_llm(tenant)}
 
 
 @router.put("/me/llm-config")
-async def save_tenant_llm_config(request: Request) -> dict:
+async def save_tenant_llm_config(
+    request: Request, _: None = Depends(require_role("admin"))
+) -> dict:
     """Update the non-secret fields (provider, default_model, base_url).
 
     This used to call TenantService methods that do not exist and answer
@@ -482,6 +530,11 @@ async def save_tenant_llm_config(request: Request) -> dict:
         or current.get("model") or current.get("default_model") or ""
     )
     base_url = body.get("base_url", current.get("base_url"))
+    if base_url is not None and not isinstance(base_url, str):
+        raise HTTPException(status_code=422, detail="base_url must be a string")
+    if base_url and base_url != current.get("base_url"):
+        # This route skipped the allow-list PUT /me/llm applies.
+        _check_llm_base_url(base_url)
     await _save_llm_config(
         request,
         tenant.tenant_id,
@@ -491,6 +544,7 @@ async def save_tenant_llm_config(request: Request) -> dict:
         base_url=base_url,
         masked_key=current.get("masked_key"),
     )
+    _audit_llm_change(request, tenant, provider=provider, base_url=base_url, key_changed=False)
     saved = await _read_llm_config(request, tenant.tenant_id)
     return {"status": "saved", **_safe_llm_view(tenant.tenant_id, saved)}
 

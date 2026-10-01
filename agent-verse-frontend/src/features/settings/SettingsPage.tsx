@@ -225,18 +225,30 @@ function LLMProviderSection({ apiKey }: { apiKey: string }) {
     },
   });
 
+  // The provider key and base_url decide where every prompt goes, so only tenant
+  // admins may change them (the backend answers 403 otherwise and reports can_edit).
+  const canEdit =
+    (llmFull as any)?.can_edit !== false && (llmConfig as any)?.can_edit !== false;
+
   if (isLoading) return <SectionShell title="LLM Provider"><p className="text-sm text-muted-foreground">Loading…</p></SectionShell>;
 
   return (
     <SectionShell
       title="LLM Provider"
       action={
-        <button onClick={() => setEditing((v) => !v)} className="text-sm text-primary hover:opacity-70">
-          {editing ? t('common.cancel') : t('common.edit')}
-        </button>
+        canEdit ? (
+          <button onClick={() => setEditing((v) => !v)} className="text-sm text-primary hover:opacity-70">
+            {editing ? t('common.cancel') : t('common.edit')}
+          </button>
+        ) : undefined
       }
     >
-      {editing ? (
+      {!canEdit && (
+        <p className="text-xs text-muted-foreground mb-3">
+          Only tenant admins can change the LLM provider, API key or base URL.
+        </p>
+      )}
+      {editing && canEdit ? (
         <div className="space-y-3">
           <div>
             <label className="block text-xs font-medium mb-1">Provider</label>
