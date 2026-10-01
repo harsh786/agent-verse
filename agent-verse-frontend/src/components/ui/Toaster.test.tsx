@@ -33,9 +33,13 @@ test('renders a toast and dismisses on click', async () => {
   expect(await screen.findByText('Network down')).toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: /dismiss/i }));
   // Use waitFor to handle AnimatePresence exit animation in framer-motion
-  await waitFor(() => {
-    expect(screen.queryByText('Network down')).not.toBeInTheDocument();
-  });
+  // The exit animation can outlast waitFor's 1 s default on a loaded machine.
+  await waitFor(
+    () => {
+      expect(screen.queryByText('Network down')).not.toBeInTheDocument();
+    },
+    { timeout: 5000 },
+  );
 });
 
 test('clicking an action button fires its onClick and dismisses the toast', async () => {
@@ -48,9 +52,13 @@ test('clicking an action button fires its onClick and dismisses the toast', asyn
 
   await userEvent.click(screen.getByRole('button', { name: 'Undo' }));
   expect(onClick).toHaveBeenCalledTimes(1);
-  await waitFor(() => {
-    expect(screen.queryByText('Deployed')).not.toBeInTheDocument();
-  });
+  // The exit animation can outlast waitFor's 1 s default on a loaded machine.
+  await waitFor(
+    () => {
+      expect(screen.queryByText('Deployed')).not.toBeInTheDocument();
+    },
+    { timeout: 5000 },
+  );
 });
 
 test('an unrecognized kind falls back to the info config', async () => {
