@@ -603,6 +603,42 @@ async def test_verify_grounding_gate_error_is_contained_and_never_crashes() -> N
     assert result["agent_state"].verification_success is True
 
 
+@pytest.mark.asyncio
+async def test_grounding_gate_error_fails_closed_on_a_high_risk_goal() -> None:
+    """CORE-29: an erroring grounding engine must not let a high-risk answer out
+    unverified — the verdict becomes a replan; a normal goal still completes,
+    and both emit grounding_check_failed."""
+    events: list[dict] = []
+
+    async def _sink(evt: dict) -> None:
+        events.append(evt)
+
+    for goal, expect_success in (
+        ("delete the production customer table", False),
+        ("normal task", True),
+    ):
+        events.clear()
+        graph = _make_graph(verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}']))
+        graph._event_callback = _sink
+        agent_state = _agent_state(goal)
+        agent_state.cited_answer = "Deleted 12345 rows."
+        agent_state.steps.append(
+            StepResult(description="step", status=StepStatus.COMPLETE, output="output",
+                       tool_calls=[{"output": "evidence text"}])
+        )
+        with patch(
+            "app.agent.grounding.check_grounding",
+            side_effect=RuntimeError("grounding check exploded"),
+        ):
+            result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+        state = result["agent_state"]
+        assert state.verification_success is expect_success, goal
+        assert any(e.get("type") == "grounding_check_failed" for e in events), goal
+        if not expect_success:
+            assert state.context.get("verification_retry") is True
+            assert "grounding check unavailable" in (state.verification_feedback or "")
+
+
 # ===========================================================================
 # Verifier calibration (false-confirm rate tracking)
 # ===========================================================================

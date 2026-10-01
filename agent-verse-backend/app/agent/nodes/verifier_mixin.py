@@ -414,8 +414,31 @@ class VerifierMixin:
                                 reasons=_verdict.reasons[:3],
                             )
             except Exception as exc:
-                # Grounding-gate errors must never crash verification.
-                self._logger.warning("final_grounding_gate_error", error=str(exc)[:80])
+                # Grounding-gate errors must never crash verification. They fail
+                # OPEN only on normal goals: a high-risk answer is never emitted
+                # unverified because the grounding engine errored (CORE-29) —
+                # same fail-closed rule as the executor's high-risk gate.
+                self._logger.warning("final_grounding_gate_error", error=type(exc).__name__)
+                from app.agent.nodes._helpers import _is_high_risk_step as _hr
+
+                _high = _hr(agent_state.goal)
+                with contextlib.suppress(Exception):
+                    await self._emit(
+                        {
+                            "type": "grounding_check_failed",
+                            "stage": "final_answer",
+                            "high_risk": _high,
+                            "error_type": type(exc).__name__,
+                        }
+                    )
+                if _high and success:
+                    success = False
+                    retry = True
+                    agent_state.context["verification_retry"] = True
+                    reason = (
+                        "Final answer not verified: grounding check unavailable on a "
+                        f"high-risk goal ({type(exc).__name__}). " + (reason or "")
+                    ).strip()
 
         agent_state.verification_success = success
         agent_state.verification_feedback = reason
