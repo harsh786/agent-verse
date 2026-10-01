@@ -7,6 +7,7 @@ import contextlib
 import contextvars
 import datetime
 import hashlib
+import itertools
 import os
 import re
 import signal as _signal
@@ -8179,9 +8180,33 @@ async def re_embed_collection_async(
                 f"({resolved_key}); re-embedding with it would not match query vectors"
             )
 
-        async def _embed(texts: list[str]) -> list[list[float]]:
+        from app.embedding.metering import embed_metered
+        from app.tenancy.context import PlanTier, TenantContext
+
+        tenant_ctx = TenantContext(
+            tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="re-embed"
+        )
+
+        async def _embed_once(texts: list[str]) -> list[list[float]]:
             response = await embedder.embed(EmbedRequest(texts=texts))
             return [list(vec) for vec in response.embeddings]
+
+        batch_seq = itertools.count()
+
+        async def _embed(texts: list[str]) -> list[list[float]]:
+            # KB-49: every batch is reserved against the tenant's budget (the
+            # worker's registered controller) before it is sent and recorded as
+            # embedding usage. A refusal raises, failing the job; a dimension
+            # move then never flips, so the collection stays on its old table.
+            return await embed_metered(
+                texts,
+                _embed_once,
+                tenant_ctx=tenant_ctx,
+                model=resolved_key,
+                operation_id=f"{job}:{next(batch_seq)}",
+                label="re-embed",
+                batch_size=max(len(texts), 1),
+            )
 
         result = await reembed.re_embed_collection(
             db=_get_fresh_db(),

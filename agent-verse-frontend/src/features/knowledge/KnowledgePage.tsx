@@ -61,6 +61,10 @@ interface ReembedProgress {
   job_id?: string; processed?: number; total?: number | null; dimension?: number; error?: string;
 }
 
+/** Chunks per re-embed batch and the budget reserved per embedding request (backend constants). */
+const REEMBED_BATCH_CHUNKS = 50;
+const EMBED_REQUEST_COST_USD = 0.0001;
+
 function reembedErrorMessage(e: unknown): string {
   if (e instanceof ApiError && e.status === 409) return 'A re-embed of this collection is already running.';
   if (e instanceof ApiError && e.status === 403) return 'Only admins can re-embed a collection.';
@@ -94,6 +98,21 @@ function ReembedControl({ collectionId }: { collectionId: string }) {
     },
   });
   const busy = mutation.isPending || progress?.status === 'queued' || progress?.status === 'running';
+  // KB-49: a re-embed is charged to the tenant's budget — say roughly how much
+  // (one embedding request per 50-chunk batch) before it is confirmed.
+  const start = async () => {
+    let estimate = '';
+    try {
+      const stats = await apiFetch<{ chunk_count?: number }>(
+        `/knowledge/collections/${collectionId}/stats`, undefined, { silenceServerErrorToast: true },
+      );
+      if (typeof stats?.chunk_count === 'number') {
+        const cost = Math.ceil(stats.chunk_count / REEMBED_BATCH_CHUNKS) * EMBED_REQUEST_COST_USD;
+        estimate = `\n\n${stats.chunk_count} chunks — estimated embedding cost $${cost.toFixed(4)}, reserved against your budget.`;
+      }
+    } catch { /* estimate unavailable: still ask */ }
+    if (window.confirm(`Re-embed every chunk with the current embedding model?${estimate}`)) mutation.mutate();
+  };
   let label: string | null = null;
   if (watching && progress) {
     if (progress.status === 'queued') label = 'Re-embed queued…';
@@ -103,7 +122,7 @@ function ReembedControl({ collectionId }: { collectionId: string }) {
   }
   return (
     <div className="flex items-center gap-2 min-w-0">
-      <button data-testid={`reembed-collection-${collectionId}`} onClick={() => mutation.mutate()} disabled={busy}
+      <button data-testid={`reembed-collection-${collectionId}`} onClick={() => { void start(); }} disabled={busy}
         title="Re-embed every chunk with the current embedding model"
         className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 disabled:opacity-50">
         <RefreshCw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} /> Re-embed

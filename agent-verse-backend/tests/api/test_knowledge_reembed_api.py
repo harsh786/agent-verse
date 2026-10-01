@@ -33,6 +33,9 @@ class _Store:
             return object()
         return None
 
+    async def collection_counters_async(self, *, tenant_ctx: Any, collection_id: str) -> Any:
+        return [{"collection_id": collection_id, "chunk_count": 120}]
+
 
 def _client(redis: Any) -> TestClient:
     app = FastAPI()
@@ -68,6 +71,9 @@ def test_admin_enqueues_a_re_embed_with_progress(enqueue: MagicMock) -> None:
     assert redis.data[reembed.lock_key("t-re", "c1")] == job_id
     progress = json.loads(redis.data[reembed.progress_key("t-re", "c1")])
     assert progress["status"] == "queued" and progress["job_id"] == job_id
+    # KB-49: the 202 says what the run will reserve (3 batches of 50 chunks).
+    assert resp.json()["chunk_count"] == 120
+    assert resp.json()["estimated_cost_usd"] == pytest.approx(0.0003)
 
     status = _client(redis).get(
         "/knowledge/collections/c1/re-embed", headers={"X-API-Key": "k-operator"}

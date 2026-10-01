@@ -38,6 +38,7 @@ function mockFetch(opts: { post: () => Response; progress: unknown[] }) {
     if (url.includes('/knowledge/collections/col-1/re-embed') && method === 'POST') return opts.post();
     if (url.includes('/knowledge/collections/col-1/re-embed'))
       return json(progress.length > 1 ? progress.shift() : progress[0]);
+    if (url.includes('/knowledge/collections/col-1/stats')) return json({ chunk_count: 120 });
     if (url.includes('/knowledge/collections')) return json([COLLECTION]);
     return json({});
   });
@@ -48,6 +49,7 @@ beforeEach(() => {
   localStorage.clear();
   useAuthStore.setState({ apiKey: 'tenant-key', tenantId: 'tenant-1', plan: 'free', isAuthenticated: true });
   useToastStore.setState({ toasts: [] });
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -98,5 +100,15 @@ describe('KnowledgePage – re-embed a collection', () => {
     renderPage();
     await userEvent.click(await screen.findByTestId('reembed-collection-col-1'));
     expect(await screen.findByText(/Re-embed failed: no embedding provider/)).toBeInTheDocument();
+  });
+
+  test('KB-49: asks for confirmation with the estimated cost, and a cancel queues nothing', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const calls = mockFetch({ post: () => json({ status: 'queued', job_id: 'j' }, 202), progress: [{ status: 'never_run' }] });
+    renderPage();
+    await userEvent.click(await screen.findByTestId('reembed-collection-col-1'));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(String(confirm.mock.calls[0][0])).toMatch(/120 chunks — estimated embedding cost \$0\.0003/);
+    expect(calls.some((c) => c.method === 'POST' && c.url.includes('/re-embed'))).toBe(false);
   });
 });

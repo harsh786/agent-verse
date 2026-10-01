@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import math
 import os
 import uuid as _uuid
 from contextlib import suppress
@@ -3210,7 +3211,7 @@ async def re_embed_collection_route(
     from app.rag import reembed
 
     tenant = _require_tenant(request)
-    await _owned_collection_or_404(request, collection_id, tenant)
+    store = await _owned_collection_or_404(request, collection_id, tenant)
     redis = _runtime_redis(request)
     if redis is None:
         raise HTTPException(status_code=503, detail="Re-embedding requires Redis")
@@ -3247,7 +3248,26 @@ async def re_embed_collection_route(
         raise HTTPException(
             status_code=503, detail="Re-embed could not be queued; try again shortly"
         ) from exc
-    return {"status": "queued", "job_id": job_id, "collection_id": collection_id}
+    # KB-49: what the run will reserve against the tenant's budget (one
+    # embedding request per re-embed batch). Best-effort: unknown -> None.
+    chunk_count: int | None = None
+    with suppress(Exception):
+        counters = await store.collection_counters_async(
+            tenant_ctx=tenant, collection_id=collection_id
+        )
+        chunk_count = int(counters[0]["chunk_count"]) if counters else 0
+    estimated_cost = (
+        round(math.ceil(chunk_count / reembed.BATCH_SIZE) * EMBED_BATCH_COST_USD, 6)
+        if chunk_count is not None
+        else None
+    )
+    return {
+        "status": "queued",
+        "job_id": job_id,
+        "collection_id": collection_id,
+        "chunk_count": chunk_count,
+        "estimated_cost_usd": estimated_cost,
+    }
 
 
 @router.get("/collections/{collection_id}/re-embed")
