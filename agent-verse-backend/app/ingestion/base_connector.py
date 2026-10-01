@@ -231,8 +231,17 @@ class BaseConnector(ABC):
 
         Returns None if unknown (streaming sources, large DBs without COUNT).
         Used to show progress bar in UI (docs_indexed / total_estimate).
+
+        Synchronous by contract and may do network I/O (S3 lists the bucket):
+        async code must call :meth:`estimate_doc_count_async` instead.
         """
         return None
+
+    async def estimate_doc_count_async(self, config: SourceConfig) -> int | None:
+        """:meth:`estimate_doc_count` on the bounded SDK pool, off the event loop."""
+        from app.ingestion.sdk_executor import run_blocking
+
+        return await run_blocking(self.estimate_doc_count, config)
 
     # ── Capability flags ──────────────────────────────────────────────────────
 
