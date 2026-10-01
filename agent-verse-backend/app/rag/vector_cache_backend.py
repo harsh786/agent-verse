@@ -32,8 +32,10 @@ class CacheBackend(Protocol):
         embedding: list[float],
         tenant_id: str,
         threshold: float = _SIMILARITY_THRESHOLD,
+        *,
+        generation: int = 0,
     ) -> dict[str, Any] | None:
-        """Return the most similar cached entry, or None."""
+        """Return the most similar entry of ``tenant_id`` at ``generation``, or None."""
         ...
 
     async def store(
@@ -42,12 +44,14 @@ class CacheBackend(Protocol):
         embedding: list[float],
         response: str,
         tenant_id: str,
+        *,
+        generation: int = 0,
     ) -> None:
-        """Store a new cache entry."""
+        """Store a new cache entry; raises when it could not be written."""
         ...
 
     async def clear(self, tenant_id: str) -> None:
-        """Clear all entries for a tenant."""
+        """Clear all entries for a tenant, across every generation."""
         ...
 
     async def stats(self, tenant_id: str) -> dict[str, Any]:
@@ -59,7 +63,8 @@ class InMemoryCacheBackend:
     """Fallback in-memory backend for tests and no-DB environments."""
 
     def __init__(self) -> None:
-        self._store: dict[str, list[dict[str, Any]]] = {}  # tenant_id → entries
+        # tenant_id → entries (each tagged with its knowledge generation)
+        self._store: dict[str, list[dict[str, Any]]] = {}
         self._hits: dict[str, int] = {}
         self._misses: dict[str, int] = {}
 
@@ -68,11 +73,15 @@ class InMemoryCacheBackend:
         embedding: list[float],
         tenant_id: str,
         threshold: float = _SIMILARITY_THRESHOLD,
+        *,
+        generation: int = 0,
     ) -> dict[str, Any] | None:
         entries = self._store.get(tenant_id, [])
         best_score = 0.0
         best_entry = None
         for entry in entries:
+            if entry["generation"] != generation:
+                continue
             score = _cosine_similarity(embedding, entry["embedding"])
             if score > best_score:
                 best_score = score
@@ -89,11 +98,14 @@ class InMemoryCacheBackend:
         embedding: list[float],
         response: str,
         tenant_id: str,
+        *,
+        generation: int = 0,
     ) -> None:
         if tenant_id not in self._store:
             self._store[tenant_id] = []
         self._store[tenant_id].append(
             {
+                "generation": generation,
                 "query": query,
                 "embedding": embedding,
                 "response": response,
@@ -153,6 +165,8 @@ class PgVectorCacheBackend:
         embedding: list[float],
         tenant_id: str,
         threshold: float = _SIMILARITY_THRESHOLD,
+        *,
+        generation: int = 0,
     ) -> dict[str, Any] | None:
         if self._db is None:
             return None
@@ -172,6 +186,7 @@ class PgVectorCacheBackend:
                                        AS score
                             FROM semantic_cache_entries
                             WHERE tenant_id = :tid
+                              AND generation = :gen
                               AND created_at > now() - make_interval(secs => :ttl)
                               AND vector_dims(CAST(embedding AS vector)) = :dim
                         ) AS candidates
@@ -186,6 +201,7 @@ class PgVectorCacheBackend:
                     {
                         "emb": emb_str,
                         "tid": tenant_id,
+                        "gen": generation,
                         "threshold": threshold,
                         "ttl": self._ttl,
                         "dim": len(embedding),
@@ -205,46 +221,51 @@ class PgVectorCacheBackend:
         embedding: list[float],
         response: str,
         tenant_id: str,
+        *,
+        generation: int = 0,
     ) -> None:
+        """Write one entry; raises on failure (the caller logs and counts it)."""
         if self._db is None:
             return
-        try:
-            import uuid
+        import uuid
 
-            text, sqlalchemy_rls_context = _get_rls_imports()
-            async with (
-                self._db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
+        text, sqlalchemy_rls_context = _get_rls_imports()
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            await session.execute(
+                text("""
+                    INSERT INTO semantic_cache_entries
+                        (id, tenant_id, generation, query, embedding, response, created_at)
+                    VALUES (:id, :tid, :gen, :q, CAST(:emb AS vector), :resp, NOW())
+                    ON CONFLICT DO NOTHING
+                """),
+                {
+                    "id": uuid.uuid4().hex,
+                    "tid": tenant_id,
+                    "gen": generation,
+                    "q": query[:1000],
+                    "emb": str(embedding),
+                    "resp": response,
+                },
+            )
+            self._writes += 1
+            if self._writes % self._PURGE_EVERY == 0:
+                # Expired rows and every superseded generation (unreachable
+                # once the tenant moved on) go together.
                 await session.execute(
-                    text("""
-                        INSERT INTO semantic_cache_entries
-                            (id, tenant_id, query, embedding, response, created_at)
-                        VALUES (:id, :tid, :q, CAST(:emb AS vector), :resp, NOW())
-                        ON CONFLICT DO NOTHING
-                    """),
-                    {
-                        "id": uuid.uuid4().hex,
-                        "tid": tenant_id,
-                        "q": query[:1000],
-                        "emb": str(embedding),
-                        "resp": response,
-                    },
+                    text(
+                        "DELETE FROM semantic_cache_entries WHERE tenant_id = :tid "
+                        "AND (generation < :gen "
+                        "OR created_at <= now() - make_interval(secs => :ttl))"
+                    ),
+                    {"tid": tenant_id, "gen": generation, "ttl": self._ttl},
                 )
-                self._writes += 1
-                if self._writes % self._PURGE_EVERY == 0:
-                    await session.execute(
-                        text(
-                            "DELETE FROM semantic_cache_entries WHERE tenant_id = :tid "
-                            "AND created_at <= now() - make_interval(secs => :ttl)"
-                        ),
-                        {"tid": tenant_id, "ttl": self._ttl},
-                    )
-        except Exception as e:
-            logger.warning("pgvector_cache_store_failed", error=str(e)[:120])
 
     async def clear(self, tenant_id: str) -> None:
+        """Delete every generation of ``tenant_id`` (tenant erase / explicit clear)."""
         if self._db is None:
             return
         try:

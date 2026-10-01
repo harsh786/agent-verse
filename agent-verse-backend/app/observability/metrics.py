@@ -291,6 +291,12 @@ MEMORY_DEGRADED_TOTAL = Counter(
     labelnames=("store", "op"),
     registry=REGISTRY,
 )
+KNOWLEDGE_FAILURE_TOTAL = Counter(
+    "agentverse_knowledge_failure_total",
+    "Knowledge-plane operations that failed (cache writes, retention runs, ...).",
+    labelnames=("component", "op"),
+    registry=REGISTRY,
+)
 COORDINATION_HANDOFF_DURATION = Histogram(
     "agentverse_coordination_handoff_duration_seconds",
     "Accepted handoff latency.",

@@ -94,6 +94,14 @@ async def bump_knowledge_generation(tenant_id: str, *, redis: Any = None) -> boo
                     await close()
 
 
+def _count_failure(op: str) -> None:
+    """Count a semantic-cache layer failure (``agentverse_knowledge_failure_total``)."""
+    with contextlib.suppress(Exception):  # metrics must never break the cache
+        from app.observability.metrics import KNOWLEDGE_FAILURE_TOTAL
+
+        KNOWLEDGE_FAILURE_TOTAL.labels("semantic_cache", op).inc()
+
+
 # ── Maths helpers ─────────────────────────────────────────────────────────────
 
 
@@ -277,6 +285,16 @@ class SemanticCache:
         replica, the worker) takes effect everywhere at once. If Redis cannot
         be read the answer might be stale, so callers treat None as a miss.
         """
+        generation = await self._current_generation(tenant_id)
+        return None if generation is None else _generation_scope(tenant_id, generation)
+
+    async def _current_generation(self, tenant_id: str) -> int | None:
+        """The tenant's current knowledge generation; None when it cannot be known.
+
+        The L1 / Redis namespaces embed it in their keys; the durable backend
+        gets it as its own column (it must never be folded into ``tenant_id``,
+        which is the RLS identity and a bounded VARCHAR).
+        """
         generation = self._generation.get(tenant_id, 0)
         if self._redis is not None:
             try:
@@ -290,7 +308,7 @@ class SemanticCache:
                 return None
             generation = max(generation, shared)
             self._generation[tenant_id] = generation
-        return _generation_scope(tenant_id, generation)
+        return generation
 
     def _scope_sync(self, tenant_id: str) -> str:
         """Namespace for the synchronous (L1-only) API: the last generation seen."""
@@ -334,10 +352,11 @@ class SemanticCache:
         """
         t0 = time.monotonic()
         s = self._get_stats(tenant_id)
-        scope = await self._scope(tenant_id)
-        if scope is None:
+        generation = await self._current_generation(tenant_id)
+        if generation is None:
             s["misses"] += 1
             return None
+        scope = _generation_scope(tenant_id, generation)
 
         # ── L1 lookup ────────────────────────────────────────────────────────
         l1_response = self._l1.get(embedding, scope)
@@ -358,7 +377,9 @@ class SemanticCache:
         # ── L2 ANN backend lookup (pgvector HNSW — faster for large caches) ──
         if self._backend is not None:
             try:
-                ann_hit = await self._backend.get_similar(embedding, scope, self._threshold)
+                ann_hit = await self._backend.get_similar(
+                    embedding, tenant_id, self._threshold, generation=generation
+                )
                 if ann_hit is not None:
                     response = ann_hit["response"]
                     # Skip empty-response entries (used for prefetch warming only)
@@ -427,9 +448,10 @@ class SemanticCache:
             return  # nothing to serve: an empty answer is never an entry
         response = response[: self._max_response]  # cap length
         entry_id = uuid.uuid4().hex[:16]
-        scope = await self._scope(tenant_id)
-        if scope is None:
+        generation = await self._current_generation(tenant_id)
+        if generation is None:
             return  # generation unknown: never store under a possibly stale one
+        scope = _generation_scope(tenant_id, generation)
 
         # L1 store
         self._l1._put(embedding, response, scope, key=entry_id)
@@ -448,9 +470,19 @@ class SemanticCache:
         # stayed empty and every backend lookup was a guaranteed miss.
         if self._backend is not None:
             try:
-                await self._backend.store(query, embedding, response, scope)
+                await self._backend.store(
+                    query, embedding, response, tenant_id, generation=generation
+                )
             except Exception as exc:
-                logger.warning("semantic_cache_backend_store_error", error=str(exc)[:100])
+                # Never breaks the caller, but never silent either: a broken
+                # durable L2 is logged and counted so it can be alerted on.
+                _count_failure("backend_store")
+                logger.warning(
+                    "semantic_cache_backend_store_error",
+                    tenant=tenant_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc)[:200],
+                )
 
     # Backward-compatible async API (used by old graph.py code)
     async def get(self, query: str, embedding: list[float] | None, tenant_id: str) -> str | None:
@@ -684,7 +716,7 @@ class SemanticCache:
         # its old answers from semantic_cache_entries.
         if self._backend is not None:
             try:
-                await self._backend.clear(scope)
+                await self._backend.clear(tid)  # every generation of the tenant
             except Exception as exc:
                 logger.warning("semantic_cache_backend_clear_error", error=str(exc)[:100])
         # Other replicas keep their own L1: move every replica to a new, empty
