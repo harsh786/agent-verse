@@ -62,7 +62,7 @@ def _fake_influx() -> dict[str, ModuleType]:
     client = MagicMock()
     client.__enter__.return_value = client
     client.query_api.return_value.query.side_effect = _follow_redirect
-    client.health.side_effect = _follow_redirect
+    client.ping.side_effect = _follow_redirect
     mod.InfluxDBClient = MagicMock(return_value=client)  # type: ignore[attr-defined]
     return {"influxdb_client": mod}
 

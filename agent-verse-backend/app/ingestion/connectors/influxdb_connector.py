@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import (
     BaseConnector,
@@ -49,7 +49,7 @@ class InfluxDBConnector(BaseConnector):
             # platform's own http://localhost:8086).
             url = cc.get("url", "")
 
-            def _health() -> Any:
+            def _health() -> tuple[bool, str]:
                 from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
 
                 with InfluxDBClient(
@@ -57,18 +57,25 @@ class InfluxDBConnector(BaseConnector):
                     token=cc.get("token", ""),
                     org=cc.get("org", ""),
                 ) as client:
-                    return client.health()
+                    # health() is deprecated in influxdb-client; ping() is its
+                    # replacement but answers only True/False, so on failure the
+                    # reason is read from the same /ping endpoint via version().
+                    if client.ping():
+                        return True, str(client.version())
+                    try:
+                        client.version()
+                    except Exception as exc:
+                        return False, f"Unhealthy: {exc}"
+                    return False, "Unhealthy: InfluxDB did not answer /ping"
 
             # The HTTP client's own lookups answer with the checked addresses, and
             # a redirect it follows (urllib3 does by default) is egress-checked.
             async with pin_source_urls([url], context="influxdb"):
-                health = await run_driver_call(_health, context="influxdb")
+                ok, detail = await run_driver_call(_health, context="influxdb")
             latency = (time.perf_counter() - t0) * 1000
-            if health.status == "pass":
-                return ConnectionHealth(
-                    ok=True, latency_ms=latency, metadata={"version": health.version}
-                )
-            return ConnectionHealth(ok=False, error=f"Unhealthy: {health.message}")
+            if ok:
+                return ConnectionHealth(ok=True, latency_ms=latency, metadata={"version": detail})
+            return ConnectionHealth(ok=False, error=detail)
         except ImportError:
             return ConnectionHealth(
                 ok=False, error="influxdb-client not installed — pip install influxdb-client"

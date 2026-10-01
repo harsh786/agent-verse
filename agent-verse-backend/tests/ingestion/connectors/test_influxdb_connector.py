@@ -75,9 +75,17 @@ def _install_fake_influxdb_client(health=None, tables=None, query_side_effect=No
             return False
 
         def health(self):
-            if health is None:
-                return _FakeHealth()
-            return health
+            raise AssertionError("health() is deprecated in influxdb-client; use ping()")
+
+        def ping(self):
+            # The real ping() swallows errors and answers False.
+            return (health or _FakeHealth()).status == "pass"
+
+        def version(self):
+            state = health or _FakeHealth()
+            if state.status != "pass":
+                raise RuntimeError(state.message or "ping failed")
+            return state.version
 
         def query_api(self):
             if query_side_effect is not None:
@@ -119,11 +127,32 @@ class TestValidateConnection:
         assert health.latency_ms >= 0
 
     async def test_unhealthy_status_reported(self):
+        # INFLUX-PING: ping() answers False and hides why; the reason comes from
+        # the same /ping endpoint via version().
         _install_fake_influxdb_client(health=_FakeHealth(status="fail", message="disk full"))
         connector = InfluxDBConnector()
         health = await connector.validate_connection(_make_config())
         assert health.ok is False
         assert "disk full" in health.error
+
+    async def test_real_client_validate_uses_ping_not_the_deprecated_health(self):
+        """With the real influxdb-client, validate must not call health() — it emits a
+        DeprecationWarning (an error under this test config) — but ping()."""
+        from unittest.mock import patch
+
+        import influxdb_client
+
+        sys.modules["influxdb_client"] = influxdb_client
+        with (
+            patch.object(influxdb_client.InfluxDBClient, "ping", return_value=True) as ping,
+            patch.object(influxdb_client.InfluxDBClient, "version", return_value="2.7.10"),
+        ):
+            health = await InfluxDBConnector().validate_connection(
+                _make_config({"url": "http://influx.test:8086"})
+            )
+        assert health.ok is True, health.error
+        assert health.metadata["version"] == "2.7.10"
+        ping.assert_called_once()
 
     async def test_generic_exception_is_caught(self):
         _install_fake_influxdb_client(query_side_effect=None)
@@ -132,7 +161,7 @@ class TestValidateConnection:
         def _boom(self, *a, **kw):
             raise RuntimeError("connection refused")
 
-        cls.health = _boom
+        cls.ping = _boom
         connector = InfluxDBConnector()
         health = await connector.validate_connection(_make_config())
         assert health.ok is False
