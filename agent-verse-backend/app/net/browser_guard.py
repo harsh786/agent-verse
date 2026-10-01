@@ -27,7 +27,10 @@ browser context:
   ``Set-Cookie`` headers are written back with ``add_cookies``.
 * non-network schemes other than ``data:``/``blob:``/``about:`` (``file:``,
   ``ftp:``, ``chrome:``, ...) are aborted;
-* WebSockets (not covered by ``route``) are validated via ``route_web_socket``;
+* WebSockets (not covered by ``route``) are intercepted via ``route_web_socket``
+  and relayed by the server over a pinned connection
+  (:func:`app.net.ssrf_guard.connect_public_websocket`) — the browser never
+  connects (and so never re-resolves) the host itself;
 * service workers are blocked — their requests bypass ``route``.
 
 Everything fails closed: any error while validating or fetching aborts the
@@ -316,11 +319,27 @@ def make_route_guard(
 
 
 def make_websocket_guard(
-    *, allowed_domains: list[str] | None = None, context: str = "browser"
+    *,
+    allowed_domains: list[str] | None = None,
+    context: str = "browser",
+    cookie_jar: Callable[[], Any] | None = None,
 ) -> Callable[[Any], Awaitable[None]]:
-    """Build a ``route_web_socket`` handler: connect only to public hosts."""
+    """Build a ``route_web_socket`` handler: connect only to public hosts.
+
+    The browser is never told to ``connect_to_server()``: Chromium would resolve
+    the host again after the check (DNS rebinding to 127.0.0.1 / the metadata
+    service). Instead the server opens the upstream connection with
+    :func:`app.net.ssrf_guard.connect_public_websocket` — resolved and checked
+    once, dialled to the checked IP — and relays frames between the page and
+    that connection. The page's cookies for the URL are forwarded from the
+    context's jar.
+    """
 
     async def _guard(ws: Any) -> None:
+        import asyncio
+
+        from app.net.ssrf_guard import connect_public_websocket
+
         url = str(getattr(ws, "url", ""))
         scheme, sep, rest = url.partition("://")
         mapped = {"ws": "http", "wss": "https"}.get(scheme.lower())
@@ -332,15 +351,72 @@ def make_websocket_guard(
             else f"blocked by SSRF guard: scheme '{scheme}' not allowed for WebSocket"
         )
         if reason:
-            logger.warning("browser_websocket_blocked", url=url[:200], reason=reason[:300])
-            try:
-                await _maybe_await(ws.close(code=1008, reason="blocked by SSRF guard"))
-            except Exception as exc:
-                logger.debug("browser_ws_close_failed", error=str(exc)[:200])
+            await _close_route(ws, url, reason)
             return
-        await _maybe_await(ws.connect_to_server())
+
+        # Register the page-side handlers before any await so no frame is lost.
+        outbox: asyncio.Queue[Any] = asyncio.Queue()
+        closed = object()
+        ws.on_message(outbox.put_nowait)
+        ws.on_close(lambda *_a: outbox.put_nowait(closed))
+        try:
+            headers: dict[str, str] = {}
+            cookie = await _jar_cookie_header(
+                cookie_jar() if cookie_jar else None, f"{mapped}{sep}{rest}"
+            )
+            if cookie:
+                headers["cookie"] = cookie
+            upstream = await connect_public_websocket(
+                url,
+                allowed_domains=allowed_domains,
+                context=context,
+                additional_headers=headers or None,
+            )
+        except Exception as exc:
+            await _close_route(ws, url, f"blocked by SSRF guard: {exc}")
+            return
+
+        async def _page_to_upstream() -> None:
+            while (msg := await outbox.get()) is not closed:
+                await upstream.send(msg)
+            await upstream.close()
+
+        async def _upstream_to_page() -> None:
+            try:
+                async for msg in upstream:
+                    await _maybe_await(ws.send(msg))
+            finally:
+                outbox.put_nowait(closed)
+                try:
+                    await _maybe_await(ws.close())
+                except Exception as exc:
+                    logger.debug("browser_ws_close_failed", error=str(exc)[:200])
+
+        async def _relay() -> None:
+            try:
+                await asyncio.gather(_page_to_upstream(), _upstream_to_page())
+            except Exception as exc:
+                logger.info("browser_ws_relay_ended", url=url[:200], error=str(exc)[:200])
+                await _close_route(ws, url, None)
+                try:
+                    await upstream.close()
+                except Exception as close_exc:
+                    logger.debug("browser_ws_upstream_close_failed", error=str(close_exc)[:200])
+
+        task = asyncio.get_running_loop().create_task(_relay())
+        _CLOSE_TASKS.add(task)
+        task.add_done_callback(_CLOSE_TASKS.discard)
 
     return _guard
+
+
+async def _close_route(ws: Any, url: str, reason: str | None) -> None:
+    if reason:
+        logger.warning("browser_websocket_blocked", url=url[:200], reason=reason[:300])
+    try:
+        await _maybe_await(ws.close(code=1008, reason="blocked by SSRF guard"))
+    except Exception as exc:
+        logger.debug("browser_ws_close_failed", error=str(exc)[:200])
 
 
 async def install_browser_guard(
@@ -386,7 +462,9 @@ async def install_browser_guard(
     await _maybe_await(
         route_ws(
             re.compile(r".*"),
-            make_websocket_guard(allowed_domains=allowed_domains, context=context),
+            make_websocket_guard(
+                allowed_domains=allowed_domains, context=context, cookie_jar=lambda: jar
+            ),
         )
     )
     # Marker so callers can assert a context/page is guarded before using it.

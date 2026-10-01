@@ -342,27 +342,126 @@ async def test_guard_aclose_leaves_an_injected_client_to_its_owner() -> None:
     assert not injected.client.is_closed
 
 
+class _WsRoute:
+    """Minimal Playwright ``WebSocketRoute`` double (page side of the socket)."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.sent: list[Any] = []
+        self.closed: list[dict[str, Any]] = []
+        self.connect_to_server = MagicMock()
+        self._on_message: Any = None
+        self._on_close: Any = None
+
+    def on_message(self, handler: Any) -> None:
+        self._on_message = handler
+
+    def on_close(self, handler: Any) -> None:
+        self._on_close = handler
+
+    def send(self, message: Any) -> None:
+        self.sent.append(message)
+
+    async def close(self, **kw: Any) -> None:
+        self.closed.append(kw)
+
+
+class _Upstream:
+    """Server-side websockets connection double."""
+
+    def __init__(self, incoming: list[Any]) -> None:
+        self._incoming = list(incoming)
+        self.sent: list[Any] = []
+        self.release = __import__("asyncio").Event()
+        self.closed = False
+
+    async def send(self, msg: Any) -> None:
+        self.sent.append(msg)
+
+    async def close(self) -> None:
+        self.closed = True
+        self.release.set()
+
+    def __aiter__(self) -> Any:
+        return self._gen()
+
+    async def _gen(self) -> Any:
+        for m in self._incoming:
+            yield m
+        await self.release.wait()
+
+
+async def _drain() -> None:
+    import asyncio
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
 @pytest.mark.parametrize(
-    ("url", "allowed"),
-    [
-        ("ws://127.0.0.1:9222/devtools", False),
-        ("wss://169.254.169.254/", False),
-        ("ws://10.0.0.1/", False),
-        ("wss://93.184.215.14/socket", True),
-    ],
+    "url",
+    ["ws://127.0.0.1:9222/devtools", "wss://169.254.169.254/", "ws://10.0.0.1/", "ftp://x/"],
 )
-async def test_websocket_guard(url: str, allowed: bool) -> None:
-    ws = MagicMock()
-    ws.url = url
-    ws.close = AsyncMock()
-    ws.connect_to_server = MagicMock()
+async def test_websocket_guard_blocks_internal_targets(
+    url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connect = AsyncMock()
+    monkeypatch.setattr("websockets.connect", connect)
+    ws = _WsRoute(url)
     await make_websocket_guard()(ws)
-    if allowed:
-        ws.connect_to_server.assert_called_once()
-        ws.close.assert_not_called()
-    else:
-        ws.close.assert_awaited_once()
-        ws.connect_to_server.assert_not_called()
+    assert ws.closed and ws.closed[0]["code"] == 1008
+    ws.connect_to_server.assert_not_called()
+    connect.assert_not_called()
+
+
+async def test_websocket_guard_relays_over_a_pinned_connection_never_the_browser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SSRF-03: the browser must not connect_to_server (it re-resolves DNS)."""
+    import app.net.ssrf_guard as g
+
+    monkeypatch.setattr(g, "_resolve_host", lambda h: ["93.184.215.14"])
+    upstream = _Upstream(["hello from server"])
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _connect(uri: str, **kw: Any) -> Any:
+        calls.append((uri, kw))
+        return upstream
+
+    monkeypatch.setattr("websockets.connect", _connect)
+    jar = MagicMock()
+    jar.cookies = AsyncMock(return_value=[{"name": "sid", "value": "abc"}])
+    ws = _WsRoute("wss://feed.example/socket")
+    await make_websocket_guard(cookie_jar=lambda: jar)(ws)
+    ws.connect_to_server.assert_not_called()
+    uri, kw = calls[0]
+    assert uri == "wss://feed.example/socket"
+    assert kw["host"] == "93.184.215.14" and kw["proxy"] is None
+    assert kw["additional_headers"] == {"cookie": "sid=abc"}
+    await _drain()
+    assert ws.sent == ["hello from server"]  # upstream -> page
+    ws._on_message("hello from page")
+    await _drain()
+    assert upstream.sent == ["hello from page"]  # page -> upstream
+    ws._on_close(1000, "")
+    await _drain()
+    assert upstream.closed
+
+
+async def test_websocket_guard_refuses_a_host_that_rebinds_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.net.ssrf_guard as g
+
+    answers = iter([["93.184.215.14"]])  # first check public, then loopback
+    monkeypatch.setattr(g, "_resolve_host", lambda h: next(answers, ["127.0.0.1"]))
+    connect = AsyncMock()
+    monkeypatch.setattr("websockets.connect", connect)
+    ws = _WsRoute("ws://rebind.example/socket")
+    await make_websocket_guard()(ws)
+    ws.connect_to_server.assert_not_called()
+    connect.assert_not_called()
+    assert ws.closed and ws.closed[0]["code"] == 1008
 
 
 async def test_new_guarded_context_installs_guards_and_blocks_service_workers() -> None:
