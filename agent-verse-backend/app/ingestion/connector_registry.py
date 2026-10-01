@@ -203,6 +203,7 @@ def load_all_connectors() -> None:
         "app.ingestion.connectors.pagerduty_connector",
         "app.ingestion.connectors.sentry_connector",
         "app.ingestion.connectors.neo4j_connector",
+        "app.ingestion.connectors.redis_connector",
     ]
     import importlib
 

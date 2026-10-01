@@ -7,6 +7,7 @@ import { FAMILY_CONFIG, ALL_FAMILIES } from '../types';
 import { useCreateSource } from '../hooks';
 import { ObjectStorageForm } from './families/ObjectStorageForm';
 import { DatabaseForm } from './families/DatabaseForm';
+import { RedisForm } from './families/RedisForm';
 import { StreamingForm } from './families/StreamingForm';
 import { CommunicationForm } from './families/CommunicationForm';
 import { CodeRepoForm } from './families/CodeRepoForm';
@@ -21,7 +22,7 @@ const SOURCE_TYPES_BY_FAMILY: Record<SourceFamily, string[]> = {
   object_storage:  ['s3', 'gcs', 'azure_blob', 'minio', 'r2', 'delta_lake', 'iceberg'],
   olap_database:   ['snowflake', 'bigquery', 'clickhouse', 'databricks', 'redshift', 'duckdb', 'trino'],
   oltp_database:   ['postgresql', 'mysql', 'mssql', 'oracle', 'mongodb', 'cockroachdb'],
-  nosql_database:  ['mongodb', 'dynamodb', 'firestore', 'cosmos_db', 'cassandra'],
+  nosql_database:  ['mongodb', 'redis', 'dynamodb', 'firestore', 'cosmos_db', 'cassandra'],
   streaming:       ['kafka', 'kinesis', 'pubsub', 'pulsar', 'rabbitmq', 'nats'],
   file_system:     ['local_fs', 'sftp', 'nfs'],
   document_store:  ['gdrive', 'notion', 'confluence', 'sharepoint', 'dropbox', 'box'],
@@ -44,9 +45,11 @@ function FamilyFormRouter({ family, sourceType, value, onChange }: {
 }) {
   switch (family) {
     case 'object_storage': return <ObjectStorageForm sourceType={sourceType} value={value} onChange={onChange} />;
+    case 'nosql_database':
+      if (sourceType === 'redis') return <RedisForm sourceType={sourceType} value={value} onChange={onChange} />;
+      return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'olap_database':
-    case 'oltp_database':
-    case 'nosql_database': return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} />;
+    case 'oltp_database': return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'streaming':      return <StreamingForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'communication':  return <CommunicationForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'code_repository': return <CodeRepoForm sourceType={sourceType} value={value} onChange={onChange} />;

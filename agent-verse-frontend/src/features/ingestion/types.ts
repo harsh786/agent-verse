@@ -131,7 +131,7 @@ export const FAMILY_CONFIG: Record<SourceFamily, {
   object_storage:  { label: "Object Storage",    icon: "Cloud",       color: "sky-500",     description: "S3, GCS, Azure Blob, MinIO, R2" },
   olap_database:   { label: "OLAP / Analytics",  icon: "BarChart3",   color: "violet-500",  description: "Snowflake, BigQuery, ClickHouse, Databricks" },
   oltp_database:   { label: "Relational DB",     icon: "Database",    color: "blue-500",    description: "PostgreSQL, MySQL, MSSQL, Oracle" },
-  nosql_database:  { label: "NoSQL Database",    icon: "Layers",      color: "indigo-500",  description: "MongoDB, DynamoDB, Firestore, Cosmos DB" },
+  nosql_database:  { label: "NoSQL Database",    icon: "Layers",      color: "indigo-500",  description: "MongoDB, Redis, DynamoDB, Firestore, Cosmos DB" },
   streaming:       { label: "Streaming",         icon: "Zap",         color: "amber-500",   description: "Kafka, Kinesis, Pub/Sub, Pulsar" },
   file_system:     { label: "File System",       icon: "HardDrive",   color: "orange-500",  description: "Local FS, NFS, SFTP" },
   document_store:  { label: "Documents & Drive", icon: "FileText",    color: "yellow-500",  description: "GDrive, Notion, Confluence, SharePoint" },

@@ -157,6 +157,24 @@ describe('SourceCreateWizard - validation gating and submit', () => {
     });
   });
 
+  test('SRC-REDIS: NoSQL -> redis renders the Redis form and submits its connection config', async () => {
+    await goToConfigure(/^NoSQL Database$/, /^redis$/);
+    await userEvent.type(screen.getByPlaceholderText('My redis source'), 'Cache');
+    fireEvent.change(screen.getByLabelText('Host'), { target: { value: 'cache.example.com' } });
+    fireEvent.change(screen.getByLabelText('Authentication'), { target: { value: 'acl' } });
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'pw' } });
+
+    await userEvent.click(screen.getByRole('button', { name: /create source/i }));
+
+    const [payload] = mutate.mock.calls[0];
+    expect(payload).toMatchObject({
+      family: 'nosql_database',
+      source_type: 'redis',
+      connection_config: { host: 'cache.example.com', auth_type: 'acl', username: 'alice', password: 'pw' },
+    });
+  });
+
   test('onSuccess callback triggers onCreated and onClose', async () => {
     mutate.mockImplementation((_payload, opts) => {
       opts?.onSuccess?.();
