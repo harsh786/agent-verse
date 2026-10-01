@@ -183,7 +183,10 @@ class IngestionPipeline:
         # metadata dict is safe and avoids editing source_config.py.
         result.metadata = {}  # type: ignore[attr-defined]
 
-        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
+        from app.ingestion.source_config import (
+            CONNECTOR_FAILURE_KEY,
+            CONNECTOR_FAILURE_RETRYABLE_KEY,
+        )
 
         connector_failure = (raw_doc.metadata or {}).get(CONNECTOR_FAILURE_KEY)
         if connector_failure:
@@ -191,6 +194,9 @@ class IngestionPipeline:
             # records the failure and its reason) — never index an empty stand-in.
             result.status = "failed"
             result.error = f"connector: {connector_failure}"
+            retryable = (raw_doc.metadata or {}).get(CONNECTOR_FAILURE_RETRYABLE_KEY)
+            if retryable is not None:
+                result.error += " (retryable)" if retryable else " (permanent)"
             result.processing_ms = (time.perf_counter() - start) * 1000
             return result
 

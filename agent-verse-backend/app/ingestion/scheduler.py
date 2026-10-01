@@ -662,6 +662,15 @@ async def _retry_one_dlq_entry(
         await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
         return "permanent"
 
+    from app.ingestion.source_config import CONNECTOR_FAILURE_RETRYABLE_KEY
+
+    if (raw_doc.metadata or {}).get(CONNECTOR_FAILURE_RETRYABLE_KEY) is False:
+        # The connector said no retry can fix this (object deleted, access
+        # denied, over the size cap): stop rescanning it.
+        _log.info("retry_dlq: dlq=%s is a permanent connector failure", dlq_id)
+        await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+        return "permanent"
+
     try:
         config = await source_store.get(source_id, tenant_id)
         if config is None:

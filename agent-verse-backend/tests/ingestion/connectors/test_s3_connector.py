@@ -233,7 +233,11 @@ class TestOnWebhook:
         docs = [d async for d in connector.on_webhook(_make_config(), payload, {})]
         assert docs == []
 
-    async def test_fetch_single_error_is_swallowed(self):
+    async def test_fetch_single_error_is_reported_not_swallowed(self):
+        # S3-WEBHOOK-ERRORS: the event yields a failure document with the reason
+        # (tests/ingestion/test_s3_webhook_errors.py covers the classification).
+        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
+
         payload = (
             b'{"Records": [{"eventName": "ObjectCreated:Put", '
             b'"s3": {"bucket": {"name": "my-bucket"}, "object": {"key": "bad.txt"}}}]}'
@@ -241,7 +245,8 @@ class TestOnWebhook:
         with patch("boto3.client", side_effect=RuntimeError("no creds")):
             connector = S3Connector()
             docs = [d async for d in connector.on_webhook(_make_config(), payload, {})]
-        assert docs == []
+        assert len(docs) == 1
+        assert "no creds" in docs[0].metadata[CONNECTOR_FAILURE_KEY]
 
 
 class TestEstimateDocCount:

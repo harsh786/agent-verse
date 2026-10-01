@@ -15,6 +15,9 @@ from dataclasses import dataclass, field
 # (download failure, over the size cap). The pipeline fails such a document
 # with that reason (→ DLQ, visible in the job) instead of indexing it.
 CONNECTOR_FAILURE_KEY = "connector_failure"
+# Optional companion: False when retrying cannot help (object deleted, access
+# denied, over the size cap). The DLQ retry loop gives up on such an entry at once.
+CONNECTOR_FAILURE_RETRYABLE_KEY = "connector_failure_retryable"
 
 
 class IngestionStatus(enum.StrEnum):

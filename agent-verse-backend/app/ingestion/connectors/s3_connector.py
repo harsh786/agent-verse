@@ -32,6 +32,60 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
+class _OversizedObjectError(Exception):
+    """An event's object is larger than the source's document size cap."""
+
+
+# S3 error codes a later retry can succeed on (throttling, server-side trouble).
+_RETRYABLE_S3_CODES = frozenset(
+    {
+        "SlowDown",
+        "Throttling",
+        "ThrottlingException",
+        "RequestLimitExceeded",
+        "RequestTimeout",
+        "RequestTimeTooSkewed",
+        "InternalError",
+        "ServiceUnavailable",
+    }
+)
+
+
+def _classify_fetch_error(exc: BaseException) -> tuple[str, bool]:
+    """``(reason, retryable)`` for a failed S3 object fetch.
+
+    Not retryable: the object or bucket is gone, access is denied, the request is
+    malformed (other 4xx), credentials are missing, the egress policy refuses the
+    endpoint, or the object is over the size cap. Retryable: throttling, 5xx,
+    connection and timeout errors — and anything unrecognised, which is safer to
+    retry (bounded by the DLQ retry cap) than to drop.
+    """
+    from app.ingestion.connector_egress import ConnectorEgressBlockedError
+
+    if isinstance(exc, _OversizedObjectError):
+        return str(exc), False
+    if isinstance(exc, ConnectorEgressBlockedError):
+        return f"egress refused: {exc}", False
+    try:
+        from botocore import exceptions as boto_exc  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover - boto3 is a core dependency
+        boto_exc = None
+    if boto_exc is not None:
+        if isinstance(exc, boto_exc.ClientError):
+            error = exc.response.get("Error", {}) or {}
+            code = str(error.get("Code", "") or "")
+            status = int((exc.response.get("ResponseMetadata", {}) or {}).get("HTTPStatusCode", 0))
+            retryable = code in _RETRYABLE_S3_CODES or status >= 500 or status in (408, 429)
+            return f"s3 GetObject failed: {code or status} {error.get('Message', '')}".strip(), (
+                retryable
+            )
+        if isinstance(exc, boto_exc.NoCredentialsError | boto_exc.PartialCredentialsError):
+            return f"s3 credentials missing: {exc}", False
+        if isinstance(exc, boto_exc.ParamValidationError):
+            return f"invalid S3 request: {exc}", False
+    return f"s3 fetch failed: {type(exc).__name__}: {exc}", True
+
+
 @register("s3", feature_flag="ingestion_connector_s3_enabled")
 class S3Connector(BaseConnector):
     """AWS S3 and S3-compatible object storage ingestion."""
@@ -324,8 +378,32 @@ class S3Connector(BaseConnector):
     async def _fetch_single(
         self, config: SourceConfig, bucket: str, key: str
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        """Fetch and yield a single S3 object."""
-        from app.ingestion.source_config import RawDocument
+        """Fetch and yield a single S3 object.
+
+        A fetch that fails yields a failure document instead (reason + whether a
+        retry can help, see :func:`_classify_fetch_error`): the pipeline fails it
+        with that reason (→ DLQ). It used to be logged and dropped, so the event
+        simply vanished.
+        """
+        from app.ingestion.source_config import (
+            CONNECTOR_FAILURE_KEY,
+            CONNECTOR_FAILURE_RETRYABLE_KEY,
+            RawDocument,
+        )
+
+        cap = int(config.max_doc_size_bytes)
+
+        def _doc(content: bytes, content_type: str, **meta: Any) -> RawDocument:
+            return RawDocument(
+                doc_id=f"s3://{bucket}/{key}",
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
+                content=content,
+                content_type=content_type,
+                source_url=f"s3://{bucket}/{key}",
+                title=key.split("/")[-1],
+                metadata={"s3_key": key, "s3_bucket": bucket, **meta},
+            )
 
         try:
             import boto3
@@ -342,22 +420,31 @@ class S3Connector(BaseConnector):
                         **self._client_kwargs(endpoint_url),
                     )
                     response = s3.get_object(Bucket=bucket, Key=key)
-                    body = response["Body"].read()
+                    size = response.get("ContentLength")
+                    if isinstance(size, int) and size > cap:
+                        response["Body"].close()
+                        raise _OversizedObjectError(f"object exceeds the {cap}-byte size cap")
+                    body = response["Body"].read(cap + 1)
+                    if len(body) > cap:
+                        raise _OversizedObjectError(f"object exceeds the {cap}-byte size cap")
                     return body, response.get("ContentType", "application/octet-stream")
 
                 content_bytes, content_type = await self._runner(endpoint_url)(_fetch)
-            raw = RawDocument(
-                doc_id=f"s3://{bucket}/{key}",
-                source_id=config.source_id,
-                tenant_id=config.tenant_id,
-                content=content_bytes,
-                content_type=content_type,
-                source_url=f"s3://{bucket}/{key}",
-                title=key.split("/")[-1],
-            )
-            yield raw, key
+        except ConnectorUnavailableError:
+            raise
         except Exception as exc:
-            _log.warning("s3_fetch_single_error bucket=%s key=%s: %s", bucket, key, exc)
+            reason, retryable = _classify_fetch_error(exc)
+            _log.warning(
+                "s3_webhook_fetch_failed bucket=%s key=%s retryable=%s: %s",
+                bucket,
+                key,
+                retryable,
+                reason,
+            )
+            failure = {CONNECTOR_FAILURE_KEY: reason, CONNECTOR_FAILURE_RETRYABLE_KEY: retryable}
+            yield _doc(b"", "application/octet-stream", **failure), key
+            return
+        yield _doc(content_bytes, content_type), key
 
     def estimate_doc_count(self, config: SourceConfig) -> int | None:
         try:
