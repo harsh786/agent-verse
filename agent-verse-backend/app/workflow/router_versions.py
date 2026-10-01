@@ -19,6 +19,8 @@ from pydantic import BaseModel
 
 from app.observability.logging import get_logger
 from app.workflow.permissions import workflow_access
+from app.workflow.runner import WorkflowValidationError
+from app.workflow.service import request_plan
 
 _log = get_logger(__name__)
 
@@ -205,7 +207,10 @@ async def submit_for_approval(workflow_id: str, request: Request) -> dict[str, A
         workflow_id,
         "publish_submitted",
         svc.submit_for_approval(
-            tenant_id=tenant_id, workflow_id=workflow_id, submitted_by=_principal(request)
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            submitted_by=_principal(request),
+            plan=request_plan(request),
         )
     )
 
@@ -230,6 +235,7 @@ async def approve_publish(
             workflow_id=workflow_id,
             approver_id=_principal(request),
             note=body.note,
+            plan=request_plan(request),
         ),
         note=body.note,
     )
@@ -300,13 +306,17 @@ async def import_yaml(request: Request) -> dict[str, Any]:
 
     svc = _svc(request)
     tenant_id = _tenant_id(request)
-    result = await svc.create(
-        tenant_id=tenant_id,
-        name=wf.name,
-        description=wf.description,
-        definition=data,
-        labels={},
-    )
+    try:
+        result = await svc.create(
+            tenant_id=tenant_id,
+            name=wf.name,
+            description=wf.description,
+            definition=data,
+            labels={},
+            plan=request_plan(request),
+        )
+    except WorkflowValidationError as exc:  # e.g. below the plan's schedule floor
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return result
 
 
@@ -325,11 +335,15 @@ async def clone_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Workflow not found")
     name = (original.name if hasattr(original, "name") else original["name"]) + " (copy)"  # type: ignore[union-attr]
     definition = original.definition if hasattr(original, "definition") else original["definition"]  # type: ignore[union-attr]
-    result = await svc.create(
-        tenant_id=tenant_id,
-        name=name,
-        description="",
-        definition=definition,
-        labels={},
-    )
+    try:
+        result = await svc.create(
+            tenant_id=tenant_id,
+            name=name,
+            description="",
+            definition=definition,
+            labels={},
+            plan=request_plan(request),
+        )
+    except WorkflowValidationError as exc:  # e.g. below the plan's schedule floor
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return result

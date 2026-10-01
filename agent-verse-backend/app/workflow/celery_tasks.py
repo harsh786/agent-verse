@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -647,6 +648,69 @@ _SCHEDULE_TRIGGER_PREDICATE = (
 )
 
 
+_KNOWN_PLANS = frozenset({"free", "starter", "professional", "enterprise"})
+
+
+async def _db_tenant_plan(system_db: Any, tenant_id: str) -> str | None:
+    """``tenants.plan_tier`` read on the maintenance session (the scan's own
+    role) — works in a Celery beat/worker, where the runner has no tenant
+    service. Tenant ids are stored hex or dashed: both forms are matched."""
+    import uuid as _uuid
+
+    from sqlalchemy import text as sa_text
+
+    from app.db.rls import system_session
+
+    forms = {str(tenant_id)}
+    try:
+        parsed = _uuid.UUID(str(tenant_id))
+        forms |= {parsed.hex, str(parsed)}
+    except ValueError:
+        pass
+    async with system_db() as session, session.begin(), system_session(session):
+        row = (
+            await session.execute(
+                sa_text("SELECT plan_tier FROM tenants WHERE id = ANY(:ids) LIMIT 1"),
+                {"ids": sorted(forms)},
+            )
+        ).first()
+    if row is None:
+        return None
+    plan = str(getattr(row[0], "value", row[0]) or "").lower()
+    return plan if plan in _KNOWN_PLANS else None
+
+
+async def _tenant_plan(
+    runner: Any, tenant_id: str, cache: dict[str, str], system_db: Any = None
+) -> str:
+    """The tenant's plan tier for the schedule floor; "free" (the strictest
+    floor) whenever it cannot be resolved — fail closed."""
+    if tenant_id in cache:
+        return cache[tenant_id]
+    plan: str | None = None
+    if system_db is not None:
+        try:
+            plan = await _db_tenant_plan(system_db, tenant_id)
+        except Exception as exc:
+            _log.warning(
+                "workflow_schedule_plan_lookup_failed", tenant_id=tenant_id, error=str(exc)
+            )
+    getter = getattr(runner, "_get_plan_tier", None)
+    if plan is None and callable(getter):
+        try:
+            result = getter(tenant_id)
+            if inspect.isawaitable(result):
+                result = await result
+            if isinstance(result, str) and result.lower() in _KNOWN_PLANS:
+                plan = result.lower()
+        except Exception as exc:
+            _log.warning(
+                "workflow_schedule_plan_lookup_failed", tenant_id=tenant_id, error=str(exc)
+            )
+    cache[tenant_id] = plan or "free"
+    return cache[tenant_id]
+
+
 async def fire_due_workflow_schedules_async() -> dict[str, int]:
     """Fire published workflows whose cron schedule just came due.
 
@@ -667,6 +731,7 @@ async def fire_due_workflow_schedules_async() -> dict[str, int]:
 
     from app.db.rls import system_session
     from app.db.session import get_system_session_factory
+    from app.triggers.models import validate_cron
     from app.workflow.runner import WorkflowValidationError
     from app.workflow.trigger_extract import extract_triggers, schedule_cron
 
@@ -681,6 +746,7 @@ async def fire_due_workflow_schedules_async() -> dict[str, int]:
     scanned = 0
     fired = 0
     cursor: str | None = None
+    plans: dict[str, str] = {}
 
     while True:
         async with system_db() as session, session.begin(), system_session(session):
@@ -724,6 +790,22 @@ async def fire_due_workflow_schedules_async() -> dict[str, int]:
             prev, nxt = bounds
             # Only fire an occurrence that came due within the grace window.
             if (now - prev).total_seconds() > _SCHEDULE_GRACE_SECONDS:
+                continue
+            # The plan's schedule floor, re-checked at FIRE time (BEFORE the
+            # occurrence is claimed): creation/publish enforce it too, but a
+            # definition stored before that check, or a plan downgrade, must
+            # never fire faster than the tenant's plan allows.
+            plan = await _tenant_plan(runner, tenant_id, plans, system_db)
+            try:
+                validate_cron(cron, plan)
+            except ValueError as exc:
+                _log.warning(
+                    "workflow_schedule_below_plan_floor",
+                    workflow_id=wf_id,
+                    plan=plan,
+                    cron=cron,
+                    reason=str(exc),
+                )
                 continue
             # Dedup: this occurrence fires at most once. TTL covers the gap until
             # the next occurrence so the key can't expire while ``prev`` is still

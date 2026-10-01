@@ -9,7 +9,7 @@ still an unattended trigger. Asserts the run starts as such, pauses for
 approval and completes on approval; the schedule is removed afterwards.
 
 WF-SCHEDULE-PLAN-FLOOR checks that a workflow cron below the plan floor is not
-accepted (the floors are enforced for /schedules and /triggers).
+accepted (refused at creation, and at publish).
 """
 
 from __future__ import annotations
@@ -115,7 +115,21 @@ def test_workflow_cron_respects_plan_floor(api: LiveAPI, cleanup: Any,
     evidence["plan"], evidence["plan_floor_s"] = plan, floor
     if not floor or floor <= 60:
         pytest.skip(f"plan {plan} allows every-minute schedules (floor {floor})")
-    wf = wfx.create_workflow(api, cleanup, schedule_cron="* * * * *", prefix="rw-floor-check")
+    # Refused at creation (422) since WF-PLAN-FLOOR; publish is checked too.
+    created = api.post(
+        f"{wfx.V1}/workflows/import-yaml",
+        content=wfx.weekly_report_yaml(
+            f"rw-floor-check-{wfx.tag()}", schedule_cron="* * * * *"
+        ).encode(),
+        headers={"Content-Type": "application/x-yaml"},
+    )
+    evidence["create_http"] = created.status_code
+    if created.status_code == 422:
+        evidence["create_detail"] = mask(created.text[:200])
+        return
+    assert created.status_code in (200, 201), mask(created.text[:300])
+    wf = {"id": str(created.json().get("id") or created.json().get("workflow_id"))}
+    cleanup("DELETE", f"{wfx.V1}/workflows/{wf['id']}")
     evidence["workflow_id"] = wf["id"]
     cleanup("POST", f"{wfx.V1}/workflows/{wf['id']}/unpublish")
     pub = api.post(f"{wfx.V1}/workflows/{wf['id']}/publish")

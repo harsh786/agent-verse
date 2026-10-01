@@ -41,6 +41,7 @@ from app.workflow.audit_middleware import record_workflow_action
 from app.workflow.dsl import WorkflowDefinition
 from app.workflow.permissions import caller_access, require_workflow_access, workflow_access
 from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
+from app.workflow.service import request_plan
 
 _log = get_logger(__name__)
 
@@ -216,6 +217,7 @@ async def create_workflow(
             description=body.description,
             definition=body.definition,
             labels=body.labels,
+            plan=request_plan(request),
         )
     except WorkflowValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -359,10 +361,15 @@ async def update_workflow(
     try:
         if updates:
             result = await svc.update(
-                tenant_id=tenant.tenant_id, workflow_id=workflow_id, updates=updates
+                tenant_id=tenant.tenant_id,
+                workflow_id=workflow_id,
+                updates=updates,
+                plan=request_plan(request),
             )
         else:
             result = await svc.get(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
+    except WorkflowValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result is None:
@@ -408,6 +415,7 @@ async def publish_workflow(workflow_id: str, request: Request) -> Any:
             tenant_id=tenant.tenant_id,
             workflow_id=workflow_id,
             published_by=str(getattr(tenant, "api_key_id", "") or "") or None,
+            plan=request_plan(request),
         )
     except PublishApprovalRequiredError as exc:
         record_workflow_action(
@@ -507,7 +515,7 @@ async def validate_workflow(workflow_id: str, request: Request) -> dict[str, Any
     # The same checks publish enforces (unsupported triggers, ...).
     from app.workflow.service import publish_problems
 
-    errors.extend(publish_problems(definition or {}))
+    errors.extend(publish_problems(definition or {}, request_plan(request)))
     return {"valid": not errors, "errors": errors}
 
 

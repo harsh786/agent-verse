@@ -434,7 +434,7 @@ async def test_fire_due_schedules_cron_bounds_exception_is_caught(
         raise ValueError("bad tz")
 
     monkeypatch.setattr(ct, "_cron_bounds", _raise)
-    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}
     _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
     result = ct.fire_due_workflow_schedules.run()
     assert result == {"scanned": 1, "fired": 0}
@@ -449,7 +449,7 @@ async def test_fire_due_schedules_outside_grace_window_is_skipped(
     now = datetime.now(UTC)
     far_prev = now - timedelta(seconds=ct._SCHEDULE_GRACE_SECONDS + 1000)
     monkeypatch.setattr(ct, "_cron_bounds", lambda *a, **k: (far_prev, now + timedelta(minutes=1)))
-    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}
     _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
     result = ct.fire_due_workflow_schedules.run()
     assert result == {"scanned": 1, "fired": 0}
@@ -465,7 +465,7 @@ async def test_fire_due_schedules_fires_run_without_redis(monkeypatch: pytest.Mo
     prev = now - timedelta(seconds=5)
     nxt = now + timedelta(minutes=1)
     monkeypatch.setattr(ct, "_cron_bounds", lambda *a, **k: (prev, nxt))
-    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}
     _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
 
     result = ct.fire_due_workflow_schedules.run()
@@ -476,6 +476,36 @@ async def test_fire_due_schedules_fires_run_without_redis(monkeypatch: pytest.Mo
     assert kwargs["workflow_id"] == "wf-1"
     assert kwargs["tenant_id"] == "t1"
     assert kwargs["trigger_type"] == "schedule"
+
+
+@pytest.mark.parametrize(
+    ("plan", "fired"), [("free", 0), ("starter", 0), ("professional", 1), (None, 0)]
+)
+@pytest.mark.asyncio
+async def test_fire_due_schedules_enforces_the_plan_floor_at_fire_time(
+    monkeypatch: pytest.MonkeyPatch, plan: str | None, fired: int
+) -> None:
+    """WF-PLAN-FLOOR: an every-minute cron fires only on a plan whose floor
+    allows it; an unresolvable plan gets the free floor (fail closed)."""
+    runner = MagicMock()
+    runner.run = AsyncMock(return_value="run-123")
+    if plan is None:
+        runner._get_plan_tier = AsyncMock(side_effect=RuntimeError("tenant lookup down"))
+    else:
+        runner._get_plan_tier = AsyncMock(return_value=plan)
+    monkeypatch.setattr(ct, "_get_runner", lambda: runner)
+    monkeypatch.setattr(ct, "_sched_redis", lambda: None)
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        ct, "_cron_bounds", lambda *a, **k: (now - timedelta(seconds=5), now + timedelta(minutes=1))
+    )
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
+
+    result = ct.fire_due_workflow_schedules.run()
+
+    assert result == {"scanned": 1, "fired": fired}
+    assert runner.run.await_count == fired
 
 
 @pytest.mark.asyncio
@@ -494,7 +524,7 @@ async def test_fire_due_schedules_redis_dedup_already_claimed_skips(
     prev = now - timedelta(seconds=5)
     nxt = now + timedelta(minutes=1)
     monkeypatch.setattr(ct, "_cron_bounds", lambda *a, **k: (prev, nxt))
-    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}
     _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
 
     result = ct.fire_due_workflow_schedules.run()
@@ -519,7 +549,7 @@ async def test_fire_due_schedules_redis_dedup_claims_and_fires(
     prev = now - timedelta(seconds=5)
     nxt = now + timedelta(minutes=1)
     monkeypatch.setattr(ct, "_cron_bounds", lambda *a, **k: (prev, nxt))
-    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}
     _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
 
     result = ct.fire_due_workflow_schedules.run()
@@ -554,7 +584,7 @@ async def test_fire_due_schedules_redis_set_raises_fails_closed(
     prev = now - timedelta(seconds=5)
     nxt = now + timedelta(minutes=1)
     monkeypatch.setattr(ct, "_cron_bounds", lambda *a, **k: (prev, nxt))
-    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}
     _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
 
     result = ct.fire_due_workflow_schedules.run()
@@ -576,7 +606,7 @@ async def test_fire_due_schedules_runner_run_exception_is_caught(
     prev = now - timedelta(seconds=5)
     nxt = now + timedelta(minutes=1)
     monkeypatch.setattr(ct, "_cron_bounds", lambda *a, **k: (prev, nxt))
-    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}
+    definition = {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}
     _patch_db_rows(monkeypatch, [("wf-1", "t1", definition)])
 
     result = ct.fire_due_workflow_schedules.run()
@@ -613,9 +643,9 @@ async def test_fire_due_schedules_multiple_rows_only_counts_schedule_ones(
     monkeypatch.setattr(ct, "_cron_bounds", lambda *a, **k: (prev, nxt))
 
     rows = [
-        ("wf-1", "t1", {"trigger": {"type": "schedule", "schedule": {"cron": "* * * * *"}}}),
+        ("wf-1", "t1", {"trigger": {"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}}),
         ("wf-2", "t2", {"trigger": {"type": "webhook"}}),
-        ("wf-3", "t3", {"triggers": [{"type": "schedule", "schedule": {"cron": "* * * * *"}}]}),
+        ("wf-3", "t3", {"triggers": [{"type": "schedule", "schedule": {"cron": "*/15 * * * *"}}]}),
     ]
     _patch_db_rows(monkeypatch, rows)
 

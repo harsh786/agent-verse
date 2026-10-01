@@ -90,6 +90,8 @@ async def test_scheduled_workflow_fires_once_and_only_when_due(
     from app.workflow.celery_tasks import fire_due_workflow_schedules_async
 
     tenant_id = str((await tenant_client.get("/tenants/me")).json()["tenant_id"])
+    # An every-minute cron needs a plan whose schedule floor is 60 s.
+    await app.state.tenant_service.update_plan(tenant_id, "professional")
 
     async def _publish(trigger: dict[str, Any]) -> str:
         """Create and publish through the real API, so the workflows →

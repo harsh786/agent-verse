@@ -17,6 +17,8 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.observability.logging import get_logger
+from app.workflow.runner import WorkflowValidationError
+from app.workflow.service import request_plan
 from app.workflow.template_store import SystemTemplateStore, TemplateNotFoundError
 
 _log = get_logger(__name__)
@@ -173,12 +175,15 @@ async def fork_template(slug: str, body: ForkRequest, request: Request) -> dict[
                 description=getattr(definition, "description", "") or "",
                 definition=definition.model_dump(mode="json"),
                 labels={"forked_from": slug},
+                plan=request_plan(request),
             )
             created_id = (
                 getattr(result, "id", None)
                 or (result.get("id") if isinstance(result, dict) else None)
                 or definition.id
             )
+        except WorkflowValidationError as exc:  # e.g. below the plan's schedule floor
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:  # surface a clear error instead of a dead id
             _log.warning("template_fork_persist_failed", slug=slug, error=str(exc)[:160])
             raise HTTPException(status_code=500, detail=f"Could not fork template: {exc}") from exc

@@ -71,14 +71,57 @@ def _terminal_event(run: dict[str, Any]) -> dict[str, Any]:
 SUPPORTED_TRIGGER_TYPES = frozenset({"api", "webhook", "schedule"})
 
 
-def publish_problems(definition: dict[str, Any]) -> list[str]:
-    """Reasons a definition must not be published (empty = publishable).
+def request_plan(request: Any) -> str:
+    """The calling tenant's plan tier ("free" when it cannot be resolved)."""
+    tenant = getattr(getattr(request, "state", None), "tenant", None)
+    if tenant is None:
+        tenant = getattr(request.app.state, "tenant_context", None)
+    plan = getattr(tenant, "plan", None)
+    return str(getattr(plan, "value", plan) or "free").lower()
 
-    Reads the raw stored DSL so an older definition never fails to load here.
+
+def schedule_floor_problems(definition: Any, plan: str | None) -> list[str]:
+    """Schedule triggers that would fire more often than ``plan`` allows.
+
+    The floor is the same Settings-driven one /schedules and /triggers enforce
+    (``SCHEDULE_MIN_INTERVAL_<PLAN>_S``). ``plan=None`` (unknown) gets the
+    strictest (free) floor — fail closed. An invalid cron is reported too.
     """
+    from app.triggers.models import validate_cron
     from app.workflow.trigger_extract import extract_triggers, schedule_cron
 
     problems: list[str] = []
+    for trigger in extract_triggers(definition if isinstance(definition, dict) else {}):
+        if str(trigger.get("type") or "") != "schedule":
+            continue
+        cron = schedule_cron(trigger)[0]
+        if not cron:
+            continue
+        try:
+            validate_cron(cron, plan or "free")
+        except ValueError as exc:
+            problems.append(f"schedule {cron!r}: {exc}")
+    return problems
+
+
+def check_schedule_floor(definition: Any, plan: str | None) -> None:
+    """Raise ``WorkflowValidationError`` (HTTP 422) for a sub-floor schedule."""
+    problems = schedule_floor_problems(definition, plan)
+    if problems:
+        from app.workflow.runner import WorkflowValidationError
+
+        raise WorkflowValidationError("; ".join(problems))
+
+
+def publish_problems(definition: dict[str, Any], plan: str | None = None) -> list[str]:
+    """Reasons a definition must not be published (empty = publishable).
+
+    Reads the raw stored DSL so an older definition never fails to load here.
+    Includes the plan's schedule floor (``plan=None`` → the free floor).
+    """
+    from app.workflow.trigger_extract import extract_triggers, schedule_cron
+
+    problems: list[str] = schedule_floor_problems(definition, plan)
     for trigger in extract_triggers(definition):
         ttype = str(trigger.get("type") or "api")
         if ttype not in SUPPORTED_TRIGGER_TYPES:
@@ -184,7 +227,9 @@ class WorkflowService:
         description: str = "",
         definition: dict | None = None,
         labels: dict[str, str] | None = None,
+        plan: str | None = None,
     ) -> dict[str, Any]:
+        check_schedule_floor(definition or {}, plan)
         return await self._store.create(
             tenant_id=tenant_id,
             name=name,
@@ -246,11 +291,14 @@ class WorkflowService:
         tenant_id: str,
         workflow_id: str,
         updates: dict[str, Any] | None = None,
+        plan: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
         # Accept both the router's ``updates={...}`` dict and direct field kwargs
         # (used by archive/publish); merge into one partial-field set.
         fields = {**(updates or {}), **kwargs}
+        if fields.get("definition") is not None:
+            check_schedule_floor(fields["definition"], plan)
         if fields:
             current = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
             if current is not None and current.get("status") == PENDING_APPROVAL:
@@ -275,7 +323,11 @@ class WorkflowService:
         return True
 
     async def publish(
-        self, tenant_id: str, workflow_id: str, published_by: str | None = None
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        published_by: str | None = None,
+        plan: str | None = None,
     ) -> dict[str, Any] | None:
         """Publish a draft workflow (status draft → published).
 
@@ -291,7 +343,7 @@ class WorkflowService:
                 "This workflow requires publish approval: submit it for approval "
                 "(POST /workflows/{id}/submit-for-approval) instead of publishing directly"
             )
-        return await self._publish(tenant_id, workflow_id, published_by=published_by)
+        return await self._publish(tenant_id, workflow_id, published_by=published_by, plan=plan)
 
     async def _publish_approval_state(
         self, tenant_id: str, workflow_id: str
@@ -309,6 +361,7 @@ class WorkflowService:
         *,
         published_by: str | None = None,
         change_summary: str | None = None,
+        plan: str | None = None,
     ) -> dict[str, Any] | None:
         """Publish a workflow (status → published) and record its version.
 
@@ -325,7 +378,7 @@ class WorkflowService:
         current = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
         if current is None:
             return None
-        problems = publish_problems(current.get("definition") or {})
+        problems = publish_problems(current.get("definition") or {}, plan)
         if problems:
             raise ValueError("Cannot publish: " + "; ".join(problems))
         prior_status = str(current.get("status") or "draft")
@@ -518,7 +571,7 @@ class WorkflowService:
         return ok
 
     async def submit_for_approval(
-        self, tenant_id: str, workflow_id: str, submitted_by: str
+        self, tenant_id: str, workflow_id: str, submitted_by: str, plan: str | None = None
     ) -> dict[str, Any] | None:
         """Draft → ``pending_approval``; records who submitted which version.
 
@@ -536,7 +589,7 @@ class WorkflowService:
             raise ValueError(
                 "this workflow does not require publish approval; publish it directly"
             )
-        problems = publish_problems(current.get("definition") or {})
+        problems = publish_problems(current.get("definition") or {}, plan)
         if problems:
             raise ValueError("Cannot publish: " + "; ".join(problems))
         result = await self._store.update(
@@ -584,6 +637,7 @@ class WorkflowService:
         workflow_id: str,
         approver_id: str | None,
         note: str = "",
+        plan: str | None = None,
     ) -> dict[str, Any] | None:
         """Approve a pending submission and publish it (four-eyes).
 
@@ -603,7 +657,7 @@ class WorkflowService:
             raise ValueError(
                 "the workflow changed since it was submitted; submit it again for approval"
             )
-        problems = publish_problems(current.get("definition") or {})
+        problems = publish_problems(current.get("definition") or {}, plan)
         if problems:
             raise ValueError("Cannot publish: " + "; ".join(problems))
         await store.record_publish_approval(
@@ -614,6 +668,7 @@ class WorkflowService:
             workflow_id,
             published_by=approver,
             change_summary=f"publish approved by {approver}" + (f": {note}" if note else ""),
+            plan=plan,
         )
         if result is None:
             return None
