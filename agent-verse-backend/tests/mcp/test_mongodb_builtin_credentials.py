@@ -222,3 +222,62 @@ async def test_client_blocks_private_mongodb_uri(
 
     assert result.success is False
     assert recording_client.instances == []
+
+
+# ── MONGO-MONITOR: no connection to replica-set members the tenant did not list ─
+
+
+@pytest.mark.asyncio
+async def test_client_is_built_with_the_member_guard(
+    recording_client: type[_RecordingClient],
+) -> None:
+    uri = "mongodb://u:p@8.8.8.8:27017,8.8.4.4:27018/db?replicaSet=rs0"
+
+    await mongodb_server.call_tool("mongodb_count", {"collection": "c"}, credentials={"url": uri})
+
+    (client,) = recording_client.instances
+    (guard,) = [g for g in client.kwargs["event_listeners"] if hasattr(g, "allows")]
+    assert guard.allows(("8.8.8.8", 27017)) and guard.allows(("8.8.4.4", 27018))
+    assert not guard.allows(("10.9.9.9", 27017))
+
+
+def test_driver_never_dials_an_unlisted_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A member the server ADVERTISES (monitor or pool) is refused before any socket."""
+    import socket
+
+    import pymongo.pool_shared as pool_shared
+    from pymongo.pool_options import PoolOptions
+
+    dialled: list[Any] = []
+
+    def _no_socket(*args: Any, **kwargs: Any) -> Any:
+        dialled.append(args)
+        raise AssertionError("a socket was opened")
+
+    monkeypatch.setattr(socket, "socket", _no_socket)
+    mongodb_server._install_member_guard()
+    from pymongo.monitoring import _EventListeners
+
+    guard = mongodb_server._MemberGuard({("8.8.8.8", 27017)})
+    # As the driver builds it for a client (and for each monitor's pool).
+    options = PoolOptions(event_listeners=_EventListeners([guard]), connect_timeout=1)
+
+    with pytest.raises(OSError, match="not listed"):
+        pool_shared._create_connection(("10.9.9.9", 27017), options)
+    assert dialled == []
+    assert guard.refused == [("10.9.9.9", 27017)]
+
+
+def test_guard_ignores_clients_without_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    import pymongo.pool_shared as pool_shared
+    from pymongo.pool_options import PoolOptions
+
+    mongodb_server._install_member_guard()
+    seen: list[Any] = []
+    monkeypatch.setattr(
+        mongodb_server, "_ORIGINAL_CREATE_CONNECTION", lambda addr, opts: seen.append(addr)
+    )
+
+    pool_shared._create_connection(("10.9.9.9", 27017), PoolOptions())
+
+    assert seen == [("10.9.9.9", 27017)]

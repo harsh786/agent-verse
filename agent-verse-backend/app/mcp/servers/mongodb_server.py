@@ -11,10 +11,11 @@ database (confused deputy).
 Egress: every host the URI names (each replica-set seed, or each SRV target of
 a ``mongodb+srv`` URI, expanded so the driver runs no SRV query of its own) is
 resolved, checked against the connector egress policy and pinned for the call
-(``pin_source_dsn``). The driver only uses those checked hosts: a single-host
-URI connects directly (no member discovery), and a replica-set URI selects only
-among the members it lists — members the server advertises but the tenant did
-not list are never used, so list every member (or use SRV).
+(``pin_source_dsn``). The driver only dials those checked hosts: a single-host
+URI connects directly (no member discovery); for a replica-set URI, operations
+select only the members it lists and the driver opens NO socket (monitoring or
+pool) to a member the server advertises but the tenant did not list
+(``_MemberGuard``) — so list every member (or use SRV).
 
 URI options that would read platform files (``tlsCAFile`` ...), route through a
 proxy (``proxyHost`` ...) or authenticate as the PLATFORM's ambient identity
@@ -383,6 +384,76 @@ def _run_tool(
     return {"error": f"Unknown tool: {tool_name}"}
 
 
+# The driver's own socket factory, wrapped once by _install_member_guard().
+_ORIGINAL_CREATE_CONNECTION: Any = None
+
+
+def _normalise_address(address: Any) -> tuple[str, int]:
+    return (str(address[0]).lower().rstrip("."), int(address[1]))
+
+
+try:  # a ServerListener subclass, so pymongo accepts and keeps it as a listener
+    from pymongo.monitoring import ServerListener as _ListenerBase
+except ImportError:  # pragma: no cover - pymongo is a dependency
+    _ListenerBase = object  # type: ignore[assignment,misc]
+
+
+class _MemberGuard(_ListenerBase):  # type: ignore[misc,valid-type]
+    """Event listener carried by OUR clients only: the members they may dial.
+
+    pymongo opens monitoring (and pool) sockets to every member a server
+    advertises in its ``hello`` reply — including hosts the tenant never listed,
+    i.e. a hostile server could make the platform connect to internal
+    addresses. Every socket the driver opens goes through
+    ``pymongo.pool_shared._create_connection(address, options)`` with this
+    client's listeners in ``options``; the wrapper refuses any address this
+    guard does not allow BEFORE a socket exists.
+    """
+
+    def __init__(self, seeds: set[tuple[str, int]]) -> None:
+        self.seeds = {_normalise_address(a) for a in seeds}
+        self.refused: list[tuple[str, int]] = []
+
+    def allows(self, address: Any) -> bool:
+        return _normalise_address(address) in self.seeds
+
+    # pymongo.monitoring.ServerListener interface (no-ops).
+    def opened(self, event: Any) -> None:
+        return None
+
+    def description_changed(self, event: Any) -> None:
+        return None
+
+    def closed(self, event: Any) -> None:
+        return None
+
+
+def _install_member_guard() -> None:
+    """Wrap pymongo's socket factory once (only acts for clients carrying a guard)."""
+    global _ORIGINAL_CREATE_CONNECTION
+    import pymongo.pool_shared as pool_shared
+
+    if getattr(pool_shared._create_connection, "_member_guard", False):
+        return
+    _ORIGINAL_CREATE_CONNECTION = pool_shared._create_connection
+
+    def _guarded(address: Any, options: Any) -> Any:
+        listeners: Any = getattr(options, "_event_listeners", None)
+        if hasattr(listeners, "event_listeners"):
+            listeners = listeners.event_listeners()
+        for listener in listeners or ():
+            if isinstance(listener, _MemberGuard) and not listener.allows(address):
+                listener.refused.append(_normalise_address(address))
+                raise OSError(
+                    f"MongoDB member {address[0]}:{address[1]} is not listed in the "
+                    "connector's URI; the egress policy refuses to dial it"
+                )
+        return _ORIGINAL_CREATE_CONNECTION(address, options)
+
+    _guarded._member_guard = True  # type: ignore[attr-defined]
+    pool_shared._create_connection = _guarded
+
+
 def _seed_selector(seeds: set[tuple[str, int]]) -> Any:
     """Server selector that only ever picks a member the tenant's URI listed."""
 
@@ -414,6 +485,9 @@ def _call_sync(
         kwargs = {**kwargs, "directConnection": True}
     else:
         kwargs = {**kwargs, "server_selector": _seed_selector(seeds)}
+    # Monitors and pools never open a socket to a member the URI did not list.
+    _install_member_guard()
+    kwargs["event_listeners"] = [*kwargs.get("event_listeners", []), _MemberGuard(seeds)]
     # Closed before the pin block ends: monitor threads resolve hosts while open.
     client: Any = pymongo.MongoClient(dsn, **kwargs)
     try:
