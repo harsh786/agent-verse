@@ -677,6 +677,15 @@ async def _retry_one_dlq_entry(
             # The Source was deleted: nothing can ever replay this entry.
             await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
             return "still_failed"
+        from app.ingestion.source_config import CONNECTOR_REPLAY_KEY
+
+        reference = (raw_doc.metadata or {}).get(CONNECTOR_REPLAY_KEY)
+        if isinstance(reference, dict):
+            # A failed event fetch: replaying the empty failure document can never
+            # succeed — ask the connector to fetch the item again instead.
+            return await _replay_connector_event(
+                dlq_id, tenant_id, config, reference, tracker, pipeline
+            )
         result = await pipeline.run(raw_doc, source_config=config)
         # ``dedup`` means the content IS indexed (e.g. a concurrent sync
         # got there first) — that resolves the entry, it is not a failure.
@@ -692,6 +701,55 @@ async def _retry_one_dlq_entry(
     except Exception as exc:
         await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc))
         return "still_failed"
+
+
+async def _replay_connector_event(
+    dlq_id: str,
+    tenant_id: str,
+    config: Any,
+    reference: dict[str, Any],
+    tracker: Any,
+    pipeline: Any,
+) -> str:
+    """Re-fetch the item a failed connector event named and run it through the pipeline.
+
+    ``succeeded`` when every re-fetched document is indexed (or already was);
+    ``permanent`` when the connector now reports a failure no retry can fix;
+    ``still_failed`` otherwise (the retry count and backoff advance).
+    """
+    from app.ingestion.connector_registry import get_connector, load_all_connectors
+    from app.ingestion.source_config import (
+        CONNECTOR_FAILURE_KEY,
+        CONNECTOR_FAILURE_RETRYABLE_KEY,
+    )
+
+    load_all_connectors()  # idempotent
+    connector = get_connector(config.source_type)()
+    docs = [doc async for doc in connector.replay_event(config, reference)]
+    if not docs:
+        await tracker.increment_dlq_retry(dlq_id, tenant_id, error="replay fetched nothing")
+        return "still_failed"
+    for doc in docs:
+        meta = doc.metadata or {}
+        if CONNECTOR_FAILURE_KEY in meta:
+            if meta.get(CONNECTOR_FAILURE_RETRYABLE_KEY) is False:
+                _log.info("retry_dlq: dlq=%s replay failed permanently", dlq_id)
+                await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+                return "permanent"
+            await tracker.increment_dlq_retry(
+                dlq_id, tenant_id, error=str(meta[CONNECTOR_FAILURE_KEY])[:300]
+            )
+            return "still_failed"
+    errors: list[str] = []
+    for doc in docs:
+        result = await pipeline.run(doc, source_config=config)
+        if not (result.success or (result.skipped and result.skip_reason == "dedup")):
+            errors.append(result.error or result.skip_reason or result.status)
+    if errors:
+        await tracker.increment_dlq_retry(dlq_id, tenant_id, error="; ".join(errors)[:300])
+        return "still_failed"
+    await tracker.resolve_dlq_entry(dlq_id, tenant_id)
+    return "succeeded"
 
 
 @shared_task(name="ingestion.retry_dlq_entry", bind=True)

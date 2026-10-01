@@ -109,6 +109,8 @@ class BaseConnector(ABC):
             cls.get_delta = _sdk_guarded_stream(own["get_delta"])  # type: ignore[method-assign]
         if "on_webhook" in own:
             cls.on_webhook = _sdk_guarded_stream(own["on_webhook"])  # type: ignore[method-assign]
+        if "replay_event" in own:
+            cls.replay_event = _sdk_guarded_stream(own["replay_event"])  # type: ignore[method-assign]
         if "validate_connection" in own:
             cls.validate_connection = _sdk_guarded_validate(  # type: ignore[method-assign]
                 own["validate_connection"]
@@ -173,6 +175,22 @@ class BaseConnector(ABC):
         Default: raises NotImplementedError (poll-only sources).
         """
         raise NotImplementedError(f"{self.__class__.__name__} does not support webhook mode")
+
+    async def replay_event(
+        self,
+        config: SourceConfig,
+        reference: dict[str, Any],
+    ) -> AsyncIterator[RawDocument]:
+        """Fetch again the item a failed event named (DLQ retry of a webhook failure).
+
+        ``reference`` is what the connector put under ``CONNECTOR_REPLAY_KEY`` on
+        the failure document. Override in connectors that emit one; the default
+        refuses, so a reference no connector understands fails loudly.
+        """
+        raise ConnectorUnavailableError(
+            f"{self.__class__.__name__} cannot replay events ({reference.get('kind')!r})"
+        )
+        yield  # pragma: no cover - makes this an async generator like the overrides
 
     async def get_acl(
         self,

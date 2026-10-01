@@ -18,6 +18,11 @@ CONNECTOR_FAILURE_KEY = "connector_failure"
 # Optional companion: False when retrying cannot help (object deleted, access
 # denied, over the size cap). The DLQ retry loop gives up on such an entry at once.
 CONNECTOR_FAILURE_RETRYABLE_KEY = "connector_failure_retryable"
+# Optional companion: a JSON-safe reference to the original event (e.g. the S3
+# bucket + key a webhook named). Stored with the DLQ entry, it lets a retry ask
+# the connector to fetch the item again (BaseConnector.replay_event) instead of
+# replaying the empty failure document.
+CONNECTOR_REPLAY_KEY = "connector_replay"
 
 
 class IngestionStatus(enum.StrEnum):

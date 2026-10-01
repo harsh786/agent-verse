@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
+# CONNECTOR_REPLAY_KEY "kind" of a failed S3 object fetch (see replay_event).
+_REPLAY_KIND = "s3_object"
+
+
 class _OversizedObjectError(Exception):
     """An event's object is larger than the source's document size cap."""
 
@@ -375,6 +379,21 @@ class S3Connector(BaseConnector):
                     async for raw, _cursor in self._fetch_single(config, bucket, key):
                         yield raw
 
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Fetch again the object a failed S3 event named (DLQ retry).
+
+        Yields the object, or a fresh failure document (reason + retryability)
+        when it still cannot be read.
+        """
+        bucket = str(reference.get("bucket") or "")
+        key = str(reference.get("key") or "")
+        if reference.get("kind") != _REPLAY_KIND or not bucket or not key:
+            raise ValueError(f"not an S3 object replay reference: {reference!r}")
+        async for raw, _key in self._fetch_single(config, bucket, key):
+            yield raw
+
     async def _fetch_single(
         self, config: SourceConfig, bucket: str, key: str
     ) -> AsyncIterator[tuple[RawDocument, str]]:
@@ -388,6 +407,7 @@ class S3Connector(BaseConnector):
         from app.ingestion.source_config import (
             CONNECTOR_FAILURE_KEY,
             CONNECTOR_FAILURE_RETRYABLE_KEY,
+            CONNECTOR_REPLAY_KEY,
             RawDocument,
         )
 
@@ -441,7 +461,13 @@ class S3Connector(BaseConnector):
                 retryable,
                 reason,
             )
-            failure = {CONNECTOR_FAILURE_KEY: reason, CONNECTOR_FAILURE_RETRYABLE_KEY: retryable}
+            failure = {
+                CONNECTOR_FAILURE_KEY: reason,
+                CONNECTOR_FAILURE_RETRYABLE_KEY: retryable,
+                # Stored with the DLQ entry: a retry re-fetches this object
+                # (replay_event) instead of replaying the empty failure document.
+                CONNECTOR_REPLAY_KEY: {"kind": _REPLAY_KIND, "bucket": bucket, "key": key},
+            }
             yield _doc(b"", "application/octet-stream", **failure), key
             return
         yield _doc(content_bytes, content_type), key
