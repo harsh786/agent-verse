@@ -15,7 +15,7 @@ The principal's roles are NOT copied: every Slack action re-reads the API key's
 live roles/scopes, so revoking or demoting the key revokes its Slack authority.
 
 Revision ID: a6c1e9d4f2b7
-Revises: d7e3a1f9b2c4
+Revises: c3d9e1f7a2b8
 Create Date: 2026-10-01
 """
 
@@ -27,7 +27,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a6c1e9d4f2b7"
-down_revision: str | None = "d7e3a1f9b2c4"
+down_revision: str | None = "c3d9e1f7a2b8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
