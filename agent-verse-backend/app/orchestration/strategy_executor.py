@@ -323,6 +323,8 @@ class DistributedStrategyExecutor:
         cancelled: Any,
     ) -> str:
         goal_text = context.goal_text
+        goal_approved = await self._gate_high_risk(request, context, goal_text)
+        gate_failure: list[StrategyGateError] = []
 
         async def decompose(goal: str) -> list[dict[str, Any]]:
             raw = await complete(
@@ -331,6 +333,22 @@ class DistributedStrategyExecutor:
                 'Respond with strict JSON: {"steps": [{"id": "step-1", "summary": "..."}]}'
             )
             steps = self._parse_steps(raw, fallback_summary=goal)
+            try:
+                # High-risk sub-tasks need the approval before ANY child runs.
+                # A sub-task that just restates the approved goal is already approved.
+                await self._gate_high_risk(
+                    request,
+                    context,
+                    *(
+                        step["summary"]
+                        for step in steps
+                        if not (goal_approved and step["summary"].strip() == goal.strip())
+                    ),
+                    steps_only=True,
+                )
+            except StrategyGateError as exc:
+                gate_failure.append(exc)
+                raise
             return [
                 {
                     "work_item_id": step["id"],
@@ -375,6 +393,8 @@ class DistributedStrategyExecutor:
             synthesize=synthesize,
             cancelled=cancelled,
         )
+        if gate_failure:
+            raise gate_failure[0]
         if state.phase != "completed" or answer is None:
             raise RuntimeError(
                 f"{request.strategy_id} did not complete: "
@@ -382,10 +402,45 @@ class DistributedStrategyExecutor:
             )
         return answer
 
+    async def _gate_high_risk(
+        self,
+        request: StrategyExecutionRequest,
+        context: Any,
+        *texts: str,
+        steps_only: bool = False,
+    ) -> bool:
+        """Require a persisted approval when any of *texts* is high-risk.
+
+        Returns True when an approval was required and granted."""
+        from app.agent.nodes._helpers import _is_high_risk_step
+
+        risky = [t for t in texts if t and _is_high_risk_step(str(t))]
+        if not risky:
+            return False
+        what = "high-risk sub-tasks" if steps_only else "high-risk goal"
+        await self._require_approval(
+            request, context, f"{request.strategy_id} {what}: {'; '.join(risky)[:300]}"
+        )
+        return True
+
+    @staticmethod
+    async def _emit(context: Any, event: dict[str, Any]) -> None:
+        callback = getattr(context, "event_callback", None)
+        if callback is None:
+            return
+        try:
+            await callback(event)
+        except Exception:  # an event sink failure never decides the gate
+            return
+
     async def _require_approval(
         self, request: StrategyExecutionRequest, context: Any, action: str
     ) -> None:
-        """Persisted human approval before a high-risk run (fail closed)."""
+        """Persisted human approval before a high-risk run (fail closed).
+
+        Approved -> the run continues; rejected / timed out / no gateway ->
+        StrategyGateError whose reason_code (approval_rejected, approval_timed_out,
+        approval_unavailable) becomes the goal's failure reason."""
         from app.governance.hitl import ApprovalStatus
 
         gateway = _resolve(self._hitl_gateway, "request_approval_async")
@@ -405,13 +460,27 @@ class DistributedStrategyExecutor:
             )
         except Exception as exc:
             raise StrategyGateError("approval_unavailable", str(exc)) from exc
+        await self._emit(
+            context,
+            {
+                "type": "waiting_approval",
+                "request_id": request_id,
+                "action": action,
+                "strategy_id": request.strategy_id,
+            },
+        )
         status = await gateway.wait_for_approval(
             request_id, tenant_ctx=tenant_ctx, timeout=self._approval_timeout
         )
         if status != ApprovalStatus.APPROVED:
+            await self._emit(
+                context,
+                {"type": "approval_denied", "request_id": request_id, "status": str(status)},
+            )
             raise StrategyGateError(
                 f"approval_{str(status).lower()}", f"strategy run approval {status}"
             )
+        await self._emit(context, {"type": "approval_granted", "request_id": request_id})
 
     async def _run_voyager(
         self,
@@ -431,8 +500,6 @@ class DistributedStrategyExecutor:
         """
         import hashlib
 
-        from app.agent.nodes._helpers import _is_high_risk_step
-
         goal_text = str(context.goal_text)
         raw = await complete(
             f"List 1-{_VOYAGER_MAX_TASKS} concrete sub-tasks needed to accomplish this goal.\n"
@@ -441,8 +508,7 @@ class DistributedStrategyExecutor:
         )
         steps = self._parse_steps(raw, fallback_summary=goal_text)
         tasks = tuple(dict.fromkeys(step["summary"][:500] for step in steps))
-        if _is_high_risk_step(goal_text) or any(_is_high_risk_step(t) for t in tasks):
-            await self._require_approval(request, context, f"voyager: {goal_text[:200]}")
+        await self._gate_high_risk(request, context, goal_text, *tasks)
 
         results: dict[str, str] = {}
 
@@ -511,6 +577,7 @@ class DistributedStrategyExecutor:
         complete: Any,
     ) -> str:
         goal_text = context.goal_text
+        await self._gate_high_risk(request, context, goal_text)
         participant_ids = ("proposer-a", "proposer-b", "proposer-c")
 
         async def propose(agent_id: str) -> dict[str, Any]:

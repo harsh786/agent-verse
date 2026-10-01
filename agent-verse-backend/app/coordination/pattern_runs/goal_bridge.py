@@ -385,11 +385,20 @@ def build_worker_distributed_loop(
     redis: Any = None,
     agent_id: str | None = None,
 ) -> Any | None:
-    """A DistributedStrategyLoop for a worker-run goal whose primary strategy is a
-    coordination pattern; ``None`` (local fallback, recorded as a downgrade) when the
-    worker cannot run it honestly (no database or no real LLM provider)."""
+    """A DistributedStrategyLoop for a worker-run goal whose primary strategy runs on
+    the StrategyRunner (coordination patterns, supervisor, goal_tree, debate,
+    voyager) — with the same budget reservation, per-call charging, HITL approval
+    gate and (voyager) persistent skill library as the API process; ``None``
+    (local fallback, recorded as a downgrade) when the worker cannot run it
+    honestly (no database or no real LLM provider)."""
+    from types import SimpleNamespace
+
+    from app.memory.voyager_skills_pg import PostgresVoyagerSkillStore
     from app.orchestration.distributed_strategy_loop import DistributedStrategyLoop
-    from app.orchestration.execution_drivers import COORDINATION_PATTERN_STRATEGIES
+    from app.orchestration.execution_drivers import (
+        COORDINATION_PATTERN_STRATEGIES,
+        STRATEGY_RUNNER_STRATEGIES,
+    )
     from app.orchestration.strategy_context_store import StrategyGoalContextStore
     from app.orchestration.strategy_executor import (
         DistributedStrategyExecutor,
@@ -400,20 +409,38 @@ def build_worker_distributed_loop(
 
     if runtime_profile is None or db_factory is None or provider is None:
         return None
-    if runtime_profile.primary_strategy.strategy_id not in COORDINATION_PATTERN_STRATEGIES:
+    strategy_id = runtime_profile.primary_strategy.strategy_id
+    if strategy_id not in STRATEGY_RUNNER_STRATEGIES:
         return None
-    pattern_state = build_pattern_state(
-        db_factory=db_factory, provider=provider, redis=redis, hitl_gateway=hitl_gateway
-    )
+    bridge = None
+    if strategy_id in COORDINATION_PATTERN_STRATEGIES:
+        pattern_state = build_pattern_state(
+            db_factory=db_factory, provider=provider, redis=redis, hitl_gateway=hitl_gateway
+        )
+        bridge = CoordinationGoalBridge(lambda: pattern_state)
     context_store = StrategyGoalContextStore()
+
+    async def _reserve(request: Any, _limits: Any) -> bool:
+        # Same rule as the API process: an unverifiable budget never admits a run.
+        check = getattr(cost_controller, "ahas_remaining_budget", None)
+        if check is None:
+            return False
+        try:
+            return bool(await check(tenant_ctx=SimpleNamespace(tenant_id=request.tenant_id)))
+        except Exception:
+            return False
+
     runner = StrategyRunner(
         build_default_registry(),
         executor=DistributedStrategyExecutor(
             context_store=context_store,
             cost_controller=cost_controller,
-            pattern_bridge=CoordinationGoalBridge(lambda: pattern_state),
+            pattern_bridge=bridge,
+            skill_store=PostgresVoyagerSkillStore(db_factory),
+            hitl_gateway=hitl_gateway,
         ),
         admission=default_distributed_admission,
+        reserve_budget=_reserve,
     )
     return DistributedStrategyLoop(
         strategy_runner=runner,
