@@ -7128,20 +7128,25 @@ def conclude_stale_experiments() -> dict:
         try:
             from sqlalchemy import text
 
-            from app.db.session import get_session_factory as _get_fresh_db
+            from app.db.rls import system_session
+            from app.db.session import get_system_session_factory
 
-            db = _get_fresh_db()
-            async with db() as session:
+            # prompt_variants is FORCE RLS and this sweep is cross-tenant: it runs
+            # on the maintenance (BYPASSRLS) factory under system_session (which
+            # fails loudly on a NOBYPASSRLS role instead of matching no rows).
+            # The trial counters are win_count / loss_count (migration 0029);
+            # the query used "wins + losses" and failed on every run.
+            db = get_system_session_factory()
+            async with db() as session, session.begin(), system_session(session):
                 result = await session.execute(
                     text(
                         "UPDATE prompt_variants SET updated_at = NOW() "
                         "WHERE updated_at < NOW() - INTERVAL '30 days' "
-                        "AND wins + losses >= 20 RETURNING id"
+                        "AND win_count + loss_count >= 20 RETURNING id"
                     )
                 )
                 concluded = len(result.fetchall())
-                await session.commit()
-                return {"status": "ok", "concluded": concluded}
+            return {"status": "ok", "concluded": concluded}
         except Exception as exc:
             return {"status": "error", "error": str(exc)}
 

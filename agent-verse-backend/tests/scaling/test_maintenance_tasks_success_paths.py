@@ -458,18 +458,28 @@ class TestConcludeStaleExperiments:
     def test_success_returns_concluded_count(self):
         from app.scaling.tasks import conclude_stale_experiments
 
-        session = _session(
-            execute_side_effect=[MagicMock(fetchall=MagicMock(return_value=[(1,), (2,), (3,)]))]
+        # system_session's SET LOCAL row_security = off, then the UPDATE (the
+        # cross-tenant sweep runs on the maintenance factory; real-Postgres
+        # coverage: test_conclude_stale_experiments_integration.py).
+        session = _session_with_begin(
+            execute_side_effect=[
+                MagicMock(),
+                MagicMock(fetchall=MagicMock(return_value=[(1,), (2,), (3,)])),
+            ]
         )
         db_factory = _db_factory(session)
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
+        with patch("app.db.session.get_system_session_factory", return_value=db_factory):
             result = conclude_stale_experiments.run()
         assert result == {"status": "ok", "concluded": 3}
+        sql = str(session.execute.call_args_list[1].args[0])
+        assert "win_count + loss_count" in sql
 
     def test_error_returns_error_status(self):
         from app.scaling.tasks import conclude_stale_experiments
 
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")):
+        with patch(
+            "app.db.session.get_system_session_factory", side_effect=RuntimeError("no db")
+        ):
             result = conclude_stale_experiments.run()
         assert result == {"status": "error", "error": "no db"}
 
