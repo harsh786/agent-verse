@@ -410,13 +410,15 @@ class VerifierMixin:
         if success:
             # Record winning plan in execution memory (sync in-memory + async DB, BUG 2b fix)
             if self._exec_memory is not None:
-                self._exec_memory.record(  # sync: immediate in-memory update
-                    goal=agent_state.goal,
-                    plan=agent_state.plan,
-                    tenant_ctx=tenant_ctx,
-                )
-                # Async DB persistence — only when a DB session factory is available
-                if self._db_session_factory is not None:
+                # One record per goal (MEM-08): record_async updates the cache
+                # itself, so the sync record() runs only in the DB-less build.
+                if self._db_session_factory is None:
+                    self._exec_memory.record(
+                        goal=agent_state.goal,
+                        plan=agent_state.plan,
+                        tenant_ctx=tenant_ctx,
+                    )
+                else:
                     # Awaited (one INSERT) so a lost write is visible on this
                     # goal instead of vanishing in a background task (MEM-07).
                     _em_persisted = await self._exec_memory.record_async(

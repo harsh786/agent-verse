@@ -3,12 +3,16 @@
 Winning plans are fed back into the planner prompt to bias toward proven approaches.
 Failed approaches are included as negative examples to avoid repeating mistakes.
 
-In production this would be backed by PostgreSQL (execution_memory table).
-This in-memory implementation is used in tests.
+Durable store: the ``execution_memory`` table (tenant RLS). ``record_async`` /
+``record_failure_async`` write it and ``recall_async`` / ``recall_failures_async``
+/ ``list_async`` read it. The in-process dicts are a bounded cache (at most
+``MAX_ENTRIES_PER_TENANT`` entries per tenant, ``MAX_TENANTS`` tenants, LRU) and
+the whole store only in the DB-less dev/test build.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any
 
 from app.db.rls import sqlalchemy_rls_context
@@ -16,6 +20,23 @@ from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
 _log = get_logger(__name__)
+
+#: Bounds of the in-process cache (MEM-08: it grew forever on the app singleton).
+MAX_ENTRIES_PER_TENANT = 100
+MAX_TENANTS = 1_000
+
+
+class _BoundedTenantLists(OrderedDict[str, list[dict[str, object]]]):
+    """tenant_id -> newest-last list, capped per tenant and LRU-capped in tenants."""
+
+    def add(self, tenant_id: str, entry: dict[str, object]) -> None:
+        bucket = self.setdefault(tenant_id, [])
+        bucket.append(entry)
+        if len(bucket) > MAX_ENTRIES_PER_TENANT:
+            del bucket[: len(bucket) - MAX_ENTRIES_PER_TENANT]
+        self.move_to_end(tenant_id)
+        while len(self) > MAX_TENANTS:
+            self.popitem(last=False)
 
 
 class RecallResult(list[dict[str, Any]]):
@@ -53,11 +74,11 @@ class ExecutionMemory:
     """Per-tenant store of past executions (successful plans and failures)."""
 
     def __init__(self) -> None:
-        # Key: tenant_id → list of memory records
-        self._plans: dict[str, list[dict[str, object]]] = {}
-        self._failures: dict[str, list[dict[str, object]]] = {}
-        # Flat execution log used by the Memory REST API
-        self._memories: dict[str, list[dict[str, object]]] = {}
+        # Key: tenant_id → list of memory records (bounded, see module docstring)
+        self._plans: _BoundedTenantLists = _BoundedTenantLists()
+        self._failures: _BoundedTenantLists = _BoundedTenantLists()
+        # Flat execution log (the DB-less REST list)
+        self._memories: _BoundedTenantLists = _BoundedTenantLists()
 
     def record(
         self,
@@ -66,7 +87,7 @@ class ExecutionMemory:
         plan: list[str],
         tenant_ctx: TenantContext,
     ) -> None:
-        self._plans.setdefault(tenant_ctx.tenant_id, []).append({"goal": goal, "plan": plan})
+        self._plans.add(tenant_ctx.tenant_id, {"goal": goal, "plan": plan})
 
     def recall(
         self,
@@ -89,8 +110,8 @@ class ExecutionMemory:
         error: str,
         tenant_ctx: TenantContext,
     ) -> None:
-        self._failures.setdefault(tenant_ctx.tenant_id, []).append(
-            {"goal": goal, "failed_step": failed_step, "error": error}
+        self._failures.add(
+            tenant_ctx.tenant_id, {"goal": goal, "failed_step": failed_step, "error": error}
         )
 
     def recall_failures(
@@ -138,13 +159,10 @@ class ExecutionMemory:
             "success": success,
             "recorded_at": datetime.now(UTC).isoformat(),
         }
-        self._memories.setdefault(tid, []).append(entry)
+        self._memories.add(tid, entry)
         # Also update _plans so sync recall() can find entries in the same session
         if success:
-            self._plans.setdefault(tid, []).append({"goal": goal, "plan": plan})
-        # Keep only last 100 in memory per tenant
-        if len(self._memories[tid]) > 100:
-            self._memories[tid] = self._memories[tid][-100:]
+            self._plans.add(tid, {"goal": goal, "plan": plan})
 
         if db is None:
             return True
@@ -189,9 +207,7 @@ class ExecutionMemory:
 
         Returns whether the durable write happened (see :meth:`record_async`)."""
         # In-memory record
-        self._failures.setdefault(tenant_id, []).append({"goal": goal, "error": error})
-        if len(self._failures.get(tenant_id, [])) > 100:
-            self._failures[tenant_id] = self._failures[tenant_id][-50:]
+        self._failures.add(tenant_id, {"goal": goal, "error": error})
 
         if db is None:
             return True
@@ -311,7 +327,7 @@ class ExecutionMemory:
                             if isinstance(plan_json, str)
                             else (plan_json or [])
                         )
-                        self._plans.setdefault(tid, []).append({"goal": goal, "plan": plan})
+                        self._plans.add(tid, {"goal": goal, "plan": plan})
                         count += 1
                     except Exception:
                         pass
