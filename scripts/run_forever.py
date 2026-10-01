@@ -20,9 +20,17 @@ without a worker draining the Celery queues every submitted goal sticks in
 PLANNING forever, and without beat nothing time-based (schedules, HITL expiry,
 maintenance) ever fires. All three launch from agent-verse-backend/.
 
+One fleet only: this talks to the same Redis/Postgres as the docker compose stack
+(project ``agentverse-backend``, override with AGENTVERSE_COMPOSE_PROJECT). While
+that stack's worker/beat containers are running, the local worker/beat stand by
+(checked via ``docker ps`` every 60 s; ours stop if compose's come up later), so
+two fleets never consume the same queues and beat never double-schedules.
+``--force-workers`` or AGENTVERSE_FORCE_WORKERS=1 overrides.
+
     ./run_forever.py                       # foreground: awake + api+worker+beat, forever
     ./run_forever.py --no-beat             # api + worker only (no periodic tasks)
     ./run_forever.py --no-worker           # api only (goals will NOT execute)
+    ./run_forever.py --force-workers       # run worker/beat even if compose runs them
     ./run_forever.py -- uv run celery ...  # override: supervise exactly this one cmd
     ./run_forever.py --port 9000           # backend on a different port
     ./run_forever.py start                 # background (detached), logs to a file
@@ -143,6 +151,131 @@ def beat_command() -> list[str]:
     ]
 
 
+# --------------------------------------------------------------------------- #
+# one Celery fleet only: defer to the docker compose stack's worker/beat
+# --------------------------------------------------------------------------- #
+# This supervisor talks to the SAME Redis/Postgres as the docker compose stack.
+# If both run a worker, two fleets (possibly from different code) consume the
+# same queues; if both run beat, every periodic task is scheduled twice. So by
+# default the local worker/beat only run while compose's are NOT running.
+COMPOSE_PROJECT_DEFAULT = "agentverse-backend"
+FORCE_WORKERS_ENV = "AGENTVERSE_FORCE_WORKERS"
+COMPOSE_PROJECT_ENV = "AGENTVERSE_COMPOSE_PROJECT"
+FLEET_RECHECK_SECONDS = 60.0
+
+
+def compose_fleet_services(
+    project: str = COMPOSE_PROJECT_DEFAULT, runner=subprocess.run
+) -> set[str] | None:
+    """Running compose worker/beat service names, or None when docker can't say.
+
+    Any service named ``worker``/``beat`` or ending in ``-worker`` (workflow-,
+    subgoal-worker) counts - each of those consumes this platform's queues.
+    """
+    cmd = [
+        "docker", "ps",
+        "--filter", f"label=com.docker.compose.project={project}",
+        "--format", '{{.Label "com.docker.compose.service"}}',
+    ]
+    try:
+        result = runner(cmd, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    names = {line.strip() for line in (result.stdout or "").splitlines() if line.strip()}
+    return {n for n in names if n in ("worker", "beat") or n.endswith("-worker")}
+
+
+@dataclass(frozen=True)
+class FleetDecision:
+    run_worker: bool
+    run_beat: bool
+    worker_reason: str
+    beat_reason: str
+
+
+def decide_fleet(
+    *, want_worker: bool, want_beat: bool, force: bool, compose: set[str] | None
+) -> FleetDecision:
+    """Whether to run the local worker / beat. ``--no-worker``/``--no-beat`` win."""
+
+    def one(want: bool, compose_has: bool, role: str) -> tuple[bool, str]:
+        if not want:
+            return False, f"{role} disabled by --no-{role}"
+        if force:
+            return True, f"{role} forced (--force-workers / {FORCE_WORKERS_ENV})"
+        if compose is None:
+            return True, f"could not query docker; running the local {role}"
+        if compose_has:
+            return False, (
+                f"docker compose {role} is running ({', '.join(sorted(compose))}); "
+                f"not starting a second {role} against the same Redis/Postgres "
+                f"(override: --force-workers or {FORCE_WORKERS_ENV}=1)"
+            )
+        return True, f"no docker compose {role} running; running the local {role}"
+
+    compose_set = compose or set()
+    has_worker = any(n == "worker" or n.endswith("-worker") for n in compose_set)
+    run_worker, worker_reason = one(want_worker, has_worker, "worker")
+    run_beat, beat_reason = one(want_beat, "beat" in compose_set, "beat")
+    return FleetDecision(run_worker, run_beat, worker_reason, beat_reason)
+
+
+def force_workers(args: argparse.Namespace) -> bool:
+    if getattr(args, "force_workers", False):
+        return True
+    return os.environ.get(FORCE_WORKERS_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+class ComposeFleetProbe:
+    """Thread-safe, TTL-cached ``compose_fleet_services`` shared by the gates."""
+
+    def __init__(self, project, ttl=FLEET_RECHECK_SECONDS, detect=None, clock=None):
+        self._detect = detect or (lambda: compose_fleet_services(project))
+        self._clock = clock or time.monotonic
+        self._ttl = ttl
+        self._lock = threading.Lock()
+        self._at: float | None = None
+        self._value: set[str] | None = None
+
+    def services(self) -> set[str] | None:
+        with self._lock:
+            now = self._clock()
+            if self._at is None or now - self._at >= self._ttl:
+                self._value = self._detect()
+                self._at = now
+            return self._value
+
+
+class FleetGate:
+    """Per-role (worker/beat) decision, re-evaluated on every call; logs changes."""
+
+    def __init__(self, probe, *, role, want, force, log=log):
+        self._probe = probe
+        self._role = role
+        self._want = want
+        self._force = force
+        self._log = log
+        self._last: bool | None = None
+
+    def allowed(self) -> bool:
+        decision = decide_fleet(
+            want_worker=self._want,
+            want_beat=self._want,
+            force=self._force,
+            compose=self._probe.services(),
+        )
+        if self._role == "worker":
+            ok, reason = decision.run_worker, decision.worker_reason
+        else:
+            ok, reason = decision.run_beat, decision.beat_reason
+        if ok != self._last:
+            self._log(f"[{self._role}] {reason}")
+            self._last = ok
+        return ok
+
+
 @dataclass
 class _Service:
     """One supervised child process (API, worker, or beat)."""
@@ -151,6 +284,9 @@ class _Service:
     command: list[str]
     cwd: Path
     child: subprocess.Popen[bytes] | None = field(default=None)
+    # Re-checked before every (re)start and while running: False = stand down
+    # because the docker compose stack runs this role (see FleetGate).
+    gate: FleetGate | None = field(default=None)
 
 
 @dataclass
@@ -173,10 +309,15 @@ def resolve_services(args: argparse.Namespace) -> list[_Service]:
         return [_Service("service", list(args.command), Path(args.cwd or REPO_ROOT))]
     cwd = Path(args.cwd or BACKEND_DIR)
     services = [_Service("api", default_command(args), cwd)]
+    project = os.environ.get(COMPOSE_PROJECT_ENV, "").strip() or COMPOSE_PROJECT_DEFAULT
+    probe = ComposeFleetProbe(project)
+    force = force_workers(args)
     if getattr(args, "worker", True):
-        services.append(_Service("worker", worker_command(), cwd))
+        gate = FleetGate(probe, role="worker", want=True, force=force)
+        services.append(_Service("worker", worker_command(), cwd, gate=gate))
     if getattr(args, "beat", True):
-        services.append(_Service("beat", beat_command(), cwd))
+        gate = FleetGate(probe, role="beat", want=True, force=force)
+        services.append(_Service("beat", beat_command(), cwd, gate=gate))
     return services
 
 
@@ -191,7 +332,12 @@ def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
     or restarting never takes the others down.
     """
     backoff = BACKOFF_START
+    gate = service.gate
     while not state.stopping:
+        if gate is not None and not gate.allowed():
+            # The compose stack runs this role: stand by, re-check periodically.
+            _interruptible_sleep(FLEET_RECHECK_SECONDS, lambda: state.stopping)
+            continue
         started = time.monotonic()
         try:
             child = subprocess.Popen(
@@ -211,7 +357,18 @@ def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
         with state.lock:
             service.child = child
         log(f"[{service.name}] started (child pid {child.pid})")
-        rc = _wait_child(child, ensure_awake=awake, stopping=lambda: state.stopping)
+        stand_down = [False]
+
+        def stopping(gate=gate, stand_down=stand_down) -> bool:
+            if state.stopping:
+                return True
+            # Compose's worker/beat came up while ours runs: stop ours.
+            if gate is not None and not gate.allowed():
+                stand_down[0] = True
+                return True
+            return False
+
+        rc = _wait_child(child, ensure_awake=awake, stopping=stopping)
         with state.lock:
             service.child = None
         uptime = time.monotonic() - started
@@ -219,6 +376,10 @@ def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
         if state.stopping:
             log(f"[{service.name}] exited (rc={rc}) during shutdown")
             break
+        if stand_down[0]:
+            log(f"[{service.name}] stopped (rc={rc}): docker compose runs it now")
+            backoff = BACKOFF_START
+            continue
 
         if uptime >= HEALTHY_UPTIME:
             backoff = BACKOFF_START  # it was stable; recover quickly
@@ -347,6 +508,8 @@ def _forwarded_run_args(args: argparse.Namespace) -> list[str]:
         forwarded.append("--no-worker")
     if not getattr(args, "beat", True):
         forwarded.append("--no-beat")
+    if getattr(args, "force_workers", False):
+        forwarded.append("--force-workers")
     if args.cwd:
         forwarded += ["--cwd", args.cwd]
     if args.command:
@@ -542,6 +705,14 @@ def build_parser() -> argparse.ArgumentParser:
             dest="beat",
             action="store_false",
             help="do not run Celery beat (scheduled/periodic tasks will not fire)",
+        )
+        p.add_argument(
+            "--force-workers",
+            action="store_true",
+            help=(
+                "run the local worker/beat even while the docker compose stack's "
+                f"are running (default: defer to compose; env {FORCE_WORKERS_ENV}=1)"
+            ),
         )
         p.set_defaults(worker=True, beat=True)
         p.add_argument(

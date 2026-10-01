@@ -44,6 +44,17 @@ These are non-obvious and have bitten previous sessions — read before running 
   raises a deprecation that `filterwarnings=error` turns into a test failure.
 - **pytest treats warnings as errors** (`filterwarnings = ["error"]`); only specific
   testcontainers/asyncpg deprecations are scoped-ignored in `pyproject.toml`.
+- **Two runtimes share one Redis/Postgres.** A launchd job
+  (`~/Library/LaunchAgents/com.local.agentverse.runforever.plist`) runs
+  `scripts/run_forever.py` — a local API + Celery worker + beat from the repo `.venv` —
+  against the same Redis/Postgres as the docker compose stack (project
+  `agentverse-backend`). To keep ONE worker fleet and ONE beat, `run_forever.py` does not
+  start its own worker/beat while the compose stack's `worker`/`*-worker`/`beat` containers
+  are running (checked with `docker ps` every 60 s; its worker/beat stop if compose's come up
+  later, and start if they go away) and logs why. Override with `--force-workers` or
+  `AGENTVERSE_FORCE_WORKERS=1`; `AGENTVERSE_COMPOSE_PROJECT` changes the project name. Logs:
+  `~/.local/state/agentverse_run_forever/run_forever.log`. Code changes reach the launchd
+  runtime only after it is restarted (`launchctl kickstart -k gui/$(id -u)/com.local.agentverse.runforever`).
 
 ## Common commands
 
