@@ -28,7 +28,10 @@ _TRACING = (
     "complete_decision / complete_with_failover, which apply budget, breaker and timeout"
 )
 _NOT_LLM = "receiver is not an LLM provider"
-_OWNED = "pending migration in this wave (PROV-25)"
+_DEBT_UNMETERED = (
+    "known debt: direct calls with NO metering, tracing, breaker or timeout; the module "
+    "is not wired anywhere (PROV-24 decides wire-or-delete). Not a guarded wrapper."
+)
 
 # "<path relative to app/>::<qualname>": (number of .complete( calls, reason)
 ALLOWED: dict[str, tuple[int, str]] = {
@@ -40,9 +43,12 @@ ALLOWED: dict[str, tuple[int, str]] = {
         1,
         _NOT_LLM + " (ProspectiveMemoryService.complete marks an intention done)",
     ),
-    # ── pending, owned by later items of this wave ────────────────────────────
-    "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _OWNED),
+    # ── known debt (must never be mistaken for a metered wrapper) ─────────────
+    "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _DEBT_UNMETERED),
 }
+
+# Entries that ARE guarded wrappers (metering / tracing around an inner call).
+_WRAPPER_KEYS = frozenset({"observability/traced_provider.py::TracedProvider.complete"})
 
 
 def _scan() -> dict[str, int]:
@@ -171,3 +177,11 @@ def test_stream_allowlist_has_no_stale_entries() -> None:
         if found.get(k, 0) != n
     )
     assert not stale, "Update STREAM_ALLOWED:\n  " + "\n  ".join(stale)
+
+
+def test_only_real_wrappers_are_classified_as_wrappers() -> None:
+    """PROV-25: ShadowRouter was exempted as a "metered/traced wrapper" it is not."""
+    for key, (_n, reason) in ALLOWED.items():
+        claims_wrapper = "wrapper" in reason.lower() and "not a guarded wrapper" not in reason.lower()
+        assert not claims_wrapper or key in _WRAPPER_KEYS, key
+    assert "ShadowRouter" not in " ".join(_WRAPPER_KEYS)
