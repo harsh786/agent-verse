@@ -35,6 +35,20 @@ class RecallResult(list[dict[str, Any]]):
         self.degraded = degraded
 
 
+def _write_failed(op: str, tenant_id: str, goal_id: str, exc: BaseException) -> None:
+    """MEM-07: a lost durable write is counted and logged with its goal."""
+    from app.observability.metrics import record_memory_degraded
+
+    record_memory_degraded("execution", "record")
+    _log.warning(
+        "execution_memory_db_write_failed",
+        op=op,
+        tenant_id=tenant_id,
+        goal_id=goal_id,
+        error=f"{type(exc).__name__}: {str(exc)[:200]}",
+    )
+
+
 class ExecutionMemory:
     """Per-tenant store of past executions (successful plans and failures)."""
 
@@ -102,8 +116,13 @@ class ExecutionMemory:
         success: bool,
         tenant_id: str,
         db: Any = None,
-    ) -> None:
+        goal_id: str = "",
+    ) -> bool:
         """Record to both in-memory dict and PostgreSQL.
+
+        Returns whether the durable write happened (always True without a DB).
+        A DB failure is counted and logged and returns False — callers flag the
+        goal as memory-degraded rather than claim the plan was remembered.
 
         Uses ``tenant_id`` (str) directly so callers don't need a TenantContext
         object.  Also updates ``_plans`` so that the synchronous ``recall()``
@@ -128,7 +147,7 @@ class ExecutionMemory:
             self._memories[tid] = self._memories[tid][-100:]
 
         if db is None:
-            return
+            return True
         try:
             import json
             import uuid
@@ -153,9 +172,9 @@ class ExecutionMemory:
                     },
                 )
         except Exception as exc:
-            from app.observability.logging import get_logger
-
-            get_logger(__name__).warning("execution_memory_db_write_failed", error=str(exc))
+            _write_failed("record", tid, goal_id, exc)
+            return False
+        return True
 
     async def record_failure_async(
         self,
@@ -164,15 +183,18 @@ class ExecutionMemory:
         error: str,
         tenant_id: str,
         db: Any = None,
-    ) -> None:
-        """Persist failed attempt to DB for cross-session pattern learning."""
+        goal_id: str = "",
+    ) -> bool:
+        """Persist failed attempt to DB for cross-session pattern learning.
+
+        Returns whether the durable write happened (see :meth:`record_async`)."""
         # In-memory record
         self._failures.setdefault(tenant_id, []).append({"goal": goal, "error": error})
         if len(self._failures.get(tenant_id, [])) > 100:
             self._failures[tenant_id] = self._failures[tenant_id][-50:]
 
         if db is None:
-            return
+            return True
         try:
             import json
             import uuid
@@ -199,9 +221,9 @@ class ExecutionMemory:
                     },
                 )
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("failure_persist_failed: %s", exc)
+            _write_failed("record_failure", tenant_id, goal_id, exc)
+            return False
+        return True
 
     async def load_from_db(
         self,

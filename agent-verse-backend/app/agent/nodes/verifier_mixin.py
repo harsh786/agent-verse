@@ -417,17 +417,23 @@ class VerifierMixin:
                 )
                 # Async DB persistence — only when a DB session factory is available
                 if self._db_session_factory is not None:
-                    _em_task = asyncio.create_task(
-                        self._exec_memory.record_async(
-                            goal=agent_state.goal,
-                            plan=agent_state.plan,
-                            success=True,
-                            tenant_id=tenant_ctx.tenant_id,
-                            db=self._db_session_factory,
-                        )
+                    # Awaited (one INSERT) so a lost write is visible on this
+                    # goal instead of vanishing in a background task (MEM-07).
+                    _em_persisted = await self._exec_memory.record_async(
+                        goal=agent_state.goal,
+                        plan=agent_state.plan,
+                        success=True,
+                        tenant_id=tenant_ctx.tenant_id,
+                        db=self._db_session_factory,
+                        goal_id=str(agent_state.goal_id or ""),
                     )
-                    self._background_tasks.add(_em_task)
-                    _em_task.add_done_callback(self._background_tasks.discard)
+                    if _em_persisted is False:
+                        _degraded = agent_state.context.setdefault("memory_degraded", [])
+                        if "execution_memory_write" not in _degraded:
+                            _degraded.append("execution_memory_write")
+                        await self._emit(
+                            {"type": "memory_degraded", "source": "execution_memory_write"}
+                        )
 
             # Auto-extract long-term learnings (sync in-memory + async DB, BUG 1 fix)
             if self._long_term_memory is not None:
