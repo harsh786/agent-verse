@@ -94,12 +94,20 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         if in_tenant_scope():
             # Dial the address checked for THIS connection (no rebinding window).
             from app.ingestion.connector_egress import pin_source_hosts
+            from app.mcp.servers.egress import connect_first, pin_variants
 
             async with pin_source_hosts(
                 [(parsed.hostname or "", parsed.port or 3306)], context="mcp builtin mysql"
             ) as pins:
-                connect_kwargs["host"] = pins.ip(parsed.hostname or "")
-                conn = await aiomysql.connect(**connect_kwargs)
+                # Each checked address in turn (e.g. ::1 then 127.0.0.1).
+                conn = await connect_first(
+                    [
+                        lambda v=variant: aiomysql.connect(
+                            **{**connect_kwargs, "host": v.ip(parsed.hostname or "")}
+                        )
+                        for variant in pin_variants(pins)
+                    ]
+                )
         else:
             conn = await aiomysql.connect(**connect_kwargs)
         try:

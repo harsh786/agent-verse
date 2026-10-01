@@ -1,6 +1,6 @@
 """Dispatch-level tests for data/storage MCP servers.
 
-Covers: postgres (asyncpg), mysql (aiomysql - not installed),
+Covers: postgres (asyncpg), mysql (aiomysql),
         snowflake (not installed),
         elasticsearch, redis, pinecone (not installed), supabase.
 """

@@ -78,10 +78,16 @@ async def _connect(asyncpg: Any, db_url: str) -> Any:
     if not in_tenant_scope():
         return await asyncpg.connect(db_url)
     from app.ingestion.connector_egress import pin_source_dsn
-    from app.mcp.servers.egress import pinned_asyncpg_kwargs
+    from app.mcp.servers.egress import connect_first, pin_variants, pinned_asyncpg_kwargs
 
     async with pin_source_dsn(db_url, context="mcp builtin postgres") as pins:
-        return await asyncpg.connect(**pinned_asyncpg_kwargs(db_url, pins))
+        # Each checked address in turn (e.g. ::1 then 127.0.0.1).
+        return await connect_first(
+            [
+                lambda v=variant: asyncpg.connect(**pinned_asyncpg_kwargs(db_url, v))
+                for variant in pin_variants(pins)
+            ]
+        )
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

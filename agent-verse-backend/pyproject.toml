@@ -85,6 +85,8 @@ dependencies = [
     "feedparser>=6.0.0",
     # MongoDB Sources connector (app/ingestion/connectors/mongodb_connector.py)
     "pymongo>=4.10",
+    "aiomysql>=0.2.0",
+    "snowflake-connector-python>=3.12",
 ]
 
 [project.scripts]
@@ -126,7 +128,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
-    "testcontainers[mongodb,postgres,redis]>=4.9.0",
+    "testcontainers[mongodb,mysql,postgres,redis]>=4.9.0",
     "respx>=0.22.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",

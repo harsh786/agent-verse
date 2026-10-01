@@ -140,6 +140,41 @@ def install_http_pinning() -> None:
 # ── database drivers ─────────────────────────────────────────────────────────
 
 
+def pin_variants(pins: Any) -> list[Any]:
+    """One EgressPins per checked address, so a driver can try each in turn.
+
+    A name often resolves to several addresses (``localhost`` → ::1 and
+    127.0.0.1; a cloud endpoint → several IPs). ``EgressPins.ip`` returns only
+    the first: if that one refuses the connection the call failed although a
+    checked address would have answered. Variant *i* uses each host's *i*-th
+    checked address (wrapping around).
+    """
+    from app.ingestion.connector_egress import EgressPins
+
+    widest = max((len(v) for v in pins.ips.values() if v), default=1)
+    variants = []
+    for i in range(widest):
+        ips = {h: [v[i % len(v)]] for h, v in pins.ips.items() if v}
+        variants.append(EgressPins(ips=ips, dsn=pins.dsn))
+    return variants
+
+
+async def connect_first(attempts: list[Any]) -> Any:
+    """Await each zero-arg coroutine factory in order; return the first success."""
+    last: Exception | None = None
+    for attempt in attempts:
+        try:
+            return await attempt()
+        except OSError as exc:
+            last = exc
+        except Exception as exc:  # driver-specific connect errors (e.g. pymysql 2003)
+            if "connect" not in str(exc).lower():
+                raise
+            last = exc
+    assert last is not None
+    raise last
+
+
 def pinned_asyncpg_kwargs(dsn: str, pins: Any) -> dict[str, Any]:
     """asyncpg connect kwargs dialling the checked IPs (asyncpg may resolve in libuv)."""
     from urllib.parse import parse_qsl
@@ -192,7 +227,9 @@ def pinned_redis_client(url: str, ips: list[str] | str, **kwargs: Any) -> Any:
 
 __all__ = [
     "checked_addresses",
+    "connect_first",
     "install_http_pinning",
+    "pin_variants",
     "pinned_asyncpg_kwargs",
     "pinned_redis_client",
 ]
