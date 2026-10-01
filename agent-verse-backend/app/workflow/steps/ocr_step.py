@@ -168,15 +168,15 @@ class OcrStepNode:
         import os as _os
         from urllib.parse import urljoin, urlparse
 
-        import httpx
-
+        from app.net.ssrf_guard import public_async_client
         from app.workflow.security import SSRFBlockedError, SSRFGuard
 
         guard = SSRFGuard()
         cap = OcrStepNode._MAX_URL_BYTES
         current = url
         try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            # Pinned client: connect-time resolution is re-checked (DNS rebinding).
+            async with public_async_client(timeout=30.0) as client:
                 for _hop in range(OcrStepNode._MAX_REDIRECTS + 1):
                     try:
                         guard.validate(current)

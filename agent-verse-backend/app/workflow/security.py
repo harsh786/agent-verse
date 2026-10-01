@@ -9,38 +9,12 @@ SecretMasker: Redacts vault-resolved secret values before persisting
 
 from __future__ import annotations
 
-import ipaddress
 import re
-import socket
-import urllib.parse
 from typing import Any
 
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
-
-# RFC 1918 + loopback + link-local (AWS/GCP metadata) + IPv6 private
-_PRIVATE_NETWORKS = [
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("169.254.0.0/16"),  # link-local + AWS IMDSv1
-    ipaddress.ip_network("0.0.0.0/8"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-]
-
-# Explicitly blocked hostnames (in addition to IP checks)
-_BLOCKED_HOSTNAMES = frozenset(
-    {
-        "metadata.google.internal",
-        "169.254.169.254",  # AWS IMDSv1
-        "fd00:ec2::254",  # AWS IMDSv2 IPv6
-        "localhost",
-    }
-)
 
 
 class SSRFBlockedError(PermissionError):
@@ -48,47 +22,25 @@ class SSRFBlockedError(PermissionError):
 
 
 class SSRFGuard:
-    """Validates HTTP step URLs against SSRF blocklist."""
+    """Validates workflow egress URLs with the CENTRAL guard (app.net.ssrf_guard).
+
+    This used to be a workflow-local copy with its own blocklist. It missed
+    IPv4-mapped IPv6 literals ([::ffff:169.254.169.254]), CGNAT cloud-metadata
+    addresses (100.100.100.200) and the unspecified address, and it resolved DNS
+    separately from the request. All rules now live in one place; the actual
+    connection must additionally use ``app.net.ssrf_guard.public_async_client``
+    so the dialled address is the checked one (DNS-rebinding defence).
+    """
 
     def validate(self, url: str) -> None:
-        """Raises SSRFBlockedError if URL is unsafe."""
+        """Raises SSRFBlockedError if URL is unsafe (fail closed)."""
+        from app.net import ssrf_guard
+
         try:
-            parsed = urllib.parse.urlparse(url)
-            hostname = parsed.hostname
-        except Exception as e:
-            raise SSRFBlockedError(f"Invalid URL {url!r}: {e}") from e
-
-        if not hostname:
-            raise SSRFBlockedError(f"Empty hostname in URL: {url!r}")
-
-        hostname_lower = hostname.lower()
-
-        # Explicit hostname blocklist
-        if hostname_lower in _BLOCKED_HOSTNAMES:
-            raise SSRFBlockedError(f"SSRF blocked: hostname {hostname!r} is explicitly blocked")
-
-        # Resolve DNS and check all returned IPs
-        try:
-            addr_infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
-        except socket.gaierror as exc:
-            # DNS resolution failed — block (could be internal hostname)
-            _log.warning("ssrf_dns_resolve_failed", hostname=hostname, url=url)
-            raise SSRFBlockedError(f"SSRF blocked: could not resolve {hostname!r}") from exc
-
-        for addr_info in addr_infos:
-            ip_str = addr_info[4][0]
-            try:
-                ip = ipaddress.ip_address(ip_str)
-            except ValueError:
-                continue
-
-            for private_net in _PRIVATE_NETWORKS:
-                if ip in private_net:
-                    raise SSRFBlockedError(
-                        f"SSRF blocked: {hostname!r} resolves to private IP {ip_str}"
-                    )
-
-        _log.debug("ssrf_check_passed", hostname=hostname)
+            ssrf_guard.assert_public_url(url, context="workflow")
+        except Exception as exc:  # SSRFError, malformed URL, resolver failure
+            _log.warning("workflow_ssrf_blocked", url=str(url)[:200], error=str(exc))
+            raise SSRFBlockedError(str(exc)) from exc
 
 
 # ─────────────────────────────────────────────────────────────────────────────

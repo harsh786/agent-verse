@@ -28,19 +28,19 @@ def test_ssrf_loopback_blocked(guard):
 
 def test_ssrf_private_10_blocked(guard):
     with patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("10.0.0.1", 0))]):
-        with pytest.raises(SSRFBlockedError, match="private IP"):
+        with pytest.raises(SSRFBlockedError, match="blocked"):
             guard.validate("http://10.0.0.1/admin")
 
 
 def test_ssrf_private_172_blocked(guard):
     with patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("172.16.0.5", 0))]):
-        with pytest.raises(SSRFBlockedError, match="private IP"):
+        with pytest.raises(SSRFBlockedError, match="blocked"):
             guard.validate("http://172.16.0.5/")
 
 
 def test_ssrf_private_192_blocked(guard):
     with patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("192.168.1.1", 0))]):
-        with pytest.raises(SSRFBlockedError, match="private IP"):
+        with pytest.raises(SSRFBlockedError, match="blocked"):
             guard.validate("http://192.168.1.1/")
 
 
@@ -56,14 +56,14 @@ def test_ssrf_localhost_hostname_blocked(guard):
 
 def test_ssrf_ipv6_loopback_blocked(guard):
     with patch("socket.getaddrinfo", return_value=[(None, None, None, None, ("::1", 0, 0, 0))]):
-        with pytest.raises(SSRFBlockedError, match="private IP"):
+        with pytest.raises(SSRFBlockedError, match="blocked"):
             guard.validate("http://[::1]/")
 
 
 def test_ssrf_dns_failure_blocked(guard):
     import socket
     with patch("socket.getaddrinfo", side_effect=socket.gaierror("NXDOMAIN")):
-        with pytest.raises(SSRFBlockedError, match="could not resolve"):
+        with pytest.raises(SSRFBlockedError, match="cannot resolve"):
             guard.validate("http://internal.corp.example.com/api")
 
 

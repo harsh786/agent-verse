@@ -61,8 +61,12 @@ class HTTPStepNode:
         timeout_s = self._parse_timeout(self.step.timeout)
         start = time.monotonic()
 
+        from app.net.ssrf_guard import SSRFError, public_async_client
+
         try:
-            async with httpx.AsyncClient(timeout=timeout_s) as client:
+            # Pinned client: the socket dials the address the central guard
+            # checked at connect time (DNS rebinding), redirects are not followed.
+            async with public_async_client(timeout=timeout_s) as client:
                 response = await client.request(
                     method=method,
                     url=url,
@@ -78,6 +82,8 @@ class HTTPStepNode:
 
         except SSRFBlockedError:
             raise
+        except SSRFError as e:
+            raise SSRFBlockedError(str(e)) from e
         except httpx.HTTPStatusError as e:
             raise RuntimeError(
                 f"HTTP {e.response.status_code} from {url}: {e.response.text[:256]}"
