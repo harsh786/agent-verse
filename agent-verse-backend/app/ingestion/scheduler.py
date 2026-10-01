@@ -417,7 +417,7 @@ async def _sync_source_async(
 @shared_task(name="ingestion.reap_stale_jobs", bind=True)
 def reap_stale_jobs_task(self) -> dict:
     """Celery beat: fail ingestion jobs a lost worker left ``running`` (KB-SYNC-WORKER)."""
-    return asyncio.get_event_loop().run_until_complete(_reap_stale_jobs_async())
+    return _run_task_loop(_reap_stale_jobs_async())
 
 
 async def _reap_stale_jobs_async(*, tracker: object | None = None) -> dict:
@@ -595,7 +595,7 @@ async def _retry_one_dlq_entry(
 @shared_task(name="ingestion.retry_dlq_entry", bind=True)
 def retry_dlq_entry_task(self, *, dlq_id: str, tenant_id: str) -> dict:
     """Operator retry of ONE DLQ entry (POST /ingestion/dlq/{id}/retry)."""
-    return asyncio.get_event_loop().run_until_complete(
+    return _run_task_loop(
         _retry_dlq_entry_async(dlq_id=dlq_id, tenant_id=tenant_id)
     )
 
