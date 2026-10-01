@@ -16,7 +16,7 @@ Also adds ``ix_goals_tenant_parent`` so a resumed supervisor can find the
 sub-goal rows it already created (``goals.parent_goal_id`` had no index).
 
 Revision ID: a7c3e9f1b5d2
-Revises: d7e3a1f9b2c4
+Revises: c3d9e1f7a2b8
 Create Date: 2026-10-01
 """
 
@@ -27,7 +27,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "a7c3e9f1b5d2"
-down_revision: str | None = "d7e3a1f9b2c4"
+down_revision: str | None = "c3d9e1f7a2b8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
