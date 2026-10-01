@@ -538,6 +538,14 @@ function uploadErrorMessage(e: unknown, filename?: string): string {
   return `${prefix}Upload failed: ${e instanceof Error ? e.message : String(e)}`;
 }
 
+/** KB-37: every ingest form says when the plan's document quota (or budget) refused it. */
+function ingestErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 429) {
+    return `Not ingested, limit reached (${e.message}). Raise the plan limit or budget, or free up space.`;
+  }
+  return String(e);
+}
+
 // ── RPA URL Scraper ───────────────────────────────────────────────────────────
 
 interface RpaUrlResult {
@@ -572,7 +580,7 @@ function RpaScrapeSection({ collections }: { collections: Collection[] }) {
       void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
       toast({ kind: 'success', message: `Scraped ${r.urls_succeeded}/${r.urls_processed} URLs → ${r.total_chunks_ingested} chunks.` });
     },
-    onError: (e) => toast({ kind: 'error', message: String(e) }),
+    onError: (e) => toast({ kind: 'error', message: ingestErrorMessage(e) }),
   });
 
   return (
@@ -702,7 +710,7 @@ function IngestTab() {
       setContent('');
       void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
     },
-    onError: (e) => toast({ kind: 'error', message: String(e) }),
+    onError: (e) => toast({ kind: 'error', message: ingestErrorMessage(e) }),
   });
 
   const fileMutation = useMutation({

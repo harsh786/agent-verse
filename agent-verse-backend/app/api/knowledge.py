@@ -536,6 +536,17 @@ async def _enforce_doc_quota_or_http(request: Request, tenant: Any) -> None:
         ) from exc
 
 
+async def _require_doc_quota(request: Request) -> None:
+    """Route dependency: the document quota, before anything is parsed or embedded."""
+    await _enforce_doc_quota_or_http(request, _require_tenant(request))
+
+
+# KB-37: EVERY route that adds documents to a collection carries this one guard
+# (only 4 of ~16 used to check the quota). It runs before the request body is
+# processed, so nothing is fetched, parsed or embedded past the limit.
+_DOC_QUOTA = [Depends(_require_doc_quota)]
+
+
 async def _screen_or_http(
     request: Request | None, tenant_id: str, text: str, *, doc_id: str = ""
 ) -> str:
@@ -755,10 +766,9 @@ async def delete_collection(request: Request, collection_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/ingest", status_code=status.HTTP_201_CREATED)
+@router.post("/ingest", status_code=status.HTTP_201_CREATED, dependencies=_DOC_QUOTA)
 async def ingest_document(request: Request, body: IngestRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
-    await _enforce_doc_quota_or_http(request, tenant_ctx)
     store = _knowledge_store(request)
     # Empty/whitespace content used to answer 201 with chunks_created 0 (and
     # "deduplicated": true) — a success that indexed nothing.
@@ -1014,7 +1024,7 @@ def _extract_upload_text(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.post("/ingest/file", status_code=201)
+@router.post("/ingest/file", status_code=201, dependencies=_DOC_QUOTA)
 async def ingest_file(
     request: Request,
     file: UploadFile = File(...),
@@ -1036,7 +1046,6 @@ async def ingest_file(
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
-    await _enforce_doc_quota_or_http(request, tenant)
 
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded_file"
@@ -1245,7 +1254,7 @@ def _extract_upload_segments(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/ingest/repo", status_code=202)
+@router.post("/ingest/repo", status_code=202, dependencies=_DOC_QUOTA)
 async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[str, Any]:
     """Clone a git repository and ingest all matching files.
 
@@ -1696,11 +1705,10 @@ async def _ingest_repo_background(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/ingest/openapi", status_code=201)
+@router.post("/ingest/openapi", status_code=201, dependencies=_DOC_QUOTA)
 async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[str, Any]:
     """Ingest an OpenAPI spec — creates a chunk per endpoint."""
     tenant = _require_tenant(request)
-    await _enforce_doc_quota_or_http(request, tenant)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
@@ -1886,11 +1894,10 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
     return content, metadata
 
 
-@router.post("/ingest/url", status_code=201)
+@router.post("/ingest/url", status_code=201, dependencies=_DOC_QUOTA)
 async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str, Any]:
     """Ingest content from a URL (web page, GitHub file, Confluence page, etc.)."""
     tenant_ctx = _require_tenant(request)
-    await _enforce_doc_quota_or_http(request, tenant_ctx)
     store = _knowledge_store(request)
 
     content, metadata = await _fetch_url_content(body.url, body.source_type)
@@ -2104,7 +2111,7 @@ def _extract_document_chunks_or_http(
     return chunks
 
 
-@router.post("/ingest/pdf", status_code=201)
+@router.post("/ingest/pdf", status_code=201, dependencies=_DOC_QUOTA)
 async def ingest_pdf(
     request: Request,
     file: UploadFile = File(...),
@@ -2131,7 +2138,7 @@ async def ingest_pdf(
     return {"chunks_ingested": ingested, "source": filename, "source_type": "pdf"}
 
 
-@router.post("/ingest/docx", status_code=201)
+@router.post("/ingest/docx", status_code=201, dependencies=_DOC_QUOTA)
 async def ingest_docx(
     request: Request,
     file: UploadFile = File(...),
@@ -2158,7 +2165,7 @@ async def ingest_docx(
     return {"chunks_ingested": ingested, "source": filename, "source_type": "docx"}
 
 
-@router.post("/ingest/github", status_code=200)
+@router.post("/ingest/github", status_code=200, dependencies=_DOC_QUOTA)
 async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str, Any]:
     """Ingest a GitHub repository into a knowledge collection via GitHub REST API."""
     tenant = _require_tenant(request)
@@ -2185,7 +2192,7 @@ async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str
     }
 
 
-@router.post("/ingest/confluence", status_code=200)
+@router.post("/ingest/confluence", status_code=200, dependencies=_DOC_QUOTA)
 async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> dict[str, Any]:
     """Ingest a Confluence space into a knowledge collection."""
     tenant = _require_tenant(request)
@@ -2217,7 +2224,7 @@ async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> 
     }
 
 
-@router.post("/ingest/jira", status_code=200)
+@router.post("/ingest/jira", status_code=200, dependencies=_DOC_QUOTA)
 async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, Any]:
     """Ingest Jira project issues into a knowledge collection."""
     tenant = _require_tenant(request)
@@ -2253,7 +2260,7 @@ async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, An
     }
 
 
-@router.post("/ingest/slack", status_code=200)
+@router.post("/ingest/slack", status_code=200, dependencies=_DOC_QUOTA)
 async def ingest_slack(request: Request, body: SlackIngestRequest) -> dict[str, Any]:
     """Ingest a Slack channel's message history into a knowledge collection."""
     tenant = _require_tenant(request)
@@ -2576,7 +2583,7 @@ async def get_collection_stats(request: Request, collection_id: str) -> dict[str
 # ---------------------------------------------------------------------------
 
 
-@router.post("/ingest/rpa-url", status_code=201)
+@router.post("/ingest/rpa-url", status_code=201, dependencies=_DOC_QUOTA)
 async def ingest_from_rpa_url(
     request: Request,
     body: RpaUrlIngestRequest,
@@ -2773,7 +2780,11 @@ async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/collections/{collection_id}/documents", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/collections/{collection_id}/documents",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=_DOC_QUOTA,
+)
 async def ingest_document_into_collection(
     collection_id: str,
     body: CollectionIngestRequest,
@@ -3372,7 +3383,7 @@ class GDriveIngestRequest(BaseModel):
     )
 
 
-@router.post("/ingest/email")
+@router.post("/ingest/email", dependencies=_DOC_QUOTA)
 async def ingest_email(
     body: EmailIngestRequest,
     request: Request,
@@ -3429,7 +3440,7 @@ async def ingest_email(
         _raise_upstream_error(exc)
 
 
-@router.post("/ingest/notion")
+@router.post("/ingest/notion", dependencies=_DOC_QUOTA)
 async def ingest_notion(
     body: NotionIngestRequest,
     request: Request,
@@ -3522,6 +3533,7 @@ async def ingest_notion(
 
 @router.post(
     "/ingest/gdrive-folder",
+    dependencies=_DOC_QUOTA,
     responses={
         207: {"description": "Some files ingested, some failed (status: partial)"},
         502: {"description": "Every attempted file failed (detail.status: failed)"},

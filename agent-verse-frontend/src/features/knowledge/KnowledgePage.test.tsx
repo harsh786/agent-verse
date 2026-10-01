@@ -253,6 +253,32 @@ describe('KnowledgePage – Ingest tab', () => {
       )).toBe(true)
     );
   });
+
+  test('KB-37: a 429 document-quota refusal of a text ingest says the limit was reached', async () => {
+    useToastStore.setState({ toasts: [] });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/knowledge/ingest') && init?.method === 'POST')
+        return new Response(JSON.stringify({ detail: "documents quota exceeded for plan 'free': 100/100" }), { status: 429, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/knowledge/collections'))
+        return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-ingest'));
+    await userEvent.click(await screen.findByRole('button', { name: /^text$/i }));
+    const allSelects = screen.getAllByRole('combobox');
+    await userEvent.selectOptions(allSelects[allSelects.length - 1], 'col-1');
+    await userEvent.type(screen.getByPlaceholderText(/paste content/i), 'content');
+    const submitBtn = screen.getAllByRole('button', { name: /^ingest$/i });
+    await userEvent.click(submitBtn[submitBtn.length - 1]);
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some(
+        (t) => t.kind === 'error' && /not ingested, limit reached/i.test(t.message),
+      )).toBe(true),
+    );
+  });
 });
 
 describe('KnowledgePage – Search tab', () => {
