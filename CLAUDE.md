@@ -197,6 +197,15 @@ initialize → plan → execute → verify → (complete | replan | max_iteratio
 (select LLM + embedding providers at startup), `OTEL_EXPORTER_OTLP_ENDPOINT`. Production
 refuses the default `agentverse:agentverse@` DB credentials.
 
+**Explicit strategies (`strategy_override` on `POST /goals`) run only on the strategy
+runtime v2**, enabled per tenant by `STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST` (comma-separated
+tenant ids, or `*` for every tenant; `app/core/runtime_flags.py`, cached — restart to change).
+`STRATEGY_RUNTIME_V2_KILL_SWITCH=true` refuses them and `STRATEGY_RUNTIME_V2_SHADOW=true`
+keeps the legacy kernel. A tenant not on the allowlist still gets the goal, run on the legacy
+kernel — never silently: a `strategy_override_downgraded` warning is logged and the goal
+carries `strategy_downgraded: true` + `strategy_downgrade.reason` in its submit result, in
+`GET /goals/{id}` and as a `strategy_downgraded` event.
+
 ## Frontend architecture (`agent-verse-frontend/`)
 - Feature-sliced under `src/features/` (one folder per domain: `goals`, `agents`, `governance`,
   `rpa`, `marketplace`, `workflow-builder`, `observability`, …).

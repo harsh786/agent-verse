@@ -607,6 +607,54 @@ def _eval_cache_size() -> int:
         return 2048
 
 
+
+_DOWNGRADE_DETAIL = {
+    "strategy_runtime_v2_not_enabled": (
+        "the strategy runtime v2 is not enabled for this tenant; set "
+        "STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST to the tenant id (or '*') to run "
+        "explicit strategies"
+    ),
+    "strategy_runtime_v2_kill_switch": (
+        "STRATEGY_RUNTIME_V2_KILL_SWITCH is on: explicit strategies are refused"
+    ),
+    "invalid_strategy_override": "the requested strategy cannot run as a goal",
+    "profile_build_failed": "the runtime profile could not be built",
+}
+
+
+def _strategy_downgrade(
+    goal_id: str, tenant_id: str, requested: Any, reason: str
+) -> dict[str, Any]:
+    """Execution-context marks + a warning for an override that will not run."""
+    detail = _DOWNGRADE_DETAIL.get(reason, reason)
+    _svc_logger.warning(
+        "strategy_override_downgraded",
+        goal_id=goal_id,
+        tenant_id=tenant_id,
+        requested_strategy=str(requested),
+        reason=reason,
+        runs="legacy_kernel",
+        detail=detail,
+    )
+    return {
+        "strategy_downgraded": True,
+        "strategy_downgrade": {
+            "requested_strategy": str(requested),
+            "reason": reason,
+            "runs": "legacy_kernel",
+            "detail": detail,
+        },
+    }
+
+
+def _downgrade_fields(execution_context: dict[str, Any] | None) -> dict[str, Any]:
+    ctx = execution_context if isinstance(execution_context, dict) else {}
+    downgraded = bool(ctx.get("strategy_downgraded"))
+    return {
+        "strategy_downgraded": downgraded,
+        "strategy_downgrade": ctx.get("strategy_downgrade") if downgraded else None,
+    }
+
 class GoalService:
     """In-memory goal service.
 
@@ -2009,16 +2057,16 @@ class GoalService:
                 "detail": str(exc)[:300],
                 "fallback": "legacy",
             }
+            context_fb: dict[str, Any] = {
+                "runtime_profile_fallback": fallback,
+                "strategy_runtime_path": "legacy",
+            }
             if requested_primary:
                 fallback["requested_primary"] = str(requested_primary)
-            return {
-                "profile_object": None,
-                "context": {
-                    "runtime_profile_fallback": fallback,
-                    "strategy_runtime_path": "legacy",
-                },
-                "columns": None,
-            }
+                context_fb.update(
+                    _strategy_downgrade(goal_id, tenant_ctx.tenant_id, requested_primary, reason)
+                )
+            return {"profile_object": None, "context": context_fb, "columns": None}
 
         # Every value below is plain JSON (the dataclass profile goes through to_dict()),
         # so execution_context and the snapshot columns can be persisted as-is.
@@ -2042,6 +2090,14 @@ class GoalService:
                 "requested_primary": str(requested_primary),
                 "fallback": "legacy",
             }
+            context.update(
+                _strategy_downgrade(
+                    goal_id,
+                    tenant_ctx.tenant_id,
+                    requested_primary,
+                    context["runtime_profile_fallback"]["reason"],
+                )
+            )
         columns = {
             "runtime_profile_id": profile.profile_id,
             "runtime_profile_version": profile.profile_version,
@@ -4416,6 +4472,16 @@ class GoalService:
                     )
                 )
 
+            _downgrade = record.execution_context.get("strategy_downgrade")
+            if record.execution_context.get("strategy_downgraded") and _downgrade:
+                # Never silent: the goal's own event stream says the requested
+                # strategy will not run (and why) before anything else happens.
+                await self._dispatch_event(
+                    goal_id,
+                    {"type": "strategy_downgraded", "strategy_downgraded": True, **_downgrade},
+                    tenant_ctx=tenant_ctx,
+                )
+
             if not dry_run:
                 if self._task_queue is not None:
                     _connector_ids: list[str] = []
@@ -4481,6 +4547,7 @@ class GoalService:
                             "agent_id": record.agent_id,
                             "workflow_mode": record.workflow_mode,
                             "created_at": record.created_at,
+                            **_downgrade_fields(record.execution_context),
                         }
                     persistence_mode = (
                         record.runtime_profile.agent_patterns.persistence_mode
@@ -4544,6 +4611,7 @@ class GoalService:
             "agent_id": record.agent_id,
             "workflow_mode": record.workflow_mode,
             "created_at": record.created_at,
+            **_downgrade_fields(record.execution_context),
         }
 
     async def get_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
@@ -4574,6 +4642,7 @@ class GoalService:
             "event_count": event_count,
             "provider_warning": record.execution_context.get("provider_warning"),
             "result_artifact": result_artifact,
+            **_downgrade_fields(record.execution_context),
         }
 
     async def get_pattern_selection(

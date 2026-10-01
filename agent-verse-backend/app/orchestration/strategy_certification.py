@@ -145,7 +145,8 @@ class RolloutController:
         }
         if self._shadow:
             return RolloutDecision("legacy", comparison)
-        if tenant_id not in self._allowlist:
+        # "*" admits every tenant (STRATEGY_RUNTIME_V2_TENANT_ALLOWLIST=*).
+        if "*" not in self._allowlist and tenant_id not in self._allowlist:
             return RolloutDecision("legacy", comparison)
         if self._kill_switch and not already_admitted:
             return RolloutDecision("rejected", comparison)
