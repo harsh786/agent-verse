@@ -57,8 +57,9 @@ async def test_episodic_recall_reads_under_tenant_guc_and_uses_db_rows() -> None
 
     episodes = await store.recall(goal="jira tickets", tenant_id=TENANT)
 
-    (select,) = assert_tenant_scoped(db, "episodic_memories", TENANT)
-    assert "WHERE tenant_id = :tenant_id" in select.sql
+    # MEM-13: relevance (text) + quality/recency candidate queries, all scoped.
+    selects = assert_tenant_scoped(db, "episodic_memories", TENANT, min_statements=2)
+    assert all("WHERE tenant_id = :tenant_id" in s.sql for s in selects)
     # The rows came from the DB, not the (empty) in-process cache.
     assert [e.episode_id for e in episodes] == ["e1"]
     assert episodes[0].tenant_id == TENANT

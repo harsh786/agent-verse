@@ -309,34 +309,64 @@ class EpisodicMemoryStore:
         from sqlalchemy import text
 
         where_outcome = "AND outcome = :outcome" if outcome_filter else ""
+        columns = (
+            "id, goal_id, goal_text, action_summary, outcome, lessons, quality_score, "
+            "steps_count, tools_used, embedding"
+        )
+        base: dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "window": max(limit * 3, _CANDIDATE_WINDOW),
+            **({"outcome": outcome_filter} if outcome_filter else {}),
+        }
+        # MEM-13: candidates are selected by RELEVANCE in SQL (pgvector cosine
+        # distance on the stored embedding when there is a query vector, and
+        # pg_trgm word similarity on the goal text), plus the quality/recency
+        # window. Relevance used to be a Python re-rank of the quality/recency
+        # window alone, so an older or low-quality relevant episode was never
+        # seen. Quality stays the tiebreak in ``_rank``.
+        queries: list[tuple[str, dict[str, Any]]] = []
+        if query_vec is not None:
+            queries.append(
+                (
+                    f"SELECT {columns} FROM episodic_memories "
+                    f"WHERE tenant_id = :tenant_id {where_outcome} "
+                    "AND jsonb_typeof(embedding) = 'array' "
+                    "AND jsonb_array_length(embedding) = :dim "
+                    "ORDER BY CAST(CAST(embedding AS text) AS vector) "
+                    "<=> CAST(:qvec AS vector) LIMIT :window",
+                    {**base, "dim": len(query_vec), "qvec": json.dumps(query_vec)},
+                )
+            )
+        if goal.strip():
+            queries.append(
+                (
+                    f"SELECT {columns} FROM episodic_memories "
+                    f"WHERE tenant_id = :tenant_id {where_outcome} "
+                    "ORDER BY word_similarity(:goal, goal_text) DESC, created_at DESC "
+                    "LIMIT :window",
+                    {**base, "goal": goal[:500]},
+                )
+            )
+        queries.append(
+            (
+                f"SELECT {columns} FROM episodic_memories "
+                f"WHERE tenant_id = :tenant_id {where_outcome} "
+                "ORDER BY quality_score DESC, created_at DESC LIMIT :window",
+                base,
+            )
+        )
         # Tenant GUC for RLS plus the explicit tenant_id predicate (defense in
-        # depth). Without the GUC a NOBYPASSRLS role sees zero rows and recall
-        # silently degrades to the per-process cache.
+        # depth). Without the GUC a NOBYPASSRLS role sees zero rows.
+        seen: dict[str, Any] = {}
         async with (
             self._db() as session,
             session.begin(),
             sqlalchemy_rls_context(session, tenant_id),
         ):
-            rows = (
-                await session.execute(
-                    text(f"""
-                SELECT id, goal_id, goal_text, action_summary, outcome,
-                       lessons, quality_score, steps_count, tools_used, embedding
-                FROM episodic_memories
-                WHERE tenant_id = :tenant_id {where_outcome}
-                ORDER BY quality_score DESC, created_at DESC
-                LIMIT :limit
-            """),
-                    {
-                        "tenant_id": tenant_id,
-                        # Rank over a candidate window, not just the top
-                        # limit*3 by quality — a relevant episode must be able
-                        # to outrank a merely high-quality one.
-                        "limit": max(limit * 3, _CANDIDATE_WINDOW),
-                        **({"outcome": outcome_filter} if outcome_filter else {}),
-                    },
-                )
-            ).fetchall()
+            for sql, params in queries:
+                for row in (await session.execute(text(sql), params)).fetchall():
+                    seen.setdefault(str(row[0]), row)
+        rows = list(seen.values())
         episodes: list[Episode] = []
         for row in rows:
             try:
