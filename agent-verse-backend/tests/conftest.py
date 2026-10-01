@@ -223,6 +223,23 @@ def _restore_model_registry_store():
 
 
 @pytest.fixture(autouse=True)
+def _reset_provider_circuit_breaker():
+    """Close the process-wide provider circuits after each test.
+
+    Tests that make a fake provider fail open the per-model circuit for
+    ``provider:""`` (fakes have no model name); left open, a later test's first
+    call to a different fake is refused for 60 s and its step "fails".
+    """
+    yield
+    from app.providers.circuit_breaker import _provider_cb
+
+    _provider_cb._failures.clear()
+    _provider_cb._last_failure.clear()
+    _provider_cb._state.clear()
+    _provider_cb._half_open_calls.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_ip_rate_limit_windows():
     """Reset the in-process per-IP limiter (signup / SSO token endpoints).
 
