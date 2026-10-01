@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.observability.logging import get_logger
 from app.workflow.dsl import WorkflowDefinition
-from app.workflow.permissions import caller_access, workflow_access
+from app.workflow.permissions import caller_access, require_workflow_access, workflow_access
 from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
 
 _log = get_logger(__name__)
@@ -115,6 +115,9 @@ class WorkflowUpdateRequest(BaseModel):
     description: str | None = Field(None, max_length=2000)
     definition: dict[str, Any] | None = None
     labels: dict[str, str] | None = None
+    # true: publishing needs submit-for-approval + approve-publish (four-eyes).
+    # Turning it off needs 'admin' access to the workflow.
+    requires_publish_approval: bool | None = None
 
 
 class TriggerRequest(BaseModel):
@@ -167,6 +170,8 @@ class WorkflowDetailResponse(WorkflowResponse):
     # The caller's level on this workflow (viewer | runner | editor | admin) so
     # the UI can disable what the per-workflow ACL would refuse.
     access: str | None = None
+    # Whether a publish must go through submit-for-approval / approve-publish.
+    requires_publish_approval: bool | None = None
 
 
 class RunResponse(BaseModel):
@@ -323,6 +328,8 @@ async def update_workflow(
     request: Request,
 ) -> Any:
     """Update a draft workflow. Published workflows must be unpublished first."""
+    from app.workflow.service import WorkflowPersistenceUnavailableError
+
     svc = _svc(request)
     tenant = _get_tenant(request)
     if body.definition is not None:
@@ -330,16 +337,34 @@ async def update_workflow(
             WorkflowDefinition(**body.definition)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid workflow DSL: {exc}") from exc
+    updates = body.model_dump(exclude_none=True)
+    requires_approval = updates.pop("requires_publish_approval", None)
+    if requires_approval is not None:
+        if await svc.get(tenant_id=tenant.tenant_id, workflow_id=workflow_id) is None:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        if requires_approval is False:
+            # Switching the approval gate OFF is an admin decision on the
+            # workflow — an editor could otherwise remove it and self-publish.
+            await require_workflow_access(request, workflow_id, "admin")
+        try:
+            await svc.set_requires_publish_approval(
+                tenant_id=tenant.tenant_id, workflow_id=workflow_id, required=requires_approval
+            )
+        except WorkflowPersistenceUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
     try:
-        result = await svc.update(
-            tenant_id=tenant.tenant_id,
-            workflow_id=workflow_id,
-            updates=body.model_dump(exclude_none=True),
-        )
+        if updates:
+            result = await svc.update(
+                tenant_id=tenant.tenant_id, workflow_id=workflow_id, updates=updates
+            )
+        else:
+            result = await svc.get(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    if requires_approval is not None:
+        result = {**result, "requires_publish_approval": requires_approval}
     return result
 
 
@@ -361,10 +386,23 @@ async def delete_workflow(workflow_id: str, request: Request) -> None:
 @router.post("/{workflow_id}/publish", response_model=WorkflowResponse, dependencies=_CAN_EDIT)
 async def publish_workflow(workflow_id: str, request: Request) -> Any:
     """Validate DSL and activate cron/webhook triggers."""
+    from app.workflow.service import (
+        PublishApprovalRequiredError,
+        WorkflowPersistenceUnavailableError,
+    )
+
     svc = _svc(request)
     tenant = _get_tenant(request)
     try:
-        result = await svc.publish(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
+        result = await svc.publish(
+            tenant_id=tenant.tenant_id,
+            workflow_id=workflow_id,
+            published_by=str(getattr(tenant, "api_key_id", "") or "") or None,
+        )
+    except PublishApprovalRequiredError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except WorkflowPersistenceUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if result is None:

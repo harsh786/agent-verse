@@ -263,3 +263,56 @@ def test_clone_not_found(client: TestClient, ver_service: MagicMock) -> None:
     ver_service.get.return_value = None
     resp = client.post("/api/v1/workflows/bad-id/clone")
     assert resp.status_code == 404
+
+
+# ── WF-ROUTES-500: the routes against the REAL WorkflowService ────────────────
+# The fixtures above use an AsyncMock service, which answers any method name —
+# that is how routes calling methods that did not exist (500 in production)
+# passed. These drive the real service.
+
+
+def _real_client() -> tuple[TestClient, str]:
+    import asyncio
+
+    from app.api.workflows import _WorkflowStore
+    from app.workflow.service import WorkflowService
+
+    svc = WorkflowService(_WorkflowStore(), run_store=None)
+    wf = asyncio.run(
+        svc.create(tenant_id="test-tenant", name="wf", definition={"name": "wf", "steps": []})
+    )
+    return make_app(svc), str(wf["id"])
+
+
+def test_real_service_version_detail_is_404_not_500() -> None:
+    client, wid = _real_client()
+    assert client.get(f"/api/v1/workflows/{wid}/versions/1").status_code == 404
+
+
+def test_real_service_diff_unknown_versions_is_404_not_500() -> None:
+    client, wid = _real_client()
+    assert client.get(f"/api/v1/workflows/{wid}/versions/1/diff/2").status_code == 404
+
+
+def test_real_service_approval_without_persistence_is_503_not_500() -> None:
+    client, wid = _real_client()
+    for path in ("submit-for-approval", "approve-publish", "reject-publish"):
+        resp = client.post(f"/api/v1/workflows/{wid}/{path}", json={})
+        assert resp.status_code == 503, (path, resp.status_code, resp.text)
+
+
+def test_approver_is_the_caller_not_the_request_body(
+    client: TestClient, ver_service: MagicMock
+) -> None:
+    resp = client.post(
+        "/api/v1/workflows/wf-1/approve-publish",
+        json={"note": "LGTM", "approver_id": "someone-else"},
+    )
+    assert resp.status_code == 200
+    assert ver_service.approve_publish.await_args.kwargs["approver_id"] == "key-1"
+
+
+def test_submitter_is_the_caller(client: TestClient, ver_service: MagicMock) -> None:
+    resp = client.post("/api/v1/workflows/wf-1/submit-for-approval")
+    assert resp.status_code == 202
+    assert ver_service.submit_for_approval.await_args.kwargs["submitted_by"] == "key-1"

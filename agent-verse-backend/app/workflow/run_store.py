@@ -54,6 +54,14 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
+def _uuid_or_none(value: Any) -> str | None:
+    """``value`` as a canonical UUID string, or ``None`` when it is not one."""
+    try:
+        return str(uuid.UUID(str(value))) if value else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def _duration_ms(started: Any, finished: Any) -> float | None:
     if isinstance(started, datetime) and isinstance(finished, datetime):
         return (finished - started).total_seconds() * 1000.0
@@ -998,9 +1006,12 @@ class PostgresWorkflowRunStore:
                         "SELECT id, version, change_summary, published_by, published_at "
                         "FROM workflow_definition_versions "
                         "WHERE workflow_id = CAST(:wid AS uuid) "
+                        # Explicit tenant predicate as well as RLS: a BYPASSRLS
+                        # connection must not read another tenant's history.
+                        "AND tenant_id = CAST(:tid AS uuid) "
                         "ORDER BY published_at DESC"
                     ),
-                    {"wid": workflow_id},
+                    {"wid": workflow_id, "tid": tenant_id},
                 )
             ).mappings().all()
             return [
@@ -1024,11 +1035,13 @@ class PostgresWorkflowRunStore:
             row = (
                 await session.execute(
                     sa_text(
-                        "SELECT version, definition_yaml, definition_json "
+                        "SELECT version, definition_yaml, definition_json, change_summary, "
+                        "published_by, published_at "
                         "FROM workflow_definition_versions "
-                        "WHERE workflow_id = CAST(:wid AS uuid) AND version = :ver"
+                        "WHERE workflow_id = CAST(:wid AS uuid) AND version = :ver "
+                        "AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"wid": workflow_id, "ver": version},
+                    {"wid": workflow_id, "ver": version, "tid": tenant_id},
                 )
             ).mappings().first()
             if row is None:
@@ -1037,7 +1050,162 @@ class PostgresWorkflowRunStore:
                 "version": row["version"],
                 "definition_yaml": row["definition_yaml"],
                 "definition_json": _as_obj(row["definition_json"]) or {},
+                "change_summary": row.get("change_summary"),
+                "published_by": str(row["published_by"]) if row.get("published_by") else None,
+                "published_at": _iso(row.get("published_at")),
             }
+
+    async def record_definition_version(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        version: str,
+        definition: dict[str, Any],
+        published_by: str | None = None,
+        change_summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Snapshot a published definition into ``workflow_definition_versions``.
+
+        Raises on failure (the caller rolls the publish back): a publish whose
+        version was not recorded could never be restored or diffed.
+        ``published_by`` is stored only when it is a UUID (API key ids are);
+        otherwise the column keeps NULL-equivalent semantics via the default.
+        """
+        import yaml as _yaml  # type: ignore[import-untyped]
+        from sqlalchemy import text as sa_text
+
+        by = _uuid_or_none(published_by)
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "INSERT INTO workflow_definition_versions "
+                        "(workflow_id, tenant_id, version, definition_yaml, definition_json, "
+                        " change_summary, published_by) "
+                        "VALUES (CAST(:wid AS uuid), CAST(:tid AS uuid), :ver, :yaml, "
+                        " CAST(:def AS jsonb), :summary, "
+                        " COALESCE(CAST(:by AS uuid), gen_random_uuid())) "
+                        "RETURNING published_at"
+                    ),
+                    {
+                        "wid": workflow_id,
+                        "tid": tenant_id,
+                        "ver": version,
+                        "yaml": _yaml.safe_dump(definition or {}, sort_keys=False),
+                        "def": json.dumps(definition or {}),
+                        "summary": change_summary,
+                        "by": by,
+                    },
+                )
+            ).first()
+            await session.commit()
+        return {
+            "version": version,
+            "definition_json": definition or {},
+            "change_summary": change_summary,
+            "published_by": by,
+            "published_at": _iso(row[0]) if row else None,
+        }
+
+    # ── Publish approval (workflow_definitions approval columns) ──────────────
+    # ``requires_publish_approval`` / ``publish_approved_*`` are real columns
+    # (migration 0108); the pending submission (who submitted which version)
+    # rides in ``trigger_config.publish_submission`` so no migration is needed.
+    async def get_publish_approval(
+        self, tenant_id: str, workflow_id: str
+    ) -> dict[str, Any] | None:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT COALESCE(requires_publish_approval, FALSE) AS required, "
+                        "trigger_config->'publish_submission' AS submission, "
+                        "publish_approved_by, publish_approved_at, publish_approval_note "
+                        "FROM workflow_definitions WHERE id = CAST(:wid AS uuid)"
+                    ),
+                    {"wid": workflow_id},
+                )
+            ).mappings().first()
+        if row is None:
+            return None
+        submission = _as_obj(row["submission"])
+        return {
+            "requires_publish_approval": bool(row["required"]),
+            "submission": submission if isinstance(submission, dict) else None,
+            "approved_by": (
+                str(row["publish_approved_by"]) if row["publish_approved_by"] else None
+            ),
+            "approved_at": _iso(row["publish_approved_at"]),
+            "note": row["publish_approval_note"],
+        }
+
+    async def set_requires_publish_approval(
+        self, tenant_id: str, workflow_id: str, required: bool
+    ) -> bool:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            result = await session.execute(
+                sa_text(
+                    "UPDATE workflow_definitions SET requires_publish_approval = :req, "
+                    "updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                ),
+                {"wid": workflow_id, "req": bool(required)},
+            )
+            await session.commit()
+            return int(result.rowcount or 0) > 0
+
+    async def set_publish_submission(
+        self, tenant_id: str, workflow_id: str, submission: dict[str, Any] | None
+    ) -> bool:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            if submission is None:
+                stmt = (
+                    "UPDATE workflow_definitions SET trigger_config = "
+                    "COALESCE(trigger_config, '{}'::jsonb) - 'publish_submission', "
+                    "updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                )
+                params: dict[str, Any] = {"wid": workflow_id}
+            else:
+                stmt = (
+                    "UPDATE workflow_definitions SET trigger_config = jsonb_set("
+                    "COALESCE(trigger_config, '{}'::jsonb), '{publish_submission}', "
+                    "CAST(:sub AS jsonb)), updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                )
+                params = {"wid": workflow_id, "sub": json.dumps(submission)}
+            result = await session.execute(sa_text(stmt), params)
+            await session.commit()
+            return int(result.rowcount or 0) > 0
+
+    async def record_publish_approval(
+        self, tenant_id: str, workflow_id: str, *, approved_by: str, note: str
+    ) -> bool:
+        """Stamp the approver/note and clear the pending submission, atomically."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            result = await session.execute(
+                sa_text(
+                    "UPDATE workflow_definitions SET "
+                    "publish_approved_by = CAST(:by AS uuid), publish_approved_at = NOW(), "
+                    "publish_approval_note = :note, trigger_config = "
+                    "COALESCE(trigger_config, '{}'::jsonb) - 'publish_submission', "
+                    "updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                ),
+                {"wid": workflow_id, "by": _uuid_or_none(approved_by), "note": note or ""},
+            )
+            await session.commit()
+            return int(result.rowcount or 0) > 0
 
     # ── Permissions (workflow_permissions) ────────────────────────────────────
     async def get_permissions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:

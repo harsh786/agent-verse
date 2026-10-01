@@ -57,6 +57,8 @@ def _tenant_id(request: Request) -> str:
 
 class ApprovalDecisionRequest(BaseModel):
     note: str = ""
+    # Ignored: the approver is always the authenticated caller. Kept so older
+    # clients that send it are not rejected.
     approver_id: str | None = None
 
 
@@ -115,15 +117,14 @@ async def diff_versions(
     version_b: int,
     request: Request,
 ) -> dict[str, Any]:
-    """Return a semantic diff between two versions.
+    """Return a semantic diff between two recorded versions.
 
     Response shape:
       {
-        "added_steps": [...],
-        "removed_steps": [...],
-        "modified_steps": [...],
+        "version_a": "...", "version_b": "...",
+        "added_steps": [step ids], "removed_steps": [...], "modified_steps": [...],
         "trigger_changed": bool,
-        "input_changes": [...],
+        "input_changes": [{"name": ..., "change": "added|removed|modified"}],
       }
     """
     svc = _svc(request)
@@ -142,7 +143,33 @@ async def diff_versions(
 
 # ---------------------------------------------------------------------------
 # Publishing approval workflow (for requires_publish_approval=True)
+#
+# Enable it with PATCH /workflows/{id} {"requires_publish_approval": true}; a
+# direct POST /publish is then refused (409). The submitter and the approver
+# are always the authenticated caller (never a body field), and the submitter
+# cannot approve their own request (four-eyes).
 # ---------------------------------------------------------------------------
+
+
+def _principal(request: Request) -> str:
+    tenant = getattr(request.state, "tenant", None)
+    if tenant is None:
+        tenant = getattr(request.app.state, "tenant_context", None)
+    return str(getattr(tenant, "api_key_id", "") or "")
+
+
+async def _approval_call(coro: Any) -> dict[str, Any]:
+    from app.workflow.service import WorkflowPersistenceUnavailableError
+
+    try:
+        result = await coro
+    except WorkflowPersistenceUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return dict(result)
 
 
 @router.post(
@@ -154,40 +181,38 @@ async def submit_for_approval(workflow_id: str, request: Request) -> dict[str, A
     """Submit a draft workflow for publish approval (enterprise feature)."""
     svc = _svc(request)
     tenant_id = _tenant_id(request)
-    try:
-        result = await svc.submit_for_approval(tenant_id=tenant_id, workflow_id=workflow_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return result
+    return await _approval_call(
+        svc.submit_for_approval(
+            tenant_id=tenant_id, workflow_id=workflow_id, submitted_by=_principal(request)
+        )
+    )
 
 
 @router.post(
     "/{workflow_id}/approve-publish",
     status_code=status.HTTP_200_OK,
-    dependencies=_CAN_EDIT,
+    dependencies=_CAN_ADMIN,
 )
 async def approve_publish(
     workflow_id: str, body: ApprovalDecisionRequest, request: Request
 ) -> dict[str, Any]:
-    """Approve and publish a submitted workflow."""
+    """Approve and publish a submitted workflow (the caller is the approver)."""
     svc = _svc(request)
     tenant_id = _tenant_id(request)
-    try:
-        result = await svc.approve_publish(
+    return await _approval_call(
+        svc.approve_publish(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
-            approver_id=body.approver_id,
+            approver_id=_principal(request),
             note=body.note,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return result
+    )
 
 
 @router.post(
     "/{workflow_id}/reject-publish",
     status_code=status.HTTP_200_OK,
-    dependencies=_CAN_EDIT,
+    dependencies=_CAN_ADMIN,
 )
 async def reject_publish(
     workflow_id: str, body: ApprovalDecisionRequest, request: Request
@@ -195,16 +220,14 @@ async def reject_publish(
     """Reject a publish submission and return to draft."""
     svc = _svc(request)
     tenant_id = _tenant_id(request)
-    try:
-        result = await svc.reject_publish(
+    return await _approval_call(
+        svc.reject_publish(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
-            approver_id=body.approver_id,
+            approver_id=_principal(request),
             note=body.note,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return result
+    )
 
 
 # ---------------------------------------------------------------------------

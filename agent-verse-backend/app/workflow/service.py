@@ -101,6 +101,53 @@ def publish_problems(definition: dict[str, Any]) -> list[str]:
     return problems
 
 
+class WorkflowPersistenceUnavailableError(RuntimeError):
+    """The feature needs the persistent run store (versions / publish approval),
+    which is not wired — HTTP 503, never a pretend success."""
+
+
+class PublishApprovalRequiredError(ValueError):
+    """The workflow has ``requires_publish_approval``: it is published only via
+    submit-for-approval → approve-publish (HTTP 409 on a direct publish)."""
+
+
+PENDING_APPROVAL = "pending_approval"
+
+
+def _steps_by_id(definition: dict[str, Any]) -> dict[str, Any]:
+    steps = definition.get("steps") if isinstance(definition, dict) else None
+    out: dict[str, Any] = {}
+    for index, step in enumerate(steps or []):
+        if isinstance(step, dict):
+            out[str(step.get("id") or f"#{index}")] = step
+    return out
+
+
+def diff_definitions(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Semantic diff of two stored definitions (steps by id, triggers, inputs)."""
+    from app.workflow.trigger_extract import extract_triggers
+
+    old_steps, new_steps = _steps_by_id(old), _steps_by_id(new)
+    raw_old, raw_new = old.get("inputs"), new.get("inputs")
+    old_inputs: dict[str, Any] = raw_old if isinstance(raw_old, dict) else {}
+    new_inputs: dict[str, Any] = raw_new if isinstance(raw_new, dict) else {}
+    input_changes: list[dict[str, str]] = []
+    for name in sorted(set(old_inputs) | set(new_inputs)):
+        if name not in old_inputs:
+            input_changes.append({"name": name, "change": "added"})
+        elif name not in new_inputs:
+            input_changes.append({"name": name, "change": "removed"})
+        elif old_inputs[name] != new_inputs[name]:
+            input_changes.append({"name": name, "change": "modified"})
+    return {
+        "added_steps": [s for s in new_steps if s not in old_steps],
+        "removed_steps": [s for s in old_steps if s not in new_steps],
+        "modified_steps": [s for s in new_steps if s in old_steps and old_steps[s] != new_steps[s]],
+        "trigger_changed": extract_triggers(old) != extract_triggers(new),
+        "input_changes": input_changes,
+    }
+
+
 class WorkflowService:
     """Full-featured workflow service used by app/workflow/router.py."""
 
@@ -171,7 +218,15 @@ class WorkflowService:
 
     async def get(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         item = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
-        return self._enrich_trigger(item) if item else item
+        if not item:
+            return item
+        item = self._enrich_trigger(item)
+        if self._run_store is not None and hasattr(self._run_store, "get_publish_approval"):
+            approval = await self._run_store.get_publish_approval(tenant_id, workflow_id)
+            item["requires_publish_approval"] = bool(
+                (approval or {}).get("requires_publish_approval")
+            )
+        return item
 
     async def update(
         self,
@@ -183,6 +238,14 @@ class WorkflowService:
         # Accept both the router's ``updates={...}`` dict and direct field kwargs
         # (used by archive/publish); merge into one partial-field set.
         fields = {**(updates or {}), **kwargs}
+        if fields:
+            current = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+            if current is not None and current.get("status") == PENDING_APPROVAL:
+                # The approver reviews exactly what was submitted.
+                raise ValueError(
+                    "workflow is pending publish approval; reject it (or unpublish) "
+                    "before editing"
+                )
         return await self._store.update(tenant_id=tenant_id, workflow_id=workflow_id, **fields)
 
     async def archive(self, tenant_id: str, workflow_id: str) -> bool:
@@ -198,8 +261,43 @@ class WorkflowService:
         _log.info("workflow.archived", tenant_id=tenant_id, workflow_id=workflow_id)
         return True
 
-    async def publish(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
+    async def publish(
+        self, tenant_id: str, workflow_id: str, published_by: str | None = None
+    ) -> dict[str, Any] | None:
         """Publish a draft workflow (status draft → published).
+
+        Refused with :class:`PublishApprovalRequiredError` when the workflow has
+        ``requires_publish_approval`` — it then goes live only through
+        :meth:`approve_publish`. Every publish snapshots the definition into the
+        version history (``workflow_definition_versions``) when the run store is
+        wired; if that snapshot cannot be written the publish is rolled back.
+        """
+        approval = await self._publish_approval_state(tenant_id, workflow_id)
+        if approval is not None and approval.get("requires_publish_approval"):
+            raise PublishApprovalRequiredError(
+                "This workflow requires publish approval: submit it for approval "
+                "(POST /workflows/{id}/submit-for-approval) instead of publishing directly"
+            )
+        return await self._publish(tenant_id, workflow_id, published_by=published_by)
+
+    async def _publish_approval_state(
+        self, tenant_id: str, workflow_id: str
+    ) -> dict[str, Any] | None:
+        getter = getattr(self._run_store, "get_publish_approval", None)
+        if getter is None:
+            return None
+        result: dict[str, Any] | None = await getter(tenant_id, workflow_id)
+        return result
+
+    async def _publish(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        published_by: str | None = None,
+        change_summary: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Publish a workflow (status → published) and record its version.
 
         Publishing also *activates* the workflow's triggers: it mints the stable
         signed webhook token so an external system can fire the workflow (item 3),
@@ -217,6 +315,7 @@ class WorkflowService:
         problems = publish_problems(current.get("definition") or {})
         if problems:
             raise ValueError("Cannot publish: " + "; ".join(problems))
+        prior_status = str(current.get("status") or "draft")
         result = await self._store.update(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
@@ -225,6 +324,36 @@ class WorkflowService:
         )
         if result is None:
             return None
+
+        recorder = getattr(self._run_store, "record_definition_version", None)
+        if recorder is not None:
+            try:
+                await recorder(
+                    tenant_id,
+                    workflow_id,
+                    version=str(result.get("version")),
+                    definition=result.get("definition") or current.get("definition") or {},
+                    published_by=published_by,
+                    change_summary=change_summary,
+                )
+            except Exception as exc:
+                # A publish with no version record could never be restored or
+                # diffed: undo it and fail honestly.
+                _log.error(
+                    "workflow.version_record_failed",
+                    tenant_id=tenant_id,
+                    workflow_id=workflow_id,
+                    error=str(exc),
+                )
+                await self._store.update(
+                    tenant_id=tenant_id,
+                    workflow_id=workflow_id,
+                    status=prior_status,
+                    published_at=None,
+                )
+                raise WorkflowPersistenceUnavailableError(
+                    "the workflow version could not be recorded; it was not published"
+                ) from exc
 
         hook = await self.webhook_trigger(tenant_id, workflow_id)
         result["webhook_token"] = hook["webhook_token"]
@@ -310,6 +439,216 @@ class WorkflowService:
             workflow_id=workflow_id,
             definition=snapshot.get("definition_json") or {},
         )
+
+    async def get_version(
+        self, tenant_id: str, workflow_id: str, version: str | int
+    ) -> dict[str, Any] | None:
+        """One recorded version (its full definition), or ``None`` if unknown.
+        Honest ``None`` when no run store is wired (nothing is ever recorded)."""
+        if self._run_store is None:
+            return None
+        snapshot = await self._run_store.get_definition_version(
+            tenant_id, workflow_id, str(version)
+        )
+        if not snapshot:
+            return None
+        return {
+            "workflow_id": workflow_id,
+            "version": snapshot.get("version"),
+            "definition": snapshot.get("definition_json") or {},
+            "definition_yaml": snapshot.get("definition_yaml"),
+            "change_summary": snapshot.get("change_summary"),
+            "published_by": snapshot.get("published_by"),
+            "published_at": snapshot.get("published_at"),
+        }
+
+    async def diff_versions(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        version_a: str | int,
+        version_b: str | int,
+    ) -> dict[str, Any]:
+        """Semantic diff ``version_a`` → ``version_b``; ValueError if either is unknown."""
+        old = await self.get_version(tenant_id, workflow_id, version_a)
+        if old is None:
+            raise ValueError(f"version {version_a} not found")
+        new = await self.get_version(tenant_id, workflow_id, version_b)
+        if new is None:
+            raise ValueError(f"version {version_b} not found")
+        return {
+            "version_a": str(version_a),
+            "version_b": str(version_b),
+            **diff_definitions(old["definition"], new["definition"]),
+        }
+
+    # ── Publish approval (requires_publish_approval) ──────────────────────────
+
+    def _approval_store(self) -> Any:
+        if self._run_store is None or not hasattr(self._run_store, "get_publish_approval"):
+            raise WorkflowPersistenceUnavailableError(
+                "publish approval needs the persistent workflow store"
+            )
+        return self._run_store
+
+    async def set_requires_publish_approval(
+        self, tenant_id: str, workflow_id: str, required: bool
+    ) -> bool:
+        store = self._approval_store()
+        ok: bool = await store.set_requires_publish_approval(tenant_id, workflow_id, required)
+        _log.info(
+            "workflow.publish_approval_required_set",
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            required=required,
+        )
+        return ok
+
+    async def submit_for_approval(
+        self, tenant_id: str, workflow_id: str, submitted_by: str
+    ) -> dict[str, Any] | None:
+        """Draft → ``pending_approval``; records who submitted which version.
+
+        ``None`` when the workflow does not exist; ValueError (409) when it is
+        not a draft, does not require approval, or could not be published."""
+        store = self._approval_store()
+        current = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+        if current is None:
+            return None
+        status = str(current.get("status") or "draft")
+        if status != "draft":
+            raise ValueError(f"only a draft can be submitted for approval (status: {status})")
+        approval = await store.get_publish_approval(tenant_id, workflow_id)
+        if not (approval or {}).get("requires_publish_approval"):
+            raise ValueError(
+                "this workflow does not require publish approval; publish it directly"
+            )
+        problems = publish_problems(current.get("definition") or {})
+        if problems:
+            raise ValueError("Cannot publish: " + "; ".join(problems))
+        result = await self._store.update(
+            tenant_id=tenant_id, workflow_id=workflow_id, status=PENDING_APPROVAL
+        )
+        if result is None:
+            return None
+        submitted_at = datetime.now(UTC).isoformat()
+        await store.set_publish_submission(
+            tenant_id,
+            workflow_id,
+            {
+                "submitted_by": submitted_by,
+                "submitted_at": submitted_at,
+                "version": result.get("version"),
+            },
+        )
+        _log.info(
+            "workflow.publish_submitted",
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            submitted_by=submitted_by,
+        )
+        return {**result, "submitted_by": submitted_by, "submitted_at": submitted_at}
+
+    async def _pending_submission(
+        self, tenant_id: str, workflow_id: str
+    ) -> tuple[Any, dict[str, Any], dict[str, Any]] | None:
+        store = self._approval_store()
+        current = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+        if current is None:
+            return None
+        if current.get("status") != PENDING_APPROVAL:
+            raise ValueError(
+                "workflow is not pending publish approval "
+                f"(status: {current.get('status') or 'draft'})"
+            )
+        approval = await store.get_publish_approval(tenant_id, workflow_id)
+        submission = (approval or {}).get("submission") or {}
+        return store, current, submission
+
+    async def approve_publish(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        approver_id: str | None,
+        note: str = "",
+    ) -> dict[str, Any] | None:
+        """Approve a pending submission and publish it (four-eyes).
+
+        The submitter cannot approve their own submission, and the definition
+        must be exactly the submitted version."""
+        pending = await self._pending_submission(tenant_id, workflow_id)
+        if pending is None:
+            return None
+        store, current, submission = pending
+        approver = str(approver_id or "")
+        if not approver:
+            raise ValueError("an identified approver is required")
+        submitter = str(submission.get("submitted_by") or "")
+        if submitter and submitter == approver:
+            raise ValueError("the submitter cannot approve their own publish request")
+        if str(submission.get("version")) != str(current.get("version")):
+            raise ValueError(
+                "the workflow changed since it was submitted; submit it again for approval"
+            )
+        problems = publish_problems(current.get("definition") or {})
+        if problems:
+            raise ValueError("Cannot publish: " + "; ".join(problems))
+        await store.record_publish_approval(
+            tenant_id, workflow_id, approved_by=approver, note=note or ""
+        )
+        result = await self._publish(
+            tenant_id,
+            workflow_id,
+            published_by=approver,
+            change_summary=f"publish approved by {approver}" + (f": {note}" if note else ""),
+        )
+        if result is None:
+            return None
+        _log.info(
+            "workflow.publish_approved",
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            approver=approver,
+        )
+        return {
+            **result,
+            "publish_approved_by": approver,
+            "publish_approved_at": datetime.now(UTC).isoformat(),
+            "publish_approval_note": note or "",
+            "submitted_by": submitter or None,
+        }
+
+    async def reject_publish(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        approver_id: str | None,
+        note: str = "",
+    ) -> dict[str, Any] | None:
+        """Reject a pending submission: back to draft, submission cleared."""
+        pending = await self._pending_submission(tenant_id, workflow_id)
+        if pending is None:
+            return None
+        store, _current, submission = pending
+        result = await self._store.update(
+            tenant_id=tenant_id, workflow_id=workflow_id, status="draft"
+        )
+        if result is None:
+            return None
+        await store.set_publish_submission(tenant_id, workflow_id, None)
+        _log.info(
+            "workflow.publish_rejected",
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            rejected_by=approver_id,
+        )
+        return {
+            **result,
+            "rejected_by": approver_id,
+            "rejected_at": datetime.now(UTC).isoformat(),
+            "rejection_note": note or "",
+            "submitted_by": submission.get("submitted_by"),
+        }
 
     # ── Permissions ───────────────────────────────────────────────────────────
 
