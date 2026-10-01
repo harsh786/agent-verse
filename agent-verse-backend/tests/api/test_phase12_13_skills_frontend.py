@@ -76,6 +76,10 @@ def test_disable_skill():
     resp = client.post("/skills-runtime/headroom/disable", headers=_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["status"] == "disabled"
+    # OPS-03: a disabled skill really is disabled (and the state is shared
+    # process-wide in the DB-less build) — re-enable so later tests can run it.
+    assert client.get("/skills-runtime/headroom", headers=_HEADERS).json()["enabled"] is False
+    client.post("/skills-runtime/headroom/enable", headers=_HEADERS)
 
 
 def test_create_tenant_skill():
@@ -157,13 +161,15 @@ def test_platform_skills_visible_to_all_tenants():
 
 def test_enable_status_is_per_tenant():
     client = TestClient(_make_app())
-    # Tenant A enables graphify
-    client.post("/skills-runtime/graphify/enable", headers=_HEADERS)
+    # Tenant A disables graphify (skills are enabled until a tenant toggles them)
+    client.post("/skills-runtime/graphify/disable", headers=_HEADERS)
+    try:
+        # Tenant B is unaffected
+        skill_b = client.get("/skills-runtime/graphify", headers=_HEADERS_B)
+        assert skill_b.json()["enabled"] is True
 
-    # Tenant B should see it as disabled
-    skill_b = client.get("/skills-runtime/graphify", headers=_HEADERS_B)
-    assert skill_b.json()["enabled"] is False
-
-    # Tenant A should see it as enabled
-    skill_a = client.get("/skills-runtime/graphify", headers=_HEADERS)
-    assert skill_a.json()["enabled"] is True
+        # Tenant A sees it disabled
+        skill_a = client.get("/skills-runtime/graphify", headers=_HEADERS)
+        assert skill_a.json()["enabled"] is False
+    finally:
+        client.post("/skills-runtime/graphify/enable", headers=_HEADERS)

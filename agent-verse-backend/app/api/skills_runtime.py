@@ -23,6 +23,11 @@ from app.skills_runtime.models import (
     SkillScope,
     SkillStatus,
 )
+from app.skills_runtime.state_store import (
+    SkillStateUnavailableError,
+    disabled_skills,
+    set_skill_enabled,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -36,11 +41,45 @@ def _require_tenant(request: Request) -> Any:
     return ctx
 
 
+async def _disabled_for(request: Request, tenant_id: str) -> set[str]:
+    """The tenant's disabled skills from the durable store; 503 when unreadable."""
+    try:
+        return await disabled_skills(_state_db(request), tenant_id)
+    except SkillStateUnavailableError as exc:
+        _log.warning("skill_state_read_failed tenant=%s: %s", tenant_id, exc)
+        raise HTTPException(503, "Skill state unavailable; please retry") from exc
+
+
+async def _set_enabled(request: Request, tenant_id: str, skill_id: str, enabled: bool) -> None:
+    try:
+        await set_skill_enabled(_state_db(request), tenant_id, skill_id, enabled)
+    except SkillStateUnavailableError as exc:
+        _log.warning("skill_state_write_failed tenant=%s: %s", tenant_id, exc)
+        raise HTTPException(503, "Skill state unavailable; please retry") from exc
+
+
+def _state_db(request: Request) -> Any:
+    return getattr(request.app.state, "db_session_factory", None)
+
+
+async def _executor(request: Request, tenant: Any) -> SkillExecutor:
+    from app.api.llm_access import tenant_llm_provider
+
+    return SkillExecutor(
+        permission_checker=permission_checker,
+        trigger_matcher=trigger_matcher,
+        provider=await tenant_llm_provider(request, tenant),
+        state_db_factory=_state_db(request),
+    )
+
+
 # Platform registry (builtins loaded at startup)
 _platform_skills: dict[str, dict] = {}
 _tenant_skills: dict[str, list] = {}  # tenant_id → skills
 _executions: dict[str, deque] = {}  # tenant_id → bounded deque of executions (maxlen=1000)
-_enabled_skills: dict[str, set] = {}  # tenant_id → {skill_ids}
+# Legacy per-process map — no longer read or written. Enable/disable state lives
+# in app.skills_runtime.state_store (Postgres when wired; OPS-03).
+_enabled_skills: dict[str, set] = {}
 _skill_versions: dict[str, list] = {}  # skill_id → list of archived versions
 _loaded_tenants: set[str] = set()  # tenant_ids whose custom skills have been loaded from DB
 
@@ -306,6 +345,7 @@ async def list_skills(
     """List available skills for the tenant."""
     tenant = _require_tenant(request)
     skills = []
+    disabled = await _disabled_for(request, tenant.tenant_id)
 
     if include_platform:
         for s in _platform_skills.values():
@@ -314,7 +354,7 @@ async def list_skills(
             skills.append(
                 {
                     **s,
-                    "enabled": s["skill_id"] in _enabled_skills.get(tenant.tenant_id, set()),
+                    "enabled": s["skill_id"] not in disabled,
                     "is_platform": True,
                 }
             )
@@ -323,7 +363,7 @@ async def list_skills(
     for s in await _tenant_skill_list(request, tenant.tenant_id):
         if status and s.get("status") != status:
             continue
-        skills.append({**s, "enabled": True, "is_platform": False})
+        skills.append({**s, "enabled": s["skill_id"] not in disabled, "is_platform": False})
 
     return {"skills": skills, "total": len(skills)}
 
@@ -363,15 +403,7 @@ async def execute_skill_by_id(
     if not skill_dict:
         raise HTTPException(404, f"Skill {body.skill_id!r} not found")
 
-    from app.api.llm_access import tenant_llm_provider
-
-    provider = await tenant_llm_provider(request, tenant)
-    executor = SkillExecutor(
-        permission_checker=permission_checker,
-        trigger_matcher=trigger_matcher,
-        provider=provider,
-    )
-    result = await executor.execute(
+    result = await (await _executor(request, tenant)).execute(
         skill=_dict_to_skill_def(skill_dict),
         input_context=body.input_context,
         tenant_id=tenant.tenant_id,
@@ -395,21 +427,17 @@ async def execute_best_match(
     """Auto-match the best skill for a goal and execute it."""
     tenant = _require_tenant(request)
 
-    skills = [_dict_to_skill_def(s) for s in _platform_skills.values()]
+    # Disabled skills are never candidates (OPS-03).
+    disabled = await _disabled_for(request, tenant.tenant_id)
+    skills = [
+        _dict_to_skill_def(s) for s in _platform_skills.values() if s["skill_id"] not in disabled
+    ]
     ranked = trigger_matcher.rank_skills(body.goal, skills)
     if not ranked:
         return {"matched": False}
 
     best_skill, score = ranked[0]
-    from app.api.llm_access import tenant_llm_provider
-
-    provider = await tenant_llm_provider(request, tenant)
-    executor = SkillExecutor(
-        permission_checker=permission_checker,
-        trigger_matcher=trigger_matcher,
-        provider=provider,
-    )
-    result = await executor.execute(
+    result = await (await _executor(request, tenant)).execute(
         skill=best_skill,
         input_context=body.goal,
         tenant_id=tenant.tenant_id,
@@ -435,7 +463,7 @@ async def permission_enable_skill(
 ) -> dict[str, Any]:
     """Re-enable a skill for the current tenant via ScopedPermissionChecker."""
     tenant = _require_tenant(request)
-    permission_checker.enable_for_tenant(tenant.tenant_id, body.skill_id)
+    await _set_enabled(request, tenant.tenant_id, body.skill_id, True)
     return {"skill_id": body.skill_id, "status": "enabled"}
 
 
@@ -446,7 +474,7 @@ async def permission_disable_skill(
 ) -> dict[str, Any]:
     """Disable a skill for the current tenant via ScopedPermissionChecker."""
     tenant = _require_tenant(request)
-    permission_checker.disable_for_tenant(tenant.tenant_id, body.skill_id)
+    await _set_enabled(request, tenant.tenant_id, body.skill_id, False)
     return {"skill_id": body.skill_id, "status": "disabled"}
 
 
@@ -463,7 +491,8 @@ async def get_skill(request: Request, skill_id: str) -> dict[str, Any]:
     if not skill:
         raise HTTPException(404, f"Skill {skill_id} not found")
 
-    return {**skill, "enabled": skill_id in _enabled_skills.get(tenant.tenant_id, set())}
+    disabled = await _disabled_for(request, tenant.tenant_id)
+    return {**skill, "enabled": skill_id not in disabled}
 
 
 @router.post("")
@@ -514,7 +543,7 @@ async def enable_skill(request: Request, skill_id: str) -> dict[str, Any]:
     ):
         raise HTTPException(404, f"Skill {skill_id} not found")
 
-    _enabled_skills.setdefault(tenant.tenant_id, set()).add(skill_id)
+    await _set_enabled(request, tenant.tenant_id, skill_id, True)
     return {"skill_id": skill_id, "status": "enabled"}
 
 
@@ -522,7 +551,7 @@ async def enable_skill(request: Request, skill_id: str) -> dict[str, Any]:
 async def disable_skill(request: Request, skill_id: str) -> dict[str, Any]:
     """Disable a skill for this tenant."""
     tenant = _require_tenant(request)
-    _enabled_skills.setdefault(tenant.tenant_id, set()).discard(skill_id)
+    await _set_enabled(request, tenant.tenant_id, skill_id, False)
     return {"skill_id": skill_id, "status": "disabled"}
 
 
@@ -542,6 +571,18 @@ async def execute_skill(
 
     if not skill:
         raise HTTPException(404, f"Skill {skill_id} not found")
+
+    # OPS-03: this route never checked the tenant's disable state or the skill
+    # permission scope. Fail closed (503) when the state cannot be read.
+    try:
+        allowed = await permission_checker.ais_allowed(
+            _dict_to_skill_def(skill), tenant.tenant_id, db_factory=_state_db(request)
+        )
+    except SkillStateUnavailableError as exc:
+        _log.warning("skill_state_read_failed tenant=%s: %s", tenant.tenant_id, exc)
+        raise HTTPException(503, "Skill state unavailable; please retry") from exc
+    if not allowed:
+        raise HTTPException(403, f"Skill {skill_id} is disabled for this tenant")
 
     import time
 
@@ -697,6 +738,7 @@ async def match_skill_by_trigger(request: Request) -> dict[str, Any]:
     tenant = _require_tenant(request)
     body = await request.json()
     trigger = body.get("trigger", "").lower()
+    disabled = await _disabled_for(request, tenant.tenant_id)
 
     matches = []
     for skill in _platform_skills.values():
@@ -707,8 +749,7 @@ async def match_skill_by_trigger(request: Request) -> dict[str, Any]:
                         "skill_id": skill["skill_id"],
                         "name": skill["name"],
                         "matched_hint": hint,
-                        "enabled": skill["skill_id"]
-                        in _enabled_skills.get(tenant.tenant_id, set()),
+                        "enabled": skill["skill_id"] not in disabled,
                     }
                 )
                 break
@@ -721,7 +762,7 @@ async def match_skill_by_trigger(request: Request) -> dict[str, Any]:
                         "skill_id": skill["skill_id"],
                         "name": skill["name"],
                         "matched_hint": hint,
-                        "enabled": True,
+                        "enabled": skill["skill_id"] not in disabled,
                     }
                 )
                 break

@@ -99,6 +99,26 @@ class ScopedPermissionChecker:
         """Re-enable a skill for a tenant."""
         self._disabled.setdefault(tenant_id, set()).discard(skill_id)
 
+    async def ais_allowed(
+        self,
+        skill: SkillDefinition,
+        tenant_id: str,
+        agent_id: str | None = None,
+        *,
+        db_factory: Any = None,
+    ) -> bool:
+        """``is_allowed`` plus the tenant's durable disable state (OPS-03).
+
+        Reads ``skill_runtime_tenant_state`` (or the DB-less in-process state);
+        a read failure raises ``SkillStateUnavailableError`` so callers fail
+        closed instead of running a possibly-disabled skill.
+        """
+        from app.skills_runtime.state_store import disabled_skills
+
+        if skill.skill_id in await disabled_skills(db_factory, tenant_id):
+            return False
+        return self.is_allowed(skill, tenant_id, agent_id)
+
     def is_allowed(
         self,
         skill: SkillDefinition,
@@ -156,8 +176,11 @@ class SkillExecutor:
         trigger_matcher: TriggerMatcher | None = None,
         provider: Any = None,  # LLMProvider
         timeout_seconds: float = 30.0,
+        state_db_factory: Any = None,
     ) -> None:
         self._permission_checker = permission_checker or ScopedPermissionChecker()
+        # Session factory for the durable per-tenant skill state (OPS-03).
+        self._state_db = state_db_factory
         self._trigger_matcher = trigger_matcher or TriggerMatcher()
         self._provider = provider
         self._timeout_seconds = timeout_seconds
@@ -188,8 +211,11 @@ class SkillExecutor:
         now = datetime.datetime.now(datetime.UTC).isoformat()
 
         try:
-            # 1. Permission check
-            if not self._permission_checker.is_allowed(skill, tenant_id, agent_id):
+            # 1. Permission check (incl. the tenant's durable disable state;
+            #    an unreadable state raises -> failed execution, fail closed)
+            if not await self._permission_checker.ais_allowed(
+                skill, tenant_id, agent_id, db_factory=self._state_db
+            ):
                 raise PermissionError(
                     f"Skill '{skill.skill_id}' is not allowed for "
                     f"tenant='{tenant_id}' agent='{agent_id}'"

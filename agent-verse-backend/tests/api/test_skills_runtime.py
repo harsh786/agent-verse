@@ -467,6 +467,45 @@ def test_execute_skill_not_found() -> None:
     assert resp.status_code == 404
 
 
+def test_direct_execute_of_disabled_skill_is_403_via_either_disable_api() -> None:
+    """OPS-03: POST /{id}/execute never checked the disable state."""
+    for disable_call in (
+        lambda c: c.post("/skills-runtime/permissions/disable", headers=H,
+                         json={"skill_id": "headroom"}),
+        lambda c: c.post("/skills-runtime/headroom/disable", headers=H),
+    ):
+        app = _make_app(tenant_id=_uniq("tenant"), provider=FakeProvider(responses=["x"]))
+        client = TestClient(app)
+        assert disable_call(client).status_code == 200
+        resp = client.post("/skills-runtime/headroom/execute", headers=H,
+                           json={"input_context": "hi"})
+        assert resp.status_code == 403
+        assert "disabled" in resp.json()["detail"]
+        assert client.get("/skills-runtime/headroom", headers=H).json()["enabled"] is False
+
+
+def test_unreadable_skill_state_fails_closed_with_503() -> None:
+    class _DownDb:
+        def __call__(self) -> Any:
+            return self
+
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("db down")
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    app = _make_app(tenant_id=_uniq("tenant"), provider=FakeProvider(responses=["x"]))
+    app.state.db_session_factory = _DownDb()
+    client = TestClient(app)
+    resp = client.post("/skills-runtime/headroom/execute", headers=H,
+                       json={"input_context": "hi"})
+    assert resp.status_code == 503
+    by_id = client.post("/skills-runtime/execute", headers=H,
+                        json={"skill_id": "headroom", "input_context": "hi"}).json()
+    assert by_id["success"] is False
+
+
 def test_execute_skill_without_provider_is_503_not_canned_success() -> None:
     """Was: success=True with a canned '[X Skill] Processing: ...' output when no
     LLM provider was configured — a fabricated execution."""
