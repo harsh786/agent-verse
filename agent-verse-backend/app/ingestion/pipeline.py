@@ -154,12 +154,19 @@ class IngestionPipeline:
         self,
         raw_doc: RawDocument,
         source_config: SourceConfig,
+        *,
+        dry_run: bool | None = None,
     ) -> PipelineResult:
         """Run all 13 pipeline stages for one document.
 
         LAW-17: correlation_id set if not already present.
         All exceptions are caught and returned in PipelineResult.status="failed".
+
+        ``dry_run`` (LAW-22) applies to this call only; ``None`` uses the mode the
+        pipeline was constructed with. The pipeline is shared app-wide, so a
+        preview must never toggle it for everyone (PREVIEW-RACE).
         """
+        dry = self._dry_run if dry_run is None else dry_run
         if not raw_doc.correlation_id:
             raw_doc.correlation_id = uuid.uuid4().hex
 
@@ -228,7 +235,7 @@ class IngestionPipeline:
 
             # ── Stage 3: CONTENT HASH (LAW-02: idempotency) ──────────────────
             content_hash = raw_doc.compute_hash()
-            if self._kb is not None and not self._dry_run:
+            if self._kb is not None and not dry:
                 existing = await self._check_existing_hash(content_hash, source_config)
                 if existing:
                     result.status = "skipped"
@@ -343,7 +350,7 @@ class IngestionPipeline:
             enriched_chunks = self._enrich(chunks_text, raw_doc, source_config)
 
             # ── Dry-run exit (LAW-22) ─────────────────────────────────────────
-            if self._dry_run:
+            if dry:
                 result.status = "dry_run"
                 result.chunks_created = len(enriched_chunks)
                 result.tokens_consumed = sum(count_tokens(c["text"]) for c in enriched_chunks)

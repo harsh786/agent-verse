@@ -110,14 +110,8 @@ class KnowledgeIngestTool:
         )
 
         # Run pipeline (with dry_run=LAW-22 if requested)
-        if dry_run:
-            pipeline._dry_run = True
-
-        try:
-            result = await pipeline.ingest(raw_doc, config)
-        finally:
-            if dry_run:
-                pipeline._dry_run = False
+        # Per call: the pipeline may be shared with concurrent requests.
+        result = await pipeline.ingest(raw_doc, config, dry_run=dry_run)
 
         return {
             "job_status": result.status,

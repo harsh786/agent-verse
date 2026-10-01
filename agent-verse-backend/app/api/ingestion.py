@@ -538,18 +538,17 @@ async def preview_source(source_id: str, request: Request) -> dict:
     if pipeline is None:
         return {"error": "Ingestion pipeline not configured"}
 
-    from app.ingestion.connector_registry import get_connector
-
-    pipeline._dry_run = True
     results: list[dict] = []
     try:
-        connector_cls = get_connector(source.source_type)
+        connector_cls = _available_connector(source.source_type)
         connector = connector_cls()
         count = 0
         async for raw_doc, _ in connector.get_delta(source, None):
             if count >= 5:
                 break
-            result = await pipeline.ingest(raw_doc, source)
+            # Per-call dry run: the pipeline is shared by every request on
+            # this replica, so its mode must never be flipped (PREVIEW-RACE).
+            result = await pipeline.ingest(raw_doc, source, dry_run=True)
             results.append(
                 {
                     "doc_id": result.doc_id,
@@ -560,9 +559,9 @@ async def preview_source(source_id: str, request: Request) -> dict:
             )
             count += 1
     except Exception as exc:
-        return {"error": str(exc), "docs_previewed": len(results)}
-    finally:
-        pipeline._dry_run = False
+        from app.ingestion.connector_registry import connector_error_message
+
+        return {"error": connector_error_message(exc), "docs_previewed": len(results)}
 
     return {"docs_previewed": len(results), "sample": results}
 

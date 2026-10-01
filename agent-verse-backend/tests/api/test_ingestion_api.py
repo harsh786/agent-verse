@@ -440,10 +440,12 @@ def test_preview_source_success_stops_at_five_docs() -> None:
 
     class _FakePipeline:
         def __init__(self) -> None:
-            self._dry_run = False
+            self.dry_runs: list[Any] = []
 
-        async def ingest(self, raw_doc: Any, src: SourceConfig) -> Any:
+        async def ingest(self, raw_doc: Any, src: SourceConfig, *, dry_run: Any = None) -> Any:
             from types import SimpleNamespace
+
+            self.dry_runs.append(dry_run)
 
             return SimpleNamespace(
                 doc_id=raw_doc, status="indexed", chunks_created=2, tokens_consumed=50
@@ -467,7 +469,8 @@ def test_preview_source_success_stops_at_five_docs() -> None:
     assert len(body["sample"]) == 5
     assert body["sample"][0]["chunks_would_create"] == 2
     assert body["sample"][0]["tokens_estimate"] == 50
-    assert pipeline._dry_run is False  # reset in `finally`
+    # PREVIEW-RACE: dry run is passed per call, never set on the shared pipeline.
+    assert pipeline.dry_runs == [True] * 5
 
 
 def test_preview_source_connector_error_reports_partial_progress() -> None:
@@ -476,10 +479,12 @@ def test_preview_source_connector_error_reports_partial_progress() -> None:
 
     class _FakePipeline:
         def __init__(self) -> None:
-            self._dry_run = False
+            self.dry_runs: list[Any] = []
 
-        async def ingest(self, raw_doc: Any, src: SourceConfig) -> Any:
+        async def ingest(self, raw_doc: Any, src: SourceConfig, *, dry_run: Any = None) -> Any:
             from types import SimpleNamespace
+
+            self.dry_runs.append(dry_run)
 
             return SimpleNamespace(
                 doc_id=raw_doc, status="indexed", chunks_created=1, tokens_consumed=10
@@ -501,7 +506,7 @@ def test_preview_source_connector_error_reports_partial_progress() -> None:
     body = resp.json()
     assert body["docs_previewed"] == 1
     assert "source unreachable" in body["error"]
-    assert pipeline._dry_run is False
+    assert pipeline.dry_runs == [True]
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────────
