@@ -2,10 +2,9 @@
  * ConnectedServicesPanel — lists MCP connectors with connect/disconnect actions.
  */
 
-import { useEffect, useState, type JSX } from 'react';
-import { Plug, PlugZap, Trash2, Plus } from 'lucide-react';
-import { getAuthHeader } from '@/stores/auth';
-import { API_BASE } from '@/lib/api/client';
+import { useCallback, useEffect, useState, type JSX } from 'react';
+import { Plug, PlugZap, Trash2, Plus, ExternalLink } from 'lucide-react';
+import { apiFetch } from '@/lib/api/client';
 
 interface Service {
   id: string;
@@ -30,42 +29,94 @@ interface Props {
   onClose?: () => void;
 }
 
-const H = () => ({ 'Content-Type': 'application/json', ...getAuthHeader() });
+/** How often a pending (authorizing) service is re-checked. */
+const PENDING_POLL_MS = 5_000;
+
+const errorText = (e: unknown) => (e instanceof Error && e.message ? e.message : 'Request failed');
+
+/** Only ever link to an http(s) authorization URL (never javascript:/data:). */
+function safeAuthUrl(u: unknown): string | null {
+  if (typeof u !== 'string' || !u) return null;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? u : null;
+  } catch {
+    return null;
+  }
+}
 
 export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  // Authorization links returned by POST /chat/services, keyed by service id.
+  const [authUrls, setAuthUrls] = useState<Record<string, string>>({});
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState('');
   const [newUrl, setNewUrl] = useState('');
 
-  useEffect(() => {
-    fetch(`${API_BASE}/chat/services`, { headers: H() })
-      .then((r) => r.json())
-      .then((d) => setServices(d.services ?? []))
-      .finally(() => setLoading(false));
+  const load = useCallback(async () => {
+    try {
+      const d = await apiFetch<{ services?: Service[] }>('/chat/services');
+      setServices(d?.services ?? []);
+      setLoadError(null);
+    } catch (e) {
+      // A failed list is an error, not "No services connected".
+      setLoadError(errorText(e));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // While any service is still authorizing, re-check it (and on window focus,
+  // i.e. when the user comes back from the OAuth tab) so a completed callback
+  // flips the row to connected without a manual reload.
+  const hasPending = services.some((s) => s.status === 'pending');
+  useEffect(() => {
+    if (!hasPending) return;
+    const t = setInterval(() => void load(), PENDING_POLL_MS);
+    const onFocus = () => void load();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [hasPending, load]);
+
   const disconnect = async (id: string) => {
-    await fetch(`${API_BASE}/chat/services/${id}`, { method: 'DELETE', headers: H() });
-    setServices((prev) => prev.filter((s) => s.id !== id));
+    setActionError(null);
+    try {
+      await apiFetch(`/chat/services/${id}`, { method: 'DELETE' });
+      // Only drop the row once the server confirmed the DELETE.
+      setServices((prev) => prev.filter((s) => s.id !== id));
+    } catch (e) {
+      setActionError(`Could not disconnect: ${errorText(e)}`);
+    }
   };
 
   const connect = async () => {
     if (!newName || !newUrl) return;
-    const r = await fetch(`${API_BASE}/chat/services`, {
-      method: 'POST',
-      headers: H(),
-      body: JSON.stringify({ name: newName, url: newUrl }),
-    });
-    if (r.ok) {
-      const data = await r.json();
+    setActionError(null);
+    try {
+      const data = await apiFetch<{ service_id: string; oauth_url?: string; status?: string }>(
+        '/chat/services',
+        { method: 'POST', body: JSON.stringify({ name: newName, url: newUrl }) },
+      );
       // The backend returns status "pending" — OAuth is not complete yet, so do
       // not claim "connected". The user finishes auth via data.oauth_url.
       setServices((prev) => [...prev, { id: data.service_id, name: newName, url: newUrl, scopes: [], status: data.status ?? 'pending', connected_at: null }]);
+      const auth = safeAuthUrl(data.oauth_url);
+      if (auth) setAuthUrls((prev) => ({ ...prev, [data.service_id]: auth }));
       setShowAdd(false);
       setNewName('');
       setNewUrl('');
+    } catch (e) {
+      setActionError(`Could not connect: ${errorText(e)}`);
     }
   };
 
@@ -84,6 +135,19 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
       <div className="flex-1 overflow-y-auto p-4 space-y-2">
         {loading && <p className="text-xs text-muted-foreground">Loading…</p>}
 
+        {loadError && (
+          <div role="alert" className="text-xs text-red-500 space-y-1">
+            <p>Could not load connected services: {loadError}</p>
+            <button className="underline" onClick={() => { setLoading(true); void load(); }}>
+              Retry
+            </button>
+          </div>
+        )}
+
+        {actionError && (
+          <p role="alert" className="text-xs text-red-500">{actionError}</p>
+        )}
+
         {services.map((s) => (
           <div
             key={s.id}
@@ -97,6 +161,17 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
             <span className={`text-xs px-1.5 py-0.5 rounded-full shrink-0 ${statusStyle(s.status)}`}>
               {s.status === 'pending' ? 'authorizing…' : s.status}
             </span>
+            {s.status === 'pending' && authUrls[s.id] && (
+              <a
+                href={authUrls[s.id]}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Authorize ${s.name}`}
+                className="flex items-center gap-0.5 text-xs text-indigo-600 hover:text-indigo-700 shrink-0"
+              >
+                Authorize <ExternalLink className="w-3 h-3" aria-hidden />
+              </a>
+            )}
             <button
               className="hidden group-hover:block p-1 hover:bg-red-50 dark:hover:bg-red-950 rounded"
               onClick={() => disconnect(s.id)}
@@ -107,7 +182,7 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
           </div>
         ))}
 
-        {!loading && services.length === 0 && (
+        {!loading && !loadError && services.length === 0 && (
           <p className="text-xs text-muted-foreground text-center py-6">
             No services connected. Add an MCP tool to extend agent capabilities.
           </p>

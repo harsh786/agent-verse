@@ -75,17 +75,51 @@ describe('ConnectedServicesPanel', () => {
     ).toBeInTheDocument();
   });
 
-  test('treats a payload with no services array as empty', async () => {
-    // Response with no `services` key -> the component falls back to [] and,
-    // once loading finishes, renders the empty message rather than crashing.
+  test('a failing list renders an error with retry, not "No services connected"', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ error: 'boom' }), {
-        status: 500,
+      new Response(JSON.stringify({ detail: 'Service registry unavailable' }), {
+        status: 503,
         headers: { 'Content-Type': 'application/json' },
       }),
     );
     render(<ConnectedServicesPanel />);
-    expect(await screen.findByText(/No services connected/i)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Service registry unavailable/);
+    expect(screen.queryByText(/No services connected/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
+  });
+
+  test('a failed DELETE keeps the row and shows the error', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'DELETE')
+        return new Response(JSON.stringify({ detail: 'Service not found' }), {
+          status: 404, headers: { 'Content-Type': 'application/json' },
+        });
+      return new Response(JSON.stringify(SERVICES), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    render(<ConnectedServicesPanel />);
+    await screen.findByText('GitHub MCP');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect GitHub MCP' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Service not found/);
+    expect(screen.getByText('GitHub MCP')).toBeInTheDocument();
+  });
+
+  test('a refused connect shows the error and keeps the form open', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST')
+        return new Response(JSON.stringify({ detail: 'OAuth for this server is not supported' }), {
+          status: 501, headers: { 'Content-Type': 'application/json' },
+        });
+      return new Response(JSON.stringify({ services: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    render(<ConnectedServicesPanel />);
+    await screen.findByText(/No services connected/i);
+    fireEvent.click(screen.getByRole('button', { name: /Add service/i }));
+    fireEvent.change(screen.getByPlaceholderText('Service name'), { target: { value: 'Notion MCP' } });
+    fireEvent.change(screen.getByPlaceholderText('MCP server URL'), { target: { value: 'https://mcp.notion.example/sse' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/not supported/);
+    expect(screen.getByPlaceholderText('Service name')).toBeInTheDocument();
+    expect(screen.queryByText('Notion MCP')).not.toBeInTheDocument();
   });
 
   test('disconnect fires a DELETE for the chosen service and removes the row', async () => {
@@ -130,8 +164,33 @@ describe('ConnectedServicesPanel', () => {
         }),
       ).toBe(true),
     );
-    // The newly added (pending) service appears in the list.
+    // The newly added (pending) service appears in the list, with the
+    // authorization link the backend returned (the user must finish OAuth).
     expect(await screen.findByText('Notion MCP')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /Authorize Notion MCP/i });
+    expect(link).toHaveAttribute('href', 'https://auth.example');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link.getAttribute('rel')).toContain('noopener');
+  });
+
+  test('a pending service is re-checked so a finished OAuth shows as connected', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let calls = 0;
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        calls += 1;
+        const status = calls === 1 ? 'pending' : 'connected';
+        return new Response(JSON.stringify({ services: [{ ...SERVICES.services[1], status }] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      render(<ConnectedServicesPanel />);
+      expect(await screen.findByText('authorizing…')).toBeInTheDocument();
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(await screen.findByText('connected')).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('the close button fires the onClose callback', async () => {
