@@ -21,6 +21,8 @@ logger = get_logger(__name__)
 _KEY = "model_registry:configured"
 _POLICY_KEY_PREFIX = "model_registry:route_policies:"
 _HEALTH_KEY_PREFIX = "model_registry:health:"
+# Bumped on every override change so every replica / worker re-seeds (PROV-17).
+_VERSION_KEY = "model_registry:configured:version"
 
 # Whitelisted fields persisted per endpoint (mirrors ModelEndpoint).
 _FIELDS = (
@@ -60,6 +62,16 @@ class ModelRegistryStore:
 
     def _save(self, items: list[dict[str, Any]]) -> None:
         self._redis.set(_KEY, json.dumps(items))
+        self._redis.incr(_VERSION_KEY)
+
+    def version(self) -> int | None:
+        """The override-set version (0 = never changed); ``None`` when unreadable."""
+        try:
+            raw = self._redis.get(_VERSION_KEY)
+            return int(raw or 0)
+        except Exception as exc:
+            logger.warning("model_registry_version_read_failed error=%s", str(exc)[:120])
+            return None
 
     def upsert(self, endpoint: dict[str, Any]) -> None:
         """Add or replace an override, keyed by provider/model_id."""

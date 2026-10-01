@@ -47,20 +47,39 @@ _TASK_ALIASES: dict[str, TaskType] = {
 
 
 _lazy_seeded = False
+# Version of the shared override set this process last seeded from, and when
+# it last looked: an override POSTed to ANOTHER replica bumps the version, so
+# this process re-seeds instead of serving a stale set until restart (PROV-17).
+_seeded_version: int | None = None
+_last_version_check = 0.0
+_VERSION_CHECK_INTERVAL_S = 5.0
 
 
 def _ensure_seeded(reg: ModelRegistry) -> None:
-    """Seed the configured set once per process from env/config (idempotent).
+    """Seed the configured set from env/config + shared overrides (idempotent).
 
-    Lets any process (API or Celery worker) select without explicit startup
-    wiring; explicit re-seeds (e.g. after a config change) still work.
+    Seeds once per process, then again whenever the shared store's override
+    version changes (checked at most every ``_VERSION_CHECK_INTERVAL_S``).
     """
-    global _lazy_seeded
+    global _lazy_seeded, _seeded_version, _last_version_check
     # Only auto-seed the process-wide global registry; a caller-supplied registry
     # (tests, isolated contexts) is left exactly as provided.
-    if _lazy_seeded or reg is not model_registry:
+    if reg is not model_registry:
+        return
+    import time
+
+    now = time.monotonic()
+    if _lazy_seeded and now - _last_version_check < _VERSION_CHECK_INTERVAL_S:
+        return
+    from app.ai_router.registry_store import get_model_registry_store
+
+    store = get_model_registry_store()
+    version = store.version() if store is not None else None
+    _last_version_check = now
+    if _lazy_seeded and (version is None or version == _seeded_version):
         return
     _lazy_seeded = True
+    _seeded_version = version
     try:
         from app.ai_router.seeder import seed_registry_from_config
 

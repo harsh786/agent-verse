@@ -30,6 +30,10 @@ class _FakeRedis:
     def set(self, k, v):
         self.store[k] = v
 
+    def incr(self, k):  # override-set version (PROV-17)
+        self.store[k] = str(int(self.store.get(k) or 0) + 1)
+        return int(self.store[k])
+
 
 def _make_app():
     app = FastAPI()
