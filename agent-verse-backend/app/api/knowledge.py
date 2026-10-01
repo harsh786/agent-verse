@@ -2830,101 +2830,47 @@ async def ingest_document_into_collection(
 async def list_documents(
     collection_id: str,
     request: Request,
-    limit: int = Query(default=20, le=100),
-    offset: int = Query(default=0),
-    search: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = Query(default=None, max_length=200),
+    offset: int = Query(default=0, ge=0, le=10_000),
+    search: str | None = Query(default=None, max_length=200),
+    source_type: str | None = Query(default=None, max_length=64),
 ) -> dict[str, Any]:
-    """List documents in a knowledge collection with pagination."""
+    """List one of the caller's collections' documents (keyset pagination).
+
+    Documents are read from the collection's chunk rows (``knowledge_documents``
+    only holds ingestion jobs). This used to select ``source`` / ``content``
+    columns that table does not have, so every call was a 503 and the Knowledge
+    page showed an empty collection (RW-07). Pass ``next_cursor`` back as
+    ``cursor`` for the next page; ``offset`` remains for old clients (bounded).
+    Filters: ``search`` (title / file name / URL) and ``source_type``.
+    """
     tenant = _require_tenant(request)
-    knowledge_store = getattr(request.app.state, "knowledge_store", None)
-
-    if knowledge_store is None:
-        return {"documents": [], "total": 0}
-
+    store = await _owned_collection_or_404(request, collection_id, tenant)
     try:
-        # Prefer a native list_documents method if available
-        if hasattr(knowledge_store, "list_documents"):
-            result = await knowledge_store.list_documents(
-                collection_id=collection_id,
+        return dict(
+            await store.list_collection_documents_async(
                 tenant_ctx=tenant,
+                collection_id=collection_id,
                 limit=limit,
+                cursor=cursor,
                 offset=offset,
                 search=search,
+                source_type=source_type,
             )
-            if isinstance(result, dict):
-                return result
-            return {"documents": result or [], "total": len(result or [])}
-
-        # Fallback: query the DB directly
-        db = getattr(knowledge_store, "_db", None) or getattr(
-            knowledge_store, "_session_factory", None
         )
-        if db:
-            from sqlalchemy import text as _t
-
-            from app.db.rls import sqlalchemy_rls_context
-
-            async with (
-                db() as session,
-                sqlalchemy_rls_context(session, tenant.tenant_id),
-            ):
-                q = """
-                    SELECT id, title, source, source_type, chunk_count, created_at,
-                           LEFT(content, 200) as preview
-                    FROM knowledge_documents
-                    WHERE collection_id = :cid AND tenant_id = :tid
-                      AND COALESCE(domain_metadata->>'record_type', '') <> 'ingestion_job'
-                """
-                params: dict[str, Any] = {
-                    "cid": collection_id,
-                    "tid": tenant.tenant_id,
-                }
-                if search:
-                    q += " AND (title ILIKE :search OR content ILIKE :search)"
-                    params["search"] = f"%{search}%"
-                q += " ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
-                params["limit"] = limit
-                params["offset"] = offset
-
-                rows = (await session.execute(_t(q), params)).fetchall()
-                count_q = (
-                    "SELECT COUNT(*) FROM knowledge_documents "
-                    "WHERE collection_id = :cid AND tenant_id = :tid "
-                    "AND COALESCE(domain_metadata->>'record_type', '') <> 'ingestion_job'"
-                )
-                total = (
-                    await session.execute(
-                        _t(count_q),
-                        {"cid": collection_id, "tid": tenant.tenant_id},
-                    )
-                ).scalar() or 0
-
-                documents = [
-                    {
-                        "id": str(r[0]),
-                        "title": r[1],
-                        "source": r[2],
-                        "source_type": r[3],
-                        "chunk_count": r[4] or 0,
-                        "created_at": r[5].isoformat() if r[5] else None,
-                        "preview": r[6],
-                    }
-                    for r in rows
-                ]
-                return {"documents": documents, "total": int(total)}
-    except HTTPException:
-        raise
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Collection {collection_id} not found"
+        ) from exc
     except Exception as exc:
-        # Was a 200 {"documents": [], "error": ...} — indistinguishable from an
-        # empty collection. A failed lookup is a failure.
+        # A failed lookup is a failure, never an empty collection.
         from app.observability.logging import get_logger as _gl
 
         _gl(__name__).exception("list_documents_failed", collection_id=collection_id)
         raise HTTPException(
             status_code=503, detail="Knowledge persistence is unavailable"
         ) from exc
-
-    return {"documents": [], "total": 0}
 
 
 async def _owned_collection_or_404(request: Request, collection_id: str, tenant: Any) -> Any:

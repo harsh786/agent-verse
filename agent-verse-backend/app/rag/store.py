@@ -136,6 +136,54 @@ def _document_row(document_id: str, chunks: list[Chunk], source_id: str) -> dict
     }
 
 
+# Chunk metadata keys a document listing's ``search`` matches (title / file / URL).
+_DOCUMENT_SEARCH_KEYS = ("doc_title", "title", "source_file", "filename", "source_url")
+# Documents counted exactly for a listing's ``total``; past it ``total_capped``.
+_DOCUMENT_COUNT_CAP = 10_000
+
+
+def _escape_like(term: str) -> str:
+    """Escape ILIKE wildcards so a search term matches literally."""
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _document_listing_row(
+    *,
+    document_id: str,
+    chunk_count: int,
+    created_at: str | None,
+    expires_at: str | None,
+    title: str,
+    source_url: str,
+    source_type: str,
+    source_file: str,
+    preview: str,
+) -> dict[str, Any]:
+    return {
+        "id": document_id,
+        "document_id": document_id,
+        "title": title or source_url or source_file or document_id,
+        "source": source_url or source_file,
+        "source_url": source_url,
+        "source_type": source_type or "unknown",
+        "chunk_count": chunk_count,
+        "created_at": created_at,
+        "expires_at": expires_at,
+        "preview": preview,
+    }
+
+
+def _document_page(documents: list[dict[str, Any]], *, limit: int, counted: int) -> dict[str, Any]:
+    capped = counted > _DOCUMENT_COUNT_CAP
+    return {
+        "documents": documents,
+        "total": _DOCUMENT_COUNT_CAP if capped else counted,
+        "total_capped": capped,
+        "next_cursor": documents[-1]["id"] if len(documents) == limit and documents else None,
+        "limit": limit,
+    }
+
+
 @dataclass
 class _CollectionStore:
     collection: KnowledgeCollection
@@ -604,6 +652,214 @@ class KnowledgeStore:
             }
             for r in rows
         ]
+
+    async def list_collection_documents_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        collection_id: str,
+        limit: int = 20,
+        cursor: str | None = None,
+        offset: int = 0,
+        search: str | None = None,
+        source_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Page through a collection's documents, aggregated from its chunk rows.
+
+        A document has no row of its own: ``knowledge_documents`` only holds
+        durable ingestion jobs, the indexed content lives in
+        ``knowledge_chunks_<dim>`` keyed by ``document_id``. Pages are
+        keyset-paginated on ``document_id`` (``cursor`` = last id of the previous
+        page): the page's ids come from a DISTINCT scan of the
+        ``(collection_id, document_id, chunk_index)`` unique index that stops
+        after ``limit`` documents, then only those documents are aggregated. So a
+        page costs the same in a million-chunk collection as in a small one.
+        ``offset`` is kept for old clients and bounded by the API. ``total`` is
+        an exact count up to ``_DOCUMENT_COUNT_CAP`` documents
+        (``total_capped`` past it), never an unbounded COUNT(DISTINCT).
+        """
+        search_term = (search or "").strip()
+        source_filter = (source_type or "").strip()
+        if self._db is None:
+            return self._list_collection_documents_memory(
+                tenant_ctx=tenant_ctx,
+                collection_id=collection_id,
+                limit=limit,
+                cursor=cursor,
+                offset=offset,
+                search=search_term,
+                source_type=source_filter,
+            )
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dim = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+            if dim is None:
+                raise KeyError(f"Collection {collection_id} not found")
+            table = _chunk_table(int(dim))
+            filters = ""
+            params: dict[str, Any] = {"tid": tenant_ctx.tenant_id, "cid": collection_id}
+            if source_filter:
+                filters += " AND metadata->>'source_type' = :stype"
+                params["stype"] = source_filter
+            if search_term:
+                filters += " AND (" + " OR ".join(
+                    f"COALESCE(metadata->>'{key}', '') ILIKE :q ESCAPE '\\'"
+                    for key in _DOCUMENT_SEARCH_KEYS
+                ) + ")"
+                params["q"] = "%" + _escape_like(search_term) + "%"
+            scope = f"FROM {table} WHERE tenant_id = :tid AND collection_id = :cid{filters}"
+
+            page_ids = [
+                str(r[0])
+                for r in (
+                    await session.execute(
+                        text(
+                            f"SELECT DISTINCT document_id {scope} "
+                            "AND (CAST(:after AS text) IS NULL "
+                            "OR document_id > CAST(:after AS text)) "
+                            "ORDER BY document_id LIMIT :lim OFFSET :off"
+                        ),
+                        {**params, "after": cursor or None, "lim": limit, "off": offset},
+                    )
+                ).fetchall()
+            ]
+            counted = int(
+                (
+                    await session.execute(
+                        text(
+                            f"SELECT COUNT(*) FROM (SELECT DISTINCT document_id {scope} "
+                            "LIMIT :cap) AS docs"
+                        ),
+                        {**params, "cap": _DOCUMENT_COUNT_CAP + 1},
+                    )
+                ).scalar_one()
+                or 0
+            )
+            rows = []
+            if page_ids:
+                rows = (
+                    await session.execute(
+                        text(f"""
+                            SELECT d.document_id, d.chunk_count, d.created_at, d.expires_at,
+                                   d.title, d.source_url, d.source_type, d.source_file,
+                                   p.preview
+                            FROM (
+                                SELECT document_id,
+                                       COUNT(*) AS chunk_count,
+                                       MIN(created_at) AS created_at,
+                                       MAX(expires_at) AS expires_at,
+                                       MAX(COALESCE(NULLIF(metadata->>'doc_title', ''),
+                                                    NULLIF(metadata->>'title', ''),
+                                                    NULLIF(metadata->>'source_file', ''),
+                                                    NULLIF(metadata->>'filename', '')))
+                                           AS title,
+                                       MAX(NULLIF(metadata->>'source_url', '')) AS source_url,
+                                       MAX(NULLIF(metadata->>'source_type', '')) AS source_type,
+                                       MAX(NULLIF(metadata->>'source_file', '')) AS source_file
+                                FROM {table}
+                                WHERE tenant_id = :tid AND collection_id = :cid
+                                  AND document_id = ANY(CAST(:ids AS text[]))
+                                GROUP BY document_id
+                            ) AS d
+                            LEFT JOIN LATERAL (
+                                SELECT LEFT(c.content, 200) AS preview
+                                FROM {table} AS c
+                                WHERE c.tenant_id = :tid AND c.collection_id = :cid
+                                  AND c.document_id = d.document_id
+                                ORDER BY c.chunk_index
+                                LIMIT 1
+                            ) AS p ON TRUE
+                            ORDER BY d.document_id
+                        """),
+                        {"tid": tenant_ctx.tenant_id, "cid": collection_id, "ids": page_ids},
+                    )
+                ).fetchall()
+
+        documents = [
+            _document_listing_row(
+                document_id=str(r[0]),
+                chunk_count=int(r[1] or 0),
+                created_at=r[2].isoformat() if r[2] is not None else None,
+                expires_at=r[3].isoformat() if r[3] is not None else None,
+                title=str(r[4] or ""),
+                source_url=str(r[5] or ""),
+                source_type=str(r[6] or ""),
+                source_file=str(r[7] or ""),
+                preview=str(r[8] or ""),
+            )
+            for r in rows
+        ]
+        return _document_page(documents, limit=limit, counted=counted)
+
+    def _list_collection_documents_memory(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        collection_id: str,
+        limit: int,
+        cursor: str | None,
+        offset: int,
+        search: str,
+        source_type: str,
+    ) -> dict[str, Any]:
+        cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
+        if cstore is None:
+            raise KeyError(f"Collection {collection_id} not found")
+        needle = search.casefold()
+        grouped: dict[str, list[Chunk]] = {}
+        for c in cstore.chunks:
+            meta = c.metadata or {}
+            if source_type and str(meta.get("source_type") or "") != source_type:
+                continue
+            if needle and not any(
+                needle in str(meta.get(key) or "").casefold() for key in _DOCUMENT_SEARCH_KEYS
+            ):
+                continue
+            grouped.setdefault(c.document_id, []).append(c)
+        ids = sorted(d for d in grouped if cursor is None or d > cursor)
+        documents = []
+        for doc_id in ids[offset : offset + limit]:
+            chunks = sorted(grouped[doc_id], key=lambda c: c.chunk_index)
+            meta = [dict(c.metadata or {}) for c in chunks]
+
+            def _first(*keys: str, _meta: list[dict[str, Any]] = meta) -> str:
+                for key in keys:
+                    for m in _meta:
+                        if m.get(key):
+                            return str(m[key])
+                return ""
+
+            documents.append(
+                _document_listing_row(
+                    document_id=doc_id,
+                    chunk_count=len(chunks),
+                    created_at=None,
+                    expires_at=None,
+                    title=_first("doc_title", "title", "source_file", "filename"),
+                    source_url=_first("source_url"),
+                    source_type=_first("source_type"),
+                    source_file=_first("source_file"),
+                    preview=chunks[0].content[:200],
+                )
+            )
+        return _document_page(documents, limit=limit, counted=min(len(grouped),
+                                                                  _DOCUMENT_COUNT_CAP + 1))
 
     async def delete_collection_async(
         self,

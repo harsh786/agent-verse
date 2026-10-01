@@ -8,8 +8,6 @@ document-ingest endpoint.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from datetime import datetime, UTC
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -387,11 +385,11 @@ def test_ingest_into_collection_embedding_provider_unavailable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# list_documents — native method + DB fallback branches
+# list_documents — KB-DOCUMENTS-503: documents come from the chunk rows
 # ---------------------------------------------------------------------------
 
 
-def test_list_documents_no_store() -> None:
+def test_list_documents_no_store_is_503() -> None:
     from app.rag.semantic_cache import SemanticCache
 
     app = FastAPI()
@@ -405,134 +403,99 @@ def test_list_documents_no_store() -> None:
 
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/knowledge/collections/col-1/documents", headers=_auth())
-    assert resp.status_code == 200
-    assert resp.json() == {"documents": [], "total": 0}
+    # An unwired store is unavailability, not an empty collection.
+    assert resp.status_code == 503
 
 
-def test_list_documents_native_method() -> None:
-    class _FakeStore:
-        async def list_documents(
-            self,
-            *,
-            collection_id: str,
-            tenant_ctx: Any,
-            limit: int,
-            offset: int,
-            search: str | None,
-        ) -> dict[str, Any]:
-            return {"documents": [{"id": "doc-1", "title": "T"}], "total": 1}
+def _seeded_store() -> tuple[KnowledgeStore, str]:
+    from app.rag.models import Chunk, KnowledgeCollection
 
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.get("/knowledge/collections/col-1/documents", headers=_auth())
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 1
-    assert body["documents"][0]["id"] == "doc-1"
-
-
-def test_list_documents_native_method_list_result() -> None:
-    class _FakeStore:
-        async def list_documents(self, **kwargs: Any) -> list[dict[str, Any]]:
-            return [{"id": "doc-1"}, {"id": "doc-2"}]
-
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.get("/knowledge/collections/col-1/documents", headers=_auth())
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 2
+    store = KnowledgeStore()
+    coll_id = store.create_collection(KnowledgeCollection(name="docs"), tenant_ctx=_CTX)
+    cstore = store._data[(_CTX.tenant_id, coll_id)]
+    for i in range(1, 6):
+        for c in range(2 if i == 3 else 1):
+            cstore.chunks.append(
+                Chunk(
+                    document_id=f"doc-{i}",
+                    content=f"body {i}.{c}",
+                    embedding=[0.0],
+                    chunk_index=c,
+                    metadata={
+                        "source_file": f"file-{i}.pdf" if i % 2 else "",
+                        "source_url": "" if i % 2 else f"https://example.test/{i}",
+                        "doc_title": "" if i % 2 else f"Page {i}",
+                        "source_type": "pdf" if i % 2 else "web",
+                    },
+                )
+            )
+    return store, coll_id
 
 
-class _FakeResult:
-    def __init__(self, rows: list[tuple] | None = None, scalar: int | None = None) -> None:
-        self._rows = rows or []
-        self._scalar = scalar
-
-    def fetchall(self) -> list[tuple]:
-        return self._rows
-
-    def scalar(self) -> int | None:
-        return self._scalar
-
-
-class _FakeSession:
-    def __init__(self, rows: list[tuple], total: int) -> None:
-        self._rows = rows
-        self._total = total
-
-    async def execute(self, query: Any, params: dict[str, Any] | None = None) -> _FakeResult:
-        text = str(query)
-        if "COUNT(" in text:
-            return _FakeResult(scalar=self._total)
-        if "SET_CONFIG" in text.upper() or "SET_CONFIG" in text:
-            return _FakeResult()
-        return _FakeResult(rows=self._rows)
-
-    async def commit(self) -> None:
-        pass
-
-    async def begin(self) -> Any:
-        @asynccontextmanager
-        async def _cm() -> Any:
-            yield self
-
-        return _cm()
+def test_list_documents_pages_with_cursor() -> None:
+    store, coll_id = _seeded_store()
+    client = _client(knowledge_store=store)
+    first = client.get(f"/knowledge/collections/{coll_id}/documents?limit=2", headers=_auth())
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert [d["id"] for d in body["documents"]] == ["doc-1", "doc-2"]
+    assert body["total"] == 5 and body["next_cursor"] == "doc-2"
+    assert body["documents"][0]["title"] == "file-1.pdf"
+    assert body["documents"][1]["source_url"] == "https://example.test/2"
+    second = client.get(
+        f"/knowledge/collections/{coll_id}/documents?limit=2&cursor=doc-2", headers=_auth()
+    ).json()
+    assert [d["id"] for d in second["documents"]] == ["doc-3", "doc-4"]
+    assert second["documents"][0]["chunk_count"] == 2
+    assert second["documents"][0]["preview"] == "body 3.0"
 
 
-class _FakeSessionCM:
-    def __init__(self, session: _FakeSession) -> None:
-        self._session = session
-
-    async def __aenter__(self) -> _FakeSession:
-        return self._session
-
-    async def __aexit__(self, *exc: Any) -> bool:
-        return False
-
-
-def _rls_noop():
-    @asynccontextmanager
-    async def _ctx(session: Any, tenant_id: str) -> Any:
-        yield session
-
-    return _ctx
+def test_list_documents_filters_and_legacy_offset() -> None:
+    store, coll_id = _seeded_store()
+    client = _client(knowledge_store=store)
+    web = client.get(
+        f"/knowledge/collections/{coll_id}/documents?source_type=web", headers=_auth()
+    ).json()
+    assert [d["id"] for d in web["documents"]] == ["doc-2", "doc-4"]
+    hit = client.get(
+        f"/knowledge/collections/{coll_id}/documents?search=FILE-5", headers=_auth()
+    ).json()
+    assert [d["id"] for d in hit["documents"]] == ["doc-5"]
+    offset = client.get(
+        f"/knowledge/collections/{coll_id}/documents?limit=2&offset=3", headers=_auth()
+    ).json()
+    assert [d["id"] for d in offset["documents"]] == ["doc-4", "doc-5"]
 
 
-def test_list_documents_db_fallback() -> None:
-    rows = [
-        (
-            "doc-1",
-            "Title",
-            "source.md",
-            "markdown",
-            3,
-            datetime(2024, 1, 1, tzinfo=UTC),
-            "preview text",
-        )
-    ]
-    session = _FakeSession(rows, total=1)
+def test_list_documents_unknown_or_foreign_collection_is_404() -> None:
+    store, _ = _seeded_store()
+    other = TenantContext(tenant_id="someone-else", plan=PlanTier.FREE, api_key_id="x")
+    from app.rag.models import KnowledgeCollection
 
-    class _FakeStore:
-        _db = staticmethod(lambda: _FakeSessionCM(session))
+    foreign = store.create_collection(KnowledgeCollection(name="theirs"), tenant_ctx=other)
+    client = _client(knowledge_store=store)
+    for cid in ("nope", foreign):
+        resp = client.get(f"/knowledge/collections/{cid}/documents", headers=_auth())
+        assert resp.status_code == 404, resp.text
 
-    with patch("app.db.rls.sqlalchemy_rls_context", new=_rls_noop()):
-        client = _client(knowledge_store=_FakeStore())
-        resp = client.get(
-            "/knowledge/collections/col-1/documents?search=foo", headers=_auth()
-        )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 1
-    assert body["documents"][0]["id"] == "doc-1"
-    assert body["documents"][0]["title"] == "Title"
+
+def test_list_documents_bounds_page_size_and_offset() -> None:
+    store, coll_id = _seeded_store()
+    client = _client(knowledge_store=store)
+    for query in ("limit=101", "limit=0", "offset=10001", "offset=-1"):
+        resp = client.get(f"/knowledge/collections/{coll_id}/documents?{query}", headers=_auth())
+        assert resp.status_code == 422, query
 
 
 def test_list_documents_failure_is_503() -> None:
-    class _FakeStore:
-        async def list_documents(self, **kwargs: Any) -> Any:
-            raise RuntimeError("boom")
+    store, coll_id = _seeded_store()
 
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.get("/knowledge/collections/col-1/documents", headers=_auth())
+    async def _boom(**kwargs: Any) -> Any:
+        raise RuntimeError("boom")
+
+    store.list_collection_documents_async = _boom  # type: ignore[method-assign]
+    client = _client(knowledge_store=store)
+    resp = client.get(f"/knowledge/collections/{coll_id}/documents", headers=_auth())
     # Was 200 {"documents": [], "error": "boom"} — looked like an empty collection.
     assert resp.status_code == 503
     assert "boom" not in resp.text
