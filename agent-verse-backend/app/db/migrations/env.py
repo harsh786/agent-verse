@@ -17,7 +17,12 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Inject the runtime DSN (async driver) so we never hardcode credentials in alembic.ini.
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Migrations run as the schema owner: MIGRATION_DATABASE_URL when the app itself
+# connects as the least-privilege application role (DATABASE_URL), which cannot
+# run DDL. ``%`` is escaped because ConfigParser interpolates it.
+_settings = get_settings()
+_migration_url = (_settings.migration_database_url or "").strip() or _settings.database_url
+config.set_main_option("sqlalchemy.url", _migration_url.replace("%", "%%"))
 
 # target_metadata stays None until ORM models are introduced (Phase 1+); migrations are
 # authored explicitly to keep full control over RLS policies and pgvector index types.
@@ -38,7 +43,26 @@ async def _run_async() -> None:
     )
     async with connectable.connect() as connection:
         await connection.run_sync(_run_migrations)
+        await _ensure_app_role(connection)
     await connectable.dispose()
+
+
+async def _ensure_app_role(connection: object) -> None:
+    """Provision the least-privilege application role (APP_DB_USER), if configured.
+
+    Runs after every upgrade so fresh and existing databases converge on the
+    same NOSUPERUSER/NOBYPASSRLS role with grants on every table — including
+    the ones the migrations just created. No APP_DB_USER = no-op.
+    """
+    from sqlalchemy.engine import make_url
+
+    from app.db.app_role import app_role_spec_from_env, ensure_app_role
+
+    spec = app_role_spec_from_env(owner_role=make_url(_migration_url).username)
+    if spec is None:
+        return
+    await connection.run_sync(ensure_app_role, spec)  # type: ignore[attr-defined]
+    await connection.commit()  # type: ignore[attr-defined]
 
 
 def run_migrations_offline() -> None:

@@ -148,6 +148,21 @@ def _least_privilege_url(
 
     raw = owner_url.replace("postgresql+asyncpg://", "postgresql://")
 
+    async def _bootstrap_app_role() -> None:
+        # The application role is provisioned by the SAME bootstrap the compose
+        # stack's db-migrate runs (app/db/app_role.py), so this tier exercises it.
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from app.db.app_role import AppRoleSpec, ensure_app_role
+
+        engine = create_async_engine(owner_url)
+        try:
+            async with engine.connect() as conn:
+                await conn.run_sync(ensure_app_role, AppRoleSpec(role=role, password=password))
+                await conn.commit()
+        finally:
+            await engine.dispose()
+
     async def _provision() -> None:
         conn = await asyncpg.connect(raw)
         try:
@@ -185,7 +200,7 @@ def _least_privilege_url(
         finally:
             await conn.close()
 
-    asyncio.run(_provision())
+    asyncio.run(_provision() if bypass_rls else _bootstrap_app_role())
     from urllib.parse import urlsplit, urlunsplit
 
     parts = urlsplit(owner_url)

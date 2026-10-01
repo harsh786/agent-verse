@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     # few legitimate cross-tenant jobs use this BYPASSRLS maintenance role via
     # get_system_session_factory(). Empty = same as database_url (dev/superuser).
     maintenance_database_url: str = ""
+    # DSN alembic migrates with: the schema OWNER. Empty = database_url (dev /
+    # single-role setups). When the API runs as the least-privilege
+    # application role (DATABASE_URL), migrations need this owner DSN; after
+    # migrating, alembic provisions APP_DB_USER (see app/db/app_role.py).
+    migration_database_url: str = ""
     redis_url: str = "redis://localhost:6379/0"
 
     # --- Redis HA settings ---
@@ -610,6 +615,21 @@ def get_settings() -> Settings:
                 "SECURITY: DATABASE_URL contains default password 'agentverse'. "
                 "This must be changed before production deployment!"
             )
+        # The local compose stack's least-privilege app role and the owner DSNs
+        # carry dev-default passwords too.
+        for name, dsn in (
+            ("DATABASE_URL", settings.database_url),
+            ("MAINTENANCE_DATABASE_URL", settings.maintenance_database_url),
+            ("MIGRATION_DATABASE_URL", settings.migration_database_url),
+        ):
+            if "agentverse_app:agentverse_app@" in dsn or (
+                name != "DATABASE_URL" and "agentverse:agentverse@" in dsn
+            ):
+                logging.getLogger(__name__).error(
+                    "SECURITY: %s contains a default development password. "
+                    "This must be changed before production deployment!",
+                    name,
+                )
         if settings.sso_enabled and not settings.is_sso_production_safe:
             logging.getLogger(__name__).error(
                 "SECURITY: KEYCLOAK_CLIENT_SECRET is empty or set to default. "

@@ -174,6 +174,21 @@ initialize → plan → execute → verify → (complete | replan | max_iteratio
 - **Row-Level Security** (`app/db/rls.py`): `rls_context()` sets the `app.tenant_id` Postgres
   GUC via `SET LOCAL` so RLS policies filter rows per tenant. Tenant isolation is enforced at
   the database, not just in app code.
+- **RLS only binds a least-privilege role.** A SUPERUSER or BYPASSRLS connection ignores every
+  policy (the local stack once ran as the superuser `agentverse`, and `GET /runs` served every
+  tenant's runs). So: (1) every tenant-scoped query ALSO carries an explicit
+  `tenant_id = :tid` predicate — never rely on the GUC alone (regression net:
+  `tests/e2e_full/test_cross_tenant_list_sweep_e2e.py`, run on the superuser harness); and
+  (2) three DB roles/DSNs: `DATABASE_URL` = app role (`agentverse_app` locally, NOSUPERUSER,
+  NOBYPASSRLS, DML only), `MAINTENANCE_DATABASE_URL` = BYPASSRLS role for cross-tenant system
+  jobs (`get_system_session_factory()` + `system_session`), `MIGRATION_DATABASE_URL` = schema
+  owner alembic runs as. After every `alembic upgrade`, `app/db/migrations/env.py` creates or
+  repairs `APP_DB_USER` with grants (`app/db/app_role.py`, idempotent, no-op when unset). In
+  compose, the one-shot `db-migrate` service does this before any app service starts (fresh
+  volumes are also covered by `infra/postgres/init/10-agentverse-app-role.sh`), and pgbouncer
+  learns the app role via `infra/pgbouncer/add-app-user.sh`. `agentverse` remains only the
+  owner/maintenance role. Change the app password with `APP_DB_PASSWORD` (shell or
+  `infra/.env`); production refuses the dev default.
 
 ### Configuration
 `app/core/config.py` — typed `Settings` loaded from env (12-factor). Key vars: `DATABASE_URL`

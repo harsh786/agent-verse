@@ -9,14 +9,22 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
+      # `agentverse` is the schema OWNER (migrations) and the BYPASSRLS
+      # maintenance role only. The API and workers connect as APP_DB_USER, a
+      # NOSUPERUSER/NOBYPASSRLS role, so row-level security isolates tenants —
+      # as the superuser, RLS was bypassed on every table.
       POSTGRES_USER: agentverse
       POSTGRES_PASSWORD: agentverse
       POSTGRES_DB: agentverse
       POSTGRES_INITDB_ARGS: "--wal-segsize=16"
+      # Read by ./postgres/init (fresh volumes only; db-migrate covers existing ones).
+      APP_DB_USER: ${APP_DB_USER:-agentverse_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-agentverse_app}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U agentverse"]
       interval: 5s
@@ -109,13 +117,25 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:v1.25.2-p0
     restart: unless-stopped
+    # Adds APP_DB_USER to the auth file (the image only writes DB_USER), then
+    # runs the image's own /entrypoint.sh. Overriding the entrypoint drops the
+    # image CMD, so it is restated.
+    entrypoint: ["/bin/sh", "/opt/agentverse/add-app-user.sh"]
+    command: ["/usr/bin/pgbouncer", "/etc/pgbouncer/pgbouncer.ini"]
+    volumes:
+      - ./pgbouncer/add-app-user.sh:/opt/agentverse/add-app-user.sh:ro
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: agentverse
       DB_PASSWORD: agentverse
       DB_NAME: agentverse
+      APP_DB_USER: ${APP_DB_USER:-agentverse_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-agentverse_app}
       AUTH_TYPE: scram-sha-256
+      # Two (database, user) pools now (app role + maintenance owner) share
+      # Postgres's default 100 connections; cap the database total below it.
+      MAX_DB_CONNECTIONS: "80"
       LISTEN_PORT: "6432"
       POOL_MODE: transaction
       MAX_CLIENT_CONN: "1000"
@@ -143,6 +163,30 @@ services:
       timeout: 3s
       retries: 10
 
+  # One-shot: migrate as the schema owner, then create/repair the least-privilege
+  # application role (app/db/app_role.py, run by alembic's env.py when
+  # APP_DB_USER is set) and grant it every table. Every app service waits for it,
+  # so nothing connects as APP_DB_USER before the role and its grants exist —
+  # on a fresh volume and on an existing one alike.
+  db-migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: on-failure
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      ENVIRONMENT: development
+      # Direct to Postgres (not PgBouncer's transaction pool) for DDL.
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@postgres:5432/agentverse
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      APP_DB_USER: ${APP_DB_USER:-agentverse_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-agentverse_app}
+    volumes:
+      - ../app/db/migrations:/app/app/db/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
     build:
       context: ..
@@ -150,9 +194,15 @@ services:
     env_file:
       - ../.env
     restart: unless-stopped
+    # Migrations run in db-migrate (as the owner); this role cannot run DDL, so
+    # the image's default `alembic upgrade head && uvicorn` CMD is not used here.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
     environment:
       ENVIRONMENT: development
-      DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      # Least-privilege application role (NOSUPERUSER, NOBYPASSRLS): RLS binds.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      # Cross-tenant system jobs only (app.db.session.get_system_session_factory).
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -231,6 +281,8 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
       keycloak:
         condition: service_started  # Don't block on Keycloak health — it takes 60-90s
 
@@ -285,7 +337,9 @@ services:
     restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,governance,ingestion,goals_dlq"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      # Least-privilege application role; agentverse only for cross-tenant system jobs.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -322,6 +376,8 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
       interval: 30s
@@ -342,7 +398,9 @@ services:
     restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      # Least-privilege application role; agentverse only for cross-tenant system jobs.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -374,6 +432,8 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
       interval: 30s
@@ -389,7 +449,9 @@ services:
     command: ["celery", "-A", "app.scaling.celery_app", "beat", "--loglevel=info"]
     environment:
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      # Least-privilege application role; agentverse only for cross-tenant system jobs.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -412,6 +474,8 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", ".venv/bin/python", "-c", "data=open('/proc/1/cmdline','rb').read(); assert b'celery' in data and b'beat' in data"]
       interval: 30s
@@ -433,7 +497,9 @@ services:
     restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"]
     environment:
-      DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
+      # Least-privilege application role; agentverse only for cross-tenant system jobs.
+      DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
+      MAINTENANCE_DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@pgbouncer:6432/agentverse
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -465,6 +531,8 @@ services:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+      db-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d celery@$(hostname) || exit 1"]
       interval: 30s
