@@ -326,7 +326,8 @@ async def test_list_without_filters_uses_true_clause() -> None:
 
 
 async def test_update_status_running_stamps_started_at() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=1)]])
+    # The UPDATE returns (previous status, workflow_id) for the lifecycle audit.
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=("pending", "wf-1"))]])
     store = PostgresWorkflowRunStore(db)
     ok = await store.update_status("run-1", WorkflowRunStatus.RUNNING, tenant_id="t1")
     assert ok is True
@@ -337,7 +338,7 @@ async def test_update_status_running_stamps_started_at() -> None:
 
 
 async def test_update_status_terminal_sets_completed_at_and_optional_fields() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=1)]])
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=("running", "wf-1"))]])
     store = PostgresWorkflowRunStore(db)
     ok = await store.update_status(
         "run-1",

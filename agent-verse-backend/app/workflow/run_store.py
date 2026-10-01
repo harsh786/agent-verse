@@ -435,15 +435,68 @@ class PostgresWorkflowRunStore:
 
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
-            result = await session.execute(
-                sa_text(
-                    f"UPDATE workflow_runs SET {', '.join(sets)} "
-                    "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
-                ),
-                params,
-            )
+            # The previous status comes from a row-locked subquery, so it is the
+            # status this UPDATE actually replaced (concurrent writers queue on
+            # the lock) — it decides the lifecycle audit event below.
+            row = (
+                await session.execute(
+                    sa_text(
+                        f"UPDATE workflow_runs r SET {', '.join(sets)} "
+                        "FROM (SELECT id, status AS old_status FROM workflow_runs "
+                        "      WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid) "
+                        "      FOR UPDATE) o "
+                        "WHERE r.id = o.id "
+                        "RETURNING o.old_status, r.workflow_id"
+                    ),
+                    params,
+                )
+            ).first()
+            if row is not None:
+                await self._audit_run_transition(
+                    session,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    old_status=None if row[0] is None else str(row[0]),
+                    new_status=status_str,
+                    workflow_id=row[1],
+                    error=error,
+                    error_step_id=error_step_id,
+                )
             await session.commit()
-            return bool(result.rowcount)
+            return row is not None
+
+    @staticmethod
+    async def _audit_run_transition(
+        session: Any,
+        *,
+        tenant_id: str,
+        run_id: str,
+        old_status: str | None,
+        new_status: str,
+        workflow_id: Any,
+        error: str | None,
+        error_step_id: str | None,
+    ) -> None:
+        """WF-ENGINE-AUDIT: the run lifecycle event, in the status write's txn."""
+        from app.workflow.engine_audit import note_of, run_event, write_engine_audit
+
+        event = run_event(old_status, new_status)
+        if event is None:
+            return
+        await write_engine_audit(
+            session,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            kind="run",
+            event=event,
+            step_id=error_step_id or "",
+            note=note_of(
+                workflow_id=workflow_id,
+                previous=old_status,
+                status=new_status,
+                error=(error or "")[:300],
+            ),
+        )
 
     async def get_workflow_id(self, run_id: str, tenant_id: str | None = None) -> str:
         from sqlalchemy import text as sa_text
@@ -551,6 +604,18 @@ class PostgresWorkflowRunStore:
                     "attempt_number": attempt_number,
                 },
             )
+            if result.rowcount:
+                from app.workflow.engine_audit import note_of, write_engine_audit
+
+                await write_engine_audit(
+                    session,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    kind="step",
+                    event="started",
+                    step_id=step_id,
+                    note=note_of(step_type=step_type, attempt=attempt_number),
+                )
             await session.commit()
             if not result.rowcount:
                 raise KeyError(f"workflow run {run_id!r} not found for tenant")
@@ -568,6 +633,8 @@ class PostgresWorkflowRunStore:
         cost_usd: float | None = None,
     ) -> bool:
         from sqlalchemy import text as sa_text
+
+        from app.workflow.engine_audit import note_of, step_event, write_engine_audit
 
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
@@ -594,6 +661,17 @@ class PostgresWorkflowRunStore:
                     "tid": tenant_id,
                 },
             )
+            event = step_event(_as_str(status)) if result.rowcount else None
+            if event is not None and event != "started":
+                await write_engine_audit(
+                    session,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    kind="step",
+                    event=event,
+                    step_id=step_id,
+                    note=note_of(error=(error or "")[:300]),
+                )
             await session.commit()
             return bool(result.rowcount)
 
