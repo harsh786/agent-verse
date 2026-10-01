@@ -67,6 +67,7 @@ COORDINATION_PATTERN_STRATEGIES: frozenset[str] = frozenset(
         "generative_agents",
         "decentralized_swarm",
         "market_auction",
+        "group_chat",
     }
 )
 STRATEGY_RUNNER_STRATEGIES: frozenset[str] = (

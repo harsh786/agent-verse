@@ -3,13 +3,12 @@
 Through the booted app (real Postgres + Redis, goals inline, strategy runtime
 v2 enabled for the tenant): ``POST /goals`` with ``strategy_override`` for each
 coordination pattern (magentic, mixture_of_agents, camel, generative_agents,
-decentralized_swarm, market_auction) and for voyager reaches
+decentralized_swarm, market_auction, group_chat) and for voyager reaches
 ``DistributedStrategyLoop -> StrategyRunner -> executor`` and completes — not
 refused at admission and not downgraded to the local kernel. The coordination
-patterns run on a goal-linked coordination session; voyager publishes its skill
-into the Postgres skill library. ``group_chat`` (no goal driver) is refused at
-selection with an explicit fallback reason instead of silently running something
-else.
+patterns (now including group_chat) run on a goal-linked coordination session;
+voyager publishes its skill into the Postgres skill library. A strategy with no
+goal driver (rewoo) is a 422 naming why and listing the runnable strategies.
 """
 
 from __future__ import annotations
@@ -34,6 +33,7 @@ _COORDINATION = (
     "generative_agents",
     "decentralized_swarm",
     "market_auction",
+    "group_chat",
 )
 
 
@@ -108,16 +108,14 @@ async def test_goal_selecting_the_strategy_runs_end_to_end(
         assert any(e.get("type") == "coordination_progress" for e in events), events
 
 
-async def test_group_chat_is_refused_with_a_reason_not_silently_swapped(
-    app: Any, tenant_client: Any, _inline_v2: None
+async def test_strategy_without_a_goal_driver_is_a_422_that_says_why(
+    tenant_client: Any, _inline_v2: None
 ) -> None:
-    submit = await tenant_client.post(
-        "/goals", json={"goal": "Discuss the roadmap", "strategy_override": "group_chat"}
+    resp = await tenant_client.post(
+        "/goals", json={"goal": "Plan the launch", "strategy_override": "rewoo"}
     )
-    # Refused up front (no goal driver) or recorded as an explicit fallback.
-    if submit.status_code == 202:
-        goal_id = submit.json()["goal_id"]
-        selection = await tenant_client.get(f"/goals/{goal_id}/pattern-selection")
-        assert selection.json()["primary_pattern"] != "group_chat"
-    else:
-        assert submit.status_code == 422, submit.text
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "INVALID_STRATEGY"
+    assert "rewoo" in detail["message"] and "no goal execution driver" in detail["message"]
+    assert {"supervisor", "group_chat", "voyager"} <= set(detail["valid_strategies"])

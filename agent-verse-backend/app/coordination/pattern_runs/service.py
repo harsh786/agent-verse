@@ -26,6 +26,7 @@ from app.coordination.pattern_runs.auction import run_auction
 from app.coordination.pattern_runs.camel import run_camel
 from app.coordination.pattern_runs.context import PublishingTranscript, RunContext, RunOutcome
 from app.coordination.pattern_runs.generative import run_generative
+from app.coordination.pattern_runs.group_chat import run_group_chat
 from app.coordination.pattern_runs.llm import PatternCallLimitError, PatternLLM
 from app.coordination.pattern_runs.magentic import run_magentic
 from app.coordination.pattern_runs.moa import run_moa
@@ -62,6 +63,7 @@ PATTERNS: dict[str, PatternSpec] = {
     "market_auction": PatternSpec(
         "auction_repository", ("bidder-1", "bidder-2", "bidder-3"), 2, 12
     ),
+    "group_chat": PatternSpec("group_chat_repository", ("planner", "critic", "writer"), 2, 30),
 }
 
 
@@ -283,6 +285,7 @@ class PatternRunService:
                 configured_providers=list(getattr(self._state, "moa_providers", None) or ()),
             ),
             "camel": lambda: run_camel(ctx),
+            "group_chat": lambda: run_group_chat(ctx),
             "generative_agents": lambda: run_generative(ctx),
             "decentralized_swarm": lambda: run_swarm(ctx),
             "market_auction": lambda: run_auction(

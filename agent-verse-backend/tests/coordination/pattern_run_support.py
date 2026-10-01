@@ -9,6 +9,7 @@ from typing import Any
 
 from app.coordination.auction.repository import InMemoryAuctionRepository, InMemorySealedBidInbox
 from app.coordination.camel.repository import InMemoryCamelRepository
+from app.coordination.group_chat.repository import InMemoryGroupChatRepository
 from app.coordination.contracts import AuthorizationContext
 from app.coordination.generative.repository import InMemoryGenerativeRepository
 from app.coordination.ledger.repository import InMemoryProgressLedgerRepository
@@ -119,6 +120,15 @@ class ScriptedProvider:
             )
         if "winner of the auction" in p:
             return "DELIVERED WORK"
+        if p.startswith("Group chat."):
+            closing = "You are 'writer'" in p
+            return json.dumps(
+                {
+                    "content": "here is the write-up" if closing else "a point to consider",
+                    "done": closing,
+                    "final_answer": "GROUP CHAT ANSWER" if closing else "",
+                }
+            )
         return "ok"
 
 
@@ -135,6 +145,7 @@ def pattern_state(provider: Any | None = None) -> SimpleNamespace:
         moa_repository=InMemoryMoARepository(),
         moa_run_repository=InMemoryMoARunRepository(),
         camel_repository=InMemoryCamelRepository(),
+        group_chat_repository=InMemoryGroupChatRepository(),
         generative_repository=InMemoryGenerativeRepository(),
         swarm_repository=InMemorySwarmRepository(),
         auction_repository=InMemoryAuctionRepository(),

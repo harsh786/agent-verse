@@ -143,7 +143,7 @@ def test_catalogue_marks_non_admitted_strategies_experimental() -> None:
     assert by_id["guardrails"]["availability"] == "cross_cutting"
     assert by_id["prospective_memory"]["availability"] == "not_available"
 
-    readiness = api.get("/strategies/group_chat/readiness", headers={"X-API-Key": "valid"})
+    readiness = api.get("/strategies/autogpt/readiness", headers={"X-API-Key": "valid"})
     assert readiness.json()["ready"] is False
     assert readiness.json()["availability"] == "experimental"
     # GOAL-STRATEGIES: coordination patterns run on the pattern runtime.
@@ -152,18 +152,26 @@ def test_catalogue_marks_non_admitted_strategies_experimental() -> None:
 
 
 def test_override_without_goal_execution_driver_is_422() -> None:
-    """ReWOO / CodeAct / group_chat have adapter logic but no goal driver: accepting them
-    would run a plain ReAct loop under their name."""
+    """ReWOO / CodeAct have adapter logic but no goal driver: accepting them would run
+    a plain ReAct loop under their name. The 422 says why and lists what can run."""
     service = AsyncMock()
     service.submit_goal.return_value = {"id": "goal-1", "status": "planning"}
     api = client(service)
-    for strategy_id in ("rewoo", "codeact", "group_chat"):
+    for strategy_id in ("rewoo", "codeact", "no_such_strategy"):
         response = api.post(
             "/goals",
             headers={"X-API-Key": "valid"},
             json={"goal": "goal", "strategy_override": strategy_id},
         )
         assert response.status_code == 422, strategy_id
+        detail = response.json()["detail"]
+        if strategy_id != "no_such_strategy":
+            assert strategy_id in detail["message"], detail
+            assert "no goal execution driver" in detail["message"], detail
+        else:
+            assert strategy_id not in response.text  # never echo unknown input
+        assert "supervisor" in detail["valid_strategies"], detail
+        assert "group_chat" in detail["valid_strategies"], detail
     service.submit_goal.assert_not_called()
     accepted = api.post(
         "/goals",

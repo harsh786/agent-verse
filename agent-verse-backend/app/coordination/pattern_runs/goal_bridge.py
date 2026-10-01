@@ -335,6 +335,7 @@ def build_pattern_state(
     )
     from app.coordination.camel.repository import PostgresCamelRepository
     from app.coordination.generative.repository import PostgresGenerativeRepository
+    from app.coordination.group_chat.repository import PostgresGroupChatRepository
     from app.coordination.ledger.repository import PostgresProgressLedgerRepository
     from app.coordination.live_bus import CoordinationLiveBus
     from app.coordination.magentic.human_review import MagenticHumanReviewService
@@ -366,6 +367,7 @@ def build_pattern_state(
         moa_run_repository=PostgresMoARunRepository(db_factory),
         moa_providers=moa_providers,
         camel_repository=PostgresCamelRepository(db_factory),
+        group_chat_repository=PostgresGroupChatRepository(db_factory),
         generative_repository=PostgresGenerativeRepository(db_factory),
         swarm_repository=PostgresSwarmRepository(db_factory),
         auction_repository=PostgresAuctionRepository(db_factory),

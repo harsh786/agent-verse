@@ -14,8 +14,8 @@ constructed). These tests pin:
   exactly the same strategies), every other one builds the same way and runs a
   trivial goal with a fake provider;
 * the only registered DISTRIBUTED strategies that cannot be built that way are
-  a known set that is either a bridged coordination pattern or denied at
-  admission (group_chat) — so nothing is admitted that nothing can run.
+  a known set of bridged coordination patterns (or denied at admission) — so
+  nothing is admitted that nothing can run.
 """
 
 from __future__ import annotations
@@ -224,7 +224,7 @@ def test_bridged_strategies_match_the_coordination_pattern_table() -> None:
 
     assert set(PATTERNS) == set(COORDINATION_PATTERN_STRATEGIES)
     assert COORDINATION_PATTERN_STRATEGIES <= SUPPORTED_DISTRIBUTED_STRATEGIES
-    assert "group_chat" not in SUPPORTED_DISTRIBUTED_STRATEGIES  # no goal driver exists
+    assert "group_chat" in COORDINATION_PATTERN_STRATEGIES  # GROUP-CHAT-GOAL
 
 
 @pytest.mark.asyncio

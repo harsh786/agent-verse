@@ -1365,6 +1365,11 @@ def create_app(
                 resume_parent=_handoff_resumer.resume_parent,
             )
             app.state.camel_repository = PostgresCamelRepository(db_factory)
+            from app.coordination.group_chat.repository import (
+                PostgresGroupChatRepository,
+            )
+
+            app.state.group_chat_repository = PostgresGroupChatRepository(db_factory)
             app.state.generative_repository = PostgresGenerativeRepository(db_factory)
             app.state.swarm_repository = PostgresSwarmRepository(db_factory)
             app.state.auction_repository = PostgresAuctionRepository(db_factory)
@@ -2862,6 +2867,9 @@ def create_app(
     app.state.progress_ledger_repository = InMemoryProgressLedgerRepository()
     app.state.moa_repository = InMemoryMoARepository()
     app.state.camel_repository = InMemoryCamelRepository()
+    from app.coordination.group_chat.repository import InMemoryGroupChatRepository
+
+    app.state.group_chat_repository = InMemoryGroupChatRepository()
     app.state.generative_repository = InMemoryGenerativeRepository()
     app.state.swarm_repository = InMemorySwarmRepository()
     app.state.auction_repository = InMemoryAuctionRepository()

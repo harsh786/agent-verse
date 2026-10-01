@@ -26,6 +26,7 @@ EXPECTED_ANSWER = {
     "generative_agents": "GENERATIVE SUMMARY",
     "decentralized_swarm": "SWARM ANSWER",
     "market_auction": "DELIVERED WORK",
+    "group_chat": "GROUP CHAT ANSWER",
 }
 
 

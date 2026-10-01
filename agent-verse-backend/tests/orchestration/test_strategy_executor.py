@@ -182,7 +182,6 @@ async def test_wired_executor_is_idempotent_per_goal() -> None:
     [
         "autogpt",
         "babyagi",
-        "group_chat",
     ],
 )
 @pytest.mark.asyncio

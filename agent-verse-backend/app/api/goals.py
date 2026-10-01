@@ -281,6 +281,35 @@ async def _release_idempotency_claim(store: Any, key: str, tenant_id: str) -> No
         _logger.warning("idempotency_release_failed", error=str(exc)[:200])
 
 
+def _invalid_strategy_detail(registry: Any, requested: str) -> dict[str, Any]:
+    """422 detail: why the strategy selection was refused and what CAN run as a goal.
+
+    The requested id is echoed only when it is a registered strategy (no
+    reflection of arbitrary client input)."""
+    valid: list[str] = []
+    known = False
+    if registry is not None:
+        from app.orchestration.execution_drivers import goal_execution_driver
+
+        valid = sorted(
+            c.strategy_id for c in registry.list_all() if goal_execution_driver(c) is not None
+        )
+        known = registry.get(requested) is not None
+    if known:
+        message = (
+            f"strategy '{requested}' is registered but has no goal execution driver, "
+            "so it cannot run as a goal"
+        )
+    else:
+        message = "the requested strategy (or an auxiliary strategy) is not a registered strategy"
+    return {
+        "code": "INVALID_STRATEGY",
+        "message": message,
+        "requested_strategy": requested if known else None,
+        "valid_strategies": valid,
+    }
+
+
 async def _submit_goal_unguarded(
     request: Request, body: GoalRequest, tenant: TenantContext, svc: Any
 ) -> dict[str, Any]:
@@ -314,7 +343,7 @@ async def _submit_goal_unguarded(
         except (LookupError, ValueError) as exc:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "Invalid strategy selection",
+                _invalid_strategy_detail(registry, body.strategy_override or "react"),
             ) from exc
     if body.persistence_mode:
         exec_ctx["persistence_mode"] = True

@@ -51,7 +51,7 @@ def test_compatibility_tables_match_registry_execution_tiers() -> None:
         ("codeact", "sandbox_not_ready"),
         ("magentic", "coordination_not_ready"),
         ("decentralized_swarm", "coordination_not_ready"),
-        ("group_chat", "coordination_not_ready"),
+        ("group_chat", "coordination_not_ready"),  # a coordination pattern since GROUP-CHAT-GOAL
     ],
 )
 def test_every_gated_strategy_is_actually_gated(strategy_id: str, reason: str) -> None:
