@@ -2013,9 +2013,39 @@ export interface ChannelBinding {
   verified_at?: string | null;
 }
 
+/** TRG-36: a Slack user linked to (or a pending code for) an AgentVerse key. */
+export interface SlackIdentityLink {
+  id: string;
+  principal_id: string;
+  team_id: string | null;
+  slack_user_id: string | null;
+  status: "pending" | "active";
+  code_expires_at?: string | null;
+  linked_at?: string | null;
+}
+
+export interface SlackLinkCode {
+  id: string;
+  status: "pending";
+  code: string;
+  expires_at: string;
+  instructions: string;
+}
+
 export const integrationsApi = {
   zapierCompletedGoals: () =>
     request<ZapierCompletedGoal[]>("/integrations/zapier/goals"),
+  slackIdentities: () => request<SlackIdentityLink[]>("/channels/identities"),
+  createSlackLinkCode: () =>
+    request<SlackLinkCode>("/channels/identities/link-codes", {
+      method: "POST",
+      body: JSON.stringify({ channel_type: "slack" }),
+    }),
+  deleteSlackIdentity: (id: string) =>
+    request<{ id: string; deleted: boolean }>(
+      `/channels/identities/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
   /** TRG-02: Slack commands route by the workspace's verified binding. */
   slackWorkspaces: async () =>
     (await request<ChannelBinding[]>("/channels/mappings")).filter(

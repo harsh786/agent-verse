@@ -76,6 +76,13 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("POST", "/tenants/me"): "tenancy:write",
     ("DELETE", "/tenants/me"): "tenancy:write",
     # Templates (goal templates)
+    # TRG-36: a caller links ITS OWN Slack identity (any role may; what the link
+    # can do in Slack is re-checked against the key's live scopes per action).
+    # goals:read is held by every role, including approver keys, which are
+    # otherwise barred from unregistered writes outside /approvals.
+    ("GET", "/channels/identities"): "goals:read",
+    ("POST", "/channels/identities"): "goals:read",
+    ("DELETE", "/channels/identities"): "goals:read",
     ("GET", "/templates"): "goals:read",
     ("POST", "/templates"): "goals:write",
     ("DELETE", "/templates"): "goals:delete",

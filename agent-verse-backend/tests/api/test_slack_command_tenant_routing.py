@@ -30,6 +30,19 @@ def _slack_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SLACK_TENANT_ID", "env-tenant-must-be-ignored")
 
 
+@pytest.fixture(autouse=True)
+def _linked_admin_principal() -> Any:
+    """TRG-36: Slack actions need a linked AgentVerse principal; these tests
+    cover tenant routing, so every Slack user is linked to an admin key."""
+    from app.integrations.slack.identity import SlackPrincipal
+
+    async def _resolve(*, system_db: Any, tenant_id: str, team_id: str, slack_user_id: str) -> Any:
+        return SlackPrincipal(tenant_id=tenant_id, principal_id="key-linked", roles=("admin",))
+
+    with patch("app.integrations.slack.identity.resolve_slack_principal", _resolve):
+        yield
+
+
 def _signed(body: bytes) -> dict[str, str]:
     ts = str(int(time.time()))
     sig = (

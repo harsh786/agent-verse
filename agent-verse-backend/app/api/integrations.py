@@ -116,10 +116,88 @@ async def _slack_bound_tenant(request: Request, payload: dict[str, Any]) -> str 
     )
 
 
-def _slack_approver(payload: dict[str, Any]) -> str:
+def _slack_user_id(payload: dict[str, Any]) -> str:
     user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
-    uid = str(user.get("id") or user.get("name") or "unknown")
-    return f"slack:{uid}"
+    return str(user.get("id") or payload.get("user_id") or "")
+
+
+_NOT_LINKED_TEXT = (
+    "Your Slack account is not linked to an AgentVerse identity. In AgentVerse, open "
+    "Integrations > Slack, choose 'Link my Slack account', then run "
+    "/agentverse link <code> here."
+)
+
+
+async def _slack_principal(
+    request: Request, tenant_id: str, team_id: str, slack_user_id: str, scope: str
+) -> tuple[Any, str | None]:
+    """(principal, None) when this Slack user may perform ``scope``; else
+    (None, reason). TRG-36: a Slack user acts only through a linked AgentVerse
+    principal whose LIVE API key grants the scope — never as "any member of a
+    bound workspace". Store failure refuses (fail closed)."""
+    from app.api.channels.ingestion import _lookup_db
+    from app.integrations.slack.identity import (
+        SlackIdentityStoreUnavailableError,
+        resolve_slack_principal,
+    )
+
+    try:
+        principal = await resolve_slack_principal(
+            system_db=_lookup_db(request),
+            tenant_id=tenant_id,
+            team_id=team_id,
+            slack_user_id=slack_user_id,
+        )
+    except SlackIdentityStoreUnavailableError as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("slack_identity_lookup_failed: %s", exc)
+        return None, "AgentVerse could not verify your identity right now; try again."
+    if principal is None:
+        return None, _NOT_LINKED_TEXT
+    if not principal.can(scope):
+        return None, f"Not authorised: your AgentVerse identity lacks the {scope} permission."
+    return principal, None
+
+
+async def _principal_ctx(request: Request, principal: Any) -> Any:
+    from app.tenancy.context import TenantContext
+
+    return TenantContext(
+        tenant_id=principal.tenant_id,
+        plan=await _tenant_plan(request, principal.tenant_id),
+        api_key_id=principal.principal_id,
+        roles=principal.roles,
+        scopes=principal.scopes,
+    )
+
+
+def _ephemeral(text: str) -> dict[str, Any]:
+    return {"response_type": "ephemeral", "replace_original": False, "text": text}
+
+
+async def _redeem_slack_link(
+    request: Request, tenant_id: str, team_id: str, slack_user_id: str, code: str
+) -> dict[str, Any]:
+    from app.api.channels.ingestion import _lookup_db
+    from app.integrations.slack.identity import (
+        SlackIdentityStoreUnavailableError,
+        redeem_link_code,
+    )
+
+    try:
+        linked = await redeem_link_code(
+            system_db=_lookup_db(request),
+            bound_tenant_id=tenant_id,
+            team_id=team_id,
+            slack_user_id=slack_user_id,
+            code=code,
+        )
+    except SlackIdentityStoreUnavailableError:
+        return _ephemeral("Linking is unavailable right now; try again.")
+    if not linked:
+        return _ephemeral("That link code is invalid or expired. Request a new one in AgentVerse.")
+    return _ephemeral("Your Slack account is now linked to your AgentVerse identity.")
 
 
 def _require_slack_signature(
@@ -159,19 +237,13 @@ async def slack_slash_command(
     params = dict(urllib.parse.parse_qsl(body.decode()))
 
     text = params.get("text", "").strip()
-    user_id = params.get("user_id", "unknown")
+    user_id = str(params.get("user_id", "") or "")
 
     if not text:
         return {
             "response_type": "ephemeral",
             "text": "Usage: /agentverse [your goal description]",
         }
-
-    goal_service = getattr(request.app.state, "goal_service", None)
-    if goal_service is None:
-        return {"response_type": "ephemeral", "text": "AgentVerse service unavailable"}
-
-    from app.tenancy.context import TenantContext
 
     # TRG-02: the tenant is the one bound to THIS (signature-verified) workspace
     # through its verified channel_tenant_mappings row. It used to be the single
@@ -191,11 +263,19 @@ async def slack_slash_command(
             ),
         }
 
-    ctx = TenantContext(
-        tenant_id=slack_tenant_id,
-        plan=await _tenant_plan(request, slack_tenant_id),
-        api_key_id=f"slack:{user_id}",
+    if text.lower().startswith("link ") or text.lower() == "link":
+        return await _redeem_slack_link(
+            request, slack_tenant_id, team_id, user_id, text[len("link") :].strip()
+        )
+    principal, refusal = await _slack_principal(
+        request, slack_tenant_id, team_id, user_id, "goals:write"
     )
+    if principal is None:
+        return _ephemeral(refusal or _NOT_LINKED_TEXT)
+    ctx = await _principal_ctx(request, principal)
+    goal_service = getattr(request.app.state, "goal_service", None)
+    if goal_service is None:
+        return {"response_type": "ephemeral", "text": "AgentVerse service unavailable"}
 
     try:
         result = await goal_service.submit_goal(
@@ -243,31 +323,34 @@ async def slack_events(
                 "slack_hitl_unbound_workspace team_id=%s", _slack_team_id(data)
             )
             return {"ok": True}
-        for action in data.get("actions", []):
-            action_id = action.get("action_id")
-            request_id = action.get("value", "")
-            if not request_id:
-                continue
-
-            hitl = getattr(request.app.state, "hitl_gateway", None)
-            if hitl:
-                from app.tenancy.context import TenantContext
-
-                ctx = TenantContext(
-                    tenant_id=bound_tenant,
-                    plan=await _tenant_plan(request, bound_tenant),
-                    api_key_id="slack-button",
+        hitl_actions = [
+            a
+            for a in data.get("actions", [])
+            if a.get("action_id") in ("approve_hitl", "reject_hitl") and a.get("value")
+        ]
+        if not hitl_actions:
+            return {"ok": True}
+        # TRG-36: only a linked AgentVerse principal with governance:approve may
+        # decide, and the decision records THAT principal as the approver.
+        principal, refusal = await _slack_principal(
+            request, bound_tenant, _slack_team_id(data), _slack_user_id(data), "governance:approve"
+        )
+        if principal is None:
+            return _ephemeral(refusal or _NOT_LINKED_TEXT)
+        hitl = getattr(request.app.state, "hitl_gateway", None)
+        if hitl is None:
+            return _ephemeral("AgentVerse approvals are unavailable right now.")
+        ctx = await _principal_ctx(request, principal)
+        for action in hitl_actions:
+            request_id = str(action.get("value"))
+            if action.get("action_id") == "approve_hitl":
+                # DB-first: resolves requests raised on any replica and only
+                # releases the waiting agent once the decision is committed.
+                await hitl.approve_async(
+                    request_id, approver=principal.principal_id, tenant_ctx=ctx
                 )
-                approver = _slack_approver(data)
-
-                if action_id == "approve_hitl":
-                    # DB-first: resolves requests raised on any replica and only
-                    # releases the waiting agent once the decision is committed
-                    # (the sync approve() saw local requests only and released
-                    # the agent before the DB write).
-                    await hitl.approve_async(request_id, approver=approver, tenant_ctx=ctx)
-                elif action_id == "reject_hitl":
-                    await hitl.reject(request_id, approver=approver, tenant_ctx=ctx)
+            else:
+                await hitl.reject(request_id, approver=principal.principal_id, tenant_ctx=ctx)
 
     return {"ok": True}
 
@@ -315,37 +398,43 @@ async def slack_interactive_callback(request: Request) -> dict:
         )
         return {"ok": True}
 
-    for action in payload.get("actions", []):
-        action_id = action.get("action_id", "")
-        value = action.get("value", "")  # goal_id encoded in value
-        user = payload.get("user", {}).get("name", "unknown")
+    hitl_actions = [
+        a
+        for a in payload.get("actions", [])
+        if a.get("action_id") in ("approve_hitl", "reject_hitl") and a.get("value")
+    ]
+    if not hitl_actions:
+        return {"ok": True}
+    # TRG-36: the clicker must be a linked AgentVerse principal with
+    # governance:approve; otherwise nothing is resumed.
+    principal, refusal = await _slack_principal(
+        request,
+        bound_tenant,
+        _slack_team_id(payload),
+        _slack_user_id(payload),
+        "governance:approve",
+    )
+    if principal is None:
+        return _ephemeral(refusal or _NOT_LINKED_TEXT)
+    if goal_service is None:
+        return _ephemeral("AgentVerse approvals are unavailable right now.")
+    tenant_ctx = await _principal_ctx(request, principal)
+    for action in hitl_actions:
+        approved = action.get("action_id") == "approve_hitl"
+        feedback = (
+            f"{'Approved' if approved else 'Rejected'} by {principal.principal_id} via Slack"
+        )
+        try:
+            await goal_service.resume_goal(
+                goal_id=str(action.get("value")),
+                approved=approved,
+                feedback=feedback,
+                tenant_ctx=tenant_ctx,
+            )
+        except Exception as exc:
+            import logging
 
-        if action_id in ("approve_hitl", "reject_hitl") and value:
-            approved = action_id == "approve_hitl"
-            feedback = f"{'Approved' if approved else 'Rejected'} by {user} via Slack"
-
-            # Resolve tenant context from the goal
-            if goal_service:
-                try:
-                    from app.tenancy.context import TenantContext
-
-                    tenant_id = bound_tenant
-                    if tenant_id:
-                        tenant_ctx = TenantContext(
-                            tenant_id=tenant_id,
-                            plan=await _tenant_plan(request, tenant_id),
-                            api_key_id="slack-interactive",
-                        )
-                        await goal_service.resume_goal(
-                            goal_id=value,
-                            approved=approved,
-                            feedback=feedback,
-                            tenant_ctx=tenant_ctx,
-                        )
-                except Exception as exc:
-                    import logging
-
-                    logging.getLogger(__name__).warning("slack_interactive_resume_failed: %s", exc)
+            logging.getLogger(__name__).warning("slack_interactive_resume_failed: %s", exc)
 
     # Acknowledge immediately (Slack requires response within 3s)
     return {"ok": True}

@@ -23,6 +23,7 @@ from app.api.auth import router as auth_router
 # ── Router imports (verbatim from app/main.py) ───────────────────────────────
 from app.api.billing import router as billing_router
 from app.api.builder import router as builder_router
+from app.api.channels.identities import router as channel_identities_router  # TRG-36
 from app.api.channels.ingestion import router as channels_router  # Phase 2
 from app.api.civilization import router as civilization_router
 from app.api.collab import router as collab_router
@@ -316,6 +317,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     app.include_router(schedules_router)
     app.include_router(triggers_router)  # Phase 4: full trigger CRUD + DLQ
     app.include_router(channels_router)  # Phase 2: channel ingestion
+    app.include_router(channel_identities_router)  # TRG-36: Slack user -> principal links
     app.include_router(state_machines_router)  # Phase 3: state machines
     app.include_router(ingestion_sources_router)  # Ingestion: source CRUD + sync
     app.include_router(ingestion_documents_router)  # Ingestion: documents + DLQ + quota

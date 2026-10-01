@@ -116,6 +116,64 @@ describe('IntegrationsPage', () => {
     expect(screen.queryByText('SLACK_TENANT_ID')).not.toBeInTheDocument();
   });
 
+  test('TRG-36: "Link my Slack account" issues a code and shows the /agentverse link command', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/channels/identities/link-codes') && init?.method === 'POST')
+        return new Response(
+          JSON.stringify({
+            id: 'l1',
+            status: 'pending',
+            code: 'ABCD234567',
+            expires_at: new Date(Date.now() + 600_000).toISOString(),
+            instructions: 'In Slack, run: /agentverse link ABCD234567',
+          }),
+          { status: 200 }
+        );
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await userEvent.click(screen.getByRole('button', { name: /link my slack account/i }));
+    expect(await screen.findByText('/agentverse link ABCD234567')).toBeInTheDocument();
+    expect(
+      fetchSpy.mock.calls.some(
+        ([u, i]) => String(u).includes('/channels/identities/link-codes') && i?.method === 'POST'
+      )
+    ).toBe(true);
+  });
+
+  test('TRG-36: lists linked Slack accounts and unlinks one', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/channels/identities/l9') && init?.method === 'DELETE')
+        return new Response(JSON.stringify({ id: 'l9', deleted: true }), { status: 200 });
+      if (url.includes('/channels/identities'))
+        return new Response(
+          JSON.stringify([
+            {
+              id: 'l9',
+              principal_id: 'key-alice',
+              team_id: 'T1',
+              slack_user_id: 'U-ALICE',
+              status: 'active',
+            },
+          ]),
+          { status: 200 }
+        );
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    expect(await screen.findByText('U-ALICE')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /unlink u-alice/i }));
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.some(
+          ([u, i]) => String(u).includes('/channels/identities/l9') && i?.method === 'DELETE'
+        )
+      ).toBe(true)
+    );
+  });
+
   test('shows Zapier delivery from /integrations/zapier/goals', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);

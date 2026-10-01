@@ -1,6 +1,7 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy } from 'lucide-react';
-import { API_BASE, integrationsApi } from '@/lib/api/client';
+import { API_BASE, integrationsApi, type SlackLinkCode } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -66,6 +67,36 @@ export function IntegrationsPage() {
     queryFn: () => integrationsApi.slackWorkspaces(),
   });
   const routable = (s?: string) => s === 'verified' || s === 'legacy_unverified';
+
+  // TRG-36: Slack users act only through a linked AgentVerse identity.
+  const qc = useQueryClient();
+  const [linkCode, setLinkCode] = useState<SlackLinkCode | null>(null);
+  const { data: slackLinks = [], isError: slackLinksError } = useQuery({
+    queryKey: ['slack-identities'],
+    queryFn: () => integrationsApi.slackIdentities(),
+  });
+  const createCode = useMutation({
+    mutationFn: () => integrationsApi.createSlackLinkCode(),
+    onSuccess: (issued) => {
+      setLinkCode(issued);
+      qc.invalidateQueries({ queryKey: ['slack-identities'] });
+    },
+    onError: (err: unknown) =>
+      toast({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Could not create a Slack link code.',
+      }),
+  });
+  const unlink = useMutation({
+    mutationFn: (id: string) => integrationsApi.deleteSlackIdentity(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['slack-identities'] }),
+    onError: (err: unknown) =>
+      toast({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Could not unlink the Slack account.',
+      }),
+  });
+  const activeLinks = slackLinks.filter((l) => l.status === 'active');
 
   return (
     <JARVISPageShell className="bg-[#0A0F1A] min-h-screen">
@@ -150,6 +181,57 @@ export function IntegrationsPage() {
                 >
                   {routable(w.status) ? 'bound' : `not routing (${w.status ?? 'unknown'})`}
                 </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* TRG-36: link the caller's Slack account to its AgentVerse identity */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-sm">Slack — linked accounts</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Approving from Slack needs an approver or admin key; submitting goals needs goal
+              write access. Unlinked Slack users are refused.
+            </p>
+          </div>
+          <button
+            onClick={() => createCode.mutate()}
+            disabled={createCode.isPending}
+            className="text-xs border border-border rounded px-3 py-1.5 hover:bg-muted flex-shrink-0"
+          >
+            Link my Slack account
+          </button>
+        </div>
+        {linkCode && (
+          <div className="px-5 py-3 border-b border-border text-sm" role="status">
+            In Slack, run <code className="bg-muted rounded px-1.5 py-0.5">/agentverse link {linkCode.code}</code>{' '}
+            before {new Date(linkCode.expires_at).toLocaleTimeString()}.
+          </div>
+        )}
+        {slackLinksError ? (
+          <p className="px-5 py-4 text-sm text-red-400">Could not load linked Slack accounts.</p>
+        ) : activeLinks.length === 0 ? (
+          <p className="px-5 py-4 text-sm text-muted-foreground">No linked Slack accounts.</p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {activeLinks.map((l) => (
+              <li key={l.id} className="px-5 py-2 flex items-center justify-between gap-3">
+                <span className="text-sm">
+                  <code>{l.slack_user_id}</code>{' '}
+                  <span className="text-muted-foreground text-xs">
+                    ({l.team_id}) as key {l.principal_id}
+                  </span>
+                </span>
+                <button
+                  aria-label={`Unlink ${l.slack_user_id ?? ''}`}
+                  onClick={() => unlink.mutate(l.id)}
+                  className="text-xs text-red-400 hover:underline"
+                >
+                  Unlink
+                </button>
               </li>
             ))}
           </ul>
