@@ -15,11 +15,11 @@ const MOCK_AGENT = {
 const MOCK_CREDENTIALS = [
   {
     key_id: 'cred-1',
-    key_type: 'jwt',
+    key_type: 'service_account',
     scopes: ['goals:read', 'agents:read'],
     expires_at: null,
+    revoked_at: null,
     last_used_at: null,
-    status: 'active',
     description: 'CI pipeline key',
   },
 ];

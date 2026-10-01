@@ -23,11 +23,6 @@ const MOCK_AGENT = {
   created_at: '2026-01-01T00:00:00Z',
 };
 
-function makeJwt(payload: Record<string, unknown>): string {
-  const b64 = (obj: unknown) => btoa(JSON.stringify(obj)).replace(/\+/g, '-').replace(/\//g, '_');
-  return `${b64({ alg: 'none' })}.${b64(payload)}.sig`;
-}
-
 function renderPage(agentId = 'agent-id-1') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -94,16 +89,18 @@ describe('AgentIdentityPage branches', () => {
     expect(await screen.findByText('Agent detail page')).toBeInTheDocument();
   });
 
-  test('issue-credential modal: change key type, toggle scope, pick expiry, submit', async () => {
+  test('issue-credential modal: toggle scope, pick expiry, submit; the one-time PEM is shown', async () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
       if (url.includes('/credentials') && method === 'POST') {
+        // The real POST /agents/{id}/credentials 201 body.
         return json({
-          key_id: 'new-cred-1', key_type: 'api_key', scopes: ['goals:read', 'agents:read'],
-          expires_at: null, last_used_at: null, status: 'active',
-          private_key: 'sk-super-secret-value',
-        });
+          key_id: 'new-cred-1', scopes: ['goals:read', 'agents:read'], expires_at: null,
+          private_key_pem: '-----BEGIN PRIVATE KEY-----\nsk-super-secret-value\n-----END PRIVATE KEY-----\n',
+          public_key_pem: '-----BEGIN PUBLIC KEY-----\nPUB\n-----END PUBLIC KEY-----\n',
+          warning: 'Private key shown ONCE',
+        }, 201);
       }
       if (url.includes('/credentials')) return json([]);
       if (url.includes('/agents/')) return json(MOCK_AGENT);
@@ -114,19 +111,22 @@ describe('AgentIdentityPage branches', () => {
     await userEvent.click(screen.getByText(/issue new credential/i));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
 
-    await userEvent.click(screen.getByText('API_KEY'));
+    // Only RS256 service accounts exist: no key-type picker.
+    expect(screen.queryByText('API_KEY')).not.toBeInTheDocument();
     await userEvent.click(screen.getByText('agents:read'));
     await userEvent.click(screen.getByText('7d'));
 
     await userEvent.click(screen.getByRole('button', { name: 'Issue Credential' }));
 
     await waitFor(() =>
-      expect(spy.mock.calls.some(([u, i]) =>
-        String(u).includes('/agents/agent-id-1/credentials') && (i as RequestInit)?.method === 'POST'
-      )).toBe(true)
+      expect(spy.mock.calls.some(([u, i]) => {
+        if (!String(u).includes('/agents/agent-id-1/credentials') || (i as RequestInit)?.method !== 'POST') return false;
+        const body = JSON.parse(String((i as RequestInit)?.body));
+        return !('key_type' in body) && body.scopes.includes('agents:read') && body.expires_in_days === 7;
+      })).toBe(true)
     );
     expect(await screen.findByText(/save this private key now/i)).toBeInTheDocument();
-    expect(screen.getByText('sk-super-secret-value')).toBeInTheDocument();
+    expect(screen.getByText(/sk-super-secret-value/)).toBeInTheDocument();
     await userEvent.click(screen.getByText(/i've saved it/i));
     expect(screen.queryByText(/save this private key now/i)).not.toBeInTheDocument();
   });
@@ -169,8 +169,8 @@ describe('AgentIdentityPage branches', () => {
       if (url.includes('/credentials/cred-1') && method === 'DELETE') return json(null, 204);
       if (url.includes('/credentials'))
         return json([{
-          key_id: 'cred-1', key_type: 'jwt', scopes: ['goals:read'],
-          expires_at: null, last_used_at: null, status: 'active', description: '',
+          key_id: 'cred-1', key_type: 'service_account', scopes: ['goals:read'],
+          expires_at: null, last_used_at: null, revoked_at: null, description: '',
         }]);
       if (url.includes('/agents/')) return json(MOCK_AGENT);
       return json(null, 404);
@@ -192,8 +192,8 @@ describe('AgentIdentityPage branches', () => {
       const url = String(input);
       if (url.includes('/credentials'))
         return json([{
-          key_id: 'cred-2', key_type: 'jwt', scopes: ['goals:read'],
-          expires_at: null, last_used_at: null, status: 'active', description: '',
+          key_id: 'cred-2', key_type: 'service_account', scopes: ['goals:read'],
+          expires_at: null, last_used_at: null, revoked_at: null, description: '',
         }]);
       if (url.includes('/agents/')) return json(MOCK_AGENT);
       return json(null, 404);
@@ -212,8 +212,8 @@ describe('AgentIdentityPage branches', () => {
       const url = String(input);
       if (url.includes('/credentials'))
         return json([{
-          key_id: 'cred-3', key_type: 'mtls', scopes: [], expires_at: null,
-          last_used_at: '2026-01-01T00:00:00Z', status: 'revoked', description: 'old key',
+          key_id: 'cred-3', key_type: 'service_account', scopes: [], expires_at: null,
+          last_used_at: '2026-01-01T00:00:00Z', revoked_at: '2026-01-02T00:00:00Z', description: 'old key',
         }]);
       if (url.includes('/agents/')) return json(MOCK_AGENT);
       return json(null, 404);
@@ -230,8 +230,8 @@ describe('AgentIdentityPage branches', () => {
       const url = String(input);
       if (url.includes('/credentials'))
         return json([{
-          key_id: 'cred-4', key_type: 'jwt', scopes: ['goals:read'],
-          expires_at: null, last_used_at: null, status: 'active',
+          key_id: 'cred-4', key_type: 'service_account', scopes: ['goals:read'],
+          expires_at: null, last_used_at: null, revoked_at: null,
         }]);
       if (url.includes('/agents/')) return json(MOCK_AGENT);
       return json(null, 404);
@@ -242,38 +242,19 @@ describe('AgentIdentityPage branches', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('cred-4');
   });
 
-  test('JWT preview: fetch token shows the decoded claims', async () => {
-    const token = makeJwt({ sub: 'agent-id-1', exp: Math.floor(Date.now() / 1000) + 3600 });
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  test('token exchange help explains the client assertion and makes no /token call', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (url.includes('/token') && method === 'POST') return json({ token, expires_at: 'later' });
       if (url.includes('/credentials')) return json([]);
       if (url.includes('/agents/')) return json(MOCK_AGENT);
       return json(null, 404);
     });
     renderPage();
     await screen.findByRole('heading', { name: 'Agent Identity' });
-    await userEvent.click(screen.getByRole('button', { name: /fetch token/i }));
-    expect(await screen.findByText('Claims')).toBeInTheDocument();
-    expect(screen.getByText('agent-id-1')).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: /refresh token/i })).toBeInTheDocument();
-  });
-
-  test('JWT preview: fetch failure shows an error toast and re-enables the button', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (url.includes('/token') && method === 'POST') return json({ error: 'nope' }, 500);
-      if (url.includes('/credentials')) return json([]);
-      if (url.includes('/agents/')) return json(MOCK_AGENT);
-      return json(null, 404);
-    });
-    renderPage();
-    await screen.findByRole('heading', { name: 'Agent Identity' });
-    await userEvent.click(screen.getByRole('button', { name: /fetch token/i }));
-    await waitFor(() => expect(screen.getByRole('button', { name: /fetch token/i })).not.toBeDisabled());
-    expect(screen.queryByText('Claims')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /token exchange/i })).toBeInTheDocument();
+    expect(screen.getByText(/client-assertion-type:jwt-bearer/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /fetch token/i })).not.toBeInTheDocument();
+    expect(spy.mock.calls.some(([u]) => String(u).includes('/token'))).toBe(false);
   });
 
   test('domain identity: selecting a domain reveals fields; saving shows "Saved"', async () => {

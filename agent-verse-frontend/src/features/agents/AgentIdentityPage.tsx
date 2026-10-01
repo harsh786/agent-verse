@@ -1,13 +1,15 @@
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import type { JSX } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Copy, CheckCheck, Shield, Plus, Trash2,
-  Key, Clock, AlertCircle,
+  Key, Clock, AlertCircle, Download,
 } from "lucide-react";
-import { agentsApi, credentialsApi } from "@/lib/api/client";
-import type { AgentCredential, IssueCredentialRequest, IssuedCredential } from "@/lib/api/client";
+import {
+  AGENT_CREDENTIAL_SCOPES, agentsApi, credentialStatus, credentialsApi, downloadPrivateKey,
+} from "@/lib/api/client";
+import type { AgentCredential, IssuedCredential } from "@/lib/api/client";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
@@ -17,17 +19,6 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function decodeJwt(token: string): Record<string, unknown> | null {
-  const parts = token.split(".");
-  if (parts.length !== 3) return null;
-  try {
-    const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-    return JSON.parse(atob(b64)) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
 function truncateKeyId(id: string): string {
   if (id.length <= 16) return id;
@@ -47,16 +38,10 @@ function expiresLabel(expiresAt: string | null): string {
 const SEVERITY_COLORS: Record<string, string> = {
   active: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
   revoked: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  expired: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
 };
 
-const ALL_SCOPES = [
-  "goals:read", "goals:write", "goals:cancel",
-  "agents:read", "agents:write", "agents:delete",
-  "knowledge:read", "knowledge:write",
-  "connectors:read", "connectors:write",
-  "governance:read", "governance:write",
-  "analytics:read",
-];
+const ALL_SCOPES: readonly string[] = AGENT_CREDENTIAL_SCOPES;
 
 const DOMAIN_FIELDS: Record<string, Array<{ key: string; label: string; placeholder: string }>> = {
   legal: [
@@ -110,7 +95,6 @@ interface IssueModalProps {
 
 function IssueCredentialModal({ open, agentId, onClose, onIssued }: IssueModalProps): JSX.Element | null {
   const qc = useQueryClient();
-  const [keyType, setKeyType] = useState<IssueCredentialRequest["key_type"]>("jwt");
   const [selectedScopes, setSelectedScopes] = useState<string[]>(["goals:read"]);
   const [expiryDays, setExpiryDays] = useState<number | undefined>(30);
   const [description, setDescription] = useState("");
@@ -118,7 +102,6 @@ function IssueCredentialModal({ open, agentId, onClose, onIssued }: IssueModalPr
   const issueMutation = useMutation({
     mutationFn: () =>
       credentialsApi.issue(agentId, {
-        key_type: keyType,
         scopes: selectedScopes,
         expires_in_days: expiryDays,
         description: description || undefined,
@@ -145,26 +128,6 @@ function IssueCredentialModal({ open, agentId, onClose, onIssued }: IssueModalPr
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
       <div className="relative bg-card border border-border rounded-xl shadow-xl max-w-lg w-full p-6 space-y-5">
         <h2 className="text-lg font-semibold">Issue New Credential</h2>
-
-        {/* Key type */}
-        <div>
-          <label className="block text-xs font-medium text-muted-foreground mb-1">Key Type</label>
-          <div className="flex gap-2">
-            {(["jwt", "api_key", "mtls"] as const).map((t) => (
-              <button
-                key={t}
-                onClick={() => setKeyType(t)}
-                className={`px-3 py-1.5 rounded-md text-xs border transition-colors ${
-                  keyType === t
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "border-border hover:bg-muted"
-                }`}
-              >
-                {t.toUpperCase()}
-              </button>
-            ))}
-          </div>
-        </div>
 
         {/* Scopes */}
         <div>
@@ -247,14 +210,21 @@ function PrivateKeyDisplay({ cred, onDismiss }: { cred: IssuedCredential; onDism
         <AlertCircle className="h-4 w-4" />
         <p className="text-sm font-semibold">Save this private key now — it won't be shown again.</p>
       </div>
-      {cred.private_key && (
-        <div className="bg-background border border-border rounded-md p-3 font-mono text-xs break-all relative">
-          {cred.private_key}
-          <div className="mt-2">
-            <CopyButton text={cred.private_key} label="Copy private key" />
-          </div>
-        </div>
-      )}
+      <p className="text-xs text-muted-foreground">
+        Key ID <span className="font-mono">{cred.key_id}</span>
+      </p>
+      <pre className="bg-background border border-border rounded-md p-3 font-mono text-xs whitespace-pre-wrap break-all">
+        {cred.private_key_pem}
+      </pre>
+      <div className="flex items-center gap-3">
+        <CopyButton text={cred.private_key_pem} label="Copy private key" />
+        <button
+          onClick={() => downloadPrivateKey(cred)}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        >
+          <Download className="h-3 w-3" /> Download .pem
+        </button>
+      </div>
       <button onClick={onDismiss} className="text-xs text-muted-foreground underline">
         I've saved it — dismiss
       </button>
@@ -262,95 +232,32 @@ function PrivateKeyDisplay({ cred, onDismiss }: { cred: IssuedCredential; onDism
   );
 }
 
-// ── JWT Preview ───────────────────────────────────────────────────────────────
+// ── Token exchange ────────────────────────────────────────────────────────────
 
-function JwtPreview({ agentId }: { agentId: string }): JSX.Element {
-  const [token, setToken] = useState<string | null>(null);
-  const [claims, setClaims] = useState<Record<string, unknown> | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [timeLeft, setTimeLeft] = useState<string>("");
-  const rafRef = useRef<number | null>(null);
-
-  // RAF countdown for expiry
-  useEffect(() => {
-    if (!claims) return;
-    const exp = claims.exp as number | undefined;
-    if (!exp) return;
-
-    const tick = (): void => {
-      const remaining = exp - Math.floor(Date.now() / 1000);
-      if (remaining <= 0) {
-        setTimeLeft("Expired");
-        return;
-      }
-      const m = Math.floor(remaining / 60);
-      const s = remaining % 60;
-      setTimeLeft(`${m}m ${s}s`);
-      rafRef.current = requestAnimationFrame(tick);
-    };
-
-    rafRef.current = requestAnimationFrame(tick);
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    };
-  }, [claims]);
-
-  const handleFetch = async (): Promise<void> => {
-    setLoading(true);
-    try {
-      const result = await credentialsApi.getToken(agentId);
-      setToken(result.token);
-      setClaims(decodeJwt(result.token));
-    } catch (e) {
-      toast({ kind: "error", message: `Failed: fetch token. ${String(e)}` });
-    } finally {
-      setLoading(false);
-    }
-  };
-
+/** How an agent obtains a token. The browser cannot do it: POST /agents/{id}/token
+ *  requires an RFC 7523 client assertion signed with the credential's private key. */
+function TokenExchangeHelp({ agentId }: { agentId: string }): JSX.Element {
+  const snippet = [
+    "from app.auth.agent_identity import build_client_assertion",
+    `assertion = build_client_assertion(agent_id="${agentId}", key_id="<key_id>",`,
+    `    private_key_pem=open("<key_id>.pem").read(), audience="/agents/${agentId}/token")`,
+    `POST /agents/${agentId}/token  {"client_assertion_type":`,
+    '  "urn:ietf:params:oauth:client-assertion-type:jwt-bearer", "client_assertion": assertion}',
+  ].join("\n");
   return (
-    <div className="bg-card border border-border rounded-xl p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="font-semibold flex items-center gap-2">
-          <Key className="h-4 w-4" /> JWT Preview
-        </h2>
-        <button
-          onClick={() => void handleFetch()}
-          disabled={loading}
-          className="px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 disabled:opacity-50"
-        >
-          {loading ? "Fetching…" : token ? "Refresh Token" : "Fetch Token"}
-        </button>
-      </div>
-
-      {token && (
-        <>
-          <div className="bg-muted/50 rounded-md p-3 font-mono text-xs break-all">
-            {token.slice(0, 80)}…
-            <div className="mt-2">
-              <CopyButton text={token} label="Copy JWT" />
-            </div>
-          </div>
-          {claims && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">Claims</p>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-                {Object.entries(claims).map(([k, v]) => (
-                  <div key={k} className="flex gap-2">
-                    <span className="font-mono text-muted-foreground">{k}:</span>
-                    <span className="font-medium truncate">{String(v)}</span>
-                  </div>
-                ))}
-              </div>
-              {timeLeft && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Clock className="h-3 w-3" /> Expires in: <span className="font-medium">{timeLeft}</span>
-                </p>
-              )}
-            </div>
-          )}
-        </>
-      )}
+    <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+      <h2 className="font-semibold flex items-center gap-2">
+        <Key className="h-4 w-4" /> Token exchange
+      </h2>
+      <p className="text-xs text-muted-foreground">
+        The agent proves it holds the private key by signing a short-lived, single-use client
+        assertion (RS256, <span className="font-mono">kid</span> = key ID,{" "}
+        <span className="font-mono">iss</span> = <span className="font-mono">sub</span> ={" "}
+        <span className="font-mono">agent:{agentId}</span>,{" "}
+        <span className="font-mono">aud</span> = <span className="font-mono">/agents/{agentId}/token</span>,
+        at most 5 minutes) and exchanging it for a 15-minute token.
+      </p>
+      <pre className="bg-muted/50 rounded-md p-3 font-mono text-xs whitespace-pre-wrap break-all">{snippet}</pre>
     </div>
   );
 }
@@ -366,7 +273,8 @@ function CredentialCard({
   onRevoke: (keyId: string) => void;
   isNew: boolean;
 }): JSX.Element {
-  const isRevoked = cred.status === "revoked";
+  const status = credentialStatus(cred);
+  const isRevoked = status === "revoked";
   return (
     <div
       className={`bg-card border border-border rounded-xl p-4 space-y-3 ${
@@ -381,10 +289,10 @@ function CredentialCard({
           </div>
           <div className="flex items-center gap-2">
             <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-              {cred.key_type.toUpperCase()}
+              {cred.key_type === "service_account" ? "RS256 SERVICE ACCOUNT" : cred.key_type.toUpperCase()}
             </span>
-            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${SEVERITY_COLORS[cred.status]}`}>
-              {cred.status}
+            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${SEVERITY_COLORS[status]}`}>
+              {status}
             </span>
           </div>
         </div>
@@ -590,7 +498,7 @@ export function AgentIdentityPage(): JSX.Element {
       </div>
 
       {/* Issued credential private key display */}
-      {issuedCred?.private_key && (
+      {issuedCred?.private_key_pem && (
         <PrivateKeyDisplay cred={issuedCred} onDismiss={() => setIssuedCred(null)} />
       )}
 
@@ -631,8 +539,8 @@ export function AgentIdentityPage(): JSX.Element {
         </div>
       )}
 
-      {/* JWT Preview */}
-      <JwtPreview agentId={agentId} />
+      {/* Token exchange */}
+      <TokenExchangeHelp agentId={agentId} />
 
       {/* Domain Identity */}
       <DomainIdentitySection agentId={agentId} />

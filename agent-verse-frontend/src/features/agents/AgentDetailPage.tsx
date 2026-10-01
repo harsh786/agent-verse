@@ -4,7 +4,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import {
-  goalsApi, agentsApi, knowledgeApi, credentialsApi,
+  goalsApi, agentsApi, knowledgeApi, credentialsApi, credentialStatus, downloadPrivateKey,
+  type AgentCredential, type IssuedCredential,
   type CreateAgentRequest,
 } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -46,6 +47,7 @@ function CredentialsTab({ agentId }: { agentId: string }) {
   const qc = useQueryClient();
   const [issuing, setIssuing] = useState(false);
   const [newScopes, setNewScopes] = useState('');
+  const [issued, setIssued] = useState<IssuedCredential | null>(null);
 
   const { data: creds = [], isLoading } = useQuery({
     queryKey: ['agent-credentials', agentId],
@@ -55,9 +57,11 @@ function CredentialsTab({ agentId }: { agentId: string }) {
 
   const issueMutation = useMutation({
     mutationFn: (scopes: string[]) =>
-      credentialsApi.issue(agentId, { key_type: 'api_key', scopes }),
-    onSuccess: () => {
+      credentialsApi.issue(agentId, { scopes }),
+    onSuccess: (cred) => {
       qc.invalidateQueries({ queryKey: ['agent-credentials', agentId] });
+      // The private key is returned once and never stored: show it now.
+      setIssued(cred);
       setIssuing(false);
       setNewScopes('');
     },
@@ -116,17 +120,44 @@ function CredentialsTab({ agentId }: { agentId: string }) {
         </div>
       )}
 
-      {(creds as any[]).length === 0 ? (
+      {issued && (
+        <div className="border border-yellow-400/60 rounded-lg p-4 space-y-2">
+          <p className="text-sm font-medium text-foreground">
+            Key <span className="font-mono">{issued.key_id}</span> issued. Save the private key now — it won't be shown again.
+          </p>
+          <pre className="text-xs font-mono whitespace-pre-wrap break-all bg-muted/50 rounded p-2">{issued.private_key_pem}</pre>
+          <div className="flex gap-3">
+            <button
+              onClick={() => downloadPrivateKey(issued)}
+              className="text-xs text-primary hover:underline"
+            >
+              Download .pem
+            </button>
+            <button onClick={() => setIssued(null)} className="text-xs text-muted-foreground hover:underline">
+              I've saved it — dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {issueMutation.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          Failed to issue credential. {String(issueMutation.error)}
+        </p>
+      )}
+
+      {creds.length === 0 ? (
         <EmptyState
           icon={<Inbox size={40} />}
           title="No credentials issued"
-          description="Issue API credentials scoped to this agent."
+          description="Issue an RS256 service-account key for this agent."
           variant="float"
         />
       ) : (
         <div className="space-y-2">
-          {(creds as any[]).map((c: any) => {
-            const credId = c.credential_id ?? c.key_id;
+          {creds.map((c: AgentCredential) => {
+            const credId = c.key_id;
+            const status = credentialStatus(c);
             return (
               <div
                 key={credId}
@@ -138,15 +169,18 @@ function CredentialsTab({ agentId }: { agentId: string }) {
                     {(c.scopes || []).join(', ')} ·{' '}
                     Created{' '}
                     {c.created_at ? new Date(c.created_at).toLocaleDateString() : '—'}
+                    {status !== 'active' && <> · <span className="text-destructive">{status}</span></>}
                   </p>
                 </div>
-                <button
-                  onClick={() => revokeMutation.mutate(credId)}
-                  disabled={revokeMutation.isPending}
-                  className="text-xs text-destructive hover:underline disabled:opacity-50"
-                >
-                  Revoke
-                </button>
+                {status !== 'revoked' && (
+                  <button
+                    onClick={() => revokeMutation.mutate(credId)}
+                    disabled={revokeMutation.isPending}
+                    className="text-xs text-destructive hover:underline disabled:opacity-50"
+                  >
+                    Revoke
+                  </button>
+                )}
               </div>
             );
           })}

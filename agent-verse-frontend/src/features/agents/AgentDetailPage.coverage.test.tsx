@@ -526,8 +526,13 @@ describe('AgentDetailPage — credentials tab issue/revoke', () => {
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
-      if (url.includes('/credentials') && method === 'POST') return json({ credential_id: 'cred-new', scopes: ['goals:read'] });
-      if (url.includes('/credentials') && method === 'DELETE') return json({ ok: true });
+      if (url.includes('/credentials') && method === 'POST')
+        return json({
+          key_id: 'kid_new', scopes: ['goals:read'], expires_at: null,
+          private_key_pem: '-----BEGIN PRIVATE KEY-----\nNEWPEM\n-----END PRIVATE KEY-----\n',
+          public_key_pem: 'PUB', warning: 'once',
+        }, 201);
+      if (url.includes('/credentials') && method === 'DELETE') return new Response(null, { status: 204 });
       if (url.includes('/credentials')) return json(list);
       if (url.includes('/versions')) return json([]);
       if (url.includes('/goals')) return json({ goals: [] });
@@ -551,8 +556,12 @@ describe('AgentDetailPage — credentials tab issue/revoke', () => {
       const body = JSON.parse(String((post?.[1] as RequestInit)?.body ?? '{}'));
       expect(body.scopes).toEqual(['goals:read', 'goals:write']);
     });
-    // Form closes again after a successful issue.
+    // Form closes again after a successful issue, and the one-time private key is shown.
     expect(screen.queryByPlaceholderText('goals:read,goals:write')).not.toBeInTheDocument();
+    expect(await screen.findByText(/NEWPEM/)).toBeInTheDocument();
+    expect(String((spy.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'POST')?.[1] as RequestInit).body)).not.toContain('key_type');
+    await userEvent.click(screen.getByText(/i've saved it/i));
+    expect(screen.queryByText(/NEWPEM/)).not.toBeInTheDocument();
   });
 
   test('canceling the issue-credential form hides it without submitting', async () => {
@@ -566,8 +575,8 @@ describe('AgentDetailPage — credentials tab issue/revoke', () => {
     expect(screen.queryByPlaceholderText('goals:read,goals:write')).not.toBeInTheDocument();
   });
 
-  test('a credential using key_id (no credential_id), no scopes, and no created_at renders its fallbacks', async () => {
-    mockCredentials([{ key_id: 'key-legacy', scopes: [] }]);
+  test('a credential with no scopes and no created_at renders its fallbacks', async () => {
+    mockCredentials([{ key_id: 'key-legacy', scopes: [], revoked_at: null, expires_at: null, created_at: '' }]);
     renderPage();
     await screen.findByTestId('agent-name');
     await userEvent.click(screen.getByRole('tab', { name: /credentials/i }));
@@ -578,12 +587,16 @@ describe('AgentDetailPage — credentials tab issue/revoke', () => {
 
   test('revoking a credential calls the revoke endpoint', async () => {
     const spy = mockCredentials([
-      { credential_id: 'cred-1', scopes: ['goals:read'], created_at: '2026-01-01T00:00:00Z' },
+      { key_id: 'cred-1', scopes: ['goals:read'], created_at: '2026-01-01T00:00:00Z', revoked_at: null, expires_at: null },
+      { key_id: 'cred-gone', scopes: ['goals:read'], created_at: '2026-01-01T00:00:00Z', revoked_at: '2026-01-02T00:00:00Z', expires_at: null },
     ]);
     renderPage();
     await screen.findByTestId('agent-name');
     await userEvent.click(screen.getByRole('tab', { name: /credentials/i }));
     await screen.findByText('cred-1');
+    // Only the active credential can be revoked; the revoked one is labelled.
+    expect(screen.getAllByRole('button', { name: 'Revoke' })).toHaveLength(1);
+    expect(screen.getByText('revoked')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Revoke' }));
     await waitFor(() =>
       expect(spy.mock.calls.some(([u, i]) =>

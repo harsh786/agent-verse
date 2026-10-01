@@ -885,7 +885,7 @@ def test_issue_credential_with_rate_limiter() -> None:
 
     resp = client.post(
         f"/agents/{agent['agent_id']}/credentials",
-        json={"scopes": []},
+        json={"scopes": ["goals:read"]},
         headers=H,
     )
     assert resp.status_code == 201
@@ -904,7 +904,7 @@ def test_issue_credential_rate_limit_exceeded() -> None:
 
     resp = client.post(
         f"/agents/{agent['agent_id']}/credentials",
-        json={"scopes": []},
+        json={"scopes": ["goals:read"]},
         headers=H,
     )
     assert resp.status_code == 429
@@ -925,7 +925,7 @@ def test_issue_credential_rate_limiter_exception_non_fatal() -> None:
 
     resp = client.post(
         f"/agents/{agent['agent_id']}/credentials",
-        json={"scopes": []},
+        json={"scopes": ["goals:read"]},
         headers=H,
     )
     assert resp.status_code == 201  # Rate limit fail is non-fatal
@@ -940,7 +940,7 @@ def test_issue_credential_service_exception() -> None:
 
     resp = client.post(
         f"/agents/{agent['agent_id']}/credentials",
-        json={"scopes": []},
+        json={"scopes": ["goals:read"]},
         headers=H,
     )
     assert resp.status_code == 500
@@ -1446,3 +1446,27 @@ def test_clone_agent_default_name() -> None:
     assert resp.status_code == 201
     body = resp.json()
     assert "copy" in body["name"].lower() or "My Agent" in body["name"]
+
+
+# ---------------------------------------------------------------------------
+# AGID-02: issued credentials must be usable — agent scopes only, RS256 only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"scopes": ["read:goals"]},  # wrong format: never matches an endpoint scope
+        {"scopes": ["tenancy:write"]},  # outside what the agent role may ever hold
+        {"scopes": []},  # an agent JWT with no scopes authenticates nothing
+        {"scopes": ["goals:read"], "key_type": "api_key"},  # only RS256 service accounts
+    ],
+)
+def test_issue_credential_rejects_unusable_requests(body: dict[str, Any]) -> None:
+    svc = AsyncMock()
+    svc.issue_credential = AsyncMock(return_value={"key_id": "k1"})
+    client = TestClient(_make_app(agent_identity_service=svc), raise_server_exceptions=False)
+    agent = _create_agent(client)
+    resp = client.post(f"/agents/{agent['agent_id']}/credentials", json=body, headers=H)
+    assert resp.status_code == 422, resp.text
+    svc.issue_credential.assert_not_called()

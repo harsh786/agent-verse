@@ -583,7 +583,7 @@ def test_issue_credential_no_service() -> None:
     agent_id = cr.json()["agent_id"]
     resp = client.post(
         f"/agents/{agent_id}/credentials",
-        json={"scopes": ["read"]},
+        json={"scopes": ["goals:read"]},
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 503

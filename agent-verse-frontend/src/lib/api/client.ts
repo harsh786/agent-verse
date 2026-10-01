@@ -2715,25 +2715,67 @@ export const marketplaceApi = {
 
 // ── Agent Credentials (Spec 1) ────────────────────────────────────────────────
 
+/** One row of GET /agents/{id}/credentials (AgentIdentityService.list_credentials).
+ *  Every credential is an RS256 service-account keypair; only the public half is stored. */
 export interface AgentCredential {
+  id: string;
+  agent_id: string;
   key_id: string;
-  key_type: "jwt" | "api_key" | "mtls";
+  key_type: string;
   scopes: string[];
   expires_at: string | null;
+  revoked_at: string | null;
   last_used_at: string | null;
-  description?: string;
-  status: "active" | "revoked";
+  created_by: string;
+  created_at: string;
+  description: string;
 }
 
+/** Scopes an agent credential may hold (backend ROLE_SCOPES["agent"]); anything else is a 422. */
+export const AGENT_CREDENTIAL_SCOPES = [
+  "goals:read", "goals:write", "goals:execute",
+  "agents:read",
+  "knowledge:read", "knowledge:write",
+  "mcp:read", "tools:read",
+  "a2a:read", "a2a:write",
+  "artifacts:read", "artifacts:write",
+  "memory:read", "memory:write",
+  "rpa:read", "perception:read", "guardrails:read",
+] as const;
+
 export interface IssueCredentialRequest {
-  key_type: "jwt" | "api_key" | "mtls";
   scopes: string[];
   expires_in_days?: number;
   description?: string;
 }
 
-export interface IssuedCredential extends AgentCredential {
-  private_key?: string;
+/** POST /agents/{id}/credentials (201). The private key is returned ONCE and never stored. */
+export interface IssuedCredential {
+  key_id: string;
+  private_key_pem: string;
+  public_key_pem: string;
+  scopes: string[];
+  expires_at: string | null;
+  warning?: string;
+}
+
+export type CredentialStatus = "active" | "revoked" | "expired";
+
+export function credentialStatus(c: Pick<AgentCredential, "revoked_at" | "expires_at">): CredentialStatus {
+  if (c.revoked_at) return "revoked";
+  if (c.expires_at && new Date(c.expires_at) < new Date()) return "expired";
+  return "active";
+}
+
+/** Save a just-issued private key as a .pem file (it is shown only once). */
+export function downloadPrivateKey(cred: Pick<IssuedCredential, "key_id" | "private_key_pem">): void {
+  const blob = new Blob([cred.private_key_pem], { type: "application/x-pem-file" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${cred.key_id}.pem`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export const credentialsApi = {
@@ -2742,8 +2784,8 @@ export const credentialsApi = {
     request<IssuedCredential>(`/agents/${agentId}/credentials`, { method: "POST", body: JSON.stringify(req) }),
   revoke: (agentId: string, keyId: string) =>
     request<void>(`/agents/${agentId}/credentials/${keyId}`, { method: "DELETE" }),
-  getToken: (agentId: string) =>
-    request<{ token: string; expires_at: string }>(`/agents/${agentId}/token`, { method: "POST" }),
+  // No browser token exchange: POST /agents/{id}/token needs a client assertion signed
+  // with the credential's private key (RFC 7523), which only the agent holds.
 };
 
 // ── Guardrails (Spec 3) ───────────────────────────────────────────────────────

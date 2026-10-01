@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.agent.pattern_flags import (
     AGENT_PATTERN_FLAG_KEYS,
@@ -1574,10 +1574,28 @@ async def clone_agent(
 
 
 class IssueCredentialRequest(BaseModel):
-    key_type: str = Field(default="service_account")
-    scopes: list[str] = Field(default_factory=list)
+    # Every credential is an RS256 service-account keypair; other "types" the UI
+    # used to offer (api_key, mtls) were stored as labels on the same keypair.
+    key_type: Literal["service_account"] = "service_account"
+    # The agent JWT's scopes are intersected with the agent role's scopes, so any
+    # other value (e.g. "read:goals", "tenancy:write") yields a credential that
+    # can never authorize anything. Refuse it at issuance instead.
+    scopes: list[str] = Field(min_length=1, max_length=32)
     expires_in_days: int | None = Field(default=90, ge=1, le=3650)
-    description: str = Field(default="")
+    description: str = Field(default="", max_length=500)
+
+    @field_validator("scopes")
+    @classmethod
+    def _agent_scopes_only(cls, v: list[str]) -> list[str]:
+        from app.auth.scope_enforcement import ROLE_SCOPES
+
+        unknown = sorted(set(v) - ROLE_SCOPES["agent"])
+        if unknown:
+            raise ValueError(
+                f"scopes not grantable to an agent: {unknown}; "
+                f"allowed: {sorted(ROLE_SCOPES['agent'])}"
+            )
+        return sorted(set(v))
 
 
 @router.get("/{agent_id}/credentials")

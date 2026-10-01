@@ -169,7 +169,7 @@ def test_issue_credential_no_vault_service() -> None:
     agent_id = agent["agent_id"]
     resp = client.post(
         f"/agents/{agent_id}/credentials",
-        json={"key_id": "my-api-key", "value": "secret123", "description": "Test key"},
+        json={"scopes": ["goals:read"], "description": "Test key"},
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code in (201, 503)

@@ -189,7 +189,11 @@ describe('AgentDetailPage', () => {
       if (url.includes('/agents/agent-001/credentials')) {
         return new Response(
           JSON.stringify([
-            { credential_id: 'cred-1', scopes: ['goals:read'], created_at: '2026-01-01' },
+            {
+              id: 'u1', agent_id: 'agent-001', key_id: 'cred-1', key_type: 'service_account',
+              scopes: ['goals:read'], expires_at: null, revoked_at: null, last_used_at: null,
+              created_by: 'k', created_at: '2026-01-01', description: '',
+            },
           ]),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
