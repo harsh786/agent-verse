@@ -60,6 +60,20 @@ groups:
           description: "More than 10 approvals waiting"
           runbook: "https://docs.agentverse.ai/runbooks/hitl-approval-backlog"
 
+      # 6 — Knowledge retention (TTL expiry) failed on consecutive runs (KB-55).
+      # The daily task now fails (and retries) instead of reporting success; two
+      # failed runs in two days means expired knowledge is being kept.
+      - alert: KnowledgeRetentionFailing
+        expr: |
+          increase(celery_task_failed_total{name="app.scaling.tasks.expire_stale_documents"}[2d]) >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Knowledge retention is failing"
+          description: "expire_stale_documents failed on consecutive runs; expired chunks are not being deleted"
+          runbook: "https://docs.agentverse.ai/runbooks/knowledge-retention"
+
   - name: agent_pattern_operations
     rules:
       - alert: CoordinationDeliveryLag

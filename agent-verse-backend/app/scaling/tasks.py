@@ -7688,7 +7688,14 @@ def conclude_stale_experiments() -> dict:
     return _run_async(_run())
 
 
-@celery_app.task(name="app.scaling.tasks.expire_stale_documents", queue="maintenance")
+@celery_app.task(
+    name="app.scaling.tasks.expire_stale_documents",
+    queue="maintenance",
+    autoretry_for=(Exception,),
+    retry_backoff=60,
+    retry_backoff_max=1800,
+    max_retries=3,
+)
 def expire_stale_documents() -> dict:
     """Expire documents past the retention window, and the graph derived from them."""
     from app.core.config import get_settings
@@ -7800,8 +7807,17 @@ async def _expire_stale_documents(retention_days: int) -> dict:
             "knowledge_chunks_expired": knowledge["knowledge_chunks_expired"],
             "knowledge_documents_expired": knowledge["knowledge_documents_expired"],
         }
-    except Exception as exc:
-        return {"status": "error", "error": str(exc)}
+    except Exception:
+        # KB-55: never swallowed into a returned dict (Celery recorded that as a
+        # success and nothing was logged). Logged, counted, re-raised: the task
+        # fails, autoretries with backoff, and celery_task_failed_total feeds the
+        # KnowledgeRetentionFailing alert.
+        logger.exception("knowledge_retention_failed", retention_days=retention_days)
+        with contextlib.suppress(Exception):
+            from app.observability.metrics import KNOWLEDGE_FAILURE_TOTAL
+
+            KNOWLEDGE_FAILURE_TOTAL.labels("retention", "expire_stale_documents").inc()
+        raise
 
 
 # Erasure jobs that cannot be claimed again for this long are assumed to belong

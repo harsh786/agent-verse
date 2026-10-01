@@ -528,12 +528,42 @@ class TestExpireStaleDocuments:
             "knowledge_documents_expired": 0,
         }
 
-    def test_error_returns_error_status(self):
+    def test_error_fails_the_task_loudly(self, caplog: pytest.LogCaptureFixture):
+        """KB-55: a retention failure used to be returned as a dict, so Celery
+        recorded success and nothing was logged. It now raises (the task fails
+        and autoretries), is logged, and is counted."""
+        from app.observability.metrics import KNOWLEDGE_FAILURE_TOTAL
         from app.scaling.tasks import expire_stale_documents
 
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")):
-            result = expire_stale_documents.run()
-        assert result == {"status": "error", "error": "no db"}
+        counter = KNOWLEDGE_FAILURE_TOTAL.labels("retention", "expire_stale_documents")
+        before = counter._value.get()
+        with (
+            patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")),
+            patch("app.scaling.tasks.logger") as log,
+            pytest.raises(RuntimeError, match="no db"),
+        ):
+            expire_stale_documents.run()
+        log.exception.assert_called_once()
+        assert log.exception.call_args.args[0] == "knowledge_retention_failed"
+        assert counter._value.get() == before + 1
+        assert expire_stale_documents.autoretry_for == (Exception,)
+
+    def test_expire_knowledge_chunks_failure_raises(self):
+        from app.scaling.tasks import _expire_stale_documents
+
+        session = _session_with_begin(None)
+        session.execute = AsyncMock(return_value=MagicMock(fetchall=MagicMock(return_value=[])))
+        with (
+            patch("app.db.session.get_session_factory", return_value=_db_factory(session)),
+            patch(
+                "app.rag.retention.expire_knowledge_chunks",
+                AsyncMock(side_effect=RuntimeError("chunk scan failed")),
+            ),
+            pytest.raises(RuntimeError, match="chunk scan failed"),
+        ):
+            import asyncio
+
+            asyncio.run(_expire_stale_documents(90))
 
 
 # ── process_dpdp_erasures ─────────────────────────────────────────────────────
