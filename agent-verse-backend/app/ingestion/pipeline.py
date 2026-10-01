@@ -743,21 +743,33 @@ class IngestionPipeline:
         """Embed all chunks, returning chunks with 'embedding' field added."""
         texts = [c["text"] for c in enriched_chunks]
         try:
+            from types import SimpleNamespace
+
+            from app.embedding.metering import embed_metered
             from app.providers.base import embed_texts
             from app.providers.embedder_factory import embedder_model_name
 
-            embeddings = await embed_texts(texts, provider=self._embedder)
+            model = embedder_model_name(self._embedder)
+
+            async def _one_batch(batch: list[str]) -> list[list[float]]:
+                return await embed_texts(batch, provider=self._embedder)
+
+            # KB-40: bounded batches, each reserved against the tenant's budget
+            # (the worker's / API's registered controller) and metered. A
+            # refusal fails this document's embedding with the real reason.
+            embeddings = await embed_metered(
+                texts,
+                _one_batch,
+                tenant_ctx=SimpleNamespace(tenant_id=config.tenant_id),
+                model=model,
+                label=f"connector-sync:{config.source_id}",
+            )
             # LAW-08: record which model produced each vector, so a model change
             # is detectable per chunk (and re-embeddable) instead of silently
             # mixing vector spaces.
-            model = embedder_model_name(self._embedder)
             for chunk, embedding in zip(enriched_chunks, embeddings, strict=False):
                 chunk["embedding"] = embedding
                 chunk["embedding_model"] = model if embedding else ""
-            if any(embeddings):
-                from app.embedding.usage import approx_tokens, record_embedding_usage
-
-                await record_embedding_usage(config.tenant_id, model, approx_tokens(texts))
         except Exception as e:
             _log.warning("pipeline_embed_error: %s", e)
             for chunk in enriched_chunks:

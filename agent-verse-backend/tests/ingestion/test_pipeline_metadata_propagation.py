@@ -67,7 +67,8 @@ async def test_metadata_and_ocr_provenance_propagate_to_final_chunks() -> None:
 
     with patch(
         "app.providers.base.embed_texts",
-        AsyncMock(return_value=[[0.1] * 8, [0.2] * 8]),
+        # One vector per text (a fixed-size reply used to be zip-truncated silently).
+        AsyncMock(side_effect=lambda texts, **_: [[0.1] * 8 for _ in texts]),
     ):
         result = await pipeline.ingest(raw, config)
 

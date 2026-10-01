@@ -192,6 +192,15 @@ def _platform() -> tuple[Any, Any]:
         raise DecisionBudgetExceededError(f"cost services unavailable: {exc}") from exc
 
 
+def platform_cost_controller() -> Any:
+    """The registered process cost controller (API lifespan / worker), or None.
+
+    Raises :class:`DecisionBudgetExceededError` when the registered resolver
+    fails (an unknown budget fails closed).
+    """
+    return _platform()[0]
+
+
 def _require_attribution(scope: _ChargeScope | None, tenant: Any) -> None:
     """Refuse a call nobody can be charged for (outside a goal, no tenant, no system job)."""
     if scope is not None or tenant is not None or _system_job.get() is not None:

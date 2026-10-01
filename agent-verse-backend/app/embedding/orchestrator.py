@@ -315,6 +315,7 @@ class EmbeddingOrchestrator:
         default_provider: Any = None,
         provider_resolver: Callable[[str], Any] | None = None,
         collection_size: int = 0,
+        cost_controller: Any = None,
     ) -> RoutedEmbeddingResult:
         """Select a model for *content_type* and ACTUALLY embed with it (D-10).
 
@@ -329,6 +330,12 @@ class EmbeddingOrchestrator:
             is used.
           * Otherwise ``default_provider`` is used (safe fallback), still with the
             selected model id threaded through.
+
+        Spend (KB-40): texts go out in bounded batches, each reserved against
+        the tenant's budget first (``cost_controller``, else the process one)
+        and recorded as embedding usage — see :mod:`app.embedding.metering`.
+        A refused reservation raises ``EmbeddingBudgetExceededError`` before
+        that batch is sent.
         """
         selection = self.select(content_type, tenant_ctx, collection_size)
 
@@ -341,7 +348,19 @@ class EmbeddingOrchestrator:
             if resolved is not None:
                 provider = resolved
 
-        embeddings = await self._embed_texts_with_model(texts, provider, selection.model_id)
+        from app.embedding.metering import embed_metered
+
+        async def _one_batch(batch: list[str]) -> list[list[float]]:
+            return await self._embed_texts_with_model(batch, provider, selection.model_id)
+
+        embeddings = await embed_metered(
+            texts,
+            _one_batch,
+            tenant_ctx=tenant_ctx,
+            model=selection.model_id,
+            controller=cost_controller,
+            label="knowledge-ingest",
+        )
         embedding_input = "text_of_caption" if selection.requires_captioning else "native"
         return RoutedEmbeddingResult(
             embeddings=embeddings,

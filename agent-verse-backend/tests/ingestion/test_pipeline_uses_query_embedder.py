@@ -64,7 +64,8 @@ async def test_chunks_record_embedding_model() -> None:
         source_id="s1", tenant_id="t1", name="n", family=SourceFamily.WEB,
         source_type="http", collection_id="col",
     )
-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 4] * 8)):
+    one_per_text = AsyncMock(side_effect=lambda texts, **_: [[0.1] * 4 for _ in texts])
+    with patch("app.providers.base.embed_texts", one_per_text):
         result = await pipeline.ingest(raw, cfg)
     assert result.status == "indexed", result.error
     chunks = kb.ingest_chunks_async.call_args[0][0]

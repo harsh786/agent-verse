@@ -26,6 +26,14 @@ from fastapi import (
 from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.core.config import get_settings
+from app.embedding.metering import (
+    EMBED_BATCH_COST_USD,
+    EMBED_BATCH_SIZE,
+    EmbeddingBudgetExceededError,
+    EmbeddingBudgetUnverifiableError,
+    embed_metered,
+    resolve_cost_controller,
+)
 from app.ingestion.orchestrator import EmptyIndexedContentError
 from app.ingestion.pipeline import (
     IngestionPolicyRejectedError,
@@ -53,6 +61,7 @@ from app.net.ssrf_guard import (
     public_async_client,
     request_public,
 )
+from app.providers.guarded_completion import DecisionBudgetExceededError
 from app.rag.contracts import (
     RAGCitation,
     RAGExecutionResult,
@@ -433,58 +442,42 @@ def _embedder_unavailable_detail(request: Request | None) -> str:
     return "Embedding provider is unavailable"
 
 
-# Texts per embedding request: a whole upload used to go out as ONE request,
-# which a large file pushed past provider request limits.
-_EMBED_BATCH_SIZE = 64
-# Reserved against the tenant budget per embedding request — the same per-call
-# estimate the RAG cost guard reserves for a retrieval embedding.
-_EMBED_BATCH_COST_USD = 0.0001
+# Texts per embedding request and the per-request budget reservation; shared
+# with every other embed path (app.embedding.metering).
+_EMBED_BATCH_SIZE = EMBED_BATCH_SIZE
+_EMBED_BATCH_COST_USD = EMBED_BATCH_COST_USD
 
 
-async def _charge_embedding_batch_or_http(
-    request: Request, *, operation_id: str, batch_index: int
-) -> None:
-    """Reserve one embedding request against the tenant's budget (429 when spent)."""
+def _state_cost_controller(request: Request) -> Any:
+    """The app's cost controller (Redis-backed first), or None (-> process one)."""
     state = request.app.state
-    controller = getattr(state, "redis_cost_controller", None) or getattr(
+    return getattr(state, "redis_cost_controller", None) or getattr(
         state, "cost_controller", None
     )
-    if controller is None:
-        return
-    tenant = _require_tenant(request)
-    try:
-        allowed = await controller.check_and_record(
-            goal_id=f"knowledge-ingest:{operation_id}",
-            cost_usd=_EMBED_BATCH_COST_USD,
-            tenant_ctx=tenant,
-            tool_name="knowledge_embedding",
-            attempt_id=f"knowledge-ingest:{operation_id}:{batch_index}",
-        )
-    except Exception as exc:
-        # Fail closed: an unknown budget must not let spend through.
-        raise HTTPException(
-            status_code=503, detail="Budget state could not be verified; embedding refused"
-        ) from exc
-    if not allowed:
-        raise HTTPException(status_code=429, detail="LLM budget exhausted for this tenant")
 
 
 async def _embed_texts_or_http(
-    texts: list[str], embedder: Any, *, request: Request | None = None
+    texts: list[str],
+    embedder: Any,
+    *,
+    request: Request | None = None,
+    tenant_ctx: TenantContext | None = None,
 ) -> list[list[float]]:
-    """Embed ``texts`` in bounded batches, each charged to the tenant (with ``request``)."""
+    """Embed ``texts`` in bounded batches, each charged to the tenant and metered.
+
+    The tenant is the request's (or ``tenant_ctx`` for work outside a request,
+    e.g. the repository ingestion worker); the controller is the app's, else
+    the process-wide one. With neither request nor tenant the batches are only
+    bounded. 429 when the budget refuses a batch, 503 when it cannot be checked.
+    """
     if embedder is None:
         raise HTTPException(status_code=503, detail=_embedder_unavailable_detail(request))
     from app.providers.base import embed_texts
+    from app.providers.embedder_factory import embedder_model_name
 
-    operation_id = _uuid.uuid4().hex
-    embeddings: list[list[float]] = []
-    for batch_index, start in enumerate(range(0, len(texts), _EMBED_BATCH_SIZE)):
-        batch = texts[start : start + _EMBED_BATCH_SIZE]
-        if request is not None:
-            await _charge_embedding_batch_or_http(
-                request, operation_id=operation_id, batch_index=batch_index
-            )
+    tenant = _require_tenant(request) if request is not None else tenant_ctx
+
+    async def _one_batch(batch: list[str]) -> list[list[float]]:
         try:
             vectors = await embed_texts(batch, provider=embedder)
         except Exception as exc:
@@ -494,17 +487,30 @@ async def _embed_texts_or_http(
             ) from exc
         if len(vectors) != len(batch) or any(not vector for vector in vectors):
             raise HTTPException(status_code=503, detail="Embedding provider is unavailable")
-        embeddings.extend(vectors)
-        if request is not None:
-            from app.embedding.usage import approx_tokens, record_embedding_usage
-            from app.providers.embedder_factory import embedder_model_name
+        return vectors
 
-            await record_embedding_usage(
-                _require_tenant(request).tenant_id,
-                embedder_model_name(embedder),
-                approx_tokens(batch),
-            )
-    return embeddings
+    try:
+        controller = (
+            resolve_cost_controller(request.app.state if request is not None else None)
+            if tenant is not None
+            else None
+        )
+        return await embed_metered(
+            texts,
+            _one_batch,
+            tenant_ctx=tenant,
+            model=embedder_model_name(embedder),
+            controller=controller,
+            resolve_controller=False,
+            label="knowledge-ingest",
+        )
+    except EmbeddingBudgetExceededError as exc:
+        raise HTTPException(status_code=429, detail="LLM budget exhausted for this tenant") from exc
+    except EmbeddingBudgetUnverifiableError as exc:
+        # Fail closed: an unknown budget must not let spend through.
+        raise HTTPException(
+            status_code=503, detail="Budget state could not be verified; embedding refused"
+        ) from exc
 
 
 async def _enforce_doc_quota_or_http(request: Request, tenant: Any) -> None:
@@ -1596,7 +1602,9 @@ async def _ingest_repo_background(
             document_id = hashlib.sha256(
                 f"{repo_url}:{repository_file.relative_path}".encode()
             ).hexdigest()[:32]
-            embeddings = await _embed_texts_or_http(raw_chunks, embedder)
+            embeddings = await _embed_texts_or_http(
+                raw_chunks, embedder, tenant_ctx=tenant_ctx
+            )
             heartbeat = await store.heartbeat_ingestion_job_async(
                 job_id,
                 lease_owner=lease_owner,
@@ -2826,6 +2834,7 @@ async def ingest_document_into_collection(
             embed_provider_resolver=getattr(
                 request.app.state, "embed_provider_resolver", None
             ),
+            cost_controller=_state_cost_controller(request),
         )
         result = await orchestrator.ingest(
             content=body.content,
@@ -2882,11 +2891,16 @@ async def ingest_document_into_collection(
         from app.rag.indexing import IndexingProviderError
 
         if isinstance(exc, DecisionBudgetExceededError):
-            # RAPTOR / agentic-chunking indexing is charged to the tenant; a
-            # refused charge fails the ingest honestly (nothing was persisted).
+            # Embeddings and RAPTOR / agentic-chunking indexing are charged to
+            # the tenant; a refused charge fails the ingest honestly (nothing
+            # was persisted).
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"LLM budget exhausted — cannot build the strategy index: {exc}",
+                detail=f"LLM budget exhausted — cannot index the document: {exc}",
+            ) from exc
+        if isinstance(exc, EmbeddingBudgetUnverifiableError):
+            raise HTTPException(
+                status_code=503, detail="Budget state could not be verified; embedding refused"
             ) from exc
         _gl(__name__).exception("ingest_document_failed: %s: %s", type(exc).__name__, exc)
         from app.providers.circuit_breaker import ProviderCircuitOpenError
@@ -3286,6 +3300,16 @@ def _raise_upstream_error(exc: Exception) -> NoReturn:
     """
     from app.observability.logging import get_logger as _get_logger
 
+    # A refused / unverifiable budget is not an upstream failure (KB-40).
+    if isinstance(exc, DecisionBudgetExceededError):
+        raise HTTPException(
+            status_code=429, detail="LLM budget exhausted for this tenant"
+        ) from exc
+    if isinstance(exc, EmbeddingBudgetUnverifiableError):
+        raise HTTPException(
+            status_code=503, detail="Budget state could not be verified; embedding refused"
+        ) from exc
+
     correlation_id = _uuid.uuid4().hex
     _get_logger(__name__).warning(
         "legacy_ingest_upstream_error",
@@ -3352,6 +3376,7 @@ async def ingest_email(
             knowledge_store=knowledge_store,
             embedder=getattr(request.app.state, "embedder", None),
             embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
+            cost_controller=_state_cost_controller(request),
         )
         result = await orch.ingest(
             content,
@@ -3407,6 +3432,7 @@ async def ingest_notion(
             knowledge_store=knowledge_store,
             embedder=getattr(request.app.state, "embedder", None),
             embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
+            cost_controller=_state_cost_controller(request),
         )
 
         total_chunks = 0
@@ -3532,6 +3558,7 @@ async def ingest_gdrive_folder(
             knowledge_store=knowledge_store,
             embedder=getattr(request.app.state, "embedder", None),
             embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
+            cost_controller=_state_cost_controller(request),
         )
         total_chunks = 0
         ingested_count = 0
@@ -3572,6 +3599,8 @@ async def ingest_gdrive_folder(
                 )
                 total_chunks += res.chunks_created
                 ingested_count += 1
+            except (DecisionBudgetExceededError, EmbeddingBudgetUnverifiableError):
+                raise  # the tenant's budget, not this file: stop the whole request
             except Exception as file_exc:
                 if "download cap" in str(file_exc):
                     truncated = True

@@ -51,8 +51,12 @@ class IngestionOrchestrator:
         indexing_dependencies: Mapping[RAGStrategy, IndexingDependency] | None = None,
         rag_indexing_config: RAGIndexingConfig | None = None,
         embed_provider_resolver: Callable[[str], Any] | None = None,
+        cost_controller: Any = None,
     ) -> None:
         self._kb = knowledge_store
+        # Reserves each embedding batch against the tenant's budget (KB-40);
+        # None -> the process-wide controller the API / worker registered.
+        self._cost_controller = cost_controller
         self._embedder = embedder
         # Maps an embedding provider name (e.g. "voyage", "openai") to a concrete
         # provider instance so EmbeddingOrchestrator.select's chosen model is
@@ -384,6 +388,7 @@ class IngestionOrchestrator:
             tenant_ctx=tenant_ctx,
             default_provider=self._embedder,
             provider_resolver=self._embed_provider_resolver,
+            cost_controller=self._cost_controller,
         )
         embeddings = routed.embeddings
         if len(embeddings) != chunks_prepared:

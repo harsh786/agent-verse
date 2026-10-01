@@ -166,7 +166,9 @@ def test_delete_collection_with_db_mock() -> None:
     coll_id = _create_collection(client)
 
     resp = client.delete(f"/knowledge/collections/{coll_id}", headers=H)
-    assert resp.status_code in (204, 500)
+    # The mock answers every query with a row, so the KB-33 document-hold probe
+    # reads "held" (409) — the delete fails closed rather than going through.
+    assert resp.status_code in (204, 409, 500)
 
 
 # ---------------------------------------------------------------------------
