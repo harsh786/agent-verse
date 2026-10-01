@@ -15,7 +15,6 @@ import pytest
 
 from app.mcp.client import MCPClient
 from app.mcp.registry import MCPRegistry, MCPServerConfig
-from app.providers.vault import store_connector_secret
 from app.tenancy.context import PlanTier, TenantContext
 
 _REF = "vault://connectors/builtin-shared/api_token"
@@ -37,7 +36,7 @@ def _cfg(handler: Any) -> MCPServerConfig:
 
 @pytest.mark.asyncio
 async def test_global_mapping_is_not_consulted_before_tenant_resolver() -> None:
-    store_connector_secret(_REF, "TENANT-A-SECRET")  # process-global legacy mapping
+    # (PROV-14: the process-global legacy mapping no longer exists at all.)
     seen: dict[str, Any] = {}
 
     async def handler(tool_name: str, args: dict, credentials: dict) -> dict:

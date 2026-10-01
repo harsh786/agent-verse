@@ -304,7 +304,14 @@ class MCPClient:
             )
             if inspect.isawaitable(resolved):
                 resolved = await resolved
-            return resolved or ""
+            if not resolved:
+                # Never authenticate with an empty secret (PROV-14).
+                from app.providers.vault import ConnectorSecretUnavailableError
+
+                raise ConnectorSecretUnavailableError(
+                    f"connector secret {value!r} could not be resolved"
+                )
+            return str(resolved)
         return str(value)
 
     async def _ensure_mcp_session(

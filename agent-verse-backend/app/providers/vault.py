@@ -24,7 +24,15 @@ _vault_log = _logging.getLogger(__name__)
 
 _DEV_INSECURE_MASTER_KEY = "dev-insecure-master-key"
 _CONNECTOR_SECRET_PREFIX = "vault://connectors/"
-_CONNECTOR_SECRET_STORE: dict[str, str] = {}
+
+
+class ConnectorSecretUnavailableError(LookupError):
+    """A connector secret cannot be stored / resolved (no store, or unknown ref).
+
+    There is deliberately no per-process fallback: a secret kept in one
+    replica's memory cannot be resolved by another, and connector auth used to
+    send an empty value instead of failing.
+    """
 
 
 def _get_master_key() -> str:
@@ -68,22 +76,24 @@ def store_connector_secret(
     *,
     store: MutableMapping[str, str] | None = None,
 ) -> None:
-    """Store a connector secret in the provided store or process fallback store."""
-    if store is not None:
-        store[ref] = value
-        return
-    _CONNECTOR_SECRET_STORE[ref] = value
+    """Store a connector secret in the provided store (required)."""
+    if store is None:
+        raise ConnectorSecretUnavailableError(
+            "no connector secret store is configured; refusing to keep the secret in "
+            "process memory"
+        )
+    store[ref] = value
 
 
 def resolve_connector_secret_ref(
     ref: str,
     *,
     store: MutableMapping[str, str] | None = None,
-) -> str | None:
-    """Resolve a connector secret reference without exposing secrets in configs."""
+) -> str:
+    """Resolve a connector secret reference; raises when it cannot be resolved."""
     if store is not None and ref in store:
         return store[ref]
-    return _CONNECTOR_SECRET_STORE.get(ref)
+    raise ConnectorSecretUnavailableError(f"connector secret {ref!r} could not be resolved")
 
 
 def _connector_secret_ref_parts(ref: str) -> tuple[str, str]:
@@ -146,7 +156,7 @@ async def store_connector_secret_for_tenant(
     store: Any = None,
     tenant_ctx: Any = None,
 ) -> None:
-    """Store a connector secret in either a tenant-aware store or mapping fallback."""
+    """Store a connector secret in a tenant-aware store (or an explicit mapping)."""
     if store is not None and hasattr(store, "store"):
         result = store.store(ref, value, tenant_ctx=tenant_ctx)
         if inspect.isawaitable(result):
@@ -160,13 +170,17 @@ async def resolve_connector_secret_ref_for_tenant(
     *,
     store: Any = None,
     tenant_ctx: Any = None,
-) -> str | None:
-    """Resolve a connector secret from a tenant-aware store or mapping fallback."""
+) -> str:
+    """Resolve a connector secret from a tenant-aware store; raises when missing."""
     if store is not None and hasattr(store, "resolve"):
         result = store.resolve(ref, tenant_ctx=tenant_ctx)
         if inspect.isawaitable(result):
             result = await result
-        return str(result) if result is not None else None
+        if result is None:
+            raise ConnectorSecretUnavailableError(
+                f"connector secret {ref!r} could not be resolved"
+            )
+        return str(result)
     return resolve_connector_secret_ref(ref, store=store)
 
 

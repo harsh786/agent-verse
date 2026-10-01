@@ -760,11 +760,14 @@ class TestVaultConnectorSecretHelpers:
         resolved = resolve_connector_secret_ref(ref, store=store)
         assert resolved == "my-secret-value"
 
-    def test_resolve_missing_ref_returns_none(self):
-        from app.providers.vault import resolve_connector_secret_ref
+    def test_resolve_missing_ref_raises(self):
+        from app.providers.vault import (
+            ConnectorSecretUnavailableError,
+            resolve_connector_secret_ref,
+        )
 
-        result = resolve_connector_secret_ref("vault://connectors/nonexistent/key", store={})
-        assert result is None
+        with pytest.raises(ConnectorSecretUnavailableError):
+            resolve_connector_secret_ref("vault://connectors/nonexistent/key", store={})
 
     def test_connector_secret_ref_parts_valid(self):
         from app.providers.vault import _connector_secret_ref_parts
@@ -786,16 +789,14 @@ class TestVaultConnectorSecretHelpers:
         with pytest.raises(ValueError):
             _connector_secret_ref_parts("vault://connectors/")
 
-    def test_store_in_global_fallback(self):
-        """store_connector_secret without a store uses the module-level fallback dict."""
+    def test_no_global_fallback_store(self):
+        """PROV-14: without a store a secret is refused, never kept in process memory."""
         from app.providers import vault as vault_module
 
         ref = "vault://connectors/global-test/secret"
-        vault_module.store_connector_secret(ref, "global-value")
-        result = vault_module.resolve_connector_secret_ref(ref)
-        assert result == "global-value"
-        # cleanup
-        del vault_module._CONNECTOR_SECRET_STORE[ref]
+        with pytest.raises(vault_module.ConnectorSecretUnavailableError):
+            vault_module.store_connector_secret(ref, "global-value")
+        assert not hasattr(vault_module, "_CONNECTOR_SECRET_STORE")
 
     @pytest.mark.asyncio
     async def test_store_connector_secret_for_tenant_mapping(self):

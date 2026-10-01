@@ -25,6 +25,7 @@ from app.net.ssrf_guard import (
     public_async_client,
 )
 from app.providers.vault import (
+    ConnectorSecretUnavailableError,
     connector_secret_ref,
     is_connector_secret_ref,
     resolve_connector_secret_ref,
@@ -237,11 +238,16 @@ async def _resolve_auth_value(
 ) -> str:
     if is_connector_secret_ref(value):
         if secret_resolver is None:
-            return resolve_connector_secret_ref(value) or ""
+            return resolve_connector_secret_ref(value)  # raises: no process fallback
         resolved = secret_resolver(value)
         if hasattr(resolved, "__await__"):
             resolved = await resolved
-        return str(resolved) if resolved is not None else ""
+        if not resolved:
+            # Never authenticate with an empty secret (PROV-14).
+            raise ConnectorSecretUnavailableError(
+                f"connector secret {value!r} could not be resolved"
+            )
+        return str(resolved)
     return str(value)
 
 

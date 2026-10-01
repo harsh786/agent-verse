@@ -53,10 +53,14 @@ def test_store_connector_secret_in_global_store_and_resolve() -> None:
         resolve_connector_secret_ref,
         store_connector_secret,
     )
+    from app.providers.vault import ConnectorSecretUnavailableError
+
     ref = connector_secret_ref("server-x", "token")
-    store_connector_secret(ref, "secret-value-123")
-    resolved = resolve_connector_secret_ref(ref)
-    assert resolved == "secret-value-123"
+    # PROV-14: no process-global fallback store any more.
+    with pytest.raises(ConnectorSecretUnavailableError):
+        store_connector_secret(ref, "secret-value-123")
+    with pytest.raises(ConnectorSecretUnavailableError):
+        resolve_connector_secret_ref(ref)
 
 
 def test_store_connector_secret_in_custom_mapping() -> None:
@@ -70,17 +74,14 @@ def test_store_connector_secret_in_custom_mapping() -> None:
     store_connector_secret(ref, "my-secret", store=custom)
     # Should be in custom store only
     assert custom[ref] == "my-secret"
-    # Global store was NOT updated
-    resolved_global = resolve_connector_secret_ref(ref)
-    # Global store may or may not have it, but custom read is correct
     resolved_custom = resolve_connector_secret_ref(ref, store=custom)
     assert resolved_custom == "my-secret"
 
 
-def test_resolve_connector_secret_ref_returns_none_when_missing() -> None:
-    from app.providers.vault import resolve_connector_secret_ref
-    result = resolve_connector_secret_ref("vault://connectors/nonexistent/key")
-    assert result is None
+def test_resolve_connector_secret_ref_raises_when_missing() -> None:
+    from app.providers.vault import ConnectorSecretUnavailableError, resolve_connector_secret_ref
+    with pytest.raises(ConnectorSecretUnavailableError):
+        resolve_connector_secret_ref("vault://connectors/nonexistent/key", store={})
 
 
 def test_resolve_connector_secret_ref_prefers_custom_store() -> None:
@@ -91,7 +92,7 @@ def test_resolve_connector_secret_ref_prefers_custom_store() -> None:
     )
     ref = connector_secret_ref("priority-s", "pk")
     custom: dict[str, str] = {ref: "from-custom"}
-    store_connector_secret(ref, "from-global")
+    store_connector_secret(ref, "ignored", store={})
     resolved = resolve_connector_secret_ref(ref, store=custom)
     assert resolved == "from-custom"
 
@@ -294,8 +295,10 @@ async def test_resolve_for_tenant_returns_none_from_async_store() -> None:
         async def resolve(self, r: str, *, tenant_ctx: object = None) -> str | None:
             return None
 
-    result = await resolve_connector_secret_ref_for_tenant(ref, store=_AsyncStore())
-    assert result is None
+    from app.providers.vault import ConnectorSecretUnavailableError
+
+    with pytest.raises(ConnectorSecretUnavailableError):
+        await resolve_connector_secret_ref_for_tenant(ref, store=_AsyncStore())
 
 
 @pytest.mark.asyncio

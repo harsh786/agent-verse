@@ -188,7 +188,10 @@ async def test_resolve_auth_value_secret_ref_async():
 
 
 @pytest.mark.asyncio
-async def test_resolve_auth_value_secret_ref_returns_none():
+async def test_resolve_auth_value_secret_ref_unresolved_raises():
+    """PROV-14: an unresolvable secret is an error, never an empty credential."""
+    from app.providers.vault import ConnectorSecretUnavailableError
+
     def resolver(ref):
         return None
 
@@ -196,9 +199,10 @@ async def test_resolve_auth_value_secret_ref_returns_none():
     client._secret_resolver = resolver
     client._secret_resolver_accepts_tenant = False
 
-    with patch("app.mcp.client.is_connector_secret_ref", return_value=True):
-        result = await client._resolve_auth_value("vault://empty", _ctx())
-    assert result == ""
+    with patch("app.mcp.client.is_connector_secret_ref", return_value=True), pytest.raises(
+        ConnectorSecretUnavailableError
+    ):
+        await client._resolve_auth_value("vault://empty", _ctx())
 
 
 # ---------------------------------------------------------------------------

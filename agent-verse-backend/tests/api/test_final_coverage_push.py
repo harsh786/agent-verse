@@ -2925,9 +2925,10 @@ class TestConnectorsWave5:
         from app.api.connectors import _secret_resolver
         from app.providers.vault import connector_secret_ref, store_connector_secret
 
-        # Store a secret so resolve works
+        # Store a secret in the app's (explicit) secret store so resolve works
         ref = connector_secret_ref("test-server", "api_key")
-        store_connector_secret(ref, "my-secret-value")
+        _store: dict[str, str] = {}
+        store_connector_secret(ref, "my-secret-value", store=_store)
 
         # Build a fake request
         class FakeState:
@@ -2937,7 +2938,7 @@ class TestConnectorsWave5:
 
         class FakeApp:
             state = MagicMock()
-            state.connector_secret_store = None
+            state.connector_secret_store = _store
 
         class FakeReq:
             state = FakeState()
@@ -3185,11 +3186,12 @@ class TestConnectorsWave6:
         from app.api.connectors import _resolve_auth_value
         from app.providers.vault import connector_secret_ref
 
+        from app.providers.vault import ConnectorSecretUnavailableError
+
         ref = connector_secret_ref("srv-noresolver", "key")
-        # Don't store the secret - resolve_connector_secret_ref returns None
-        result = await _resolve_auth_value(ref, secret_resolver=None)
-        # Returns "" when secret_resolver is None and no stored value
-        assert isinstance(result, str)
+        # PROV-14: no resolver and no store is an error, never an empty credential.
+        with pytest.raises(ConnectorSecretUnavailableError):
+            await _resolve_auth_value(ref, secret_resolver=None)
 
     def test_register_connector_secret_fail_with_ref(self) -> None:
         """Lines 302-304: register_connector fails when secret storage fails for a valid ref."""
