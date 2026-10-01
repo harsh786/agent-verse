@@ -481,6 +481,9 @@ function GovernedRecordsSection() {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+/** Execution-memory rows per page (GET /memory/execution limit). */
+const EXEC_PAGE_SIZE = 25;
+
 export function MemoryExplorerPage() {
   const qc = useQueryClient();
   const [recallQuery, setRecallQuery] = useState('');
@@ -489,6 +492,7 @@ export function MemoryExplorerPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
   const [execOpen, setExecOpen] = useState(false);
+  const [execPage, setExecPage] = useState(0);
   const [editingMemory, setEditingMemory] = useState<MemoryEntry | null>(null);
   const [deleteMemoryId, setDeleteMemoryId] = useState<string | null>(null);
   const PAGE_SIZE = 20;
@@ -520,9 +524,14 @@ export function MemoryExplorerPage() {
   });
   const unreliableCount = reliability.filter((t) => t.unreliable).length;
 
-  const { data: execMemories = [], isLoading: execLoading } = useQuery({
-    queryKey: ['execution-memories'],
-    queryFn: () => memoryApi.listExecution(),
+  const {
+    data: execMemories = [],
+    isLoading: execLoading,
+    isError: execError,
+    refetch: refetchExec,
+  } = useQuery({
+    queryKey: ['execution-memories', execPage],
+    queryFn: () => memoryApi.listExecution({ limit: EXEC_PAGE_SIZE, offset: execPage * EXEC_PAGE_SIZE }),
     enabled: execOpen,
     staleTime: 30_000,
   });
@@ -887,7 +896,15 @@ export function MemoryExplorerPage() {
                 <div className="p-5 space-y-2">
                   {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10" />)}
                 </div>
-              ) : execMemories.length === 0 ? (
+              ) : execError ? (
+                <div role="alert" className="px-5 py-6 flex items-center gap-3 text-sm text-mission-red">
+                  <AlertTriangle className="h-5 w-5 shrink-0" aria-hidden="true" />
+                  Could not load execution memory — the memory store is unavailable.
+                  <button type="button" onClick={() => void refetchExec()} className="ml-2 underline text-white/70 hover:text-white">
+                    Retry
+                  </button>
+                </div>
+              ) : execMemories.length === 0 && execPage === 0 ? (
                 <EmptyState
           icon={<Inbox size={40} />}
           title="No execution memories"
@@ -915,6 +932,27 @@ export function MemoryExplorerPage() {
                     </li>
                   ))}
                 </ul>
+              )}
+              {!execLoading && !execError && (execPage > 0 || execMemories.length === EXEC_PAGE_SIZE) && (
+                <div className="flex items-center justify-between px-5 py-2 border-t border-neural-violet/10 text-xs text-white/50">
+                  <button
+                    type="button"
+                    disabled={execPage === 0}
+                    onClick={() => setExecPage((p) => Math.max(0, p - 1))}
+                    className="disabled:opacity-30 hover:text-white"
+                  >
+                    Newer
+                  </button>
+                  <span>Page {execPage + 1}</span>
+                  <button
+                    type="button"
+                    disabled={execMemories.length < EXEC_PAGE_SIZE}
+                    onClick={() => setExecPage((p) => p + 1)}
+                    className="disabled:opacity-30 hover:text-white"
+                  >
+                    Older
+                  </button>
+                </div>
               )}
             </div>
           )}

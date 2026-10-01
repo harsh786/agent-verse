@@ -700,6 +700,42 @@ describe('MemoryExplorerPage — Tool reliability thresholds & exec memory failu
   });
 });
 
+// ── MEM-06: execution memory error state and paging ─────────────────────────
+
+describe('MemoryExplorerPage — execution memory states (MEM-06)', () => {
+  test('a failed execution-memory load shows an error, not "No execution memories"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/execution')) return new Response('{"detail":"down"}', { status: 503 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await userEvent.click(screen.getByText(/execution memory/i));
+    expect(await screen.findByText(/could not load execution memory/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no execution memories/i)).not.toBeInTheDocument();
+  });
+
+  test('pages through execution memory with limit/offset', async () => {
+    const calls: string[] = [];
+    const page = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ goal_text: `goal ${i}`, success: true, recorded_at: '2026-01-01' }));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/execution')) {
+        calls.push(url);
+        return new Response(JSON.stringify(url.includes('offset=0') ? page(25) : [{ goal_text: 'oldest plan', success: false, recorded_at: '2025-01-01' }]), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await userEvent.click(screen.getByText(/execution memory/i));
+    await screen.findByText('goal 0');
+    await userEvent.click(screen.getByRole('button', { name: 'Older' }));
+    expect(await screen.findByText('oldest plan')).toBeInTheDocument();
+    expect(calls.some((u) => u.includes('limit=25') && u.includes('offset=25'))).toBe(true);
+  });
+});
+
 // ── MEM-01: tool reliability error / empty / flagged states ─────────────────
 
 describe('MemoryExplorerPage — tool reliability states (MEM-01)', () => {

@@ -1541,7 +1541,10 @@ export const memoryApi = {
     request<MemoryEntry>(`/memory/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   clearAll: () => request<void>("/memory", { method: "DELETE" }),
   toolReliability: () => request<ToolReliabilityRow[]>("/memory/tool-reliability"),
-  listExecution: () => request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>("/memory/execution"),
+  listExecution: (params: { limit?: number; offset?: number } = {}) =>
+    request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>(
+      `/memory/execution?limit=${params.limit ?? 50}&offset=${params.offset ?? 0}`,
+    ),
   /** Canonical governed records categorized by memory_kind with goal-linkage + TTL. */
   listRecords: (opts: { kind?: MemoryKind; goalId?: string; limit?: number } = {}) => {
     const params = new URLSearchParams();

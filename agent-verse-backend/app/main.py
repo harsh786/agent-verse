@@ -1541,32 +1541,10 @@ def create_app(
             except Exception as _tr_exc:
                 logger.warning("tool_reliability_store_wire_failed", error=str(_tr_exc))
 
-            # Seed execution memory from DB for faster cold-start recall()
-            try:
-
-                async def _hydrate_exec_memory() -> None:
-                    try:
-                        _em_rows = None
-                        async with db_factory() as _em_sess:
-                            from sqlalchemy import text as _t
-
-                            _em_rows = (
-                                await _em_sess.execute(
-                                    _t("SELECT DISTINCT tenant_id FROM execution_memory LIMIT 50")
-                                )
-                            ).fetchall()
-                        if _em_rows:
-                            for (_em_tid,) in _em_rows:
-                                await _exec_memory.load_from_db(tenant_id=_em_tid, db=db_factory)
-                        logger.info("execution_memory_hydrated", tenant_count=len(_em_rows or []))
-                    except Exception as _em_inner_err:
-                        logger.warning(
-                            "execution_memory_hydration_failed", error=str(_em_inner_err)
-                        )
-
-                _startup.spawn("execution_memory_hydration", _hydrate_exec_memory)
-            except Exception as _em_exc:
-                logger.warning("execution_memory_hydration_setup_failed", error=str(_em_exc))
+            # No startup hydration of execution memory (MEM-06): recall_async and
+            # GET /memory/execution read execution_memory under each tenant's RLS.
+            # The old seed ran "SELECT DISTINCT tenant_id" on the app session with
+            # no system context, so under FORCE RLS it hydrated nothing.
 
             # Wire DB factory into LongTermMemoryStore
             try:

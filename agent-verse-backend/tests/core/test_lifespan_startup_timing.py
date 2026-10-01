@@ -87,7 +87,9 @@ async def test_lifespan_with_400_tenants_serves_fast_without_per_tenant_mcp_work
         # Non-essential warm-ups were started in the background, tracked.
         tasks = tracker.snapshot()["tasks"]
         assert "marketplace_v2_seed" in tasks
-        assert "execution_memory_hydration" in tasks
+        # MEM-06: execution memory is read per tenant under RLS on demand — the
+        # RLS-blind startup hydration is gone.
+        assert "execution_memory_hydration" not in tasks
         assert "goal_warm_cache" in tasks
         await tracker.wait_ready(timeout=60)
 

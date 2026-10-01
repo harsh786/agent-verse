@@ -345,22 +345,28 @@ async def list_long_term_memories(
 
 
 @router.get("/execution")
-async def list_execution_memories(request: Request) -> list[dict[str, Any]]:
-    """List execution memory entries (winning plans)."""
+async def list_execution_memories(
+    request: Request,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[dict[str, Any]]:
+    """List recorded executions (winning plans and failures), newest first.
+
+    Served from ``execution_memory`` under the tenant's RLS (MEM-06) — it
+    returned the in-process list of whichever replica ran the goal. 503 on a
+    DB error.
+    """
     tenant = _require_tenant(request)
-    # Execution memory is in-memory only for now
     exec_mem = getattr(request.app.state, "exec_memory", None)
     if exec_mem is None:
         return []
-    memories = exec_mem._memories.get(tenant.tenant_id, [])
-    return [
-        {
-            "goal_text": m.get("goal_text", "")[:200],
-            "success": m.get("success", False),
-            "recorded_at": m.get("recorded_at", ""),
-        }
-        for m in memories[-50:]  # Cap at 50
-    ]
+    try:
+        rows: list[dict[str, Any]] = await exec_mem.list_async(
+            tenant_id=tenant.tenant_id, db=_get_db(request), limit=limit, offset=offset
+        )
+    except Exception as exc:
+        raise _db_unavailable("list_execution_memories", exc) from exc
+    return rows
 
 
 @router.get("/records")

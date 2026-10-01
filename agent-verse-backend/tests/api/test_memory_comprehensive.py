@@ -195,6 +195,47 @@ def test_list_long_term_reads_postgres_not_the_replica_cache() -> None:
     assert [r["memory_id"] for r in resp.json()] == ["db-1"]
 
 
+def test_list_execution_reads_postgres_on_a_fresh_instance() -> None:
+    """MEM-06: rows seeded in execution_memory are listed by a fresh
+    ExecutionMemory (empty process log), paged, under the tenant GUC."""
+    from datetime import UTC, datetime
+
+    from app.memory.execution import ExecutionMemory
+    from tests._rls_recorder import RlsRecordingDb, assert_tenant_scoped
+
+    ts = datetime(2026, 9, 1, tzinfo=UTC)
+    db = RlsRecordingDb(
+        rows_for=lambda sql, _p: [("ship release", True, ts)]
+        if "FROM execution_memory" in sql
+        else []
+    )
+    app = _make_app()
+    app.state.exec_memory = ExecutionMemory()
+    app.state.db_session_factory = db
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/memory/execution?limit=10&offset=20", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 200
+    assert resp.json() == [
+        {"goal_text": "ship release", "success": True, "recorded_at": ts.isoformat()}
+    ]
+    (stmt,) = assert_tenant_scoped(db, "execution_memory", _CTX.tenant_id)
+    assert stmt.params["lim"] == 10 and stmt.params["off"] == 20
+
+
+def test_list_execution_db_failure_is_503() -> None:
+    from app.memory.execution import ExecutionMemory
+
+    class _Broken:
+        def __call__(self) -> Any:
+            raise ConnectionError("db down")
+
+    app = _make_app()
+    app.state.exec_memory = ExecutionMemory()
+    app.state.db_session_factory = _Broken()
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.get("/memory/execution", headers={"X-API-Key": _VALID_KEY}).status_code == 503
+
+
 def test_list_long_term_db_failure_is_503() -> None:
     from app.memory.long_term import LongTermMemoryStore
 
@@ -233,8 +274,11 @@ def test_list_execution_memories_no_exec_mem() -> None:
 
 
 def test_list_execution_memories_with_exec_mem() -> None:
+    """No DB configured: the process's execution log is the store."""
+    from app.memory.execution import ExecutionMemory
+
     app = _make_app()
-    exec_mem = MagicMock()
+    exec_mem = ExecutionMemory()
     exec_mem._memories = {
         _CTX.tenant_id: [
             {"goal_text": "Deploy services", "success": True, "recorded_at": "2024-01-01"},

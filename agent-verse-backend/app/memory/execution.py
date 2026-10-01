@@ -225,6 +225,51 @@ class ExecutionMemory:
             return False
         return True
 
+    async def list_async(
+        self, *, tenant_id: str, db: Any = None, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """A tenant's recorded executions, newest first (the REST list, MEM-06).
+
+        From ``execution_memory`` under the tenant's RLS when a DB is wired —
+        the same on every replica and after a restart. Raises on a DB failure.
+        Without a DB, this process's log is the store.
+        """
+        if db is None:
+            rows = list(reversed(self._memories.get(tenant_id, [])))[offset : offset + limit]
+            return [
+                {
+                    "goal_text": str(m.get("goal_text", ""))[:200],
+                    "success": bool(m.get("success", False)),
+                    "recorded_at": str(m.get("recorded_at", "")),
+                }
+                for m in rows
+            ]
+        from sqlalchemy import text
+
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            db_rows = (
+                await session.execute(
+                    text(
+                        "SELECT goal_text, success, created_at FROM execution_memory "
+                        "WHERE tenant_id = :tid ORDER BY created_at DESC "
+                        "LIMIT :lim OFFSET :off"
+                    ),
+                    {"tid": tenant_id, "lim": limit, "off": offset},
+                )
+            ).fetchall()
+        return [
+            {
+                "goal_text": str(r[0] or "")[:200],
+                "success": bool(r[1]),
+                "recorded_at": r[2].isoformat() if hasattr(r[2], "isoformat") else str(r[2] or ""),
+            }
+            for r in db_rows
+        ]
+
     async def load_from_db(
         self,
         *,
