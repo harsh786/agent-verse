@@ -359,7 +359,7 @@ async def test_trigger_self_optimization_with_self_optimizer_suggestions() -> No
     returns non-empty suggestions (covers lines 760-766)."""
     p = _fake_provider()
     mock_self_opt = MagicMock()
-    mock_self_opt.analyze_and_suggest = MagicMock(
+    mock_self_opt.analyze_and_persist = AsyncMock(
         return_value=[{"id": "sugg-1"}, {"id": "sugg-2"}]
     )
     g = AgentGraph(planner=p, executor=p, verifier=p)
@@ -374,7 +374,7 @@ async def test_trigger_self_optimization_with_self_optimizer_suggestions() -> No
 
     # Should not raise
     await g._trigger_self_optimization(state=state, scorecard=scorecard, tenant_ctx=_TENANT)
-    mock_self_opt.analyze_and_suggest.assert_called_once()
+    mock_self_opt.analyze_and_persist.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -382,7 +382,7 @@ async def test_trigger_self_optimization_no_suggestions_is_noop() -> None:
     """_trigger_self_optimization is a no-op when self_optimizer returns no suggestions."""
     p = _fake_provider()
     mock_self_opt = MagicMock()
-    mock_self_opt.analyze_and_suggest = MagicMock(return_value=[])
+    mock_self_opt.analyze_and_persist = AsyncMock(return_value=[])
     g = AgentGraph(planner=p, executor=p, verifier=p)
     g._self_optimizer = mock_self_opt
 
@@ -394,15 +394,15 @@ async def test_trigger_self_optimization_no_suggestions_is_noop() -> None:
     scorecard.average_score = MagicMock(return_value=0.45)
 
     await g._trigger_self_optimization(state=state, scorecard=scorecard, tenant_ctx=_TENANT)
-    mock_self_opt.analyze_and_suggest.assert_called_once()
+    mock_self_opt.analyze_and_persist.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_trigger_self_optimization_self_optimizer_exception_swallowed() -> None:
-    """_trigger_self_optimization swallows exceptions from self_optimizer.analyze_and_suggest."""
+    """_trigger_self_optimization swallows exceptions from self_optimizer.analyze_and_persist."""
     p = _fake_provider()
     mock_self_opt = MagicMock()
-    mock_self_opt.analyze_and_suggest = MagicMock(
+    mock_self_opt.analyze_and_persist = AsyncMock(
         side_effect=RuntimeError("self-opt service unavailable")
     )
     g = AgentGraph(planner=p, executor=p, verifier=p)

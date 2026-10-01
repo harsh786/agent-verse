@@ -1023,7 +1023,7 @@ class TestDispatchEvent:
         mock_eval = AsyncMock()
         mock_eval.score_and_persist = AsyncMock(return_value=mock_sc)
         mock_optimizer = MagicMock()
-        mock_optimizer.analyze_and_suggest = MagicMock()
+        mock_optimizer.analyze_and_persist = AsyncMock(return_value=[])
         app = MagicMock()
         app.eval_runner = mock_eval
         app.self_optimizer = mock_optimizer
@@ -1031,7 +1031,7 @@ class TestDispatchEvent:
         svc._app_state = app
         with patch("app.tenancy.limits.decrement_concurrent_goals", AsyncMock()):
             await svc._dispatch_event("g1", {"type": "goal_complete"}, tenant_ctx=_ctx())
-        mock_optimizer.analyze_and_suggest.assert_called_once()
+        mock_optimizer.analyze_and_persist.assert_awaited_once()
 
     async def test_goal_complete_with_redis_publish(self):
         """Lines 1179-1185: publish to Redis on goal_complete."""
