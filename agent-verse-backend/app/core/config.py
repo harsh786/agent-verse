@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     debug: bool = False
     log_level: str = "INFO"
 
+    # --- LLM SDK clients (PROV-06) ---
+    # Every vendor SDK client is built with these instead of the SDK default
+    # (600 s), so no caller can hang for ten minutes on a stuck endpoint.
+    llm_client_timeout_seconds: float = 300.0
+    llm_client_max_retries: int = 2
+
     # --- networking / security ---
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173"]

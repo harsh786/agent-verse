@@ -143,7 +143,11 @@ class OpenAICompatibleProvider:
         except ImportError as exc:
             raise ImportError("Install 'openai' to use OpenAICompatibleProvider") from exc
 
-        self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+        from app.providers.sdk_options import sdk_client_options
+
+        self._client = openai.AsyncOpenAI(
+            api_key=api_key, base_url=base_url, **sdk_client_options()
+        )
         # Vendor-specific chat body extensions (e.g. vLLM
         # {"chat_template_kwargs": {"enable_thinking": false}} to suppress a
         # reasoning model's chain-of-thought). Passed verbatim to chat completions.

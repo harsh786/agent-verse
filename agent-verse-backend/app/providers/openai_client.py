@@ -23,7 +23,9 @@ def async_openai_client(**overrides: Any) -> Any:
     """
     import openai
 
-    kwargs: dict[str, Any] = {}
+    from app.providers.sdk_options import sdk_client_options
+
+    kwargs: dict[str, Any] = dict(sdk_client_options())
     base_url = os.getenv("OPENAI_BASE_URL")
     if base_url:
         kwargs["base_url"] = base_url

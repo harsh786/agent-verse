@@ -71,10 +71,13 @@ class OpenRouterProvider(OpenAICompatibleProvider):
         try:
             import openai
 
+            from app.providers.sdk_options import sdk_client_options
+
             self._client = openai.AsyncOpenAI(
                 api_key=_api_key,
                 base_url="https://openrouter.ai/api/v1",
                 default_headers=self._or_headers,
+                **sdk_client_options(),
             )
         except ImportError as exc:
             raise ImportError("Install 'openai' to use OpenRouterProvider") from exc

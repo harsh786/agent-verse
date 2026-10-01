@@ -38,7 +38,9 @@ class AnthropicProvider:
         except ImportError as exc:
             raise ImportError("Install 'anthropic' to use AnthropicProvider") from exc
 
-        self._client = anthropic.AsyncAnthropic(api_key=api_key)
+        from app.providers.sdk_options import sdk_client_options
+
+        self._client = anthropic.AsyncAnthropic(api_key=api_key, **sdk_client_options())
         self._default_model = default_model
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
