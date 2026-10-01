@@ -68,6 +68,37 @@ def tenant_circuit_scope(tenant_id: str) -> str:
     return f"tenant:{tenant_id}"
 
 
+def _allowed_private_hosts() -> list[str]:
+    """Operator allowlist of private LLM hosts (TENANT_LLM_ALLOWED_PRIVATE_HOSTS)."""
+    import os
+
+    return sorted(
+        {
+            h.strip().lower()
+            for h in os.getenv("TENANT_LLM_ALLOWED_PRIVATE_HOSTS", "").split(",")
+            if h.strip()
+        }
+    )
+
+
+def _pinned_http_client(base_url: str) -> Any:
+    """httpx client for a tenant base_url, pinned to SSRF-checked IPs (SSRF-06).
+
+    The base_url is checked once at build time, but the SDK's own client would
+    resolve the name again on every request — a rebinding host would then
+    receive the tenant's prompts and API key on an internal address. The
+    pinned client re-resolves + checks at every connect and dials the checked
+    IP; only the exact host the operator allowlisted may be private.
+    """
+    from urllib.parse import urlparse
+
+    from app.net.ssrf_guard import public_async_client
+
+    host = (urlparse(base_url).hostname or "").lower()
+    allowed = [host] if host and host in _allowed_private_hosts() else None
+    return public_async_client(allowed_domains=allowed)
+
+
 def _assert_tenant_base_url_allowed(base_url: str) -> None:
     """A tenant-supplied base_url must be a public host.
 
@@ -76,18 +107,12 @@ def _assert_tenant_base_url_allowed(base_url: str) -> None:
     legitimately run models on private hosts list those hosts in
     TENANT_LLM_ALLOWED_PRIVATE_HOSTS (comma-separated hostnames).
     """
-    import os
     from urllib.parse import urlparse
 
     from app.net.ssrf_guard import assert_public_url
 
     host = (urlparse(base_url).hostname or "").lower()
-    allowed = {
-        h.strip().lower()
-        for h in os.getenv("TENANT_LLM_ALLOWED_PRIVATE_HOSTS", "").split(",")
-        if h.strip()
-    }
-    if host and host in allowed:
+    if host and host in _allowed_private_hosts():
         return
     try:
         assert_public_url(base_url, context="tenant_llm_base_url")
@@ -237,6 +262,7 @@ def _construct(
             api_key=api_key,
             base_url=base_url or OFFICIAL_BASE_URLS["nvidia"],
             default_model=model or _DEFAULT_MODELS["nvidia"],
+            http_client=_pinned_http_client(base_url) if base_url else None,
         )
     else:
         from app.providers.openai_compatible import OpenAICompatibleProvider
@@ -247,5 +273,6 @@ def _construct(
             base_url=base_url or OFFICIAL_BASE_URLS[pname],
             default_model=model,
             embed_model=embed_model,
+            http_client=_pinned_http_client(base_url) if base_url else None,
         )
     return provider

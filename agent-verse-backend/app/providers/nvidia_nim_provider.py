@@ -11,7 +11,7 @@ Environment variables:
 from __future__ import annotations
 
 import os
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from app.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -38,6 +38,7 @@ class NvidiaNIMProvider(OpenAICompatibleProvider):
         api_key: str | None = None,
         base_url: str | None = None,
         default_model: str = "nvidia/llama-3.1-nemotron-70b-instruct",
+        http_client: Any | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("NGC_API_KEY", ""),
@@ -46,4 +47,5 @@ class NvidiaNIMProvider(OpenAICompatibleProvider):
             ),
             default_model=default_model,
             supports_vision_flag=False,
+            http_client=http_client,
         )

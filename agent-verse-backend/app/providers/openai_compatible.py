@@ -137,6 +137,7 @@ class OpenAICompatibleProvider:
         embed_model: str | None = None,
         supports_vision_flag: bool = True,
         extra_body: dict[str, Any] | None = None,
+        http_client: Any | None = None,
     ) -> None:
         try:
             import openai
@@ -145,8 +146,14 @@ class OpenAICompatibleProvider:
 
         from app.providers.sdk_options import sdk_client_options
 
+        # ``http_client``: a tenant-supplied base_url passes the SSRF-pinned
+        # client (ssrf_guard.public_async_client) so every connection is
+        # re-checked at connect time instead of re-resolved by the SDK.
         self._client = openai.AsyncOpenAI(
-            api_key=api_key, base_url=base_url, **sdk_client_options()
+            api_key=api_key,
+            base_url=base_url,
+            http_client=http_client,
+            **sdk_client_options(),
         )
         # Vendor-specific chat body extensions (e.g. vLLM
         # {"chat_template_kwargs": {"enable_thinking": false}} to suppress a
