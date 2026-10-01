@@ -19,6 +19,14 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
+class CivilizationGoalUnavailableError(RuntimeError):
+    """A civilization goal could not be handed to the goal pipeline.
+
+    Raised instead of answering "accepted" with a synthetic id: the caller maps it
+    to a 503 so an outage is never reported as an accepted goal.
+    """
+
+
 class CivilizationOrchestrator:
     """Runtime coordinator for a civilization.
 
@@ -165,34 +173,48 @@ class CivilizationOrchestrator:
                     limit=5,
                 )
 
-        result_goal_id = goal_id
-        if self._goal_service is not None:
-            try:
-                bb_context_str = ""
-                if blackboard_context:
-                    bb_context_str = "\n".join(
-                        f"- [{e.get('topic', '')}] {str(e.get('content', ''))[:200]}"
-                        f" (confidence: {e.get('confidence', 0):.2f})"
-                        for e in blackboard_context
-                    )
+        if self._goal_service is None:
+            await self._emit_goal_rejected(goal_id, "goal service unavailable")
+            raise CivilizationGoalUnavailableError("goal service is not configured")
 
-                result = await self._goal_service.submit_goal(
-                    goal=goal,
-                    tenant_ctx=self._tenant_ctx,
-                    agent_id=agent_id,
-                    priority=priority,
-                    dry_run=False,
-                    execution_context={
-                        "civilization_id": self._civ_id,
-                        "orchestrator_goal_id": goal_id,
-                        "parent_goal_id": goal_id,
-                        "blackboard_context": bb_context_str,
-                        "blackboard_entry_count": len(blackboard_context),
-                    },
-                )
-                result_goal_id = result.get("goal_id", goal_id)
-            except Exception as exc:
-                logger.warning("orchestrator_goal_submit_failed", error=str(exc))
+        bb_context_str = ""
+        if blackboard_context:
+            bb_context_str = "\n".join(
+                f"- [{e.get('topic', '')}] {str(e.get('content', ''))[:200]}"
+                f" (confidence: {e.get('confidence', 0):.2f})"
+                for e in blackboard_context
+            )
+
+        try:
+            result = await self._goal_service.submit_goal(
+                goal=goal,
+                tenant_ctx=self._tenant_ctx,
+                agent_id=agent_id,
+                priority=priority,
+                dry_run=False,
+                execution_context={
+                    "civilization_id": self._civ_id,
+                    "orchestrator_goal_id": goal_id,
+                    "parent_goal_id": goal_id,
+                    "blackboard_context": bb_context_str,
+                    "blackboard_entry_count": len(blackboard_context),
+                },
+            )
+        except Exception as exc:
+            # Quota/budget/readiness refusals and outages propagate with their own
+            # status; nothing is reported as accepted.
+            logger.warning(
+                "orchestrator_goal_submit_failed",
+                civilization_id=self._civ_id,
+                error_type=type(exc).__name__,
+            )
+            await self._emit_goal_rejected(goal_id, type(exc).__name__)
+            raise
+
+        result_goal_id = result.get("goal_id") if isinstance(result, dict) else None
+        if not result_goal_id:
+            await self._emit_goal_rejected(goal_id, "no goal id returned")
+            raise CivilizationGoalUnavailableError("goal service returned no goal id")
 
         return {
             "status": "accepted",
@@ -201,6 +223,20 @@ class CivilizationOrchestrator:
             "agent_id": agent_id,
             "routing_confidence": routing.get("confidence", 0.0),
         }
+
+    async def _emit_goal_rejected(self, orchestrator_goal_id: str, reason: str) -> None:
+        """Best-effort GOAL_REJECTED event; the caller's error is what matters."""
+        try:
+            await emit_event(
+                civilization_id=self._civ_id,
+                tenant_id=self._tenant_id,
+                event_type=CivEventType.GOAL_REJECTED,
+                payload={"orchestrator_goal_id": orchestrator_goal_id, "reason": reason},
+                db=self._db,
+                redis=self._redis,
+            )
+        except Exception as exc:
+            logger.warning("orchestrator_goal_rejected_event_failed", error=type(exc).__name__)
 
     async def trigger_debate(
         self,

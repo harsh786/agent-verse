@@ -7,6 +7,12 @@ from app.civilization.models import Constitution
 from app.civilization.orchestrator import CivilizationOrchestrator
 
 
+def _goal_service() -> AsyncMock:
+    gs = AsyncMock()
+    gs.submit_goal = AsyncMock(return_value={"goal_id": "goal-from-service"})
+    return gs
+
+
 def _make_orchestrator(**kwargs) -> CivilizationOrchestrator:
     constitution = kwargs.get("constitution", Constitution(max_depth=3, total_budget_usd=50.0))
 
@@ -42,7 +48,7 @@ def _make_orchestrator(**kwargs) -> CivilizationOrchestrator:
         society=kwargs.get("society", mock_society),
         bus=kwargs.get("bus", mock_bus),
         blackboard=kwargs.get("blackboard", AsyncMock()),
-        goal_service=kwargs.get("goal_service"),
+        goal_service=kwargs["goal_service"] if "goal_service" in kwargs else _goal_service(),
         db_session_factory=kwargs.get("db"),
         redis=kwargs.get("redis"),
     )
@@ -338,8 +344,15 @@ async def test_submit_goal_multi_agent_supervisor_failure_falls_through():
 
 
 @pytest.mark.asyncio
-async def test_submit_goal_service_exception_is_handled():
-    """GoalService submit failure is logged and orchestrator still returns accepted."""
+async def test_submit_goal_service_exception_propagates_and_emits_rejected(monkeypatch):
+    """ORG-36: a GoalService failure is never reported as an accepted goal."""
+    emitted: list[str] = []
+
+    async def _emit(**kw):
+        emitted.append(kw["event_type"])
+        return "e"
+
+    monkeypatch.setattr("app.civilization.orchestrator.emit_event", _emit)
     orch = _make_orchestrator()
 
     mock_gs = AsyncMock()
@@ -349,9 +362,40 @@ async def test_submit_goal_service_exception_is_handled():
     from app.tenancy.context import PlanTier, TenantContext
     orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
 
+    with pytest.raises(RuntimeError, match="GoalService down"):
+        await orch.submit_goal("Some goal")
+    assert "goal_rejected" in emitted
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_without_goal_service_is_unavailable():
+    """ORG-36: no goal service means nothing can be submitted -- never a fake id."""
+    from app.civilization.orchestrator import CivilizationGoalUnavailableError
+
+    orch = _make_orchestrator(goal_service=None)
+    with pytest.raises(CivilizationGoalUnavailableError):
+        await orch.submit_goal("Some goal")
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_returns_the_real_goal_id():
+    orch = _make_orchestrator()
+    orch._goal_service = AsyncMock()
+    orch._goal_service.submit_goal = AsyncMock(return_value={"goal_id": "real-goal-7"})
     result = await orch.submit_goal("Some goal")
     assert result["status"] == "accepted"
-    assert result["goal_id"]  # still has a goal_id (the civ_* one)
+    assert result["goal_id"] == "real-goal-7"
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_without_returned_id_is_unavailable():
+    from app.civilization.orchestrator import CivilizationGoalUnavailableError
+
+    orch = _make_orchestrator()
+    orch._goal_service = AsyncMock()
+    orch._goal_service.submit_goal = AsyncMock(return_value={})
+    with pytest.raises(CivilizationGoalUnavailableError):
+        await orch.submit_goal("Some goal")
 
 
 @pytest.mark.asyncio

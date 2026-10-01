@@ -19,6 +19,7 @@ class CivEventType:
     AGENT_UPDATED = "agent_updated"
     SPAWN_DENIED = "spawn_denied"
     GOAL_SUBMITTED = "goal_submitted"
+    GOAL_REJECTED = "goal_rejected"
     GOAL_COMPLETED = "goal_completed"
     DEBATE_STARTED = "debate_started"
     DEBATE_CONCLUDED = "debate_concluded"

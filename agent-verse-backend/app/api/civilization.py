@@ -615,7 +615,23 @@ async def submit_goal(request: Request, civ_id: str, body: SubmitGoalRequest) ->
         raise HTTPException(500, str(exc)) from exc
 
     orchestrator = _build_orchestrator(civ_id, tenant_ctx.tenant_id, constitution_data, request)
-    result = await orchestrator.submit_goal(body.goal, priority=body.priority)
+    from app.core.errors import PlatformError
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
+    try:
+        result: dict = await orchestrator.submit_goal(body.goal, priority=body.priority)
+    except (HTTPException, PlatformError, DecisionBudgetExceededError):
+        # Quota / budget / readiness refusals keep their own status (429/403/503
+        # via the app's handlers); they are never an "accepted" goal.
+        raise
+    except Exception as exc:
+        logger.warning(
+            "civilization_goal_submit_failed", civilization_id=civ_id, error=type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The goal could not be submitted; retry",
+        ) from exc
     return result
 
 
