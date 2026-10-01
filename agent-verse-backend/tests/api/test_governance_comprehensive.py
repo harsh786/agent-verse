@@ -499,8 +499,7 @@ def test_get_policy_versions_no_db(monkeypatch) -> None:
     app = _make_app_no_db()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/governance/policies/pol-1/versions", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 503  # an unreadable history is not an empty one
 
 
 def test_rollback_policy_no_db(monkeypatch) -> None:

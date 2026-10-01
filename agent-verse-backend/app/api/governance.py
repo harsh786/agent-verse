@@ -1804,11 +1804,17 @@ async def batch_approve(
 
 @router.get("/policies/{policy_id}/versions")
 async def get_policy_versions(request: Request, policy_id: str) -> list[dict[str, Any]]:
-    """Return the full version history for a policy (this tenant only)."""
+    """Return the full version history for a policy (this tenant only).
+
+    ``[]`` only for a policy with no recorded versions; a missing database is a
+    503 like a failing one — an unreadable history is not an empty history.
+    """
     tenant_ctx: TenantContext = _require_tenant(request)
     db = _get_db(request)
     if db is None:
-        return []
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Policy history unavailable (no database)"
+        )
     from sqlalchemy import text
 
     from app.db.rls import sqlalchemy_rls_context

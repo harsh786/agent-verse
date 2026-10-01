@@ -1922,11 +1922,15 @@ class ContractSignRequest(BaseModel):
 
 @router.get("/contracts")
 async def list_contracts(request: Request) -> list[dict[str, Any]]:
-    """List enterprise contracts for the tenant."""
+    """List enterprise contracts for the tenant.
+
+    ``[]`` only when the tenant genuinely has none; a missing or failing
+    database is a 503 (both used to answer ``[]`` — "no signed DPA/BAA").
+    """
     ctx = _require_tenant(request)
     db = _get_db(request)
     if db is None:
-        return []
+        raise HTTPException(503, "Contracts are unavailable (no database configured)")
     try:
         from sqlalchemy import text
 
@@ -1967,7 +1971,7 @@ async def list_contracts(request: Request) -> list[dict[str, Any]]:
         import logging
 
         logging.getLogger(__name__).warning("list_contracts_failed: %s", exc)
-        return []
+        raise HTTPException(503, "Contracts could not be read; retry") from exc
 
 
 @router.post("/contracts/{contract_type}/sign", status_code=201)

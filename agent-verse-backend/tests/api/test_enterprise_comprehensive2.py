@@ -497,10 +497,11 @@ def test_saml_configure() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_contracts() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/enterprise/contracts", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code in (200, 500)
+def test_list_contracts_without_db_is_503() -> None:
+    with patch("app.api.enterprise._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.get("/enterprise/contracts", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
 
 
 def test_sign_contract() -> None:

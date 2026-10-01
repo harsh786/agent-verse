@@ -689,13 +689,13 @@ def test_gdpr_export_status_found_row() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_contracts_returns_empty_list_when_db_is_none() -> None:
+def test_list_contracts_is_503_when_db_is_none() -> None:
+    # No database means the contracts are unknown, not absent.
     with patch("app.api.enterprise._get_db", return_value=None):
         app = _make_app()
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/enterprise/contracts", headers=_headers())
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 503
 
 
 def test_sign_contract_db_exception_is_503() -> None:

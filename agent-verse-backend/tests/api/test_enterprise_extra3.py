@@ -951,11 +951,11 @@ def test_rerun_compliance_check_unsupported() -> None:
 # ---------------------------------------------------------------------------
 
 def test_list_contracts_no_db() -> None:
-    """Lines 1044-1048: no DB → returns empty list."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/enterprise/contracts", headers=_headers())
-    assert resp.status_code == 200
-    assert resp.json() == []
+    """No DB → 503 (it used to answer [] — "no signed contracts")."""
+    with patch("app.api.enterprise._get_db", return_value=None):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.get("/enterprise/contracts", headers=_headers())
+    assert resp.status_code == 503
 
 
 def test_sign_contract_no_db() -> None:
@@ -1482,13 +1482,12 @@ def test_list_contracts_with_db_no_rows() -> None:
 
 
 def test_list_contracts_with_db_exception() -> None:
-    """Lines 1130-1152: DB raises exception → returns []."""
+    """DB raises → 503, never an empty list."""
     db = _make_db_mock(fail=True)
     with patch("app.api.enterprise._get_db", return_value=db):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/enterprise/contracts", headers=_headers())
-        assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.status_code == 503
 
 
 # Lines 1162-1165 — saml_configure with DB exception

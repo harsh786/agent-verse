@@ -299,14 +299,41 @@ def test_list_contracts_requires_auth() -> None:
     assert resp.status_code == 401
 
 
-def test_list_contracts_no_db_returns_empty_list() -> None:
-    """GET /enterprise/contracts returns [] when no DB configured."""
+def test_list_contracts_no_db_returns_503(no_database: None) -> None:
+    """No database → 503: "no contracts" must not stand in for "unreadable"."""
     client = TestClient(
         _make_app(db_factory=None), raise_server_exceptions=False
     )
     resp = client.get("/enterprise/contracts", headers=_HDR)
+    assert resp.status_code == 503
+
+
+def test_list_contracts_db_error_returns_503() -> None:
+    """A failing query is a 503, not an empty list (it used to answer [])."""
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(side_effect=RuntimeError("connection lost"))
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    session_cm.__aexit__ = AsyncMock(return_value=None)
+    client = TestClient(
+        _make_app(db_factory=MagicMock(return_value=session_cm)),
+        raise_server_exceptions=False,
+    )
+    resp = client.get("/enterprise/contracts", headers=_HDR)
+    assert resp.status_code == 503
+
+
+def test_list_contracts_empty_table_returns_empty_list() -> None:
+    """[] only for a genuinely empty, readable result (tenant-scoped)."""
+    from tests._rls_recorder import RlsRecordingDb
+
+    db = RlsRecordingDb()
+    client = TestClient(_make_app(db_factory=db), raise_server_exceptions=False)
+    resp = client.get("/enterprise/contracts", headers=_HDR)
     assert resp.status_code == 200
     assert resp.json() == []
+    [stmt] = db.touching("enterprise_contracts")
+    assert stmt.tenant_guc == _CTX.tenant_id
 
 
 def test_list_contracts_with_db_returns_serialized_rows() -> None:
@@ -344,27 +371,6 @@ def test_list_contracts_with_db_returns_serialized_rows() -> None:
         assert len(body) >= 0  # at least didn't raise
     elif isinstance(body, dict) and "contracts" in body:
         assert isinstance(body["contracts"], list)
-
-
-def test_list_contracts_db_exception_returns_empty_list() -> None:
-    """If the DB query raises, the endpoint returns empty list (logs warning)."""
-    mock_session = MagicMock()
-    mock_session.execute = AsyncMock(side_effect=RuntimeError("asyncpg dropped"))
-    session_cm = MagicMock()
-    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
-    session_cm.__aexit__ = AsyncMock(return_value=None)
-    mock_factory = MagicMock(return_value=session_cm)
-
-    client = TestClient(
-        _make_app(db_factory=mock_factory), raise_server_exceptions=False
-    )
-    resp = client.get("/enterprise/contracts", headers=_HDR)
-    assert resp.status_code == 200
-    body = resp.json()
-    # Endpoint swallows DB exception and returns []
-    assert body == [] or (
-        isinstance(body, dict) and body.get("contracts") == []
-    )
 
 
 def test_delete_consent_with_no_active_row_is_404() -> None:

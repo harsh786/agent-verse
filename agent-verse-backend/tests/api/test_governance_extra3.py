@@ -662,12 +662,11 @@ def test_batch_reject_not_found() -> None:
 # ---------------------------------------------------------------------------
 
 def test_get_policy_versions_no_db() -> None:
-    """Line 1142: no DB → returns empty list."""
+    """No DB → 503: an unreadable history is not an empty one."""
     with patch("app.api.governance._get_db", return_value=None):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/policies/some-policy-id/versions", headers=_headers())
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 503
 
 
 def test_get_policy_versions_with_db_exception() -> None:
