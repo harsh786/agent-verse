@@ -650,7 +650,14 @@ def _get_llm_provider(tenant_id: str) -> Any:
     # gets its provider or TenantProviderError, which run_goal turns into a
     # failed goal — never silent platform spend.
     from app.providers.tenant_provider import build_tenant_provider
+    from app.providers.tenant_vault import TenantVaultError, prepare_tenant_llm_config
 
+    try:
+        from app.db.session import get_session_factory
+
+        config = _run_async(prepare_tenant_llm_config(config, tenant_id, get_session_factory()))
+    except TenantVaultError as exc:  # PROV-15: tenant-vault key unreadable → fail closed
+        raise TenantProviderError(f"tenant vault key could not be loaded: {exc}") from exc
     return build_tenant_provider(
         config, tenant_id=tenant_id, embed_model=os.getenv("EMBEDDING_MODEL") or None
     )

@@ -3800,9 +3800,11 @@ class GoalService:
                 _cfg = await _config_store.get_config(tenant_ctx.tenant_id, strict=True) or {}
                 _enc = str(_cfg.get("encrypted_key") or "")
                 if _enc:
-                    from app.providers.vault import get_vault
+                    from app.providers.tenant_vault import decrypt_tenant_secret
 
-                    scoped_llm_key = str(get_vault().decrypt(_enc) or "")
+                    scoped_llm_key = await decrypt_tenant_secret(
+                        self._db, tenant_ctx.tenant_id, _enc
+                    )
                     if not scoped_llm_key:
                         raise ValueError("tenant LLM API key decrypted to an empty value")
                 elif _cfg:

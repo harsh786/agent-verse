@@ -124,7 +124,15 @@ async def resolve_tenant_byok_provider(app_state: Any, tenant_id: str) -> Any | 
         cfg = await store.get_config(tenant_id)
     if not cfg:
         return None
-    return build_tenant_provider(dict(cfg), tenant_id=tenant_id)
+    from app.providers.tenant_vault import TenantVaultError, prepare_tenant_llm_config
+
+    try:
+        prepared = await prepare_tenant_llm_config(
+            dict(cfg), tenant_id, getattr(app_state, "db_session_factory", None)
+        )
+    except TenantVaultError as exc:
+        raise TenantProviderError(f"Tenant LLM API key could not be unwrapped: {exc}") from exc
+    return build_tenant_provider(prepared, tenant_id=tenant_id)
 
 
 def build_tenant_provider(
@@ -156,10 +164,18 @@ def build_tenant_provider(
         raise TenantProviderError(
             f"Tenant LLM provider {pname!r} has no API key; set it with PUT /tenants/me/llm"
         )
+    from app.providers.tenant_vault import is_tenant_encrypted
+
+    if is_tenant_encrypted(encrypted_key) and not cfg.get("decrypted_key"):
+        # A tenant-vault key (PROV-15) is unwrapped by prepare_tenant_llm_config
+        # (async, needs the DB) before this sync builder runs.
+        raise TenantProviderError(
+            "Tenant LLM API key is encrypted with the tenant vault key, which was not loaded"
+        )
     try:
         from app.providers.vault import get_vault
 
-        api_key = get_vault().decrypt(encrypted_key)
+        api_key = str(cfg.get("decrypted_key") or "") or get_vault().decrypt(encrypted_key)
     except Exception as exc:
         raise TenantProviderError(
             "Tenant LLM API key could not be decrypted; re-save it with PUT /tenants/me/llm"

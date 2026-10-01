@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 
 from app.core.errors import ConflictError, NotFoundError, PlatformError
-from app.providers.vault import get_vault
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import VALID_ROLES, require_role
 
@@ -415,8 +414,15 @@ async def set_llm_config(
             _assert_tenant_base_url_allowed(body.base_url)
         except TenantProviderError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-    vault = get_vault()
-    encrypted_key = vault.encrypt(body.api_key)
+    # PROV-15: the tenant's own vault key when it set one, else the platform vault.
+    from app.providers.tenant_vault import TenantVaultError, encrypt_tenant_secret
+
+    try:
+        encrypted_key = await encrypt_tenant_secret(
+            getattr(request.app.state, "db_session_factory", None), ctx.tenant_id, body.api_key
+        )
+    except TenantVaultError as exc:
+        raise HTTPException(503, f"Tenant vault key could not be read: {exc}") from exc
     masked_key = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "****"
     await _save_llm_config(
         request,
@@ -985,29 +991,38 @@ async def set_byok_vault_key(
     body: VaultKeyRequest,
     ctx: TenantContext = Depends(_require_tenant),
 ) -> dict:
-    """Set a Bring-Your-Own-Key (BYOK) master key for this tenant's secret vault."""
+    """Set a Bring-Your-Own-Key (BYOK) key for this tenant's secret vault.
+
+    Stored wrapped by the platform vault (envelope encryption); the tenant's new
+    secrets (its LLM API key) are encrypted with it. Replacing the key
+    re-encrypts those secrets in the same transaction.
+    """
     import base64 as _b64
 
     try:
-        key_bytes = _b64.b64decode(body.key_base64)
+        key_bytes = _b64.b64decode(body.key_base64, validate=True)
         if len(key_bytes) != 32:
             raise ValueError("Key must be 32 bytes when decoded")
     except Exception as exc:
         raise HTTPException(400, f"Invalid key: {exc}") from exc
 
-    # Per-tenant BYOK is NOT yet persisted: the vault master key is process-global
-    # (from the VAULT_KEY_BASE64 env / _get_master_key), and there is no secure
-    # per-tenant key store to hold a customer key. Report that honestly rather than
-    # implying the key is now active for this tenant.
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        raise HTTPException(
+            503, "Tenant vault keys need the database; none is configured on this deployment"
+        )
+    from app.providers.tenant_vault import TenantVaultError, store_tenant_vault_key
+
+    try:
+        fingerprint = await store_tenant_vault_key(db, ctx.tenant_id, key_bytes)
+    except TenantVaultError as exc:
+        raise HTTPException(503, f"Tenant vault key could not be stored: {exc}") from exc
     return {
-        "status": "validated_not_persisted",
+        "status": "stored",
         "key_length": len(key_bytes),
-        "persisted": False,
-        "message": (
-            "Key format validated (32 bytes) but NOT stored: per-tenant BYOK is not "
-            "yet implemented. Set the VAULT_KEY_BASE64 env var to configure the "
-            "process-wide vault master key."
-        ),
+        "persisted": True,
+        "fingerprint": fingerprint,
+        "message": "Stored (wrapped by the platform vault); used for this tenant's new secrets.",
     }
 
 

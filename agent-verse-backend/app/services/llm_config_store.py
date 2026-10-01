@@ -261,6 +261,7 @@ async def aget_llm_api_key_for_tenant(tenant_id: str) -> str:
     encrypted = str((config or {}).get("encrypted_key") or "")
     if not encrypted:
         return ""
-    from app.providers.vault import get_vault
+    from app.db.session import get_session_factory
+    from app.providers.tenant_vault import decrypt_tenant_secret
 
-    return str(get_vault().decrypt(encrypted))
+    return await decrypt_tenant_secret(get_session_factory(), tenant_id, encrypted)
