@@ -191,7 +191,9 @@ back; chat is a first-class API surface.
 
 Backend:
 - [ ] Route `gateway/_process_command` through `ChatService` (shared intent + history +
-  context), persisting turns via `ConversationManager` (dedupe the two pipelines).
+  context), persisting turns in the chat session mapped by the durable channel sessions
+  (`PostgresChatRepository.resolve_channel_session`; the unused `ConversationManager` /
+  `gateway_conversations` pipeline was removed rather than kept as a duplicate).
 - [ ] First-class channel→tenant/session mapping (channel registration record), replacing the
   shared `GATEWAY_INGRESS_SECRET`+header binding for tenant resolution.
 - [ ] Generic inbound webhook + outbound reply already exist — ensure both use the unified path.
@@ -205,7 +207,7 @@ Backend:
   where he left, from any interface" true regardless of where the last message was sent.
 
 Tests:
-- [ ] unit: WhatsApp inbound → ChatService.dispatch → reply; history persisted via ConversationManager.
+- [ ] unit: WhatsApp inbound → ChatService.dispatch → reply; history persisted in the channel user's durable chat session.
 - [ ] e2e: same "search Jira" journey via a simulated Telegram webhook produces identical
   behavior to the web chat path.
 
