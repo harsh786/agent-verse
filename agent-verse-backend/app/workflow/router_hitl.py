@@ -259,8 +259,14 @@ async def stream_approvals(request: Request) -> StreamingResponse:
                     seen.add(item.request_id)
                     event_data = {
                         "event": "new_request",
+                        "kind": "workflow",
                         "request_id": item.request_id,
                         "priority": item.priority,
+                        "workflow_id": item.workflow_id,
+                        "workflow_name": item.workflow_name,
+                        "run_id": item.run_id,
+                        "step_id": item.step_id,
+                        "step_name": item.step_name,
                     }
                     yield f"data: {_json.dumps(event_data)}\n\n"
         yield "data: [DONE]\n\n"

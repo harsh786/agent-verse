@@ -105,6 +105,9 @@ class HITLStepNode:
                 step_name=self.step.name or self.step.id,
                 workflow_name=state.get("workflow_name", ""),
                 tenant_id=state.get("tenant_id", ""),
+                # The inbox links an approval to its workflow by this id; it was
+                # never passed, so every workflow approval had workflow_id=''.
+                workflow_id=str(state.get("workflow_id") or ""),
                 assignee_role=(self.step.assignee.role if self.step.assignee else ""),
                 strategy=(self.step.assignee.strategy if self.step.assignee else "round_robin"),
                 specific_user=(self.step.assignee.specific_user if self.step.assignee else None),

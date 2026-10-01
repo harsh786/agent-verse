@@ -142,10 +142,9 @@ async def test_workflow_hitl_pause_approve_resume() -> None:
 
     # 2. Approve via the gateway — must resume the paused run for real.
     decided = await hitl_gateway.decide(req.request_id, action="approve", actor_id="reviewer-1")
-    # WorkflowHITLRequest.decide() only special-cases the literal strings
-    # "approved"/"rejected"; a custom action id like this step's "approve"
-    # resolves to the generic "decided" status.
-    assert decided.status == "decided"
+    # The approve family maps to "approved" (it used to fall through to the
+    # generic "decided" because only the literal "approved" was special-cased).
+    assert decided.status == "approved"
     assert decided.action_taken == "approve"
 
     state = await compiled.aget_state(config)

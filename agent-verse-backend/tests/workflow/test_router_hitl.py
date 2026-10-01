@@ -244,6 +244,18 @@ def test_stream_is_not_shadowed_by_the_detail_route(
     events = [json.loads(p) for p in payloads if p != "[DONE]"]
     # The pending request is announced on the FIRST poll (no initial sleep),
     # exactly once, and the stream ends cleanly.
-    assert events == [{"event": "new_request", "request_id": "req-1", "priority": "medium"}]
+    assert len(events) == 1
+    assert {k: events[0][k] for k in ("event", "request_id", "priority")} == {
+        "event": "new_request",
+        "request_id": "req-1",
+        "priority": "medium",
+    }
+    # WF-APPROVAL-WORKFLOW-ID: the event links the approval to its workflow run.
+    assert events[0]["kind"] == "workflow"
+    assert (events[0]["workflow_id"], events[0]["run_id"], events[0]["step_id"]) == (
+        "wf-1",
+        "run-1",
+        "review",
+    )
     assert payloads[-1] == "[DONE]"
     gateway.get_request.assert_not_awaited()

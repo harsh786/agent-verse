@@ -198,6 +198,21 @@ def _is_overdue(req: Any, now: datetime) -> bool:
     return (now - created).total_seconds() >= hours * 3600
 
 
+def decision_status(action: str) -> str:
+    """The approval status a decision leaves: ``approved`` / ``rejected`` for
+    the approve / reject families (the DSL and UI ids are ``approve`` /
+    ``reject``, which used to fall through to the generic ``decided``), else
+    ``decided`` for a custom action id."""
+    from app.workflow.steps.hitl_step import APPROVE_ACTIONS, REJECT_ACTIONS
+
+    norm = str(action or "").strip().lower()
+    if norm in APPROVE_ACTIONS:
+        return "approved"
+    if norm in REJECT_ACTIONS:
+        return "rejected"
+    return "decided"
+
+
 class HITLWorkflowGateway:
     """Workflow-specific HITL gateway — wraps the base HITLGateway."""
 
@@ -234,6 +249,7 @@ class HITLWorkflowGateway:
         step_name: str = "",
         workflow_name: str = "",
         tenant_id: str = "",
+        workflow_id: str = "",
         assignee_role: str = "",
         strategy: AssignmentStrategy = "round_robin",
         specific_user: str | None = None,
@@ -261,6 +277,7 @@ class HITLWorkflowGateway:
 
         req = WorkflowHITLRequest(
             run_id=run_id,
+            workflow_id=workflow_id,
             step_id=step_id,
             step_name=step_name,
             workflow_name=workflow_name,
@@ -329,7 +346,7 @@ class HITLWorkflowGateway:
         # Decide on a copy: the in-memory mirror hands out shared objects, and a
         # losing concurrent decision must not overwrite the winner's fields.
         req = dataclasses.replace(req)
-        req.status = action if action in ("approved", "rejected") else "decided"
+        req.status = decision_status(action)
         req.action_taken = action
         req.reviewed_by = actor_id
         req.reviewed_at = datetime.now(UTC).isoformat()

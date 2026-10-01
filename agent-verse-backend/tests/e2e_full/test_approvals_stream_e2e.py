@@ -125,6 +125,7 @@ async def test_stream_token_streams_pending_approval(
                     break
                 events.append(json.loads(payload))
 
-    assert {"event": "new_request", "request_id": request_id, "priority": "medium"} in events
+    mine = [e for e in events if e.get("request_id") == request_id]
+    assert mine and mine[0]["event"] == "new_request" and mine[0]["priority"] == "medium", events
     # Announced once, not once per poll.
     assert sum(1 for e in events if e.get("request_id") == request_id) == 1
