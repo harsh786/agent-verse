@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '@/lib/api/client';
+import { providerHealthState } from '@/features/models/providerHealth';
 
 /** GET /ai-ops/eval-results row (the fields this card shows). */
 interface EvalRun {
@@ -98,7 +99,7 @@ export function AIOpsDashboard() {
   const completedToday = goals.filter((g: any) => g.status === 'complete').length;
   const failedToday = goals.filter((g: any) => g.status === 'failed').length;
   const providers = modelsData?.providers ?? [];
-  const healthyProviders = providers.filter((p: any) => p.is_healthy).length;
+  const healthyProviders = providers.filter((p: any) => providerHealthState(p) === 'healthy').length;
   const alerts = alertsData?.alerts ?? [];
   // An unreachable endpoint is "unknown" — never 'ok' ("All systems normal").
   const regressionStatus = regressionError ? 'unknown' : (regressionData?.status ?? 'unknown');
@@ -250,17 +251,26 @@ export function AIOpsDashboard() {
                 <p className="text-xs text-muted-foreground">No providers tested yet</p>
               ) : (
                 providers.map((p: any) => (
-                  <div key={p.provider} className="flex items-center justify-between">
+                  <div
+                    key={p.provider}
+                    className="flex items-center justify-between"
+                    data-testid={`aiops-provider-${p.provider}`}
+                    data-state={providerHealthState(p)}
+                  >
                     <div className="flex items-center gap-2">
-                      {p.is_healthy ? (
+                      {providerHealthState(p) === 'healthy' ? (
                         <div className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                      ) : (
+                      ) : providerHealthState(p) === 'unhealthy' ? (
                         <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                      ) : (
+                        <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
                       )}
                       <span className="text-xs capitalize">{p.provider}</span>
                     </div>
                     <span className="text-[10px] text-muted-foreground">
-                      {p.avg_latency_ms > 0 ? `${Math.round(p.avg_latency_ms)}ms` : 'Not tested'}
+                      {providerHealthState(p) === 'unverified'
+                        ? 'Unverified'
+                        : p.avg_latency_ms > 0 ? `${Math.round(p.avg_latency_ms)}ms` : 'Not tested'}
                     </span>
                   </div>
                 ))

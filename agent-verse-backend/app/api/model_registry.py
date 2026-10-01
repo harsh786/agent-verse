@@ -70,7 +70,8 @@ def _require_platform_admin(request: Request) -> None:
 def _health_dict(provider: str) -> dict[str, Any]:
     h = model_registry.get_provider_health(provider)
     return {
-        "is_healthy": h.is_healthy,
+        "is_healthy": h.is_healthy,  # None = unverified (never checked)
+        "last_checked_at": h.last_checked_at,
         "circuit_open": h.circuit_open,
         "error_rate_5m": round(h.error_rate_5m, 3),
         "avg_latency_ms": round(h.avg_latency_ms, 1),
@@ -184,21 +185,55 @@ async def test_model(request: Request) -> dict[str, Any]:
     if app_provider is None:
         return {"status": "skipped", "reason": "No provider configured", "model": model_id}
 
+    # Only the provider actually backing the app can be pinged: the ping always
+    # went to the app provider, but its result was recorded against whichever
+    # provider was NAMED, so probing "anthropic" on an NVIDIA deployment marked
+    # anthropic healthy (or broken) without ever calling it.
+    from app.ai_router.health_feed import provider_label
+
+    attributable = provider_label(app_provider)
+    backing = attributable or ""
+    if not backing:
+        from app.core.config import get_settings
+
+        backing = (get_settings().default_llm_provider or "").strip()
+    if backing != provider:
+        return {
+            "status": "skipped",
+            "reason": (
+                f"provider {provider!r} does not back this deployment (the app provider "
+                f"is {backing or 'unknown'}); health left unchanged"
+            ),
+            "model": model_id,
+        }
+
     import time
+
+    from app.providers.base import CompletionRequest, Message
+    from app.providers.guarded_completion import (
+        complete_decision,
+        system_job_scope,
+        tenant_charge_scope,
+    )
 
     start = time.monotonic()
     try:
-        from app.providers.base import CompletionRequest, Message
-
-        resp = await app_provider.complete(
-            CompletionRequest(
-                messages=[Message(role="user", content="Reply with just the word 'OK'")],
-                model=model_id,
-                max_tokens=10,
+        # A platform-operator probe: an uncharged system job (not the admin's
+        # tenant spend), still with the circuit breaker and a bounded timeout.
+        # complete_decision records the outcome in the shared provider health.
+        with system_job_scope("model_probe"), tenant_charge_scope(None):
+            resp = await complete_decision(
+                app_provider,
+                CompletionRequest(
+                    messages=[Message(role="user", content="Reply with just the word 'OK'")],
+                    model=model_id,
+                    max_tokens=10,
+                ),
+                role="model_probe",
             )
-        )
         latency_ms = (time.monotonic() - start) * 1000
-        model_registry.update_health(provider, latency_ms=latency_ms, error=False)
+        if attributable is None:  # the feed could not attribute it: record here
+            model_registry.update_health(provider, latency_ms=latency_ms, error=False)
         return {
             "status": "ok",
             "latency_ms": round(latency_ms, 1),
@@ -206,7 +241,8 @@ async def test_model(request: Request) -> dict[str, Any]:
             "response": resp.content[:50],
         }
     except Exception as exc:
-        model_registry.update_health(provider, error=True, error_msg=str(exc))
+        if attributable is None:
+            model_registry.update_health(provider, error=True, error_msg=str(exc))
         return {"status": "error", "error": str(exc), "model": model_id}
 
 

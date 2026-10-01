@@ -34,11 +34,11 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-function mockFetch(opts: { models?: unknown; pending?: boolean } = {}) {
+function mockFetch(opts: { models?: unknown; pending?: boolean; health?: unknown } = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
-    if (url.includes('/models/health')) return json(HEALTH);
+    if (url.includes('/models/health')) return json(opts.health ?? HEALTH);
     if (url.includes('/models/test') && method === 'POST')
       return json({ status: 'ok', model: 'Claude X', latency_ms: 88 });
     if (url.includes('/models')) {
@@ -65,6 +65,26 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('ModelControlCenter', () => {
+  test('a provider nobody has checked shows as Unverified, not healthy or failed', async () => {
+    mockFetch({
+      health: { providers: [{ provider: 'nvidia', is_healthy: null, avg_latency_ms: 0 }] },
+      models: {
+        models: [
+          {
+            provider: 'nvidia', model_id: 'm', display_name: 'NV M', capabilities: ['text_generation'],
+            quality_score: 0.5, cost_per_1k_input: 0, context_window: 8192,
+            health: { is_healthy: null },
+          },
+        ],
+      },
+    });
+    renderPage();
+    expect(await screen.findByText('NV M')).toBeInTheDocument();
+    expect(await screen.findByTestId('provider-health-nvidia')).toHaveAttribute('data-state', 'unverified');
+    expect(screen.getByText('Unverified')).toBeInTheDocument();
+    expect(screen.getByTestId('model-health-nvidia/m')).toHaveAttribute('data-state', 'unverified');
+  });
+
   test('renders header, model cards and the provider count summary', async () => {
     mockFetch();
     renderPage();

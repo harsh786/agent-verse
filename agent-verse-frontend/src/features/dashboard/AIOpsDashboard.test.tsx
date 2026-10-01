@@ -193,6 +193,17 @@ describe('AIOpsDashboard', () => {
     expect(await screen.findByTestId('location')).toHaveTextContent('/models');
   });
 
+  test('an unverified provider is grey and not counted as healthy', async () => {
+    mockFetch({ models: { providers: [
+      { provider: 'anthropic', is_healthy: true, avg_latency_ms: 50 },
+      { provider: 'nvidia', is_healthy: null, avg_latency_ms: 0 },
+    ] } });
+    renderDashboard();
+    expect(await screen.findByText('1/2')).toBeInTheDocument();
+    expect(screen.getByTestId('aiops-provider-nvidia')).toHaveAttribute('data-state', 'unverified');
+    expect(screen.getByText('Unverified')).toBeInTheDocument();
+  });
+
   test('shows a green healthy-providers icon when every provider is healthy', async () => {
     mockFetch({ models: { providers: [{ provider: 'anthropic', is_healthy: true, avg_latency_ms: 50 }] } });
     renderDashboard();

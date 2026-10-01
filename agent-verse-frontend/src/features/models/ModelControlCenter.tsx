@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   Activity, Zap, Brain, Eye, Wrench, RefreshCw,
-  CheckCircle, XCircle, Loader2,
+  CheckCircle, XCircle, Loader2, HelpCircle,
 } from 'lucide-react';
 import { toast } from '@/stores/toast';
 import { StatusOrb } from '@/components/ui/StatusOrb';
+import { providerHealthState } from './providerHealth';
 
 export function ModelControlCenter() {
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
@@ -96,26 +97,37 @@ export function ModelControlCenter() {
       {/* Provider Health Strip */}
       {healthData?.providers && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {healthData.providers.map((p: any) => (
+          {healthData.providers.map((p: any) => {
+            const state = providerHealthState(p);
+            return (
             <div
               key={p.provider}
+              data-testid={`provider-health-${p.provider}`}
+              data-state={state}
               className={`p-3 border rounded-xl flex items-center gap-3 ${
-                p.is_healthy
+                state === 'healthy'
                   ? 'border-green-200 bg-green-50/50 dark:border-green-800'
-                  : 'border-red-200 bg-red-50/50 dark:border-red-800'
+                  : state === 'unhealthy'
+                    ? 'border-red-200 bg-red-50/50 dark:border-red-800'
+                    : 'border-border bg-muted/40'
               }`}
             >
-              {p.is_healthy
+              {state === 'healthy'
                 ? <CheckCircle className="h-5 w-5 text-green-500 shrink-0" />
-                : <XCircle className="h-5 w-5 text-red-500 shrink-0" />}
+                : state === 'unhealthy'
+                  ? <XCircle className="h-5 w-5 text-red-500 shrink-0" />
+                  : <HelpCircle className="h-5 w-5 text-muted-foreground shrink-0" />}
               <div className="min-w-0">
                 <p className="text-xs font-medium capitalize">{p.provider}</p>
                 <p className="text-[10px] text-muted-foreground">
-                  {p.avg_latency_ms > 0 ? `${Math.round(p.avg_latency_ms)}ms` : 'Not tested'}
+                  {state === 'unverified'
+                    ? 'Unverified'
+                    : p.avg_latency_ms > 0 ? `${Math.round(p.avg_latency_ms)}ms` : 'Not tested'}
                 </p>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -174,10 +186,17 @@ export function ModelControlCenter() {
                       {m.provider}
                     </span>
                   </div>
-                  <div className="flex items-center gap-1">
-                    {m.health?.is_healthy
+                  <div
+                    className="flex items-center gap-1"
+                    data-testid={`model-health-${m.provider}/${m.model_id}`}
+                    data-state={providerHealthState(m.health)}
+                    title={providerHealthState(m.health) === 'unverified' ? 'Unverified' : undefined}
+                  >
+                    {providerHealthState(m.health) === 'healthy'
                       ? <StatusOrb status="active" size={8} />
-                      : <StatusOrb status="failed" size={8} />}
+                      : providerHealthState(m.health) === 'unhealthy'
+                        ? <StatusOrb status="failed" size={8} />
+                        : <span className="w-2 h-2 rounded-full bg-muted-foreground/40" aria-label="Unverified" />}
                   </div>
                 </div>
 

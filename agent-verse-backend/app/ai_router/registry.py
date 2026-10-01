@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import Any
 
@@ -246,7 +247,8 @@ class ModelRegistry:
         error: bool = False,
         error_msg: str = "",
     ) -> None:
-        h = self._health.setdefault(provider, ProviderHealth(provider=provider))
+        h = self.get_provider_health(provider)
+        self._health[provider] = h
         if error:
             h.error_rate_5m = min(1.0, h.error_rate_5m + 0.1)
             h.last_error = error_msg
@@ -257,9 +259,34 @@ class ModelRegistry:
 
         h.last_checked_at = datetime.datetime.now(datetime.UTC).isoformat()
         h.is_healthy = h.error_rate_5m < 0.5
+        from app.ai_router.registry_store import get_model_registry_store
+
+        store = get_model_registry_store()
+        if store is not None:
+            try:
+                store.set_health(provider, dataclasses.asdict(h))
+            except Exception as exc:  # local copy still updated; replicas lag
+                _log.warning("provider_health_store_write_failed: %s", str(exc)[:160])
 
     def get_provider_health(self, provider: str) -> ProviderHealth:
-        return self._health.get(provider, ProviderHealth(provider=provider))
+        """Shared (Redis) health when the store is wired, else this process's view.
+
+        A provider no call or probe has checked reports ``is_healthy=None``.
+        """
+        from app.ai_router.registry_store import get_model_registry_store
+
+        store = get_model_registry_store()
+        if store is not None:
+            try:
+                data = store.get_health(provider)
+            except Exception as exc:
+                _log.warning("provider_health_store_read_failed: %s", str(exc)[:160])
+            else:
+                if data is not None:
+                    fields = {f.name for f in dataclasses.fields(ProviderHealth)}
+                    return ProviderHealth(**{k: v for k, v in data.items() if k in fields})
+        cached = self._health.get(provider)
+        return dataclasses.replace(cached) if cached else ProviderHealth(provider=provider)
 
     def set_route_policy(
         self, tenant_id: str, task_type: TaskType, policy: ModelRoutePolicy

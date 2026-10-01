@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 
 _KEY = "model_registry:configured"
 _POLICY_KEY_PREFIX = "model_registry:route_policies:"
+_HEALTH_KEY_PREFIX = "model_registry:health:"
 
 # Whitelisted fields persisted per endpoint (mirrors ModelEndpoint).
 _FIELDS = (
@@ -101,6 +102,18 @@ class ModelRegistryStore:
         policies = self.get_route_policies(tenant_id)
         policies[task_type] = policy
         self._redis.set(self._policy_key(tenant_id), json.dumps(policies))
+
+    # ── Provider health (shared by every API replica and worker) ──────────────
+
+    def get_health(self, provider: str) -> dict[str, Any] | None:
+        raw = self._redis.get(f"{_HEALTH_KEY_PREFIX}{provider}")
+        if not raw:
+            return None
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+
+    def set_health(self, provider: str, health: dict[str, Any]) -> None:
+        self._redis.set(f"{_HEALTH_KEY_PREFIX}{provider}", json.dumps(health))
 
 
 # ── Module-level singleton (wired from create_app when Redis is available) ──────

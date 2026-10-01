@@ -127,6 +127,8 @@ def test_models_test_allowed_for_platform_admin(monkeypatch: pytest.MonkeyPatch)
     from app.ai_router.registry import model_registry
 
     provider = _Provider(fail=False)
+    # PROV-16: only the provider backing the app is pinged (else "skipped").
+    provider._agentverse_provider_type = "openai"  # type: ignore[attr-defined]
     client = _client(monkeypatch, provider)
     monkeypatch.setattr(model_registry, "update_health", lambda *a, **k: None)
     provider.complete = _ok_complete  # type: ignore[method-assign]

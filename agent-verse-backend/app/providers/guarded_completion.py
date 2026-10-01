@@ -321,8 +321,25 @@ async def complete_decision(
     if charge:
         _require_attribution(scope, tenant)
         await _preflight(scope, tenant)
-    resp = await complete_with_failover(
-        provider, request, timeout_seconds=_timeout(timeout_seconds)
+    import time
+
+    from app.ai_router.health_feed import record_llm_outcome
+
+    model = str(getattr(request, "model", "") or "")
+    started = time.monotonic()
+    try:
+        resp = await complete_with_failover(
+            provider, request, timeout_seconds=_timeout(timeout_seconds)
+        )
+    except Exception as exc:
+        if getattr(exc, "provider_failure", True):
+            record_llm_outcome(
+                provider=provider, model=model, ok=False,
+                latency_ms=(time.monotonic() - started) * 1000, error=str(exc),
+            )
+        raise
+    record_llm_outcome(
+        provider=provider, model=model, ok=True, latency_ms=(time.monotonic() - started) * 1000
     )
     if charge:
         await _charge(

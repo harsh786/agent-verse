@@ -303,6 +303,12 @@ class ExecutorMixin:
     def _record_provider_health(self, model: str, *, ok: bool, start: float) -> None:
         """D-13: report a live LLM provider-call outcome to the model router's health
         policy so orchestrator failover learns. Fully guarded — never raises."""
+        from app.ai_router.health_feed import record_llm_outcome
+
+        # PROV-16: also the registry's provider health (GET /models/health).
+        record_llm_outcome(
+            model=model or "", ok=ok, latency_ms=(time.monotonic() - start) * 1000.0
+        )
         router = getattr(self, "_model_router", None)
         if router is None or not hasattr(router, "record_provider_result"):
             return

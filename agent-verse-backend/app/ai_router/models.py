@@ -104,10 +104,15 @@ RoutePolicy = ModelRoutePolicy
 
 @dataclass
 class ProviderHealth:
-    """Real-time health metrics for a provider."""
+    """Real-time health metrics for a provider.
+
+    ``is_healthy`` is ``None`` (unverified) until a real call or an operator
+    probe has checked the provider; it used to default to ``True``, so the UI
+    showed providers nobody had ever called as healthy.
+    """
 
     provider: str
-    is_healthy: bool = True
+    is_healthy: bool | None = None
     circuit_open: bool = False
     avg_latency_ms: float = 0.0
     error_rate_5m: float = 0.0

@@ -28,7 +28,7 @@ _TRACING = (
     "complete_decision / complete_with_failover, which apply budget, breaker and timeout"
 )
 _NOT_LLM = "receiver is not an LLM provider"
-_OWNED = "pending migration in this wave (PROV-02 / PROV-16 / PROV-25)"
+_OWNED = "pending migration in this wave (PROV-02 / PROV-25)"
 
 # "<path relative to app/>::<qualname>": (number of .complete( calls, reason)
 ALLOWED: dict[str, tuple[int, str]] = {
@@ -38,7 +38,6 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "scaling/memory_tasks.py::process_due_memories": (1, _NOT_LLM + " (prospective memory)"),
     # ── pending, owned by later items of this wave ────────────────────────────
     "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _OWNED),
-    "api/model_registry.py::test_model": (1, _OWNED),
     "chat/service.py::ChatService._llm_summarize": (1, _OWNED),
     "chat/service.py::ChatService._merge_summary": (1, _OWNED),
     "chat/service.py::ChatService.run_qa": (1, _OWNED),
