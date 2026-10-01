@@ -21,6 +21,16 @@ class ToolRef:
     # tools run without human approval in autonomous mode (explicit user opt-in).
     auto_approve: bool = False
 
+    def __post_init__(self) -> None:
+        # Carry the governance forms of this tool (bare / connection-qualified /
+        # connection id) so grants, policies and permissions match it whichever
+        # form they name — including when a ToolRef is rebuilt from state.
+        from app.mcp.tool_naming import governed_tool_name
+
+        self.name = governed_tool_name(
+            self.name, server_id=self.server_id, server_name=self.server_name
+        )
+
 
 @dataclass
 class ToolContext:

@@ -19,7 +19,10 @@ from collections.abc import Iterable
 from typing import Any
 
 __all__ = [
+    "GovernedToolName",
     "connection_slug",
+    "governance_names",
+    "governed_tool_name",
     "qualified_tool_name",
     "qualify_colliding_tools",
     "strip_connection_prefix",
@@ -40,8 +43,53 @@ def qualified_tool_name(connection_name: str, tool_name: str) -> str:
     return f"{prefix}{_SEP}{tool_name}"
 
 
+class GovernedToolName(str):
+    """A tool name that also knows every name governance may address it by.
+
+    Grants, tool policies, the permission matrix and per-agent permissions are
+    written against tool names. For a tool offered as ``orders_db__mongodb_find``
+    a rule may name the bare tool (``mongodb_find`` — any connection the agent
+    may use), the connection-qualified tool (``orders_db__mongodb_find``) or the
+    connection id (``builtin-mongodb:orders-db/mongodb_find``). It compares and
+    hashes as the plain name; ``names`` lists those forms, most specific first.
+    """
+
+    names: tuple[str, ...]
+
+    def __new__(cls, name: str, names: Iterable[str] = ()) -> GovernedToolName:
+        obj = super().__new__(cls, name)
+        obj.names = tuple(dict.fromkeys([*[n for n in names if n], str(name)]))
+        return obj
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (GovernedToolName, (str(self), self.names))
+
+
+def governance_names(tool_name: str) -> tuple[str, ...]:
+    """Every name governance may match ``tool_name`` by, most specific first."""
+    names = getattr(tool_name, "names", None)
+    return tuple(names) if names else (str(tool_name),)
+
+
+def governed_tool_name(name: str, *, server_id: str = "", server_name: str = "") -> str:
+    """``name`` carrying its connection-qualified and connection-id forms."""
+    bare = strip_connection_prefix(name, server_name) if server_name else name
+    forms: list[str] = []
+    if server_id:
+        forms.append(f"{server_id}/{bare}")
+    if server_name:
+        forms.append(qualified_tool_name(server_name, bare))
+    forms.append(bare)
+    return GovernedToolName(name, forms)
+
+
 def qualify_colliding_tools[T](tools: Iterable[T]) -> list[T]:
-    """Rename tools whose name is exposed by more than one connection (in place)."""
+    """Rename tools whose name is exposed by more than one connection (in place).
+
+    Every tool's name also carries its governance forms (see GovernedToolName),
+    so a grant / policy / permission naming the bare tool, the qualified tool or
+    the connection id is matched correctly, colliding or not.
+    """
     items = list(tools)
     servers_by_name: dict[str, set[str]] = {}
     for tool in items:
@@ -49,10 +97,14 @@ def qualify_colliding_tools[T](tools: Iterable[T]) -> list[T]:
         servers_by_name.setdefault(name, set()).add(str(getattr(tool, "server_id", "")))
     for tool in items:
         name = str(getattr(tool, "name", "") or "")
-        if name and len(servers_by_name.get(name, ())) > 1:
-            label = str(getattr(tool, "server_name", "") or getattr(tool, "server_id", ""))
-            tool_any: Any = tool
-            tool_any.name = qualified_tool_name(label, name)
+        if not name:
+            continue
+        server_id = str(getattr(tool, "server_id", "") or "")
+        label = str(getattr(tool, "server_name", "") or server_id)
+        tool_any: Any = tool
+        if len(servers_by_name.get(name, ())) > 1:
+            name = qualified_tool_name(label, name)
+        tool_any.name = governed_tool_name(name, server_id=server_id, server_name=label)
     return items
 
 

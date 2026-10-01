@@ -181,14 +181,19 @@ class PolicyEngine:
                 if pol_id in parent_policy_ids and pol not in applicable_policies:
                     applicable_policies.append(pol)
 
+        # A policy on the bare tool applies on every connection; one naming a
+        # connection ("orders_db__*" / "<connector id>/*") only there.
+        from app.mcp.tool_naming import governance_names
+
+        names = governance_names(tool_name)
         for policy in applicable_policies:
             if not self._is_within_time_window(policy):
                 continue  # Time window not active, skip this policy
             for pattern in policy.denied_tools:
-                if fnmatch.fnmatch(tool_name, pattern):
+                if any(fnmatch.fnmatch(name, pattern) for name in names):
                     return PolicyResult.DENY
             for pattern in policy.approval_tools:
-                if fnmatch.fnmatch(tool_name, pattern):
+                if any(fnmatch.fnmatch(name, pattern) for name in names):
                     return PolicyResult.REQUIRE_APPROVAL
         return PolicyResult.ALLOW
 

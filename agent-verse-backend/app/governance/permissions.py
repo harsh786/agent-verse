@@ -89,11 +89,25 @@ class PermissionMatrix:
         return self._rules.get((tenant_ctx.tenant_id, tool_name))
 
     def _resolve_rule(self, tool_name: str, *, tenant_ctx: TenantContext) -> PermissionRule | None:
-        """Resolve the effective rule: explicit tenant rule, else default glob."""
-        rule = self.get_rule(tool_name, tenant_ctx=tenant_ctx)
-        if rule is not None:
-            return rule
-        return self._match_default_rule(tool_name)
+        """Resolve the effective rule: explicit tenant rule, else default glob.
+
+        The tool may be addressed by its connection id form, its
+        connection-qualified name or its bare name (app.mcp.tool_naming); the
+        explicit rule for the most specific form wins. Default (deny) globs
+        apply if ANY form matches.
+        """
+        from app.mcp.tool_naming import governance_names
+
+        names = governance_names(tool_name)
+        for name in names:
+            rule = self.get_rule(name, tenant_ctx=tenant_ctx)
+            if rule is not None:
+                return rule
+        for name in names:
+            default = self._match_default_rule(name)
+            if default is not None:
+                return default
+        return None
 
     def check(
         self,

@@ -127,17 +127,43 @@ async def load_agent_permissions(
     return rules
 
 
+_RESTRICTIVENESS = {ActionLevel.DENY: 2, ActionLevel.APPROVAL: 1}
+
+
 def match_rule(
     rules: tuple[AgentPermissionRule, ...], tool_name: str
 ) -> AgentPermissionRule | None:
-    exact = [r for r in rules if r.tool_name == tool_name]
-    if exact:
-        return exact[0]
-    lowered = tool_name.lower()
-    globs = [r for r in rules if fnmatch.fnmatch(lowered, r.tool_name.lower())]
-    if not globs:
-        return None
-    return max(globs, key=lambda r: len(r.tool_name.replace("*", "")))
+    """The rule governing ``tool_name``.
+
+    The tool may be addressed as the bare tool (any connection), the
+    connection-qualified tool (``orders_db__mongodb_find``) or the connection id
+    (``<connector id>/mongodb_find``) — see app.mcp.tool_naming. An exact rule
+    wins (the most specific form first), then the longest glob; equally specific
+    globs resolve to the MORE restrictive level, so a broad allow never
+    overrides an equally specific deny.
+    """
+    from app.mcp.tool_naming import governance_names
+
+    names = governance_names(tool_name)
+    for name in names:
+        exact = [r for r in rules if r.tool_name == name]
+        if exact:
+            return exact[0]
+    best: AgentPermissionRule | None = None
+    best_key: tuple[int, int, int] | None = None
+    for index, name in enumerate(names):
+        lowered = name.lower()
+        for rule in rules:
+            if not fnmatch.fnmatch(lowered, rule.tool_name.lower()):
+                continue
+            key = (
+                len(rule.tool_name.replace("*", "")),
+                _RESTRICTIVENESS.get(rule.level, 0),
+                -index,
+            )
+            if best_key is None or key > best_key:
+                best, best_key = rule, key
+    return best
 
 
 def resolve_level(

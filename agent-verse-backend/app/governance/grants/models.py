@@ -68,7 +68,13 @@ class Grant:
             return False
         if self.budget_exhausted(cost_usd):
             return False
-        return scope_matches(self.scopes, tool_name)
+        # Any governance form of the tool: bare ("mongodb_find" — every connection
+        # the agent may use), connection-qualified ("orders_db__mongodb_find") or
+        # connection id ("builtin-mongodb:orders-db/mongodb_find"). A scope naming
+        # one connection never covers the same tool on another connection.
+        from app.mcp.tool_naming import governance_names
+
+        return any(scope_matches(self.scopes, name) for name in governance_names(tool_name))
 
 
 __all__ = ["Grant", "scope_matches"]
