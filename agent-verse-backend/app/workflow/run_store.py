@@ -762,7 +762,14 @@ class PostgresWorkflowRunStore:
         output: Any = None,
         error: str | None = None,
         cost_usd: float | None = None,
+        state_delta: dict[str, Any] | None = None,
     ) -> bool:
+        """Finish the latest attempt row of a step.
+
+        ``state_delta`` (WF-34) is the non-output state the step returned (vars,
+        foreach progress, cost/tokens); a resumed run replays it for a skipped
+        COMPLETE step.
+        """
         from sqlalchemy import text as sa_text
 
         from app.workflow.engine_audit import note_of, step_event, write_engine_audit
@@ -774,6 +781,7 @@ class PostgresWorkflowRunStore:
                 sa_text(
                     "UPDATE workflow_step_results SET "
                     " status = :status, output = CAST(:output AS jsonb), error = :error, "
+                    " state_delta = COALESCE(CAST(:state_delta AS jsonb), state_delta), "
                     " cost_usd = COALESCE(:cost_usd, cost_usd), completed_at = NOW(), "
                     " duration_ms = CAST(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000 AS int) "
                     "WHERE tenant_id = CAST(:tid AS uuid) AND id = ("
@@ -787,6 +795,7 @@ class PostgresWorkflowRunStore:
                     "output": json.dumps(output) if output is not None else None,
                     "error": error,
                     "cost_usd": cost_usd,
+                    "state_delta": json.dumps(state_delta, default=str) if state_delta else None,
                     "run_id": run_id,
                     "step_id": step_id,
                     "tid": tenant_id,
@@ -867,10 +876,12 @@ class PostgresWorkflowRunStore:
                     "INSERT INTO workflow_step_results "
                     "(id, run_id, tenant_id, step_id, step_type, step_name, status, "
                     " resolved_input, output, attempt_number, started_at, completed_at, "
-                    " duration_ms) "
+                    " duration_ms, state_delta) "
                     "SELECT gen_random_uuid(), CAST(:to_run AS uuid), s.tenant_id, s.step_id, "
                     " s.step_type, s.step_name, s.status, s.resolved_input, s.output, 1, "
-                    " s.started_at, s.completed_at, s.duration_ms "
+                    " s.started_at, s.completed_at, s.duration_ms, "
+                    # Variables carry over; the source run's spend is not re-charged.
+                    " s.state_delta - 'cost_usd' - 'tokens_used' "
                     "FROM ("
                     "  SELECT DISTINCT ON (step_id) * FROM workflow_step_results "
                     "  WHERE run_id = CAST(:from_run AS uuid) AND tenant_id = CAST(:tid AS uuid) "
@@ -1831,4 +1842,5 @@ class PostgresWorkflowRunStore:
             "started_at": _iso(row["started_at"]),
             "finished_at": _iso(row["completed_at"]),
             "duration_ms": float(row["duration_ms"]) if row["duration_ms"] is not None else None,
+            "state_delta": _as_obj(row.get("state_delta")),
         }

@@ -40,6 +40,18 @@ from app.workflow.steps.hitl_step import classify_hitl_decision
 
 _log = get_logger(__name__)
 
+# State a step contributes besides its output. Persisted with the step result
+# (``state_delta``) and replayed when a resumed run skips the completed step, so
+# variables, foreach progress and cost/tokens survive an approval / pause / crash
+# (WF-34). Run-control keys (status, error, hitl_*, paused_*) are never replayed.
+_REPLAYED_STATE_KEYS = ("vars", "foreach_progress", "cost_usd", "tokens_used", "completed_branch")
+
+
+def _state_delta(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    return {k: result[k] for k in _REPLAYED_STATE_KEYS if result.get(k) not in (None, {}, 0)}
+
 # (direct approval deps, indirect approval ancestors) for one step.
 _Barrier = tuple[frozenset[str], frozenset[str]]
 
@@ -81,6 +93,13 @@ class CompiledWorkflow:
 
     async def aget_state(self, config: dict[str, Any]) -> Any:
         return await self.graph.aget_state(config)
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        """Drop this process's checkpoint for ``thread_id`` (no-op without one)."""
+        saver = getattr(self.graph, "checkpointer", None)
+        deleter = getattr(saver, "adelete_thread", None)
+        if deleter is not None:
+            await deleter(thread_id)
 
 
 class WorkflowCompiler:
@@ -343,9 +362,12 @@ class WorkflowCompiler:
                     # not a JSON object or is empty — so resuming never replays
                     # an earlier step's side effect.
                     if _prior and _prior.get("status") == StepStatus.COMPLETE.value:
+                        # Replay the step's recorded state (vars, cost, ...) too —
+                        # outputs alone left later steps reading defaults.
+                        replay = _state_delta(_prior.get("state_delta"))
                         if _prior.get("output") is None:
-                            return {}
-                        return {"step_outputs": {step.id: _prior["output"]}}
+                            return replay
+                        return {**replay, "step_outputs": {step.id: _prior["output"]}}
                 # STOP / PAUSE: honor an operator control status set via the API.
                 # Raising halts the whole run (propagates out of ainvoke) so no
                 # further steps execute — the runner maps the signal to the
@@ -407,6 +429,7 @@ class WorkflowCompiler:
                             self._step_status_for(result.get("status")),
                             (result.get("step_outputs") or {}).get(step.id),
                             result.get("error"),
+                            state_delta=_state_delta(result),
                         )
                     return result
                 if attempt < max_attempts:
@@ -497,7 +520,14 @@ class WorkflowCompiler:
         status: Any,
         output: Any,
         error: str | None,
+        *,
+        state_delta: dict[str, Any] | None = None,
     ) -> None:
+        extra: dict[str, Any] = {}
+        if state_delta:
+            extra["state_delta"] = state_delta
+            if state_delta.get("cost_usd"):
+                extra["cost_usd"] = state_delta["cost_usd"]
         try:
             await run_store.record_step_finish(
                 run_id=state["run_id"],
@@ -508,6 +538,7 @@ class WorkflowCompiler:
                 # non-object output made the step look output-less on resume.
                 output=output,
                 error=error,
+                **extra,
             )
         except Exception as exc:
             _log.warning("step_finish_persist_failed", step_id=step.id, error=str(exc))

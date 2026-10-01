@@ -429,6 +429,10 @@ class WorkflowRunner:
         )
         compiled = self._compiler.compile(definition)
         config = {"configurable": {"thread_id": run_id}}
+        # The state above is rebuilt from Postgres; a checkpoint this worker
+        # process kept from an earlier attempt of the run would be MERGED into it
+        # by the reducers (cost/tokens added twice, stale status).
+        await self._drop_checkpoint(compiled, run_id)
         # Mark RUNNING before executing so started_at is stamped at the real start
         # (update_status COALESCEs started_at on 'running') — otherwise the run
         # jumps straight to a terminal status and duration can't be computed.
@@ -595,6 +599,9 @@ class WorkflowRunner:
             if not resumed:
                 _log.info("workflow_resume_skipped_run_not_waiting", run_id=run_id)
                 return
+        # A second resume of the run in this process must not merge into the
+        # first resume's END checkpoint (it re-added the replayed cost).
+        await self._drop_checkpoint(compiled, f"{run_id}::resume")
         try:
             final_state = await compiled.ainvoke(initial_state, config)
         except WorkflowCancelled:
@@ -610,6 +617,18 @@ class WorkflowRunner:
             await self._fail_run(run_id, tenant_id, exc, initial_state, definition)
             return
         await self._finalize_status(run_id, tenant_id, final_state, definition=definition)
+
+    @staticmethod
+    async def _drop_checkpoint(compiled: Any, thread_id: str) -> None:
+        """Forget this process's checkpoint for ``thread_id`` (state is rebuilt
+        from the database by the caller)."""
+        deleter = getattr(compiled, "adelete_thread", None)
+        if deleter is None:
+            return
+        try:
+            await deleter(thread_id)
+        except Exception as exc:  # a stale checkpoint is worse, but never fatal
+            _log.warning("workflow_checkpoint_drop_failed", thread_id=thread_id, error=str(exc))
 
     async def _fail_run(
         self,
