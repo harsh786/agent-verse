@@ -2225,35 +2225,44 @@ def run_goal(
     # (emergency_stop:{tenant}:{org}, written by the org endpoint and previously
     # never read) — the goal's org comes from goals.execution_context.org_id.
     _lock_r = _get_sync_redis()
-    try:
-        from app.db.session import get_session_factory as _es_sf
-        from app.governance import emergency_stop as _es
+    from app.db.session import get_session_factory as _es_sf
+    from app.governance import emergency_stop as _es
 
+    # WF-16: an unreadable stop state is not "not stopped". Retry the task with
+    # backoff; after the last retry record the goal as blocked — never run it.
+    _es_error: Exception | None = None
+    _stop_reason: str | None = None
+    try:
         _stop_reason = _es.emergency_stop_reason_sync(
             _lock_r,
             tenant_id,
             resolve_org_id=lambda: _run_async(_es.goal_org_id(_es_sf(), tenant_id, goal_id)),
         )
-        if _stop_reason:
-            logger.warning(
-                "goal_blocked_by_emergency_stop goal_id=%s tenant_id=%s reason=%s",
-                goal_id,
-                tenant_id,
-                _stop_reason,
-            )
-            # Record it: the goal row used to stay "queued" forever and keep its
-            # concurrency slot, so the stop looked like a hang.
-            _blocked: Any = None
-            with contextlib.suppress(Exception):
-                _blocked = _run_async(_mark_goal_blocked(goal_id, tenant_id, _stop_reason))
-            # A redelivered message for an already-finished goal changes nothing
-            # and must not free a slot a running goal holds.
-            if _blocked is not False:
-                with contextlib.suppress(Exception):
-                    _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
-            return {"status": "blocked", "reason": _stop_reason}
     except Exception as _es_exc:
-        logger.warning("emergency_stop_check_failed: %s", _es_exc)
+        logger.error("emergency_stop_check_failed goal_id=%s: %s", goal_id, _es_exc)
+        _es_error = _es_exc
+    if _es_error is not None:
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=_es_error, countdown=2**self.request.retries) from _es_error
+        _stop_reason = _es.UNVERIFIABLE_REASON
+    if _stop_reason:
+        logger.warning(
+            "goal_blocked_by_emergency_stop goal_id=%s tenant_id=%s reason=%s",
+            goal_id,
+            tenant_id,
+            _stop_reason,
+        )
+        # Record it: the goal row used to stay "queued" forever and keep its
+        # concurrency slot, so the stop looked like a hang.
+        _blocked: Any = None
+        with contextlib.suppress(Exception):
+            _blocked = _run_async(_mark_goal_blocked(goal_id, tenant_id, _stop_reason))
+        # A redelivered message for an already-finished goal changes nothing
+        # and must not free a slot a running goal holds.
+        if _blocked is not False:
+            with contextlib.suppress(Exception):
+                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        return {"status": "blocked", "reason": _stop_reason}
 
     db_factory: Any = None
     goal_bridge: Any = None
