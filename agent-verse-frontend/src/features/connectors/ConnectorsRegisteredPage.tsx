@@ -567,6 +567,9 @@ function AuthTypeSelector({
 
 interface FormState {
   name: string;
+  /** Catalog type of this connection ('' when registering a custom server). A
+   *  tenant may hold several connections of one type, each with its own name. */
+  connector_type: string;
   url: string;
   auth_type: string;
   auth_values: Record<string, string>;
@@ -575,6 +578,7 @@ interface FormState {
 
 const EMPTY_FORM: FormState = {
   name: '',
+  connector_type: '',
   url: '',
   auth_type: 'bearer',
   auth_values: {},
@@ -612,6 +616,7 @@ export function ConnectorsRegisteredPage() {
     if (prefill) {
       return {
         name: prefill.name ?? '',
+        connector_type: prefill.connector_type ?? '',
         url: prefill.url ?? prefill.default_url ?? '',
         auth_type: prefill.auth_type ?? 'bearer',
         auth_values: {},
@@ -643,6 +648,9 @@ export function ConnectorsRegisteredPage() {
         auth_type: form.auth_type,
         auth_config,
         auto_approve: form.auto_approve,
+        // Lets the backend bind the right built-in handler to an instance whose
+        // name is not the type name (e.g. "orders-db" of type "mongodb").
+        ...(form.connector_type ? { connector_type: form.connector_type } : {}),
       };
       if (editingId) {
         return connectorsApi.update(editingId, payload);
@@ -681,6 +689,7 @@ export function ConnectorsRegisteredPage() {
     setEditingId(c.server_id);
     setForm({
       name: c.name,
+      connector_type: c.connector_type ?? '',
       url: c.url,
       auth_type: c.auth_type ?? 'bearer',
       auth_values: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
@@ -713,12 +722,22 @@ export function ConnectorsRegisteredPage() {
     setFormError('');
   }, []);
 
-  const urlConfig = getUrlConfig(form.name);
+  const urlConfig = getUrlConfig(form.connector_type || form.name);
+
+  // Each connection needs its own name — several of one type are allowed, but
+  // two with the same name can't be told apart in pickers.
+  const trimmedName = form.name.trim().toLowerCase();
+  const nameTaken =
+    !!trimmedName &&
+    connectors.some(
+      (c) => c.server_id !== editingId && (c.name ?? '').trim().toLowerCase() === trimmedName,
+    );
 
   // Validation
   const canSubmit =
     form.name.trim() &&
     form.url.trim() &&
+    !nameTaken &&
     !registerMutation.isPending;
 
   return (
@@ -797,6 +816,11 @@ export function ConnectorsRegisteredPage() {
                           >
                             {c.name || c.server_id}
                           </Link>
+                          {c.connector_type && c.connector_type.toLowerCase() !== (c.name ?? '').toLowerCase() && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                              {c.connector_type}
+                            </span>
+                          )}
                           {c.has_builtin && (
                             <span
                               title="Built-in handler — runs inside AgentVerse, no external MCP server needed"
@@ -911,6 +935,11 @@ export function ConnectorsRegisteredPage() {
             </div>
 
             <div className="px-6 py-5 space-y-5">
+              {form.connector_type && (
+                <p className="text-xs text-muted-foreground">
+                  Type: <span className="font-medium text-foreground">{form.connector_type}</span>
+                </p>
+              )}
               {/* Name */}
               <div>
                 <label htmlFor="connector-name" className="block text-sm font-medium mb-1">
@@ -923,9 +952,16 @@ export function ConnectorsRegisteredPage() {
                   placeholder="my-jira, github-org, slack-engineering…"
                   className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                 />
-                <p className="text-xs text-muted-foreground mt-1">
-                  A short unique name to identify this connector
-                </p>
+                {nameTaken ? (
+                  <p role="alert" className="text-xs text-destructive mt-1">
+                    A connector named “{form.name.trim()}” already exists — give this connection its own name.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    A unique name for this connection — you can register several of the same type
+                    (e.g. orders-db and analytics-db).
+                  </p>
+                )}
               </div>
 
               {/* URL — with connector-specific hint */}
@@ -958,7 +994,7 @@ export function ConnectorsRegisteredPage() {
                   <HintText id="url-hint" text={urlConfig.hint} />
                 )}
                 {/* Quick-fill buttons for known connectors */}
-                {form.name.trim().length > 2 && urlConfig && !form.url && (
+                {(form.connector_type || form.name.trim()).length > 2 && urlConfig && !form.url && (
                   <button
                     type="button"
                     onClick={() => setForm((f) => ({ ...f, url: urlConfig.url }))}
@@ -1018,7 +1054,7 @@ export function ConnectorsRegisteredPage() {
                     <SmartAuthFields
                       authType={form.auth_type}
                       authValues={form.auth_values}
-                      connectorName={form.name}
+                      connectorName={form.connector_type || form.name}
                       onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
                     />
                   </div>

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { Node } from '@xyflow/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
@@ -18,7 +19,17 @@ function makeNode(stepType: string, data: Record<string, unknown> = {}, id = 'st
 }
 
 function renderConfig(node: Node, onUpdate = vi.fn(), onClose = vi.fn()) {
-  render(<WorkflowStepConfig node={node} onUpdate={onUpdate} onClose={onClose} />);
+  // The tool step lists the tenant's connectors (react-query) — give it a client
+  // and an empty connector list so no real request is made.
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+    new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+  );
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={qc}>
+      <WorkflowStepConfig node={node} onUpdate={onUpdate} onClose={onClose} />
+    </QueryClientProvider>,
+  );
   return { onUpdate, onClose };
 }
 

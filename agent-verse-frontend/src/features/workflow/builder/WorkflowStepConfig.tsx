@@ -17,6 +17,8 @@ import { TextAreaField, NumberField, ToggleField } from './config-fields/FormFie
 import { KeyValueEditor } from './config-fields/KeyValueEditor';
 import { CollapsibleSection } from './config-fields/AdvancedSection';
 import { NLTriggerAssist } from './NLTriggerAssist';
+import { useQuery } from '@tanstack/react-query';
+import { connectorsApi } from '@/lib/api/client';
 
 interface StepConfigProps {
   node: Node;
@@ -320,15 +322,86 @@ function LLMConfig({ data, onUpdate }: PanelProps) {
 }
 
 function ToolConfig({ data, onUpdate, nodeId }: PanelProps) {
+  // A tenant may register several instances of one connector type (e.g. two
+  // MongoDBs), so the step names the specific INSTANCE (its opaque server_id)
+  // and a tool that instance exposes — not just a tool name.
+  const serverId = String(data.server_id ?? '');
+  const tool = String(data.tool ?? '');
+  const { data: rawConnectors, isSuccess: connectorsLoaded, isError: connectorsFailed } = useQuery({
+    queryKey: ['connectors'],
+    queryFn: () => connectorsApi.list(),
+  });
+  const connectors = [...(Array.isArray(rawConnectors) ? rawConnectors : [])].sort((a, b) =>
+    (a.name || a.server_id).localeCompare(b.name || b.server_id),
+  );
+  const selected = connectors.find((c) => c.server_id === serverId);
+  const { data: rawTools, isSuccess: toolsLoaded } = useQuery({
+    queryKey: ['connector-tools', serverId],
+    queryFn: () => connectorsApi.tools(serverId),
+    enabled: !!selected,
+  });
+  const tools = (Array.isArray(rawTools) ? rawTools : []).filter(
+    (t): t is { name: string; description?: string } => typeof t?.name === 'string' && t.name !== '',
+  );
+
+  const connectorOptions = [
+    { label: 'Any connector (match by tool name)', value: '' },
+    ...connectors.map((c) => ({
+      label: c.connector_type ? `${c.name || c.server_id} · ${c.connector_type}` : c.name || c.server_id,
+      value: c.server_id,
+    })),
+    ...(serverId && connectorsLoaded && !selected
+      ? [{ label: `${serverId} (missing)`, value: serverId }]
+      : []),
+  ];
+  const toolOptions = [
+    { label: 'Select a tool…', value: '' },
+    ...tools.map((t) => ({ label: t.name, value: t.name })),
+    ...(tool && !tools.some((t) => t.name === tool) ? [{ label: `${tool} (not exposed)`, value: tool }] : []),
+  ];
+  const pickTool = !!selected && toolsLoaded && tools.length > 0;
+
   return (
     <>
-      <TextField
-        label="Tool name"
-        value={String(data.tool ?? '')}
-        onChange={(v) => onUpdate({ tool: v })}
-        placeholder="e.g. github.create_issue"
-        description="MCP tool identifier (namespace.action)"
-      />
+      <div>
+        <SelectField
+          label="Connector"
+          value={serverId}
+          options={connectorOptions}
+          onChange={(v) => onUpdate({ server_id: v || undefined, tool: undefined })}
+        />
+        {serverId && (
+          <p className="text-[11px] text-white/30 mt-1 font-mono break-all">Server ID: {serverId}</p>
+        )}
+        {connectorsFailed && (
+          <p role="alert" className="text-[11px] text-red-400 mt-1">Couldn't load your connectors.</p>
+        )}
+        {serverId && connectorsLoaded && !selected && (
+          <p className="text-[11px] text-amber-400 mt-1">
+            This connector is no longer registered — pick another or re-register it.
+          </p>
+        )}
+      </div>
+      {pickTool ? (
+        <SelectField
+          label="Tool"
+          value={tool}
+          options={toolOptions}
+          onChange={(v) => onUpdate({ tool: v || undefined })}
+        />
+      ) : (
+        <TextField
+          label="Tool name"
+          value={tool}
+          onChange={(v) => onUpdate({ tool: v })}
+          placeholder="e.g. github.create_issue"
+          description={
+            serverId
+              ? 'Tool exposed by the selected connector'
+              : 'MCP tool identifier (namespace.action); the first connector exposing it is used'
+          }
+        />
+      )}
       <KeyValueEditor
         key={nodeId}
         label="Arguments"

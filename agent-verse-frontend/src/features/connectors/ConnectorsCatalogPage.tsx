@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { CheckCircle2, Zap, Search, SlidersHorizontal } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { connectorsApi, type CatalogEntry } from '@/lib/api/client';
@@ -66,13 +66,18 @@ function ConnectorCard({
   onConfigure,
   onOAuthSuccess,
   oauthServerId,
+  instanceCount = 0,
 }: {
   entry: CatalogEntry;
-  onConfigure: (entry: CatalogEntry) => void;
+  /** `addAnother` = register a further, separately named instance of this type. */
+  onConfigure: (entry: CatalogEntry, opts?: { addAnother?: boolean }) => void;
   onOAuthSuccess?: () => void;
   /** This tenant's registered OAuth connector for this entry, if any. */
   oauthServerId?: string;
+  /** How many connectors of this type the tenant has registered. */
+  instanceCount?: number;
 }) {
+  const configured = entry.is_configured || instanceCount > 0;
   const emoji = CONNECTOR_EMOJIS[entry.name] ?? '🔌';
   const categoryColor = CATEGORY_COLORS[entry.category] ?? CATEGORY_COLORS.other;
   const categoryLabel = CATEGORY_LABELS[entry.category] ?? entry.category;
@@ -82,12 +87,12 @@ function ConnectorCard({
   return (
     <div
       className={`relative flex flex-col rounded-2xl border bg-card shadow-sm transition-shadow hover:shadow-md ${
-        entry.is_configured
+        configured
           ? 'border-emerald-200 dark:border-emerald-800/60'
           : 'border-border'
       }`}
     >
-      {entry.is_configured && (
+      {configured && (
         <div className="absolute -top-2.5 right-3 flex items-center gap-1 rounded-full bg-emerald-500 px-2.5 py-0.5 text-[10px] font-semibold text-[#F1F5F9] shadow">
           <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
           Configured
@@ -161,17 +166,33 @@ function ConnectorCard({
             onSuccess={onOAuthSuccess}
           />
         )}
-        <button
-          type="button"
-          onClick={() => onConfigure(entry)}
-          className={`w-full rounded-xl py-2 text-xs font-semibold transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 ${
-            entry.is_configured
-              ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300'
-              : 'bg-primary text-primary-foreground'
-          }`}
-        >
-          {entry.is_configured ? 'Reconfigure' : 'Configure'}
-        </button>
+        {configured ? (
+          // An installed type stays installable: each extra connection is its own
+          // named instance (e.g. two MongoDBs "orders-db" and "analytics-db").
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onConfigure(entry, { addAnother: true })}
+              className="flex-1 rounded-xl py-2 text-xs font-semibold bg-primary text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2"
+            >
+              Add another
+            </button>
+            <Link
+              to="/connectors"
+              className="rounded-xl px-3 py-2 text-xs font-semibold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-300"
+            >
+              {instanceCount > 0 ? `Manage (${instanceCount})` : 'Manage'}
+            </Link>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onConfigure(entry)}
+            className="w-full rounded-xl py-2 text-xs font-semibold transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 bg-primary text-primary-foreground"
+          >
+            Configure
+          </button>
+        )}
       </div>
     </div>
   );
@@ -242,12 +263,24 @@ export function ConnectorsCatalogPage() {
 
   const configuredCount = catalog.filter((e) => e.is_configured).length;
 
-  const handleConfigure = (entry: CatalogEntry) => {
+  // Registered instances per catalog type (connector_type when the backend
+  // reports it; older payloads only carry the name).
+  const instanceCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const c of Array.isArray(installed) ? installed : []) {
+      const key = (c?.connector_type || c?.name || '').toLowerCase();
+      if (key) m.set(key, (m.get(key) ?? 0) + 1);
+    }
+    return m;
+  }, [installed]);
+
+  const handleConfigure = (entry: CatalogEntry, opts: { addAnother?: boolean } = {}) => {
     navigate('/connectors', {
       state: {
         prefill: {
           connector_type: entry.connector_type ?? entry.name,
-          name: entry.name,
+          // A further instance needs its own name — the user picks it.
+          name: opts.addAnother ? '' : entry.name,
           url: entry.default_url,
           auth_type: entry.auth_type,
           auth_fields: entry.auth_fields,
@@ -409,6 +442,7 @@ export function ConnectorsCatalogPage() {
               entry={entry}
               onConfigure={handleConfigure}
               oauthServerId={oauthServerIds.get(entry.name.toLowerCase())}
+              instanceCount={instanceCounts.get((entry.connector_type || entry.name).toLowerCase()) ?? 0}
               onOAuthSuccess={() => {
                 qc.invalidateQueries({ queryKey: ['connectors-catalog'] });
                 qc.invalidateQueries({ queryKey: ['connectors'] });

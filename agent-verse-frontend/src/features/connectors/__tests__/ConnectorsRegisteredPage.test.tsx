@@ -2,7 +2,7 @@
  * ConnectorsRegisteredPage — comprehensive tests
  * Covers: smart auth fields, connector-specific URLs, CRUD operations, test flow
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
@@ -664,5 +664,107 @@ describe('Accessibility', () => {
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: /register connector/i }));
     expect(screen.getByRole('button', { name: /show/i })).toBeInTheDocument();
+  });
+});
+
+// ── MULTI-INSTANCE-UI: several connectors of the same type ───────────────────
+
+describe('Multiple instances of one connector type', () => {
+  const ORDERS = {
+    server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb',
+    url: 'builtin://', auth_type: 'api_key', auth_config: { uri: '***' }, status: 'active', has_builtin: true,
+  };
+  const ANALYTICS = {
+    ...ORDERS, server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db',
+  };
+  const both = { match: (u: string) => u.endsWith('/connectors'), response: [ORDERS, ANALYTICS] };
+  const rowOf = (name: string) => screen.getByRole('link', { name }).closest('tr') as HTMLElement;
+  const enc = encodeURIComponent;
+
+  it('lists each instance by its own name, type, link and server id', async () => {
+    mockFetch([both]);
+    renderPage();
+    expect(await screen.findByRole('link', { name: 'orders-db' })).toHaveAttribute('href', `/connectors/${enc(ORDERS.server_id)}`);
+    expect(screen.getByRole('link', { name: 'analytics-db' })).toHaveAttribute('href', `/connectors/${enc(ANALYTICS.server_id)}`);
+    expect(within(rowOf('orders-db')).getByText('mongodb')).toBeInTheDocument();
+    expect(within(rowOf('analytics-db')).getByText('builtin-mongodb:analytics-db')).toBeInTheDocument();
+  });
+
+  it('tests, edits and removes each instance independently', async () => {
+    const spy = mockFetch([
+      both,
+      { match: (u, i) => u.endsWith('/test') && i?.method === 'POST', response: { reachable: true, status: 'ok', latency_ms: 5 } },
+      { match: (_u, i) => i?.method === 'DELETE', response: null, status: 204 },
+    ]);
+    renderPage();
+    await screen.findByRole('link', { name: 'analytics-db' });
+
+    await userEvent.click(within(rowOf('analytics-db')).getByRole('button', { name: /^test$/i }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, i]) =>
+        String(u).endsWith(`/connectors/${enc(ANALYTICS.server_id)}/test`) && (i as RequestInit)?.method === 'POST',
+      )).toBe(true),
+    );
+    expect(spy.mock.calls.some(([u]) => String(u).includes(`${enc(ORDERS.server_id)}/test`))).toBe(false);
+
+    await userEvent.click(within(rowOf('analytics-db')).getByRole('button', { name: /^edit$/i }));
+    expect(screen.getByLabelText(/^name/i)).toHaveValue('analytics-db');
+    await userEvent.click(screen.getByRole('button', { name: /cancel/i }));
+
+    await userEvent.click(within(rowOf('orders-db')).getByRole('button', { name: /remove/i }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /^remove$/i }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, i]) =>
+        String(u).endsWith(`/connectors/${enc(ORDERS.server_id)}`) && (i as RequestInit)?.method === 'DELETE',
+      )).toBe(true),
+    );
+    expect(spy.mock.calls.some(([u, i]) =>
+      String(u).endsWith(`/connectors/${enc(ANALYTICS.server_id)}`) && (i as RequestInit)?.method === 'DELETE',
+    )).toBe(false);
+  });
+
+  it('adds another instance of an installed type under a new, unique name', async () => {
+    const spy = mockFetch([
+      both,
+      { match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { server_id: 'builtin-mongodb:reports-db', name: 'reports-db' } },
+    ]);
+    renderPage({ prefill: { connector_type: 'mongodb', name: '', url: 'builtin://', auth_type: 'none' } });
+    await screen.findByTestId('register-modal');
+    expect(screen.getByText((_, el) => el?.tagName === 'P' && el.textContent === 'Type: mongodb')).toBeInTheDocument();
+    const name = screen.getByLabelText(/^name/i);
+    await userEvent.type(name, 'Orders-DB');
+    expect(screen.getByRole('alert')).toHaveTextContent(/already exists/i);
+    expect(screen.getByRole('button', { name: /^register$/i })).toBeDisabled();
+    await userEvent.clear(name);
+    await userEvent.type(name, 'reports-db');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
+    await waitFor(() => {
+      const post = spy.mock.calls.find(([u, i]) => String(u).endsWith('/connectors') && (i as RequestInit)?.method === 'POST');
+      expect(post).toBeTruthy();
+      expect(JSON.parse(String((post![1] as RequestInit).body))).toMatchObject({
+        name: 'reports-db', connector_type: 'mongodb',
+      });
+    });
+  });
+
+  it('editing an instance keeps its type and may keep its own name', async () => {
+    const spy = mockFetch([
+      both,
+      { match: (_u, i) => i?.method === 'PUT', response: ANALYTICS },
+    ]);
+    renderPage();
+    await screen.findByRole('link', { name: 'analytics-db' });
+    await userEvent.click(within(rowOf('analytics-db')).getByRole('button', { name: /^edit$/i }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => {
+      const put = spy.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'PUT');
+      expect(put).toBeTruthy();
+      expect(String(put![0])).toContain(`/connectors/${enc(ANALYTICS.server_id)}`);
+      expect(JSON.parse(String((put![1] as RequestInit).body))).toMatchObject({
+        name: 'analytics-db', connector_type: 'mongodb',
+      });
+    });
   });
 });

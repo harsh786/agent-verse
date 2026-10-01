@@ -137,8 +137,33 @@ describe('ConnectorsCatalogPage', () => {
     );
     renderPage();
     await screen.findByText('Jira');
-    const configureButtons = screen.getAllByRole('button', { name: /configure/i });
+    // Unconfigured types offer Configure; configured ones offer Add another.
+    const configureButtons = screen.getAllByRole('button', { name: /^configure$|add another/i });
     expect(configureButtons).toHaveLength(RICH_CATALOG_ENTRIES.length);
+  });
+
+  // MULTI-INSTANCE-UI: a type that is already installed must still be
+  // installable again as another, separately named connection.
+  test('a configured type offers "Add another" (a new instance) and shows how many exist', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const body = url.includes('/connectors/catalog')
+        ? [{ ...RICH_CATALOG_ENTRIES[1], name: 'mongodb', display_name: 'MongoDB', connector_type: 'mongodb', auth_type: 'api_key' }]
+        : [
+            { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb', url: 'builtin://' },
+            { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb', url: 'builtin://' },
+          ];
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await screen.findByText('MongoDB');
+    expect(await screen.findByRole('link', { name: /manage \(2\)/i })).toHaveAttribute('href', '/connectors');
+    await userEvent.click(screen.getByRole('button', { name: /add another/i }));
+    expect(mockNavigate).toHaveBeenCalledWith('/connectors', expect.objectContaining({
+      state: expect.objectContaining({
+        prefill: expect.objectContaining({ connector_type: 'mongodb', name: '' }),
+      }),
+    }));
   });
 
   test('shows empty state when no catalog entries returned', async () => {

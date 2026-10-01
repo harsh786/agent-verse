@@ -671,7 +671,10 @@ export const agentsApi = {
 // ── Connectors ────────────────────────────────────────────────────────────────
 
 export interface ConnectorRequest {
+  /** This connection's own name (unique per tenant). */
   name: string;
+  /** Catalog type (e.g. "mongodb") — several named instances of one type may exist. */
+  connector_type?: string;
   url: string;
   auth_type: string;
   auth_config: Record<string, string>;
