@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from app.providers.base import (
     CompletionRequest,
@@ -38,20 +40,74 @@ class GeminiProvider:
         self._embed_model = embed_model
 
     @staticmethod
-    def _reject_unsupported(request: CompletionRequest) -> None:
-        """Fail honestly on request features this adapter does not implement.
+    def _structured(request: CompletionRequest) -> bool:
+        """Tools, images or tool turns need structured contents (not a text prompt)."""
+        return bool(request.tools) or any(
+            getattr(m, "image_data", None) or m.role == "tool" or m.tool_calls
+            for m in request.messages
+        )
 
-        The prompt is flattened to text, so tool definitions and image payloads
-        used to be dropped silently and the model answered as if they were never
-        offered (a fake tool-less "success"). Raise instead.
-        """
-        if request.tools:
-            raise NotImplementedError(
-                "GeminiProvider does not implement tool calling; "
-                f"{len(request.tools)} tool definition(s) cannot be sent"
+    # JSON-schema keys Gemini function declarations reject.
+    _UNSUPPORTED_SCHEMA_KEYS = frozenset({"additionalProperties", "$schema", "$defs", "$ref"})
+
+    @classmethod
+    def _gemini_schema(cls, schema: Any) -> Any:
+        if isinstance(schema, dict):
+            return {
+                k: cls._gemini_schema(v)
+                for k, v in schema.items()
+                if k not in cls._UNSUPPORTED_SCHEMA_KEYS
+            }
+        if isinstance(schema, list):
+            return [cls._gemini_schema(v) for v in schema]
+        return schema
+
+    def _contents(self, request: CompletionRequest) -> list[Any]:
+        """Messages as google-genai Content: text, inline images, function calls and
+        function responses (a tool result is matched to its call by id)."""
+        types = self._types
+        call_names: dict[str, str] = {}
+        contents: list[Any] = []
+        for m in request.messages:
+            if m.role == "system":
+                continue
+            parts: list[Any] = []
+            if m.role == "tool":
+                name = call_names.get(m.tool_call_id or "", m.tool_call_id or "tool")
+                parts.append(
+                    types.Part.from_function_response(
+                        name=name, response={"result": m.content}
+                    )
+                )
+                contents.append(types.Content(role="user", parts=parts))
+                continue
+            if isinstance(m.content, str) and m.content:
+                parts.append(types.Part(text=m.content))
+            elif isinstance(m.content, list):
+                parts.extend(
+                    types.Part(text=str(p.get("text", "")))
+                    for p in m.content
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            if m.image_data:
+                parts.append(
+                    types.Part.from_bytes(
+                        data=base64.b64decode(m.image_data), mime_type="image/png"
+                    )
+                )
+            for tc in m.tool_calls or []:
+                call_names[str(tc.get("id") or "")] = str(tc.get("name") or "")
+                parts.append(
+                    types.Part(
+                        function_call=types.FunctionCall(
+                            name=str(tc.get("name") or ""), args=dict(tc.get("input") or {})
+                        )
+                    )
+                )
+            contents.append(
+                types.Content(role="model" if m.role == "assistant" else "user", parts=parts)
             )
-        if any(getattr(m, "image_data", None) for m in request.messages):
-            raise NotImplementedError("GeminiProvider does not implement image input")
+        return contents
 
     def _config(self, request: CompletionRequest) -> object:
         kwargs: dict[str, object] = {
@@ -61,26 +117,60 @@ class GeminiProvider:
         if request.response_schema is not None or request.json_object:
             # JSON mode; the schema itself is stated in the prompt (see _prompt).
             kwargs["response_mime_type"] = "application/json"
+        if self._structured(request):
+            system = request.system or next(
+                (m.content for m in request.messages if m.role == "system"), None
+            )
+            if system:
+                kwargs["system_instruction"] = system
+        if request.tools:
+            kwargs["tools"] = [
+                self._types.Tool(
+                    function_declarations=[
+                        self._types.FunctionDeclaration(
+                            name=t.name,
+                            description=t.description,
+                            parameters=self._gemini_schema(t.input_schema),
+                        )
+                        for t in request.tools
+                    ]
+                )
+            ]
         return self._types.GenerateContentConfig(**kwargs)
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        self._reject_unsupported(request)
         model_name = request.model or self._default_model
-        prompt = self._prompt(request)
+        contents: Any = (
+            self._contents(request) if self._structured(request) else self._prompt(request)
+        )
         config = self._config(request)
         response = await self._client.aio.models.generate_content(
             model=model_name,
-            contents=prompt,
+            contents=contents,
             config=config,
         )
         usage = getattr(response, "usage_metadata", None)
         prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
         output_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+        tool_calls = [
+            {
+                "name": str(getattr(fc, "name", "") or ""),
+                "input": dict(getattr(fc, "args", None) or {}),
+                "id": str(getattr(fc, "id", "") or f"call_{i}"),
+            }
+            for i, fc in enumerate(getattr(response, "function_calls", None) or [])
+        ]
+        try:
+            text = str(getattr(response, "text", "") or "")
+        except Exception:  # the SDK raises reading .text on a function-call-only reply
+            text = ""
         return CompletionResponse(
-            content=str(getattr(response, "text", "") or ""),
+            content=text,
             model=model_name,
             input_tokens=prompt_tokens,
             output_tokens=output_tokens,
+            tool_calls=tool_calls,
+            stop_reason="tool_use" if tool_calls else "end_turn",
             usage=TokenUsage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=output_tokens,
@@ -93,7 +183,10 @@ class GeminiProvider:
         request: CompletionRequest,
         on_token: Callable[[str], Awaitable[None]],
     ) -> CompletionResponse:
-        self._reject_unsupported(request)
+        if self._structured(request):
+            # Tool / image turns: one structured call (function calls are not
+            # streamed as text tokens).
+            return await self.complete(request)
         model_name = request.model or self._default_model
         content = ""
         usage = None
@@ -169,9 +262,9 @@ class GeminiProvider:
         return "\n".join(parts)
 
     def supports_vision(self) -> bool:
-        # Images are not sent (see _reject_unsupported) — do not advertise vision.
-        return False
+        # Images are sent as inline parts (see _contents).
+        return True
 
     def supports_tool_use(self) -> bool:
-        # Tool definitions are not sent (see _reject_unsupported).
-        return False
+        # Tools are sent as function declarations; calls come back as tool_calls.
+        return True

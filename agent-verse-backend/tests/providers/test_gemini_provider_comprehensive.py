@@ -1,4 +1,7 @@
-"""Current Google Gen AI async provider coverage."""
+"""Current Google Gen AI async provider coverage.
+
+Tool calling / image input: tests/providers/test_prov07_gemini_tool_calling.py.
+"""
 
 from __future__ import annotations
 
@@ -67,44 +70,6 @@ async def test_embed_maps_query_and_document_tasks() -> None:
     assert document.embeddings == [[0.1, 0.2]]
     assert models.embed_calls[0]["config"].task_type == "RETRIEVAL_QUERY"
     assert models.embed_calls[1]["config"].task_type == "RETRIEVAL_DOCUMENT"
-
-
-def test_capability_flags_are_honest() -> None:
-    """Tools and images are not sent by this adapter, so it must not claim them."""
-    provider, _ = _provider()
-    assert provider.supports_vision() is False
-    assert provider.supports_tool_use() is False
-
-
-async def test_complete_with_tools_raises_instead_of_dropping_them() -> None:
-    import pytest
-
-    from app.providers.base import ToolDefinition
-
-    provider, models = _provider()
-    with pytest.raises(NotImplementedError, match="tool calling"):
-        await provider.complete(
-            CompletionRequest(
-                messages=[Message(role="user", content="list issues")],
-                model="gemini-2.5-pro",
-                tools=[ToolDefinition(name="jira_search", description="d", input_schema={})],
-            )
-        )
-    assert models.generate_calls == []
-
-
-async def test_complete_with_image_raises() -> None:
-    import pytest
-
-    provider, models = _provider()
-    with pytest.raises(NotImplementedError, match="image"):
-        await provider.complete(
-            CompletionRequest(
-                messages=[Message(role="user", content="what is this", image_data="aGk=")],
-                model="gemini-2.5-pro",
-            )
-        )
-    assert models.generate_calls == []
 
 
 async def test_response_schema_requests_json_mode_and_states_schema() -> None:
