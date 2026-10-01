@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -125,7 +125,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    key = os.getenv("KLAVIYO_API_KEY", "")
+    key = tenant_getenv("KLAVIYO_API_KEY", "")
     return {
         "Authorization": f"Klaviyo-API-Key {key}",
         "Content-Type": "application/json",
@@ -134,7 +134,7 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("KLAVIYO_API_KEY"):
+    if not tenant_getenv("KLAVIYO_API_KEY"):
         return {"error": "KLAVIYO_API_KEY not configured"}
 
     try:

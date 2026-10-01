@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    domain = os.getenv("FRESHCHAT_DOMAIN", "")
+    domain = tenant_getenv("FRESHCHAT_DOMAIN", "")
     return f"https://{domain}.freshchat.com/v2" if domain else "https://api.freshchat.com/v2"
 
 
@@ -125,7 +125,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    api_token = os.getenv("FRESHCHAT_API_TOKEN", "")
+    api_token = tenant_getenv("FRESHCHAT_API_TOKEN", "")
     if not api_token:
         return {"error": "FRESHCHAT_API_TOKEN not configured"}
 

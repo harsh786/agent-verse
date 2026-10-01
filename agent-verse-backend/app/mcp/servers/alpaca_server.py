@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -110,8 +110,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    api_key = os.getenv("ALPACA_API_KEY", "")
-    secret_key = os.getenv("ALPACA_SECRET_KEY", "")
+    api_key = tenant_getenv("ALPACA_API_KEY", "")
+    secret_key = tenant_getenv("ALPACA_SECRET_KEY", "")
     if not api_key or not secret_key:
         return {"error": "ALPACA_API_KEY and ALPACA_SECRET_KEY not configured"}
 

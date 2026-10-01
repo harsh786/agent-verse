@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -102,8 +102,8 @@ TOOL_DEFINITIONS = [
 
 
 async def _get_token() -> str:
-    client_id = os.getenv("ZUORA_CLIENT_ID", "")
-    client_secret = os.getenv("ZUORA_CLIENT_SECRET", "")
+    client_id = tenant_getenv("ZUORA_CLIENT_ID", "")
+    client_secret = tenant_getenv("ZUORA_CLIENT_SECRET", "")
     async with httpx.AsyncClient(timeout=30.0) as c:
         r = await c.post(
             TOKEN_URL,
@@ -118,8 +118,8 @@ async def _get_token() -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    client_id = os.getenv("ZUORA_CLIENT_ID", "")
-    client_secret = os.getenv("ZUORA_CLIENT_SECRET", "")
+    client_id = tenant_getenv("ZUORA_CLIENT_ID", "")
+    client_secret = tenant_getenv("ZUORA_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         return {"error": "ZUORA_CLIENT_ID and ZUORA_CLIENT_SECRET must be configured"}
 

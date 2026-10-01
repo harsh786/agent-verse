@@ -9,11 +9,11 @@ Auth: HTTP Basic (api_key:secret_key)
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -121,14 +121,14 @@ TOOL_DEFINITIONS = [
 
 def _auth() -> httpx.BasicAuth:
     return httpx.BasicAuth(
-        os.getenv("AMPLITUDE_API_KEY", ""),
-        os.getenv("AMPLITUDE_SECRET_KEY", ""),
+        tenant_getenv("AMPLITUDE_API_KEY", ""),
+        tenant_getenv("AMPLITUDE_SECRET_KEY", ""),
     )
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("AMPLITUDE_API_KEY", "")
-    secret_key = os.getenv("AMPLITUDE_SECRET_KEY", "")
+    api_key = tenant_getenv("AMPLITUDE_API_KEY", "")
+    secret_key = tenant_getenv("AMPLITUDE_SECRET_KEY", "")
 
     if not api_key or not secret_key:
         return {"error": "AMPLITUDE_API_KEY and AMPLITUDE_SECRET_KEY not configured"}

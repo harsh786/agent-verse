@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    base = os.getenv("EPIC_BASE_URL", "https://fhir.epic.com/interconnect-fhir-oauth")
+    base = tenant_getenv("EPIC_BASE_URL", "https://fhir.epic.com/interconnect-fhir-oauth")
     return f"{base.rstrip('/')}/api/FHIR/R4"
 
 
@@ -111,7 +111,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    access_token = os.getenv("EPIC_ACCESS_TOKEN", "")
+    access_token = tenant_getenv("EPIC_ACCESS_TOKEN", "")
     if not access_token:
         return {"error": "EPIC_ACCESS_TOKEN not configured"}
 

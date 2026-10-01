@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ BASE_URL = "https://api.getresponse.com/v3"
 
 def _headers() -> dict[str, str]:
     return {
-        "X-Auth-Token": f"api-key {os.getenv('GETRESPONSE_API_KEY', '')}",
+        "X-Auth-Token": f"api-key {tenant_getenv('GETRESPONSE_API_KEY', '')}",
         "Content-Type": "application/json",
     }
 
@@ -131,7 +131,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("GETRESPONSE_API_KEY"):
+    if not tenant_getenv("GETRESPONSE_API_KEY"):
         return {"error": "GETRESPONSE_API_KEY not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:

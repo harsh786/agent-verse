@@ -7,11 +7,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -182,7 +182,7 @@ TOOL_DEFINITIONS = [
 
 
 def _clickup_headers() -> dict[str, str]:
-    token = os.getenv("CLICKUP_API_TOKEN", "")
+    token = tenant_getenv("CLICKUP_API_TOKEN", "")
     return {
         "Authorization": token,
         "Content-Type": "application/json",
@@ -206,7 +206,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("CLICKUP_API_TOKEN", "")
+    token = tenant_getenv("CLICKUP_API_TOKEN", "")
     if not token:
         return {"error": "CLICKUP_API_TOKEN not configured"}
 

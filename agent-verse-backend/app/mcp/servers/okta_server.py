@@ -8,11 +8,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -171,7 +171,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("OKTA_API_TOKEN", "")
+    token = tenant_getenv("OKTA_API_TOKEN", "")
     return {
         "Authorization": f"SSWS {token}",
         "Content-Type": "application/json",
@@ -184,10 +184,10 @@ async def call_tool(
     arguments: dict[str, Any],
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    base_url = os.getenv("OKTA_BASE_URL", "").rstrip("/")
+    base_url = tenant_getenv("OKTA_BASE_URL", "").rstrip("/")
     if not base_url:
         return {"error": "OKTA_BASE_URL not configured"}
-    api_token = os.getenv("OKTA_API_TOKEN", "")
+    api_token = tenant_getenv("OKTA_API_TOKEN", "")
     if not api_token:
         return {"error": "OKTA_API_TOKEN not configured"}
 

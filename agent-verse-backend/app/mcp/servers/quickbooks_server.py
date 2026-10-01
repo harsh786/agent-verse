@@ -8,11 +8,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -157,14 +157,14 @@ TOOL_DEFINITIONS = [
 
 
 def _base_url() -> str:
-    sandbox = os.getenv("QUICKBOOKS_SANDBOX", "true").lower() == "true"
+    sandbox = tenant_getenv("QUICKBOOKS_SANDBOX", "true").lower() == "true"
     base = "sandbox-quickbooks" if sandbox else "quickbooks"
-    company_id = os.getenv("QUICKBOOKS_COMPANY_ID", "")
+    company_id = tenant_getenv("QUICKBOOKS_COMPANY_ID", "")
     return f"https://{base}.api.intuit.com/v3/company/{company_id}"
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("QUICKBOOKS_ACCESS_TOKEN", "")
+    token = tenant_getenv("QUICKBOOKS_ACCESS_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
@@ -173,8 +173,8 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("QUICKBOOKS_ACCESS_TOKEN", "")
-    company_id = os.getenv("QUICKBOOKS_COMPANY_ID", "")
+    token = tenant_getenv("QUICKBOOKS_ACCESS_TOKEN", "")
+    company_id = tenant_getenv("QUICKBOOKS_COMPANY_ID", "")
     if not token or not company_id:
         return {"error": "QUICKBOOKS_ACCESS_TOKEN and QUICKBOOKS_COMPANY_ID required"}
 

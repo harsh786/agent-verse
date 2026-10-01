@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -98,9 +98,9 @@ async def _get_token(client: httpx.AsyncClient) -> str:
         f"{BASE_URL}/oauth/token",
         data={
             "grant_type": "refresh_token",
-            "client_id": os.getenv("ACOUSTIC_CLIENT_ID", ""),
-            "client_secret": os.getenv("ACOUSTIC_CLIENT_SECRET", ""),
-            "refresh_token": os.getenv("ACOUSTIC_REFRESH_TOKEN", ""),
+            "client_id": tenant_getenv("ACOUSTIC_CLIENT_ID", ""),
+            "client_secret": tenant_getenv("ACOUSTIC_CLIENT_SECRET", ""),
+            "refresh_token": tenant_getenv("ACOUSTIC_REFRESH_TOKEN", ""),
         },
     )
     r.raise_for_status()
@@ -108,9 +108,9 @@ async def _get_token(client: httpx.AsyncClient) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    client_id = os.getenv("ACOUSTIC_CLIENT_ID", "")
-    client_secret = os.getenv("ACOUSTIC_CLIENT_SECRET", "")
-    refresh_token = os.getenv("ACOUSTIC_REFRESH_TOKEN", "")
+    client_id = tenant_getenv("ACOUSTIC_CLIENT_ID", "")
+    client_secret = tenant_getenv("ACOUSTIC_CLIENT_SECRET", "")
+    refresh_token = tenant_getenv("ACOUSTIC_REFRESH_TOKEN", "")
     if not client_id or not client_secret or not refresh_token:
         return {
             "error": "ACOUSTIC_CLIENT_ID, ACOUSTIC_CLIENT_SECRET, and ACOUSTIC_REFRESH_TOKEN not configured"  # noqa: E501

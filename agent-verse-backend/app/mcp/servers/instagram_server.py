@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -128,18 +128,18 @@ TOOL_DEFINITIONS = [
 
 
 def _account_id(arguments: dict) -> str:
-    return arguments.get("account_id") or os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "")
+    return arguments.get("account_id") or tenant_getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "")
 
 
 def _params(extra: dict | None = None) -> dict[str, Any]:
-    p: dict[str, Any] = {"access_token": os.getenv("INSTAGRAM_ACCESS_TOKEN", "")}
+    p: dict[str, Any] = {"access_token": tenant_getenv("INSTAGRAM_ACCESS_TOKEN", "")}
     if extra:
         p.update(extra)
     return p
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("INSTAGRAM_ACCESS_TOKEN", "")
+    token = tenant_getenv("INSTAGRAM_ACCESS_TOKEN", "")
     if not token:
         return {"error": "INSTAGRAM_ACCESS_TOKEN not configured"}
     account_id = _account_id(arguments)

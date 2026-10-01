@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -22,8 +22,8 @@ LOOKUP_BASE = "https://lookups.twilio.com/v1"
 
 
 def _auth() -> tuple[str, str]:
-    sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-    tok = os.getenv("TWILIO_AUTH_TOKEN", "")
+    sid = tenant_getenv("TWILIO_ACCOUNT_SID", "")
+    tok = tenant_getenv("TWILIO_AUTH_TOKEN", "")
     return (sid, tok)
 
 
@@ -119,11 +119,11 @@ _OUTBOUND_TOOLS = frozenset({"twilio_send_sms", "twilio_send_whatsapp", "twilio_
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    sid = os.getenv("TWILIO_ACCOUNT_SID", "")
-    if not sid or not os.getenv("TWILIO_AUTH_TOKEN"):
+    sid = tenant_getenv("TWILIO_ACCOUNT_SID", "")
+    if not sid or not tenant_getenv("TWILIO_AUTH_TOKEN"):
         return {"error": "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN required"}
 
-    from_default = os.getenv("TWILIO_FROM_NUMBER", "")
+    from_default = tenant_getenv("TWILIO_FROM_NUMBER", "")
 
     # Outbound consent — default DENY. These tools used to text / phone any
     # number the agent chose, with no opt-in and no STOP honouring. The built-in

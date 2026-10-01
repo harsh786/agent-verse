@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -127,8 +127,8 @@ TOOL_DEFINITIONS = [
 
 
 def _auth_header() -> dict[str, str]:
-    username = os.getenv("BITBUCKET_USERNAME", "")
-    app_password = os.getenv("BITBUCKET_APP_PASSWORD", "")
+    username = tenant_getenv("BITBUCKET_USERNAME", "")
+    app_password = tenant_getenv("BITBUCKET_APP_PASSWORD", "")
     token = base64.b64encode(f"{username}:{app_password}".encode()).decode()
     return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
 

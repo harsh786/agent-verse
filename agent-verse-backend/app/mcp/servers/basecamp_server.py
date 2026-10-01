@@ -9,11 +9,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -142,8 +142,8 @@ TOOL_DEFINITIONS = [
 
 
 def _basecamp_headers() -> dict[str, str]:
-    token = os.getenv("BASECAMP_ACCESS_TOKEN", "")
-    user_agent = os.getenv("BASECAMP_USER_AGENT", "AgentVerse/1.0 (support@example.com)")
+    token = tenant_getenv("BASECAMP_ACCESS_TOKEN", "")
+    user_agent = tenant_getenv("BASECAMP_USER_AGENT", "AgentVerse/1.0 (support@example.com)")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -168,8 +168,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    account_id = os.getenv("BASECAMP_ACCOUNT_ID", "")
-    token = os.getenv("BASECAMP_ACCESS_TOKEN", "")
+    account_id = tenant_getenv("BASECAMP_ACCOUNT_ID", "")
+    token = tenant_getenv("BASECAMP_ACCESS_TOKEN", "")
     if not account_id or not token:
         return {"error": "BASECAMP_ACCOUNT_ID and BASECAMP_ACCESS_TOKEN must be configured"}
 

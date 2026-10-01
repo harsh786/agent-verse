@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -112,8 +112,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    token = os.getenv("CHATFUEL_TOKEN", "")
-    bot_id = os.getenv("CHATFUEL_BOT_ID", "")
+    token = tenant_getenv("CHATFUEL_TOKEN", "")
+    bot_id = tenant_getenv("CHATFUEL_BOT_ID", "")
     if not token:
         return {"error": "CHATFUEL_TOKEN not configured"}
     if not bot_id:

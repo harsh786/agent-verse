@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -138,7 +138,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    access_token = os.getenv("BUFFER_ACCESS_TOKEN", "")
+    access_token = tenant_getenv("BUFFER_ACCESS_TOKEN", "")
     if not access_token:
         return {"error": "BUFFER_ACCESS_TOKEN not configured"}
 

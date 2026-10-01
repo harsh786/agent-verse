@@ -8,12 +8,12 @@ Environment:
 from __future__ import annotations
 
 import hashlib
-import os
 import time
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -200,8 +200,8 @@ async def _send_events(
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    pixel_id = os.getenv("FACEBOOK_PIXEL_ID", "")
-    access_token = os.getenv("FACEBOOK_ACCESS_TOKEN", "")
+    pixel_id = tenant_getenv("FACEBOOK_PIXEL_ID", "")
+    access_token = tenant_getenv("FACEBOOK_ACCESS_TOKEN", "")
     if not pixel_id:
         return {"error": "FACEBOOK_PIXEL_ID not configured"}
     if not access_token:

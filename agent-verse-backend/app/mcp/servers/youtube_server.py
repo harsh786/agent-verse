@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -141,11 +141,11 @@ TOOL_DEFINITIONS = [
 
 
 def _api_key() -> str:
-    return os.getenv("YOUTUBE_API_KEY", "")
+    return tenant_getenv("YOUTUBE_API_KEY", "")
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("YOUTUBE_ACCESS_TOKEN", "")
+    token = tenant_getenv("YOUTUBE_ACCESS_TOKEN", "")
     if token:
         return {"Authorization": f"Bearer {token}"}
     return {}
@@ -153,7 +153,7 @@ def _headers() -> dict[str, str]:
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     api_key = _api_key()
-    token = os.getenv("YOUTUBE_ACCESS_TOKEN", "")
+    token = tenant_getenv("YOUTUBE_ACCESS_TOKEN", "")
     if not api_key and not token:
         return {"error": "YOUTUBE_API_KEY or YOUTUBE_ACCESS_TOKEN must be configured"}
 

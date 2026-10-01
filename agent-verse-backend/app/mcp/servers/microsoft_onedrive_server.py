@@ -6,11 +6,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -180,7 +180,7 @@ def _item_url(item_id: str | None, path: str | None) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("ONEDRIVE_ACCESS_TOKEN", "")
+    token = tenant_getenv("ONEDRIVE_ACCESS_TOKEN", "")
     if not token:
         return {"error": "ONEDRIVE_ACCESS_TOKEN not configured"}
 

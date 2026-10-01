@@ -9,11 +9,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -118,9 +118,9 @@ def _client(base_url: str) -> httpx.AsyncClient:
     headers: dict[str, str] = {}
     auth = None
 
-    if token := os.getenv("SPLUNK_TOKEN"):
+    if token := tenant_getenv("SPLUNK_TOKEN"):
         headers["Authorization"] = f"Bearer {token}"
-    elif (user := os.getenv("SPLUNK_USERNAME")) and (pwd := os.getenv("SPLUNK_PASSWORD")):
+    elif (user := tenant_getenv("SPLUNK_USERNAME")) and (pwd := tenant_getenv("SPLUNK_PASSWORD")):
         auth = (user, pwd)
 
     return httpx.AsyncClient(
@@ -128,17 +128,17 @@ def _client(base_url: str) -> httpx.AsyncClient:
         headers=headers,
         auth=auth,
         timeout=60.0,
-        verify=os.getenv("SPLUNK_VERIFY_SSL", "true").lower() != "false",
+        verify=tenant_getenv("SPLUNK_VERIFY_SSL", "true").lower() != "false",
     )
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base_url = os.getenv("SPLUNK_URL", "").rstrip("/")
+    base_url = tenant_getenv("SPLUNK_URL", "").rstrip("/")
     if not base_url:
         return {"error": "SPLUNK_URL not configured"}
 
-    if not os.getenv("SPLUNK_TOKEN") and not (
-        os.getenv("SPLUNK_USERNAME") and os.getenv("SPLUNK_PASSWORD")
+    if not tenant_getenv("SPLUNK_TOKEN") and not (
+        tenant_getenv("SPLUNK_USERNAME") and tenant_getenv("SPLUNK_PASSWORD")
     ):
         return {"error": "SPLUNK_TOKEN or SPLUNK_USERNAME/SPLUNK_PASSWORD not configured"}
 

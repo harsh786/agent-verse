@@ -8,23 +8,23 @@ Environment:
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    domain = os.getenv("FRESHDESK_DOMAIN", "")
+    domain = tenant_getenv("FRESHDESK_DOMAIN", "")
     return f"https://{domain}.freshdesk.com/api/v2"
 
 
 def _headers() -> dict[str, str]:
-    api_key = os.getenv("FRESHDESK_API_KEY", "")
+    api_key = tenant_getenv("FRESHDESK_API_KEY", "")
     creds = base64.b64encode(f"{api_key}:X".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -153,8 +153,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    domain = os.getenv("FRESHDESK_DOMAIN", "")
-    api_key = os.getenv("FRESHDESK_API_KEY", "")
+    domain = tenant_getenv("FRESHDESK_DOMAIN", "")
+    api_key = tenant_getenv("FRESHDESK_API_KEY", "")
     if not domain or not api_key:
         return {"error": "FRESHDESK_DOMAIN and FRESHDESK_API_KEY must be configured"}
 

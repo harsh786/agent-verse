@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ BASE_URL = "https://api.mailgun.net/v3"
 
 
 def _auth() -> tuple[str, str]:
-    return ("api", os.getenv("MAILGUN_API_KEY", ""))
+    return ("api", tenant_getenv("MAILGUN_API_KEY", ""))
 
 
 TOOL_DEFINITIONS = [
@@ -142,10 +142,10 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("MAILGUN_API_KEY"):
+    if not tenant_getenv("MAILGUN_API_KEY"):
         return {"error": "MAILGUN_API_KEY not configured"}
 
-    domain = os.getenv("MAILGUN_DOMAIN", "")
+    domain = tenant_getenv("MAILGUN_DOMAIN", "")
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:

@@ -8,11 +8,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -134,14 +134,14 @@ TOOL_DEFINITIONS = [
 
 
 def _base_url() -> str:
-    sandbox = os.getenv("PAYPAL_SANDBOX", "true").lower() == "true"
+    sandbox = tenant_getenv("PAYPAL_SANDBOX", "true").lower() == "true"
     return "https://api-m.sandbox.paypal.com" if sandbox else "https://api-m.paypal.com"
 
 
 async def _get_token() -> str:
     base = _base_url()
-    client_id = os.getenv("PAYPAL_CLIENT_ID", "")
-    client_secret = os.getenv("PAYPAL_CLIENT_SECRET", "")
+    client_id = tenant_getenv("PAYPAL_CLIENT_ID", "")
+    client_secret = tenant_getenv("PAYPAL_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         return ""
     try:
@@ -159,7 +159,7 @@ async def _get_token() -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("PAYPAL_CLIENT_ID") or not os.getenv("PAYPAL_CLIENT_SECRET"):
+    if not tenant_getenv("PAYPAL_CLIENT_ID") or not tenant_getenv("PAYPAL_CLIENT_SECRET"):
         return {"error": "PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET required"}
 
     token = await _get_token()

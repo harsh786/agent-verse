@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -141,8 +141,8 @@ async def _get_utoken(client: httpx.AsyncClient, app_key: str, secret: str) -> s
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    app_key = os.getenv("YOTPO_APP_KEY", "")
-    secret = os.getenv("YOTPO_SECRET", "")
+    app_key = tenant_getenv("YOTPO_APP_KEY", "")
+    secret = tenant_getenv("YOTPO_SECRET", "")
     if not app_key:
         return {"error": "YOTPO_APP_KEY not configured"}
     if not secret:

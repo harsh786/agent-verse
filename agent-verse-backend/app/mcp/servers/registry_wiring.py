@@ -1638,7 +1638,10 @@ def get_builtin_server_configs() -> list[dict]:
             "description": "Docker containers, images, volumes, and networks",
             "tool_definitions": docker_server.TOOL_DEFINITIONS,
             "handler": docker_server.call_tool,
-            "requires_env": [],
+            # Tenant-credentialed: the tenant's own Docker Engine endpoint. It used
+            # to be credential-free, so EVERY tenant got the PLATFORM's local
+            # Docker daemon (container logs, image pulls) as a tool.
+            "requires_env": ["DOCKER_HOST"],
         },
         {
             "server_id": "builtin-heroku",
@@ -3358,6 +3361,20 @@ def get_builtin_server_configs() -> list[dict]:
         else:
             seen[sid] = len(deduplicated)
             deduplicated.append(cfg)
+
+    # Every built-in is dispatched with the CALLING connector's credentials
+    # (TOOL-01): a vendor built-in runs tenant-scoped — its tenant_getenv()
+    # lookups answer from the connector only, never the platform env — and a
+    # credential-free, platform-owned one (web search / OCR / HTTP) accepts the
+    # same ``credentials`` contract but keeps its platform configuration.
+    from app.mcp.servers.credentials import platform_scoped, with_tenant_credentials
+
+    for cfg in deduplicated:
+        handler: Any = cfg["handler"]
+        if cfg.get("requires_env"):
+            cfg["handler"] = with_tenant_credentials(handler)
+        else:
+            cfg["handler"] = platform_scoped(handler)
     return deduplicated
 
 
@@ -3394,7 +3411,7 @@ def has_tenant_credentials(credentials: dict[str, Any], required_env: tuple[str,
         isinstance(v, str) and v.strip() for k, v in credentials.items() if k not in _ENDPOINT_KEYS
     ):
         return True
-    endpoint_only = bool(required_env) and all(e.endswith("_URL") for e in required_env)
+    endpoint_only = bool(required_env) and all(e.endswith(("_URL", "_HOST")) for e in required_env)
     return endpoint_only and any(credentials.get(k) for k in _ENDPOINT_KEYS)
 
 

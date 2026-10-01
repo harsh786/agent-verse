@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -19,7 +19,7 @@ BASE_URL = "https://api.createsend.com/api/v3.3"
 
 
 def _auth() -> tuple[str, str]:
-    return (os.getenv("CAMPAIGN_MONITOR_API_KEY", ""), "x")
+    return (tenant_getenv("CAMPAIGN_MONITOR_API_KEY", ""), "x")
 
 
 TOOL_DEFINITIONS = [
@@ -135,7 +135,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("CAMPAIGN_MONITOR_API_KEY"):
+    if not tenant_getenv("CAMPAIGN_MONITOR_API_KEY"):
         return {"error": "CAMPAIGN_MONITOR_API_KEY not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:

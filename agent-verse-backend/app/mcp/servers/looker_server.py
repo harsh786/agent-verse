@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,9 +75,9 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-_BASE_URL = os.getenv("LOOKER_BASE_URL", "").rstrip("/")
-_CLIENT_ID = os.getenv("LOOKER_CLIENT_ID", "")
-_CLIENT_SECRET = os.getenv("LOOKER_CLIENT_SECRET", "")
+_BASE_URL = tenant_getenv("LOOKER_BASE_URL", "").rstrip("/")
+_CLIENT_ID = tenant_getenv("LOOKER_CLIENT_ID", "")
+_CLIENT_SECRET = tenant_getenv("LOOKER_CLIENT_SECRET", "")
 _token_cache: dict[str, Any] = {}
 
 

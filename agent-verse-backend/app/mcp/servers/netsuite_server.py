@@ -8,18 +8,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    account_id = os.getenv("NETSUITE_ACCOUNT_ID", "")
+    account_id = tenant_getenv("NETSUITE_ACCOUNT_ID", "")
     return f"https://{account_id}.suitetalk.api.netsuite.com/services/rest/record/v1"
 
 
@@ -113,9 +113,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    account_id = os.getenv("NETSUITE_ACCOUNT_ID", "")
-    consumer_key = os.getenv("NETSUITE_CONSUMER_KEY", "")
-    token_key = os.getenv("NETSUITE_TOKEN_KEY", "")
+    account_id = tenant_getenv("NETSUITE_ACCOUNT_ID", "")
+    consumer_key = tenant_getenv("NETSUITE_CONSUMER_KEY", "")
+    token_key = tenant_getenv("NETSUITE_TOKEN_KEY", "")
     if not account_id or not consumer_key or not token_key:
         return {
             "error": "NETSUITE_ACCOUNT_ID, NETSUITE_CONSUMER_KEY, and NETSUITE_TOKEN_KEY must be configured"  # noqa: E501

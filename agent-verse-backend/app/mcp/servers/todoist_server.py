@@ -7,11 +7,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -157,7 +157,7 @@ def _resolve_token(credentials: dict[str, str] | None) -> str:
         val = creds.get(name)
         if isinstance(val, str) and val.strip():
             return val.strip()
-    return os.getenv("TODOIST_API_TOKEN", "")
+    return tenant_getenv("TODOIST_API_TOKEN", "")
 
 
 def _todoist_headers(token: str) -> dict[str, str]:

@@ -6,11 +6,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -112,12 +112,12 @@ def _headers() -> dict[str, str]:
     return {
         "Cache-Control": "no-cache",
         "Content-Type": "application/json",
-        "X-Api-Key": os.getenv("APOLLO_API_KEY", ""),
+        "X-Api-Key": tenant_getenv("APOLLO_API_KEY", ""),
     }
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("APOLLO_API_KEY", "")
+    api_key = tenant_getenv("APOLLO_API_KEY", "")
     if not api_key:
         return {"error": "APOLLO_API_KEY not configured"}
 

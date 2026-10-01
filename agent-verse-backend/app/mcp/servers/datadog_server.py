@@ -9,17 +9,15 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-_SITE = os.getenv("DATADOG_SITE", "datadoghq.com")
-DATADOG_BASE_URL = f"https://api.{_SITE}"
 
 TOOL_DEFINITIONS = [
     {
@@ -181,8 +179,8 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    api_key = os.getenv("DATADOG_API_KEY", "")
-    app_key = os.getenv("DATADOG_APP_KEY", "")
+    api_key = tenant_getenv("DATADOG_API_KEY", "")
+    app_key = tenant_getenv("DATADOG_APP_KEY", "")
     return {
         "DD-API-KEY": api_key,
         "DD-APPLICATION-KEY": app_key,
@@ -196,11 +194,11 @@ async def call_tool(
     arguments: dict[str, Any],
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    api_key = os.getenv("DATADOG_API_KEY", "")
+    api_key = tenant_getenv("DATADOG_API_KEY", "")
     if not api_key:
         return {"error": "DATADOG_API_KEY not configured"}
 
-    site = os.getenv("DATADOG_SITE", "datadoghq.com")
+    site = tenant_getenv("DATADOG_SITE", "datadoghq.com")
     base_url = f"https://api.{site}"
 
     try:

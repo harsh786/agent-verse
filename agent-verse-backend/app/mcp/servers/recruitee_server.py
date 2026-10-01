@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -98,13 +98,13 @@ TOOL_DEFINITIONS = [
 
 
 def _base() -> str:
-    company_id = os.getenv("RECRUITEE_COMPANY_ID", "")
+    company_id = tenant_getenv("RECRUITEE_COMPANY_ID", "")
     return f"https://api.recruitee.com/c/{company_id}"
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_token = os.getenv("RECRUITEE_API_TOKEN", "")
-    company_id = os.getenv("RECRUITEE_COMPANY_ID", "")
+    api_token = tenant_getenv("RECRUITEE_API_TOKEN", "")
+    company_id = tenant_getenv("RECRUITEE_COMPANY_ID", "")
     if not api_token or not company_id:
         return {"error": "RECRUITEE_API_TOKEN and RECRUITEE_COMPANY_ID must be configured"}
 

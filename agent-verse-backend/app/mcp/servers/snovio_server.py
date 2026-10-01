@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -118,8 +118,8 @@ async def _get_access_token(client_id: str, client_secret: str) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    client_id = os.getenv("SNOVIO_CLIENT_ID", "")
-    client_secret = os.getenv("SNOVIO_CLIENT_SECRET", "")
+    client_id = tenant_getenv("SNOVIO_CLIENT_ID", "")
+    client_secret = tenant_getenv("SNOVIO_CLIENT_SECRET", "")
     if not client_id:
         return {"error": "SNOVIO_CLIENT_ID not configured"}
     if not client_secret:

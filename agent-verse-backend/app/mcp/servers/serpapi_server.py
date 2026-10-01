@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -120,11 +120,11 @@ TOOL_DEFINITIONS = [
 
 
 def _base_params() -> dict[str, Any]:
-    return {"api_key": os.getenv("SERPAPI_API_KEY", ""), "output": "json"}
+    return {"api_key": tenant_getenv("SERPAPI_API_KEY", ""), "output": "json"}
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    key = os.getenv("SERPAPI_API_KEY", "")
+    key = tenant_getenv("SERPAPI_API_KEY", "")
     if not key:
         return {"error": "SERPAPI_API_KEY not configured"}
 

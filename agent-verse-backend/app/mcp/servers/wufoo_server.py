@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    subdomain = os.getenv("WUFOO_SUBDOMAIN", "")
+    subdomain = tenant_getenv("WUFOO_SUBDOMAIN", "")
     return f"https://{subdomain}.wufoo.com/api/v3"
 
 
@@ -102,8 +102,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    api_key = os.getenv("WUFOO_API_KEY", "")
-    subdomain = os.getenv("WUFOO_SUBDOMAIN", "")
+    api_key = tenant_getenv("WUFOO_API_KEY", "")
+    subdomain = tenant_getenv("WUFOO_SUBDOMAIN", "")
     if not api_key:
         return {"error": "WUFOO_API_KEY not configured"}
     if not subdomain:

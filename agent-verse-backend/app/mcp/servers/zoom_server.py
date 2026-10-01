@@ -10,11 +10,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -153,12 +153,12 @@ TOOL_DEFINITIONS = [
 
 async def _get_token() -> str:
     """Get OAuth token, supporting both direct token and Server-to-Server OAuth."""
-    if token := os.getenv("ZOOM_OAUTH_TOKEN") or os.getenv("ZOOM_JWT_TOKEN"):
+    if token := tenant_getenv("ZOOM_OAUTH_TOKEN") or tenant_getenv("ZOOM_JWT_TOKEN"):
         return token
 
-    account_id = os.getenv("ZOOM_ACCOUNT_ID", "")
-    client_id = os.getenv("ZOOM_CLIENT_ID", "")
-    client_secret = os.getenv("ZOOM_CLIENT_SECRET", "")
+    account_id = tenant_getenv("ZOOM_ACCOUNT_ID", "")
+    client_id = tenant_getenv("ZOOM_CLIENT_ID", "")
+    client_secret = tenant_getenv("ZOOM_CLIENT_SECRET", "")
 
     if all([account_id, client_id, client_secret]):
         import base64

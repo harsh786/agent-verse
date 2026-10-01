@@ -8,23 +8,23 @@ Environment:
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    subdomain = os.getenv("BAMBOOHR_SUBDOMAIN", "")
+    subdomain = tenant_getenv("BAMBOOHR_SUBDOMAIN", "")
     return f"https://api.bamboohr.com/api/gateway.php/{subdomain}/v1"
 
 
 def _headers() -> dict[str, str]:
-    api_key = os.getenv("BAMBOOHR_API_KEY", "")
+    api_key = tenant_getenv("BAMBOOHR_API_KEY", "")
     creds = base64.b64encode(f"{api_key}:x".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -116,8 +116,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("BAMBOOHR_API_KEY", "")
-    subdomain = os.getenv("BAMBOOHR_SUBDOMAIN", "")
+    api_key = tenant_getenv("BAMBOOHR_API_KEY", "")
+    subdomain = tenant_getenv("BAMBOOHR_SUBDOMAIN", "")
     if not api_key or not subdomain:
         return {"error": "BAMBOOHR_API_KEY and BAMBOOHR_SUBDOMAIN must be configured"}
 

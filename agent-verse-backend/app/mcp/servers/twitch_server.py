@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -21,8 +21,8 @@ BASE_URL = "https://api.twitch.tv/helix"
 
 def _headers() -> dict[str, str]:
     return {
-        "Client-ID": os.getenv("TWITCH_CLIENT_ID", ""),
-        "Authorization": f"Bearer {os.getenv('TWITCH_ACCESS_TOKEN', '')}",
+        "Client-ID": tenant_getenv("TWITCH_CLIENT_ID", ""),
+        "Authorization": f"Bearer {tenant_getenv('TWITCH_ACCESS_TOKEN', '')}",
     }
 
 
@@ -144,8 +144,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    client_id = os.getenv("TWITCH_CLIENT_ID", "")
-    access_token = os.getenv("TWITCH_ACCESS_TOKEN", "")
+    client_id = tenant_getenv("TWITCH_CLIENT_ID", "")
+    access_token = tenant_getenv("TWITCH_ACCESS_TOKEN", "")
     if not client_id:
         return {"error": "TWITCH_CLIENT_ID not configured"}
     if not access_token:

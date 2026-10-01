@@ -10,11 +10,11 @@ Environment:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -121,16 +121,18 @@ def _client(base_url: str) -> httpx.AsyncClient:
     headers: dict[str, str] = {}
     auth = None
 
-    if token := os.getenv("PROMETHEUS_TOKEN"):
+    if token := tenant_getenv("PROMETHEUS_TOKEN"):
         headers["Authorization"] = f"Bearer {token}"
-    elif (user := os.getenv("PROMETHEUS_USERNAME")) and (pwd := os.getenv("PROMETHEUS_PASSWORD")):
+    elif (user := tenant_getenv("PROMETHEUS_USERNAME")) and (
+        pwd := tenant_getenv("PROMETHEUS_PASSWORD")
+    ):
         auth = (user, pwd)
 
     return httpx.AsyncClient(base_url=base_url, headers=headers, auth=auth, timeout=30.0)
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base_url = os.getenv("PROMETHEUS_URL", "").rstrip("/")
+    base_url = tenant_getenv("PROMETHEUS_URL", "").rstrip("/")
     if not base_url:
         return {"error": "PROMETHEUS_URL not configured"}
 

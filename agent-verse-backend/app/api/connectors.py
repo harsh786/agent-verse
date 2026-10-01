@@ -383,6 +383,16 @@ async def list_catalog(request: Request) -> list[dict]:
 
 
 _ENDPOINT_AUTH_KEYS = ("url", "base_url", "instance_url", "server_url", "endpoint")
+# Database connection URIs (MongoDB / Postgres / MySQL / Redis built-ins).
+_DSN_URL_SCHEMES = (
+    "mongodb://",
+    "mongodb+srv://",
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "redis://",
+    "rediss://",
+)
 
 
 async def _assert_connector_urls_public(
@@ -406,7 +416,7 @@ async def _assert_connector_urls_public(
         candidate = raw.strip()
         if not candidate or candidate.startswith("builtin://"):
             continue
-        if candidate.lower().startswith(("mongodb://", "mongodb+srv://")):
+        if candidate.lower().startswith(_DSN_URL_SCHEMES):
             # A database URI is not HTTP: check every host it dials (each
             # replica-set seed / SRV target) instead of refusing the scheme.
             from app.ingestion.connector_egress import check_source_dsn

@@ -6,11 +6,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -136,7 +136,7 @@ def _headers(auth_token: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    auth_token = os.getenv("VERO_AUTH_TOKEN", "")
+    auth_token = tenant_getenv("VERO_AUTH_TOKEN", "")
     if not auth_token:
         return {"error": "VERO_AUTH_TOKEN not configured"}
 

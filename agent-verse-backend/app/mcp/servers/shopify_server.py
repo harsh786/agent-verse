@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,12 +20,12 @@ SHOPIFY_API_VERSION = "2024-01"
 
 
 def _base() -> str:
-    store = os.getenv("SHOPIFY_STORE_URL", "").strip("/")
+    store = tenant_getenv("SHOPIFY_STORE_URL", "").strip("/")
     return f"https://{store}/admin/api/{SHOPIFY_API_VERSION}"
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+    token = tenant_getenv("SHOPIFY_ACCESS_TOKEN", "")
     return {
         "X-Shopify-Access-Token": token,
         "Content-Type": "application/json",
@@ -199,8 +199,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    store = os.getenv("SHOPIFY_STORE_URL", "")
-    token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+    store = tenant_getenv("SHOPIFY_STORE_URL", "")
+    token = tenant_getenv("SHOPIFY_ACCESS_TOKEN", "")
     if not store or not token:
         return {"error": "SHOPIFY_STORE_URL and SHOPIFY_ACCESS_TOKEN must be configured"}
 

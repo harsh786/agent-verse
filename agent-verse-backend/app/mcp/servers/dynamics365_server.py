@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -133,11 +133,11 @@ def _headers(token: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("DYNAMICS365_ACCESS_TOKEN", "")
+    token = tenant_getenv("DYNAMICS365_ACCESS_TOKEN", "")
     if not token:
         return {"error": "DYNAMICS365_ACCESS_TOKEN not configured"}
 
-    org_url = os.getenv("DYNAMICS365_ORG_URL", "").rstrip("/")
+    org_url = tenant_getenv("DYNAMICS365_ORG_URL", "").rstrip("/")
     if not org_url:
         return {"error": "DYNAMICS365_ORG_URL not configured"}
 

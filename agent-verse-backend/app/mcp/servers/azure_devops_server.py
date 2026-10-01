@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -23,11 +23,11 @@ _API_VERSION = "7.1"
 
 
 def _org() -> str:
-    return os.getenv("AZURE_DEVOPS_ORG", "")
+    return tenant_getenv("AZURE_DEVOPS_ORG", "")
 
 
 def _project() -> str:
-    return os.getenv("AZURE_DEVOPS_PROJECT", "")
+    return tenant_getenv("AZURE_DEVOPS_PROJECT", "")
 
 
 def _base_url() -> str:
@@ -36,7 +36,7 @@ def _base_url() -> str:
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("AZURE_DEVOPS_TOKEN", "")
+    token = tenant_getenv("AZURE_DEVOPS_TOKEN", "")
     # Azure DevOps uses Basic auth with any username and PAT as password
     encoded = base64.b64encode(f":{token}".encode()).decode()
     return {

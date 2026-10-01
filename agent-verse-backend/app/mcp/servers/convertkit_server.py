@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -106,8 +106,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("CONVERTKIT_API_KEY", "")
-    api_secret = os.getenv("CONVERTKIT_API_SECRET", "")
+    api_key = tenant_getenv("CONVERTKIT_API_KEY", "")
+    api_secret = tenant_getenv("CONVERTKIT_API_SECRET", "")
     if not api_key:
         return {"error": "CONVERTKIT_API_KEY not configured"}
 

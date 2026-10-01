@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-JENKINS_URL = os.getenv("JENKINS_URL", "").rstrip("/")
 
 TOOL_DEFINITIONS = [
     {
@@ -117,8 +116,8 @@ TOOL_DEFINITIONS = [
 
 
 def _auth() -> dict[str, str]:
-    user = os.getenv("JENKINS_USER", "")
-    token = os.getenv("JENKINS_API_TOKEN", "")
+    user = tenant_getenv("JENKINS_USER", "")
+    token = tenant_getenv("JENKINS_API_TOKEN", "")
     creds = base64.b64encode(f"{user}:{token}".encode()).decode()
     return {"Authorization": f"Basic {creds}"}
 
@@ -146,7 +145,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base = JENKINS_URL or os.getenv("JENKINS_URL", "").rstrip("/")
+    base = tenant_getenv("JENKINS_URL", "").rstrip("/")
     if not base:
         return {"error": "JENKINS_URL not configured"}
 

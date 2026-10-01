@@ -9,11 +9,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -90,10 +90,10 @@ def _headers(token: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    client_id = os.getenv("WORKDAY_CLIENT_ID", "")
-    client_secret = os.getenv("WORKDAY_CLIENT_SECRET", "")
-    tenant = os.getenv("WORKDAY_TENANT", "")
-    base_url = os.getenv("WORKDAY_BASE_URL", "").rstrip("/")
+    client_id = tenant_getenv("WORKDAY_CLIENT_ID", "")
+    client_secret = tenant_getenv("WORKDAY_CLIENT_SECRET", "")
+    tenant = tenant_getenv("WORKDAY_TENANT", "")
+    base_url = tenant_getenv("WORKDAY_BASE_URL", "").rstrip("/")
 
     if not all([client_id, client_secret, tenant, base_url]):
         return {

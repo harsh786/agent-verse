@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -114,7 +114,7 @@ def _resolve_key(credentials: dict[str, str] | None) -> str:
         val = creds.get(name)
         if isinstance(val, str) and val.strip():
             return val.strip()
-    return os.getenv("TAVILY_API_KEY", "")
+    return tenant_getenv("TAVILY_API_KEY", "")
 
 
 def _headers(key: str) -> dict[str, str]:

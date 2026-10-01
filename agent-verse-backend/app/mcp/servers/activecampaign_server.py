@@ -7,23 +7,23 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    return os.getenv("ACTIVECAMPAIGN_BASE_URL", "").rstrip("/") + "/api/3"
+    return tenant_getenv("ACTIVECAMPAIGN_BASE_URL", "").rstrip("/") + "/api/3"
 
 
 def _headers() -> dict[str, str]:
     return {
-        "Api-Token": os.getenv("ACTIVECAMPAIGN_API_KEY", ""),
+        "Api-Token": tenant_getenv("ACTIVECAMPAIGN_API_KEY", ""),
         "Content-Type": "application/json",
     }
 
@@ -128,8 +128,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("ACTIVECAMPAIGN_API_KEY", "")
-    base_url = os.getenv("ACTIVECAMPAIGN_BASE_URL", "")
+    api_key = tenant_getenv("ACTIVECAMPAIGN_API_KEY", "")
+    base_url = tenant_getenv("ACTIVECAMPAIGN_BASE_URL", "")
     if not api_key:
         return {"error": "ACTIVECAMPAIGN_API_KEY not configured"}
     if not base_url:

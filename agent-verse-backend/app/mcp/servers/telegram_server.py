@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -136,7 +136,7 @@ def _resolve_token(credentials: dict[str, str] | None) -> str:
         val = creds.get(name)
         if isinstance(val, str) and val.strip():
             return val.strip()
-    return os.getenv("TELEGRAM_BOT_TOKEN", "")
+    return tenant_getenv("TELEGRAM_BOT_TOKEN", "")
 
 
 def _resolve_default_chat_id(credentials: dict[str, str] | None) -> str:
@@ -151,12 +151,10 @@ def _resolve_default_chat_id(credentials: dict[str, str] | None) -> str:
         val = creds.get(name)
         if isinstance(val, (str, int)) and str(val).strip():
             return str(val).strip()
-    return os.getenv("TELEGRAM_DEFAULT_CHAT_ID", "")
+    return tenant_getenv("TELEGRAM_DEFAULT_CHAT_ID", "")
 
 
-def _effective_chat_id(
-    arguments: dict[str, Any], credentials: dict[str, str] | None
-) -> str:
+def _effective_chat_id(arguments: dict[str, Any], credentials: dict[str, str] | None) -> str:
     """The chat_id to use: the explicit argument when supplied, otherwise the
     connector's configured default."""
     cid = arguments.get("chat_id")
@@ -176,11 +174,7 @@ async def _post_with_parse_fallback(
     ``Markdown``), retry once as plain text so a formatting glitch never eats
     the whole message."""
     r = await client.post(url, json=payload)
-    if (
-        r.status_code == 400
-        and payload.get("parse_mode")
-        and _PARSE_ENTITY_HINT in r.text.lower()
-    ):
+    if r.status_code == 400 and payload.get("parse_mode") and _PARSE_ENTITY_HINT in r.text.lower():
         plain = {k: v for k, v in payload.items() if k != "parse_mode"}
         r = await client.post(url, json=plain)
     return r

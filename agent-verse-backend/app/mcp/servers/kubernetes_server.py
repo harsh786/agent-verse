@@ -10,17 +10,15 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-KUBE_API = os.getenv("KUBE_API_SERVER", "").rstrip("/")
-_DEFAULT_NS = os.getenv("KUBE_NAMESPACE", "default")
 
 TOOL_DEFINITIONS = [
     {
@@ -157,14 +155,14 @@ TOOL_DEFINITIONS = [
 
 def _kube_headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {os.getenv('KUBE_TOKEN', '')}",
+        "Authorization": f"Bearer {tenant_getenv('KUBE_TOKEN', '')}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
 
 def _ns(arguments: dict[str, Any]) -> str:
-    return arguments.get("namespace") or os.getenv("KUBE_NAMESPACE", "default")
+    return arguments.get("namespace") or tenant_getenv("KUBE_NAMESPACE", "default")
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -184,13 +182,13 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api = KUBE_API or os.getenv("KUBE_API_SERVER", "").rstrip("/")
+    api = tenant_getenv("KUBE_API_SERVER", "").rstrip("/")
     if not api:
         return {"error": "KUBE_API_SERVER not configured"}
 
     # Most clusters use self-signed certs; allow env-override for CA
-    verify: bool | str = os.getenv("KUBE_CA_CERT", True)
-    if verify is True and os.getenv("KUBE_INSECURE_SKIP_VERIFY", "").lower() == "true":
+    verify: bool | str = tenant_getenv("KUBE_CA_CERT", True)
+    if verify is True and tenant_getenv("KUBE_INSECURE_SKIP_VERIFY", "").lower() == "true":
         verify = False
 
     async with httpx.AsyncClient(

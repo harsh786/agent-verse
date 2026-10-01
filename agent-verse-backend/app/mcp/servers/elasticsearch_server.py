@@ -9,11 +9,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -114,20 +114,22 @@ TOOL_DEFINITIONS = [
 
 
 def _client() -> tuple[str, httpx.AsyncClient]:
-    base = os.getenv("ELASTICSEARCH_URL", "http://localhost:9200").rstrip("/")
+    base = tenant_getenv("ELASTICSEARCH_URL", "http://localhost:9200").rstrip("/")
     headers: dict[str, str] = {"Content-Type": "application/json"}
     auth = None
 
-    if api_key := os.getenv("ELASTICSEARCH_API_KEY"):
+    if api_key := tenant_getenv("ELASTICSEARCH_API_KEY"):
         headers["Authorization"] = f"ApiKey {api_key}"
-    elif (user := os.getenv("ELASTICSEARCH_USER")) and (pwd := os.getenv("ELASTICSEARCH_PASSWORD")):
+    elif (user := tenant_getenv("ELASTICSEARCH_USER")) and (
+        pwd := tenant_getenv("ELASTICSEARCH_PASSWORD")
+    ):
         auth = (user, pwd)
 
     return base, httpx.AsyncClient(headers=headers, auth=auth, timeout=30.0)
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base_url = os.getenv("ELASTICSEARCH_URL", "")
+    base_url = tenant_getenv("ELASTICSEARCH_URL", "")
     if not base_url:
         return {"error": "ELASTICSEARCH_URL not configured"}
 

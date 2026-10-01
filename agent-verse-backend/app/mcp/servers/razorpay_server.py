@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -142,8 +142,8 @@ TOOL_DEFINITIONS = [
 
 def _auth() -> tuple[str, str]:
     return (
-        os.getenv("RAZORPAY_KEY_ID", ""),
-        os.getenv("RAZORPAY_KEY_SECRET", ""),
+        tenant_getenv("RAZORPAY_KEY_ID", ""),
+        tenant_getenv("RAZORPAY_KEY_SECRET", ""),
     )
 
 

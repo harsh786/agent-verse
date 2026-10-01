@@ -9,24 +9,24 @@ Environment:
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    subdomain = os.getenv("ZENDESK_SUBDOMAIN", "")
+    subdomain = tenant_getenv("ZENDESK_SUBDOMAIN", "")
     return f"https://{subdomain}.zendesk.com/api/v2"
 
 
 def _headers() -> dict[str, str]:
-    email = os.getenv("ZENDESK_EMAIL", "")
-    token = os.getenv("ZENDESK_API_TOKEN", "")
+    email = tenant_getenv("ZENDESK_EMAIL", "")
+    token = tenant_getenv("ZENDESK_API_TOKEN", "")
     creds = base64.b64encode(f"{email}/token:{token}".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -159,9 +159,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    subdomain = os.getenv("ZENDESK_SUBDOMAIN", "")
-    email = os.getenv("ZENDESK_EMAIL", "")
-    token = os.getenv("ZENDESK_API_TOKEN", "")
+    subdomain = tenant_getenv("ZENDESK_SUBDOMAIN", "")
+    email = tenant_getenv("ZENDESK_EMAIL", "")
+    token = tenant_getenv("ZENDESK_API_TOKEN", "")
     if not all([subdomain, email, token]):
         return {
             "error": "ZENDESK_SUBDOMAIN, ZENDESK_EMAIL, and ZENDESK_API_TOKEN must be configured"

@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -83,13 +83,13 @@ TOOL_DEFINITIONS = [
 
 def _auth() -> tuple[str, str]:
     return (
-        os.getenv("GONG_ACCESS_KEY", ""),
-        os.getenv("GONG_ACCESS_KEY_SECRET", ""),
+        tenant_getenv("GONG_ACCESS_KEY", ""),
+        tenant_getenv("GONG_ACCESS_KEY_SECRET", ""),
     )
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("GONG_ACCESS_KEY") or not os.getenv("GONG_ACCESS_KEY_SECRET"):
+    if not tenant_getenv("GONG_ACCESS_KEY") or not tenant_getenv("GONG_ACCESS_KEY_SECRET"):
         return {"error": "GONG_ACCESS_KEY and GONG_ACCESS_KEY_SECRET required"}
 
     try:

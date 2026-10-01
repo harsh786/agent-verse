@@ -7,11 +7,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -105,7 +105,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("NETLIFY_ACCESS_TOKEN", "")
+    token = tenant_getenv("NETLIFY_ACCESS_TOKEN", "")
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 

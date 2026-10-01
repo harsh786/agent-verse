@@ -42,7 +42,8 @@ def test_registered_with_the_builtin_agent_tools() -> None:
     from app.mcp.servers.registry_wiring import get_builtin_server_configs
 
     (cfg,) = [c for c in get_builtin_server_configs() if c["server_id"] == "builtin-a2a"]
-    assert cfg["handler"] is a2a_call.call_tool
+    # Dispatched tenant-scoped (TOOL-01): the wrapper binds the connector credentials.
+    assert cfg["handler"]._builtin_inner_handler is a2a_call.call_tool
     assert [t["name"] for t in cfg["tool_definitions"]] == ["a2a_delegate_task"]
     # Needs the tenant's own agent endpoint: never inserted/wired from platform env.
     assert cfg["requires_env"]

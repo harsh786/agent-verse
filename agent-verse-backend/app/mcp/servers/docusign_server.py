@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -135,13 +135,13 @@ TOOL_DEFINITIONS = [
 
 
 def _base() -> str:
-    base = os.getenv("DOCUSIGN_BASE_URL", "https://www.docusign.net/restapi").rstrip("/")
-    account_id = os.getenv("DOCUSIGN_ACCOUNT_ID", "")
+    base = tenant_getenv("DOCUSIGN_BASE_URL", "https://www.docusign.net/restapi").rstrip("/")
+    account_id = tenant_getenv("DOCUSIGN_ACCOUNT_ID", "")
     return f"{base}/v2.1/accounts/{account_id}"
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("DOCUSIGN_ACCESS_TOKEN", "")
+    token = tenant_getenv("DOCUSIGN_ACCESS_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -149,8 +149,8 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("DOCUSIGN_ACCESS_TOKEN", "")
-    account_id = os.getenv("DOCUSIGN_ACCOUNT_ID", "")
+    token = tenant_getenv("DOCUSIGN_ACCESS_TOKEN", "")
+    account_id = tenant_getenv("DOCUSIGN_ACCOUNT_ID", "")
     if not token or not account_id:
         return {"error": "DOCUSIGN_ACCESS_TOKEN and DOCUSIGN_ACCOUNT_ID must be configured"}
 

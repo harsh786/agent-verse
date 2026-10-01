@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ BASE_URL = "https://api.getdrip.com/v2"
 
 def _headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {os.getenv('DRIP_API_TOKEN', '')}",
+        "Authorization": f"Bearer {tenant_getenv('DRIP_API_TOKEN', '')}",
         "Content-Type": "application/json",
     }
 
@@ -121,7 +121,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("DRIP_API_TOKEN"):
+    if not tenant_getenv("DRIP_API_TOKEN"):
         return {"error": "DRIP_API_TOKEN not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:

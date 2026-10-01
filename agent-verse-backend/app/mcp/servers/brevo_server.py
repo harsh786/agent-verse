@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -115,7 +115,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    key = os.getenv("BREVO_API_KEY", "")
+    key = tenant_getenv("BREVO_API_KEY", "")
     return {
         "api-key": key,
         "Content-Type": "application/json",
@@ -124,13 +124,13 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("BREVO_API_KEY"):
+    if not tenant_getenv("BREVO_API_KEY"):
         return {"error": "BREVO_API_KEY not configured"}
 
     try:
         async with httpx.AsyncClient(base_url=BREVO_BASE, headers=_headers(), timeout=30.0) as c:
             if tool_name == "brevo_send_email":
-                sender_email = arguments.get("sender_email") or os.getenv(
+                sender_email = arguments.get("sender_email") or tenant_getenv(
                     "BREVO_SENDER_EMAIL", "noreply@example.com"
                 )
                 payload: dict[str, Any] = {

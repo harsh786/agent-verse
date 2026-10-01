@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    url = os.getenv("HOME_ASSISTANT_URL", "http://homeassistant.local:8123")
+    url = tenant_getenv("HOME_ASSISTANT_URL", "http://homeassistant.local:8123")
     return f"{url.rstrip('/')}/api"
 
 
@@ -109,8 +109,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    token = os.getenv("HOME_ASSISTANT_TOKEN", "")
-    ha_url = os.getenv("HOME_ASSISTANT_URL", "")
+    token = tenant_getenv("HOME_ASSISTANT_TOKEN", "")
+    ha_url = tenant_getenv("HOME_ASSISTANT_URL", "")
     if not token:
         return {"error": "HOME_ASSISTANT_TOKEN not configured"}
     if not ha_url:

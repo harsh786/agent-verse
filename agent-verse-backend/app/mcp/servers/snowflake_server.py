@@ -15,9 +15,9 @@ Note: Snowflake connector is synchronous; calls are run in a thread pool.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -100,22 +100,22 @@ def get_tools() -> list[dict[str, Any]]:
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     for env in _REQUIRED_ENV:
-        if not os.getenv(env):
+        if not tenant_getenv(env):
             return {"error": f"{env} not configured"}
 
-    allow_writes = os.getenv("SNOWFLAKE_ALLOW_WRITES", "false").lower() == "true"
+    allow_writes = tenant_getenv("SNOWFLAKE_ALLOW_WRITES", "false").lower() == "true"
 
     try:
         import snowflake.connector  # type: ignore[import]
 
         def _sync() -> dict[str, Any]:
             conn = snowflake.connector.connect(
-                account=os.getenv("SNOWFLAKE_ACCOUNT"),
-                user=os.getenv("SNOWFLAKE_USER"),
-                password=os.getenv("SNOWFLAKE_PASSWORD"),
-                warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", ""),
-                database=os.getenv("SNOWFLAKE_DATABASE", ""),
-                schema=os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
+                account=tenant_getenv("SNOWFLAKE_ACCOUNT"),
+                user=tenant_getenv("SNOWFLAKE_USER"),
+                password=tenant_getenv("SNOWFLAKE_PASSWORD"),
+                warehouse=tenant_getenv("SNOWFLAKE_WAREHOUSE", ""),
+                database=tenant_getenv("SNOWFLAKE_DATABASE", ""),
+                schema=tenant_getenv("SNOWFLAKE_SCHEMA", "PUBLIC"),
             )
             try:
                 cur = conn.cursor(snowflake.connector.DictCursor)
@@ -148,8 +148,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     return {"rows": rows, "row_count": cur.rowcount}
 
                 elif tool_name == "snowflake_list_tables":
-                    db = arguments.get("database", os.getenv("SNOWFLAKE_DATABASE", ""))
-                    schema = arguments.get("schema", os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC"))
+                    db = arguments.get("database", tenant_getenv("SNOWFLAKE_DATABASE", ""))
+                    schema = arguments.get("schema", tenant_getenv("SNOWFLAKE_SCHEMA", "PUBLIC"))
                     query = "SHOW TABLES"
                     if db and schema:
                         query += f" IN SCHEMA {db}.{schema}"
@@ -173,7 +173,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             finally:
                 conn.close()
 
-        return await asyncio.get_running_loop().run_in_executor(None, _sync)
+        return await asyncio.to_thread(_sync)
 
     except ImportError:
         return {

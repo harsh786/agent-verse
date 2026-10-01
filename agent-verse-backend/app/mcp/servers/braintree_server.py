@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -110,9 +110,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    merchant_id = os.getenv("BRAINTREE_MERCHANT_ID", "")
-    public_key = os.getenv("BRAINTREE_PUBLIC_KEY", "")
-    private_key = os.getenv("BRAINTREE_PRIVATE_KEY", "")
+    merchant_id = tenant_getenv("BRAINTREE_MERCHANT_ID", "")
+    public_key = tenant_getenv("BRAINTREE_PUBLIC_KEY", "")
+    private_key = tenant_getenv("BRAINTREE_PRIVATE_KEY", "")
     if not merchant_id or not public_key or not private_key:
         return {
             "error": "BRAINTREE_MERCHANT_ID, BRAINTREE_PUBLIC_KEY, and BRAINTREE_PRIVATE_KEY must be configured"  # noqa: E501

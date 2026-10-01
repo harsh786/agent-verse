@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -114,11 +114,11 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("SONARQUBE_TOKEN", "")
+    token = tenant_getenv("SONARQUBE_TOKEN", "")
     if not token:
         return {"error": "SONARQUBE_TOKEN not configured"}
 
-    sq_url = os.getenv("SONARQUBE_URL", "https://sonarcloud.io")
+    sq_url = tenant_getenv("SONARQUBE_URL", "https://sonarcloud.io")
     base = f"{sq_url}/api"
 
     async with httpx.AsyncClient(timeout=30.0, auth=(token, "")) as c:

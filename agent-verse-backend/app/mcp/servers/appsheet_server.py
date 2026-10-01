@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    app_id = os.getenv("APPSHEET_APP_ID", "")
+    app_id = tenant_getenv("APPSHEET_APP_ID", "")
     return f"https://api.appsheet.com/api/v2/apps/{app_id}"
 
 
@@ -117,8 +117,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    app_id = os.getenv("APPSHEET_APP_ID", "")
-    access_key = os.getenv("APPSHEET_ACCESS_KEY", "")
+    app_id = tenant_getenv("APPSHEET_APP_ID", "")
+    access_key = tenant_getenv("APPSHEET_ACCESS_KEY", "")
     if not app_id or not access_key:
         return {"error": "APPSHEET_APP_ID and APPSHEET_ACCESS_KEY not configured"}
 

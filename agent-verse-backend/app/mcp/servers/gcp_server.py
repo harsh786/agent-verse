@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -156,8 +157,8 @@ def _get_access_token() -> str | None:
     2. GOOGLE_APPLICATION_CREDENTIALS env var (path to JSON file)
     3. GCP_API_KEY (returned as-is for API key auth; callers must use ?key= param)
     """
-    sa_json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    sa_json_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    sa_json_str = tenant_getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    sa_json_path = tenant_getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
     sa_data: dict[str, Any] | None = None
     if sa_json_str:
@@ -200,7 +201,7 @@ def _auth_headers(token: str | None) -> dict[str, str]:
 
 
 def _api_key_param() -> dict[str, str]:
-    key = os.getenv("GCP_API_KEY", "")
+    key = tenant_getenv("GCP_API_KEY", "")
     return {"key": key} if key else {}
 
 
@@ -209,10 +210,10 @@ async def call_tool(
     arguments: dict[str, Any],
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    project_id = arguments.get("project_id") or os.getenv("GCP_PROJECT_ID", "")
+    project_id = arguments.get("project_id") or tenant_getenv("GCP_PROJECT_ID", "")
     token = _get_access_token()
 
-    if not token and not os.getenv("GCP_API_KEY", ""):
+    if not token and not tenant_getenv("GCP_API_KEY", ""):
         return {
             "error": (
                 "No GCP credentials found. Set GOOGLE_APPLICATION_CREDENTIALS, "

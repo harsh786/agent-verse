@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -117,8 +117,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    access_token = os.getenv("ZOHO_ACCESS_TOKEN", "")
-    org_id = os.getenv("ZOHO_ORGANIZATION_ID", "")
+    access_token = tenant_getenv("ZOHO_ACCESS_TOKEN", "")
+    org_id = tenant_getenv("ZOHO_ORGANIZATION_ID", "")
     if not access_token or not org_id:
         return {"error": "ZOHO_ACCESS_TOKEN and ZOHO_ORGANIZATION_ID must be configured"}
 

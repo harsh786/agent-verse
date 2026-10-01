@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -113,7 +113,7 @@ TOOL_DEFINITIONS = [
 
 
 def _base_url() -> str:
-    domain = os.getenv("FRESHSALES_DOMAIN", "")
+    domain = tenant_getenv("FRESHSALES_DOMAIN", "")
     return f"https://{domain}.freshsales.io/api"
 
 
@@ -125,11 +125,11 @@ def _headers(api_key: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("FRESHSALES_API_KEY", "")
+    api_key = tenant_getenv("FRESHSALES_API_KEY", "")
     if not api_key:
         return {"error": "FRESHSALES_API_KEY not configured"}
 
-    domain = os.getenv("FRESHSALES_DOMAIN", "")
+    domain = tenant_getenv("FRESHSALES_DOMAIN", "")
     if not domain:
         return {"error": "FRESHSALES_DOMAIN not configured"}
 

@@ -8,11 +8,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -129,13 +129,13 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("VERCEL_TOKEN", "")
+    token = tenant_getenv("VERCEL_TOKEN", "")
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
 def _team_params(extra: dict[str, Any] | None = None) -> dict[str, Any]:
     params: dict[str, Any] = {}
-    team_id = os.getenv("VERCEL_TEAM_ID", "")
+    team_id = tenant_getenv("VERCEL_TEAM_ID", "")
     if team_id:
         params["teamId"] = team_id
     if extra:

@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -97,8 +97,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    app_id = os.getenv("KNACK_APP_ID", "")
-    api_key = os.getenv("KNACK_API_KEY", "")
+    app_id = tenant_getenv("KNACK_APP_ID", "")
+    api_key = tenant_getenv("KNACK_API_KEY", "")
     if not app_id or not api_key:
         return {"error": "KNACK_APP_ID and KNACK_API_KEY must be configured"}
 

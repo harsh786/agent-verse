@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -111,7 +111,7 @@ def _params(api_key: str, **extra: Any) -> dict[str, Any]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("JOTFORM_API_KEY", "")
+    api_key = tenant_getenv("JOTFORM_API_KEY", "")
     if not api_key:
         return {"error": "JOTFORM_API_KEY not configured"}
 

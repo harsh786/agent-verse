@@ -6,11 +6,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -82,11 +82,11 @@ TOOL_DEFINITIONS = [
 
 def _auth() -> tuple[str, str]:
     # Affinity uses HTTP Basic auth: empty username, API key as password
-    return ("", os.getenv("AFFINITY_API_KEY", ""))
+    return ("", tenant_getenv("AFFINITY_API_KEY", ""))
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("AFFINITY_API_KEY"):
+    if not tenant_getenv("AFFINITY_API_KEY"):
         return {"error": "AFFINITY_API_KEY not configured"}
 
     try:

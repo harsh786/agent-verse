@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ BASE_URL = "https://api.postmarkapp.com"
 
 def _headers() -> dict[str, str]:
     return {
-        "X-Postmark-Server-Token": os.getenv("POSTMARK_SERVER_TOKEN", ""),
+        "X-Postmark-Server-Token": tenant_getenv("POSTMARK_SERVER_TOKEN", ""),
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
@@ -149,7 +149,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("POSTMARK_SERVER_TOKEN"):
+    if not tenant_getenv("POSTMARK_SERVER_TOKEN"):
         return {"error": "POSTMARK_SERVER_TOKEN not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:

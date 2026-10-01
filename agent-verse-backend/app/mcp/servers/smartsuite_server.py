@@ -8,11 +8,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -137,8 +137,8 @@ TOOL_DEFINITIONS = [
 
 
 def _smartsuite_headers() -> dict[str, str]:
-    api_key = os.getenv("SMARTSUITE_API_KEY", "")
-    account_id = os.getenv("SMARTSUITE_ACCOUNT_ID", "")
+    api_key = tenant_getenv("SMARTSUITE_API_KEY", "")
+    account_id = tenant_getenv("SMARTSUITE_ACCOUNT_ID", "")
     return {
         "Authorization": f"Token {api_key}",
         "ACCOUNT-ID": account_id,
@@ -163,8 +163,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("SMARTSUITE_API_KEY", "")
-    account_id = os.getenv("SMARTSUITE_ACCOUNT_ID", "")
+    api_key = tenant_getenv("SMARTSUITE_API_KEY", "")
+    account_id = tenant_getenv("SMARTSUITE_ACCOUNT_ID", "")
     if not api_key or not account_id:
         return {"error": "SMARTSUITE_API_KEY and SMARTSUITE_ACCOUNT_ID must be configured"}
 

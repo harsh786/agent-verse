@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -116,8 +116,8 @@ def _auth_params(login_id: str, password: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    login_id = os.getenv("KONNEKTIVE_LOGIN_ID", "")
-    password = os.getenv("KONNEKTIVE_PASSWORD", "")
+    login_id = tenant_getenv("KONNEKTIVE_LOGIN_ID", "")
+    password = tenant_getenv("KONNEKTIVE_PASSWORD", "")
     if not login_id:
         return {"error": "KONNEKTIVE_LOGIN_ID not configured"}
     if not password:

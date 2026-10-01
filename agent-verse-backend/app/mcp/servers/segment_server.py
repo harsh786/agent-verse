@@ -6,11 +6,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -127,7 +127,7 @@ def _auth(write_key: str) -> tuple[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    write_key = os.getenv("SEGMENT_WRITE_KEY", "")
+    write_key = tenant_getenv("SEGMENT_WRITE_KEY", "")
     if not write_key:
         return {"error": "SEGMENT_WRITE_KEY not configured"}
 

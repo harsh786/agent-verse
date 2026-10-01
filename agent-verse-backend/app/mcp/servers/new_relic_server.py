@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -110,8 +110,8 @@ def _api_headers(api_key: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("NEW_RELIC_API_KEY", "")
-    account_id_str = os.getenv("NEW_RELIC_ACCOUNT_ID", "")
+    api_key = tenant_getenv("NEW_RELIC_API_KEY", "")
+    account_id_str = tenant_getenv("NEW_RELIC_ACCOUNT_ID", "")
 
     if not api_key:
         return {"error": "NEW_RELIC_API_KEY not configured"}

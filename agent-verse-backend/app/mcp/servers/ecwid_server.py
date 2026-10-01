@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -132,20 +132,20 @@ TOOL_DEFINITIONS = [
 
 
 def _base() -> str:
-    store_id = os.getenv("ECWID_STORE_ID", "")
+    store_id = tenant_getenv("ECWID_STORE_ID", "")
     return f"https://app.ecwid.com/api/v3/{store_id}"
 
 
 def _headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {os.getenv('ECWID_SECRET_TOKEN', '')}",
+        "Authorization": f"Bearer {tenant_getenv('ECWID_SECRET_TOKEN', '')}",
         "Content-Type": "application/json",
     }
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    secret_token = os.getenv("ECWID_SECRET_TOKEN", "")
-    store_id = os.getenv("ECWID_STORE_ID", "")
+    secret_token = tenant_getenv("ECWID_SECRET_TOKEN", "")
+    store_id = tenant_getenv("ECWID_STORE_ID", "")
     if not secret_token:
         return {"error": "ECWID_SECRET_TOKEN not configured"}
     if not store_id:

@@ -9,24 +9,24 @@ Environment:
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    domain = os.getenv("GORGIAS_DOMAIN", "")
+    domain = tenant_getenv("GORGIAS_DOMAIN", "")
     return f"https://{domain}.gorgias.com/api"
 
 
 def _headers() -> dict[str, str]:
-    email = os.getenv("GORGIAS_EMAIL", "")
-    api_key = os.getenv("GORGIAS_API_KEY", "")
+    email = tenant_getenv("GORGIAS_EMAIL", "")
+    api_key = tenant_getenv("GORGIAS_API_KEY", "")
     creds = base64.b64encode(f"{email}:{api_key}".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -125,9 +125,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    domain = os.getenv("GORGIAS_DOMAIN", "")
-    email = os.getenv("GORGIAS_EMAIL", "")
-    api_key = os.getenv("GORGIAS_API_KEY", "")
+    domain = tenant_getenv("GORGIAS_DOMAIN", "")
+    email = tenant_getenv("GORGIAS_EMAIL", "")
+    api_key = tenant_getenv("GORGIAS_API_KEY", "")
     if not all([domain, email, api_key]):
         return {"error": "GORGIAS_DOMAIN, GORGIAS_EMAIL, and GORGIAS_API_KEY must be configured"}
 

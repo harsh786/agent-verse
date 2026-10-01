@@ -83,7 +83,15 @@ _BUILTIN_ENDPOINT_KEYS = ("url", "base_url", "instance_url", "server_url", "endp
 
 # Database connection URIs a built-in driver dials (not HTTP): checked host by
 # host (every replica-set seed / SRV target) instead of being refused on scheme.
-_DSN_SCHEMES = ("mongodb://", "mongodb+srv://")
+_DSN_SCHEMES = (
+    "mongodb://",
+    "mongodb+srv://",
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "redis://",
+    "rediss://",
+)
 
 
 def _assert_egress_allowed(url: str, *, context: str) -> None:
@@ -647,10 +655,10 @@ class MCPClient:
                     )
                 resolved[k] = str(plain)
             credentials = resolved
-        # Confused-deputy guard: most built-in handlers still fall back to the
-        # platform's env credentials (os.getenv("GITHUB_TOKEN"), ...) when the
-        # tenant supplied none, so a tenant connector without its own credentials
-        # used to run as the PLATFORM's identity. Refuse before the handler runs.
+        # Confused-deputy guard (defence in depth): built-in handlers read their
+        # configuration via tenant_getenv(), which answers only from these
+        # credentials during the call (app/mcp/servers/credentials.py), and a
+        # connector with no credentials at all is refused before the handler runs.
         from app.mcp.servers.registry_wiring import (
             builtin_required_env,
             has_tenant_credentials,
@@ -689,7 +697,7 @@ class MCPClient:
                 success=False,
                 error=(
                     f"Connector '{server.name}' has no credentials configured for this "
-                    "tenant. Add your own credentials to the connector; platform "
+                    "tenant. Configure credentials on the connector; platform "
                     "credentials are never used for tenant tool calls."
                 ),
                 server_id=server.server_id,

@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -129,8 +129,8 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    store_id = os.getenv("ORDER_DESK_STORE_ID", "")
-    api_key = os.getenv("ORDER_DESK_API_KEY", "")
+    store_id = tenant_getenv("ORDER_DESK_STORE_ID", "")
+    api_key = tenant_getenv("ORDER_DESK_API_KEY", "")
     return {
         "ORDERDESK-STORE-ID": store_id,
         "ORDERDESK-API-KEY": api_key,
@@ -139,8 +139,8 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    store_id = os.getenv("ORDER_DESK_STORE_ID", "")
-    api_key = os.getenv("ORDER_DESK_API_KEY", "")
+    store_id = tenant_getenv("ORDER_DESK_STORE_ID", "")
+    api_key = tenant_getenv("ORDER_DESK_API_KEY", "")
     if not store_id:
         return {"error": "ORDER_DESK_STORE_ID not configured"}
     if not api_key:

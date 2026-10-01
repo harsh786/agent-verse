@@ -8,11 +8,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -164,7 +164,7 @@ TOOL_DEFINITIONS = [
 
 
 def _wrike_headers() -> dict[str, str]:
-    token = os.getenv("WRIKE_ACCESS_TOKEN", "")
+    token = tenant_getenv("WRIKE_ACCESS_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -188,11 +188,11 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("WRIKE_ACCESS_TOKEN", "")
+    token = tenant_getenv("WRIKE_ACCESS_TOKEN", "")
     if not token:
         return {"error": "WRIKE_ACCESS_TOKEN not configured"}
 
-    host = os.getenv("WRIKE_HOST", "www.wrike.com")
+    host = tenant_getenv("WRIKE_HOST", "www.wrike.com")
     base_url = f"https://{host}/api/v4"
 
     async with httpx.AsyncClient(

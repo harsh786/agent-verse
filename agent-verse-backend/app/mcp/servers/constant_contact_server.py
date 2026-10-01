@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ BASE_URL = "https://api.cc.email/v3"
 
 def _headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {os.getenv('CONSTANT_CONTACT_API_KEY', '')}",
+        "Authorization": f"Bearer {tenant_getenv('CONSTANT_CONTACT_API_KEY', '')}",
         "Content-Type": "application/json",
     }
 
@@ -127,7 +127,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("CONSTANT_CONTACT_API_KEY"):
+    if not tenant_getenv("CONSTANT_CONTACT_API_KEY"):
         return {"error": "CONSTANT_CONTACT_API_KEY not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:

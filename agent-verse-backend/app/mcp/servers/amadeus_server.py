@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -143,8 +143,8 @@ TOOL_DEFINITIONS = [
 
 
 async def _get_token(client: httpx.AsyncClient) -> str:
-    client_id = os.getenv("AMADEUS_CLIENT_ID", "")
-    client_secret = os.getenv("AMADEUS_CLIENT_SECRET", "")
+    client_id = tenant_getenv("AMADEUS_CLIENT_ID", "")
+    client_secret = tenant_getenv("AMADEUS_CLIENT_SECRET", "")
     r = await client.post(
         AUTH_URL,
         data={
@@ -158,8 +158,8 @@ async def _get_token(client: httpx.AsyncClient) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    client_id = os.getenv("AMADEUS_CLIENT_ID", "")
-    client_secret = os.getenv("AMADEUS_CLIENT_SECRET", "")
+    client_id = tenant_getenv("AMADEUS_CLIENT_ID", "")
+    client_secret = tenant_getenv("AMADEUS_CLIENT_SECRET", "")
     if not client_id or not client_secret:
         return {"error": "AMADEUS_CLIENT_ID and AMADEUS_CLIENT_SECRET not configured"}
 

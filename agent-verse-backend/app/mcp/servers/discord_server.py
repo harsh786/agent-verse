@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -108,7 +108,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("DISCORD_BOT_TOKEN", "")
+    token = tenant_getenv("DISCORD_BOT_TOKEN", "")
     return {
         "Authorization": f"Bot {token}",
         "Content-Type": "application/json",
@@ -116,7 +116,7 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("DISCORD_BOT_TOKEN"):
+    if not tenant_getenv("DISCORD_BOT_TOKEN"):
         return {"error": "DISCORD_BOT_TOKEN not configured"}
 
     try:

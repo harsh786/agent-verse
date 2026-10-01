@@ -7,12 +7,12 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 import uuid
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -158,12 +158,12 @@ TOOL_DEFINITIONS = [
 
 
 def _base_url() -> str:
-    sandbox = os.getenv("SQUARE_SANDBOX", "true").lower() == "true"
+    sandbox = tenant_getenv("SQUARE_SANDBOX", "true").lower() == "true"
     return "https://connect.squareupsandbox.com" if sandbox else "https://connect.squareup.com"
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("SQUARE_ACCESS_TOKEN", "")
+    token = tenant_getenv("SQUARE_ACCESS_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -172,7 +172,7 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("SQUARE_ACCESS_TOKEN"):
+    if not tenant_getenv("SQUARE_ACCESS_TOKEN"):
         return {"error": "SQUARE_ACCESS_TOKEN not configured"}
 
     base = _base_url()

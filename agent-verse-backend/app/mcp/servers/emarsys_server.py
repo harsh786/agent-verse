@@ -8,13 +8,13 @@ Environment:
 from __future__ import annotations
 
 import hashlib
-import os
 import secrets
 import time
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -121,8 +121,8 @@ def _wsse_header(username: str, secret: str) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    username = os.getenv("EMARSYS_USERNAME", "")
-    secret = os.getenv("EMARSYS_SECRET", "")
+    username = tenant_getenv("EMARSYS_USERNAME", "")
+    secret = tenant_getenv("EMARSYS_SECRET", "")
     if not username or not secret:
         return {"error": "EMARSYS_USERNAME and EMARSYS_SECRET not configured"}
 

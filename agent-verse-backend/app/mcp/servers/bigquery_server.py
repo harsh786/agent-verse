@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -110,11 +110,11 @@ def _headers(token: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("BIGQUERY_ACCESS_TOKEN", "")
+    token = tenant_getenv("BIGQUERY_ACCESS_TOKEN", "")
     if not token:
         return {"error": "BIGQUERY_ACCESS_TOKEN not configured"}
 
-    project_id = arguments.get("project_id") or os.getenv("BIGQUERY_PROJECT_ID", "")
+    project_id = arguments.get("project_id") or tenant_getenv("BIGQUERY_PROJECT_ID", "")
     hdrs = _headers(token)
 
     async with httpx.AsyncClient(timeout=60.0) as c:

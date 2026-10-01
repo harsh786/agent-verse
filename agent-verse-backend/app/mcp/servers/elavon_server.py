@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -99,9 +99,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    merchant_id = os.getenv("ELAVON_MERCHANT_ID", "")
-    user_id = os.getenv("ELAVON_USER_ID", "")
-    pin = os.getenv("ELAVON_PIN", "")
+    merchant_id = tenant_getenv("ELAVON_MERCHANT_ID", "")
+    user_id = tenant_getenv("ELAVON_USER_ID", "")
+    pin = tenant_getenv("ELAVON_PIN", "")
     if not merchant_id or not user_id or not pin:
         return {"error": "ELAVON_MERCHANT_ID, ELAVON_USER_ID, and ELAVON_PIN not configured"}
 

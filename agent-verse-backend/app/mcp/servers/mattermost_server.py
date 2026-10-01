@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -101,7 +101,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("MATTERMOST_TOKEN", "")
+    token = tenant_getenv("MATTERMOST_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -109,11 +109,11 @@ def _headers() -> dict[str, str]:
 
 
 def _base() -> str:
-    return os.getenv("MATTERMOST_URL", "").rstrip("/") + "/api/v4"
+    return tenant_getenv("MATTERMOST_URL", "").rstrip("/") + "/api/v4"
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("MATTERMOST_URL") or not os.getenv("MATTERMOST_TOKEN"):
+    if not tenant_getenv("MATTERMOST_URL") or not tenant_getenv("MATTERMOST_TOKEN"):
         return {"error": "MATTERMOST_URL and MATTERMOST_TOKEN required"}
 
     base = _base()

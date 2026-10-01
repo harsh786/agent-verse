@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -121,9 +121,9 @@ TOOL_DEFINITIONS = [
 
 
 def _server_prefix() -> str:
-    prefix = os.getenv("MAILCHIMP_SERVER_PREFIX", "")
+    prefix = tenant_getenv("MAILCHIMP_SERVER_PREFIX", "")
     if not prefix:
-        api_key = os.getenv("MAILCHIMP_API_KEY", "")
+        api_key = tenant_getenv("MAILCHIMP_API_KEY", "")
         if "-" in api_key:
             prefix = api_key.rsplit("-", 1)[-1]
     return prefix or "us1"
@@ -134,7 +134,7 @@ def _base() -> str:
 
 
 def _auth() -> tuple[str, str]:
-    return ("anystring", os.getenv("MAILCHIMP_API_KEY", ""))
+    return ("anystring", tenant_getenv("MAILCHIMP_API_KEY", ""))
 
 
 def _subscriber_hash(email: str) -> str:
@@ -144,7 +144,7 @@ def _subscriber_hash(email: str) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("MAILCHIMP_API_KEY"):
+    if not tenant_getenv("MAILCHIMP_API_KEY"):
         return {"error": "MAILCHIMP_API_KEY not configured"}
 
     base = _base()

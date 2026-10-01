@@ -8,17 +8,15 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-GITLAB_BASE_URL = os.getenv("GITLAB_BASE_URL", "https://gitlab.com").rstrip("/")
-_API_BASE = f"{GITLAB_BASE_URL}/api/v4"
 
 TOOL_DEFINITIONS = [
     {
@@ -192,8 +190,12 @@ TOOL_DEFINITIONS = [
 ]
 
 
+def _api_base() -> str:
+    return f"{tenant_getenv('GITLAB_BASE_URL', 'https://gitlab.com').rstrip('/')}/api/v4"
+
+
 def _headers() -> dict[str, str]:
-    token = os.getenv("GITLAB_TOKEN", "")
+    token = tenant_getenv("GITLAB_TOKEN", "")
     h: dict[str, str] = {"Content-Type": "application/json"}
     if token:
         h["Authorization"] = f"Bearer {token}"
@@ -228,7 +230,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     import base64
 
-    async with httpx.AsyncClient(base_url=_API_BASE, headers=_headers(), timeout=30.0) as client:
+    async with httpx.AsyncClient(base_url=_api_base(), headers=_headers(), timeout=30.0) as client:
         if tool_name == "gitlab_list_projects":
             params: dict[str, Any] = {
                 "membership": "true",

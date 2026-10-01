@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -146,11 +146,11 @@ def _from_firestore_doc(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("FIREBASE_ACCESS_TOKEN", "")
+    token = tenant_getenv("FIREBASE_ACCESS_TOKEN", "")
     if not token:
         return {"error": "FIREBASE_ACCESS_TOKEN not configured"}
 
-    project_id = os.getenv("FIREBASE_PROJECT_ID", "")
+    project_id = tenant_getenv("FIREBASE_PROJECT_ID", "")
     hdrs = _headers(token)
     fs_base = _fs_base(project_id)
 

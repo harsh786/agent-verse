@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -97,20 +97,20 @@ TOOL_DEFINITIONS = [
 
 
 def _base() -> str:
-    return os.getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
+    return tenant_getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
 
 
 def _auth() -> tuple[str, str]:
-    return (os.getenv("KAFKA_API_KEY", ""), os.getenv("KAFKA_API_SECRET", ""))
+    return (tenant_getenv("KAFKA_API_KEY", ""), tenant_getenv("KAFKA_API_SECRET", ""))
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base = os.getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
+    base = tenant_getenv("KAFKA_REST_ENDPOINT", "").rstrip("/")
     if not base:
         return {
             "error": "KAFKA_REST_ENDPOINT environment variable not set. Set it to your Confluent REST Proxy or Kafka REST endpoint URL (e.g. https://pkc-xxxxx.region.confluent.cloud)"  # noqa: E501
         }
-    api_key = os.getenv("KAFKA_API_KEY", "")
+    api_key = tenant_getenv("KAFKA_API_KEY", "")
     if not api_key:
         return {"error": "KAFKA_API_KEY not configured"}
 

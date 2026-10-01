@@ -11,9 +11,9 @@ For service-specific features, register aws_s3, aws_lambda, etc. separately.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -143,9 +143,9 @@ async def call_tool(
     arguments: dict[str, Any],
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-    region = arguments.get("region") or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+    access_key = tenant_getenv("AWS_ACCESS_KEY_ID", "")
+    secret_key = tenant_getenv("AWS_SECRET_ACCESS_KEY", "")
+    region = arguments.get("region") or tenant_getenv("AWS_DEFAULT_REGION", "us-east-1")
 
     if not access_key or not secret_key:
         return {"error": "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set"}

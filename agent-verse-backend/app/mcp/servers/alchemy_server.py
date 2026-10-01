@@ -7,19 +7,19 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    network = os.getenv("ALCHEMY_NETWORK", "eth-mainnet")
-    api_key = os.getenv("ALCHEMY_API_KEY", "")
+    network = tenant_getenv("ALCHEMY_NETWORK", "eth-mainnet")
+    api_key = tenant_getenv("ALCHEMY_API_KEY", "")
     return f"https://{network}.g.alchemy.com/v2/{api_key}"
 
 
@@ -109,8 +109,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    api_key = os.getenv("ALCHEMY_API_KEY", "")
-    network = os.getenv("ALCHEMY_NETWORK", "eth-mainnet")
+    api_key = tenant_getenv("ALCHEMY_API_KEY", "")
+    network = tenant_getenv("ALCHEMY_NETWORK", "eth-mainnet")
     if not api_key:
         return {"error": "ALCHEMY_API_KEY not configured"}
 

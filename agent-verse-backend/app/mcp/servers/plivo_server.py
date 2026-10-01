@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ BASE_URL = "https://api.plivo.com/v1"
 
 
 def _auth() -> tuple[str, str]:
-    return (os.getenv("PLIVO_AUTH_ID", ""), os.getenv("PLIVO_AUTH_TOKEN", ""))
+    return (tenant_getenv("PLIVO_AUTH_ID", ""), tenant_getenv("PLIVO_AUTH_TOKEN", ""))
 
 
 TOOL_DEFINITIONS = [
@@ -145,8 +145,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    auth_id = os.getenv("PLIVO_AUTH_ID", "")
-    auth_token = os.getenv("PLIVO_AUTH_TOKEN", "")
+    auth_id = tenant_getenv("PLIVO_AUTH_ID", "")
+    auth_token = tenant_getenv("PLIVO_AUTH_TOKEN", "")
     if not auth_id:
         return {"error": "PLIVO_AUTH_ID not configured"}
     if not auth_token:

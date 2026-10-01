@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    practice_id = os.getenv("ATHENA_PRACTICE_ID", "")
+    practice_id = tenant_getenv("ATHENA_PRACTICE_ID", "")
     return f"https://api.platform.athenahealth.com/v1/{practice_id}"
 
 
@@ -109,8 +109,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    access_token = os.getenv("ATHENA_ACCESS_TOKEN", "")
-    practice_id = os.getenv("ATHENA_PRACTICE_ID", "")
+    access_token = tenant_getenv("ATHENA_ACCESS_TOKEN", "")
+    practice_id = tenant_getenv("ATHENA_PRACTICE_ID", "")
     if not access_token:
         return {"error": "ATHENA_ACCESS_TOKEN not configured"}
     if not practice_id:

@@ -9,9 +9,9 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
+from app.mcp.servers.credentials import aws_credentials, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -171,9 +171,8 @@ def _cw_client() -> Any:
 
     return boto3.client(
         "cloudwatch",
-        region_name=os.getenv("AWS_REGION", "us-east-1"),
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=tenant_getenv("AWS_REGION", "us-east-1"),
+        **aws_credentials(),
     )
 
 
@@ -182,9 +181,8 @@ def _logs_client() -> Any:
 
     return boto3.client(
         "logs",
-        region_name=os.getenv("AWS_REGION", "us-east-1"),
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=tenant_getenv("AWS_REGION", "us-east-1"),
+        **aws_credentials(),
     )
 
 
@@ -336,4 +334,4 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         except Exception as exc:
             return {"error": str(exc)}
 
-    return await asyncio.get_running_loop().run_in_executor(None, _sync)
+    return await asyncio.to_thread(_sync)

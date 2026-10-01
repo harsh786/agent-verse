@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -110,7 +110,7 @@ _SPORT_APIS: dict[str, str] = {
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    api_key = os.getenv("SPORTRADAR_API_KEY", "")
+    api_key = tenant_getenv("SPORTRADAR_API_KEY", "")
     if not api_key:
         return {"error": "SPORTRADAR_API_KEY not configured"}
 

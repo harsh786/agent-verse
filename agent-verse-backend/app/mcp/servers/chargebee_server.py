@@ -7,23 +7,23 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    site = os.getenv("CHARGEBEE_SITE", "")
+    site = tenant_getenv("CHARGEBEE_SITE", "")
     return f"https://{site}.chargebee.com/api/v2"
 
 
 def _auth() -> tuple[str, str]:
-    return (os.getenv("CHARGEBEE_API_KEY", ""), "")
+    return (tenant_getenv("CHARGEBEE_API_KEY", ""), "")
 
 
 TOOL_DEFINITIONS = [
@@ -135,8 +135,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    site = os.getenv("CHARGEBEE_SITE", "")
-    api_key = os.getenv("CHARGEBEE_API_KEY", "")
+    site = tenant_getenv("CHARGEBEE_SITE", "")
+    api_key = tenant_getenv("CHARGEBEE_API_KEY", "")
     if not site or not api_key:
         return {"error": "CHARGEBEE_SITE and CHARGEBEE_API_KEY must be configured"}
 

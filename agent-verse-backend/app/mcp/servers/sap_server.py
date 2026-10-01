@@ -8,18 +8,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    base = os.getenv("SAP_BASE_URL", "")
+    base = tenant_getenv("SAP_BASE_URL", "")
     return f"{base.rstrip('/')}/sap/opu/odata/sap" if base else ""
 
 
@@ -120,9 +120,9 @@ TOOL_DEFINITIONS = [
 
 
 async def _get_token(client: httpx.AsyncClient) -> str:
-    client_id = os.getenv("SAP_CLIENT_ID", "")
-    client_secret = os.getenv("SAP_CLIENT_SECRET", "")
-    sap_base = os.getenv("SAP_BASE_URL", "")
+    client_id = tenant_getenv("SAP_CLIENT_ID", "")
+    client_secret = tenant_getenv("SAP_CLIENT_SECRET", "")
+    sap_base = tenant_getenv("SAP_BASE_URL", "")
     r = await client.post(
         f"{sap_base}/oauth/token",
         data={"grant_type": "client_credentials"},
@@ -133,9 +133,9 @@ async def _get_token(client: httpx.AsyncClient) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    client_id = os.getenv("SAP_CLIENT_ID", "")
-    client_secret = os.getenv("SAP_CLIENT_SECRET", "")
-    sap_base = os.getenv("SAP_BASE_URL", "")
+    client_id = tenant_getenv("SAP_CLIENT_ID", "")
+    client_secret = tenant_getenv("SAP_CLIENT_SECRET", "")
+    sap_base = tenant_getenv("SAP_BASE_URL", "")
     if not client_id or not client_secret:
         return {"error": "SAP_CLIENT_ID and SAP_CLIENT_SECRET not configured"}
     if not sap_base:

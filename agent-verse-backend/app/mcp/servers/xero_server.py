@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -184,8 +184,8 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("XERO_ACCESS_TOKEN", "")
-    tenant_id = os.getenv("XERO_TENANT_ID", "")
+    token = tenant_getenv("XERO_ACCESS_TOKEN", "")
+    tenant_id = tenant_getenv("XERO_TENANT_ID", "")
     return {
         "Authorization": f"Bearer {token}",
         "Xero-tenant-id": tenant_id,
@@ -195,8 +195,8 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("XERO_ACCESS_TOKEN", "")
-    tenant_id = os.getenv("XERO_TENANT_ID", "")
+    token = tenant_getenv("XERO_ACCESS_TOKEN", "")
+    tenant_id = tenant_getenv("XERO_TENANT_ID", "")
     if not token or not tenant_id:
         return {"error": "XERO_ACCESS_TOKEN and XERO_TENANT_ID must be configured"}
 

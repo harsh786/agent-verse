@@ -7,11 +7,11 @@ Environment:
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -21,7 +21,7 @@ BASE_URL = "https://gmail.googleapis.com/gmail/v1"
 
 def _headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {os.getenv('GMAIL_ACCESS_TOKEN', '')}",
+        "Authorization": f"Bearer {tenant_getenv('GMAIL_ACCESS_TOKEN', '')}",
         "Content-Type": "application/json",
     }
 
@@ -162,7 +162,7 @@ def _build_mime_message(
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("GMAIL_ACCESS_TOKEN"):
+    if not tenant_getenv("GMAIL_ACCESS_TOKEN"):
         return {"error": "GMAIL_ACCESS_TOKEN not configured"}
 
     user_id = arguments.get("user_id", "me")

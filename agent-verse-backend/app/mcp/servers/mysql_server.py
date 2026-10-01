@@ -10,10 +10,10 @@ Security:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 from urllib.parse import urlparse
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -73,11 +73,11 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    url = os.getenv("MYSQL_MCP_URL", "")
+    url = tenant_getenv("MYSQL_MCP_URL", "")
     if not url:
         return {"error": "MYSQL_MCP_URL not configured"}
 
-    allow_writes = os.getenv("MYSQL_MCP_ALLOW_WRITES", "false").lower() == "true"
+    allow_writes = tenant_getenv("MYSQL_MCP_ALLOW_WRITES", "false").lower() == "true"
 
     try:
         import aiomysql  # type: ignore[import]

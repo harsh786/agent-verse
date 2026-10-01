@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -130,9 +130,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    client_id = os.getenv("PLAID_CLIENT_ID", "")
-    secret = os.getenv("PLAID_SECRET", "")
-    access_token = os.getenv("PLAID_ACCESS_TOKEN", "")
+    client_id = tenant_getenv("PLAID_CLIENT_ID", "")
+    secret = tenant_getenv("PLAID_SECRET", "")
+    access_token = tenant_getenv("PLAID_ACCESS_TOKEN", "")
 
     if not client_id or not secret:
         return {"error": "PLAID_CLIENT_ID and PLAID_SECRET not configured"}

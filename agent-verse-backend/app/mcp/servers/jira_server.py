@@ -9,18 +9,16 @@ Environment variables:
 from __future__ import annotations
 
 import base64
-import os
 from contextlib import suppress
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
-
-JIRA_BASE = os.getenv("JIRA_BASE_URL", "").rstrip("/")
 
 
 def _absolute_http_url(url: str) -> str:
@@ -216,8 +214,8 @@ TOOL_DEFINITIONS = [
 
 
 def _jira_auth(email: str | None = None, token: str | None = None) -> dict[str, str]:
-    _email = email or os.getenv("JIRA_EMAIL", "")
-    _token = token or os.getenv("JIRA_API_TOKEN", "")
+    _email = email or tenant_getenv("JIRA_EMAIL", "")
+    _token = token or tenant_getenv("JIRA_API_TOKEN", "")
     creds = base64.b64encode(f"{_email}:{_token}".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -262,7 +260,7 @@ async def _call_tool_inner(
     use_env = credentials is None
 
     def _env(name: str) -> str:
-        return os.getenv(name, "") if use_env else ""
+        return tenant_getenv(name, "") if use_env else ""
 
     tenant_base = str(creds.get("url") or creds.get("base_url") or "")
     base = _absolute_http_url(tenant_base or _env("JIRA_BASE_URL"))

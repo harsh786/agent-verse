@@ -8,11 +8,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -160,8 +160,8 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("GOOGLE_ACCESS_TOKEN", "")
-    dev_token = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN", "")
+    token = tenant_getenv("GOOGLE_ACCESS_TOKEN", "")
+    dev_token = tenant_getenv("GOOGLE_ADS_DEVELOPER_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "developer-token": dev_token,
@@ -180,12 +180,12 @@ async def _gaql_search(c: httpx.AsyncClient, customer_id: str, query: str) -> di
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("GOOGLE_ACCESS_TOKEN", "")
-    dev_token = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN", "")
+    token = tenant_getenv("GOOGLE_ACCESS_TOKEN", "")
+    dev_token = tenant_getenv("GOOGLE_ADS_DEVELOPER_TOKEN", "")
     if not token or not dev_token:
         return {"error": "GOOGLE_ACCESS_TOKEN and GOOGLE_ADS_DEVELOPER_TOKEN required"}
 
-    cid = arguments.get("customer_id", os.getenv("GOOGLE_ADS_CUSTOMER_ID", ""))
+    cid = arguments.get("customer_id", tenant_getenv("GOOGLE_ADS_CUSTOMER_ID", ""))
     if not cid:
         return {"error": "customer_id argument or GOOGLE_ADS_CUSTOMER_ID env var required"}
 

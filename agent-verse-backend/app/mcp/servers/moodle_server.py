@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    url = os.getenv("MOODLE_URL", "")
+    url = tenant_getenv("MOODLE_URL", "")
     return f"{url.rstrip('/')}/webservice/rest/server.php" if url else ""
 
 
@@ -110,8 +110,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    token = os.getenv("MOODLE_TOKEN", "")
-    moodle_url = os.getenv("MOODLE_URL", "")
+    token = tenant_getenv("MOODLE_TOKEN", "")
+    moodle_url = tenant_getenv("MOODLE_URL", "")
     if not token:
         return {"error": "MOODLE_TOKEN not configured"}
     if not moodle_url:

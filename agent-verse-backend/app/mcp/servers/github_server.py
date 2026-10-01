@@ -11,17 +11,16 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from app.mcp.servers.credentials import in_tenant_scope, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-GITHUB_BASE_URL = os.getenv("GITHUB_BASE_URL", "https://api.github.com")
 
 TOOL_DEFINITIONS = [
     {
@@ -121,12 +120,12 @@ async def call_tool(
     credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     creds = credentials or {}
-    # No os.getenv("GITHUB_TOKEN") fallback (confused deputy — same fix as
+    # No tenant_getenv("GITHUB_TOKEN") fallback (confused deputy — same fix as
     # app/knowledge/ingestors/github_ingestor.py): without a tenant token the
     # call is anonymous. The unused env-reading _headers() helper is removed too.
     token = creds.get("token") or creds.get("api_token") or creds.get("password") or ""
     tenant_base = str(creds.get("url") or creds.get("base_url") or "")
-    base_url = tenant_base or os.getenv("GITHUB_BASE_URL", "https://api.github.com")
+    base_url = tenant_base or tenant_getenv("GITHUB_BASE_URL", "https://api.github.com")
     from app.net.ssrf_guard import SSRFError, assert_public_url_async, public_async_client
 
     # An operator GITHUB_BASE_URL (GHES on the LAN) is trusted config: its own
@@ -138,7 +137,7 @@ async def call_tool(
             await assert_public_url_async(base_url, context="github connector")
         except SSRFError:
             return {"error": "GitHub URL blocked by SSRF guard"}
-    elif os.getenv("GITHUB_BASE_URL"):
+    elif not in_tenant_scope() and tenant_getenv("GITHUB_BASE_URL"):
         pin_allowlist = [(urlparse(base_url).hostname or "").lower()]
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",

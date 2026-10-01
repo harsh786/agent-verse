@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -143,8 +143,8 @@ TOOL_DEFINITIONS = [
 
 
 def _confluence_auth() -> dict[str, str]:
-    email = os.getenv("CONFLUENCE_EMAIL", "")
-    token = os.getenv("CONFLUENCE_API_TOKEN", "")
+    email = tenant_getenv("CONFLUENCE_EMAIL", "")
+    token = tenant_getenv("CONFLUENCE_API_TOKEN", "")
     creds = base64.b64encode(f"{email}:{token}".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -170,7 +170,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base = os.getenv("CONFLUENCE_BASE_URL", "").rstrip("/")
+    base = tenant_getenv("CONFLUENCE_BASE_URL", "").rstrip("/")
     if not base:
         return {"error": "CONFLUENCE_BASE_URL not configured"}
 

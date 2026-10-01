@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -112,7 +112,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("WEBFLOW_API_TOKEN", "")
+    token = tenant_getenv("WEBFLOW_API_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -121,11 +121,11 @@ def _headers() -> dict[str, str]:
 
 
 def _site_id(arguments: dict) -> str:
-    return arguments.get("site_id") or os.getenv("WEBFLOW_SITE_ID", "")
+    return arguments.get("site_id") or tenant_getenv("WEBFLOW_SITE_ID", "")
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("WEBFLOW_API_TOKEN", "")
+    token = tenant_getenv("WEBFLOW_API_TOKEN", "")
     if not token:
         return {"error": "WEBFLOW_API_TOKEN not configured"}
 

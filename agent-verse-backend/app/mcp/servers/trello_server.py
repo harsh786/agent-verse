@@ -8,11 +8,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -187,8 +187,8 @@ TOOL_DEFINITIONS = [
 
 def _trello_params() -> dict[str, str]:
     return {
-        "key": os.getenv("TRELLO_API_KEY", ""),
-        "token": os.getenv("TRELLO_TOKEN", ""),
+        "key": tenant_getenv("TRELLO_API_KEY", ""),
+        "token": tenant_getenv("TRELLO_TOKEN", ""),
     }
 
 
@@ -209,8 +209,8 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("TRELLO_API_KEY", "")
-    token = os.getenv("TRELLO_TOKEN", "")
+    api_key = tenant_getenv("TRELLO_API_KEY", "")
+    token = tenant_getenv("TRELLO_TOKEN", "")
     if not api_key or not token:
         return {"error": "TRELLO_API_KEY and TRELLO_TOKEN must be configured"}
 

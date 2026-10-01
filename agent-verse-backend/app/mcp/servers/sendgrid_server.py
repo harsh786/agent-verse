@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -150,7 +150,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    key = os.getenv("SENDGRID_API_KEY", "")
+    key = tenant_getenv("SENDGRID_API_KEY", "")
     return {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -158,10 +158,10 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("SENDGRID_API_KEY"):
+    if not tenant_getenv("SENDGRID_API_KEY"):
         return {"error": "SENDGRID_API_KEY not configured"}
 
-    default_from = os.getenv("SENDGRID_FROM_EMAIL", "noreply@example.com")
+    default_from = tenant_getenv("SENDGRID_FROM_EMAIL", "noreply@example.com")
 
     try:
         async with httpx.AsyncClient(base_url=SENDGRID_BASE, headers=_headers(), timeout=30.0) as c:

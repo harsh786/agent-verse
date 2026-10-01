@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -122,7 +122,7 @@ TOOL_DEFINITIONS = [
 
 
 def _auth_headers() -> dict[str, str]:
-    token = os.getenv("SALESFORCE_ACCESS_TOKEN", "")
+    token = tenant_getenv("SALESFORCE_ACCESS_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -130,8 +130,8 @@ def _auth_headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    base = os.getenv("SALESFORCE_INSTANCE_URL", "").rstrip("/")
-    if not base or not os.getenv("SALESFORCE_ACCESS_TOKEN"):
+    base = tenant_getenv("SALESFORCE_INSTANCE_URL", "").rstrip("/")
+    if not base or not tenant_getenv("SALESFORCE_ACCESS_TOKEN"):
         return {"error": "SALESFORCE_INSTANCE_URL and SALESFORCE_ACCESS_TOKEN required"}
 
     try:

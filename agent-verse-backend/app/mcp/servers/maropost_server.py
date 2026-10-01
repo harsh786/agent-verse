@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    account_id = os.getenv("MAROPOST_ACCOUNT_ID", "")
+    account_id = tenant_getenv("MAROPOST_ACCOUNT_ID", "")
     return f"https://api.maropost.com/accounts/{account_id}"
 
 
@@ -102,8 +102,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    account_id = os.getenv("MAROPOST_ACCOUNT_ID", "")
-    api_key = os.getenv("MAROPOST_API_KEY", "")
+    account_id = tenant_getenv("MAROPOST_ACCOUNT_ID", "")
+    api_key = tenant_getenv("MAROPOST_API_KEY", "")
     if not account_id or not api_key:
         return {"error": "MAROPOST_ACCOUNT_ID and MAROPOST_API_KEY not configured"}
 

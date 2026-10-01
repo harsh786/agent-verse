@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -150,8 +150,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    access_token = os.getenv("MAGENTO_ACCESS_TOKEN", "")
-    base_url = os.getenv("MAGENTO_BASE_URL", "")
+    access_token = tenant_getenv("MAGENTO_ACCESS_TOKEN", "")
+    base_url = tenant_getenv("MAGENTO_BASE_URL", "")
     if not access_token:
         return {"error": "MAGENTO_ACCESS_TOKEN not configured"}
     if not base_url:

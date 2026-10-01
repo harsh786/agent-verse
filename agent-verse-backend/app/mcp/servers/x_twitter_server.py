@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import os
 import time
 import urllib.parse
 import uuid
@@ -20,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -145,16 +145,16 @@ TOOL_DEFINITIONS = [
 
 
 def _bearer_headers() -> dict[str, str]:
-    token = os.getenv("TWITTER_BEARER_TOKEN", "")
+    token = tenant_getenv("TWITTER_BEARER_TOKEN", "")
     return {"Authorization": f"Bearer {token}"}
 
 
 def _oauth1_header(method: str, url: str, params: dict | None = None) -> dict[str, str]:
     """Generate OAuth 1.0a Authorization header for write operations."""
-    api_key = os.getenv("TWITTER_API_KEY", "")
-    api_secret = os.getenv("TWITTER_API_SECRET", "")
-    access_token = os.getenv("TWITTER_ACCESS_TOKEN", "")
-    access_token_secret = os.getenv("TWITTER_ACCESS_TOKEN_SECRET", "")
+    api_key = tenant_getenv("TWITTER_API_KEY", "")
+    api_secret = tenant_getenv("TWITTER_API_SECRET", "")
+    access_token = tenant_getenv("TWITTER_ACCESS_TOKEN", "")
+    access_token_secret = tenant_getenv("TWITTER_ACCESS_TOKEN_SECRET", "")
 
     oauth_params = {
         "oauth_consumer_key": api_key,
@@ -192,7 +192,7 @@ def _oauth1_header(method: str, url: str, params: dict | None = None) -> dict[st
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    bearer = os.getenv("TWITTER_BEARER_TOKEN", "")
+    bearer = tenant_getenv("TWITTER_BEARER_TOKEN", "")
     if not bearer:
         return {"error": "TWITTER_BEARER_TOKEN not configured"}
 

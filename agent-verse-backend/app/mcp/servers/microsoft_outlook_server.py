@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -120,7 +120,7 @@ def _build_recipients(emails: list[str]) -> list[dict[str, Any]]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("MICROSOFT_ACCESS_TOKEN", "")
+    token = tenant_getenv("MICROSOFT_ACCESS_TOKEN", "")
     if not token:
         return {"error": "MICROSOFT_ACCESS_TOKEN not configured"}
 

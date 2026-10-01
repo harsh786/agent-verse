@@ -8,11 +8,11 @@ Environment:
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -66,8 +66,8 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-_PARTNER_USER_ID = os.getenv("EXPENSIFY_PARTNER_USER_ID", "")
-_PARTNER_USER_SECRET = os.getenv("EXPENSIFY_PARTNER_USER_SECRET", "")
+_PARTNER_USER_ID = tenant_getenv("EXPENSIFY_PARTNER_USER_ID", "")
+_PARTNER_USER_SECRET = tenant_getenv("EXPENSIFY_PARTNER_USER_SECRET", "")
 _API_URL = "https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations"
 
 

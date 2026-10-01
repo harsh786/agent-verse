@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -124,7 +124,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_password = os.getenv("WISTIA_API_PASSWORD", "")
+    api_password = tenant_getenv("WISTIA_API_PASSWORD", "")
     if not api_password:
         return {"error": "WISTIA_API_PASSWORD not configured"}
 

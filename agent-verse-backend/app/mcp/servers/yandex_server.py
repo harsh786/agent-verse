@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -120,8 +120,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    api_key = os.getenv("YANDEX_API_KEY", "")
-    oauth_token = os.getenv("YANDEX_OAUTH_TOKEN", "")
+    api_key = tenant_getenv("YANDEX_API_KEY", "")
+    oauth_token = tenant_getenv("YANDEX_OAUTH_TOKEN", "")
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:

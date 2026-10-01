@@ -8,12 +8,12 @@ Environment:
 
 from __future__ import annotations
 
-import os
 import time
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -127,9 +127,9 @@ def _make_jwt() -> str:
     try:
         import jwt as pyjwt
 
-        developer_id = os.getenv("DOORDASH_DEVELOPER_ID", "")
-        key_id = os.getenv("DOORDASH_KEY_ID", "")
-        signing_secret = os.getenv("DOORDASH_SIGNING_SECRET", "")
+        developer_id = tenant_getenv("DOORDASH_DEVELOPER_ID", "")
+        key_id = tenant_getenv("DOORDASH_KEY_ID", "")
+        signing_secret = tenant_getenv("DOORDASH_SIGNING_SECRET", "")
         payload = {
             "aud": "doordash",
             "iss": developer_id,
@@ -143,9 +143,9 @@ def _make_jwt() -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    developer_id = os.getenv("DOORDASH_DEVELOPER_ID", "")
-    key_id = os.getenv("DOORDASH_KEY_ID", "")
-    signing_secret = os.getenv("DOORDASH_SIGNING_SECRET", "")
+    developer_id = tenant_getenv("DOORDASH_DEVELOPER_ID", "")
+    key_id = tenant_getenv("DOORDASH_KEY_ID", "")
+    signing_secret = tenant_getenv("DOORDASH_SIGNING_SECRET", "")
     if not developer_id or not key_id or not signing_secret:
         return {
             "error": "DOORDASH_DEVELOPER_ID, DOORDASH_KEY_ID, and DOORDASH_SIGNING_SECRET not configured"  # noqa: E501

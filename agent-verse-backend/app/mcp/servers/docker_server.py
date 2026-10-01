@@ -1,7 +1,8 @@
 """Docker MCP server — interact with Docker Engine and Docker Hub.
 
 Environment variables:
-  DOCKER_HOST:         Docker daemon socket or TCP URL (default: unix:///var/run/docker.sock)
+  DOCKER_HOST:         Docker Engine URL (tenant connectors: an https:// endpoint only;
+                       the local unix socket is used only outside tenant calls)
   DOCKER_HUB_USERNAME: Docker Hub username (for Hub operations)
   DOCKER_HUB_PASSWORD: Docker Hub password or access token
 """
@@ -9,11 +10,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import TenantCredentialError, in_tenant_scope, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -138,8 +139,22 @@ TOOL_DEFINITIONS = [
 
 
 def _docker_unix_socket() -> str:
-    """Return the Docker host socket path."""
-    return os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    """Return the Docker Engine endpoint.
+
+    On a tenant call only the connector's own http(s) endpoint is used — never
+    the platform's local daemon socket (whoever drives that owns the host).
+    """
+    if in_tenant_scope():
+        host = str(tenant_getenv("DOCKER_HOST") or "")
+        if not host:
+            raise TenantCredentialError(
+                "Docker connector has no Docker Engine endpoint: configure credentials "
+                "(an https:// Docker Engine URL); the platform's Docker daemon is never used."
+            )
+        if not host.lower().startswith(("http://", "https://")):
+            raise TenantCredentialError("Docker Engine endpoint must be an http(s):// URL")
+        return host
+    return str(tenant_getenv("DOCKER_HOST", "unix:///var/run/docker.sock"))
 
 
 async def _docker_request(

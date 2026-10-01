@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -19,7 +19,7 @@ BASE_URL = "https://api.moosend.com/v3"
 
 
 def _params_with_key(extra: dict | None = None) -> dict[str, Any]:
-    params: dict[str, Any] = {"apikey": os.getenv("MOOSEND_API_KEY", "")}
+    params: dict[str, Any] = {"apikey": tenant_getenv("MOOSEND_API_KEY", "")}
     if extra:
         params.update(extra)
     return params
@@ -117,7 +117,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("MOOSEND_API_KEY"):
+    if not tenant_getenv("MOOSEND_API_KEY"):
         return {"error": "MOOSEND_API_KEY not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:

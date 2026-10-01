@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -138,8 +138,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    app_id = os.getenv("EBAY_APP_ID", "")
-    oauth_token = os.getenv("EBAY_OAUTH_TOKEN", "")
+    app_id = tenant_getenv("EBAY_APP_ID", "")
+    oauth_token = tenant_getenv("EBAY_OAUTH_TOKEN", "")
     if not app_id:
         return {"error": "EBAY_APP_ID not configured"}
     if not oauth_token:
@@ -225,9 +225,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "ebay_get_selling_stats":
-                arguments.get(
-                    "metric_keys", ["TRANSACTION", "LISTING_IMPRESSION_TOTAL"]
-                )
+                arguments.get("metric_keys", ["TRANSACTION", "LISTING_IMPRESSION_TOTAL"])
                 r = await client.get(
                     "https://api.ebay.com/sell/analytics/v1/seller_standards_profile",
                     headers=headers,

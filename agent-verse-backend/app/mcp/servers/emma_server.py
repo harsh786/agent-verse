@@ -8,18 +8,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    account_id = os.getenv("EMMA_ACCOUNT_ID", "")
+    account_id = tenant_getenv("EMMA_ACCOUNT_ID", "")
     return f"https://api.e2ma.net/{account_id}"
 
 
@@ -116,9 +116,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    account_id = os.getenv("EMMA_ACCOUNT_ID", "")
-    public_key = os.getenv("EMMA_PUBLIC_KEY", "")
-    private_key = os.getenv("EMMA_PRIVATE_KEY", "")
+    account_id = tenant_getenv("EMMA_ACCOUNT_ID", "")
+    public_key = tenant_getenv("EMMA_PUBLIC_KEY", "")
+    private_key = tenant_getenv("EMMA_PRIVATE_KEY", "")
     if not account_id or not public_key or not private_key:
         return {"error": "EMMA_ACCOUNT_ID, EMMA_PUBLIC_KEY, and EMMA_PRIVATE_KEY not configured"}
 

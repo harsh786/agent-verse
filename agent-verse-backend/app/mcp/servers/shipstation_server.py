@@ -8,11 +8,11 @@ Environment:
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -150,15 +150,15 @@ TOOL_DEFINITIONS = [
 
 
 def _auth_header() -> str:
-    api_key = os.getenv("SHIPSTATION_API_KEY", "")
-    api_secret = os.getenv("SHIPSTATION_API_SECRET", "")
+    api_key = tenant_getenv("SHIPSTATION_API_KEY", "")
+    api_secret = tenant_getenv("SHIPSTATION_API_SECRET", "")
     token = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
     return f"Basic {token}"
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("SHIPSTATION_API_KEY", "")
-    api_secret = os.getenv("SHIPSTATION_API_SECRET", "")
+    api_key = tenant_getenv("SHIPSTATION_API_KEY", "")
+    api_secret = tenant_getenv("SHIPSTATION_API_SECRET", "")
     if not api_key:
         return {"error": "SHIPSTATION_API_KEY not configured"}
     if not api_secret:

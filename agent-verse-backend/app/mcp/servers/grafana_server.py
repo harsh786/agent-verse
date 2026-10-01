@@ -7,17 +7,17 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-_BASE_URL = os.getenv("GRAFANA_URL", "").rstrip("/")
-_API_KEY = os.getenv("GRAFANA_API_KEY", "")
+_BASE_URL = tenant_getenv("GRAFANA_URL", "").rstrip("/")
+_API_KEY = tenant_getenv("GRAFANA_API_KEY", "")
 
 TOOL_DEFINITIONS = [
     {

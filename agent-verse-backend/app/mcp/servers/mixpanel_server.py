@@ -9,11 +9,11 @@ Environment:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -124,13 +124,13 @@ TOOL_DEFINITIONS = [
 
 def _auth() -> tuple[str, str]:
     return (
-        os.getenv("MIXPANEL_SERVICE_ACCOUNT_USERNAME", ""),
-        os.getenv("MIXPANEL_SERVICE_ACCOUNT_SECRET", ""),
+        tenant_getenv("MIXPANEL_SERVICE_ACCOUNT_USERNAME", ""),
+        tenant_getenv("MIXPANEL_SERVICE_ACCOUNT_SECRET", ""),
     )
 
 
 def _project_id() -> str:
-    return os.getenv("MIXPANEL_PROJECT_ID", "")
+    return tenant_getenv("MIXPANEL_PROJECT_ID", "")
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

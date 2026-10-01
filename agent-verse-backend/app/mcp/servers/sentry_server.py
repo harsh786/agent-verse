@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -141,7 +141,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("SENTRY_AUTH_TOKEN", "")
+    token = tenant_getenv("SENTRY_AUTH_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -149,8 +149,8 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("SENTRY_AUTH_TOKEN", "")
-    org = os.getenv("SENTRY_ORG_SLUG", "")
+    token = tenant_getenv("SENTRY_AUTH_TOKEN", "")
+    org = tenant_getenv("SENTRY_ORG_SLUG", "")
 
     if not token:
         return {"error": "SENTRY_AUTH_TOKEN not configured"}

@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -100,7 +100,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("KAJABI_API_KEY", "")
+    api_key = tenant_getenv("KAJABI_API_KEY", "")
     if not api_key:
         return {"error": "KAJABI_API_KEY not configured"}
 
@@ -173,9 +173,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 if action == "revoke":
                     # httpx's delete() has no json= param; a DELETE with a body
                     # must go through request() or it raises TypeError at runtime.
-                    r = await client.request(
-                        "DELETE", endpoint, headers=headers, json=payload
-                    )
+                    r = await client.request("DELETE", endpoint, headers=headers, json=payload)
                 else:
                     r = await client.post(endpoint, headers=headers, json=payload)
                 r.raise_for_status()

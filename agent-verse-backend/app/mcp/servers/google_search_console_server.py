@@ -8,11 +8,11 @@ Environment variables (one required):
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -117,10 +117,10 @@ TOOL_DEFINITIONS = [
 
 
 def _google_token() -> str:
-    direct = os.getenv("GOOGLE_ACCESS_TOKEN", "")
+    direct = tenant_getenv("GOOGLE_ACCESS_TOKEN", "")
     if direct:
         return direct
-    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    sa_json = tenant_getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if sa_json:
         try:
             from google.auth.transport.requests import Request  # type: ignore[import]

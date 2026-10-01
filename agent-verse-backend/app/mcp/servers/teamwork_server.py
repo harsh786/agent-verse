@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    site = os.getenv("TEAMWORK_SITE", "")
+    site = tenant_getenv("TEAMWORK_SITE", "")
     return f"https://{site}.teamwork.com/projects/api/v3"
 
 
@@ -113,8 +113,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("TEAMWORK_API_KEY", "")
-    site = os.getenv("TEAMWORK_SITE", "")
+    api_key = tenant_getenv("TEAMWORK_API_KEY", "")
+    site = tenant_getenv("TEAMWORK_SITE", "")
     if not api_key or not site:
         return {"error": "TEAMWORK_API_KEY and TEAMWORK_SITE must be configured"}
 

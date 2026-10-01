@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -105,15 +105,15 @@ TOOL_DEFINITIONS = [
 
 def _headers() -> dict[str, str]:
     return {
-        "X-PW-AccessToken": os.getenv("COPPER_API_KEY", ""),
+        "X-PW-AccessToken": tenant_getenv("COPPER_API_KEY", ""),
         "X-PW-Application": "developer_api",
-        "X-PW-UserEmail": os.getenv("COPPER_USER_EMAIL", ""),
+        "X-PW-UserEmail": tenant_getenv("COPPER_USER_EMAIL", ""),
         "Content-Type": "application/json",
     }
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("COPPER_API_KEY") or not os.getenv("COPPER_USER_EMAIL"):
+    if not tenant_getenv("COPPER_API_KEY") or not tenant_getenv("COPPER_USER_EMAIL"):
         return {"error": "COPPER_API_KEY and COPPER_USER_EMAIL required"}
 
     try:

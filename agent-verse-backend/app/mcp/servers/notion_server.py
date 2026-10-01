@@ -7,11 +7,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -166,7 +166,7 @@ TOOL_DEFINITIONS = [
 
 
 def _notion_headers() -> dict[str, str]:
-    token = os.getenv("NOTION_API_KEY", "")
+    token = tenant_getenv("NOTION_API_KEY", "")
     return {
         "Authorization": f"Bearer {token}",
         "Notion-Version": NOTION_VERSION,
@@ -208,7 +208,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
 
 
 async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("NOTION_API_KEY", "")
+    token = tenant_getenv("NOTION_API_KEY", "")
     if not token:
         return {"error": "NOTION_API_KEY not configured"}
 

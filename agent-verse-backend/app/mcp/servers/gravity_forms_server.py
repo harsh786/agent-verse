@@ -8,18 +8,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    site_url = os.getenv("GRAVITY_FORMS_SITE_URL", "")
+    site_url = tenant_getenv("GRAVITY_FORMS_SITE_URL", "")
     return f"{site_url.rstrip('/')}/wp-json/gf/v2"
 
 
@@ -105,9 +105,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    consumer_key = os.getenv("GRAVITY_FORMS_CONSUMER_KEY", "")
-    consumer_secret = os.getenv("GRAVITY_FORMS_CONSUMER_SECRET", "")
-    site_url = os.getenv("GRAVITY_FORMS_SITE_URL", "")
+    consumer_key = tenant_getenv("GRAVITY_FORMS_CONSUMER_KEY", "")
+    consumer_secret = tenant_getenv("GRAVITY_FORMS_CONSUMER_SECRET", "")
+    site_url = tenant_getenv("GRAVITY_FORMS_SITE_URL", "")
     if not consumer_key or not consumer_secret:
         return {
             "error": "GRAVITY_FORMS_CONSUMER_KEY and GRAVITY_FORMS_CONSUMER_SECRET not configured"

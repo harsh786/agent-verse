@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -104,20 +104,20 @@ TOOL_DEFINITIONS = [
 
 
 def _base_url() -> str:
-    account = os.getenv("LOGGLY_ACCOUNT", "")
+    account = tenant_getenv("LOGGLY_ACCOUNT", "")
     if not account:
         return ""
     return f"https://{account}.loggly.com"
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("LOGGLY_API_TOKEN", "")
+    token = tenant_getenv("LOGGLY_API_TOKEN", "")
     return {"Authorization": f"bearer {token}"}
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     base_url = _base_url()
-    token = os.getenv("LOGGLY_API_TOKEN", "")
+    token = tenant_getenv("LOGGLY_API_TOKEN", "")
 
     if not base_url:
         return {"error": "LOGGLY_ACCOUNT not configured"}

@@ -10,24 +10,24 @@ Environment:
 from __future__ import annotations
 
 import base64
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base() -> str:
-    url = os.getenv("WORDPRESS_URL", "").rstrip("/")
+    url = tenant_getenv("WORDPRESS_URL", "").rstrip("/")
     return f"{url}/wp-json/wp/v2"
 
 
 def _headers() -> dict[str, str]:
-    username = os.getenv("WORDPRESS_USERNAME", "")
-    app_password = os.getenv("WORDPRESS_APP_PASSWORD", "")
+    username = tenant_getenv("WORDPRESS_USERNAME", "")
+    app_password = tenant_getenv("WORDPRESS_APP_PASSWORD", "")
     creds = base64.b64encode(f"{username}:{app_password}".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -148,9 +148,9 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    wp_url = os.getenv("WORDPRESS_URL", "")
-    username = os.getenv("WORDPRESS_USERNAME", "")
-    app_pass = os.getenv("WORDPRESS_APP_PASSWORD", "")
+    wp_url = tenant_getenv("WORDPRESS_URL", "")
+    username = tenant_getenv("WORDPRESS_USERNAME", "")
+    app_pass = tenant_getenv("WORDPRESS_APP_PASSWORD", "")
     if not all([wp_url, username, app_pass]):
         return {
             "error": "WORDPRESS_URL, WORDPRESS_USERNAME, and WORDPRESS_APP_PASSWORD must be configured"  # noqa: E501

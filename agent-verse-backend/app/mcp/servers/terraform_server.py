@@ -11,11 +11,11 @@ Content-Type: application/vnd.api+json and the 'data' wrapper format.
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -211,7 +211,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("TERRAFORM_TOKEN", "")
+    token = tenant_getenv("TERRAFORM_TOKEN", "")
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": _JSONAPI_CT,
@@ -220,7 +220,7 @@ def _headers() -> dict[str, str]:
 
 
 def _org(arguments: dict[str, Any]) -> str:
-    return arguments.get("org") or os.getenv("TERRAFORM_ORG", "")
+    return arguments.get("org") or tenant_getenv("TERRAFORM_ORG", "")
 
 
 async def call_tool(
@@ -228,7 +228,7 @@ async def call_tool(
     arguments: dict[str, Any],
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    token = os.getenv("TERRAFORM_TOKEN", "")
+    token = tenant_getenv("TERRAFORM_TOKEN", "")
     if not token:
         return {"error": "TERRAFORM_TOKEN not configured"}
 

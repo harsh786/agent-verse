@@ -9,11 +9,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -196,14 +196,14 @@ TOOL_DEFINITIONS = [
 
 
 def _headers(include_from: bool = False) -> dict[str, str]:
-    api_key = os.getenv("PAGERDUTY_API_KEY", "")
+    api_key = tenant_getenv("PAGERDUTY_API_KEY", "")
     h: dict[str, str] = {
         "Authorization": f"Token token={api_key}",
         "Accept": "application/vnd.pagerduty+json;version=2",
         "Content-Type": "application/json",
     }
     if include_from:
-        from_email = os.getenv("PAGERDUTY_FROM_EMAIL", "")
+        from_email = tenant_getenv("PAGERDUTY_FROM_EMAIL", "")
         if from_email:
             h["From"] = from_email
     return h
@@ -214,7 +214,7 @@ async def call_tool(
     arguments: dict[str, Any],
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    api_key = os.getenv("PAGERDUTY_API_KEY", "")
+    api_key = tenant_getenv("PAGERDUTY_API_KEY", "")
     if not api_key:
         return {"error": "PAGERDUTY_API_KEY not configured"}
 
@@ -287,7 +287,7 @@ async def call_tool(
                 }
 
             elif tool_name == "pagerduty_create_incident":
-                from_email = os.getenv("PAGERDUTY_FROM_EMAIL", "")
+                from_email = tenant_getenv("PAGERDUTY_FROM_EMAIL", "")
                 if not from_email:
                     return {
                         "error": "PAGERDUTY_FROM_EMAIL not configured (required for incident creation)"  # noqa: E501

@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -104,7 +104,7 @@ def _headers(token: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("BITLY_ACCESS_TOKEN", "")
+    token = tenant_getenv("BITLY_ACCESS_TOKEN", "")
     if not token:
         return {"error": "BITLY_ACCESS_TOKEN not configured"}
 
@@ -132,7 +132,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "bitly_expand_url":
-                bitlink_id = arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
+                bitlink_id = (
+                    arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
+                )
                 r = await c.post(
                     f"{BITLY_BASE}/expand",
                     headers=hdrs,
@@ -147,7 +149,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "bitly_get_click_metrics":
-                bitlink_id = arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
+                bitlink_id = (
+                    arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
+                )
                 r = await c.get(
                     f"{BITLY_BASE}/bitlinks/{bitlink_id}/clicks",
                     headers=hdrs,
@@ -207,7 +211,9 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 }
 
             elif tool_name == "bitly_get_bitlink_info":
-                bitlink_id = arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
+                bitlink_id = (
+                    arguments["bitlink_id"].removeprefix("https://").removeprefix("http://")
+                )
                 r = await c.get(
                     f"{BITLY_BASE}/bitlinks/{bitlink_id}",
                     headers=hdrs,

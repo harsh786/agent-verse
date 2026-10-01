@@ -7,18 +7,18 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _base_url() -> str:
-    domain = os.getenv("CANVAS_DOMAIN", "canvas.instructure.com")
+    domain = tenant_getenv("CANVAS_DOMAIN", "canvas.instructure.com")
     return f"https://{domain}/api/v1"
 
 
@@ -134,10 +134,10 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
-    access_token = os.getenv("CANVAS_ACCESS_TOKEN", "")
+    access_token = tenant_getenv("CANVAS_ACCESS_TOKEN", "")
     if not access_token:
         return {"error": "CANVAS_ACCESS_TOKEN not configured"}
-    if not os.getenv("CANVAS_DOMAIN", ""):
+    if not tenant_getenv("CANVAS_DOMAIN", ""):
         return {"error": "CANVAS_DOMAIN not configured"}
 
     base_url = _base_url()

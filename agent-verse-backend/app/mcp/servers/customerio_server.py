@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -108,8 +108,8 @@ TOOL_DEFINITIONS = [
 def _track_headers() -> dict[str, str]:
     import base64
 
-    site_id = os.getenv("CUSTOMERIO_SITE_ID", "")
-    api_key = os.getenv("CUSTOMERIO_API_KEY", "")
+    site_id = tenant_getenv("CUSTOMERIO_SITE_ID", "")
+    api_key = tenant_getenv("CUSTOMERIO_API_KEY", "")
     creds = base64.b64encode(f"{site_id}:{api_key}".encode()).decode()
     return {
         "Authorization": f"Basic {creds}",
@@ -118,7 +118,7 @@ def _track_headers() -> dict[str, str]:
 
 
 def _app_headers() -> dict[str, str]:
-    app_key = os.getenv("CUSTOMERIO_APP_API_KEY", "")
+    app_key = tenant_getenv("CUSTOMERIO_APP_API_KEY", "")
     return {
         "Authorization": f"Bearer {app_key}",
         "Content-Type": "application/json",
@@ -126,7 +126,7 @@ def _app_headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("CUSTOMERIO_SITE_ID") and not os.getenv("CUSTOMERIO_APP_API_KEY"):
+    if not tenant_getenv("CUSTOMERIO_SITE_ID") and not tenant_getenv("CUSTOMERIO_APP_API_KEY"):
         return {"error": "CUSTOMERIO_SITE_ID/CUSTOMERIO_API_KEY or CUSTOMERIO_APP_API_KEY required"}
 
     try:

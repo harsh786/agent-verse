@@ -8,9 +8,9 @@ Security:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -74,11 +74,11 @@ def get_tools() -> list[dict[str, Any]]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    db_url = os.getenv("POSTGRES_MCP_URL", "")
+    db_url = tenant_getenv("POSTGRES_MCP_URL", "")
     if not db_url:
         return {"error": "POSTGRES_MCP_URL not configured"}
 
-    allow_writes = os.getenv("POSTGRES_MCP_ALLOW_WRITES", "false").lower() == "true"
+    allow_writes = tenant_getenv("POSTGRES_MCP_ALLOW_WRITES", "false").lower() == "true"
 
     try:
         import asyncpg  # type: ignore[import]

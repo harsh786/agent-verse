@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -75,7 +75,7 @@ TOOL_DEFINITIONS = [
 
 
 def _token() -> str:
-    return os.getenv("UBER_ACCESS_TOKEN", "")
+    return tenant_getenv("UBER_ACCESS_TOKEN", "")
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -96,9 +96,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                     "end_latitude": dropoff["lat"],
                     "end_longitude": dropoff["lng"],
                 }
-                pr = await c.get(
-                    f"{UBER_BASE}/estimates/price", headers=hdrs, params=price_params
-                )
+                pr = await c.get(f"{UBER_BASE}/estimates/price", headers=hdrs, params=price_params)
                 pr.raise_for_status()
                 price_data = pr.json()
                 tr = await c.get(
@@ -111,9 +109,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 )
                 tr.raise_for_status()
                 time_data = tr.json()
-                times = {
-                    t.get("product_id"): t.get("estimate") for t in time_data.get("times", [])
-                }
+                times = {t.get("product_id"): t.get("estimate") for t in time_data.get("times", [])}
                 return {
                     "estimates": [
                         {

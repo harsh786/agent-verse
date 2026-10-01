@@ -9,9 +9,9 @@ Environment:
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
+from app.mcp.servers.credentials import aws_credentials, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -120,9 +120,8 @@ def _client() -> Any:
 
     return boto3.client(
         "sqs",
-        region_name=os.getenv("AWS_REGION", "us-east-1"),
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        region_name=tenant_getenv("AWS_REGION", "us-east-1"),
+        **aws_credentials(),
     )
 
 
@@ -132,7 +131,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     except ImportError:
         return {"error": "boto3 not installed. Run: pip install boto3"}
 
-    if not os.getenv("AWS_ACCESS_KEY_ID", ""):
+    if not tenant_getenv("AWS_ACCESS_KEY_ID", ""):
         return {"error": "AWS_ACCESS_KEY_ID not configured"}
 
     def _sync() -> dict[str, Any]:
@@ -218,4 +217,4 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             logger.exception("sqs_call_tool_error tool=%s", tool_name)
             return {"error": str(exc)}
 
-    return await asyncio.get_running_loop().run_in_executor(None, _sync)
+    return await asyncio.to_thread(_sync)

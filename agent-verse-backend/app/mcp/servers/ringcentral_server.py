@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +20,7 @@ BASE_URL = "https://platform.ringcentral.com/restapi/v1.0"
 
 def _headers() -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {os.getenv('RINGCENTRAL_ACCESS_TOKEN', '')}",
+        "Authorization": f"Bearer {tenant_getenv('RINGCENTRAL_ACCESS_TOKEN', '')}",
         "Content-Type": "application/json",
     }
 
@@ -141,7 +141,7 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    if not os.getenv("RINGCENTRAL_ACCESS_TOKEN"):
+    if not tenant_getenv("RINGCENTRAL_ACCESS_TOKEN"):
         return {"error": "RINGCENTRAL_ACCESS_TOKEN not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:

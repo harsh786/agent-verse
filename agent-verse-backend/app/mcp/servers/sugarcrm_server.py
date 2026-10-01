@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -123,11 +123,11 @@ def _headers(token: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("SUGARCRM_ACCESS_TOKEN", "")
+    token = tenant_getenv("SUGARCRM_ACCESS_TOKEN", "")
     if not token:
         return {"error": "SUGARCRM_ACCESS_TOKEN not configured"}
 
-    instance_url = os.getenv("SUGARCRM_INSTANCE_URL", "").rstrip("/")
+    instance_url = tenant_getenv("SUGARCRM_INSTANCE_URL", "").rstrip("/")
     if not instance_url:
         return {"error": "SUGARCRM_INSTANCE_URL not configured"}
 

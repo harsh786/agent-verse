@@ -7,11 +7,11 @@ Environment variables:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -131,7 +131,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    api_key = os.getenv("HEROKU_API_KEY", "")
+    api_key = tenant_getenv("HEROKU_API_KEY", "")
     return {
         "Authorization": f"Bearer {api_key}",
         "Accept": "application/vnd.heroku+json; version=3",

@@ -6,11 +6,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -108,7 +108,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    key = os.getenv("DEEL_API_KEY", "")
+    key = tenant_getenv("DEEL_API_KEY", "")
     return {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -117,7 +117,7 @@ def _headers() -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    key = os.getenv("DEEL_API_KEY", "")
+    key = tenant_getenv("DEEL_API_KEY", "")
     if not key:
         return {"error": "DEEL_API_KEY not configured"}
 

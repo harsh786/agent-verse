@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -116,8 +116,8 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("REDMINE_API_KEY", "")
-    base_url = os.getenv("REDMINE_URL", "").rstrip("/")
+    api_key = tenant_getenv("REDMINE_API_KEY", "")
+    base_url = tenant_getenv("REDMINE_URL", "").rstrip("/")
     if not api_key or not base_url:
         return {"error": "REDMINE_API_KEY and REDMINE_URL must be configured"}
 

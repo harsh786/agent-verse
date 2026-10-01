@@ -6,11 +6,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -295,7 +295,7 @@ TOOL_DEFINITIONS = [
 
 
 def _headers() -> dict[str, str]:
-    key = os.getenv("STRIPE_SECRET_KEY", "")
+    key = tenant_getenv("STRIPE_SECRET_KEY", "")
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/x-www-form-urlencoded"}
 
 
@@ -318,7 +318,7 @@ def _flatten(d: dict[str, Any], parent_key: str = "", sep: str = "[") -> dict[st
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    key = os.getenv("STRIPE_SECRET_KEY", "")
+    key = tenant_getenv("STRIPE_SECRET_KEY", "")
     if not key:
         return {"error": "STRIPE_SECRET_KEY not configured"}
 

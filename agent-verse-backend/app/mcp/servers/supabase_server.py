@@ -7,11 +7,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -126,8 +126,8 @@ def _headers(service_key: str) -> dict[str, str]:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    url = os.getenv("SUPABASE_URL", "").rstrip("/")
-    service_key = os.getenv("SUPABASE_SERVICE_KEY", "")
+    url = tenant_getenv("SUPABASE_URL", "").rstrip("/")
+    service_key = tenant_getenv("SUPABASE_SERVICE_KEY", "")
 
     if not url:
         return {"error": "SUPABASE_URL not configured"}

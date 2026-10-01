@@ -9,12 +9,12 @@ Environment:
 from __future__ import annotations
 
 import hashlib
-import os
 import time
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -117,7 +117,7 @@ TOOL_DEFINITIONS = [
 
 
 def _base() -> str:
-    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+    cloud_name = tenant_getenv("CLOUDINARY_CLOUD_NAME", "")
     return f"https://api.cloudinary.com/v1_1/{cloud_name}"
 
 
@@ -132,8 +132,8 @@ def _sign(params: dict[str, Any], api_secret: str) -> str:
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    api_key = os.getenv("CLOUDINARY_API_KEY", "")
-    api_secret = os.getenv("CLOUDINARY_API_SECRET", "")
+    api_key = tenant_getenv("CLOUDINARY_API_KEY", "")
+    api_secret = tenant_getenv("CLOUDINARY_API_SECRET", "")
     if not api_key:
         return {"error": "CLOUDINARY_API_KEY not configured"}
 
@@ -214,7 +214,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
                 return {"result": data.get("result"), "deleted": data.get("result") == "ok"}
 
             elif tool_name == "cloudinary_transform_image":
-                cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME", "")
+                cloud_name = tenant_getenv("CLOUDINARY_CLOUD_NAME", "")
                 public_id = arguments["public_id"]
                 transforms = []
                 if arguments.get("width"):

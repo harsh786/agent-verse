@@ -7,11 +7,11 @@ Environment:
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -73,7 +73,7 @@ SLACK_API = "https://slack.com/api"
 
 
 def _token() -> str:
-    return os.getenv("SLACK_BOT_TOKEN", "")
+    return tenant_getenv("SLACK_BOT_TOKEN", "")
 
 
 async def call_tool(

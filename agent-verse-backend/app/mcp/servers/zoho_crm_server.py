@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -102,17 +102,17 @@ TOOL_DEFINITIONS = [
 
 
 def _base_url() -> str:
-    domain = os.getenv("ZOHO_DOMAIN", "zoho.com")
+    domain = tenant_getenv("ZOHO_DOMAIN", "zoho.com")
     return f"https://www.zohoapis.{domain}/crm/v3"
 
 
 def _headers() -> dict[str, str]:
-    token = os.getenv("ZOHO_ACCESS_TOKEN", "")
+    token = tenant_getenv("ZOHO_ACCESS_TOKEN", "")
     return {"Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"}
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("ZOHO_ACCESS_TOKEN", "")
+    token = tenant_getenv("ZOHO_ACCESS_TOKEN", "")
     if not token:
         return {"error": "ZOHO_ACCESS_TOKEN not configured"}
 

@@ -7,11 +7,11 @@ Environment variables:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -145,12 +145,12 @@ TOOL_DEFINITIONS = [
 
 
 def _base_url() -> str:
-    domain = os.getenv("PIPEDRIVE_COMPANY_DOMAIN", "")
+    domain = tenant_getenv("PIPEDRIVE_COMPANY_DOMAIN", "")
     return f"https://{domain}.pipedrive.com/api/v1" if domain else ""
 
 
 def _params(extra: dict | None = None) -> dict[str, Any]:
-    token = os.getenv("PIPEDRIVE_API_TOKEN", "")
+    token = tenant_getenv("PIPEDRIVE_API_TOKEN", "")
     p: dict[str, Any] = {"api_token": token}
     if extra:
         p.update(extra)
@@ -159,7 +159,7 @@ def _params(extra: dict | None = None) -> dict[str, Any]:
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     base = _base_url()
-    token = os.getenv("PIPEDRIVE_API_TOKEN", "")
+    token = tenant_getenv("PIPEDRIVE_API_TOKEN", "")
     if not base or not token:
         return {"error": "PIPEDRIVE_API_TOKEN and PIPEDRIVE_COMPANY_DOMAIN required"}
 

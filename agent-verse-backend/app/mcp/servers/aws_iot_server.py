@@ -8,16 +8,16 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
 
 def _endpoint() -> str:
-    region = os.getenv("AWS_REGION", "us-east-1")
+    region = tenant_getenv("AWS_REGION", "us-east-1")
     return f"https://iot.{region}.amazonaws.com"
 
 
@@ -106,9 +106,9 @@ TOOL_DEFINITIONS = [
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
     import json
 
-    access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
-    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-    region = os.getenv("AWS_REGION", "us-east-1")
+    access_key = tenant_getenv("AWS_ACCESS_KEY_ID", "")
+    secret_key = tenant_getenv("AWS_SECRET_ACCESS_KEY", "")
+    region = tenant_getenv("AWS_REGION", "us-east-1")
     if not access_key or not secret_key:
         return {"error": "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY not configured"}
 

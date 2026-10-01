@@ -8,11 +8,11 @@ Environment:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 
+from app.mcp.servers.credentials import tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -142,20 +142,20 @@ TOOL_DEFINITIONS = [
 
 def _auth() -> tuple[str, str]:
     return (
-        os.getenv("WOOCOMMERCE_CONSUMER_KEY", ""),
-        os.getenv("WOOCOMMERCE_CONSUMER_SECRET", ""),
+        tenant_getenv("WOOCOMMERCE_CONSUMER_KEY", ""),
+        tenant_getenv("WOOCOMMERCE_CONSUMER_SECRET", ""),
     )
 
 
 def _base() -> str:
-    url = os.getenv("WOOCOMMERCE_URL", "").rstrip("/")
+    url = tenant_getenv("WOOCOMMERCE_URL", "").rstrip("/")
     return f"{url}/{WC_API_VERSION}"
 
 
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    wc_url = os.getenv("WOOCOMMERCE_URL", "")
-    ck = os.getenv("WOOCOMMERCE_CONSUMER_KEY", "")
-    cs = os.getenv("WOOCOMMERCE_CONSUMER_SECRET", "")
+    wc_url = tenant_getenv("WOOCOMMERCE_URL", "")
+    ck = tenant_getenv("WOOCOMMERCE_CONSUMER_KEY", "")
+    cs = tenant_getenv("WOOCOMMERCE_CONSUMER_SECRET", "")
     if not all([wc_url, ck, cs]):
         return {
             "error": "WOOCOMMERCE_URL, WOOCOMMERCE_CONSUMER_KEY, "
