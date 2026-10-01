@@ -11,7 +11,6 @@ from app.auth.scope_enforcement import (
     EXEMPT_PATH_PREFIXES,
     ROLE_SCOPES,
     ABACEvaluator,
-    RoleResolver,
     ScopeEnforcementMiddleware,
 )
 
@@ -183,55 +182,8 @@ async def test_abac_evaluate_multiple_conditions_all_must_pass():
     assert result is False
 
 
-# ---------------------------------------------------------------------------
-# RoleResolver
-# ---------------------------------------------------------------------------
-
-
-async def test_role_resolver_simple_role():
-    from unittest.mock import AsyncMock, MagicMock
-
-    role_mock = MagicMock()
-    role_mock.permissions = ["goals:read", "goals:write"]
-    role_mock.parent_role_id = None
-
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = role_mock
-    db_mock = AsyncMock()
-    db_mock.execute = AsyncMock(return_value=result_mock)
-
-    resolver = RoleResolver()
-    perms = await resolver.resolve("role-id-1", db_mock)
-    assert "goals:read" in perms
-    assert "goals:write" in perms
-
-
-async def test_role_resolver_role_not_found():
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = None
-    db_mock = AsyncMock()
-    db_mock.execute = AsyncMock(return_value=result_mock)
-
-    resolver = RoleResolver()
-    perms = await resolver.resolve("nonexistent-role", db_mock)
-    assert perms == set()
-
-
-async def test_role_resolver_cycle_guard():
-    """A role that references itself should not infinite loop."""
-    role_mock = MagicMock()
-    role_mock.permissions = ["goals:read"]
-    role_mock.parent_role_id = "role-id-1"  # Self-reference
-
-    result_mock = MagicMock()
-    result_mock.scalar_one_or_none.return_value = role_mock
-    db_mock = AsyncMock()
-    db_mock.execute = AsyncMock(return_value=result_mock)
-
-    resolver = RoleResolver()
-    perms = await resolver.resolve("role-id-1", db_mock)
-    # Should return without infinite recursion
-    assert "goals:read" in perms
+# RoleResolver (an unreferenced, tenant-unscoped CustomRole lookup by id) was
+# removed (ID-ONLY-LOOKUPS); role inheritance is resolved by the RBAC services.
 
 
 # ---------------------------------------------------------------------------

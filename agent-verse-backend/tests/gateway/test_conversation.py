@@ -93,7 +93,11 @@ class TestAddTurn:
             channel="rest",
             command_id="cmd-1",
         )
-        session.execute.assert_awaited_once()
+        # Tenant RLS GUC, then the tenant-filtered UPDATE.
+        assert session.execute.await_count == 2
+        scope, update = session.execute.await_args_list
+        assert "set_config" in str(scope.args[0]) and scope.args[1] == {"tid": TENANT_ID}
+        assert "tenant_id = :tid" in str(update.args[0])
         session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -130,7 +134,7 @@ class TestGetContext:
         session = _make_session(result_mock)
         manager = ConversationManager(session)
 
-        turns = await manager.get_context("conv-1", last_n=5)
+        turns = await manager.get_context("conv-1", tenant_id="t1", last_n=5)
         assert len(turns) == 5
         assert turns[-1].content == "msg14"
 
@@ -141,7 +145,7 @@ class TestGetContext:
         session = _make_session(result_mock)
         manager = ConversationManager(session)
 
-        turns = await manager.get_context("conv-missing")
+        turns = await manager.get_context("conv-missing", tenant_id="t1")
         assert turns == []
 
     @pytest.mark.asyncio
@@ -150,5 +154,5 @@ class TestGetContext:
         session.execute = AsyncMock(side_effect=RuntimeError("boom"))
         manager = ConversationManager(session)
 
-        turns = await manager.get_context("conv-1")
+        turns = await manager.get_context("conv-1", tenant_id="t1")
         assert turns == []

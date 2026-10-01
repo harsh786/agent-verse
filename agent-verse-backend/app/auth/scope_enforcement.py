@@ -479,47 +479,6 @@ class ABACEvaluator:
 
 
 # ---------------------------------------------------------------------------
-# Role resolver — full permission set including inheritance chain
-# ---------------------------------------------------------------------------
-
-
-class RoleResolver:
-    """Resolve the complete permission set for a role, traversing parent chain."""
-
-    async def resolve(
-        self,
-        role_id: str,
-        db: Any,
-        _visited: set[str] | None = None,
-    ) -> set[str]:
-        if _visited is None:
-            _visited = set()
-        if role_id in _visited:
-            return set()  # cycle guard
-        _visited.add(role_id)
-
-        from sqlalchemy import select
-
-        from app.db.models.auth import CustomRole
-
-        row = await db.execute(
-            select(CustomRole).where(
-                CustomRole.id == role_id,
-                CustomRole.is_active.is_(True),
-            )
-        )
-        role = row.scalar_one_or_none()
-        if not role:
-            return set()
-
-        perms: set[str] = set(role.permissions or [])
-        if role.parent_role_id:
-            parent = await self.resolve(role.parent_role_id, db, _visited)
-            perms |= parent
-        return perms
-
-
-# ---------------------------------------------------------------------------
 # Middleware
 # ---------------------------------------------------------------------------
 

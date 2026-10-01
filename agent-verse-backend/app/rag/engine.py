@@ -270,6 +270,38 @@ def _rrf_score(ranks: list[int]) -> float:
     return sum(1.0 / (_RRF_K + r) for r in ranks)
 
 
+_COLLECTION_METADATA_COLUMNS = frozenset({"embedding_dim", "chunk_count"})
+
+
+async def _collection_metadata(
+    session: AsyncSession, collection_id: str, column: str
+) -> int | None:
+    """One integer column of a collection, for the session's own tenant only.
+
+    The session is already scoped to the caller's tenant (``app.tenant_id``);
+    the explicit ``tenant_id`` predicate mirrors the RLS policy so a SUPERUSER /
+    BYPASSRLS connection cannot read another tenant's collection metadata, and
+    an unscoped session (empty GUC) reads nothing.
+
+    Returns ``None`` when the collection exists but the column is NULL; raises
+    ``LookupError`` when the collection is not visible to the session's tenant.
+    """
+    if column not in _COLLECTION_METADATA_COLUMNS:  # inlined into the SQL below
+        raise ValueError(f"unsupported collection metadata column {column!r}")
+    row = (
+        await session.execute(
+            text(
+                f"SELECT {column} FROM knowledge_collections WHERE id = :cid "
+                "AND tenant_id = current_setting('app.tenant_id', TRUE) LIMIT 1"
+            ),
+            {"cid": collection_id},
+        )
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"collection {collection_id!r} not found for this tenant")
+    return int(row[0]) if row[0] is not None else None
+
+
 async def _binary_prefilter_shortlist(
     session: AsyncSession,
     *,
@@ -302,13 +334,7 @@ async def _binary_prefilter_shortlist(
         return None
     try:
         # Cheap maintained counter — no table scan.
-        size_row = (
-            await session.execute(
-                text("SELECT chunk_count FROM knowledge_collections WHERE id = :cid"),
-                {"cid": collection_id},
-            )
-        ).fetchone()
-        collection_size = int(size_row[0]) if size_row and size_row[0] is not None else 0
+        collection_size = await _collection_metadata(session, collection_id, "chunk_count") or 0
     except Exception:
         return None
     if not should_use_binary_prefilter(
@@ -383,19 +409,20 @@ async def hybrid_search(
     # searched in the wrong table and silently return nothing.
     if embedding_dim is None:
         try:
-            row = (
-                await session.execute(
-                    text("SELECT embedding_dim FROM knowledge_collections WHERE id = :cid LIMIT 1"),
-                    {"cid": collection_id},
-                )
-            ).fetchone()
+            stored_dim = await _collection_metadata(session, collection_id, "embedding_dim")
+        except LookupError:
+            # Not the caller's collection (or gone): nothing to search. Never
+            # fall through to a guessed table — the chunk legs would then read
+            # another tenant's collection on a BYPASSRLS connection.
+            logger.warning("collection_not_found_for_tenant", collection_id=collection_id)
+            return []
         except Exception as exc:
             if strict:
                 raise RetrievalLegExecutionError("collection_metadata") from exc
             logger.warning("collection_metadata_unreadable", collection_id=collection_id)
             return []
-        if row is not None and row[0]:
-            embedding_dim = int(row[0])
+        if stored_dim:
+            embedding_dim = stored_dim
         elif query_embedding:
             # The query was embedded by the resolved embedder, whose width is
             # the width this collection's chunks were written with.

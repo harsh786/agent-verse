@@ -62,6 +62,7 @@ class ConversationManager:
             try:
                 from sqlalchemy import text
 
+                await self._scope(tenant_id)
                 # Try to find existing conversation
                 q = text("""
                     SELECT id, turns, context_summary, last_command_at, created_at
@@ -134,6 +135,7 @@ class ConversationManager:
         try:
             from sqlalchemy import text
 
+            await self._scope(tenant_id)
             q = text("""
                 UPDATE gateway_conversations
                 SET turns = turns || CAST(:new_turn AS jsonb),
@@ -155,16 +157,36 @@ class ConversationManager:
         except Exception as exc:
             _log.warning("conversation_manager.add_turn_failed", error=str(exc))
 
+    async def _scope(self, tenant_id: str) -> None:
+        """Scope the session's current transaction to the tenant (RLS GUC)."""
+        from sqlalchemy import text
+
+        await self._s.execute(
+            text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+        )
+
     async def get_context(
         self,
         conversation_id: str,
+        *,
+        tenant_id: str,
         last_n: int = 10,
     ) -> list[ConversationTurn]:
+        """The last ``last_n`` turns of the tenant's conversation.
+
+        Read by id alone it relied on the caller's RLS context: unscoped on the
+        NOBYPASSRLS role it found nothing, and on a BYPASSRLS role it returned
+        any tenant's conversation. Now scoped to ``tenant_id`` both ways.
+        """
         try:
             from sqlalchemy import text
 
-            q = text("SELECT turns FROM gateway_conversations WHERE id = :cid")
-            res = await self._s.execute(q, {"cid": conversation_id})
+            await self._scope(tenant_id)
+            q = text(
+                "SELECT turns FROM gateway_conversations "
+                "WHERE id = CAST(:cid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
+            )
+            res = await self._s.execute(q, {"cid": conversation_id, "tid": tenant_id})
             row = res.fetchone()
             if not row:
                 return []
