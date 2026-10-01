@@ -55,4 +55,4 @@ async def test_sub_goal_resolving_to_the_parent_is_not_awaited() -> None:
     sup._synthesize = synth  # type: ignore[method-assign]
     res = await sup.run("do x", tenant_ctx=None, parent_goal_id="parent")
     assert all(t.status == "failed" for t in res.tasks)
-    assert all(c["execution_context"] == {SUBGOAL_MARKER: "parent"} for c in svc.calls)
+    assert all(c["execution_context"][SUBGOAL_MARKER] == "parent" for c in svc.calls)

@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.agent.fanout_ledger import FANOUT_TASK_KEY, FanoutLedger, LedgerEntry
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -64,6 +65,17 @@ class SubAgentTask:
     completed_at: str = ""
 
 
+def _task_from_entry(entry: LedgerEntry) -> SubAgentTask:
+    return SubAgentTask(
+        task_id=entry.task_key,
+        goal=str(entry.spec.get("goal", "")),
+        goal_id=entry.child_goal_id or "",
+        status=entry.status if entry.finished else "pending",
+        result=entry.result,
+        error=entry.error,
+    )
+
+
 @dataclass
 class SupervisionResult:
     success: bool
@@ -105,33 +117,64 @@ class SupervisorAgent:
         tenant_ctx: Any,
         event_callback: Any = None,
         parent_goal_id: str | None = None,
+        ledger: FanoutLedger | None = None,
     ) -> SupervisionResult:
-        """Decompose and execute goal across multiple sub-agents."""
+        """Decompose and execute goal across multiple sub-agents.
+
+        With a ``ledger`` (the parent is a persisted goal and Postgres is wired)
+        the decomposition and every child's goal id / outcome are durable, so a
+        parent redelivered after a crash re-attaches instead of re-dispatching.
+        """
 
         async def emit(event: dict) -> None:
             if event_callback:
                 with contextlib.suppress(Exception):
                     await event_callback(event)
 
-        # Step 1: Decompose goal into sub-tasks
-        sub_tasks = await self._decompose(goal, tenant_ctx)
-        await emit(
-            {
-                "type": "supervisor_decomposed",
-                "task_count": len(sub_tasks),
-                "tasks": [t.goal for t in sub_tasks],
-            }
-        )
+        # Step 1: Decompose goal into sub-tasks — or, when this parent was already
+        # here before a crash/redelivery, re-attach to the durable plan (CORE-31).
+        entries = await ledger.load() if ledger is not None else []
+        if entries:
+            sub_tasks = [_task_from_entry(e) for e in entries]
+            await emit(
+                {
+                    "type": "supervisor_resumed",
+                    "task_count": len(sub_tasks),
+                    "finished": sum(1 for e in entries if e.finished),
+                }
+            )
+        else:
+            sub_tasks = await self._decompose(goal, tenant_ctx)
+            await emit(
+                {
+                    "type": "supervisor_decomposed",
+                    "task_count": len(sub_tasks),
+                    "tasks": [t.goal for t in sub_tasks],
+                }
+            )
 
-        # A single sub-task is the goal itself: supervising it only spawns a
-        # redundant copy and waits on it. Let the normal loop handle it.
-        if len(sub_tasks) <= 1:
-            return SupervisionResult(success=False, tasks=sub_tasks)
+            # A single sub-task is the goal itself: supervising it only spawns a
+            # redundant copy and waits on it. Let the normal loop handle it.
+            if len(sub_tasks) <= 1:
+                return SupervisionResult(success=False, tasks=sub_tasks)
+            if ledger is not None:
+                # Durable BEFORE any dispatch; raises (no fan-out) when it cannot
+                # be written. First writer wins, so a concurrent redelivery of the
+                # same parent converges on one plan.
+                planned = await ledger.plan(
+                    [
+                        LedgerEntry(task_key=t.task_id, position=i, spec={"goal": t.goal})
+                        for i, t in enumerate(sub_tasks)
+                    ]
+                )
+                sub_tasks = [_task_from_entry(e) for e in planned]
 
         # Step 2: Execute sub-tasks in parallel batches
         semaphore = asyncio.Semaphore(self._max_parallel)
 
         async def run_task(task: SubAgentTask) -> None:
+            if task.status in ("complete", "failed"):
+                return  # finished before a crash: reuse its recorded result
             async with semaphore:
                 task.status = "running"
                 task.started_at = datetime.now(UTC).isoformat()
@@ -143,30 +186,68 @@ class SupervisorAgent:
                     }
                 )
                 try:
-                    sub = await self._goal_service.submit_goal(
-                        goal=task.goal,
-                        priority="normal",
-                        dry_run=False,
-                        tenant_ctx=tenant_ctx,
-                        agent_id=task.agent_id,
-                        # Marks the sub-goal so its own graph does not run the
-                        # supervisor again: without it every sub-goal decomposed
-                        # itself, recursively, each parent waiting on children
-                        # that never finished (goals stuck in "planning").
-                        execution_context={SUBGOAL_MARKER: parent_goal_id or "supervisor"},
-                    )
-                    goal_id = sub["goal_id"]
-                    if parent_goal_id and str(goal_id) == str(parent_goal_id):
-                        # Never wait on ourselves (deadlock).
-                        raise RuntimeError("sub-goal resolved to the parent goal")
-                    task.goal_id = str(goal_id)
-                    await emit(
-                        {
-                            "type": "supervisor_task_goal_created",
-                            "task_id": task.task_id,
-                            "goal_id": task.goal_id,
-                        }
-                    )
+                    goal_id: Any = task.goal_id
+                    if not goal_id and ledger is not None:
+                        goal_id = await ledger.find_child_goal(task.task_id)
+                        if goal_id:
+                            # Created just before a crash, never recorded: do now
+                            # (best effort — the goals row keeps finding it).
+                            try:
+                                await ledger.mark_dispatched(task.task_id, str(goal_id))
+                            except Exception as exc:
+                                logger.warning(
+                                    "supervisor_ledger_dispatch_write_failed",
+                                    error=type(exc).__name__,
+                                )
+                    if goal_id:
+                        # Already dispatched by an earlier (crashed) run of this
+                        # parent: re-attach (its events replay) — never resubmit.
+                        task.goal_id = str(goal_id)
+                        await emit(
+                            {
+                                "type": "supervisor_task_reattached",
+                                "task_id": task.task_id,
+                                "goal_id": task.goal_id,
+                            }
+                        )
+                    else:
+                        sub = await self._goal_service.submit_goal(
+                            goal=task.goal,
+                            priority="normal",
+                            dry_run=False,
+                            tenant_ctx=tenant_ctx,
+                            agent_id=task.agent_id,
+                            # Marks the sub-goal so its own graph does not run the
+                            # supervisor again: without it every sub-goal decomposed
+                            # itself, recursively, each parent waiting on children
+                            # that never finished (goals stuck in "planning").
+                            # The task key lets a resumed parent find this row.
+                            execution_context={
+                                SUBGOAL_MARKER: parent_goal_id or "supervisor",
+                                FANOUT_TASK_KEY: task.task_id,
+                            },
+                        )
+                        goal_id = sub["goal_id"]
+                        if parent_goal_id and str(goal_id) == str(parent_goal_id):
+                            # Never wait on ourselves (deadlock).
+                            raise RuntimeError("sub-goal resolved to the parent goal")
+                        task.goal_id = str(goal_id)
+                        if ledger is not None:
+                            try:
+                                await ledger.mark_dispatched(task.task_id, task.goal_id)
+                            except Exception as exc:
+                                # The goals row (parent + task key) still finds it.
+                                logger.warning(
+                                    "supervisor_ledger_dispatch_write_failed",
+                                    error=type(exc).__name__,
+                                )
+                        await emit(
+                            {
+                                "type": "supervisor_task_goal_created",
+                                "task_id": task.task_id,
+                                "goal_id": task.goal_id,
+                            }
+                        )
 
                     # Wait for completion, collecting the sub-goal's REAL output. The
                     # goal_complete event carries no "output" key, so the result used to
@@ -204,6 +285,20 @@ class SupervisorAgent:
                     task.error = str(exc)
                 finally:
                     task.completed_at = datetime.now(UTC).isoformat()
+                    if ledger is not None and task.status in ("complete", "failed"):
+                        try:
+                            await ledger.mark_finished(
+                                task.task_id,
+                                status=task.status,
+                                result=task.result,
+                                error=task.error[:2000],
+                            )
+                        except Exception as exc:
+                            # A resume re-attaches and replays it instead.
+                            logger.warning(
+                                "supervisor_ledger_finish_write_failed",
+                                error=type(exc).__name__,
+                            )
                     await emit(
                         {
                             "type": "supervisor_task_complete",

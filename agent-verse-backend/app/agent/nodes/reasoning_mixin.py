@@ -511,11 +511,22 @@ class ReasoningMixin:
                 agent_router=getattr(self, "_agent_router", None),
                 **_width_kw,
             )
+            from app.agent.fanout_ledger import ledger_for
+
+            _parent_id = getattr(agent_state, "goal_id", None)
             result = await supervisor.run(
                 goal=agent_state.goal,
                 tenant_ctx=tenant_ctx,
                 event_callback=getattr(self, "_event_callback", None),
-                parent_goal_id=getattr(agent_state, "goal_id", None),
+                parent_goal_id=_parent_id,
+                # CORE-31: decomposition + child ids durable in Postgres, so a
+                # redelivered parent re-attaches instead of re-dispatching.
+                ledger=ledger_for(
+                    getattr(self, "_db_session_factory", None),
+                    tenant_id=getattr(tenant_ctx, "tenant_id", None),
+                    parent_goal_id=_parent_id,
+                    kind="supervisor",
+                ),
             )
             agent_state.context["supervisor_applied"] = True
             synthesized = getattr(result, "synthesized_result", "") or ""
