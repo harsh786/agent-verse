@@ -26,6 +26,12 @@ _SCHEDULE_GRACE_SECONDS = 150
 # lifespan does not run in a worker, so app.state holds only the in-memory
 # fallback runner — MemorySaver + mock tools + no persistence).
 _WORKER_RUNNER: Any = None
+# Loop-bound clients (redis.asyncio) the cached runner owns. Every task runs on
+# its own fresh loop (_run_async), so they are closed with that loop and the
+# runner is rebuilt for the next task: a runner never outlives its loop. Runs
+# resume from the persisted run record (execute_fresh / execute_resume_fresh),
+# not from this process's in-memory checkpointer, so nothing is lost.
+_WORKER_RUNNER_CLIENTS: list[Any] = []
 
 
 def _build_worker_runner() -> Any:
@@ -108,6 +114,7 @@ def _build_worker_runner() -> Any:
         _wf_redis = _aioredis_wf.from_url(
             _os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
         )
+        _WORKER_RUNNER_CLIENTS.append(_wf_redis)
         _wf_secret_store = RedisConnectorSecretStore(redis=_wf_redis, vault=get_vault())
 
         async def _wf_resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
@@ -153,6 +160,7 @@ def _build_worker_runner() -> Any:
         _step_redis = _aioredis_steps.from_url(
             _os_steps.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
         )
+        _WORKER_RUNNER_CLIENTS.append(_step_redis)
     except Exception as _redis_exc:
         _log.warning("worker_runner_step_redis_unavailable", error=str(_redis_exc)[:120])
     compiler.bind_services(workflow_runner=_WORKER_RUNNER, redis=_step_redis)
@@ -184,19 +192,47 @@ def _get_runner() -> Any:
 
 
 def _run_async(coro: Any) -> Any:
-    """Run an async coroutine from a Celery task (sync context)."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures
+    """Run an async coroutine from a Celery task (sync context).
 
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                future = pool.submit(asyncio.run, coro)
-                return future.result(timeout=7200)
-        else:
-            return loop.run_until_complete(coro)
+    Always on a fresh loop via ``app.db.session.run_in_fresh_loop`` (leftover
+    tasks cancelled, DB engines disposed, loop closed) — never the persistent
+    ``get_event_loop()``, which shared pooled asyncpg connections across loops
+    with the scaling tasks in the same worker (TX-LEAK). The worker runner's
+    loop-bound clients are closed inside the same loop. Called from inside a
+    running loop (tests / eager mode) it runs in a helper thread.
+    """
+    from app.db.session import run_in_fresh_loop
+
+    async def _with_runner_cleanup() -> Any:
+        try:
+            return await coro
+        finally:
+            await _close_worker_runner_clients()
+
+    try:
+        asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return run_in_fresh_loop(_with_runner_cleanup())
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(run_in_fresh_loop, _with_runner_cleanup()).result(timeout=7200)
+
+
+async def _close_worker_runner_clients() -> None:
+    """Close the cached runner's loop-bound clients and drop the runner."""
+    global _WORKER_RUNNER
+    clients = list(_WORKER_RUNNER_CLIENTS)
+    _WORKER_RUNNER_CLIENTS.clear()
+    _WORKER_RUNNER = None
+    for client in clients:
+        close = getattr(client, "aclose", None)
+        if close is None:
+            continue
+        try:
+            await close()
+        except Exception as exc:
+            _log.warning("worker_runner_client_close_failed", error=str(exc)[:120])
 
 
 @celery_app.task(
