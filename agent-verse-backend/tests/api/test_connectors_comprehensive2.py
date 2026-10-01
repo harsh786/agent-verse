@@ -6,7 +6,7 @@ Targets: 69% → 85%+ coverage on app/api/connectors.py
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -148,6 +148,19 @@ def test_list_capabilities_with_query() -> None:
     assert resp.status_code == 200
     [stmt] = db.touching("tool_capabilities")
     assert stmt.params["q"] == "%github%"
+
+
+def test_list_capabilities_db_setup_failure_is_503() -> None:
+    """No app.state factory and the global one cannot be built → the documented 503.
+
+    The fallback ``get_session_factory()`` ran outside the endpoint's try, so a
+    factory error escaped as an unhandled 500.
+    """
+    with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")):
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.get("/connectors/capabilities", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "capability index unavailable"
 
 
 def test_list_capabilities_db_error_is_503() -> None:

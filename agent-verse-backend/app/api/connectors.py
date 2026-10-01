@@ -1899,12 +1899,14 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
 async def list_capabilities(request: Request, q: str = "") -> list[dict]:
     """List all discovered tool capabilities for this tenant."""
     tenant_ctx = _require_tenant(request)
-    db = getattr(request.app.state, "db_session_factory", None)
-    if db is None:
-        from app.db.session import get_session_factory
-
-        db = get_session_factory()
     try:
+        # Resolved inside the try: a factory that cannot be built is the same
+        # "capability index unavailable" 503 as a failing query (it was a 500).
+        db = getattr(request.app.state, "db_session_factory", None)
+        if db is None:
+            from app.db.session import get_session_factory
+
+            db = get_session_factory()
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
