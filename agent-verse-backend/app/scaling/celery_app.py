@@ -92,6 +92,8 @@ celery_app = Celery(
         "app.scaling.raft_tasks",
         # Expired strategy-evidence purge (beat: purge-expired-strategy-evidence).
         "app.orchestration.evidence_maintenance",
+        # Coordination outbox delivery (beat: dispatch-coordination-outbox).
+        "app.coordination.outbox_tasks",
     ],
 )
 
@@ -220,6 +222,14 @@ celery_app.conf.update(
         "execute-retention-policy": {
             "task": "app.scaling.tasks.execute_retention_policy",
             "schedule": crontab(hour=3, minute=0),  # 3 AM UTC daily
+            "options": {"queue": "maintenance"},
+        },
+        # Coordination outbox -> Redis Streams. Rows were written in the same
+        # transaction as each coordination state change but never delivered.
+        # Exclusive per-row claims (SKIP LOCKED) make overlapping ticks safe.
+        "dispatch-coordination-outbox": {
+            "task": "agentverse.coordination.dispatch_outbox",
+            "schedule": 5.0,
             "options": {"queue": "maintenance"},
         },
         "purge-expired-strategy-evidence": {
