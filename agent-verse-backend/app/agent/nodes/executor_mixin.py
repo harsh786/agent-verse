@@ -775,8 +775,9 @@ class ExecutorMixin:
                 graph._db_session_factory = getattr(self, "_db_session_factory", None)
                 # A child's synthetic id has no goals row (and exceeds goals.id), so
                 # every checkpoint write failed the FK — a wasted, swallowed DB round
-                # trip per step. Children are re-run from the PARENT's checkpoints,
-                # so they do not checkpoint themselves (CORE-10).
+                # trip per step. Children do not checkpoint themselves; each child's
+                # completion is recorded in the parent's fan-out ledger instead, so
+                # a resumed parent skips finished children (CORE-10).
                 graph._checkpoints_enabled = False
                 graph._agent_collection_ids = list(self._agent_collection_ids)
                 graph._event_callback = self._event_callback
@@ -788,6 +789,7 @@ class ExecutorMixin:
                 if self._model_router is not None:
                     with contextlib.suppress(Exception):
                         _tree_model = self._model_router.model_for("planning") or ""
+                from app.agent.fanout_ledger import ledger_for
                 from app.providers.guarded_completion import GuardedDecisionProvider
 
                 sub_goals: list[SubGoal] = await execute_goal_tree(
@@ -806,6 +808,12 @@ class ExecutorMixin:
                     graph_factory=_sub_graph_factory,
                     event_callback=self._event_callback,
                     model=_tree_model,
+                    ledger=ledger_for(
+                        getattr(self, "_db_session_factory", None),
+                        tenant_id=getattr(tenant_ctx, "tenant_id", None),
+                        parent_goal_id=agent_state.goal_id,
+                        kind="goal_tree",
+                    ),
                 )
                 agent_state.sub_goals = sub_goals
                 if sub_goals:

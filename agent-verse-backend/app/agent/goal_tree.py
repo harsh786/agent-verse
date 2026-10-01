@@ -17,10 +17,28 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.agent.fanout_ledger import FanoutLedger, LedgerEntry
 from app.agent.state import AgentState, GoalStatus, SubGoal
 from app.providers.base import CompletionRequest, LLMProvider, Message
 from app.providers.model_defaults import configured_default_model as _configured_default_model
 from app.tenancy.context import TenantContext
+
+
+def _sub_goal_from_entry(entry: LedgerEntry, parent_goal_id: str) -> SubGoal:
+    """A planned child rebuilt from the durable ledger (finished ones keep their outcome)."""
+    status = {"complete": GoalStatus.COMPLETE, "failed": GoalStatus.FAILED}.get(
+        entry.status, GoalStatus.PLANNING
+    )
+    deps = entry.spec.get("depends_on")
+    return SubGoal(
+        sub_goal_id=entry.task_key,
+        description=str(entry.spec.get("description", "")),
+        parent_goal_id=parent_goal_id,
+        depends_on=[str(d) for d in deps] if isinstance(deps, list) else [],
+        status=status,
+        result=entry.result,
+        error=entry.error,
+    )
 
 
 @dataclass
@@ -192,6 +210,7 @@ async def execute_goal_tree(
     event_callback: Any = None,
     max_parallel: int = 4,
     model: str = "",
+    ledger: FanoutLedger | None = None,
 ) -> list[SubGoal]:
     """Decompose goal → build dependency DAG → execute with parallelism.
 
@@ -199,17 +218,64 @@ async def execute_goal_tree(
     The final element (when sub-goals succeed) is a synthesis SubGoal whose
     ``result`` contains the LLM-synthesized answer to the original goal.
     """
-    decomp = await decompose_goal(goal, planner, tenant_ctx, parent_goal_id, model=model)
-    if not decomp.should_decompose or not decomp.sub_goals:
-        return []
+    # CORE-10: with a ledger (persisted parent + Postgres) the decomposition and
+    # every child's completion are durable, so a parent redelivered after a crash
+    # reuses the stored plan and never re-runs a child that already finished.
+    entries = await ledger.load() if ledger is not None else []
+    if entries:
+        planned = [_sub_goal_from_entry(e, parent_goal_id) for e in entries]
+    else:
+        decomp = await decompose_goal(goal, planner, tenant_ctx, parent_goal_id, model=model)
+        if not decomp.should_decompose or not decomp.sub_goals:
+            return []
+        planned = decomp.sub_goals
+        if ledger is not None:
+            # Durable before any child runs; raises (no child runs) otherwise.
+            stored = await ledger.plan(
+                [
+                    LedgerEntry(
+                        task_key=sg.sub_goal_id,
+                        position=i,
+                        spec={"description": sg.description, "depends_on": sg.depends_on},
+                    )
+                    for i, sg in enumerate(planned)
+                ]
+            )
+            planned = [_sub_goal_from_entry(e, parent_goal_id) for e in stored]
+
+    async def _record(sg: SubGoal) -> None:
+        if ledger is None:
+            return
+        failed = sg.status is GoalStatus.FAILED or bool(sg.error)
+        try:
+            await ledger.mark_finished(
+                sg.sub_goal_id,
+                status="failed" if failed else "complete",
+                result=sg.result,
+                error=sg.error[:2000],
+            )
+        except Exception as exc:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "goal_tree_ledger_write_failed: %s", type(exc).__name__
+            )
 
     semaphore = asyncio.Semaphore(max_parallel)
     succeeded: set[str] = set()
     not_succeeded: set[str] = set()
     results: list[SubGoal] = []
 
+    # Children that finished before a crash: reuse, never re-run.
+    remaining = []
+    for sg in planned:
+        if sg.status in (GoalStatus.COMPLETE, GoalStatus.FAILED):
+            (not_succeeded if sg.status is GoalStatus.FAILED else succeeded).add(sg.sub_goal_id)
+            results.append(sg)
+        else:
+            remaining.append(sg)
+
     # Topological execution: process waves of ready sub-goals
-    remaining = list(decomp.sub_goals)
     max_waves = len(remaining) + 1
     wave = 0
 
@@ -226,6 +292,7 @@ async def execute_goal_tree(
                 not_succeeded.add(sg.sub_goal_id)
                 results.append(sg)
                 remaining.remove(sg)
+                await _record(sg)
         if not remaining:
             break
         # Find all sub-goals whose dependencies all succeeded
@@ -236,16 +303,18 @@ async def execute_goal_tree(
             ready = remaining[:]
 
         # Execute ready sub-goals in parallel (bounded by semaphore)
-        tasks = [
-            execute_sub_goal(
+        async def _run_and_record(sg: SubGoal) -> SubGoal:
+            out = await execute_sub_goal(
                 sg,
                 tenant_ctx=tenant_ctx,
                 graph_factory=graph_factory,
                 semaphore=semaphore,
                 event_callback=event_callback,
             )
-            for sg in ready
-        ]
+            await _record(out)  # as soon as THIS child finishes
+            return out
+
+        tasks = [_run_and_record(sg) for sg in ready]
         done: list[SubGoal] = list(await asyncio.gather(*tasks, return_exceptions=False))
 
         for sg in done:
