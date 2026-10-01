@@ -729,7 +729,9 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
     # Enforce release gate: fully-autonomous mode requires an eval suite
-    if body.autonomy_mode == "fully-autonomous" and not body.eval_suite_id:
+    # (FULLY_AUTONOMOUS_EVAL_GATE_ENABLED=false is the owner's opt-out).
+    _gate_on = _eval_gate_enabled()
+    if _gate_on and body.autonomy_mode == "fully-autonomous" and not body.eval_suite_id:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -737,7 +739,7 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
                 "Attach an eval suite with passing results first."
             ),
         )
-    if body.autonomy_mode == "fully-autonomous" and body.eval_suite_id:
+    if _gate_on and body.autonomy_mode == "fully-autonomous" and body.eval_suite_id:
         await _enforce_rollout_gate(
             request, tenant_ctx, agent_id=None, eval_suite_id=body.eval_suite_id
         )
@@ -935,14 +937,15 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
     # Enforce release gate: switching to fully-autonomous requires eval_suite_id
     new_autonomy = body.autonomy_mode or current.get("autonomy_mode")
     new_eval_suite = body.eval_suite_id or current.get("eval_suite_id")
-    if new_autonomy == "fully-autonomous" and not new_eval_suite:
+    _gate_on = _eval_gate_enabled()
+    if _gate_on and new_autonomy == "fully-autonomous" and not new_eval_suite:
         raise HTTPException(
             status_code=422,
             detail="fully-autonomous mode requires eval_suite_id",
         )
     # Becoming fully-autonomous (or changing the suite that vouches for it)
     # requires the suite's latest completed run to pass the rollout gate.
-    if new_autonomy == "fully-autonomous" and (
+    if _gate_on and new_autonomy == "fully-autonomous" and (
         current.get("autonomy_mode") != "fully-autonomous"
         or new_eval_suite != current.get("eval_suite_id")
     ):
@@ -1523,6 +1526,18 @@ async def exchange_agent_token(
         exp = None
 
     return {"token": token, "expires_at": exp, "token_type": "Bearer"}
+
+
+def _eval_gate_enabled() -> bool:
+    """Owner decision: is the fully-autonomous eval rollout gate enforced?"""
+    from app.core.config import get_settings
+
+    enabled = bool(getattr(get_settings(), "fully_autonomous_eval_gate_enabled", True))
+    if not enabled:
+        from app.observability.logging import get_logger
+
+        get_logger(__name__).warning("fully_autonomous_eval_gate_disabled_by_setting")
+    return enabled
 
 
 async def _rollout_gate_report(

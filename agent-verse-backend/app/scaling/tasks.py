@@ -180,10 +180,14 @@ async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
 
     Celery workers never call ``_dispatch_event`` in the API process, so the
     counter must be decremented explicitly here at every terminal exit of
-    ``run_goal``. A supervisor sub-goal holds no slot of its own: nothing to do.
+    ``run_goal``. A supervisor sub-goal holds no slot of its own (unless
+    SUBGOALS_SHARE_PARENT_SLOT=false): nothing to do.
     """
     if _SUBGOAL_RUN.get():
-        return
+        from app.services.goal_service import subgoals_share_parent_slot
+
+        if subgoals_share_parent_slot():
+            return
     try:
         import redis.asyncio as aioredis
 

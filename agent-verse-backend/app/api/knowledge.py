@@ -2216,12 +2216,13 @@ async def federated_search_endpoint(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="collection_ids is required",
         )
-    from app.knowledge.federated_search import MAX_FEDERATED_COLLECTIONS, federated_search
+    from app.knowledge.federated_search import federated_search, max_federated_collections
 
-    if not isinstance(collection_ids, list) or len(collection_ids) > MAX_FEDERATED_COLLECTIONS:
+    max_collections = max_federated_collections()
+    if not isinstance(collection_ids, list) or len(collection_ids) > max_collections:
         raise HTTPException(
             status_code=422,
-            detail=f"collection_ids must list at most {MAX_FEDERATED_COLLECTIONS} collections",
+            detail=f"collection_ids must list at most {max_collections} collections",
         )
     if not isinstance(filters, dict):
         raise HTTPException(status_code=422, detail="filters must be an object")

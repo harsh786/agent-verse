@@ -51,8 +51,17 @@ def _subgoal_queue_kwargs(execution_context: Any) -> dict[str, Any]:
 def _holds_concurrency_slot(execution_context: Any) -> bool:
     """False for a supervisor's sub-goal: it runs under its parent's concurrent-goal
     slot. Taking its own slot let a parent at the tenant's limit starve its own
-    children (CORE-07). The fan-out is bounded (<= 6 sub-tasks, one level)."""
-    return not _subgoal_queue_kwargs(execution_context)
+    children (CORE-07). The fan-out is bounded (<= 6 sub-tasks, one level).
+    SUBGOALS_SHARE_PARENT_SLOT=false (owner decision) gives sub-goals their own."""
+    if not _subgoal_queue_kwargs(execution_context):
+        return True
+    return not subgoals_share_parent_slot()
+
+
+def subgoals_share_parent_slot() -> bool:
+    from app.core.config import get_settings
+
+    return bool(getattr(get_settings(), "subgoals_share_parent_slot", True))
 
 
 def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:

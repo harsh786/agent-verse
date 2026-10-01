@@ -495,6 +495,23 @@ class Settings(BaseSettings):
     # cannot be pinned (confluent-kafka / librdkafka) is refused while this is on.
     ingestion_egress_strict_pinning: bool = True
 
+    # --- owner decisions (defaults = shipped behaviour) ---
+    # Shortest gap a plan may schedule between fires (cron, interval, api_poll
+    # floors). The beat ticks every 60 s, so 60 s is the effective minimum.
+    schedule_min_interval_free_s: int = Field(default=900, ge=60)
+    schedule_min_interval_starter_s: int = Field(default=300, ge=60)
+    schedule_min_interval_professional_s: int = Field(default=60, ge=60)
+    schedule_min_interval_enterprise_s: int = Field(default=60, ge=60)
+    # Collections one federated knowledge search may fan out to.
+    knowledge_federated_max_collections: int = Field(default=20, ge=1, le=200)
+    # Making an agent fully-autonomous requires an attached eval suite whose
+    # latest completed run passes the rollout gate. False skips both checks.
+    fully_autonomous_eval_gate_enabled: bool = True
+    # A supervisor's sub-goals run under the parent's concurrent-goal slot
+    # (a parent at the tenant limit can never starve its own children). False
+    # makes each sub-goal take, and release, a slot of its own.
+    subgoals_share_parent_slot: bool = True
+
     # --- SAML 2.0 ---
     saml_enabled: bool = False
     saml_idp_metadata_url: str = ""

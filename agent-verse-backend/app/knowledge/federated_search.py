@@ -79,7 +79,17 @@ def _merge_unique_dicts(
 
 # Collections one federated request may search (the route refuses more with
 # 422), and how many are searched at once.
-MAX_FEDERATED_COLLECTIONS = 20
+MAX_FEDERATED_COLLECTIONS = 20  # default; KNOWLEDGE_FEDERATED_MAX_COLLECTIONS overrides
+
+
+def max_federated_collections() -> int:
+    """Collections one federated search may fan out to (Settings, default 20)."""
+    from app.core.config import get_settings
+
+    value = getattr(get_settings(), "knowledge_federated_max_collections", None)
+    return value if isinstance(value, int) and value > 0 else MAX_FEDERATED_COLLECTIONS
+
+
 FEDERATED_FAN_OUT = 5
 
 
@@ -118,10 +128,9 @@ async def federated_search(
     if not collection_ids:
         return []
 
-    if len(collection_ids) > MAX_FEDERATED_COLLECTIONS:
-        raise ValueError(
-            f"at most {MAX_FEDERATED_COLLECTIONS} collections can be searched at once"
-        )
+    limit = max_federated_collections()
+    if len(collection_ids) > limit:
+        raise ValueError(f"at most {limit} collections can be searched at once")
     fetch_k = per_collection_k if per_collection_k is not None else top_k * 2
     # The fan-out used to gather every collection at once, unbounded.
     slots = asyncio.Semaphore(FEDERATED_FAN_OUT)

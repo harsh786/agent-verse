@@ -251,6 +251,8 @@ class TriggerSpec:
 
 # TRG-16: the shortest gap a plan may schedule between fires (cron and
 # interval). The beat ticks every 60s, so 60s is the effective platform floor.
+# These are the DEFAULTS; the effective floors come from Settings
+# (SCHEDULE_MIN_INTERVAL_<PLAN>_S) — see plan_min_interval_seconds.
 PLAN_MIN_SCHEDULE_INTERVAL_SECONDS: dict[str, int] = {
     "free": 900,
     "starter": 300,
@@ -266,7 +268,14 @@ _CRON_GAP_SAMPLES = 64
 def plan_min_interval_seconds(plan: str) -> int:
     """The plan's minimum schedule interval; an unknown plan gets FREE's floor."""
     key = str(getattr(plan, "value", plan) or "free").lower()
-    return PLAN_MIN_SCHEDULE_INTERVAL_SECONDS.get(key, PLAN_MIN_SCHEDULE_INTERVAL_SECONDS["free"])
+    if key not in PLAN_MIN_SCHEDULE_INTERVAL_SECONDS:
+        key = "free"
+    from app.core.config import get_settings
+
+    configured = getattr(get_settings(), f"schedule_min_interval_{key}_s", None)
+    if isinstance(configured, int) and configured > 0:
+        return configured
+    return PLAN_MIN_SCHEDULE_INTERVAL_SECONDS[key]
 
 
 # The api_poll spec default (the dataclass default of poll_interval_seconds).
