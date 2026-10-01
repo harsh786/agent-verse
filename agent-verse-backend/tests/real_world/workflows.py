@@ -171,8 +171,9 @@ def decide(api: LiveAPI, request_id: str, action: str, note: str) -> Any:
     return body_of(resp)
 
 
-def run_audit_rows(api: LiveAPI, run_id: str) -> list[dict[str, Any]]:
-    resp = api.get("/governance/audit", params={"goal_id": run_id, "limit": 200})
+def audit_rows(api: LiveAPI, subject_id: str) -> list[dict[str, Any]]:
+    """Audit rows whose goal_id is ``subject_id`` (a workflow id or a run id)."""
+    resp = api.get("/governance/audit", params={"goal_id": subject_id, "limit": 200})
     if resp.status_code != 200:
         return [{"error": f"/governance/audit -> {resp.status_code}"}]
     return list(resp.json())

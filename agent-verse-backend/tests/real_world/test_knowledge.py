@@ -9,16 +9,16 @@ that a goal can answer questions only answerable from these docs, citing them.
 from __future__ import annotations
 
 import os
-import time
 from typing import Any
 
 import pytest
 
-from tests.real_world.helpers import LiveAPI, mask, tag, wait_until
+from tests.real_world.helpers import LiveAPI, body_of, mask, tag, wait_until
 from tests.real_world.kb_fixtures import Doc, build_docs
 
 GOAL_TIMEOUT = float(os.getenv("RW_GOAL_TIMEOUT", "480"))
 URL_DOC = os.getenv("RW_KB_URL_DOC", "https://peps.python.org/pep-0020/")
+REEMBED_TIMEOUT = float(os.getenv("RW_REEMBED_TIMEOUT", "300"))
 
 
 def _source_file(hit: dict[str, Any]) -> str:
@@ -223,22 +223,23 @@ def test_kb_reembed_keeps_search_correct(api: LiveAPI, kb: dict[str, Any],
         if rr.status_code != 200 or not rr.json().get("chunks_ingested"):
             soft.append(f"reingest -> {rr.status_code}: {mask(rr.text[:200])}")
 
-    # 2) Uploaded file: the documented re-embed path is delete + upload again.
-    target = next(d for d in kb["docs"] if d.filename.endswith(".docx"))
-    old_id = (kb["uploads"][target.filename]["body"] or {}).get("document_id")
-    assert old_id, "upload response carried no document_id"
-    dele = api.delete(f"/knowledge/collections/{cid}/documents/{old_id}")
-    evidence["delete_http"] = dele.status_code
-    assert dele.status_code in (200, 204), f"delete doc -> {dele.status_code}"
-    up = api.post("/knowledge/ingest/file", data={"collection_id": cid},
-                  files={"file": (target.filename, target.data, target.mime)})
-    body = up.json() if up.status_code < 300 else {}
-    evidence["reupload"] = {"http": up.status_code, "chunks": body.get("chunks_created"),
-                            "deduplicated": body.get("deduplicated")}
-    assert up.status_code in (200, 201) and body.get("chunks_created"), (
-        f"re-upload after delete was not re-embedded: {mask(up.text[:300])}"
+    # 2) Whole collection: POST /knowledge/collections/{id}/re-embed (KB-25), then
+    #    poll its progress until the maintenance task finishes.
+    started = api.post(f"/knowledge/collections/{cid}/re-embed")
+    evidence["reembed_http"] = started.status_code
+    evidence["reembed"] = body_of(started) if started.status_code < 500 else mask(
+        started.text[:200])
+    assert started.status_code == 202, (
+        f"POST re-embed -> {started.status_code}: {mask(started.text[:300])}"
     )
-    time.sleep(2)
+    progress = wait_until(
+        lambda: api.json_ok("GET", f"/knowledge/collections/{cid}/re-embed"),
+        timeout=REEMBED_TIMEOUT, interval=4, desc="collection re-embed to finish",
+        done=lambda p: str(p.get("status")) in ("completed", "failed", "cancelled"))
+    evidence["reembed_progress"] = {k: progress.get(k) for k in (
+        "status", "total", "processed", "model", "error")}
+    assert progress.get("status") == "completed", f"re-embed ended {mask(progress)[:300]}"
+    assert int(progress.get("processed") or 0) >= len(kb["docs"]), progress
 
     after = api.json_ok("GET", f"/embeddings/health/{cid}")
     evidence["health_after"] = {k: after.get(k) for k in ("total_chunks", "embedded_chunks",

@@ -8,7 +8,12 @@
 # at a JSON file with an "api_key" field. Optional:
 #   AGENTVERSE_BASE_URL (default http://localhost:8000)  BASE_URL (frontend, default :5173)
 #   RW_PYTEST_ARGS  extra pytest args (e.g. "-k hitl")   RW_SKIP_UI=1  skip Playwright
-#   RW_HITL_PERSIST=0 skip WF-HITL-RESTART               RW_RSS_URL / RW_MONGO_URI / RW_REDIS_URL
+#   RW_HITL_PERSIST=0 skip WF-HITL-RESTART               RW_RSS_URL (public feed)
+#   RW_SCHEDULE_MAX_WAIT  longest cron wait in s (default 960 = free plan's 900 s floor)
+#   RW_APPROVER_API_KEY   a 2nd key of the same tenant: runs the four-eyes publish approval
+#   RW_REDIS_URL (+ RW_REDIS_SEED_CONTAINER) / RW_MONGO_URI (+ RW_MONGO_DB, RW_MONGO_COLLECTION,
+#                RW_MONGO_FACT)  stack-reachable sources for real ingestion; without them the
+#                connectors are checked against the egress guard only
 set -uo pipefail
 
 OUT="${1:?usage: $0 <report-dir>}"

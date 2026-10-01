@@ -138,14 +138,24 @@ def test_wf_hitl_approve(api: LiveAPI, api_key: str, tenant_id: str, cleanup: An
     }
     assert request_id not in pending_ids, "decided approval still listed as pending"
 
-    rows = wfx.run_audit_rows(api, run_id)
-    names = sorted({str(r.get("tool_name")) for r in rows})
+    # Audit: API actions are rows with goal_id=<workflow_id> (workflow.created,
+    # workflow.run_triggered with run_id in the note, workflow.approval_decided —
+    # keyed by the approval's workflow_id, else its run_id); engine lifecycle
+    # events (AutoAuditMiddleware) are keyed by run_id.
+    wf_rows = wfx.audit_rows(api, _wf["id"])
+    run_rows = wfx.audit_rows(api, run_id)
+    names = sorted({str(r.get("tool_name")) for r in wf_rows + run_rows})
     evidence["audit_tool_names"] = names
-    if not any("run_started" in n or "workflow.run" in n for n in names):
-        soft.append(f"no workflow run audit row for run {run_id} (GET /governance/audit "
-                    f"goal_id=run_id -> {len(rows)} rows)")
-    if not any("hitl" in n or "approval" in n or "decid" in n for n in names):
-        soft.append("no approval-decision audit row for the run")
+    if not any(n == "workflow.run_triggered" and run_id in str(r.get("note"))
+               for r in wf_rows for n in [str(r.get("tool_name"))]):
+        soft.append(f"no workflow.run_triggered audit row naming run {run_id}")
+    decided = [r for r in wf_rows + run_rows if r.get("tool_name") == "workflow.approval_decided"]
+    if not decided:
+        soft.append("no workflow.approval_decided audit row for the approval")
+    elif not any(r.get("outcome") == "approve" for r in decided):
+        soft.append(f"approval audit row has outcome {[r.get('outcome') for r in decided]}")
+    if not any("run_started" in n or "completed" in n for n in names):
+        soft.append(f"no engine lifecycle audit rows (run started/completed) for run {run_id}")
     assert not soft, "; ".join(soft)
 
 
