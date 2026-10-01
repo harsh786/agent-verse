@@ -3,7 +3,7 @@
 It used ``system_session`` (``SET LOCAL row_security = off``) for a single
 tenant's INSERT on the request path: a privilege escalation, and under the API's
 NOBYPASSRLS role every statement fails "query would be affected by row-level
-security".
+security". (The real-schema check lives in test_audit_v3_persistence_postgres.)
 """
 
 from __future__ import annotations
@@ -11,6 +11,11 @@ from __future__ import annotations
 from typing import Any
 
 from app.governance.audit_v3 import AuditV3
+
+
+class _Result:
+    def one_or_none(self) -> None:
+        return None
 
 
 class _Session:
@@ -26,8 +31,12 @@ class _Session:
     def begin(self) -> _Session:
         return self
 
-    async def execute(self, statement: Any, params: Any = None) -> None:
+    async def execute(self, statement: Any, params: Any = None) -> _Result:
         self._log.append((str(statement), params))
+        return _Result()
+
+    async def flush(self) -> None:
+        return None
 
 
 async def test_append_persists_inside_the_tenant_rls_context() -> None:
@@ -40,7 +49,8 @@ async def test_append_persists_inside_the_tenant_rls_context() -> None:
     assert not any("row_security" in sql for sql in statements), "RLS bypass on request path"
     assert "set_config('app.tenant_id'" in statements[0]
     assert log[0][1] == {"tid": "tenant-a"}
-    insert = next(i for i, sql in enumerate(statements) if "INSERT INTO audit_events" in sql)
+    insert = next(i for i, sql in enumerate(statements) if "INSERT INTO audit_chain" in sql)
     assert insert > 0, "the INSERT must run after the tenant GUC is set"
-    assert log[insert][1]["tid"] == "tenant-a"
+    assert log[insert][1]["t"] == "tenant-a"
     assert record.tenant_id == "tenant-a"
+    assert record.sequence == 0

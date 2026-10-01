@@ -99,7 +99,14 @@ async def get_audit_integrity(request: Request) -> dict[str, Any]:
         }
 
     try:
-        result: Any = target.verify_chain(tenant.tenant_id)
+        # The stored (DB) chain when the verifier has one — never this replica's
+        # in-memory records presented as the fleet's chain.
+        averify = getattr(target, "averify_chain", None)
+        result: Any = (
+            averify(tenant.tenant_id) if averify is not None else target.verify_chain(
+                tenant.tenant_id
+            )
+        )
         if inspect.isawaitable(result):
             result = await result
     except Exception as exc:

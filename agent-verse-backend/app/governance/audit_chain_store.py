@@ -59,8 +59,10 @@ class PersistentAuditChain:
         """Append one record to the tenant's chain; returns the stored record."""
         at = datetime.now(UTC)
         at_iso = at.isoformat()
-        async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant_id
+        async with (
+            self._sf() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
         ):
             row = (
                 await session.execute(
@@ -93,29 +95,51 @@ class PersistentAuditChain:
 
     async def verify(self, tenant_id: str) -> tuple[bool, int | None]:
         """Recompute the tenant's chain. Returns (ok, first_broken_seq_or_None)."""
-        async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
-            session, tenant_id
-        ):
-            rows = (
-                await session.execute(
-                    text(
-                        "SELECT seq, occurred_at, payload, prev_hash, record_hash "
-                        "FROM audit_chain WHERE tenant_id = :t ORDER BY seq ASC"
-                    ),
-                    {"t": tenant_id},
-                )
-            ).all()
+        ok, broken, _checked, _tip = await self.verify_detailed(tenant_id)
+        return ok, broken
+
+    async def verify_detailed(
+        self, tenant_id: str, *, page_size: int = 1000
+    ) -> tuple[bool, int | None, int, str]:
+        """Recompute the chain in keyset pages over ``seq`` (bounded memory).
+
+        Returns ``(ok, first_broken_seq, records_checked, tip_hash)``. A gap in
+        ``seq`` (a deleted row) breaks the chain too.
+        """
         prev = _GENESIS
-        for seq, occurred_at, payload, prev_hash, record_hash in rows:
-            payload_d = json.loads(payload) if isinstance(payload, str) else payload
-            at_iso = occurred_at.isoformat() if hasattr(occurred_at, "isoformat") else str(
-                occurred_at
-            )
-            expected = compute_hash(prev, payload_d, seq=seq, at=at_iso)
-            if prev_hash != prev or record_hash != expected:
-                return False, seq
-            prev = record_hash
-        return True, None
+        expected_seq = 0
+        checked = 0
+        while True:
+            async with (
+                self._sf() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT seq, occurred_at, payload, prev_hash, record_hash "
+                            "FROM audit_chain WHERE tenant_id = :t AND seq >= :after "
+                            "ORDER BY seq ASC LIMIT :lim"
+                        ),
+                        {"t": tenant_id, "after": expected_seq, "lim": page_size},
+                    )
+                ).all()
+            for seq, occurred_at, payload, prev_hash, record_hash in rows:
+                payload_d = json.loads(payload) if isinstance(payload, str) else payload
+                at_iso = (
+                    occurred_at.isoformat()
+                    if hasattr(occurred_at, "isoformat")
+                    else str(occurred_at)
+                )
+                expected = compute_hash(prev, payload_d, seq=seq, at=at_iso)
+                if seq != expected_seq or prev_hash != prev or record_hash != expected:
+                    return False, (expected_seq if seq != expected_seq else seq), checked, prev
+                prev = record_hash
+                expected_seq += 1
+                checked += 1
+            if len(rows) < page_size:
+                return True, None, checked, prev
 
 
 __all__ = ["AuditChainAppendError", "PersistentAuditChain"]

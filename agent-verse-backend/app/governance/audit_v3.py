@@ -213,13 +213,60 @@ class AuditV3:
         delegation_chain: dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> AuditRecord:
-        """Append an audit record to the chain. Returns the new record."""
+        """Append an audit record to the chain. Returns the new record.
+
+        With a ``db_factory`` the record is appended to the durable per-tenant
+        ``audit_chain`` (``PersistentAuditChain``: monotonic seq, race-safe across
+        replicas, verifiable with :meth:`averify_chain`) and any failure RAISES —
+        it used to INSERT columns ``audit_events`` does not have and swallow the
+        error, so every record (incl. the GDPR deletion audit) was lost. Process
+        memory is not the chain then: the returned record carries the stored
+        seq / prev hash / record hash. Without a DB the in-memory chain is used.
+        """
         ts = datetime.now(UTC).isoformat()
-        previous_hash = self._get_previous_hash(tenant_id)
         tool_args_hash = _hash_dict(tool_args or {})
         delegation_chain_hash = _hash_dict(delegation_chain or {})
         metadata_hash = _hash_dict(metadata or {})
 
+        if self._db is not None:
+            from app.governance.audit_chain_store import PersistentAuditChain
+
+            record_id = uuid.uuid4().hex
+            stored = await PersistentAuditChain(self._db).append(
+                tenant_id,
+                {
+                    "kind": "audit_v3",
+                    "id": record_id,
+                    "goal_id": goal_id,
+                    "action": action,
+                    "tool_name": tool_name,
+                    "tool_args_hash": tool_args_hash,
+                    "actor": actor,
+                    "actor_ip": actor_ip,
+                    "delegation_chain_hash": delegation_chain_hash,
+                    "metadata_hash": metadata_hash,
+                    "metadata": metadata or {},
+                },
+            )
+            logger.debug("audit_appended", tenant=tenant_id, action=action, seq=stored["seq"])
+            return AuditRecord(
+                id=record_id,
+                tenant_id=tenant_id,
+                goal_id=goal_id,
+                action=action,
+                tool_name=tool_name,
+                tool_args_hash=tool_args_hash,
+                actor=actor,
+                actor_ip=actor_ip,
+                delegation_chain_hash=delegation_chain_hash,
+                previous_hash=str(stored["prev_hash"]),
+                entry_hash=str(stored["record_hash"]),
+                timestamp=str(stored["at"]),
+                metadata_hash=metadata_hash,
+                sequence=int(stored["seq"]),
+            )
+
+        previous_hash = self._get_previous_hash(tenant_id)
         entry_hash = compute_entry_hash(
             previous_hash=previous_hash,
             timestamp=ts,
@@ -250,60 +297,33 @@ class AuditV3:
             metadata_hash=metadata_hash,
             sequence=self._next_sequence(tenant_id),
         )
-
-        # Update chain tip
         self._chain_tips[tenant_id] = entry_hash
         self._records.append(record)
-
-        # Persist to DB async (non-blocking)
-        if self._db is not None:
-            try:
-                from sqlalchemy import text
-
-                from app.db.rls import sqlalchemy_rls_context
-
-                # One tenant's record → that tenant's RLS context. This used to
-                # run under system_session (RLS bypass) — a privilege escalation
-                # on a request path, and under the API's NOBYPASSRLS role every
-                # statement failed "query would be affected by row-level security".
-                async with (
-                    self._db() as session,
-                    session.begin(),
-                    sqlalchemy_rls_context(session, tenant_id),
-                ):
-                    await session.execute(
-                        text("""
-                            INSERT INTO audit_events
-                            (id, tenant_id, goal_id, action, tool_name, tool_args_hash,
-                             actor, actor_ip, delegation_chain_hash, previous_hash,
-                             entry_hash, event_timestamp, metadata_hash, sequence_num)
-                            VALUES (:id,:tid,:gid,:action,:tool,:args_hash,
-                                    :actor,:ip,:del_hash,:prev_hash,
-                                    :hash,:ts,:meta_hash,:seq)
-                            ON CONFLICT (id) DO NOTHING
-                        """),
-                        {
-                            "id": record.id,
-                            "tid": tenant_id,
-                            "gid": goal_id,
-                            "action": action,
-                            "tool": tool_name,
-                            "args_hash": tool_args_hash,
-                            "actor": actor,
-                            "ip": actor_ip,
-                            "del_hash": delegation_chain_hash,
-                            "prev_hash": previous_hash,
-                            "hash": entry_hash,
-                            "ts": ts,
-                            "meta_hash": metadata_hash,
-                            "seq": record.sequence,
-                        },
-                    )
-            except Exception as exc:
-                logger.warning("audit_v3_persist_failed", error=str(exc)[:80])
-
         logger.debug("audit_appended", tenant=tenant_id, action=action, hash=entry_hash[:16])
         return record
+
+    async def averify_chain(self, tenant_id: str) -> dict[str, Any]:
+        """Verify the tenant's STORED chain (the in-memory one without a DB).
+
+        Raises when the chain cannot be read: an unreadable chain is never
+        reported as verified.
+        """
+        if self._db is None:
+            return self._verify_single_chain(tenant_id)
+        from app.governance.audit_chain_store import PersistentAuditChain
+
+        ok, broken_seq, checked, tip = await PersistentAuditChain(self._db).verify_detailed(
+            tenant_id
+        )
+        result: dict[str, Any] = {
+            "valid": ok,
+            "records_checked": checked,
+            "broken_at": broken_seq,
+            "chain_tip_hash": tip if ok else None,
+        }
+        if not ok:
+            result["reason"] = f"hash chain broken at seq {broken_seq}"
+        return result
 
     def record(
         self,
