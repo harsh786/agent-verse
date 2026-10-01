@@ -897,6 +897,47 @@ class KnowledgeStore:
         return _document_page(documents, limit=limit, counted=min(len(grouped),
                                                                   _DOCUMENT_COUNT_CAP + 1))
 
+    async def held_document_ids_async(
+        self, collection_id: str, document_ids: list[str], *, tenant_ctx: TenantContext
+    ) -> set[str]:
+        """The subset of ``document_ids`` (of ``collection_id``) under an in-force hold.
+
+        A tenant-wide or collection hold covers every id. One query per call
+        (callers pass a page of ids), never one per document. Errors propagate:
+        the caller must not delete what it could not check. Without a database
+        there are no durable holds.
+        """
+        if self._db is None or not document_ids:
+            return set()
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT d.rid FROM unnest(CAST(:ids AS text[])) AS d(rid) "
+                        "WHERE EXISTS (SELECT 1 FROM legal_holds lh "
+                        "WHERE lh.tenant_id = :tid AND lh.status = 'active' "
+                        "AND (lh.expires_at IS NULL OR lh.expires_at > now()) "
+                        "AND (lh.resource_type = 'tenant' "
+                        "OR lh.resource_ids @> jsonb_build_array(CAST(:cid AS text)) "
+                        "OR lh.resource_ids @> jsonb_build_array(d.rid)))"
+                    ),
+                    {
+                        "ids": list(document_ids),
+                        "tid": tenant_ctx.tenant_id,
+                        "cid": collection_id,
+                    },
+                )
+            ).fetchall()
+        return {str(r[0]) for r in rows}
+
     async def collection_under_legal_hold_async(
         self, collection_id: str, *, tenant_ctx: TenantContext
     ) -> bool:

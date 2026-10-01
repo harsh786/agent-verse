@@ -68,6 +68,32 @@ async def _load_source(request: Request, source_id: str, tenant_id: str) -> Any:
     return src if (src and src.tenant_id == tenant_id) else None
 
 
+async def _refuse_reindex_of_held_collection(
+    request: Request, tenant_id: str, collection_id: str | None
+) -> None:
+    """409 when the Source's collection (or the whole tenant) is under legal hold.
+
+    A reindex deletes the Source's documents; with the collection held none of
+    them may go. Held documents inside an unheld collection are skipped by the
+    worker. Fail closed: an unverifiable hold state refuses the reindex (503).
+    """
+    holds = getattr(request.app.state, "legal_hold_manager", None)
+    if holds is None or not collection_id:
+        return
+    try:
+        held = await holds.is_under_hold(tenant_id=tenant_id, resource_id=collection_id)
+    except Exception as exc:
+        _log.exception("ingestion_reindex_hold_check_failed", collection_id=collection_id)
+        raise HTTPException(
+            status_code=503, detail="Legal hold state could not be verified; reindex refused"
+        ) from exc
+    if held:
+        raise HTTPException(
+            status_code=409,
+            detail="The source's collection is under legal hold; reindex would delete held data",
+        )
+
+
 # ── Request / Response models ─────────────────────────────────────────────────
 
 
@@ -518,6 +544,7 @@ async def reindex_source(source_id: str, request: Request) -> dict:
     tracker = _get_tracker(request)
     if tracker is None:
         raise HTTPException(status_code=503, detail="Ingestion framework not configured")
+    await _refuse_reindex_of_held_collection(request, tenant.tenant_id, source.collection_id)
     job_id = await tracker.acquire_lock(source_id, tenant.tenant_id)
     if job_id is None:
         raise HTTPException(status_code=409, detail="A sync is already running for this source")

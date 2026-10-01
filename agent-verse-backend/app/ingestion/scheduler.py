@@ -773,8 +773,17 @@ async def _retry_dlq_entry_async(*, dlq_id: str, tenant_id: str) -> dict:
     return {"dlq_id": dlq_id, "outcome": outcome}
 
 
+_REINDEX_PAGE = 200
+
+
 async def _delete_source_documents(pipeline, config) -> int:
-    """Delete every document a Source indexed into its collection (for reindex)."""
+    """Delete every document a Source indexed into its collection (for reindex).
+
+    Documents under an in-force legal hold (on the document, its collection or
+    the whole tenant) are kept — one hold query per page, keyset-paginated so
+    kept documents are not re-read. A hold check that fails raises, so the
+    reindex stops instead of deleting what it could not verify (fail closed).
+    """
     store = getattr(pipeline, "_kb", None)
     if store is None or not config.collection_id:
         return 0
@@ -783,21 +792,38 @@ async def _delete_source_documents(pipeline, config) -> int:
     tenant_ctx = TenantContext(
         tenant_id=config.tenant_id, api_key_id="reindex", plan=PlanTier.FREE
     )
-    removed = 0
+    removed = kept = 0
+    after: str | None = None
     while True:
         documents = await store.list_source_documents_async(
             tenant_ctx=tenant_ctx,
             collection_id=config.collection_id,
             source_id=config.source_id,
-            limit=200,
+            limit=_REINDEX_PAGE,
+            after=after,
         )
         if not documents:
-            return removed
-        for document in documents:
+            break
+        ids = [str(document["id"]) for document in documents]
+        held = await store.held_document_ids_async(
+            config.collection_id, ids, tenant_ctx=tenant_ctx
+        )
+        for doc_id in ids:
+            if doc_id in held:
+                kept += 1
+                continue
             await store.delete_document_async(
-                str(document["id"]), collection_id=config.collection_id, tenant_ctx=tenant_ctx
+                doc_id, collection_id=config.collection_id, tenant_ctx=tenant_ctx
             )
             removed += 1
+        if len(documents) < _REINDEX_PAGE:
+            break
+        after = ids[-1]
+    if kept:
+        _log.info(
+            "reindex_kept_held_documents source=%s kept=%d", config.source_id, kept
+        )
+    return removed
 
 
 def _repository_dlq_payload(raw_doc_json: object) -> dict | None:

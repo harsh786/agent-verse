@@ -70,4 +70,20 @@ describe('SourceDetailDrawer – sync operations', () => {
     await waitFor(() => expect(posted(spy, '/sources/src-42/reindex')).toBe(true));
     expect(confirm).toHaveBeenCalledTimes(2);
   });
+
+  test('KB-43: a 409 legal-hold refusal of a reindex is shown', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/health')) return json({ ok: true, latency_ms: 1, error: null, metadata: {} });
+      if (url.includes('/sync/status')) return json({ status: 'completed' });
+      if (url.includes('/reindex') && method === 'POST')
+        return json({ detail: "The source's collection is under legal hold; reindex would delete held data" }, 409);
+      return json([]);
+    });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderDrawer();
+    await userEvent.click(await screen.findByRole('button', { name: 'Reindex source' }));
+    expect(await screen.findByText(/reindex refused: the collection is under legal hold/i)).toBeInTheDocument();
+  });
 });

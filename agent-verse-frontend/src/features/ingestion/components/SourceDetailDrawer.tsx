@@ -1,5 +1,6 @@
 import { X, RefreshCw, Activity, FileText, Square, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
+import { ApiError } from '@/lib/api/client';
 import type { SourceConfig } from '../types';
 import { FAMILY_CONFIG } from '../types';
 import { useSourceHealth, useSyncStatus, useDocuments, useTriggerSync, useCancelSync, useReindexSource } from '../hooks';
@@ -40,6 +41,15 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
             {triggerSync.isError && (
               <p role="alert" className="mt-1 text-xs text-red-600 break-words">
                 Sync failed to start: {triggerSync.error instanceof Error ? triggerSync.error.message : String(triggerSync.error)}
+              </p>
+            )}
+            {reindex.isError && (
+              <p role="alert" className="mt-1 text-xs text-red-600 break-words">
+                {reindex.error instanceof ApiError && reindex.error.status === 409
+                  ? reindex.error.message.toLowerCase().includes('legal hold')
+                    ? 'Reindex refused: the collection is under legal hold.'
+                    : 'Reindex refused: a sync is already running for this source.'
+                  : `Reindex failed: ${reindex.error instanceof Error ? reindex.error.message : String(reindex.error)}`}
               </p>
             )}
           </div>

@@ -212,6 +212,36 @@ async def test_reindex_while_syncing_is_409() -> None:
     apply_async.assert_not_called()
 
 
+def test_reindex_of_a_held_collection_is_409_and_queues_nothing() -> None:
+    """KB-43: a reindex deletes the Source's documents — never in a held collection."""
+    tracker = IngestionJobTracker()
+    source = _source()
+    holds = MagicMock()
+    holds.is_under_hold = AsyncMock(return_value=True)
+    with patch("app.ingestion.scheduler.sync_source_task") as task:
+        resp = _client(ingestion_job_tracker=tracker, legal_hold_manager=holds).post(
+            f"/sources/{source.source_id}/reindex", headers=_AUTH
+        )
+    assert resp.status_code == 409
+    assert "legal hold" in resp.json()["detail"]
+    task.apply_async.assert_not_called()
+    holds.is_under_hold.assert_awaited_once_with(tenant_id=_CTX.tenant_id, resource_id="col-1")
+    assert tracker._locks == {}
+
+
+def test_reindex_with_unverifiable_holds_is_503() -> None:
+    tracker = IngestionJobTracker()
+    source = _source()
+    holds = MagicMock()
+    holds.is_under_hold = AsyncMock(side_effect=RuntimeError("db down"))
+    with patch("app.ingestion.scheduler.sync_source_task") as task:
+        resp = _client(ingestion_job_tracker=tracker, legal_hold_manager=holds).post(
+            f"/sources/{source.source_id}/reindex", headers=_AUTH
+        )
+    assert resp.status_code == 503
+    task.apply_async.assert_not_called()
+
+
 def test_reindex_without_the_ingestion_framework_is_503() -> None:
     source = _source()
     resp = _client().post(f"/sources/{source.source_id}/reindex", headers=_AUTH)

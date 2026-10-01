@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.ingestion.job_tracker import IngestionJobTracker
 from app.ingestion.scheduler import _retry_dlq_entry_async, _sync_source_async
 from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfig, SourceFamily
@@ -106,6 +108,7 @@ async def test_reindex_deletes_the_sources_documents_and_syncs_from_scratch() ->
     pages = [[{"id": "doc-a"}, {"id": "doc-b"}], []]
     kb.list_source_documents_async = AsyncMock(side_effect=lambda **_: pages.pop(0))
     kb.delete_document_async = AsyncMock(return_value=1)
+    kb.held_document_ids_async = AsyncMock(return_value=set())
     pipeline._kb = kb
 
     await _run(tracker, pipeline, store, triggered_by="reindex", job_id=job_id, reindex=True)
@@ -162,3 +165,75 @@ async def test_operator_retry_of_a_resolved_entry_does_nothing() -> None:
         result = await _retry_dlq_entry_async(dlq_id="q1", tenant_id="t1")
     assert result["outcome"] == "already_resolved"
     pipeline.run.assert_not_called()
+
+
+# ── KB-43: reindex honours legal holds ───────────────────────────────────────
+
+
+def _reindex_kb(pages: list[list[dict[str, str]]], held: Any) -> MagicMock:
+    kb = MagicMock()
+    kb.list_source_documents_async = AsyncMock(side_effect=lambda **_: pages.pop(0))
+    kb.delete_document_async = AsyncMock(return_value=1)
+    kb.held_document_ids_async = held
+    return kb
+
+
+async def test_reindex_keeps_documents_under_legal_hold() -> None:
+    from app.ingestion.scheduler import _delete_source_documents
+
+    kb = _reindex_kb(
+        [[{"id": "doc-a"}, {"id": "doc-held"}, {"id": "doc-c"}]],
+        AsyncMock(return_value={"doc-held"}),
+    )
+    removed = await _delete_source_documents(MagicMock(_kb=kb), _config())
+    assert removed == 2
+    assert [c.args[0] for c in kb.delete_document_async.await_args_list] == ["doc-a", "doc-c"]
+    kb.held_document_ids_async.assert_awaited_once()
+    assert kb.held_document_ids_async.await_args.args == ("col-1", ["doc-a", "doc-held", "doc-c"])
+
+
+async def test_reindex_pages_past_kept_documents_by_keyset() -> None:
+    from app.ingestion import scheduler
+
+    page1 = [{"id": f"d{i:03d}"} for i in range(scheduler._REINDEX_PAGE)]
+    kb = _reindex_kb([page1, []], AsyncMock(side_effect=lambda cid, ids, **_: set(ids)))
+    removed = await scheduler._delete_source_documents(MagicMock(_kb=kb), _config())
+    assert removed == 0
+    kb.delete_document_async.assert_not_awaited()
+    second = kb.list_source_documents_async.await_args_list[1].kwargs
+    assert second["after"] == page1[-1]["id"]  # held documents are never re-read
+
+
+async def test_unverifiable_hold_state_fails_the_reindex_and_deletes_nothing() -> None:
+    tracker = IngestionJobTracker()
+    job_id = await tracker.acquire_lock("src-1", "t1")
+    store = AsyncMock()
+    store.get.return_value = _config()
+    ingested: list[str] = []
+    pipeline = _pipeline(ingested)
+    pipeline._kb = _reindex_kb([[{"id": "doc-a"}]], AsyncMock(side_effect=RuntimeError("down")))
+    task = MagicMock()
+    task.retry.return_value = RuntimeError("retry scheduled")
+
+    with (
+        patch(
+            "app.ingestion.scheduler._build_worker_ingestion",
+            return_value=(tracker, pipeline, store),
+        ),
+        patch("app.ingestion.connector_registry.load_all_connectors"),
+        patch("app.ingestion.connector_registry.get_connector", return_value=_Connector),
+        pytest.raises(RuntimeError, match="retry scheduled"),
+    ):
+        await _sync_source_async(
+            task=task,
+            source_id="src-1",
+            tenant_id="t1",
+            triggered_by="reindex",
+            job_id=job_id,
+            reindex=True,
+        )
+
+    pipeline._kb.delete_document_async.assert_not_awaited()
+    assert ingested == []  # the re-sync never started
+    job = tracker.get_job(str(job_id))
+    assert job is not None and job.status == "failed"
