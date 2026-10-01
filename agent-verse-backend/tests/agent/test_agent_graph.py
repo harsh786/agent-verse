@@ -283,14 +283,13 @@ async def test_circuit_breaker_half_open_probe() -> None:
 
 
 async def test_real_embedding_fallback_no_provider() -> None:
-    """embed_texts returns empty embeddings when no provider given (Fix 1.6)."""
-    from app.providers.base import embed_texts
+    """No provider: embed_texts raises (PROV-08) — never [] or random vectors."""
+    import pytest
 
-    result = await embed_texts(["hello world", "foo bar"])
-    assert len(result) == 2
-    for vec in result:
-        # Must be empty list, not random noise (Fix 1.6 — no random vectors)
-        assert vec == []
+    from app.providers.base import EmbedderUnavailableError, embed_texts
+
+    with pytest.raises(EmbedderUnavailableError):
+        await embed_texts(["hello world", "foo bar"])
 
 
 def test_write_checkpoint_without_db_does_not_raise() -> None:

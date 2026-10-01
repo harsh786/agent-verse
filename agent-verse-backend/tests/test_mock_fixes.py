@@ -28,13 +28,13 @@ def test_embed_texts_returns_empty_list_without_provider():
     """embed_texts() returns empty embeddings, not random vectors, when no provider."""
     import asyncio
 
-    from app.providers.base import embed_texts
-    result = asyncio.run(embed_texts(["test text"], provider=None))
-    # Either returns empty list or single empty embedding
-    assert isinstance(result, list)
-    if result:
-        # If returned something, it should be an empty embedding, not random data
-        assert result[0] == []
+    import pytest
+
+    from app.providers.base import EmbedderUnavailableError, embed_texts
+
+    # PROV-08: no embedder is an explicit error — never random vectors or [].
+    with pytest.raises(EmbedderUnavailableError):
+        asyncio.run(embed_texts(["test text"], provider=None))
 
 
 def test_smart_context_fetch_returns_empty_without_embedder():

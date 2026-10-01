@@ -385,11 +385,23 @@ class IngestionPipeline:
             # when embedding is unavailable. Drop those chunks so we never index
             # a silent zero-vector; if nothing survives, skip honestly rather
             # than writing empty embeddings.
+            _all_chunks = unique_chunks
             unique_chunks = [c for c in unique_chunks if c.get("embedding")]
             if not unique_chunks:
-                result.status = "skipped"
+                # PROV-08: a failure, with the embedder's reason — not a quiet skip.
+                _reason = next(
+                    (c["embed_error"] for c in _all_chunks if c.get("embed_error")),
+                    "the embedder returned no vectors",
+                )
+                result.status = "failed"
                 result.skip_reason = "embedding_unavailable"
+                result.error = f"embedding_unavailable: {_reason}"
                 return result
+            if len(unique_chunks) < len(_all_chunks):
+                result.error = (
+                    f"partial: {len(_all_chunks) - len(unique_chunks)} of "
+                    f"{len(_all_chunks)} chunks had no embedding and were not indexed"
+                )
 
             # ── Stage 12: INDEX ───────────────────────────────────────────────
             # ``result.metadata`` carries the parse/OCR/degradation provenance
@@ -744,6 +756,8 @@ class IngestionPipeline:
             _log.warning("pipeline_embed_error: %s", e)
             for chunk in enriched_chunks:
                 chunk["embedding"] = []
+                # Carried to Stage 11b so the job fails with the real reason.
+                chunk["embed_error"] = f"{type(e).__name__}: {e}"[:300]
         return enriched_chunks
 
     def _dedup_chunks(

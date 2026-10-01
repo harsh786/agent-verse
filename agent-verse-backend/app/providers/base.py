@@ -160,19 +160,24 @@ class LLMProvider(Protocol):
 # -- Standalone helpers --------------------------------------------------------
 
 
-async def embed_texts(texts: list[str], provider: LLMProvider | None = None) -> list[list[float]]:
-    """Embed texts using the given provider, or return empty embeddings as fallback.
+class EmbedderUnavailableError(RuntimeError):
+    """No embedder is configured, or the configured one cannot embed (PROV-08)."""
 
-    Callers must handle empty embeddings (``[]``) gracefully — they indicate
-    that no real embedder is configured. Random noise vectors are never returned
-    as they silently corrupt RAG retrieval quality.
+
+async def embed_texts(texts: list[str], provider: LLMProvider | None = None) -> list[list[float]]:
+    """Embed texts with *provider*.
+
+    Raises :class:`EmbedderUnavailableError` when there is no embedder or it does
+    not support embeddings. It used to return ``[]`` vectors, and callers stored
+    vectorless chunks that silently fell back to lexical search. Random noise
+    vectors are never returned either.
     """
-    if provider is not None:
-        try:
-            resp = await provider.embed(EmbedRequest(texts=texts))
-            return resp.embeddings
-        except NotImplementedError:
-            pass  # provider doesn't support embedding -- fall through to empty
-    # No real provider configured — return empty embeddings instead of random noise.
-    # Callers must handle empty embeddings gracefully.
-    return [[] for _ in texts]
+    if provider is None:
+        raise EmbedderUnavailableError("no embedding provider is configured")
+    try:
+        resp = await provider.embed(EmbedRequest(texts=texts))
+    except NotImplementedError as exc:
+        raise EmbedderUnavailableError(
+            f"the configured provider cannot embed: {exc or type(provider).__name__}"
+        ) from exc
+    return resp.embeddings

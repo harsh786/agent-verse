@@ -19,20 +19,19 @@ async def test_embed_texts_with_fake_provider():
 
 
 async def test_embed_texts_fallback_no_provider():
-    """embed_texts returns empty embeddings when no provider is given (Fix 1.6)."""
-    result = await embed_texts(["hello"])
-    assert len(result) == 1
-    # Must be empty list, not random noise
-    assert result[0] == []
+    """No provider: embed_texts raises (PROV-08), never returns [] or noise."""
+    from app.providers.base import EmbedderUnavailableError
+
+    with pytest.raises(EmbedderUnavailableError):
+        await embed_texts(["hello"])
 
 
 async def test_embed_texts_multiple_texts_no_provider():
-    """embed_texts returns one empty embedding per text when no provider (Fix 1.6)."""
-    texts = ["a", "b", "c", "d"]
-    result = await embed_texts(texts)
-    assert len(result) == len(texts)
-    for vec in result:
-        assert vec == []
+    """No provider: embed_texts raises for any batch size (PROV-08)."""
+    from app.providers.base import EmbedderUnavailableError
+
+    with pytest.raises(EmbedderUnavailableError):
+        await embed_texts(["a", "b", "c", "d"])
 
 
 async def test_embed_texts_provider_not_implemented_falls_back():
@@ -48,9 +47,10 @@ async def test_embed_texts_provider_not_implemented_falls_back():
         def supports_tool_use(self) -> bool:
             return False
 
-    result = await embed_texts(["hello"], provider=NoEmbedProvider())  # type: ignore[arg-type]
-    assert len(result) == 1
-    assert result[0] == []
+    from app.providers.base import EmbedderUnavailableError
+
+    with pytest.raises(EmbedderUnavailableError):
+        await embed_texts(["hello"], provider=NoEmbedProvider())  # type: ignore[arg-type]
 
 
 # ── FakeProvider ──────────────────────────────────────────────────────────────

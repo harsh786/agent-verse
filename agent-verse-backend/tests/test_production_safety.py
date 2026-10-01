@@ -6,13 +6,13 @@ def test_no_random_embeddings_returned():
     """embed_texts() never returns random vectors — returns [] when no provider."""
     import asyncio
 
-    from app.providers.base import embed_texts
+    import pytest
 
-    result = asyncio.run(embed_texts(["test text"], provider=None))
-    assert isinstance(result, list)
-    for emb in result:
-        # Each embedding should be empty or a real embedding (not random noise)
-        assert emb == [] or len(emb) == 0 or (len(emb) > 0 and isinstance(emb[0], float))
+    from app.providers.base import EmbedderUnavailableError, embed_texts
+
+    # PROV-08: without a provider it raises — never random (or empty) vectors.
+    with pytest.raises(EmbedderUnavailableError):
+        asyncio.run(embed_texts(["test text"], provider=None))
 
 
 def test_tool_inverses_mcp_client_settable():

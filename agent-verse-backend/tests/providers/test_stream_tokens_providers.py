@@ -427,23 +427,23 @@ async def test_embed_texts_with_provider() -> None:
 
 @pytest.mark.asyncio
 async def test_embed_texts_provider_raises_not_implemented() -> None:
-    """Lines 159-160: embed() raises NotImplementedError → empty embeddings."""
-    from app.providers.base import embed_texts
+    """embed() raises NotImplementedError → EmbedderUnavailableError (PROV-08)."""
+    from app.providers.base import EmbedderUnavailableError, embed_texts
 
     mock_provider = AsyncMock()
     mock_provider.embed = AsyncMock(side_effect=NotImplementedError("no embedding"))
 
-    result = await embed_texts(["text"], mock_provider)
-    assert result == [[]]  # empty fallback per text
+    with pytest.raises(EmbedderUnavailableError):
+        await embed_texts(["text"], mock_provider)
 
 
 @pytest.mark.asyncio
 async def test_embed_texts_no_provider() -> None:
-    """Lines 162-163: embed_texts(provider=None) returns empty embeddings."""
-    from app.providers.base import embed_texts
+    """embed_texts(provider=None) raises EmbedderUnavailableError (PROV-08)."""
+    from app.providers.base import EmbedderUnavailableError, embed_texts
 
-    result = await embed_texts(["a", "b"], provider=None)
-    assert result == [[], []]
+    with pytest.raises(EmbedderUnavailableError):
+        await embed_texts(["a", "b"], provider=None)
 
 
 # ── FakeProvider: embed_batch and supports_embeddings (lines 104, 119) ────────
