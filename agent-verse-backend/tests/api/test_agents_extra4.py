@@ -796,12 +796,24 @@ def test_export_agent_mcp_client_exception_swallowed() -> None:
 # ---------------------------------------------------------------------------
 
 def test_list_credentials_no_service() -> None:
-    """Lines 1091-1092: list credentials returns [] when no service."""
+    """No identity service: 503, never a fake-empty "no credentials" list (AGID-04)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     agent = _create_agent(client)
     resp = client.get(f"/agents/{agent['agent_id']}/credentials", headers=H)
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 503
+
+
+def test_revoke_credential_is_bound_to_the_path_agent() -> None:
+    """DELETE /agents/A/credentials/{B's key} must not revoke agent B's key (AGID-04)."""
+    svc = AsyncMock()
+    svc.revoke_credential = AsyncMock(return_value=False)
+    client = TestClient(_make_app(agent_identity_service=svc), raise_server_exceptions=False)
+    agent = _create_agent(client)
+    resp = client.delete(f"/agents/{agent['agent_id']}/credentials/kid-of-b", headers=H)
+    assert resp.status_code == 404
+    svc.revoke_credential.assert_awaited_once_with(
+        key_id="kid-of-b", tenant_id=_CTX.tenant_id, agent_id=agent["agent_id"]
+    )
 
 
 def test_list_credentials_with_service() -> None:

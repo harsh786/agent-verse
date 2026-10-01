@@ -389,7 +389,7 @@ async def test_issue_credential_clears_jwks_cache_on_redis():
 
 async def test_revoke_credential_no_db_returns_false():
     svc = AgentIdentityService(db=None)
-    result = await svc.revoke_credential("kid-1", "t1")
+    result = await svc.revoke_credential("kid-1", "t1", agent_id="a1")
     assert result is False
 
 
@@ -405,8 +405,12 @@ async def test_revoke_credential_with_db_returns_true_on_success():
     db_factory = MagicMock(return_value=session_mock)
 
     svc = AgentIdentityService(db=db_factory)
-    result = await svc.revoke_credential("kid-1", "t1")
+    result = await svc.revoke_credential("kid-1", "t1", agent_id="a1")
     assert result is True
+    # The UPDATE is bound to the path agent, not just key_id + tenant (AGID-04).
+    stmt, params = session_mock.execute.await_args_list[-1].args
+    assert "agent_id = :aid" in str(stmt)
+    assert params["aid"] == "a1"
 
 
 async def test_revoke_credential_returns_false_when_not_found():
@@ -421,7 +425,7 @@ async def test_revoke_credential_returns_false_when_not_found():
     db_factory = MagicMock(return_value=session_mock)
 
     svc = AgentIdentityService(db=db_factory)
-    result = await svc.revoke_credential("nonexistent-kid", "t1")
+    result = await svc.revoke_credential("nonexistent-kid", "t1", agent_id="a1")
     assert result is False
 
 
@@ -441,7 +445,7 @@ async def test_revoke_credential_notifies_redis_on_success():
     redis_mock.publish = AsyncMock()
 
     svc = AgentIdentityService(db=db_factory, redis=redis_mock)
-    await svc.revoke_credential("kid-1", "t1")
+    await svc.revoke_credential("kid-1", "t1", agent_id="a1")
 
     redis_mock.delete.assert_awaited_with("jwks:cache")
     redis_mock.publish.assert_awaited_with("jwks_invalidated", "kid-1")

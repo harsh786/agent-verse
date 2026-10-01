@@ -1606,7 +1606,8 @@ async def list_agent_credentials(
     tenant = _require_tenant(request)
     svc = getattr(request.app.state, "agent_identity_service", None)
     if svc is None:
-        return []
+        # Same as issue/revoke: a misconfigured replica must not report "no credentials".
+        raise HTTPException(503, "Agent identity service not available")
     try:
         return await svc.list_credentials(agent_id=agent_id, tenant_id=tenant.tenant_id)
     except Exception as exc:
@@ -1679,7 +1680,9 @@ async def revoke_agent_credential(
     svc = getattr(request.app.state, "agent_identity_service", None)
     if svc is None:
         raise HTTPException(503, "Agent identity service not available")
-    revoked = await svc.revoke_credential(key_id=key_id, tenant_id=tenant.tenant_id)
+    revoked = await svc.revoke_credential(
+        key_id=key_id, tenant_id=tenant.tenant_id, agent_id=agent_id
+    )
     if not revoked:
         raise HTTPException(404, f"Credential {key_id} not found or already revoked")
 

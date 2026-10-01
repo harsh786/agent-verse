@@ -572,8 +572,7 @@ def test_list_credentials_no_service() -> None:
     cr = client.post("/agents", json={"name": "cred-agent"}, headers={"X-API-Key": _VALID_KEY})
     agent_id = cr.json()["agent_id"]
     resp = client.get(f"/agents/{agent_id}/credentials", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 503
 
 
 def test_issue_credential_no_service() -> None:

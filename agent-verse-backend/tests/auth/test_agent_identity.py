@@ -155,7 +155,7 @@ async def test_revoked_credential_cannot_issue_tokens() -> None:
     key_id = result["key_id"]
 
     # Revoke it
-    revoked = await svc.revoke_credential(key_id=key_id, tenant_id="t1")
+    revoked = await svc.revoke_credential(key_id=key_id, tenant_id="t1", agent_id="agent-123")
     assert revoked is True
 
     # Attempt to issue a JWT with the revoked key → should return None

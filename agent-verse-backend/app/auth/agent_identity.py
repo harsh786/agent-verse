@@ -403,8 +403,11 @@ class AgentIdentityService:
             "warning": "Private key shown ONCE — save it immediately and securely.",
         }
 
-    async def revoke_credential(self, key_id: str, tenant_id: str) -> bool:
-        """Revoke a credential by key_id.
+    async def revoke_credential(self, key_id: str, tenant_id: str, *, agent_id: str) -> bool:
+        """Revoke *agent_id*'s credential *key_id*.
+
+        Bound to the agent: the caller's ownership check is on the path agent, so
+        a key of another agent in the same tenant must not be revocable through it.
 
         Returns True if the credential was found and revoked, False otherwise.
         Publishes to Redis channel 'jwks_invalidated' so JWKS caches are cleared.
@@ -421,9 +424,10 @@ class AgentIdentityService:
             result = await session.execute(
                 _t("""
                     UPDATE agent_credentials SET revoked_at = NOW()
-                    WHERE key_id = :kid AND tenant_id = :tid AND revoked_at IS NULL
+                    WHERE key_id = :kid AND tenant_id = :tid AND agent_id = :aid
+                      AND revoked_at IS NULL
                 """),
-                {"kid": key_id, "tid": tenant_id},
+                {"kid": key_id, "tid": tenant_id, "aid": agent_id},
             )
             await session.commit()
             revoked = result.rowcount > 0
