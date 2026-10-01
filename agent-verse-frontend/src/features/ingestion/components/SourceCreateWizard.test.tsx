@@ -1,6 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 
 const mutate = vi.fn();
 let isPending = false;
@@ -14,6 +14,12 @@ afterEach(() => {
   mutate.mockReset();
   isPending = false;
 });
+
+// The first (cold) import of the wizard + framer-motion can exceed the 5s
+// per-test timeout on a loaded machine; warm the module graph once up front.
+beforeAll(async () => {
+  await import('./SourceCreateWizard');
+}, 60_000);
 
 async function loadWizard() {
   const { SourceCreateWizard } = await import('./SourceCreateWizard');

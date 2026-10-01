@@ -1,7 +1,16 @@
 """WebCrawlConnector — incremental web crawl using trafilatura.
 
-Supports sitemap.xml discovery, robots.txt compliance, incremental
-delta via URL hash + content hash deduplication.
+Connection config (Sources UI: Web & Internet -> web_crawl):
+    seed_urls            Start URLs (a list; a newline/comma-separated string and the
+                         ``urls`` key older UI builds sent are accepted too).
+    sitemap_url          Optional sitemap.xml whose ``<loc>`` URLs join the frontier.
+    max_depth            >1 follows same-site links found on fetched pages (default 3).
+    max_pages            Pages fetched per sync (default 100).
+    include_url_pattern / exclude_url_pattern  Regexes applied to every URL.
+    crawl_delay_seconds  Pause between fetches (default 1.0).
+
+Every URL (seeds, sitemap, sitemap entries, discovered links, redirect targets)
+passes the egress guard. Incremental delta via URL hash + content hash.
 """
 
 from __future__ import annotations
@@ -24,6 +33,30 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
+_MAX_SITEMAP_BYTES = 10 * 1024 * 1024
+
+
+def _seed_urls(cc: dict[str, object]) -> list[str]:
+    """``seed_urls`` as a list — also from a string or the legacy ``urls`` key."""
+    raw = cc.get("seed_urls") or cc.get("urls") or []
+    items = raw if isinstance(raw, list | tuple) else str(raw).replace(",", "\n").splitlines()
+    return [str(u).strip() for u in items if str(u).strip()]
+
+
+async def _sitemap_urls(client: object, sitemap_url: str, limit: int) -> list[str]:
+    """``<loc>`` entries of a sitemap, fetched through the egress guard (every
+    redirect hop re-checked). Entries are filtered by the crawl loop's guard too."""
+    import re
+
+    from app.ingestion.connector_egress import guarded_request
+
+    response = await guarded_request(client, "GET", sitemap_url, context="web_crawl.sitemap")
+    response.raise_for_status()
+    text = bytes(response.content[:_MAX_SITEMAP_BYTES]).decode("utf-8", errors="replace")
+    # A regex, not an XML parser: no entity expansion on tenant-supplied XML.
+    locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text, flags=re.I)
+    return [u for u in dict.fromkeys(locs) if not u.lower().endswith(".xml")][:limit]
+
 
 @register("web_crawl")
 class WebCrawlConnector(BaseConnector):
@@ -35,12 +68,13 @@ class WebCrawlConnector(BaseConnector):
         import time
 
         t0 = time.perf_counter()
-        seed_urls = config.connection_config.get("seed_urls", [])
-        if not seed_urls:
-            return ConnectionHealth(ok=False, error="No seed_urls configured")
+        seed_urls = _seed_urls(config.connection_config)
+        sitemap_url = str(config.connection_config.get("sitemap_url") or "").strip()
+        if not seed_urls and not sitemap_url:
+            return ConnectionHealth(ok=False, error="No seed_urls (or sitemap_url) configured")
         try:
 
-            url = seed_urls[0]
+            url = seed_urls[0] if seed_urls else sitemap_url
             assert_source_url(url, context="web_crawl.validate", config=config)
             # No automatic redirect following: a public seed that 302s to
             # 169.254.169.254 would otherwise be fetched past the guard.
@@ -62,7 +96,8 @@ class WebCrawlConnector(BaseConnector):
         """Crawl seed URLs and discover new/changed pages."""
         from app.ingestion.source_config import RawDocument
 
-        seed_urls: list[str] = config.connection_config.get("seed_urls", [])
+        seed_urls = _seed_urls(config.connection_config)
+        sitemap_url = str(config.connection_config.get("sitemap_url") or "").strip()
         max_depth: int = config.connection_config.get("max_depth", 3)
         max_pages: int = config.connection_config.get("max_pages", 100)
         crawl_delay: float = config.connection_config.get("crawl_delay_seconds", 1.0)
@@ -97,6 +132,16 @@ class WebCrawlConnector(BaseConnector):
             timeout=30,
             headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"},
         ) as client:
+            if sitemap_url:
+                try:
+                    for loc in await _sitemap_urls(client, sitemap_url, max_pages):
+                        if loc not in urls_to_visit:
+                            urls_to_visit.append(loc)
+                except Exception as exc:
+                    # The sitemap is optional discovery; seeds still crawl.
+                    _log.warning("webcrawl_sitemap_failed url=%s: %s", sitemap_url[:200], exc)
+                    if not urls_to_visit:
+                        raise
             while urls_to_visit and visited < max_pages:
                 url = urls_to_visit.pop(0)
                 url_hash = hashlib.md5(url.encode()).hexdigest()
