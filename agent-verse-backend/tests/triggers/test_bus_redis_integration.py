@@ -90,3 +90,73 @@ async def test_real_redis_backlog_crash_redelivery_and_ack(redis: Any) -> None:
     assert ids == ["g-backlog", "g-crashed", "g-live"]
     assert (await redis.xpending(stream, group))["pending"] == 0
     assert await redis.xlen(stream) == 3
+
+
+class _OutageStore:
+    """ScheduleStore during a DB outage, read strictly (TRG-55)."""
+
+    def __init__(self) -> None:
+        self.down = True
+
+    async def find_by_type_async(
+        self, trigger_type: str, tenant_id: str = "", strict: bool = False, **_: Any
+    ) -> list:
+        from app.triggers.store import ScheduleStoreUnavailableError
+
+        if self.down:
+            if not strict:
+                return []  # the stale-cache fallback that used to lose the firing
+            raise ScheduleStoreUnavailableError("postgres down")
+        return [{"spec": TriggerSpec(trigger_type=TriggerType.GOAL_COMPLETED)}]
+
+
+async def test_real_redis_db_outage_keeps_entry_pending_then_fires(redis: Any) -> None:
+    stream, group = "trigger:stream:goal", ChainTriggerConsumer.GROUP
+    await bus.publish_trigger_event(
+        redis,
+        "goal.completed",
+        build_chain_event(channel="goal.completed", tenant_id="t1", goal_id="g-outage"),
+    )
+    store = _OutageStore()
+    disp = AsyncMock()
+    disp.resolve_tenant_plan = AsyncMock(return_value="free")
+    consumer = ChainTriggerConsumer(trigger_store=store, dispatcher=disp, redis=redis)
+    task = asyncio.create_task(consumer.start())
+    try:
+        await asyncio.sleep(0.15)  # fewer than max_deliveries attempts
+        assert (await redis.xpending(stream, group))["pending"] == 1
+        disp.dispatch.assert_not_awaited()
+        store.down = False
+        await _until(lambda: disp.dispatch.await_count == 1)
+    finally:
+        await consumer.stop()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert (await redis.xpending(stream, group))["pending"] == 0
+    assert await redis.xlen(bus.dead_letter_stream(stream)) == 0
+
+
+async def test_real_redis_exhausted_entry_is_dead_lettered(redis: Any) -> None:
+    stream, group = "trigger:stream:goal", ChainTriggerConsumer.GROUP
+    await bus.publish_trigger_event(
+        redis,
+        "goal.completed",
+        build_chain_event(channel="goal.completed", tenant_id="t1", goal_id="g-dlq"),
+    )
+    consumer = ChainTriggerConsumer(
+        trigger_store=_OutageStore(), dispatcher=AsyncMock(), redis=redis
+    )
+    task = asyncio.create_task(consumer.start())
+    dlq = bus.dead_letter_stream(stream)
+    try:
+        deadline = asyncio.get_running_loop().time() + 10
+        while await redis.xlen(dlq) == 0:
+            assert asyncio.get_running_loop().time() < deadline, "never dead-lettered"
+            await asyncio.sleep(0.05)
+    finally:
+        await consumer.stop()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    [(_, fields)] = await redis.xrange(dlq)
+    assert fields["source_stream"] == stream and fields["group"] == group
+    assert (await redis.xpending(stream, group))["pending"] == 0

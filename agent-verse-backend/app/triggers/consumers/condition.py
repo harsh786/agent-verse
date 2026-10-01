@@ -116,7 +116,7 @@ class ConditionTriggerConsumer:
         for ttype in _FAMILY_TYPES:
             try:
                 triggers = await self._store.find_by_type_async(  # type: ignore[attr-defined]
-                    ttype, tenant_id=tenant_id
+                    ttype, tenant_id=tenant_id, strict=True
                 )
             except Exception as exc:
                 _log.warning("condition_store_error type=%s: %s", ttype, exc)

@@ -352,7 +352,7 @@ class ConversationalTriggerConsumer:
         for ttype in _CONV_TYPES:
             try:
                 triggers = await self._store.find_by_type_async(  # type: ignore[attr-defined]
-                    ttype, tenant_id=tenant_id
+                    ttype, tenant_id=tenant_id, strict=True
                 )
             except Exception as exc:
                 _log.warning("conversational_store_error type=%s: %s", ttype, exc)

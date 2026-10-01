@@ -89,7 +89,9 @@ class _Store:
     def __init__(self, specs: list[Any]) -> None:
         self._specs = specs
 
-    async def find_by_type_async(self, trigger_type: str, tenant_id: str) -> list[dict]:
+    async def find_by_type_async(
+        self, trigger_type: str, tenant_id: str, strict: bool = False
+    ) -> list[dict]:
         return [{"spec": s} for s in self._specs]
 
 

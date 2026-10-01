@@ -55,7 +55,7 @@ class MQTTTriggerConsumer:
         if self._store is None or self._dispatcher is None:
             return
 
-        triggers = await self._store.find_by_type_async("mqtt", tenant_id=tenant_id)
+        triggers = await self._store.find_by_type_async("mqtt", tenant_id=tenant_id, strict=True)
         from types import SimpleNamespace
 
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)

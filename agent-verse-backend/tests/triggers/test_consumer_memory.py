@@ -95,7 +95,7 @@ class TestHandle:
             {"data": json.dumps({"tenant_id": "t1", "tenant_plan": "enterprise"}).encode()}
         )
 
-        store.find_by_type_async.assert_awaited_once_with("memory_created", tenant_id="t1")
+        store.find_by_type_async.assert_awaited_once_with("memory_created", tenant_id="t1", strict=True)
         dispatcher.dispatch.assert_awaited_once()
         call_spec, call_data, call_ctx = dispatcher.dispatch.call_args.args
         assert call_spec is spec

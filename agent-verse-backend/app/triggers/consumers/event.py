@@ -113,7 +113,7 @@ class EventTriggerConsumer:
             return  # unscoped events are never dispatched (no cross-tenant fire)
         try:
             triggers = await self._store.find_by_type_async(  # type: ignore[attr-defined]
-                "event", tenant_id=tenant_id
+                "event", tenant_id=tenant_id, strict=True
             )
         except Exception as exc:
             # Not accepted: the stream entry stays pending and is retried.

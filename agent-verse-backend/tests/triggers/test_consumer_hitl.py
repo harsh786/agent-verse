@@ -104,7 +104,7 @@ class TestHandle:
             }
         )
 
-        store.find_by_type_async.assert_awaited_once_with("hitl_approved", tenant_id="t1")
+        store.find_by_type_async.assert_awaited_once_with("hitl_approved", tenant_id="t1", strict=True)
         dispatcher.dispatch.assert_awaited_once()
         call_spec, call_data, call_ctx = dispatcher.dispatch.call_args.args
         assert call_spec is spec
@@ -121,7 +121,7 @@ class TestHandle:
         await consumer._handle(
             {"channel": "hitl.rejected", "data": json.dumps({"tenant_id": "t1"})}
         )
-        store.find_by_type_async.assert_awaited_once_with("hitl_rejected", tenant_id="t1")
+        store.find_by_type_async.assert_awaited_once_with("hitl_rejected", tenant_id="t1", strict=True)
 
     @pytest.mark.asyncio
     async def test_queue_id_mismatch_skips_dispatch(self) -> None:

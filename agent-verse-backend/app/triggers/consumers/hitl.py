@@ -60,7 +60,9 @@ class HITLTriggerConsumer:
         if not tenant_id or self._store is None or self._dispatcher is None:
             return
 
-        triggers = await self._store.find_by_type_async(trigger_type, tenant_id=tenant_id)
+        triggers = await self._store.find_by_type_async(
+            trigger_type, tenant_id=tenant_id, strict=True
+        )
         if not triggers:
             return
         from app.governance.hitl_queues import matches

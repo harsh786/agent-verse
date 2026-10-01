@@ -38,7 +38,9 @@ class _FakeStore:
     def __init__(self, triggers_by_tenant: dict[str, list[dict[str, Any]]]) -> None:
         self._t = triggers_by_tenant
 
-    async def find_by_type_async(self, ttype: str, *, tenant_id: str) -> list[dict[str, Any]]:
+    async def find_by_type_async(
+        self, ttype: str, *, tenant_id: str, strict: bool = False
+    ) -> list[dict[str, Any]]:
         assert ttype == "event"
         return self._t.get(tenant_id, [])
 

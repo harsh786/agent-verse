@@ -39,7 +39,9 @@ class GraphQLSubscriptionConsumer:
         if self._store is None or self._dispatcher is None:
             return []
 
-        triggers = await self._store.find_by_type_async("graphql_subscription", tenant_id=tenant_id)
+        triggers = await self._store.find_by_type_async(
+            "graphql_subscription", tenant_id=tenant_id, strict=True
+        )
         from types import SimpleNamespace
 
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
@@ -85,7 +87,9 @@ class WebSocketMessageConsumer:
         if self._store is None or self._dispatcher is None:
             return []
 
-        triggers = await self._store.find_by_type_async("websocket_message", tenant_id=tenant_id)
+        triggers = await self._store.find_by_type_async(
+            "websocket_message", tenant_id=tenant_id, strict=True
+        )
         from types import SimpleNamespace
 
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)
@@ -141,7 +145,9 @@ class PriceThresholdPoller:
         if self._store is None or self._dispatcher is None:
             return []
 
-        triggers = await self._store.find_by_type_async("price_threshold", tenant_id=tenant_id)
+        triggers = await self._store.find_by_type_async(
+            "price_threshold", tenant_id=tenant_id, strict=True
+        )
         from types import SimpleNamespace
 
         tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan=plan)

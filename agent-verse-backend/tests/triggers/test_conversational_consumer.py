@@ -119,7 +119,9 @@ class _FakeStore:
     def __init__(self, by_type: dict[str, list[dict[str, Any]]]) -> None:
         self._t = by_type
 
-    async def find_by_type_async(self, ttype: str, *, tenant_id: str) -> list[dict[str, Any]]:
+    async def find_by_type_async(
+        self, ttype: str, *, tenant_id: str, strict: bool = False
+    ) -> list[dict[str, Any]]:
         return self._t.get(ttype, [])
 
 

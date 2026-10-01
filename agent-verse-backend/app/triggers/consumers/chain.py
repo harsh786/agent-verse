@@ -165,6 +165,7 @@ class ChainTriggerConsumer:
             triggers = await self._store.find_by_type_async(
                 trigger_type=trigger_type,
                 tenant_id=tenant_id,
+                strict=True,
             )
         except Exception as exc:
             # Not accepted: raise so the stream entry stays pending and is

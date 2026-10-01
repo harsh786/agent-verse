@@ -67,6 +67,11 @@ class TriggerBusPublishError(RuntimeError):
     """The event could not be appended to its trigger stream."""
 
 
+def dead_letter_stream(stream: str) -> str:
+    """Where entries that exhausted ``trigger_bus_max_deliveries`` are kept."""
+    return f"{stream}:dlq"
+
+
 def stream_for_channel(channel: str, settings: Settings | None = None) -> str:
     """The Redis Stream holding events published on the legacy *channel*."""
     s = settings or get_settings()
@@ -277,13 +282,8 @@ class TriggerStreamReader:
                     continue
                 deliveries = await self._deliveries(entry_id)
                 if deliveries > self._max_deliveries:
-                    _log.error(
-                        "trigger_bus_entry_dropped stream=%s group=%s id=%s deliveries=%d",
-                        self.stream,
-                        self.group,
-                        entry_id,
-                        deliveries,
-                    )
+                    # TRG-55: dead-letter (kept for replay) rather than drop.
+                    await self._dead_letter(entry_id, fields, deliveries)
                     await self._ack(entry_id)
                     continue
                 await self._process(entry_id, fields, handler)
@@ -332,6 +332,34 @@ class TriggerStreamReader:
             )
             return
         await self._ack(entry)
+
+    async def _dead_letter(self, entry_id: str, fields: Any, deliveries: int) -> None:
+        """Copy an entry that kept failing to ``<stream>:dlq`` before it is acked.
+
+        It used to be acked and dropped with only a log line, so an event that
+        failed for longer than the retry budget (e.g. a long DB outage) was lost.
+        The dead-letter stream keeps the original channel/data plus where it came
+        from, for inspection and replay. If the XADD itself fails the entry is
+        NOT acked (it stays pending and is retried).
+        """
+        items = fields.items() if isinstance(fields, Mapping) else []
+        record = {_text(k): _text(v) for k, v in items}
+        record.update(
+            {
+                "source_stream": self.stream,
+                "group": self.group,
+                "source_id": entry_id,
+                "deliveries": str(deliveries),
+            }
+        )
+        _log.error(
+            "trigger_bus_entry_dead_lettered stream=%s group=%s id=%s deliveries=%d",
+            self.stream,
+            self.group,
+            entry_id,
+            deliveries,
+        )
+        await self.redis.xadd(dead_letter_stream(self.stream), record, maxlen=100_000)
 
     async def _ack(self, entry_id: str) -> None:
         await self.redis.xack(self.stream, self.group, entry_id)

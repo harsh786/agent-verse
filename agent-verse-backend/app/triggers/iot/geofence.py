@@ -85,8 +85,12 @@ class GeofenceTriggerEvaluator:
         if self._store is None or self._dispatcher is None:
             return fired
 
-        triggers = await self._store.find_by_type_async("geofence", tenant_id=tenant_id)
-        exit_triggers = await self._store.find_by_type_async("geofence", tenant_id=tenant_id)
+        triggers = await self._store.find_by_type_async(
+            "geofence", tenant_id=tenant_id, strict=True
+        )
+        exit_triggers = await self._store.find_by_type_async(
+            "geofence", tenant_id=tenant_id, strict=True
+        )
 
         from types import SimpleNamespace
 

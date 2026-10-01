@@ -49,10 +49,14 @@ class ChannelIngestionGateway:
             if self._store is None:
                 continue
             try:
-                triggers = await self._store.find_by_type_async(trigger_type, tenant_id=tenant_id)
+                triggers = await self._store.find_by_type_async(
+                    trigger_type, tenant_id=tenant_id, strict=True
+                )
             except Exception as exc:
+                # TRG-55: never report an event handled when its triggers were
+                # never read (the cache fallback / skip lost the firing).
                 _log.warning("channel_ingest_store_error channel=%s: %s", channel_type, exc)
-                continue
+                raise
 
             for trigger in triggers:
                 spec = getattr(trigger, "spec", trigger)

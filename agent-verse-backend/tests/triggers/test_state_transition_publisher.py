@@ -71,7 +71,7 @@ def _consumer(spec: Any) -> tuple[ConditionTriggerConsumer, AsyncMock]:
     dispatcher = SimpleNamespace(dispatch=AsyncMock())
     store = SimpleNamespace(
         find_by_type_async=AsyncMock(
-            side_effect=lambda t, tenant_id: [{"spec": spec}] if t == "state_transition" else []
+            side_effect=lambda t, tenant_id, strict=False: [{"spec": spec}] if t == "state_transition" else []
         )
     )
     return ConditionTriggerConsumer(trigger_store=store, dispatcher=dispatcher), dispatcher.dispatch
