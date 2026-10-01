@@ -86,6 +86,17 @@ def _get_redis_pool() -> Any:
     return _REDIS_POOL
 
 
+def _redacted_error(exc: BaseException, *, limit: int = 1000) -> str:
+    """``"<ExceptionClass>: <redacted message>"`` for goal rows, events and results.
+
+    CORE-34: worker-level failures stored and published ``str(exc)``, so a
+    credential in exception text reached SSE, the event log and the goal row.
+    """
+    from app.agent.sanitization import redact_sensitive_text
+
+    return f"{type(exc).__name__}: {redact_sensitive_text(exc)}"[:limit]
+
+
 def _get_sync_redis() -> Any:
     """Get a synchronous Redis client using the module-level pool."""
     import redis
@@ -2315,6 +2326,11 @@ def run_goal(
     _chain_published: set[str] = set()
 
     async def append_submitted_goal_event(event: dict[str, Any]) -> None:
+        # CORE-34: sanitized (credential redaction, size caps) before it reaches
+        # Redis (SSE) or the event store, like every AgentGraph event.
+        from app.agent.sanitization import sanitize_event
+
+        event = sanitize_event(event)
         # ── ALWAYS publish to Redis pub/sub first (SSE real-time feed) ────────
         # This must happen regardless of DB availability. Previously the function
         # returned early when event_store was None, silently dropping all events
@@ -2440,8 +2456,10 @@ def run_goal(
             await _finalize_owning_mission(goal_id, tenant_id)
 
     async def mark_worker_failed(exc: Exception) -> None:
-        await update_submitted_goal_status("failed", error_message=str(exc))
-        await append_submitted_goal_event({"type": "worker_failed", "reason": str(exc)})
+        # Exception class + redacted message (CORE-34), never the raw text.
+        _reason = _redacted_error(exc)
+        await update_submitted_goal_status("failed", error_message=_reason)
+        await append_submitted_goal_event({"type": "worker_failed", "reason": _reason})
         await meter_worker_goal("failed")
         if not dry_run:
             await _finalize_owning_mission(goal_id, tenant_id)
@@ -3816,7 +3834,7 @@ def run_goal(
         )
         _run_async(mark_worker_failed(exc))
         _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
-        return {"status": "failed", "goal_id": goal_id, "reason": str(exc)}
+        return {"status": "failed", "goal_id": goal_id, "reason": _redacted_error(exc)}
     except Exception as exc:
         logger.error("Goal %s failed: %s", goal_id, exc)
         _record_goal_duration_metric(
