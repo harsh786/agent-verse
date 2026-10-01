@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import time
 from collections import defaultdict
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -22,6 +24,21 @@ from typing import Any
 from app.observability.logging import get_logger
 from app.observability.metrics import record_cost_usd
 from app.tenancy.context import TenantContext
+
+# Metric scope of the spend being checked/recorded: "tool" by default; LLM
+# charges run under llm_spend() so dashboards can separate LLM from tool cost.
+_COST_SCOPE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "agentverse_cost_metric_scope", default="tool"
+)
+
+
+async def llm_spend(call: Awaitable[bool]) -> bool:
+    """Await a ``check_and_record(...)`` charge, recording it under scope ``llm``."""
+    token = _COST_SCOPE.set("llm")
+    try:
+        return await call
+    finally:
+        _COST_SCOPE.reset(token)
 
 
 @dataclass(frozen=True)
@@ -288,7 +305,7 @@ class CostController:
                         daily_limit=cfg.per_tenant_daily_usd,
                         pct=round(_pct * 100, 1),
                     )
-            record_cost_usd(scope="tool", amount=cost_usd)
+            record_cost_usd(scope=_COST_SCOPE.get(), amount=cost_usd)
             return True
 
     def goal_total(self, goal_id: str, *, tenant_ctx: TenantContext) -> float:
@@ -493,7 +510,7 @@ class RedisCostController:
                 with contextlib.suppress(Exception):
                     await self._redis.set(idem_key, "1", ex=86400)
 
-            record_cost_usd(scope="tool", amount=cost_usd)
+            record_cost_usd(scope=_COST_SCOPE.get(), amount=cost_usd)
             return True
 
         except Exception as exc:

@@ -278,8 +278,12 @@ class DistributedStrategyExecutor:
         tenant_ctx = getattr(context, "tenant_ctx", None)
         if controller is None or tenant_ctx is None or cost_usd <= 0.0:
             return
-        ok = await controller.check_and_record(
-            goal_id=request.goal_id, cost_usd=cost_usd, tenant_ctx=tenant_ctx
+        from app.governance.cost import llm_spend
+
+        ok = await llm_spend(
+            controller.check_and_record(
+                goal_id=request.goal_id, cost_usd=cost_usd, tenant_ctx=tenant_ctx
+            )
         )
         if not ok:
             raise BudgetExceededError(

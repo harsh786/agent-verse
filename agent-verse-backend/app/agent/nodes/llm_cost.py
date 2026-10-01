@@ -67,8 +67,12 @@ async def charge_llm_call(
     cost_controller = getattr(graph, "_cost_controller", None)
     if cost_controller is not None and tenant_ctx is not None:
         try:
-            ok = await cost_controller.check_and_record(
-                goal_id=goal_id, cost_usd=cost, tenant_ctx=tenant_ctx
+            from app.governance.cost import llm_spend
+
+            ok = await llm_spend(
+                cost_controller.check_and_record(
+                    goal_id=goal_id, cost_usd=cost, tenant_ctx=tenant_ctx
+                )
             )
         except Exception as exc:
             # Fail closed: a controller outage must not crash planning/verification,

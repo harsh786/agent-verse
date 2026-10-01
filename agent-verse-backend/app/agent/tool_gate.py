@@ -207,9 +207,13 @@ class GovernedToolGate:
         prompt, completion = llm_call_tokens(resp)
         cost = calculate_cost(str(getattr(resp, "model", "") or ""), prompt, completion)
         try:
+            from app.governance.cost import llm_spend
+
             return bool(
-                await self._cost_controller.check_and_record(
-                    goal_id=goal_id, cost_usd=cost, tenant_ctx=tenant_ctx
+                await llm_spend(
+                    self._cost_controller.check_and_record(
+                        goal_id=goal_id, cost_usd=cost, tenant_ctx=tenant_ctx
+                    )
                 )
             )
         except Exception:

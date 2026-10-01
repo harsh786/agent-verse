@@ -1118,7 +1118,8 @@ async def test_graph_cost_controller_records_cost_metric(
     # Cost is calculated from real token usage — and planner + executor + verifier
     # calls are ALL charged (planner/verifier used to be free).
     assert len(recorded) == 3
-    assert all(scope == "tool" and amount > 0.0 for scope, amount in recorded)
+    # PROV-04: LLM spend is labelled scope "llm" (it used to be "tool").
+    assert all(scope == "llm" and amount > 0.0 for scope, amount in recorded)
 
 
 async def test_graph_dedup_marks_seen() -> None:

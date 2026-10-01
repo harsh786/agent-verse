@@ -174,12 +174,16 @@ class _RAGCostGuard:
         estimated_cost = self._ESTIMATED_COSTS[operation]
         operation_key = reservation_key or f"{operation}:{self._sequence}"
         operation_hash = hashlib.sha256(operation_key.encode()).hexdigest()[:16]
-        allowed = await self._controller.check_and_record(
-            goal_id=self._execution_id,
-            cost_usd=estimated_cost,
-            tenant_ctx=self._tenant_context,
-            tool_name=f"rag_{operation}",
-            attempt_id=f"rag:{self._invocation_id}:{operation_hash}",
+        from app.governance.cost import llm_spend
+
+        allowed = await llm_spend(
+            self._controller.check_and_record(
+                goal_id=self._execution_id,
+                cost_usd=estimated_cost,
+                tenant_ctx=self._tenant_context,
+                tool_name=f"rag_{operation}",
+                attempt_id=f"rag:{self._invocation_id}:{operation_hash}",
+            )
         )
         if not allowed:
             raise RetrievalStrategyExecutionError(

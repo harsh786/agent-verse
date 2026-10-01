@@ -2124,10 +2124,14 @@ class ExecutorMixin:
                 state.context["total_cost_usd"] = (
                     state.context.get("total_cost_usd", 0.0) + _actual_cost
                 )
-            ok = await self._cost_controller.check_and_record(
-                goal_id=state.goal_id,
-                cost_usd=_actual_cost,
-                tenant_ctx=tenant_ctx,
+            from app.governance.cost import llm_spend
+
+            ok = await llm_spend(
+                self._cost_controller.check_and_record(
+                    goal_id=state.goal_id,
+                    cost_usd=_actual_cost,
+                    tenant_ctx=tenant_ctx,
+                )
             )
             if not ok:
                 # Latch so no further LLM call is attempted for the rest of
