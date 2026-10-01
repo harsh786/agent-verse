@@ -27,12 +27,13 @@ async def purge_expired_strategy_evidence_once(
 @celery_app.task(name="agentverse.maintenance.purge_expired_strategy_evidence")  # type: ignore[untyped-decorator]
 def purge_expired_strategy_evidence() -> dict[str, Any]:
     """Delete expired evidence in bounded batches on the maintenance (BYPASSRLS) role."""
-    import asyncio
 
-    from app.db.session import get_system_session_factory
+    from app.db.session import get_system_session_factory, run_in_fresh_loop
 
     try:
-        deleted = asyncio.run(purge_expired_strategy_evidence_once(get_system_session_factory()))
+        deleted = run_in_fresh_loop(
+            purge_expired_strategy_evidence_once(get_system_session_factory())
+        )
     except Exception as exc:
         _log.warning("strategy_evidence_purge_failed", error=str(exc)[:200])
         return {"status": "error", "error": type(exc).__name__}

@@ -80,12 +80,10 @@ class Settings(BaseSettings):
     db_pool_timeout: float = 30.0
     db_pool_recycle: int = 1800
     db_pool_pre_ping: bool = True
-    # Postgres reclaims a connection left "idle in transaction" past this many ms.
-    # Custom Starlette BaseHTTPMiddleware cancels the request task on client
-    # disconnect (SSE, polling, navigation) without always rolling back the DB
-    # session, leaking a pooled connection stuck idle-in-transaction; without a
-    # server-side timeout these accumulate until the pool exhausts and requests
-    # hang for db_pool_timeout — the intermittent "blip". 0 disables.
+    # Postgres reclaims a connection left "idle in transaction" past this many ms
+    # (backstop; see app.db.session.run_in_fresh_loop for the root-cause fix).
+    # NOTE: a PgBouncer in front ignores this startup parameter — set it on the
+    # server too. 0 disables.
     db_idle_in_transaction_timeout_ms: int = 30_000
     # Safety cap on any single statement so a hung query can't hold a connection
     # indefinitely. Generous so legitimate heavy analytics / vector scans aren't

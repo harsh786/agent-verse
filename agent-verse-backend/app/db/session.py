@@ -5,6 +5,7 @@ from __future__ import annotations
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -19,10 +20,13 @@ from app.core.config import get_settings
 def _server_settings(settings: object) -> dict[str, str]:
     """Server-side safety timeouts, sent as asyncpg startup parameters (per-connection GUCs).
 
-    idle_in_transaction_session_timeout reclaims connections a cancelled request
-    left mid-transaction (custom BaseHTTPMiddleware cancels the task on client
-    disconnect without rolling back) — otherwise they leak and eventually
-    exhaust the pool, causing the intermittent request hangs / "blips".
+    idle_in_transaction_session_timeout is a backstop for connections abandoned
+    mid-transaction. The measured root cause was Celery task loops reusing a
+    pooled asyncpg connection on another event loop (BEGIN sent, reply never
+    read) and tasks left pending at loop close — fixed by ``run_in_fresh_loop``.
+    A cancelled HTTP request (BaseHTTPMiddleware on client disconnect) does roll
+    back and return its connection; tests/db/test_session_connection_return_
+    integration.py pins both against a real Postgres.
     A PgBouncer in front must list every key here in ignore_startup_parameters,
     or it refuses the connection (see infra/docker-compose.yml).
     """
@@ -174,3 +178,49 @@ async def get_db() -> AsyncIterator[AsyncSession]:
     """FastAPI dependency — yields one session per request."""
     async with get_db_session() as session:
         yield session
+
+
+_LEFTOVER_TASK_GRACE_S = 10.0
+
+
+def run_in_fresh_loop(coro: Any) -> Any:
+    """Run ``coro`` to completion on a new event loop, leaving no DB state behind.
+
+    The ONLY way sync code (Celery tasks, beat jobs, CLIs) should drive async DB
+    code. asyncpg connections are bound to the loop that opened them; the
+    "idle in transaction" leak came from task loops that broke that rule:
+
+    * ``new_event_loop()`` ... ``loop.close()`` without disposing the engine, or
+      the persistent ``get_event_loop()`` mixed with throw-away loops, so the
+      module-level pool handed a connection from loop A to loop B — asyncpg wrote
+      ``BEGIN`` to the socket, then failed awaiting the reply ("attached to a
+      different loop") and the connection was dropped with its transaction open;
+    * tasks still pending when the loop closed (fire-and-forget work holding a
+      session) were never resumed, so their sessions never rolled back.
+
+    Teardown, on the still-running loop: cancel and await every leftover task
+    (their ``async with`` blocks roll back and return connections), dispose every
+    engine used in this loop (``dispose_task_engine``), shut down async
+    generators, then close the loop.
+    """
+    import asyncio
+    import logging
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            leftovers = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in leftovers:
+                task.cancel()
+            if leftovers:
+                loop.run_until_complete(asyncio.wait(leftovers, timeout=_LEFTOVER_TASK_GRACE_S))
+            loop.run_until_complete(dispose_task_engine())
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "fresh_loop_teardown_failed: %s: %s", type(exc).__name__, exc
+            )
+        finally:
+            loop.close()

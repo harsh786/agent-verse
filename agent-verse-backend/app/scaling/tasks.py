@@ -237,22 +237,16 @@ def _scheduled_goal_id(schedule_key: str, *, fire_instance_id: str | None = None
 def _run_async(coro: Any) -> Any:
     """Run an async coroutine from a sync Celery task.
 
-    Disposes the module-level asyncpg engine before closing the event loop so
-    that connection pool cleanup can run while the loop is still active.
-    Without this, SQLAlchemy raises ``RuntimeError: Event loop is closed``
-    for every pooled asyncpg connection during teardown.
+    Delegates to ``app.db.session.run_in_fresh_loop``: leftover tasks are
+    cancelled and awaited (so their sessions roll back and return connections)
+    and every engine used in the loop is disposed before the loop closes. Every
+    task loop in this module goes through here — a pooled asyncpg connection
+    reused on another loop is how the worker leaked "idle in transaction"
+    connections (BEGIN sent, reply never read).
     """
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        try:
-            from app.db.session import dispose_task_engine
+    from app.db.session import run_in_fresh_loop
 
-            loop.run_until_complete(dispose_task_engine())
-        except Exception:
-            pass
-        loop.close()
+    return run_in_fresh_loop(coro)
 
 
 async def _load_worker_policy_engine(db_factory: Any, tenant_id: str) -> Any:
@@ -5081,15 +5075,11 @@ def check_mcp_health() -> dict[str, Any]:
             results.append({"status": "error", "reason": str(exc)})
         return {"servers_checked": len(results), "results": results[:20]}
 
-    event_loop = asyncio.new_event_loop()
     try:
-        try:
-            result = event_loop.run_until_complete(_run())
-        except Exception:
-            # MCPServerConfig import may fail (e.g. mcp module not available)
-            result = event_loop.run_until_complete(_fallback())
-    finally:
-        event_loop.close()
+        result = _run_async(_run())
+    except Exception:
+        # MCPServerConfig import may fail (e.g. mcp module not available)
+        result = _run_async(_fallback())
 
     return {
         "status": "ok",
@@ -6454,11 +6444,7 @@ def consolidate_memories_task() -> dict:
 
         return results
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_async(_run())
 
 
 # Register consolidate_memories in the Celery beat schedule (3 AM UTC daily)
@@ -7824,11 +7810,7 @@ def delta_reingest_files(
             "collection_id": collection_id,
         }
 
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_async(_run())
 
 
 # ── N8: Org Autonomous Operating Loop (runs every 5 min via Celery Beat) ─────
@@ -7987,7 +7969,6 @@ def org_brain_loop() -> dict[str, int]:
     ``org_autonomy_enabled`` feature flag, autonomy level (L3+), and a
     per-org Redis tick lock.
     """
-    import asyncio as _asyncio
 
     async def _run() -> dict[str, int]:
         import structlog as _slog
@@ -8063,11 +8044,7 @@ def org_brain_loop() -> dict[str, int]:
             "blocked": blocked_total,
         }
 
-    loop = _asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_async(_run())
 
 
 # ── Task 9: Ambient Collaboration Tick ("the team talks") ───────────────────
@@ -8182,7 +8159,6 @@ def org_collaboration_loop() -> dict[str, int]:
     try/except mirrors ``org_brain_loop`` so one org's failure never blocks
     the rest of the batch.
     """
-    import asyncio as _asyncio
 
     zero_totals = {"processed": 0, "orgs_with_chatter": 0, "messages_emitted": 0}
 
@@ -8257,11 +8233,7 @@ def org_collaboration_loop() -> dict[str, int]:
             "messages_emitted": messages_emitted,
         }
 
-    loop = _asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    return _run_async(_run())
 
 
 # ── PART 43: Org Intelligence + Digest + Twin Sync Cron Tasks ─────────────────
@@ -8277,14 +8249,11 @@ def org_intelligence_cron() -> dict:
 
     if not is_feature_enabled("org_analytics_enabled"):
         return {"status": "disabled"}
-    loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(_run_org_intelligence_cron())
+        return _run_async(_run_org_intelligence_cron())
     except Exception as exc:
         logger.error("org_intelligence_cron failed: %s", exc)
         return {"error": str(exc)}
-    finally:
-        loop.close()
 
 
 @celery_app.task(name="app.scaling.tasks.org_digest_cron", queue="maintenance")
@@ -8297,14 +8266,11 @@ def org_digest_cron() -> dict:
 
     if not is_feature_enabled("org_digest_enabled"):
         return {"status": "disabled"}
-    loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(_run_org_digest_cron())
+        return _run_async(_run_org_digest_cron())
     except Exception as exc:
         logger.error("org_digest_cron failed: %s", exc)
         return {"error": str(exc)}
-    finally:
-        loop.close()
 
 
 @celery_app.task(name="app.scaling.tasks.org_twin_sync", queue="maintenance")
@@ -8315,15 +8281,12 @@ def org_twin_sync(event: dict) -> dict:
     """
     from app.org.feature_flags import _run_org_twin_sync
 
-    loop = asyncio.new_event_loop()
     try:
-        loop.run_until_complete(_run_org_twin_sync(event))
+        _run_async(_run_org_twin_sync(event))
         return {"status": "ok", "event_type": event.get("event_type", "unknown")}
     except Exception as exc:
         logger.warning("org_twin_sync failed: %s", exc)
         return {"error": str(exc)}
-    finally:
-        loop.close()
 
 
 # Register org cron tasks in Celery beat schedule

@@ -14,7 +14,6 @@ unchanged: ``app.api.knowledge._ingest_repo_background``.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from celery import shared_task  # type: ignore[import-not-found]
@@ -22,6 +21,18 @@ from celery import shared_task  # type: ignore[import-not-found]
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
+
+
+def _run_task_loop(coro: Any) -> Any:
+    """Celery entry → async body on a fresh, fully torn-down loop.
+
+    The persistent ``get_event_loop()`` shared the module-level DB engine with
+    the scaling tasks' throw-away loops in the same worker process, so pooled
+    asyncpg connections crossed loops and leaked "idle in transaction".
+    """
+    from app.db.session import run_in_fresh_loop
+
+    return run_in_fresh_loop(coro)
 
 
 def _worker_services() -> tuple[Any, Any, Any]:
@@ -94,7 +105,7 @@ async def _run_repo_ingest_async(
 @shared_task(name="ingestion.ingest_repository", bind=True, acks_late=True)
 def ingest_repository_task(self: Any, **params: Any) -> dict[str, Any]:
     """Celery entry point; failures are recorded on the job row and dead-lettered."""
-    asyncio.get_event_loop().run_until_complete(_run_repo_ingest_async(**params))
+    _run_task_loop(_run_repo_ingest_async(**params))
     return {"job_id": params.get("job_id")}
 
 

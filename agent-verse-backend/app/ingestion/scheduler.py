@@ -14,11 +14,10 @@ LAW-17: No silent data loss — all failures land in DLQ.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import logging
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from celery import shared_task  # type: ignore[import-not-found]
 
@@ -26,6 +25,19 @@ if TYPE_CHECKING:
     pass
 
 _log = logging.getLogger(__name__)
+
+
+def _run_task_loop(coro: Any) -> Any:
+    """Celery entry → async body on a fresh, fully torn-down loop.
+
+    The persistent ``get_event_loop()`` shared the module-level DB engine with
+    the scaling tasks' throw-away loops in the same worker process, so pooled
+    asyncpg connections crossed loops and leaked "idle in transaction".
+    """
+    from app.db.session import run_in_fresh_loop
+
+    return run_in_fresh_loop(coro)
+
 
 # Maximum jitter (seconds) to spread sync starts across tenants
 _MAX_JITTER_SECONDS = 30
@@ -69,7 +81,7 @@ def sync_source_task(
       - Reindex (API POST /sources/{id}/reindex, ``reindex=True``): the source's
         indexed documents are deleted and it is re-synced from the start.
     """
-    return asyncio.get_event_loop().run_until_complete(
+    return _run_task_loop(
         _sync_source_async(
             task=self,
             source_id=source_id,
@@ -409,7 +421,7 @@ def dispatch_due_sources_task(self) -> dict:
     Runs every minute via beat schedule. Each source gets an individual
     sync_source_task with per-source jitter.
     """
-    return asyncio.get_event_loop().run_until_complete(_dispatch_due_sources_async())
+    return _run_task_loop(_dispatch_due_sources_async())
 
 
 async def _dispatch_due_sources_async() -> dict:
@@ -447,7 +459,7 @@ async def _dispatch_due_sources_async() -> dict:
 @shared_task(name="ingestion.retry_dlq_entries", bind=True)
 def retry_dlq_entries_task(self) -> dict:
     """Retry eligible DLQ entries (exponential backoff, max 5 attempts)."""
-    return asyncio.get_event_loop().run_until_complete(_retry_dlq_async())
+    return _run_task_loop(_retry_dlq_async())
 
 
 async def _retry_dlq_async() -> dict:
