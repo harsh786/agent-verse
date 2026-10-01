@@ -135,6 +135,27 @@ def _setup_worker_checkpointer(**kwargs: Any) -> None:
         _wire_worker_model_registry_store()
     except Exception as exc:  # re-tried per goal by _worker_tenant_policy_roles
         _logging.getLogger(__name__).warning("worker_model_registry_store_failed: %s", exc)
+    # PROV-11: the worker runs production goals, so it needs the served models'
+    # context windows too (they were probed only at API startup).
+    _probe_worker_model_windows()
+
+
+def _probe_worker_model_windows() -> None:
+    """Fill this worker's on-prem model context-window map (best effort)."""
+    import asyncio as _asyncio
+    import logging as _logging
+
+    try:
+        from app.ai_router import deployment_roles
+        from app.core.config import get_settings
+
+        settings = get_settings()
+        if not getattr(settings, "onprem_enabled", False):
+            return
+        windows = _asyncio.run(deployment_roles.probe_model_windows(settings))
+        _logging.getLogger(__name__).info("worker_onprem_model_windows windows=%s", windows)
+    except Exception as exc:  # unknown windows keep small models out of roles (fail closed)
+        _logging.getLogger(__name__).warning("worker_model_window_probe_failed: %s", exc)
 
 
 @_task_prerun.connect
