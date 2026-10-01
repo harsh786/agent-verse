@@ -32,6 +32,9 @@ class ProviderCircuitBreaker:
         self._last_failure: dict[str, float] = {}
         self._state: dict[str, str] = {}  # "closed" | "open" | "half-open"
         self._half_open_calls: dict[str, int] = defaultdict(int)
+        # When the in-flight half-open probe started: a probe whose outcome never
+        # arrives frees its slot after ``recovery_timeout`` (PROV-28).
+        self._probe_started: dict[str, float] = {}
 
     def is_open(self, provider_name: str) -> bool:
         """Return True if the circuit is open (provider unavailable)."""
@@ -46,7 +49,14 @@ class ProviderCircuitBreaker:
                 return False
             return True
         if state == "half-open":
-            return self._half_open_calls[provider_name] >= self._half_open_max
+            if self._half_open_calls[provider_name] < self._half_open_max:
+                return False
+            started = self._probe_started.get(provider_name, 0.0)
+            if time.monotonic() - started >= self._recovery_timeout:
+                # The probe never reported (lost task): admit a new one.
+                self._half_open_calls[provider_name] = 0
+                return False
+            return True
         return False
 
     def record_success(self, provider_name: str) -> None:
@@ -54,6 +64,7 @@ class ProviderCircuitBreaker:
         self._failures[provider_name] = 0
         self._state[provider_name] = "closed"
         self._half_open_calls.pop(provider_name, None)
+        self._probe_started.pop(provider_name, None)
 
     def record_failure(self, provider_name: str) -> None:
         """Increment failure count; open the circuit when threshold is reached."""
@@ -67,6 +78,14 @@ class ProviderCircuitBreaker:
         """Track half-open probe calls."""
         if self._state.get(provider_name) == "half-open":
             self._half_open_calls[provider_name] += 1
+            self._probe_started[provider_name] = time.monotonic()
+
+    def release_probe(self, provider_name: str) -> None:
+        """A half-open probe ended with no provider verdict (cancelled, or a
+        caller-side refusal): free its slot so the next call can probe.
+        """
+        if self._state.get(provider_name) == "half-open" and self._half_open_calls[provider_name]:
+            self._half_open_calls[provider_name] -= 1
 
 
 # Module-level singleton shared across all graph instances.
@@ -92,6 +111,7 @@ async def call_with_circuit_breaker(
         )
 
     _provider_cb.before_call(provider_name)
+    recorded = False
     try:
         timeout = timeout_seconds
         if timeout is None:
@@ -101,9 +121,11 @@ async def call_with_circuit_breaker(
             timeout=timeout,
         )
         _provider_cb.record_success(provider_name)
+        recorded = True
         return result
     except TimeoutError as exc:
         _provider_cb.record_failure(provider_name)
+        recorded = True
         raise TimeoutError(
             f"LLM provider call timed out for {provider_name} after {timeout}s"
         ) from exc
@@ -112,7 +134,14 @@ async def call_with_circuit_breaker(
         # not a provider failure and must not open the circuit for everyone.
         if getattr(exc, "provider_failure", True):
             _provider_cb.record_failure(provider_name)
+            recorded = True
         raise
+    finally:
+        # CancelledError (a BaseException) or a non-provider refusal: no verdict.
+        # Without this the single half-open slot stayed used and the circuit
+        # reported open until the process restarted.
+        if not recorded:
+            _provider_cb.release_probe(provider_name)
 
 
 def breaker_key(provider: Any, request: Any = None) -> str:
