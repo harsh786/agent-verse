@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
@@ -55,6 +55,34 @@ def _builtin_config_for_type(value: str) -> dict[str, Any] | None:
         return builtin_config_for_type(value)
     except Exception:
         return None
+
+
+_CONNECTOR_TYPE_CACHE: dict[str, str] | None = None
+
+
+def _connector_type_for(builtin_type: str) -> str:
+    """The connector-catalog type key for a built-in ('builtin-mongodb' -> 'mongodb')."""
+    global _CONNECTOR_TYPE_CACHE
+    if _CONNECTOR_TYPE_CACHE is None:
+        mapping: dict[str, str] = {}
+        for spec in CONNECTOR_CATALOG:
+            cfg = _builtin_config_for_type(spec.builtin_server_id or spec.name)
+            if cfg is not None:
+                mapping.setdefault(str(cfg["server_id"]), spec.name)
+        _CONNECTOR_TYPE_CACHE = mapping
+    return _CONNECTOR_TYPE_CACHE.get(builtin_type) or builtin_type.removeprefix("builtin-")
+
+
+def _declared_type_on_update(body: RegisterConnectorRequest) -> str:
+    if not body.builtin_type:
+        return ""
+    cfg = _builtin_config_for_type(body.builtin_type)
+    if cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Unknown connector type '{body.builtin_type}'",
+        )
+    return str(cfg["server_id"])
 
 
 def _infer_builtin_type(name: str) -> str | None:
@@ -109,11 +137,15 @@ class RegisterConnectorRequest(BaseModel):
 
     name: str
     url: str
-    # Declared built-in type ("mongodb", "MongoDB" or "builtin-mongodb"). Sent as
-    # "type" by the UI. When omitted it is inferred from the name, but only when
-    # that is unambiguous ("MongoDB", "mongodb-prod"); otherwise the connector is
-    # a plain remote MCP server. Several connections may share one type.
-    builtin_type: str | None = Field(default=None, alias="type")
+    # Declared built-in type ("mongodb", "MongoDB", "google_sheets" or
+    # "builtin-mongodb"); the connectors UI sends it as "connector_type". When
+    # omitted it is inferred from the name, but only when that is unambiguous
+    # ("MongoDB", "mongodb-prod"); otherwise the connector is a plain remote MCP
+    # server. Several connections may share one type.
+    builtin_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("type", "connector_type", "builtin_type"),
+    )
     # The enum, not ``str``: an unknown value used to pass request validation and
     # then blow up constructing MCPServerConfig inside the registry — an
     # unhandled pydantic error, i.e. HTTP 500 on ordinary bad input. Now a 422
@@ -340,6 +372,8 @@ def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data["display_name"] = cfg.name
     data["builtin_type"] = builtin_type
     data["builtin_type_name"] = str(builtin_cfg.get("name", "")) if builtin_cfg else ""
+    # The catalog type key the UI groups instances by ("mongodb", "google_sheets").
+    data["connector_type"] = _connector_type_for(builtin_type) if builtin_type else ""
     # The stored url is "builtin://" for built-in connectors (a dispatch marker);
     # surface the real upstream API endpoint separately so the UI can show it.
     if (cfg.url or "").startswith("builtin://"):
@@ -624,8 +658,9 @@ async def update_connector(
         # keeps its tools (a fresh UUID would strip them after a restart).
         server_id=existing.server_id,
         tool_definitions=list(existing.tool_definitions or []),
-        # The connection's built-in type never changes on update.
-        builtin_type=existing.builtin_type,
+        # The connection's built-in type never changes on update (a legacy
+        # connector without one may have it declared now).
+        builtin_type=existing.builtin_type or _declared_type_on_update(body),
     )
     updated = await reg.update(server_id, cfg, tenant_ctx=tenant_ctx)
     if not updated:

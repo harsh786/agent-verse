@@ -364,3 +364,42 @@ async def test_qualified_names_route_to_their_connection(world: dict[str, Any]) 
     assert direct.success and by_dotted.success and by_slug.success
     assert ["8.8.4.4" in d for d in _Mongo.dsns] == [True, True, False]
     assert not ambiguous.success and "several connectors" in (ambiguous.error or "")
+
+
+# ── the UI's field names ─────────────────────────────────────────────────────
+
+
+def test_ui_connector_type_field_binds_the_builtin(world: dict[str, Any]) -> None:
+    """The connectors UI sends and reads ``connector_type`` (the catalog type key)."""
+    c = world["client"]
+    created = _create(c, "orders-db", ORDERS_URI, connector_type="mongodb")
+    sheets = _create(
+        c, "finance-sheet", "https://sheets.googleapis.com/v4", connector_type="google_sheets"
+    )
+
+    assert created.status_code == 201
+    assert created.json()["builtin_type"] == "builtin-mongodb"
+    listed = {row["server_id"]: row for row in c.get("/connectors", headers=HDR).json()}
+    assert listed[created.json()["server_id"]]["connector_type"] == "mongodb"
+    assert listed[sheets.json()["server_id"]]["connector_type"] == "google_sheets"
+
+
+def test_ui_edit_with_connector_type_keeps_the_type(world: dict[str, Any]) -> None:
+    c = world["client"]
+    sid = _create(c, "orders-db", ORDERS_URI, connector_type="mongodb").json()["server_id"]
+
+    resp = c.put(
+        f"/connectors/{sid}",
+        json={
+            "name": "orders-db",
+            "connector_type": "mongodb",
+            "url": "builtin://",
+            "auth_type": "none",
+            "auth_config": {"url": ORDERS_URI},
+        },
+        headers=HDR,
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["builtin_type"] == "builtin-mongodb"
+    assert resp.json()["connector_type"] == "mongodb"
