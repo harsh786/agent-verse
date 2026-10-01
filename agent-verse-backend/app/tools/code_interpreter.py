@@ -22,8 +22,9 @@ import os
 import tempfile
 import threading
 import time
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -73,6 +74,75 @@ _PIDS_LIMIT = 64
 # Per-stream output cap returned to the caller (the API used to return whatever
 # the program printed — a ``print('x' * 10**9)`` was buffered whole into memory).
 _MAX_OUTPUT_CHARS = 1_000_000
+
+
+# How long to wait for the output reader after the container has stopped.
+_READER_JOIN_S = 10.0
+_STDOUT, _STDERR = 1, 2
+
+
+def _frames(attached: Any) -> Iterator[tuple[int, bytes]]:
+    """(stream, chunk) frames from a non-TTY docker attach socket."""
+    from docker.utils.socket import frames_iter
+
+    return cast("Iterator[tuple[int, bytes]]", frames_iter(attached, tty=False))
+
+
+class _CappedCapture:
+    """Collect stdout/stderr frames up to *cap* bytes per stream.
+
+    The first byte past the cap stops reading and calls *on_overflow* (the
+    container is killed), so a runaway printer holds at most ``cap`` bytes per
+    stream in this process.
+    """
+
+    def __init__(self, on_overflow: Any, cap: int = _MAX_OUTPUT_CHARS) -> None:
+        self._cap = cap
+        self._on_overflow = on_overflow
+        self._buf = {_STDOUT: bytearray(), _STDERR: bytearray()}
+        self.overflowed = False
+
+    def consume(self, frames: Iterable[tuple[int, bytes]]) -> None:
+        try:
+            for stream, chunk in frames:
+                if self.overflowed:
+                    # Keep draining (and discarding) until EOF: the daemon does not
+                    # finish the killed container while its attach stream is blocked.
+                    continue
+                buf = self._buf.get(stream)
+                if buf is None or not chunk:
+                    continue
+                room = self._cap - len(buf)
+                if len(chunk) > room:
+                    buf.extend(chunk[:room])
+                    self.overflowed = True
+                    # Kill from another thread: the daemon only completes the kill
+                    # once the attach stream drains, which is this loop's job.
+                    threading.Thread(target=self._overflow_safely, daemon=True).start()
+                    continue
+                buf.extend(chunk)
+        except Exception:
+            return  # socket closed under us (kill/remove): keep what was read
+        finally:
+            close = getattr(frames, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
+
+    def _overflow_safely(self) -> None:
+        with contextlib.suppress(Exception):
+            self._on_overflow()
+
+    def text(self) -> tuple[str, str]:
+        out = self._buf[_STDOUT].decode("utf-8", errors="replace")
+        err = self._buf[_STDERR].decode("utf-8", errors="replace")
+        if self.overflowed:
+            note = f"\n[output truncated at {self._cap} bytes]"
+            if len(self._buf[_STDOUT]) >= self._cap:
+                out += note
+            if len(self._buf[_STDERR]) >= self._cap:
+                err += note
+        return out, err
 
 
 def _cap_output(text: str) -> str:
@@ -253,22 +323,38 @@ class CodeInterpreter:
                 pids_limit=_PIDS_LIMIT,
                 cap_drop=["ALL"],
                 security_opt=["no-new-privileges"],
+                # Output is read live from the attach stream (capped); the daemon
+                # stores no copy of it.
+                log_config={"Type": "none", "Config": {}},
             )
             timed_out = False
             exit_code = 1
+            capture = _CappedCapture(on_overflow=container.kill)
+            reader: threading.Thread | None = None
             try:
                 import socket as _socket
 
-                attached = container.attach_socket(params={"stdin": 1, "stream": 1})
+                # One attach socket carries stdin in and stdout/stderr out, read
+                # while the program runs with a byte cap per stream. The output
+                # used to be fetched afterwards with container.logs(), which
+                # returns the whole log as one bytes object (a program printing
+                # gigabytes was buffered in full here), and the daemon kept it
+                # on disk; the log driver is now "none".
+                attached = container.attach_socket(
+                    params={"stdin": 1, "stdout": 1, "stderr": 1, "stream": 1}
+                )
                 container.start()
+                reader = threading.Thread(
+                    target=capture.consume, args=(_frames(attached),), daemon=True
+                )
+                reader.start()
                 raw = getattr(attached, "_sock", attached)
                 try:
                     raw.sendall(code.encode("utf-8"))
                     with contextlib.suppress(OSError):
                         raw.shutdown(_socket.SHUT_WR)
-                finally:
-                    with contextlib.suppress(Exception):
-                        attached.close()
+                except OSError:
+                    pass  # the program exited before reading all of stdin
                 try:
                     status = container.wait(timeout=effective_timeout)
                     exit_code = int(status.get("StatusCode", 1))
@@ -276,15 +362,17 @@ class CodeInterpreter:
                     timed_out = True
                     with contextlib.suppress(Exception):
                         container.kill()
-                out = _cap_output(
-                    container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-                )
-                err = _cap_output(
-                    container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
-                )
+                reader.join(timeout=_READER_JOIN_S)
+                with contextlib.suppress(Exception):
+                    attached.close()
             finally:
                 with contextlib.suppress(Exception):
                     container.remove(force=True)
+            out, err = capture.text()
+            if capture.overflowed:
+                err = (
+                    err + f"\nOutput exceeded {_MAX_OUTPUT_CHARS} bytes; the program was stopped."
+                ).strip()
             if timed_out:
                 err = (err + f"\nExecution exceeded {effective_timeout}s and was killed.").strip()
             return CodeResult(

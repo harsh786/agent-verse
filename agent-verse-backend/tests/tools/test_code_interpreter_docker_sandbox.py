@@ -93,3 +93,26 @@ async def test_containers_are_not_left_behind() -> None:
     await ci.CodeInterpreter(timeout=3).execute("while True:\n    pass\n", "python")
     after = {c.id for c in client.containers.list(all=True)}
     assert after <= before, f"sandbox containers leaked: {after - before}"
+
+
+@pytest.mark.asyncio
+async def test_huge_output_is_truncated_and_bounded() -> None:
+    """CODE-01: 50 MB of stdout is read live up to the cap, then the program is
+    stopped; nothing close to 50 MB is held in this process."""
+    import docker
+
+    client = docker.from_env()
+    before = {c.id for c in client.containers.list(all=True)}
+    t0 = time.monotonic()
+    result = await ci.CodeInterpreter(timeout=60).execute(
+        "import sys\nchunk = 'z' * 65536\nfor _ in range(800):\n    sys.stdout.write(chunk)\n",
+        "python",
+    )
+    assert time.monotonic() - t0 < 30, "the overflowing program was not stopped"
+    assert result.timed_out is False
+    assert result.success is False
+    assert "Output exceeded" in result.stderr
+    assert "[output truncated" in result.stdout
+    assert len(result.stdout) <= ci._MAX_OUTPUT_CHARS + 200
+    after = {c.id for c in client.containers.list(all=True)}
+    assert after <= before, f"sandbox containers leaked: {after - before}"

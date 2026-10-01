@@ -171,6 +171,16 @@ async def test_subprocess_fallback_unsupported_language():
 
 # ── 8. Docker path (mocked) ───────────────────────────────────────────────────
 
+
+@pytest.fixture(autouse=True)
+def _attach_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake attach sockets carry their (stream, bytes) frames in ``test_frames``."""
+    import app.tools.code_interpreter as ci_mod
+
+    monkeypatch.setattr(
+        ci_mod, "_frames", lambda attached: iter(getattr(attached, "test_frames", []))
+    )
+
 def _fake_docker_client(
     *,
     exit_code: int = 0,
@@ -194,16 +204,8 @@ def _fake_docker_client(
     else:
         container.wait.return_value = {"StatusCode": exit_code}
 
-    out_bytes, err_bytes = stdout, stderr
-
-    def _logs(stdout: bool = True, stderr: bool = True) -> bytes:
-        if stdout and not stderr:
-            return out_bytes
-        if stderr and not stdout:
-            return err_bytes
-        return out_bytes + err_bytes
-
-    container.logs.side_effect = _logs
+    # What the attach socket streams back (read via ci._frames, patched below).
+    sock.test_frames = [(1, stdout), (2, stderr)]
 
     client = MagicMock()
     if create_exc is not None:
