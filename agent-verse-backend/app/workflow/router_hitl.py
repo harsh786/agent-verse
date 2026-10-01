@@ -223,6 +223,58 @@ async def approval_stats(request: Request) -> dict[str, Any]:
     return await svc.get_stats(tenant_id=tenant_id)
 
 
+# Poll cadence / lifetime of GET /approvals/stream (module-level so tests can
+# shorten them). The client reconnects after [DONE].
+_STREAM_POLL_SECONDS = 5.0
+_STREAM_MAX_POLLS = 60  # ~5 min per connection
+
+
+# NOTE: declared BEFORE GET /{request_id}. Declared after it (as it used to be),
+# "/approvals/stream" matched the detail route as request_id="stream" and every
+# connection got 404 "Approval request not found".
+@router.get("/stream")
+async def stream_approvals(request: Request) -> StreamingResponse:
+    """SSE stream of new approval inbox events for the current user.
+
+    EventSource cannot send headers: authenticate with ``?token=`` from
+    ``GET /tenants/stream-token`` (accepted on ``.../stream`` GETs only). Each
+    pending request the caller may act on (same visibility as ``GET
+    /approvals``) is announced once as ``new_request``; the first poll runs
+    immediately so the current inbox arrives without a delay."""
+    _svc(request)  # 503 up front when the gateway is missing
+
+    async def event_gen() -> AsyncGenerator[str, None]:
+        import asyncio
+        import json as _json
+
+        seen: set[str] = set()
+        for poll in range(_STREAM_MAX_POLLS):
+            if poll:
+                await asyncio.sleep(_STREAM_POLL_SECONDS)
+            if await request.is_disconnected():
+                return
+            items = await _visible_pending(request)
+            for item in items:
+                if item.request_id not in seen:
+                    seen.add(item.request_id)
+                    event_data = {
+                        "event": "new_request",
+                        "request_id": item.request_id,
+                        "priority": item.priority,
+                    }
+                    yield f"data: {_json.dumps(event_data)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/{request_id}")
 async def get_approval(request_id: str, request: Request) -> dict[str, Any]:
     svc = _svc(request)
@@ -406,39 +458,3 @@ async def delegate_all(body: DelegateAllRequest, request: Request) -> dict[str, 
         except Exception:
             pass
     return {"delegated": count, "to_user_id": body.to_user_id}
-
-
-@router.get("/stream")
-async def stream_approvals(request: Request) -> StreamingResponse:
-    """SSE stream of new approval inbox events for the current user."""
-    _svc(request)  # 503 up front when the gateway is missing
-
-    async def event_gen() -> AsyncGenerator[str, None]:
-        import asyncio
-        import json as _json
-
-        # Poll every 5 seconds for new pending requests the caller may act on
-        # (same visibility as GET /approvals).
-        seen: set[str] = set()
-        for _ in range(60):  # max 5 min stream
-            await asyncio.sleep(5)
-            items = await _visible_pending(request)
-            for item in items:
-                if item.request_id not in seen:
-                    seen.add(item.request_id)
-                    event_data = {
-                        "event": "new_request",
-                        "request_id": item.request_id,
-                        "priority": item.priority,
-                    }
-                    yield f"data: {_json.dumps(event_data)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        event_gen(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )

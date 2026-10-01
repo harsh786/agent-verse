@@ -216,3 +216,34 @@ def test_magic_link_expired(client: TestClient, gateway: MagicMock) -> None:
     gateway.consume_magic_link.return_value = None
     resp = client.get("/api/v1/approvals/magic/bad-token?action=approve")
     assert resp.status_code == 410
+
+
+# ── SSE stream (APPROVALS-STREAM-404) ────────────────────────────────────────
+
+
+def test_stream_is_not_shadowed_by_the_detail_route(
+    gateway: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /approvals/stream used to match GET /approvals/{request_id} (declared
+    first) and answer 404 "Approval request not found"."""
+    import json
+
+    from app.workflow import router_hitl
+
+    monkeypatch.setattr(router_hitl, "_STREAM_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(router_hitl, "_STREAM_MAX_POLLS", 2)
+    gateway.get_request.return_value = None  # what the shadowing route would hit
+    client = make_app(gateway)
+
+    with client.stream("GET", "/api/v1/approvals/stream") as resp:
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        lines = [ln for ln in resp.iter_lines() if ln.startswith("data:")]
+
+    payloads = [ln[len("data:") :].strip() for ln in lines]
+    events = [json.loads(p) for p in payloads if p != "[DONE]"]
+    # The pending request is announced on the FIRST poll (no initial sleep),
+    # exactly once, and the stream ends cleanly.
+    assert events == [{"event": "new_request", "request_id": "req-1", "priority": "medium"}]
+    assert payloads[-1] == "[DONE]"
+    gateway.get_request.assert_not_awaited()
