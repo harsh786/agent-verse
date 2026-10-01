@@ -2,29 +2,96 @@
 
 from __future__ import annotations
 
+import os
 import uuid
+from dataclasses import dataclass
 from typing import Any
+
+import structlog
 
 from app.coordination.moa.adapter import MoARuntime
 from app.coordination.moa.aggregator import AggregationInput
 from app.coordination.moa.layer_planner import LayerPlanner
 from app.coordination.moa.models import ModelCandidate
 from app.coordination.pattern_runs.context import RunContext, RunOutcome
+from app.coordination.pattern_runs.llm import provider_model
 
 _EST_CALL_COST_USD = 0.01
 
+logger = structlog.get_logger(__name__)
 
-def _candidate(name: str, *, provider_id: str, model: str) -> ModelCandidate:
-    # Proposers are distinct personas on the tenant's configured provider: their
-    # deployment ids (and failure domains) are per persona, so quorum counts
-    # independent proposals — the view reports this as single-provider diversity.
+
+@dataclass(frozen=True)
+class _Deployment:
+    provider: Any
+    provider_id: str
+    model: str
+
+
+def _provider_id(provider: Any) -> str:
+    return str(getattr(provider, "_agentverse_provider_type", "") or type(provider).__name__)
+
+
+def proposer_pool(
+    primary: Any, configured: list[Any] | None, models: list[str] | None
+) -> list[_Deployment]:
+    """Distinct (provider, model) deployments available to MoA proposers.
+
+    Sources, de-duplicated by (provider id, model): each configured provider at
+    its default model (``app.state.moa_providers``), then the run's
+    ``proposer_models`` requested through the primary provider (model-routing
+    backends such as OpenRouter or the on-prem dispatcher), then the primary.
+    """
+    pool: dict[tuple[str, str], _Deployment] = {}
+    for provider in configured or ():
+        model = provider_model(provider)
+        pool.setdefault(
+            (_provider_id(provider), model), _Deployment(provider, _provider_id(provider), model)
+        )
+    for model in models or ():
+        if model.strip():
+            key = (_provider_id(primary), model.strip())
+            pool.setdefault(key, _Deployment(primary, key[0], key[1]))
+    primary_key = (_provider_id(primary), provider_model(primary))
+    pool.setdefault(primary_key, _Deployment(primary, *primary_key))
+    return list(pool.values())
+
+
+def configured_provider_pool() -> list[Any]:
+    """Every configured real LLM provider (each at its default model), for MoA proposers."""
+    from app.providers.fake import FakeProvider
+    from app.providers.registry import _detect_providers, _instantiate_provider
+
+    pool: list[Any] = []
+    for cfg in _detect_providers():
+        try:
+            provider = _instantiate_provider(cfg)
+        except Exception as exc:
+            logger.debug("moa_provider_unavailable", type=cfg.provider_type, error=str(exc)[:80])
+            continue
+        if provider is None or isinstance(provider, FakeProvider):
+            continue
+        if not getattr(provider, "_agentverse_provider_type", None):
+            provider._agentverse_provider_type = cfg.provider_type
+        pool.append(provider)
+    return pool
+
+
+def default_proposer_models() -> list[str]:
+    """Operator default for ``proposer_models`` (comma-separated MOA_PROPOSER_MODELS)."""
+    return [
+        item.strip() for item in os.getenv("MOA_PROPOSER_MODELS", "").split(",") if item.strip()
+    ]
+
+
+def _candidate(name: str, deployment: _Deployment) -> ModelCandidate:
     return ModelCandidate(
         candidate_id=name,
-        provider_id=provider_id,
-        model_family=model or "default",
-        deployment_id=f"{model or 'default'}:{name}",
+        provider_id=deployment.provider_id,
+        model_family=deployment.model or "default",
+        deployment_id=f"{deployment.provider_id}:{deployment.model or 'default'}:{name}",
         region="default",
-        failure_domain=name,
+        failure_domain=f"{deployment.provider_id}:{name}",
         healthy=True,
         context_limit=100_000,
         estimated_cost_usd=_EST_CALL_COST_USD,
@@ -33,13 +100,52 @@ def _candidate(name: str, *, provider_id: str, model: str) -> ModelCandidate:
     )
 
 
-async def run_moa(ctx: RunContext, *, repository: Any, provider: Any) -> RunOutcome:
-    provider_id = type(provider).__name__
-    model = str(getattr(provider, "default_model", "") or getattr(provider, "_default_model", ""))
-    proposers = tuple(
-        _candidate(name, provider_id=provider_id, model=model) for name in ctx.participants
+async def run_moa(
+    ctx: RunContext,
+    *,
+    repository: Any,
+    provider: Any,
+    configured_providers: list[Any] | None = None,
+) -> RunOutcome:
+    pool = proposer_pool(
+        provider,
+        configured_providers,
+        list(ctx.options.get("proposer_models") or ()) or default_proposer_models(),
     )
-    aggregator = _candidate("aggregator", provider_id=provider_id, model=model)
+    assignment = {name: pool[index % len(pool)] for index, name in enumerate(ctx.participants)}
+    distinct_models = {(d.provider_id, d.model) for d in assignment.values()}
+    if len(distinct_models) == 1:
+        # Only one model is configured: proposals are personas of the same model,
+        # so they are not independent samples. Keep running, but say so.
+        diversity = "single_model_personas"
+        logger.warning(
+            "moa_single_model_personas",
+            execution_id=ctx.execution_id,
+            model=next(iter(distinct_models))[1],
+            hint="configure several providers or proposer_models for real diversity",
+        )
+    elif len(distinct_models) == len(assignment):
+        diversity = "multi_model"
+    else:
+        diversity = "partial_multi_model"
+    proposer_models = {name: d.model for name, d in assignment.items()}
+    await ctx.publish(
+        {
+            "type": "event",
+            "event_type": "pattern_run.moa_diversity.v1",
+            "payload": {
+                "execution_id": ctx.execution_id,
+                "diversity": diversity,
+                "proposer_models": proposer_models,
+            },
+        }
+    )
+    await ctx.update_view(diversity=diversity, proposer_models=proposer_models)
+    proposers = tuple(_candidate(name, assignment[name]) for name in ctx.participants)
+    by_candidate = {item.candidate_id: assignment[item.candidate_id] for item in proposers}
+    aggregator = _candidate(
+        "aggregator", _Deployment(provider, _provider_id(provider), provider_model(provider))
+    )
     layers = max(1, min(int(ctx.options.get("layers", 2)), 3))
     maximum_cost = float(ctx.options.get("max_cost_usd", 1.0))
     plan = LayerPlanner().plan(
@@ -76,11 +182,14 @@ async def run_moa(ctx: RunContext, *, repository: Any, provider: Any) -> RunOutc
     ) -> dict[str, Any]:
         prior = aggregates.get(layer_index - 1)
         refinement = f"\nPrevious layer's aggregate answer to improve on:\n{prior}" if prior else ""
+        deployment = by_candidate[candidate.candidate_id]
         answer = await ctx.llm.text(
             f"You are proposer '{candidate.candidate_id}' in a Mixture-of-Agents layer "
             f"{layer_index}. Give your best independent answer.\n"
             f"Objective: {context['objective']}{refinement}",
             step=f"layer-{layer_index}-{candidate.candidate_id}",
+            provider=deployment.provider,
+            model=deployment.model or None,
         )
         return {
             "safe_excerpt": answer[:2_000],
@@ -129,7 +238,8 @@ async def run_moa(ctx: RunContext, *, repository: Any, provider: Any) -> RunOutc
             "layers": layers,
             "completed_layers": state.completed_layers,
             "degraded": state.degraded,
-            "diversity": "single_provider_personas",
+            "diversity": diversity,
+            "proposer_models": proposer_models,
             "proposers": [item.candidate_id for item in proposers],
         },
     )

@@ -243,7 +243,10 @@ class PatternRunService:
                 ctx, ledger_repository=self._required("progress_ledger_repository")
             ),
             "mixture_of_agents": lambda: run_moa(
-                ctx, repository=self._required("moa_repository"), provider=provider
+                ctx,
+                repository=self._required("moa_repository"),
+                provider=provider,
+                configured_providers=list(getattr(self._state, "moa_providers", None) or ()),
             ),
             "camel": lambda: run_camel(ctx),
             "generative_agents": lambda: run_generative(ctx),

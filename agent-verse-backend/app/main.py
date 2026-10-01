@@ -2863,6 +2863,15 @@ def create_app(
     # a real LLM configured. Bind the real provider (never the no-key
     # FakeProvider, whose canned output must not be reported as LLM-powered).
     app.state.llm_provider = None if isinstance(_app_provider, FakeProvider) else _app_provider
+    # MOA-DIVERSITY: every configured provider becomes a distinct MoA proposer model.
+    app.state.moa_providers = []
+    if app.state.llm_provider is not None:
+        try:
+            from app.coordination.pattern_runs.moa import configured_provider_pool
+
+            app.state.moa_providers = configured_provider_pool()
+        except Exception as _moa_exc:
+            logger.warning("moa_provider_pool_unavailable", error=str(_moa_exc)[:160])
     app.state.mcp_registry = _mcp_registry
     app.state.mcp_client = _mcp_client
     app.state.tool_cache = _tool_cache_inmem

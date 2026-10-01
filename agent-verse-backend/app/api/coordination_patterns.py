@@ -32,6 +32,9 @@ class PatternRunOptions(BaseModel):
     timeout_seconds: int = Field(default=300, ge=10, le=900)
     max_tokens: int = Field(default=40_000, ge=1_000, le=200_000)
     max_resets: int = Field(default=1, ge=0, le=3)
+    # Mixture-of-agents: models requested through the configured provider, one per
+    # proposer (for model-routing backends); configured providers are used too.
+    proposer_models: list[str] = Field(default_factory=list, max_length=6)
 
 
 class PatternRunRequest(BaseModel):

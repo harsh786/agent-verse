@@ -19,7 +19,7 @@ class PatternCallLimitError(RuntimeError):
     """The run exhausted its LLM call ceiling."""
 
 
-def _provider_model(provider: Any) -> str:
+def provider_model(provider: Any) -> str:
     for attr in ("default_model", "_default_model", "model"):
         value = getattr(provider, attr, None)
         if isinstance(value, str) and value:
@@ -83,17 +83,27 @@ class PatternLLM:
         self.calls = 0
         self.tokens = 0
 
-    async def text(self, prompt: str, *, step: str, max_tokens: int = 800) -> str:
+    async def text(
+        self,
+        prompt: str,
+        *,
+        step: str,
+        max_tokens: int = 800,
+        provider: Any = None,
+        model: str | None = None,
+    ) -> str:
+        """One charged call; *provider*/*model* route it to a specific deployment."""
         if self.calls >= self._max_calls:
             raise PatternCallLimitError(
                 f"{self._pattern} run exhausted its {self._max_calls}-call LLM ceiling"
             )
         self.calls += 1
+        target = provider if provider is not None else self._provider
         response = await complete_decision(
-            self._provider,
+            target,
             CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
-                model=_provider_model(self._provider),
+                model=model or provider_model(target),
                 max_tokens=max_tokens,
             ),
             role=f"coordination_{self._pattern}_{step}",
@@ -114,4 +124,10 @@ class PatternLLM:
         )
 
 
-__all__ = ["PatternCallLimitError", "PatternLLM", "parse_json_object", "string_list"]
+__all__ = [
+    "PatternCallLimitError",
+    "PatternLLM",
+    "parse_json_object",
+    "provider_model",
+    "string_list",
+]
