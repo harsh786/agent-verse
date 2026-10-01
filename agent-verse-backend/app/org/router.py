@@ -1307,13 +1307,22 @@ async def list_org_approvals(
         "completed",
         "done",
     )
-    try:
-        tasks = await service.list_tasks(org_id, limit=200)
-    except Exception as exc:
+    def _unavailable(exc: Exception) -> HTTPException:
+        # A 200 {"data": []} here rendered as "No pending approvals" while gates
+        # were waiting. Fail closed with an honest 503 (no raw exception text).
         from app.observability.logging import get_logger
 
         get_logger(__name__).warning("org_list_approvals_failed", org_id=org_id, error=str(exc))
-        return {"data": [], "org_id": org_id, "total": 0, "error": str(exc)}
+        # ``status`` is shadowed by the query parameter here, hence the literal.
+        return HTTPException(
+            status_code=503,
+            detail="Approvals are temporarily unavailable; try again shortly",
+        )
+
+    try:
+        tasks = await service.list_tasks(org_id, limit=200)
+    except Exception as exc:
+        raise _unavailable(exc) from exc
 
     def _to_item(t: Any) -> dict[str, Any]:
         meta = t.extra_data or {}
@@ -1368,8 +1377,9 @@ async def list_org_approvals(
                 for m in missions
                 if str(m.status) not in ("completed", "failed", "cancelled", "archived")
             }
-        except Exception:
-            _open = set()
+        except Exception as exc:
+            # An empty fallback set silently dropped every gate on a mission.
+            raise _unavailable(exc) from exc
         selected = [
             t
             for t in gates

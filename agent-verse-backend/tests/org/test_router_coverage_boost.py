@@ -838,31 +838,28 @@ class TestOrgApprovalsList:
         assert r.status_code == 200
         assert r.json()["total"] == 0
 
-    async def test_list_approvals_list_missions_raises_falls_back_open(
+    async def test_list_approvals_list_missions_raises_is_503(
         self, client: AsyncClient, mock_service: MagicMock
     ) -> None:
+        # Without the open-missions set the pending filter is unknowable; an
+        # empty fallback set silently hid every gate on a mission (FE-24).
         gate = _fake_task(
             status="approval_required", extra_data={"task_kind": "approval_gate"}
         )
-        gate.mission_id = None
         mock_service.list_tasks = AsyncMock(return_value=[gate])
         mock_service.list_missions = AsyncMock(side_effect=RuntimeError("db down"))
         r = await client.get(f"/v1/org/{ORG_ID}/approvals")
-        assert r.status_code == 200
-        # mission_id is None on the gate -> stays selected regardless of the
-        # (empty, because list_missions raised) open-missions fallback set.
-        assert r.json()["total"] == 1
+        assert r.status_code == 503
+        assert "db down" not in r.text
 
-    async def test_list_approvals_list_tasks_raises_returns_error_payload(
+    async def test_list_approvals_list_tasks_raises_is_503(
         self, client: AsyncClient, mock_service: MagicMock
     ) -> None:
+        # A 200 {"data": []} rendered as "No pending approvals" while gates waited.
         mock_service.list_tasks = AsyncMock(side_effect=RuntimeError("db down"))
         r = await client.get(f"/v1/org/{ORG_ID}/approvals")
-        assert r.status_code == 200
-        data = r.json()
-        assert data["data"] == []
-        assert data["total"] == 0
-        assert "error" in data
+        assert r.status_code == 503
+        assert "db down" not in r.text
 
 
 class TestOrgApprovalDecision:

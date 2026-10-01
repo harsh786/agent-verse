@@ -114,4 +114,30 @@ describe('ApprovalCenter', () => {
       expect(spy.mock.calls.filter(([u]) => String(u).includes('/approvals')).length).toBeGreaterThan(before),
     );
   });
+
+  test('a failing approvals list renders an error with retry, not "No pending approvals"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ detail: 'Requires org role viewer' }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      }));
+    renderCenter();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Requires org role viewer/);
+    expect(screen.queryByText('No pending approvals')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
+  });
+
+  test('a refused decision (409) renders an alert on the card', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (/\/approvals\/ap-1\/approve$/.test(url) && (init?.method ?? 'GET') === 'POST')
+        return new Response(JSON.stringify({ detail: 'Approval already decided' }), {
+          status: 409, headers: { 'Content-Type': 'application/json' },
+        });
+      return new Response(JSON.stringify(APPROVALS), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderCenter();
+    await screen.findByText('Deploy to production');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Approve' })[0]);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already decided/);
+  });
 });

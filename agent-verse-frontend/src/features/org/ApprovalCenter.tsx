@@ -17,8 +17,9 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
+import { useApprovals } from './hooks/useOrg';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -48,18 +49,6 @@ const RISK_CONFIG: Record<string, { class: string; icon: React.ElementType; labe
 
 // ── API hooks ──────────────────────────────────────────────────────────────
 
-function useApprovals(orgId: string) {
-  return useQuery({
-    queryKey: ['approvals', orgId],
-    queryFn: () =>
-      apiFetch<{ data: Approval[] }>(`/v1/org/${orgId}/approvals`)
-        .then(r => (Array.isArray(r) ? r : r?.data ?? []))
-        .catch(() => [] as Approval[]),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
-  });
-}
-
 function useApprovalAction(orgId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -72,13 +61,17 @@ function useApprovalAction(orgId: string) {
   });
 }
 
+function errorText(e: unknown): string {
+  return e instanceof Error && e.message ? e.message : 'Request failed';
+}
+
 // ── Approval card ──────────────────────────────────────────────────────────
 
 function ApprovalCard({ approval, orgId }: { approval: Approval; orgId: string }) {
   const [expanded, setExpanded] = useState(false);
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [rejectNotes, setRejectNotes] = useState('');
-  const { mutate: act, isPending } = useApprovalAction(orgId);
+  const { mutate: act, isPending, error: actionError } = useApprovalAction(orgId);
   const riskConf = RISK_CONFIG[approval.risk_level] ?? RISK_CONFIG.medium;
   const RiskIcon = riskConf.icon;
 
@@ -152,6 +145,11 @@ function ApprovalCard({ approval, orgId }: { approval: Approval; orgId: string }
               className="text-xs h-16 resize-none bg-[var(--bg-surface)] border-[var(--border)]"
               aria-label="Rejection reason"
             />
+          )}
+          {actionError && (
+            <p role="alert" className="text-xs text-red-400">
+              Decision failed: {errorText(actionError)}
+            </p>
           )}
           <div className="flex gap-2">
             <Button
@@ -241,8 +239,8 @@ interface ApprovalCenterProps {
 }
 
 export function ApprovalCenter({ orgId }: ApprovalCenterProps) {
-  const { data: approvals = [], isLoading, refetch, isFetching } = useApprovals(orgId);
-  const pending = (approvals as Approval[]).filter(a => a.status === 'pending');
+  const { data: approvals = [], isLoading, isError, error, refetch, isFetching } = useApprovals(orgId);
+  const pending = (approvals as unknown as Approval[]).filter(a => a.status === 'pending');
   const sorted = [...pending].sort(
     (a, b) => RISK_ORDER.indexOf(a.risk_level) - RISK_ORDER.indexOf(b.risk_level)
   );
@@ -274,6 +272,11 @@ export function ApprovalCenter({ orgId }: ApprovalCenterProps) {
       {isLoading ? (
         <div className="flex items-center justify-center h-24" aria-live="polite">
           <RefreshCw className="h-5 w-5 animate-spin text-[var(--accent-blue)]" aria-label="Loading" />
+        </div>
+      ) : isError ? (
+        <div role="alert" className="flex flex-col items-center justify-center gap-2 h-24 border border-dashed border-red-400/40 rounded-xl">
+          <p className="text-sm text-red-400">Could not load approvals: {errorText(error)}</p>
+          <Button variant="outline" size="sm" className="h-7" onClick={() => refetch()}>Retry</Button>
         </div>
       ) : sorted.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-24 border border-dashed border-[var(--border)] rounded-xl">

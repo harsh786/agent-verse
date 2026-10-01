@@ -44,6 +44,7 @@ def _make_app(mock_service: Any | None = None) -> FastAPI:
         _svc._tenant_id = TENANT_ID
         _svc.list_missions = AsyncMock(return_value=[])
         _svc.list_events = AsyncMock(return_value=[])
+        _svc.list_tasks = AsyncMock(return_value=[])
         app.dependency_overrides[get_org_service] = lambda: _svc
 
     # Inject a mock app state for gateway/redis
@@ -76,28 +77,35 @@ async def test_org_approvals_no_gateway(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_org_approvals_with_pending() -> None:
-    """Returns pending approvals from HITL gateway."""
-    from app.governance.hitl import ApprovalStatus
+    """Lists the org's pending approval-gate tasks (the durable store)."""
+    gate = MagicMock()
+    gate.id = "gate-123"
+    gate.mission_id = None
+    gate.status = "approval_required"
+    gate.extra_data = {"task_kind": "approval_gate", "gate": {"type": "send_email"}}
+    gate.outputs = []
+    gate.title = "Approval gate: send_email"
+    gate.objective = ""
+    gate.why = "send_email"
+    gate.risk_level = "high"
+    gate.cost_estimate_usd = None
+    gate.owner_agent_id = None
+    gate.expires_at = None
+    gate.created_at = None
+    gate.updated_at = None
 
-    mock_req = MagicMock()
-    mock_req.goal_id    = "goal-123"
-    mock_req.action     = "send_email"
-    mock_req.risk_level = "high"
-    mock_req.status     = ApprovalStatus.PENDING
-    mock_req.request_id = "req-123"
-    mock_req.created_at = "2026-08-20T00:00:00Z"
-
-    mock_gateway = MagicMock()
-    mock_gateway.list_pending.return_value = [mock_req]
-
-    app = _make_app()
-    app.state.hitl_gateway = mock_gateway
+    svc = MagicMock()
+    svc._tenant_id = TENANT_ID
+    svc.list_tasks = AsyncMock(return_value=[gate])
+    svc.list_missions = AsyncMock(return_value=[])
+    app = _make_app(svc)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         resp = await c.get(f"/v1/org/{ORG_ID}/approvals")
     assert resp.status_code == 200
     data = resp.json()
-    assert isinstance(data["data"], list)
+    assert [a["id"] for a in data["data"]] == ["gate-123"]
+    assert data["data"][0]["status"] == "pending"
 
 
 @pytest.mark.asyncio
