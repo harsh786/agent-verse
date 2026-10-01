@@ -117,6 +117,13 @@ class WorkflowHITLRequest:
 _SLA_ACTOR = "system:sla"
 
 
+class ApprovalPersistenceError(RuntimeError):
+    """The durable approval store could not record a change (HTTP 503).
+
+    Never swallowed: an approval that exists only in one process's memory is
+    invisible to every reviewer, so its run would wait forever (WF-40)."""
+
+
 class ApprovalAlreadyDecidedError(Exception):
     """Someone else already decided this approval (HTTP 409)."""
 
@@ -831,24 +838,32 @@ class HITLWorkflowGateway:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     async def _save(self, req: WorkflowHITLRequest) -> None:
-        self._store[req.request_id] = req
-        # Durable, cross-process persistence (Postgres, RLS). Best-effort: an
-        # infra hiccup must not break the in-process suspend/resume path.
+        """Persist ``req``; raises :class:`ApprovalPersistenceError` when the
+        durable store is wired and the write fails (fail closed — the caller's
+        step fails / the API answers 503 instead of reporting a phantom change).
+        """
         if self._approval_store is not None:
             try:
                 await self._approval_store.save(req)
             except Exception as exc:
-                _log.warning(
+                _log.error(
                     "hitl_approval_db_save_failed",
                     request_id=req.request_id,
                     error=str(exc),
                 )
+                raise ApprovalPersistenceError(
+                    "the approval could not be saved; try again"
+                ) from exc
+        self._store[req.request_id] = req
         if self._redis is not None:
-            await self._redis.setex(
-                f"hitl:req:{req.request_id}",
-                86_400 * 30,  # 30-day TTL
-                json.dumps(req.__dict__),
-            )
+            payload = json.dumps(req.__dict__)
+            if self._approval_store is None:
+                # Redis is the only shared copy: its failure must surface.
+                await self._redis.setex(f"hitl:req:{req.request_id}", 86_400 * 30, payload)
+            else:
+                # Postgres holds the approval; the Redis mirror is a cache.
+                with contextlib.suppress(Exception):
+                    await self._redis.setex(f"hitl:req:{req.request_id}", 86_400 * 30, payload)
 
     async def _send_notification(self, req: WorkflowHITLRequest) -> None:
         if self._notify is None:

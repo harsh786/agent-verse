@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from app.observability.logging import get_logger
-from app.workflow.hitl_extension import ApprovalAlreadyDecidedError
+from app.workflow.hitl_extension import ApprovalAlreadyDecidedError, ApprovalPersistenceError
 
 _log = get_logger(__name__)
 
@@ -359,6 +359,8 @@ async def delegate_approval(
             note=body.note,
             tenant_id=_tenant_id(request),
         )
+    except ApprovalPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return req.__dict__
@@ -372,6 +374,8 @@ async def escalate_approval(request_id: str, request: Request) -> dict[str, Any]
         req = await svc.escalate(
             request_id=request_id, actor_id=_user_id(request), tenant_id=_tenant_id(request)
         )
+    except ApprovalPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return req.__dict__
