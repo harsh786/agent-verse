@@ -300,6 +300,12 @@ def _is_uncacheable_output(output: str | None) -> bool:
 class ExecutorMixin:
     """Mixin: _node_execute, _execute_step_with_loop, _execute_step, _execute_step_with_cache."""
 
+    def _record_stream_failure(self, exec_model: str, start: float) -> None:
+        """A failed executor step: every model actually attempted failed (PROV-21),
+        not just the step's nominal model."""
+        for model in getattr(self, "_failed_models", None) or [exec_model]:
+            self._record_provider_health(model, ok=False, start=start)
+
     def _record_provider_health(self, model: str, *, ok: bool, start: float) -> None:
         """D-13: report a live LLM provider-call outcome to the model router's health
         policy so orchestrator failover learns. Fully guarded — never raises."""
@@ -2092,7 +2098,7 @@ class ExecutorMixin:
             except Exception:
                 if _active_breaker is not None:
                     _active_breaker.record_failure()
-                self._record_provider_health(_exec_model, ok=False, start=_llm_call_start)
+                self._record_stream_failure(_exec_model, _llm_call_start)
                 raise
         finally:
             if _bulkhead_acquired and _bulkhead is not None:

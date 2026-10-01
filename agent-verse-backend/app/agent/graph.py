@@ -998,16 +998,29 @@ class AgentGraph(
             emitted[0] += 1
             await on_token(chunk)
 
+        from app.providers import circuit_breaker as _cb
+
         for i, model in enumerate(models):
             attempt = request if i == 0 else dataclasses.replace(request, model=model)
+            # PROV-21: the same per-model circuit the non-streaming path uses — a
+            # model whose circuit is open is skipped, outcomes feed the circuit.
+            _key = _cb.breaker_key(self._executor, attempt)
+            if _cb._provider_cb.is_open(_key):
+                last_exc = _cb.ProviderCircuitOpenError(f"circuit open for {_key}")
+                self._logger.warning("executor_model_circuit_open", model=model)
+                continue
+            _cb._provider_cb.before_call(_key)
             emitted[0] = 0
             try:
                 resp = await asyncio.wait_for(
                     self._executor.stream_tokens(attempt, _counting_on_token), timeout=timeout
                 )
+                _cb._provider_cb.record_success(_key)
                 self._last_served_model = model
                 return resp
             except Exception as exc:
+                if getattr(exc, "provider_failure", True):
+                    _cb._provider_cb.record_failure(_key)
                 last_exc = exc
                 self._failed_models.append(model)
                 token_buffer.clear()
