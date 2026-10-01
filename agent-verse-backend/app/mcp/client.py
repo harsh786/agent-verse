@@ -78,6 +78,9 @@ def _ws_to_http_url(url: str) -> str:
     return _absolute_http_url(stripped)
 
 
+# OAuth-flow auth types whose access token lives in the OAuth token store.
+_OAUTH_AUTH_TYPES = frozenset({"oauth_ac", "pkce", "oauth_cc"})
+
 # Credential keys a built-in handler uses as the vendor API endpoint.
 _BUILTIN_ENDPOINT_KEYS = ("url", "base_url", "instance_url", "server_url", "endpoint")
 
@@ -661,6 +664,26 @@ class MCPClient:
                     )
                 resolved[k] = str(plain)
             credentials = resolved
+        # OAuth connectors (Google, Microsoft, ...): the handler needs THIS
+        # connection's access token from the OAuth token store. auth_config only
+        # holds the client settings, so the handler used to get no token at all.
+        if server.auth_type in _OAUTH_AUTH_TYPES:
+            oauth_token = await self._oauth_access_token(
+                server, tenant_ctx=tenant_ctx, server_id=server.server_id
+            )
+            if oauth_token:
+                credentials = {**credentials, "access_token": oauth_token}
+            elif not str(credentials.get("access_token") or "").strip():
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=(
+                        f"Connector '{server.name}' has no valid OAuth token for this tenant; "
+                        "reconnect (authorize) the connector. Platform credentials are never "
+                        "used for tenant tool calls."
+                    ),
+                    server_id=server.server_id,
+                )
         # Confused-deputy guard (defence in depth): built-in handlers read their
         # configuration via tenant_getenv(), which answers only from these
         # credentials during the call (app/mcp/servers/credentials.py), and a
@@ -1649,31 +1672,48 @@ class MCPClient:
             for k, v in auth.items():
                 if k != "auth_type":
                     headers[k] = await self._resolve_auth_value(v, tenant_ctx)
-        elif cfg.auth_type in {"oauth_ac", "pkce", "oauth_cc"}:
-            # Try to get token from OAuth manager
-            if self._oauth_manager is not None:
-                try:
-                    tenant_id = getattr(tenant_ctx, "tenant_id", "")
-                    # Read through the durable token store when the manager has
-                    # one: the token may have been obtained by another replica
-                    # (or this is the worker, which never ran the OAuth flow).
-                    _aget = getattr(self._oauth_manager, "aget_token", None)
-                    if inspect.iscoroutinefunction(_aget):
-                        token = await _aget(tenant_id, server_id)
-                    else:
-                        token = self._oauth_manager.get_token(tenant_id, server_id)
-                    if token is not None:
-                        if token.is_expired():
-                            with suppress(Exception):
-                                token = await self._oauth_manager.refresh_token(
-                                    tenant_id=tenant_id,
-                                    server_id=server_id,
-                                    token=token,
-                                    auth_config=auth,
-                                )
-                        if token is not None and not token.is_expired():
-                            headers["Authorization"] = f"Bearer {token.access_token}"
-                except Exception:
-                    pass
+        elif cfg.auth_type in _OAUTH_AUTH_TYPES:
+            access_token = await self._oauth_access_token(
+                cfg, tenant_ctx=tenant_ctx, server_id=server_id
+            )
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
 
         return headers
+
+    async def _oauth_access_token(
+        self,
+        cfg: MCPServerConfig,
+        *,
+        tenant_ctx: TenantContext | None,
+        server_id: str,
+    ) -> str | None:
+        """The connection's own OAuth access token from the OAuth token store.
+
+        Read through the durable store when the manager has one (the token may
+        have been obtained by another replica, or this is the worker, which never
+        ran the OAuth flow) and refreshed when expired. ``None`` when there is no
+        usable token — never a platform credential.
+        """
+        if self._oauth_manager is None:
+            return None
+        try:
+            tenant_id = getattr(tenant_ctx, "tenant_id", "")
+            _aget = getattr(self._oauth_manager, "aget_token", None)
+            if inspect.iscoroutinefunction(_aget):
+                token = await _aget(tenant_id, server_id)
+            else:
+                token = self._oauth_manager.get_token(tenant_id, server_id)
+            if token is not None and token.is_expired():
+                with suppress(Exception):
+                    token = await self._oauth_manager.refresh_token(
+                        tenant_id=tenant_id,
+                        server_id=server_id,
+                        token=token,
+                        auth_config=cfg.auth_config,
+                    )
+            if token is not None and not token.is_expired() and token.access_token:
+                return str(token.access_token)
+        except Exception as exc:
+            logger.warning("oauth_token_lookup_failed server_id=%s error=%s", server_id, exc)
+        return None
