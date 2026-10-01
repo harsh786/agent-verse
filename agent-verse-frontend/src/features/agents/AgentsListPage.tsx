@@ -70,6 +70,8 @@ export function AgentsListPage() {
   // 502 from /agents/create = designer LLM failed, nothing created, heuristic
   // draft returned. Show it and require an explicit "Create anyway".
   const [heuristicDraft, setHeuristicDraft] = useState<HeuristicAgentDraft | null>(null);
+  // MEM-30: the designer's policy suggestions are advisory and NOT applied.
+  const [policySuggestions, setPolicySuggestions] = useState<string[]>([]);
 
 
   // Escape closes the create dialog. A modal that traps the user until they
@@ -135,7 +137,8 @@ export function AgentsListPage() {
     mutationFn: (acceptHeuristic: boolean) =>
       agentsApi.createNl(nlCommand, false, { acceptHeuristic }),
     onMutate: () => setHeuristicDraft(null),
-    onSuccess: () => {
+    onSuccess: (resp) => {
+      setPolicySuggestions(resp?.meta_agent_config?.policy_suggestions ?? []);
       qc.invalidateQueries({ queryKey: ['agents'] });
       setShowCreate(false);
       setNlCommand('');
@@ -235,6 +238,38 @@ export function AgentsListPage() {
             ))}
           </div>
         </div>
+
+        {policySuggestions.length > 0 && (
+          <div
+            role="status"
+            data-testid="policy-suggestions-notice"
+            className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="font-medium text-amber-300">
+                  Suggested policies for the new agent — not applied
+                </p>
+                <ul className="mt-1 list-disc pl-5 text-muted-foreground">
+                  {policySuggestions.map((s) => (
+                    <li key={s}>{s}</li>
+                  ))}
+                </ul>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  These are suggestions only. Create any you want as tool policies under Governance.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPolicySuggestions([])}
+                aria-label="Dismiss policy suggestions"
+                className="text-muted-foreground hover:text-foreground"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Create modal */}
         {showCreate && (

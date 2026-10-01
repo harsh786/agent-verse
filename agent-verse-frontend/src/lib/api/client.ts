@@ -569,7 +569,13 @@ export interface MetaAgentDraftConfig {
 export interface MetaAgentCreateResponse {
   agent?: AgentResponse;
   agent_id?: string;
-  meta_agent_config?: Record<string, unknown> & { generated_by?: string };
+  meta_agent_config?: Record<string, unknown> & {
+    generated_by?: string;
+    /** Free-text governance ideas from the designer LLM — never applied. */
+    policy_suggestions?: string[];
+    policy_suggestions_applied?: boolean;
+    policy_suggestions_note?: string;
+  };
 }
 
 /** The id of the agent POST /agents/create made, whichever shape the body used. */

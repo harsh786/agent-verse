@@ -899,7 +899,14 @@ async def create_agent_nl(request: Request, body: MetaAgentCreateRequest) -> dic
             "cron_expression": config.cron_expression,
             "interval_seconds": config.interval_seconds,
             "autonomy_mode": config.autonomy_mode,
+            # MEM-30: free-text governance ideas from the designer LLM. They are
+            # NOT turned into tool policies — say so, so nobody assumes they bind.
             "policy_suggestions": config.policy_suggestions,
+            "policy_suggestions_applied": False,
+            "policy_suggestions_note": (
+                "Suggestions only — not applied. Create any you want as tool "
+                "policies under Governance."
+            ),
             "generated_by": generated_by,
             "fallback_reason": str(getattr(config, "fallback_reason", "")),
         },

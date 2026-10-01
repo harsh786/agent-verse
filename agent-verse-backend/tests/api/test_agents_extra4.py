@@ -1425,6 +1425,11 @@ def test_create_agent_nl_success() -> None:
     assert "agent" in body
     assert "meta_agent_config" in body
     assert body["meta_agent_config"]["autonomy_mode"] == "supervised"
+    # MEM-30: suggestions are advisory text, explicitly NOT applied as policies.
+    cfg = body["meta_agent_config"]
+    assert cfg["policy_suggestions"] == ["allow_all"]
+    assert cfg["policy_suggestions_applied"] is False
+    assert "not applied" in cfg["policy_suggestions_note"].lower()
 
 
 # ---------------------------------------------------------------------------

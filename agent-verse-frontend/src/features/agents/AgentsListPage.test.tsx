@@ -391,6 +391,35 @@ test('create flow: a successful submit invalidates the list, closes the modal, a
   expect(f).toHaveBeenCalled();
 });
 
+test('create flow: policy suggestions are shown as NOT applied (MEM-30)', async () => {
+  mockFetch({
+    agents: [],
+    onCreate: () =>
+      new Response(
+        JSON.stringify({
+          agent: makeAgent({ agent_id: 'new-2', name: 'Guarded Bot' }),
+          meta_agent_config: {
+            policy_suggestions: ['Require approval before closing tickets'],
+            policy_suggestions_applied: false,
+          },
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } },
+      ),
+  });
+  const user = userEvent.setup();
+  renderPage();
+  await waitFor(() => expect(screen.getByText(/no agents/i)).toBeInTheDocument());
+  await user.click(screen.getByRole('button', { name: 'New Agent' }));
+  await user.type(screen.getByPlaceholderText(/Create an agent that monitors/), 'Deploy a bot');
+  await user.click(screen.getByRole('button', { name: 'Deploy Agent' }));
+
+  const notice = await screen.findByTestId('policy-suggestions-notice');
+  expect(notice).toHaveTextContent(/not applied/i);
+  expect(notice).toHaveTextContent('Require approval before closing tickets');
+  await user.click(screen.getByRole('button', { name: /dismiss policy suggestions/i }));
+  expect(screen.queryByTestId('policy-suggestions-notice')).not.toBeInTheDocument();
+});
+
 test('create flow: shows the mutation error message on failure and keeps the modal open', async () => {
   mockFetch({
     agents: [],
