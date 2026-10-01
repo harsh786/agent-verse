@@ -378,6 +378,22 @@ def _run_async(coro: Any) -> Any:
     return run_in_fresh_loop(coro)
 
 
+async def _await_then_flush_audit(coro: Any, audit: Any) -> Any:
+    """Await *coro*, then every audit write it scheduled, before the loop closes.
+
+    ``_run_async`` cancels leftover tasks when it closes the per-task loop, which
+    is how the final step's audit INSERT used to be destroyed on workers (AUDIT-05).
+    """
+    try:
+        return await coro
+    finally:
+        flush = getattr(audit, "flush", None)
+        if flush is not None:
+            lost = await flush()
+            if lost:
+                logger.error("worker_audit_writes_lost count=%s", lost)
+
+
 async def _load_worker_policy_engine(db_factory: Any, tenant_id: str) -> Any:
     from app.governance.policies import Policy, PolicyEngine
 
@@ -2701,6 +2717,8 @@ def run_goal(
 
     # The worker has one execution kernel. Assembly failures fail explicitly.
     _loop_is_patched = False
+    # The goal's AuditLog: flushed before the run loop closes (AUDIT-05).
+    _worker_audit: Any = None
 
     # Resolve the agent's autonomy_mode from the DB so that fully-autonomous
     # agents bypass the HITL gate on write_high tool calls.
@@ -2913,6 +2931,7 @@ def run_goal(
             from app.reliability.rollback import RollbackEngine
 
             _audit = AuditLog(db_session_factory=db_factory)
+            _worker_audit = _audit
             # Durable + cross-process: gates raised here are persisted (so the
             # API can find and resolve them) and the waiter also listens on the
             # Redis BLPOP result key the API publishes to. A bare HITLGateway()
@@ -3743,8 +3762,13 @@ def run_goal(
                 timeout=float(goal_timeout_s),
             )
             state = _run_async(
-                # The heartbeat is withheld when this loop stops making progress.
-                _heartbeat.run_with_progress(_goal_run) if _heartbeat is not None else _goal_run
+                _await_then_flush_audit(
+                    # The heartbeat is withheld when this loop stops making progress.
+                    _heartbeat.run_with_progress(_goal_run)
+                    if _heartbeat is not None
+                    else _goal_run,
+                    _worker_audit,
+                )
             )
         except TimeoutError:
             _run_async(mark_worker_failed(TimeoutError(f"Goal timed out after {goal_timeout_s}s")))

@@ -2654,6 +2654,15 @@ def create_app(
                     # (a BaseException): it must not abort the rest of shutdown.
                     with contextlib.suppress(Exception, _ps_asyncio.CancelledError):
                         await _ps_task
+                # Await in-flight audit writes before the DB pool goes away.
+                if (_al_stop := getattr(app.state, "audit_log", None)) is not None and hasattr(
+                    _al_stop, "flush"
+                ):
+                    try:
+                        if _lost := await _al_stop.flush():
+                            logger.error("audit_writes_lost_at_shutdown", count=_lost)
+                    except Exception as _al_stop_exc:
+                        logger.error("audit_flush_failed", error=str(_al_stop_exc))
                 if _siem_fwd := getattr(app.state, "siem_forwarder", None):
                     import contextlib
 

@@ -7,13 +7,14 @@ no delete or update method.
 In production this is backed by an append-only PostgreSQL table with an
 immutability trigger; this in-memory version is used in tests.
 
-When ``db_session_factory`` is supplied, writes are also persisted to
-PostgreSQL via fire-and-forget asyncio tasks. DB failures are logged as
-warnings and never raised to callers.
+When ``db_session_factory`` is supplied, writes are persisted to PostgreSQL:
+``record_async`` awaits the write (and raises ``AuditWriteError`` if it cannot be
+stored); ``record`` tracks its write task so ``flush`` can await it.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,17 @@ from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
 _log = get_logger(__name__)
+
+_AUDIT_INSERT_SQL = """
+    INSERT INTO audit_log (
+        id, tenant_id, goal_id, tool_name, action_level, outcome, step_id,
+        approver, note, ip_address, user_agent, api_key_id, request_id, connector_id
+    ) VALUES (
+        :id, :tenant_id, :goal_id, :tool_name, :action_level, :outcome, :step_id,
+        :approver, :note, :ip_address, :user_agent, :api_key_id, :request_id, :connector_id
+    )
+    ON CONFLICT (id) DO NOTHING
+"""
 
 
 class AuditQueryUnavailableError(RuntimeError):
@@ -52,17 +64,55 @@ class AuditEvent:
     auth_type: str | None = None
 
 
-class AuditLog:
-    """Append-only in-memory audit log, namespaced per tenant.
+class AuditWriteError(RuntimeError):
+    """An audit event could not be stored durably (after retries)."""
 
-    When ``db_session_factory`` is provided, records are also persisted to
-    PostgreSQL via fire-and-forget asyncio tasks. DB failures are logged as
-    warnings and never raised to callers.
+
+def _audit_row(event: AuditEvent, tenant_id: str) -> dict[str, Any]:
+    return {
+        "id": event.event_id,
+        "tenant_id": tenant_id,
+        "goal_id": event.goal_id,
+        "tool_name": event.tool_name,
+        "action_level": event.action_level.value,
+        "outcome": event.outcome,
+        "step_id": event.step_id or "",
+        "approver": event.approver,
+        "note": event.note,
+        "ip_address": event.ip_address,
+        "user_agent": event.user_agent,
+        "api_key_id": event.api_key_id,
+        "request_id": event.request_id,
+        "connector_id": event.connector_id,
+    }
+
+
+class AuditLog:
+    """Append-only audit log: PostgreSQL is the source of truth.
+
+    ``record_async`` awaits the INSERT (retrying transient failures) and raises
+    :class:`AuditWriteError` when the event could not be stored, so callers can
+    fail closed. ``record`` is the sync entry point for code that cannot await:
+    its write task is strongly referenced and retried, and ``flush`` awaits every
+    pending write — Celery workers flush before their per-task loop closes, the
+    API flushes on shutdown — so a write is never silently orphaned.
     """
 
-    def __init__(self, db_session_factory: Any = None) -> None:
+    def __init__(
+        self,
+        db_session_factory: Any = None,
+        *,
+        write_attempts: int = 3,
+        retry_base_delay: float = 0.2,
+    ) -> None:
         self._log: dict[str, list[AuditEvent]] = {}
         self._db = db_session_factory
+        self._write_attempts = max(1, write_attempts)
+        self._retry_base_delay = max(0.0, retry_base_delay)
+        # Strong references to in-flight ``record`` writes (an unreferenced task
+        # can be garbage-collected mid-flight) so ``flush`` can await them.
+        self._pending: set[asyncio.Task[None]] = set()
+        self._lost_writes = 0
         # Optional SIEM forwarder — when wired, every recorded event is also
         # enqueued for batched delivery to the configured SIEM platform.
         self._siem_forwarder: Any = None
@@ -75,25 +125,101 @@ class AuditLog:
         """
         self._siem_forwarder = forwarder
 
-    def record(self, event: AuditEvent, *, tenant_ctx: TenantContext) -> None:
-        """Record in memory, fire-and-forget to DB, and forward to SIEM."""
-        self._log.setdefault(tenant_ctx.tenant_id, []).append(event)
+    @property
+    def pending_writes(self) -> int:
+        """Number of ``record`` writes not yet finished."""
+        return len(self._pending)
+
+    def _cache(self, event: AuditEvent, tenant_id: str) -> None:
+        self._log.setdefault(tenant_id, []).append(event)
         # Forward to SIEM (non-blocking, never raises — protects the write path).
         if self._siem_forwarder is not None:
             try:
-                self._siem_forwarder.enqueue(
-                    self._to_siem_event(event, tenant_ctx.tenant_id)
-                )
+                self._siem_forwarder.enqueue(self._to_siem_event(event, tenant_id))
             except Exception as exc:
                 _log.warning("audit_siem_enqueue_failed", error=str(exc))
-        if self._db is not None:
-            import asyncio
 
+    def record(self, event: AuditEvent, *, tenant_ctx: TenantContext) -> None:
+        """Record an event from sync code; the DB write is tracked, not orphaned.
+
+        Prefer :meth:`record_async` wherever the caller can await. The write
+        scheduled here is retried, strongly referenced, and awaited by
+        :meth:`flush`; a write that finally fails is logged as an error
+        (``audit_write_lost``) and counted.
+        """
+        tenant_id = tenant_ctx.tenant_id
+        self._cache(event, tenant_id)
+        if self._db is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop to run the write on: say so loudly instead of dropping it.
+            self._lost_writes += 1
+            _log.error("audit_write_lost", reason="no_running_loop", event_id=event.event_id)
+            return
+        task = loop.create_task(self._tracked_write(event, tenant_id))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def record_async(self, event: AuditEvent, *, tenant_ctx: TenantContext) -> None:
+        """Record an event and await its durable write.
+
+        Raises :class:`AuditWriteError` when a DB is configured and the event
+        could not be stored after retries.
+        """
+        tenant_id = tenant_ctx.tenant_id
+        self._cache(event, tenant_id)
+        if self._db is None:
+            return
+        await self._persist_with_retry(event, tenant_id)
+
+    async def flush(self, timeout: float | None = 30.0) -> int:
+        """Await every pending ``record`` write; return how many were lost."""
+        lost_before = self._lost_writes
+        while self._pending:
+            batch = list(self._pending)
+            done, not_done = await asyncio.wait(batch, timeout=timeout)
+            for task in not_done:
+                task.cancel()
+                self._pending.discard(task)
+            if not_done:
+                self._lost_writes += len(not_done)
+                _log.error("audit_write_lost", reason="flush_timeout", count=len(not_done))
+            for task in done:
+                self._pending.discard(task)
+        return self._lost_writes - lost_before
+
+    async def _tracked_write(self, event: AuditEvent, tenant_id: str) -> None:
+        try:
+            await self._persist_with_retry(event, tenant_id)
+        except AuditWriteError as exc:
+            self._lost_writes += 1
+            _log.error(
+                "audit_write_lost",
+                reason="db_write_failed",
+                event_id=event.event_id,
+                tenant_id=tenant_id,
+                error=str(exc.__cause__ or exc),
+            )
+
+    async def _persist_with_retry(self, event: AuditEvent, tenant_id: str) -> None:
+        last_exc: Exception | None = None
+        for attempt in range(self._write_attempts):
             try:
-                loop = asyncio.get_running_loop()
-                _task = loop.create_task(self._db_record(event, tenant_ctx.tenant_id))  # noqa: RUF006
-            except RuntimeError:
-                pass  # No running loop (e.g., in sync test context)
+                await self._db_record(event, tenant_id)
+                return
+            except Exception as exc:
+                last_exc = exc
+                _log.warning(
+                    "audit_write_retry",
+                    attempt=attempt + 1,
+                    event_id=event.event_id,
+                    error=str(exc),
+                )
+                if attempt + 1 < self._write_attempts and self._retry_base_delay:
+                    await asyncio.sleep(self._retry_base_delay * (2**attempt))
+        raise AuditWriteError(f"audit event {event.event_id} not stored") from last_exc
 
     @staticmethod
     def _to_siem_event(event: AuditEvent, tenant_id: str) -> dict[str, Any]:
@@ -130,40 +256,23 @@ class AuditLog:
         }
 
     async def _db_record(self, event: AuditEvent, tenant_id: str) -> None:
+        """INSERT one event, idempotent on ``id``: a retry after an unknown commit
+        outcome never duplicates the row or trips the immutability trigger."""
+        if self._db is None:
+            return
         from opentelemetry import trace as _trace
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
 
         _tracer = _trace.get_tracer(__name__)
         with _tracer.start_as_current_span("governance.audit.db_record") as span:
             span.set_attribute("tenant_id", tenant_id)
             span.set_attribute("tool_name", event.tool_name or "")
             span.set_attribute("outcome", event.outcome)
-        if self._db is None:
-            return
-        try:
-            from app.db.models.governance import AuditLog as AuditLogModel
-            from app.db.rls import sqlalchemy_rls_context
-
             async with self._db() as session, session.begin():  # noqa: SIM117
                 async with sqlalchemy_rls_context(session, tenant_id):
-                    row = AuditLogModel(
-                        id=event.event_id,
-                        tenant_id=tenant_id,
-                        goal_id=event.goal_id,
-                        tool_name=event.tool_name,
-                        action_level=event.action_level.value,
-                        outcome=event.outcome,
-                        step_id=event.step_id or "",
-                        approver=event.approver,
-                        note=event.note,
-                        ip_address=event.ip_address,
-                        user_agent=event.user_agent,
-                        api_key_id=event.api_key_id,
-                        request_id=event.request_id,
-                        connector_id=event.connector_id,
-                    )
-                    session.add(row)
-        except Exception as exc:
-            _log.warning("DB audit record failed: %s", exc)
+                    await session.execute(text(_AUDIT_INSERT_SQL), _audit_row(event, tenant_id))
 
     def query(
         self,
@@ -239,8 +348,7 @@ class AuditLog:
                 # Server-side free-text over the human-meaningful columns, so search
                 # covers the WHOLE dataset (not just one page the client loaded).
                 conditions.append(
-                    "(note ILIKE :q OR tool_name ILIKE :q OR goal_id ILIKE :q "
-                    "OR outcome ILIKE :q)"
+                    "(note ILIKE :q OR tool_name ILIKE :q OR goal_id ILIKE :q OR outcome ILIKE :q)"
                 )
                 params["q"] = f"%{q}%"
 

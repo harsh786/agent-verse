@@ -125,7 +125,7 @@ async def record_usage(
             action_level=ActionLevel.ALLOW_LOG,
             outcome=f"tokens_used={tokens_used}",
         )
-        audit_log.record(event, tenant_ctx=tenant_ctx)
+        await audit_log.record_async(event, tenant_ctx=tenant_ctx)
 
 
 async def exec_memory_lookup(
