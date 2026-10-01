@@ -2422,7 +2422,14 @@ def run_goal(
             _, fresh_event_store, _ = _make_worker_goal_bridge()
             await fresh_event_store.append_event(goal_id, event, tenant_ctx=tenant_ctx)
         except Exception as db_exc:
-            logger.debug("DB event append failed (non-fatal): %s", db_exc)
+            # SVC-08: buffered in the Redis outbox (replayed by the
+            # drain-goal-event-outbox beat task), never silently dropped.
+            logger.warning("DB event append failed, buffering: %s", db_exc)
+            from app.services.event_store import buffer_failed_event_via_settings
+
+            await buffer_failed_event_via_settings(
+                tenant_id=tenant_id, goal_id=goal_id, event=event
+            )
 
     async def ensure_submitted_goal_row() -> None:
         if goal_bridge is None:

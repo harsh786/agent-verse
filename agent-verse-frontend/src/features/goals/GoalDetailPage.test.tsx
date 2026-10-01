@@ -684,6 +684,26 @@ describe('GoalDetailPage — additional coverage', () => {
     );
   });
 
+  test('a 503 from the event history shows "temporarily unavailable", not an empty log (SVC-08)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/goals/goal-1/replay')) {
+        return new Response(JSON.stringify({ detail: 'Replay service temporarily unavailable' }), {
+          status: 503,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /dev log/i }));
+    expect(await screen.findByText(/history is temporarily unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no persisted events/i)).not.toBeInTheDocument();
+  });
+
   test('a 503 from resume is shown as a retryable error, not a success (SVC-03)', async () => {
     useToastStore.setState({ toasts: [] });
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {

@@ -909,12 +909,14 @@ export function GoalDetailPage() {
   });
 
   // Event log (dev tab) — reuse the eagerly-fetched persistedEvents when possible
-  const { data: eventLog = [], isLoading: eventsLoading } = useQuery({
+  const { data: eventLog = [], isLoading: eventsLoading, isError: eventsUnavailable } = useQuery({
     queryKey: ["goal-events", goalId],
     queryFn: () => goalsApi.getEventLog(goalId!),
     enabled: !!goalId && activeTab === "events",
     // If we already have persisted events from the exec tab query, use staleTime
     staleTime: 15_000,
+    // A 503 means the history is temporarily unreadable (not empty): keep retrying.
+    refetchInterval: (q) => (q.state.status === "error" ? 10_000 : false),
   });
 
   // Eval
@@ -1283,6 +1285,10 @@ export function GoalDetailPage() {
         <div id="goal-tabpanel-events" role="tabpanel" aria-labelledby="goal-tab-events" className="space-y-2">
           {eventsLoading
             ? Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)
+            : eventsUnavailable
+            ? <p role="status" className="text-sm text-muted-foreground p-3 rounded-lg border bg-card">
+                Event history is temporarily unavailable — retrying…
+              </p>
             : eventLog.length === 0
             ? <EmptyState
           icon={<Inbox size={40} />}

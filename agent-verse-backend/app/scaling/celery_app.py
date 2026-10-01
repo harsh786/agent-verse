@@ -90,6 +90,7 @@ celery_app = Celery(
         "app.ingestion.repo_tasks",
         # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
         "app.scaling.raft_tasks",
+        "app.scaling.event_outbox_tasks",
         # Expired strategy-evidence purge (beat: purge-expired-strategy-evidence).
         "app.orchestration.evidence_maintenance",
         # Coordination outbox delivery (beat: dispatch-coordination-outbox).
@@ -135,6 +136,7 @@ celery_app.conf.update(
         # AI-Ops dataset runs (durable, resumable per case) — MEM-25.
         "app.scaling.tasks.run_ai_ops_dataset": {"queue": "maintenance"},
         "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
+        "app.scaling.event_outbox_tasks.drain_goal_event_outbox": {"queue": "maintenance"},
         # GDPR export — runs in background, long-running
         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
         # Per-plan routing aliases (workers can subscribe to these specific queues)
@@ -261,6 +263,13 @@ celery_app.conf.update(
         },
         # RAFT: advance submitted/running fine-tune jobs (bounded batch per tick)
         # so a finished model becomes deployable without a manual refresh.
+        # Goal events whose durable append failed are parked in a Redis outbox
+        # (SVC-08); replay them so the event history has no holes.
+        "drain-goal-event-outbox": {
+            "task": "app.scaling.event_outbox_tasks.drain_goal_event_outbox",
+            "schedule": 30.0,
+            "options": {"queue": "maintenance"},
+        },
         "poll-raft-fine-tune-jobs": {
             "task": "app.scaling.raft_tasks.poll_raft_fine_tune_jobs",
             "schedule": 120.0,  # every 2 minutes

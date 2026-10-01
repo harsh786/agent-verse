@@ -2677,26 +2677,31 @@ class GoalService:
     ) -> None:
         if self._event_store is None:
             return
+        ctx = self._tenant_ctx_for_event_store(record, tenant_ctx)
         try:
-            await self._event_store.append_event(
-                goal_id,
-                event,
-                tenant_ctx=self._tenant_ctx_for_event_store(record, tenant_ctx),
-            )
+            await self._event_store.append_event(goal_id, event, tenant_ctx=ctx)
         except Exception as exc:
-            _svc_logger.warning("DB persist goal event failed: %s", exc)
+            # Never silently dropped from the durable stream: park it in the
+            # Redis outbox, which the drain-goal-event-outbox beat task replays.
+            _svc_logger.warning("DB persist goal event failed, buffering: %s", exc)
+            from app.services.event_store import buffer_failed_event_via_settings
+
+            await buffer_failed_event_via_settings(
+                tenant_id=ctx.tenant_id,
+                goal_id=goal_id,
+                event=event,
+                redis=getattr(self, "_redis", None),
+            )
 
     async def _list_persisted_events(
         self, goal_id: str, tenant_ctx: TenantContext
     ) -> list[dict[str, Any]]:
         if self._event_store is None:
             return []
-        try:
-            events = await self._event_store.list_events(goal_id, tenant_ctx=tenant_ctx)
-            return cast("list[dict[str, Any]]", events)
-        except Exception as exc:
-            _svc_logger.warning("DB list goal events failed: %s", exc)
-            return []
+        # A store error raises ServiceUnavailableError (503): an outage used to
+        # replay as an empty history.
+        events = await self._event_store.list_events(goal_id, tenant_ctx=tenant_ctx)
+        return cast("list[dict[str, Any]]", events)
 
     async def _list_events_since_persisted(
         self, goal_id: str, after_sequence: int, tenant_ctx: TenantContext
@@ -2704,13 +2709,11 @@ class GoalService:
         """Return persisted events after *after_sequence* (with ``_seq`` keys)."""
         if self._event_store is None:
             return []
-        try:
-            return await self._event_store.list_events_since(
-                goal_id, after_sequence=after_sequence, tenant_ctx=tenant_ctx
-            )
-        except Exception as exc:
-            _svc_logger.warning("DB list events since failed: %s", exc)
-            return []
+        # Errors raise ServiceUnavailableError (503), never an empty history.
+        events = await self._event_store.list_events_since(
+            goal_id, after_sequence=after_sequence, tenant_ctx=tenant_ctx
+        )
+        return cast("list[dict[str, Any]]", events)
 
     @staticmethod
     def _event_key(event: dict[str, Any]) -> str:

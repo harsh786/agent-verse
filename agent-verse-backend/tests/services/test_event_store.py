@@ -57,7 +57,7 @@ class _FakeSession:
                     goal_id=params.get("gid"),
                 )
             )
-            return SimpleNamespace(rowcount=1)
+            return SimpleNamespace(rowcount=1, scalar_one_or_none=lambda: next_seq)
 
         # SELECT path (list_events): return all stored events
         class _Result:

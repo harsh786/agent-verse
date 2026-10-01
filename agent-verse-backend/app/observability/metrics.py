@@ -177,6 +177,13 @@ SCHEDULE_FIRE_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+GOAL_EVENT_OUTBOX_TOTAL = Counter(
+    "agentverse_goal_event_outbox_total",
+    "Goal events whose durable append failed: buffered / replayed / dropped / lost.",
+    labelnames=("outcome",),
+    registry=REGISTRY,
+)
+
 DESIRED_WORKERS = Gauge(
     "agentverse_desired_workers",
     "Desired worker count per plan for autoscaling (consumed by KEDA/HPA).",

@@ -800,15 +800,28 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
     since_sequence = int(last_event_id) if last_event_id.isdigit() else 0
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        from app.core.errors import ServiceUnavailableError
+
         seq = 0
-        async for event in svc.subscribe_events(
-            goal_id=goal_id,
-            tenant_ctx=tenant_ctx,
-            since_sequence=since_sequence,
-        ):
-            seq += 1
-            event_seq = event.get("_seq", seq)
-            yield f"id: {event_seq}\ndata: {json.dumps(event)}\n\n"
+        try:
+            async for event in svc.subscribe_events(
+                goal_id=goal_id,
+                tenant_ctx=tenant_ctx,
+                since_sequence=since_sequence,
+            ):
+                seq += 1
+                event_seq = event.get("_seq", seq)
+                yield f"id: {event_seq}\ndata: {json.dumps(event)}\n\n"
+        except ServiceUnavailableError as exc:
+            # The headers are already sent: report a retryable stream error the
+            # client can reconnect on, instead of an empty / silently ended stream.
+            payload = {
+                "type": "stream_error",
+                "code": exc.code,
+                "retryable": True,
+                "message": "Goal event history is temporarily unavailable; reconnecting.",
+            }
+            yield f"retry: 5000\nevent: error\ndata: {json.dumps(payload)}\n\n"
 
     return StreamingResponse(
         event_generator(),
