@@ -10,11 +10,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
     assert_source_host,
@@ -188,7 +187,7 @@ class KafkaConnector(BaseConnector):
             offset_cursor = f"{m['topic']}:{m['partition']}:{m['offset']}"
             new_cursor = offset_cursor
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, m["topic"], m["partition"], m["offset"]),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=f"kafka://{bootstrap}/{m['topic']}/{m['partition']}/{m['offset']}",

@@ -8,11 +8,10 @@ Uses Redis pub/sub for real-time ingestion on goal completion.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -99,7 +98,8 @@ class AgentGeneratedConnector(BaseConnector):
         if not text.strip():
             return
 
-        goal_id = data.get("goal_id", uuid.uuid4().hex)
+        # No goal id (malformed event): the same output is the same document.
+        goal_id = str(data.get("goal_id") or stable_doc_id(config, "goal-output", text))
         yield RawDocument(
             doc_id=goal_id,
             source_id=config.source_id,

@@ -8,12 +8,11 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import ConnectorEgressBlockedError
 from app.ingestion.connector_registry import register
 
@@ -126,7 +125,7 @@ class ZendeskConnector(BaseConnector):
                             f"Updated: {updated}\n\n{ticket.get('description') or ''}"
                         )
                         doc = RawDocument(
-                            doc_id=str(uuid.uuid4()),
+                            doc_id=stable_doc_id(config, "ticket", ticket.get("id")),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=f"https://{subdomain}.zendesk.com/agent/tickets/{ticket.get('id')}",
@@ -164,7 +163,7 @@ class ZendeskConnector(BaseConnector):
                         text = re.sub(r"<[^>]+>", " ", article.get("body", ""))
                         full_text = f"# {article.get('title', '')}\n\n{text}"
                         doc = RawDocument(
-                            doc_id=str(uuid.uuid4()),
+                            doc_id=stable_doc_id(config, "article", article.get("id")),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=article.get("html_url", ""),

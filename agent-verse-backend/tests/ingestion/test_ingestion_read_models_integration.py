@@ -329,3 +329,53 @@ async def test_sync_status_reads_the_job_the_worker_recorded(dbs: SimpleNamespac
     assert latest.triggered_by == "manual"
     # RLS: tenant B cannot read tenant A's job.
     assert await api.latest_job(src.source_id, dbs.b.tenant_id) is None
+
+
+@pytest.mark.asyncio
+async def test_stable_id_resync_replaces_the_document_in_postgres(dbs: SimpleNamespace) -> None:
+    """STABLE-DOC-IDS: an edited item re-synced under its stable id replaces the
+    indexed version atomically — no stale chunks, no unique-key failure on
+    (collection, document, chunk_index), counters unchanged — and an unchanged
+    item is still a dedup skip."""
+    from app.ingestion.base_connector import stable_doc_id
+
+    store = KnowledgeStore(dbs.app)
+    col = await store.create_collection_async(KnowledgeCollection(name="r"), tenant_ctx=dbs.a)
+    src = SourceConfig(
+        source_id=f"src-{uuid.uuid4().hex[:8]}", tenant_id=dbs.a.tenant_id, name="s",
+        family=SourceFamily.WEB, source_type="http", collection_id=col,
+        min_quality_score=0.0, pii_action="allow",
+    )
+    pipeline = IngestionPipeline(knowledge_store=store, embedder=_Embedder())
+    doc_id = stable_doc_id(src, "PROJ-1")
+
+    def _raw(text_: str) -> RawDocument:
+        return RawDocument(
+            doc_id=doc_id, source_id=src.source_id, tenant_id=dbs.a.tenant_id,
+            content=(text_ * 30).encode(), content_type="text/plain",
+        )
+
+    first = await pipeline.ingest(_raw("Original ticket description text. "), src)
+    assert first.status == "indexed", first.error
+    edited = await pipeline.ingest(_raw("Edited ticket description, new facts. "), src)
+    assert edited.status == "indexed", edited.error
+    unchanged = await pipeline.ingest(_raw("Edited ticket description, new facts. "), src)
+    assert (unchanged.status, unchanged.skip_reason) == ("skipped", "dedup")
+
+    async with dbs.admin() as s:
+        contents = (
+            await s.execute(
+                text("SELECT content FROM knowledge_chunks_768 WHERE document_id = :d"),
+                {"d": doc_id},
+            )
+        ).scalars().all()
+        counters = (
+            await s.execute(
+                text("SELECT document_count, chunk_count FROM knowledge_collections "
+                     "WHERE id = :c"),
+                {"c": col},
+            )
+        ).one()
+    assert contents and all("Edited" in c for c in contents)
+    assert counters[0] == 1
+    assert counters[1] == len(contents)

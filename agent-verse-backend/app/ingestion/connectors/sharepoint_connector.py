@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
     assert_source_url,
@@ -255,7 +254,7 @@ class SharePointSourceConnector(BaseConnector):
             if not content.strip():
                 continue
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, item_id),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=meta.get("webUrl", ""),

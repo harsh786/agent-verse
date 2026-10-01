@@ -31,11 +31,15 @@ from __future__ import annotations
 import json as _json
 import logging
 import time
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    row_identity,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 
@@ -134,7 +138,10 @@ class HttpApiConnector(BaseConnector):
             if record_cursor:
                 new_cursor = max(new_cursor, record_cursor)
 
-            doc_id = str(record.get(id_field, "") or uuid.uuid4().hex)
+            record_id = record.get(id_field)
+            doc_id = stable_doc_id(
+                config, url, record_id if record_id not in (None, "") else row_identity(record)
+            )
             if content_fields:
                 text = "\n".join(str(record.get(f, "")) for f in content_fields)
             else:

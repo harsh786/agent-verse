@@ -12,7 +12,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import (
     EgressPins,
     dsn_with_pinned_hosts,
@@ -129,7 +129,8 @@ class PostgreSQLConnector(BaseConnector):
 
                     text = _row_to_text(table, pk_cols, row_dict)
                     pk_val = "_".join(str(row_dict.get(k, "")) for k in pk_cols)
-                    doc_id = f"pg://{schema}.{table}/{pk_val}"
+                    row_url = f"pg://{schema}.{table}/{pk_val}"
+                    doc_id = stable_doc_id(config, row_url)
 
                     raw = RawDocument(
                         doc_id=doc_id,
@@ -137,7 +138,7 @@ class PostgreSQLConnector(BaseConnector):
                         tenant_id=config.tenant_id,
                         content=text.encode("utf-8"),
                         content_type="text/plain",
-                        source_url=doc_id,
+                        source_url=row_url,
                         title=f"{table} {pk_val}",
                         modified_at=row_cursor,
                         metadata={"table": table, "schema": schema, "pk": pk_val},

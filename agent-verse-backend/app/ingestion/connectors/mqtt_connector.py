@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_hosts
 from app.ingestion.connector_registry import register
 
@@ -20,6 +19,13 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _payload_digest(payload: object) -> str:
+    """MQTT messages carry no id: the same payload on the same topic is the same item."""
+    import hashlib
+
+    return hashlib.sha256(str(payload).encode()).hexdigest()
 
 
 def _broker_host(cc: dict[str, Any]) -> str:
@@ -150,7 +156,7 @@ class MQTTConnector(BaseConnector):
             except Exception:
                 text = msg["payload"]
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, msg["topic"], _payload_digest(msg["payload"])),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=f"mqtt://{host}/{msg['topic']}",

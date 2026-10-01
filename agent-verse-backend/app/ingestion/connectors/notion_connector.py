@@ -10,11 +10,10 @@ content = await connector.fetch_page_content(page_id="xyz...")
 from __future__ import annotations
 
 import time
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -185,7 +184,7 @@ class NotionSourceConnector(BaseConnector):
                     )
                     break
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, page_id),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=page.get("url", ""),

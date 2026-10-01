@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -103,7 +102,7 @@ class ElasticsearchConnector(BaseConnector):
                     source = hit.get("_source", {})
                     text = json.dumps(source, ensure_ascii=False, indent=2)
                     doc = RawDocument(
-                        doc_id=str(uuid.uuid4()),
+                        doc_id=stable_doc_id(config, index, hit.get("_id")),
                         source_id=config.source_id,
                         tenant_id=config.tenant_id,
                         source_url=f"{base_url}/{index}/_doc/{hit.get('_id')}",

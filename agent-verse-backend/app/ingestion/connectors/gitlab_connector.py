@@ -7,11 +7,10 @@ Cursor: last event/updated timestamp.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -84,7 +83,7 @@ class GitLabConnector(BaseConnector):
                             new_cursor = max(new_cursor, updated)
                             text = f"# [{issue.get('iid')}] {issue.get('title')}\n\nStatus: {issue.get('state')}\nUpdated: {updated}\n\n{issue.get('description') or ''}"  # noqa: E501
                             doc = RawDocument(
-                                doc_id=str(uuid.uuid4()),
+                                doc_id=stable_doc_id(config, project_id, "issue", issue.get("iid")),
                                 source_id=config.source_id,
                                 tenant_id=config.tenant_id,
                                 source_url=issue.get("web_url", ""),
@@ -117,7 +116,7 @@ class GitLabConnector(BaseConnector):
                             new_cursor = max(new_cursor, updated)
                             text = f"# MR !{mr.get('iid')}: {mr.get('title')}\n\nStatus: {mr.get('state')}\nBranch: {mr.get('source_branch')} → {mr.get('target_branch')}\n\n{mr.get('description') or ''}"  # noqa: E501
                             doc = RawDocument(
-                                doc_id=str(uuid.uuid4()),
+                                doc_id=stable_doc_id(config, project_id, "mr", mr.get("iid")),
                                 source_id=config.source_id,
                                 tenant_id=config.tenant_id,
                                 source_url=mr.get("web_url", ""),

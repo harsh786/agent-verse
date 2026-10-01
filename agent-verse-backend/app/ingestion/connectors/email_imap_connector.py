@@ -11,12 +11,11 @@ import asyncio
 import email
 import imaplib
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from email.header import decode_header as _decode_header
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import pin_source_hosts
 from app.ingestion.connector_registry import register
 
@@ -155,7 +154,7 @@ class EmailIMAPConnector(BaseConnector):
             # already-fetched messages to be re-searched on the next sync.
             new_cursor = str(max(int(new_cursor), int(uid)))
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, mailbox, uid),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=f"imap://{host}/{mailbox}/uid/{uid}",

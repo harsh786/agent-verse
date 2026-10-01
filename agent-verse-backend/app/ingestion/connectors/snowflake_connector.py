@@ -13,11 +13,15 @@ the SDK pool (:mod:`app.ingestion.sdk_executor`), never on the event loop.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    row_identity,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 
@@ -123,11 +127,12 @@ class SnowflakeConnector(BaseConnector):
                 row_dict = dict(row)
                 new_cursor = str(row_dict.get(cursor_col, new_cursor))
                 text = _row_to_text(row_dict)
+                row_key = row_identity(row_dict, cc.get("id_column"))
                 doc = RawDocument(
-                    doc_id=str(uuid.uuid4()),
+                    doc_id=stable_doc_id(config, row_key),
                     source_id=config.source_id,
                     tenant_id=config.tenant_id,
-                    source_url=f"snowflake://{cc.get('account')}/{cc.get('database')}/row/{uuid.uuid4()}",
+                    source_url=f"snowflake://{cc.get('account')}/{cc.get('database')}/row/{row_key}",
                     content=text.encode(),
                     content_type="text/plain",
                     metadata=row_dict,

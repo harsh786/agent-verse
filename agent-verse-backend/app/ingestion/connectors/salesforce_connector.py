@@ -8,11 +8,10 @@ Supports: any SObject (Account, Contact, Lead, Case, Opportunity, custom).
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -90,7 +89,7 @@ class SalesforceConnector(BaseConnector):
                         text_parts = [f"{k}: {v}" for k, v in record.items() if v is not None]
                         text = f"SObject: {sobject}\n" + "\n".join(text_parts)
                         doc = RawDocument(
-                            doc_id=str(uuid.uuid4()),
+                            doc_id=stable_doc_id(config, sobject, record.get("Id")),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=f"{instance_url}/lightning/r/{sobject}/{record.get('Id')}/view",

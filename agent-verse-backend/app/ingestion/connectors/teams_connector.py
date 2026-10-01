@@ -8,11 +8,10 @@ Supports teams, channels, and direct messages.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -95,7 +94,7 @@ class TeamsConnector(BaseConnector):
                         author = msg.get("from", {}).get("user", {}).get("displayName", "Unknown")
                         text = f"[Teams] {author}: {body_content}"
                         doc = RawDocument(
-                            doc_id=str(uuid.uuid4()),
+                            doc_id=stable_doc_id(config, team_id, channel_id, msg.get("id")),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=msg.get(

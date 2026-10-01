@@ -877,10 +877,14 @@ class IngestionPipeline:
                 plan=PlanTier.FREE,
                 api_key_id="ingestion",
             )
+            # Connector document ids are stable per upstream item, so the same
+            # id arriving again with new content is an edit: replace the old
+            # version atomically (unchanged content was skipped at Stage 3).
             chunk_ids = await self._kb.ingest_chunks_async(
                 rag_chunks,
                 collection_id=config.collection_id,
                 tenant_ctx=tenant_ctx,
+                replace_document=True,
             )
             return chunk_ids
         except Exception as e:

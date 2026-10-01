@@ -17,6 +17,39 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 
+def stable_doc_id(config: SourceConfig, *key_parts: object) -> str:
+    """A document id derived from the Source and the item's native identity.
+
+    The same upstream item (an issue key, a blob path, a message id, a row's
+    primary key) gets the same id on every sync, so a re-sync replaces the
+    indexed document instead of adding a second copy beside it (connectors used
+    to mint a random ``uuid4`` per sync and relied on content-hash dedup alone:
+    an *edited* item was indexed again next to its stale version). The Source id
+    is part of the key, so two Sources reading the same upstream never collide.
+    """
+    import uuid
+
+    key = "\x1f".join(str(part) for part in key_parts)
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentverse-source:{config.source_id}:{key}"))
+
+
+def row_identity(row: dict[str, Any], id_column: str | None = None) -> str:
+    """Native identity of a database row: its configured / conventional primary
+    key, or — with no key column — a hash of the row's values (identical rows
+    keep one id; an edited key-less row cannot be related to its old version)."""
+    import hashlib
+    import json
+
+    candidates = [id_column] if id_column else ["id", "_id", "uuid", "pk", "key"]
+    for column in candidates:
+        if column and row.get(column) is not None:
+            return f"{column}={row[column]}"
+    digest = hashlib.sha256(
+        json.dumps(row, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    return f"row-sha256={digest}"
+
+
 class ConnectorUnavailableError(RuntimeError):
     """The connector cannot run at all (e.g. its SDK is not installed).
 
@@ -141,6 +174,34 @@ class BaseConnector(ABC):
         Called when source-side deletion is detected via CDC or webhook.
         Default: no-op. Override for connectors that track deletions.
         """
+
+    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+        """Every document id that currently exists upstream, or None if unknowable.
+
+        Override only where a complete, authoritative listing is cheap (an object
+        store's key listing). After a sync with no failures, the scheduler
+        deletes this Source's indexed documents whose ids are not in the set
+        (upstream deletions), skipping any under legal hold. ``None`` — the
+        default — means "cannot know", and nothing is ever deleted. Must raise
+        rather than return a partial set.
+        """
+        return None
+
+    def manages_doc_id(self, doc_id: str) -> bool:
+        """True for ids this connector's *current* id scheme produces.
+
+        Only such documents are deletion candidates: documents indexed before
+        ids were stable (random ``uuid4``) can never appear in the live listing,
+        and deleting them would drop content whose unchanged upstream item is
+        not re-fetched by an incremental sync. Default: :func:`stable_doc_id`
+        ids (UUID version 5).
+        """
+        import uuid
+
+        try:
+            return uuid.UUID(str(doc_id)).version == 5
+        except ValueError:
+            return False
 
     def estimate_doc_count(self, config: SourceConfig) -> int | None:
         """Estimate total document count for progress reporting.

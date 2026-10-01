@@ -7,11 +7,10 @@ Exports nodes and relationships as structured text for embedding.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import pin_source_dsn, run_driver_call
 from app.ingestion.connector_registry import register
 
@@ -19,6 +18,14 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _node_identity(node: dict[str, object]) -> str:
+    """The node's element id; a row without one (a projection) by its values."""
+    from app.ingestion.base_connector import row_identity
+
+    node_id = node.get("_id")
+    return str(node_id) if node_id not in (None, "") else row_identity(node, "__no_key__")
 
 
 @register("neo4j", feature_flag="ingestion_connector_neo4j_enabled")
@@ -112,10 +119,10 @@ class Neo4jConnector(BaseConnector):
             text = f"Node [{labels_str}]\n{props_text}"
 
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, _node_identity(node)),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
-                source_url=f"neo4j://{neo4j_uri}/node/{node.get('_id', uuid.uuid4())}",
+                source_url=f"neo4j://{neo4j_uri}/node/{_node_identity(node)}",
                 content=text.encode(),
                 content_type="text/plain",
                 metadata={"labels": labels_str, "id": node.get("_id")},

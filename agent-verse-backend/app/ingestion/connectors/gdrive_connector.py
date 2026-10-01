@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import io
 import time
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import run_blocking
 
@@ -220,7 +219,7 @@ class GDriveSourceConnector(BaseConnector):
             if content is None or not content.strip():
                 continue  # unsupported type, or no text
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, file_id),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 title=meta.get("name", ""),

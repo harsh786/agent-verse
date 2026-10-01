@@ -7,11 +7,10 @@ Uses ServiceNow Table API.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -118,7 +117,7 @@ class ServiceNowConnector(BaseConnector):
                         number = rec.get("number") or sys_id
                         text = f"[{table.upper()}] {number}: {short_desc}\nUpdated: {updated}\n\n{body}"  # noqa: E501
                         doc = RawDocument(
-                            doc_id=str(uuid.uuid4()),
+                            doc_id=stable_doc_id(config, table, sys_id),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=f"https://{instance}.service-now.com/nav_to.do?source_url={table}.do?sys_id={sys_id}",

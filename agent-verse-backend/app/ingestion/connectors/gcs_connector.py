@@ -11,11 +11,10 @@ downloads run on the SDK pool (:mod:`app.ingestion.sdk_executor`).
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 
@@ -78,6 +77,25 @@ class GCSConnector(BaseConnector):
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
 
+    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+        """Every blob under the configured prefix/patterns (upstream deletions)."""
+        from google.cloud import storage
+
+        creds_json = config.connection_config.get("service_account_json")
+        bucket_name = config.connection_config.get("bucket", "")
+        prefix = config.connection_config.get("prefix", "")
+
+        def _names() -> list[str]:
+            client = _make_client(storage, creds_json)
+            return [blob.name for blob in client.list_blobs(bucket_name, prefix=prefix)]
+
+        names = await run_blocking(_names)
+        return {
+            stable_doc_id(config, f"gs://{bucket_name}/{name}")
+            for name in names
+            if self._matches(name, config.include_patterns, config.exclude_patterns)
+        }
+
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
@@ -106,7 +124,7 @@ class GCSConnector(BaseConnector):
             try:
                 content = await run_blocking(blob.download_as_bytes)
                 doc = RawDocument(
-                    doc_id=str(uuid.uuid4()),
+                    doc_id=stable_doc_id(config, f"gs://{bucket_name}/{blob.name}"),
                     source_id=config.source_id,
                     tenant_id=config.tenant_id,
                     source_url=f"gs://{bucket_name}/{blob.name}",

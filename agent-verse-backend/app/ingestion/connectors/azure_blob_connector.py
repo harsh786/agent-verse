@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from collections.abc import AsyncIterator, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +15,7 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
+    stable_doc_id,
 )
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
@@ -181,6 +181,33 @@ class AzureBlobConnector(BaseConnector):
             async for item in self._iter_blobs(config, cursor):
                 yield item
 
+    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+        """Every blob under the configured prefix/patterns (upstream deletions)."""
+        from azure.storage.blob import BlobServiceClient
+
+        cc = config.connection_config
+        container = cc.get("container", "")
+        prefix = cc.get("prefix", "") or None
+        async with _pinned_azure_egress(config):
+            if cc.get("connection_string"):
+                service = BlobServiceClient.from_connection_string(cc["connection_string"])
+            else:
+                service = BlobServiceClient(
+                    account_url=f"https://{cc.get('account_name', '')}.blob.core.windows.net",
+                    credential=cc.get("account_key", ""),
+                )
+            container_client = service.get_container_client(container)
+
+            def _names() -> list[str]:
+                return [b.name for b in container_client.list_blobs(name_starts_with=prefix)]
+
+            names = await run_driver_call(_names, context="azure_blob")
+        return {
+            stable_doc_id(config, container, name)
+            for name in names
+            if self._matches(name, config.include_patterns, config.exclude_patterns)
+        }
+
     async def _iter_blobs(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
@@ -247,7 +274,7 @@ class AzureBlobConnector(BaseConnector):
 
         def _report(blob: Any, reason: str) -> RawDocument:
             return RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, container, blob.name),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=f"https://{account_name}.blob.core.windows.net/{container}/{blob.name}",
@@ -286,7 +313,7 @@ class AzureBlobConnector(BaseConnector):
                 yield _report(blob, f"blob exceeds the {cap}-byte size cap"), new_cursor
                 continue
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, container, blob.name),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=f"https://{account_name}.blob.core.windows.net/{container}/{blob.name}",

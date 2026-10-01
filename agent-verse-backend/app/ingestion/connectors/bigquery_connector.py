@@ -14,11 +14,15 @@ the event loop.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    row_identity,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 
@@ -110,11 +114,12 @@ class BigQueryConnector(BaseConnector):
             row_dict = dict(row)
             new_cursor = str(row_dict.get(cursor_col, new_cursor))
             text = "\n".join(f"{k}: {v}" for k, v in row_dict.items() if v is not None)
+            row_key = row_identity(row_dict, cc.get("id_column"))
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, row_key),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
-                source_url=f"bigquery://{project}/row/{uuid.uuid4()}",
+                source_url=f"bigquery://{project}/row/{row_key}",
                 content=text.encode(),
                 content_type="text/plain",
                 metadata=row_dict,

@@ -14,6 +14,7 @@ from app.ingestion.connectors.postgresql_connector import (
     _build_dsn,
     _row_to_text,
 )
+from app.ingestion.base_connector import stable_doc_id
 from app.ingestion.source_config import SourceConfig
 
 
@@ -122,7 +123,8 @@ class TestGetDelta:
 
         assert len(docs) == 2
         doc0, _cursor0 = docs[0]
-        assert doc0.doc_id == "pg://public.customers/1"
+        assert doc0.source_url == "pg://public.customers/1"
+        assert doc0.doc_id == stable_doc_id(config, "pg://public.customers/1")
         assert doc0.source_id == "src-pg"
         assert doc0.tenant_id == "t1"
         assert "Alice" in doc0.content.decode()
@@ -140,7 +142,8 @@ class TestGetDelta:
         with patch("asyncpg.connect", AsyncMock(return_value=fake_conn)):
             docs = await _collect(PostgreSQLConnector().get_delta(config, None))
 
-        assert docs[0][0].doc_id == "pg://public.widgets/5"
+        assert docs[0][0].source_url == "pg://public.widgets/5"
+        assert docs[0][0].doc_id == stable_doc_id(config, "pg://public.widgets/5")
 
     async def test_query_error_on_one_table_continues_to_next(self):
         fake_conn = AsyncMock()
@@ -154,7 +157,8 @@ class TestGetDelta:
             docs = await _collect(PostgreSQLConnector().get_delta(config, None))
 
         assert len(docs) == 1
-        assert docs[0][0].doc_id == "pg://public.good/9"
+        assert docs[0][0].source_url == "pg://public.good/9"
+        assert docs[0][0].doc_id == stable_doc_id(config, "pg://public.good/9")
 
     async def test_no_tables_configured_yields_nothing(self):
         fake_conn = AsyncMock()

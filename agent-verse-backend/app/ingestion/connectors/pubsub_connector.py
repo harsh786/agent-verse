@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import run_blocking
 
@@ -98,7 +97,7 @@ class PubSubConnector(BaseConnector):
                 )
 
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, sub_name, msg_id),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=f"pubsub://{project}/{sub_name}/{msg_id}",

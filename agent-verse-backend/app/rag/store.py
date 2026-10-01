@@ -2069,8 +2069,22 @@ class KnowledgeStore:
         *,
         collection_id: str,
         tenant_ctx: TenantContext,
+        replace_document: bool = False,
     ) -> list[str]:
-        """Persist all chunks for one ingestion unit in a single transaction."""
+        """Persist all chunks for one ingestion unit in a single transaction.
+
+        ``replace_document`` (one document per call): the document's existing
+        chunks are deleted in the same transaction, so a re-synced item with a
+        stable id replaces its previous version instead of sitting beside it.
+        The duplicate-content guard still applies — an unchanged document (same
+        ``doc_content_hash``) raises :class:`DuplicateContentError` as before.
+        """
+        replacement_id: str | None = None
+        if replace_document and chunks:
+            document_ids = {chunk.document_id for chunk in chunks}
+            if len(document_ids) != 1:
+                raise ValueError("A document replacement must contain exactly one document")
+            replacement_id = next(iter(document_ids))
         if not chunks:
             collection = await self.get_collection_async(
                 collection_id,
@@ -2097,6 +2111,10 @@ class KnowledgeStore:
             ):
                 raise DuplicateContentError(
                     f"Content already indexed in collection {collection_id}"
+                )
+            if replacement_id is not None:
+                self.delete_document(
+                    replacement_id, collection_id=collection_id, tenant_ctx=tenant_ctx
                 )
             for chunk in chunks:
                 self.ingest_chunk(chunk, collection_id=collection_id, tenant_ctx=tenant_ctx)
@@ -2128,6 +2146,8 @@ class KnowledgeStore:
             records,
             collection_id=collection_id,
             tenant_id=tenant_ctx.tenant_id,
+            replacement_document_id=replacement_id,
+            check_duplicates_on_replace=True,
         )
 
         # In-memory mirror only when there is no database. With a DB the chunk
@@ -2295,6 +2315,42 @@ class KnowledgeStore:
             tenant_id=tenant_id,
         )
 
+    @staticmethod
+    async def _raise_if_doc_hash_indexed(
+        session: Any,
+        table: str,
+        records: list[dict[str, Any]],
+        *,
+        collection_id: str,
+        tenant_id: str,
+    ) -> None:
+        from sqlalchemy import text
+
+        doc_hashes = {str(record["metadata"].get("doc_content_hash") or "") for record in records}
+        doc_hashes.discard("")
+        for doc_hash in doc_hashes:
+            duplicate = (
+                await session.execute(
+                    text(
+                        f"SELECT 1 FROM {table} "
+                        "WHERE collection_id = :collection_id "
+                        "AND tenant_id = :tenant_id "
+                        "AND metadata->>'doc_content_hash' = :doc_hash "
+                        "LIMIT 1"
+                    ),
+                    {
+                        "collection_id": collection_id,
+                        "tenant_id": tenant_id,
+                        "doc_hash": doc_hash,
+                    },
+                )
+            ).scalar_one_or_none()
+            if duplicate is not None:
+                raise DuplicateContentError(
+                    f"Content already indexed in collection {collection_id} "
+                    f"(doc_content_hash={doc_hash[:12]}...)"
+                )
+
     async def _persist_chunks(
         self,
         records: list[dict[str, Any]],
@@ -2305,6 +2361,7 @@ class KnowledgeStore:
         completion_source_hash: str | None = None,
         completion_lease_owner: str | None = None,
         replacement_document_id: str | None = None,
+        check_duplicates_on_replace: bool = False,
     ) -> None:
         if self._db is None:
             return
@@ -2383,6 +2440,13 @@ class KnowledgeStore:
 
             removed_chunks = 0
             removed_bytes = 0
+            if replacement_document_id is not None and check_duplicates_on_replace:
+                # A replacement whose content is already indexed (this document
+                # unchanged, or the same content under another id) is a duplicate,
+                # exactly as on the plain insert path below.
+                await self._raise_if_doc_hash_indexed(
+                    session, table, records, collection_id=collection_id, tenant_id=tenant_id
+                )
             if replacement_document_id is not None:
                 # RETURNING the byte sizes lets the counter update below be an
                 # exact delta instead of a full-collection recompute.
@@ -2414,33 +2478,9 @@ class KnowledgeStore:
                 # this collection's row lock, so the loser is caught atomically
                 # instead of racing into a duplicate insert (or, when document_id
                 # also matches, an ugly unique-constraint failure).
-                doc_hashes = {
-                    str(record["metadata"].get("doc_content_hash") or "")
-                    for record in records
-                }
-                doc_hashes.discard("")
-                for doc_hash in doc_hashes:
-                    duplicate = (
-                        await session.execute(
-                            text(
-                                f"SELECT 1 FROM {table} "
-                                "WHERE collection_id = :collection_id "
-                                "AND tenant_id = :tenant_id "
-                                "AND metadata->>'doc_content_hash' = :doc_hash "
-                                "LIMIT 1"
-                            ),
-                            {
-                                "collection_id": collection_id,
-                                "tenant_id": tenant_id,
-                                "doc_hash": doc_hash,
-                            },
-                        )
-                    ).scalar_one_or_none()
-                    if duplicate is not None:
-                        raise DuplicateContentError(
-                            f"Content already indexed in collection {collection_id} "
-                            f"(doc_content_hash={doc_hash[:12]}...)"
-                        )
+                await self._raise_if_doc_hash_indexed(
+                    session, table, records, collection_id=collection_id, tenant_id=tenant_id
+                )
 
             # How many of this batch's documents are *new* to the collection —
             # computed before the INSERT so the counter update below can be a

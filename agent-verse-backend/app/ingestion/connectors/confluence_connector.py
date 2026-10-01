@@ -7,11 +7,10 @@ Cursor: last page modified timestamp (ISO 8601).
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -105,7 +104,7 @@ class ConfluenceConnector(BaseConnector):
                             title = page.get("title", "")
                             full_text = f"# {title}\n\n{text}"
                             doc = RawDocument(
-                                doc_id=str(uuid.uuid4()),
+                                doc_id=stable_doc_id(config, page.get("id")),
                                 source_id=config.source_id,
                                 tenant_id=config.tenant_id,
                                 source_url=f"{base_url}/wiki/spaces/{space_key}/pages/{page.get('id')}",

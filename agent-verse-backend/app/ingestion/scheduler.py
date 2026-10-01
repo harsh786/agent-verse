@@ -185,6 +185,92 @@ def _bind_worker_guardrail_rules(db_factory: object) -> None:
         )
 
 
+def _build_worker_legal_holds() -> object | None:
+    """The legal-hold checker for the worker (the API wires its own in lifespan)."""
+    from app.db.session import get_session_factory
+    from app.governance.legal_holds import LegalHoldManager
+
+    return LegalHoldManager(redis=None, db_factory=get_session_factory())
+
+
+_RECONCILE_PAGE = 500
+
+
+async def _reconcile_upstream_deletions(connector: Any, config: Any, pipeline: Any) -> int:
+    """Delete this Source's indexed documents that no longer exist upstream.
+
+    Runs only for connectors whose ``list_live_doc_ids`` returns an authoritative
+    set (``None`` = cannot know → nothing is deleted). Only documents stamped
+    with this Source's id are candidates; a document (or its collection) under
+    legal hold is kept, and a hold that cannot be verified keeps it too (fail
+    closed). Any listing error skips reconciliation — the sync itself stands.
+    """
+    try:
+        live = await connector.list_live_doc_ids(config)
+    except Exception as exc:
+        _log.warning(
+            "upstream_deletion_listing_failed source=%s: %s", config.source_id, exc
+        )
+        return 0
+    store = getattr(pipeline, "_kb", None)
+    if live is None or store is None or not config.collection_id:
+        return 0
+
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_ctx = TenantContext(
+        tenant_id=config.tenant_id, plan=PlanTier.FREE, api_key_id="ingestion"
+    )
+    stale: list[str] = []
+    after: str | None = None
+    while True:
+        rows = await store.list_source_documents_async(
+            tenant_ctx=tenant_ctx,
+            collection_id=config.collection_id,
+            source_id=config.source_id,
+            limit=_RECONCILE_PAGE,
+            after=after,
+        )
+        stale.extend(
+            str(r["id"])
+            for r in rows
+            if str(r["id"]) not in live and connector.manages_doc_id(str(r["id"]))
+        )
+        if len(rows) < _RECONCILE_PAGE:
+            break
+        after = str(rows[-1]["id"])
+    if not stale:
+        return 0
+
+    holds: Any = _build_worker_legal_holds()
+    deleted = 0
+    for doc_id in stale:
+        if holds is not None:
+            try:
+                held = await holds.is_under_hold(
+                    tenant_id=config.tenant_id, resource_id=doc_id
+                ) or await holds.is_under_hold(
+                    tenant_id=config.tenant_id, resource_id=config.collection_id
+                )
+            except Exception as exc:
+                _log.warning(
+                    "upstream_deletion_hold_unverifiable source=%s doc=%s: %s",
+                    config.source_id, doc_id, exc,
+                )
+                continue
+            if held:
+                continue
+        if await store.delete_document_async(
+            doc_id, collection_id=config.collection_id, tenant_ctx=tenant_ctx
+        ):
+            deleted += 1
+    _log.info(
+        "upstream_deletions_applied source=%s deleted=%d stale=%d",
+        config.source_id, deleted, len(stale),
+    )
+    return deleted
+
+
 async def _sync_source_async(
     *,
     task,
@@ -385,11 +471,18 @@ async def _sync_source_async(
         if new_cursor and new_cursor != (config.cursor_value or ""):
             await source_store.update(source_id, tenant_id, cursor_value=new_cursor)
 
+        # Upstream deletions: only after a complete, failure-free run, and only
+        # for connectors that can list what exists upstream.
+        docs_deleted = 0
+        if not docs_failed and not cancelled:
+            docs_deleted = await _reconcile_upstream_deletions(connector, config, pipeline)
+
         return {
             "job_id": job.job_id,
             "docs_indexed": docs_indexed,
             "docs_skipped": docs_skipped,
             "docs_failed": docs_failed,
+            "docs_deleted": docs_deleted,
             "cancelled": cancelled,
         }
 

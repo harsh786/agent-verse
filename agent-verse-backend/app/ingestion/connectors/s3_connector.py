@@ -255,6 +255,39 @@ class S3Connector(BaseConnector):
 
                 yield raw, new_cursor
 
+    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+        """Every object key under the configured prefix/patterns (upstream deletions)."""
+        import boto3
+
+        cc = config.connection_config
+        bucket = cc.get("bucket", "")
+        prefix = cc.get("prefix", "")
+        credentials = cc.get("credentials", {})
+        async with self._pinned_endpoint(config) as endpoint_url:
+
+            def _list() -> list[str]:
+                session = boto3.Session(
+                    aws_access_key_id=credentials.get("access_key_id"),
+                    aws_secret_access_key=credentials.get("secret_access_key"),
+                    region_name=cc.get("region", "us-east-1"),
+                )
+                client = session.client("s3", **self._client_kwargs(endpoint_url))
+                keys: list[str] = []
+                paginator = client.get_paginator("list_objects_v2")
+                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                    keys.extend(obj["Key"] for obj in page.get("Contents", []))
+                return keys
+
+            keys = await self._runner(endpoint_url)(_list)
+        return {
+            f"s3://{bucket}/{key}"
+            for key in keys
+            if self._matches_patterns(key, config.include_patterns, config.exclude_patterns)
+        }
+
+    def manages_doc_id(self, doc_id: str) -> bool:
+        return str(doc_id).startswith("s3://")
+
     async def on_webhook(
         self,
         config: SourceConfig,

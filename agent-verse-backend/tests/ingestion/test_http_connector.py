@@ -70,7 +70,13 @@ async def test_get_delta_yields_documents() -> None:
     cfg = _config(url="https://1.1.1.1/api", cursor_field="updated_at", id_field="id")
     with _patch_httpx(payload):
         docs = [(d.doc_id, c) async for d, c in conn.get_delta(cfg, None)]
-    assert [d for d, _ in docs] == ["a", "b"]
+    # STABLE-DOC-IDS: ids derive from the Source + endpoint + record id.
+    from app.ingestion.base_connector import stable_doc_id
+
+    assert [d for d, _ in docs] == [
+        stable_doc_id(cfg, "https://1.1.1.1/api", "a"),
+        stable_doc_id(cfg, "https://1.1.1.1/api", "b"),
+    ]
     # Cursor advances to the latest updated_at.
     assert docs[-1][1] == "2026-01-02"
 
@@ -85,7 +91,9 @@ async def test_get_delta_incremental_skips_old_records() -> None:
     cfg = _config(url="https://1.1.1.1/api", cursor_field="updated_at")
     with _patch_httpx(payload):
         ids = [d.doc_id async for d, _ in conn.get_delta(cfg, "2026-01-03")]
-    assert ids == ["b"]
+    from app.ingestion.base_connector import stable_doc_id
+
+    assert ids == [stable_doc_id(cfg, "https://1.1.1.1/api", "b")]
 
 
 @pytest.mark.asyncio

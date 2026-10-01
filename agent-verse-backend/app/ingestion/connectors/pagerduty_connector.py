@@ -6,11 +6,10 @@ Cursor: last incident created_at timestamp (ISO 8601).
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -98,7 +97,7 @@ class PagerDutyConnector(BaseConnector):
                             f"{incident.get('description') or incident.get('summary') or ''}"
                         )
                         doc = RawDocument(
-                            doc_id=str(uuid.uuid4()),
+                            doc_id=stable_doc_id(config, incident.get("id")),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=incident.get("html_url", ""),

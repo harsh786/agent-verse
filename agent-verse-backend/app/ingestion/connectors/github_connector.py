@@ -9,11 +9,10 @@ Supports:
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -84,7 +83,13 @@ class GitHubConnector(BaseConnector):
                         ),
                     )
                     for chunk in chunks:
-                        doc_id = f"{repo}_{chunk.get('source_doc_id', uuid.uuid4().hex)}"
+                        doc_id = (
+                            f"{repo}_{chunk['source_doc_id']}"
+                            if chunk.get("source_doc_id")
+                            else stable_doc_id(
+                                config, repo, chunk.get("source_url", ""), chunk.get("content", "")
+                            )
+                        )
                         raw = RawDocument(
                             doc_id=doc_id,
                             source_id=config.source_id,

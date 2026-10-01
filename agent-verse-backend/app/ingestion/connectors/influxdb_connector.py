@@ -7,11 +7,10 @@ Supports InfluxDB 2.x (Flux queries) and 3.x.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_egress import pin_source_urls, run_driver_call
 from app.ingestion.connector_registry import register
 
@@ -19,6 +18,14 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+_NON_IDENTITY_COLUMNS = frozenset({"_value", "result", "table", "_start", "_stop"})
+
+
+def _point_identity(row: dict[str, Any]) -> list[str]:
+    """A point is identified by measurement, field, tags and time — not its value."""
+    return [f"{k}={v}" for k, v in sorted(row.items()) if k not in _NON_IDENTITY_COLUMNS]
 
 
 @register("influxdb", feature_flag="ingestion_connector_influxdb_enabled")
@@ -116,7 +123,7 @@ class InfluxDBConnector(BaseConnector):
                 text_parts
             )
             doc = RawDocument(
-                doc_id=str(uuid.uuid4()),
+                doc_id=stable_doc_id(config, *_point_identity(row)),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 source_url=f"{url}/orgs/{org}/buckets/{bucket}/measurements/{measurement}",

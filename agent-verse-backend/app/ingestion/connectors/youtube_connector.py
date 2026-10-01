@@ -8,11 +8,10 @@ Supports: channel videos, playlists, and individual video URLs.
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -118,7 +117,7 @@ class YouTubeConnector(BaseConnector):
 
                 full_text = f"# {title}\n\n{text}"
                 doc = RawDocument(
-                    doc_id=str(uuid.uuid4()),
+                    doc_id=stable_doc_id(config, video_id),
                     source_id=config.source_id,
                     tenant_id=config.tenant_id,
                     source_url=f"https://www.youtube.com/watch?v={video_id}",

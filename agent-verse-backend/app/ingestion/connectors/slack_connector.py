@@ -9,11 +9,10 @@ Supports:
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -82,7 +81,9 @@ class SlackConnector(BaseConnector):
                         new_cursor = ts
 
                     raw = RawDocument(
-                        doc_id=f"{channel_id}_{ts or uuid.uuid4().hex}",
+                        doc_id=f"{channel_id}_{ts}"
+                        if ts
+                        else stable_doc_id(config, channel_id, chunk.get("content", "")),
                         source_id=config.source_id,
                         tenant_id=config.tenant_id,
                         content=chunk.get("content", "").encode("utf-8"),
