@@ -46,7 +46,7 @@ export interface IngestionJob {
   job_id:           string;
   source_id:        string;
   tenant_id:        string;
-  status:           "pending" | "running" | "completed" | "failed" | "paused";
+  status:           "pending" | "running" | "completed" | "failed" | "paused" | "cancelled";
   sync_mode:        "full" | "incremental" | "streaming";
   triggered_by:     string;
   started_at:       string | null;

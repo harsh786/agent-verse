@@ -1,8 +1,8 @@
-import { X, RefreshCw, Activity, FileText } from 'lucide-react';
+import { X, RefreshCw, Activity, FileText, Square, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
 import type { SourceConfig } from '../types';
 import { FAMILY_CONFIG } from '../types';
-import { useSourceHealth, useSyncStatus, useDocuments, useTriggerSync } from '../hooks';
+import { useSourceHealth, useSyncStatus, useDocuments, useTriggerSync, useCancelSync, useReindexSource } from '../hooks';
 
 interface Props { source: SourceConfig; onClose: () => void; }
 type Tab = 'overview' | 'documents' | 'history' | 'settings';
@@ -12,6 +12,9 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
   const { data: health } = useSourceHealth(source.source_id);
   const { data: syncStatus } = useSyncStatus(source.source_id);
   const triggerSync = useTriggerSync();
+  const cancelSync = useCancelSync();
+  const reindex = useReindexSource();
+  const running = (syncStatus as { status?: string } | undefined)?.status === 'running';
   const familyCfg = FAMILY_CONFIG[source.family] ?? { label: source.family, icon: 'Bot', color: 'stone-500', description: '' };
 
   return (
@@ -50,6 +53,28 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
               <RefreshCw className={`h-3 w-3 ${triggerSync.isPending ? 'animate-spin' : ''}`} />
               {triggerSync.isPending ? 'Syncing…' : 'Sync Now'}
             </button>
+            {running ? (
+              <button
+                onClick={() => cancelSync.mutate(source.source_id)}
+                disabled={cancelSync.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
+                aria-label="Cancel sync"
+              >
+                <Square className="h-3 w-3" /> Cancel
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  if (window.confirm('Delete everything this source indexed and re-sync it from scratch?'))
+                    reindex.mutate(source.source_id);
+                }}
+                disabled={reindex.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted transition-colors disabled:opacity-50"
+                aria-label="Reindex source"
+              >
+                <RotateCcw className="h-3 w-3" /> Reindex
+              </button>
+            )}
             <button onClick={onClose} aria-label="Close" className="rounded-md p-2 hover:bg-muted transition-colors">
               <X className="h-4 w-4" />
             </button>

@@ -3,6 +3,7 @@ import { Plus, Database, AlertCircle, RefreshCw } from 'lucide-react';
 import { SourceList } from './components/SourceList';
 import { SourceCreateWizard } from './components/SourceCreateWizard';
 import { QuotaUsageBar } from './components/QuotaUsageBar';
+import { DLQPanel } from './components/DLQPanel';
 import { useSources, useIngestionQuota } from './hooks';
 import type { SourceFamily } from './types';
 import { FAMILY_CONFIG } from './types';
@@ -85,6 +86,9 @@ export function SourcesPage() {
         isLoading={isLoading}
         onAddSource={() => setShowCreate(true)}
       />
+
+      {/* Ingestion dead-letter queue, with per-entry retry */}
+      <DLQPanel />
 
       {/* Create wizard */}
       {showCreate && <SourceCreateWizard onClose={() => setShowCreate(false)} />}

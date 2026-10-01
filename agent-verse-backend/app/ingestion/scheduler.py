@@ -58,6 +58,7 @@ def sync_source_task(
     tenant_id: str,
     triggered_by: str = "scheduler",
     job_id: str | None = None,
+    reindex: bool = False,
 ) -> dict:
     """Celery task: synchronise a single source through the full 13-stage pipeline.
 
@@ -65,6 +66,8 @@ def sync_source_task(
       - Celery beat (periodic polling)
       - Webhook handler (event-driven via on_webhook)
       - Manual trigger (API POST /sources/{id}/sync)
+      - Reindex (API POST /sources/{id}/reindex, ``reindex=True``): the source's
+        indexed documents are deleted and it is re-synced from the start.
     """
     return asyncio.get_event_loop().run_until_complete(
         _sync_source_async(
@@ -73,6 +76,7 @@ def sync_source_task(
             tenant_id=tenant_id,
             triggered_by=triggered_by,
             job_id=job_id,
+            reindex=reindex,
         )
     )
 
@@ -170,7 +174,13 @@ def _bind_worker_guardrail_rules(db_factory: object) -> None:
 
 
 async def _sync_source_async(
-    *, task, source_id: str, tenant_id: str, triggered_by: str, job_id: str | None = None
+    *,
+    task,
+    source_id: str,
+    tenant_id: str,
+    triggered_by: str,
+    job_id: str | None = None,
+    reindex: bool = False,
 ) -> dict:
     """Async body of sync_source_task.
 
@@ -259,13 +269,28 @@ async def _sync_source_async(
     )
 
     docs_indexed = docs_failed = docs_skipped = 0
+    cancelled = False
 
     try:
+        if reindex:
+            # "Delete + full re-sync": drop what this source indexed, then sync
+            # from the beginning (dedup would otherwise skip unchanged documents
+            # and nothing would be re-chunked or re-embedded).
+            removed = await _delete_source_documents(pipeline, config)
+            _log.info("reindex source=%s removed_documents=%d", source_id, removed)
+            config.cursor_value = ""
+            await source_store.update(source_id, tenant_id, cursor_value="")
+
         # ── Delta loop ───────────────────────────────────────────────────────
         cursor = config.cursor_value or None
         new_cursor = cursor
 
         async for raw_doc, next_cursor in connector.get_delta(config, cursor):  # type: ignore[misc]
+            # KB-15: an operator cancel (POST /sources/{id}/sync/cancel) stops the
+            # loop between documents; indexed work and the cursor are kept.
+            if await tracker.is_cancel_requested(tenant_id, job.job_id) is True:
+                cancelled = True
+                break
             try:
                 from app.core.config import get_settings
                 from app.tenancy.context import PlanTier, TenantContext
@@ -330,7 +355,7 @@ async def _sync_source_async(
         job.docs_indexed = docs_indexed
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed
-        await tracker.complete_job(job)
+        await tracker.complete_job(job, cancelled=cancelled)
         # Advance last_synced_at + cursor on the durable source row so the beat
         # due-scan reschedules the next sync one interval out (item 6).
         # mark_synced is the single owner of consecutive_failures (0 when no doc
@@ -353,6 +378,7 @@ async def _sync_source_async(
             "docs_indexed": docs_indexed,
             "docs_skipped": docs_skipped,
             "docs_failed": docs_failed,
+            "cancelled": cancelled,
         }
 
     except Exception as exc:
@@ -436,88 +462,146 @@ async def _retry_dlq_async() -> dict:
     embedder, read DB rows as attributes, and passed no SourceConfig — so even a
     returned entry could only ever be skipped.
     """
-    from app.ingestion.job_tracker import raw_document_from_dlq_json
-
     tracker, pipeline, source_store = _build_worker_ingestion()
 
     entries = await tracker.get_retryable_dlq_entries(max_entries=50)
     retried = succeeded = still_failed = 0
 
     for entry in entries:
-        dlq_id = str(entry.get("dlq_id") or "")
-        tenant_id = str(entry.get("tenant_id") or "")
-        source_id = str(entry.get("source_id") or "")
-        if not dlq_id or not tenant_id:
-            continue
-
-        if int(entry.get("retry_count") or 0) >= _DLQ_MAX_RETRIES:
-            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
-            continue
-
-        repository_payload = _repository_dlq_payload(entry.get("raw_doc_json"))
-        if repository_payload is not None:
-            # A failed repository ingestion: replay it as a new durable job
-            # (these rows used to be marked permanent — nothing could replay them).
-            from app.ingestion.repo_tasks import replay_repository_dlq_entry
-
-            try:
-                replayed = await replay_repository_dlq_entry(
-                    repository_payload, tenant_id=tenant_id, max_attempts=_DLQ_MAX_RETRIES
-                )
-            except Exception as exc:
-                await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc)[:300])
-                still_failed += 1
-                continue
-            if replayed:
-                await tracker.resolve_dlq_entry(dlq_id, tenant_id)
-                retried += 1
-                succeeded += 1
-            else:
-                await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
-            continue
-
-        raw_doc = raw_document_from_dlq_json(
-            entry.get("raw_doc_json"),
-            source_id=source_id,
-            tenant_id=tenant_id,
-            doc_id=str(entry.get("doc_id") or ""),
-        )
-        if raw_doc is None:
-            # Not a connector document (e.g. repo-ingest parameters) or an
-            # unreadable payload: no retry can replay it, so stop rescanning it.
-            _log.warning("retry_dlq: dlq=%s has no replayable document", dlq_id)
-            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
-            continue
-
-        retried += 1
-        try:
-            config = await source_store.get(source_id, tenant_id)
-            if config is None:
-                # The Source was deleted: nothing can ever replay this entry.
-                await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
-                still_failed += 1
-                continue
-            result = await pipeline.run(raw_doc, source_config=config)
-            # ``dedup`` means the content IS indexed (e.g. a concurrent sync
-            # got there first) — that resolves the entry, it is not a failure.
-            if result.success or (result.skipped and result.skip_reason == "dedup"):
-                await tracker.resolve_dlq_entry(dlq_id, tenant_id)
-                succeeded += 1
-            else:
-                await tracker.increment_dlq_retry(
-                    dlq_id,
-                    tenant_id,
-                    error=result.error or result.skip_reason or result.status,
-                )
-                still_failed += 1
-        except Exception as exc:
-            await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc))
+        outcome = await _retry_one_dlq_entry(entry, tracker, pipeline, source_store)
+        if outcome in ("succeeded", "still_failed"):
+            retried += 1
+        if outcome == "succeeded":
+            succeeded += 1
+        elif outcome == "still_failed":
             still_failed += 1
 
     _log.info(
         "retry_dlq: retried=%d succeeded=%d still_failed=%d", retried, succeeded, still_failed
     )
     return {"retried": retried, "succeeded": succeeded, "still_failed": still_failed}
+
+
+async def _retry_one_dlq_entry(
+    entry: dict, tracker, pipeline, source_store, *, force: bool = False
+) -> str:
+    """Replay one DLQ entry: ``succeeded`` | ``still_failed`` | ``permanent`` | ``skipped``.
+
+    ``force`` (an operator retry) replays an entry even at or past the retry cap.
+    """
+    from app.ingestion.job_tracker import raw_document_from_dlq_json
+
+    dlq_id = str(entry.get("dlq_id") or "")
+    tenant_id = str(entry.get("tenant_id") or "")
+    source_id = str(entry.get("source_id") or "")
+    if not dlq_id or not tenant_id:
+        return "skipped"
+
+    if not force and int(entry.get("retry_count") or 0) >= _DLQ_MAX_RETRIES:
+        await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+        return "permanent"
+
+    repository_payload = _repository_dlq_payload(entry.get("raw_doc_json"))
+    if repository_payload is not None:
+        # A failed repository ingestion: replay it as a new durable job
+        # (these rows used to be marked permanent — nothing could replay them).
+        from app.ingestion.repo_tasks import replay_repository_dlq_entry
+
+        try:
+            replayed = await replay_repository_dlq_entry(
+                repository_payload, tenant_id=tenant_id, max_attempts=_DLQ_MAX_RETRIES
+            )
+        except Exception as exc:
+            await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc)[:300])
+            return "still_failed"
+        if replayed:
+            await tracker.resolve_dlq_entry(dlq_id, tenant_id)
+            return "succeeded"
+        await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+        return "permanent"
+
+    raw_doc = raw_document_from_dlq_json(
+        entry.get("raw_doc_json"),
+        source_id=source_id,
+        tenant_id=tenant_id,
+        doc_id=str(entry.get("doc_id") or ""),
+    )
+    if raw_doc is None:
+        # Not a connector document (e.g. repo-ingest parameters) or an
+        # unreadable payload: no retry can replay it, so stop rescanning it.
+        _log.warning("retry_dlq: dlq=%s has no replayable document", dlq_id)
+        await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+        return "permanent"
+
+    try:
+        config = await source_store.get(source_id, tenant_id)
+        if config is None:
+            # The Source was deleted: nothing can ever replay this entry.
+            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+            return "still_failed"
+        result = await pipeline.run(raw_doc, source_config=config)
+        # ``dedup`` means the content IS indexed (e.g. a concurrent sync
+        # got there first) — that resolves the entry, it is not a failure.
+        if result.success or (result.skipped and result.skip_reason == "dedup"):
+            await tracker.resolve_dlq_entry(dlq_id, tenant_id)
+            return "succeeded"
+        await tracker.increment_dlq_retry(
+            dlq_id,
+            tenant_id,
+            error=result.error or result.skip_reason or result.status,
+        )
+        return "still_failed"
+    except Exception as exc:
+        await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc))
+        return "still_failed"
+
+
+@shared_task(name="ingestion.retry_dlq_entry", bind=True)
+def retry_dlq_entry_task(self, *, dlq_id: str, tenant_id: str) -> dict:
+    """Operator retry of ONE DLQ entry (POST /ingestion/dlq/{id}/retry)."""
+    return asyncio.get_event_loop().run_until_complete(
+        _retry_dlq_entry_async(dlq_id=dlq_id, tenant_id=tenant_id)
+    )
+
+
+async def _retry_dlq_entry_async(*, dlq_id: str, tenant_id: str) -> dict:
+    """Load the entry under its tenant's RLS context and replay it now (``force``)."""
+    tracker, pipeline, source_store = _build_worker_ingestion()
+    entry = await tracker.get_dlq_entry(dlq_id, tenant_id)
+    if entry is None:
+        return {"dlq_id": dlq_id, "outcome": "not_found"}
+    if entry.get("resolved_at") is not None:
+        return {"dlq_id": dlq_id, "outcome": "already_resolved"}
+    outcome = await _retry_one_dlq_entry(entry, tracker, pipeline, source_store, force=True)
+    _log.info("retry_dlq_entry: dlq=%s outcome=%s", dlq_id, outcome)
+    return {"dlq_id": dlq_id, "outcome": outcome}
+
+
+async def _delete_source_documents(pipeline, config) -> int:
+    """Delete every document a Source indexed into its collection (for reindex)."""
+    store = getattr(pipeline, "_kb", None)
+    if store is None or not config.collection_id:
+        return 0
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_ctx = TenantContext(
+        tenant_id=config.tenant_id, api_key_id="reindex", plan=PlanTier.FREE
+    )
+    removed = 0
+    while True:
+        documents = await store.list_source_documents_async(
+            tenant_ctx=tenant_ctx,
+            collection_id=config.collection_id,
+            source_id=config.source_id,
+            limit=200,
+        )
+        if not documents:
+            return removed
+        for document in documents:
+            await store.delete_document_async(
+                str(document["id"]), collection_id=config.collection_id, tenant_ctx=tenant_ctx
+            )
+            removed += 1
 
 
 def _repository_dlq_payload(raw_doc_json: object) -> dict | None:

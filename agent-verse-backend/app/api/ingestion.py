@@ -1,20 +1,23 @@
-"""Ingestion API — CRUD + sync control + DLQ + health + preview.
+"""Ingestion API — Source CRUD, sync control, DLQ, health, preview, quota.
 
-38 endpoints covering:
-  POST/GET/PATCH/DELETE /api/v1/sources         Source CRUD
-  POST                  /api/v1/sources/{id}/sync         Trigger sync
-  POST                  /api/v1/sources/{id}/sync/cancel  Cancel running sync
-  GET                   /api/v1/sources/{id}/sync/status  Current job
-  GET                   /api/v1/sources/{id}/health       Connection check
-  GET                   /api/v1/sources/{id}/preview      Sample 5 docs (dry-run)
-  GET                   /api/v1/sources/{id}/stats        Totals
-  POST                  /api/v1/sources/{id}/reindex      Delete + full re-sync
-  GET                   /api/v1/sources/catalogue         All supported types
-  POST                  /api/v1/sources/validate          Validate config before save
-  GET/DELETE            /api/v1/ingestion/documents       Indexed document CRUD
-  GET                   /api/v1/ingestion/dlq             DLQ listing (read-only)
-  GET                   /api/v1/ingestion/quota           Tenant quota
-  GET                   /api/v1/ingestion/cost            Cost breakdown
+Endpoints (this list is checked against the registered routes by a test):
+  GET/POST      /sources                              List / create Sources
+  GET           /sources/catalogue                    All supported connector types
+  POST          /sources/validate                     Validate a config before saving it
+  GET/PATCH/DELETE /sources/{source_id}               Read / update / delete a Source
+  GET           /sources/{source_id}/health           Connection check
+  POST          /sources/{source_id}/sync             Trigger a sync (durable Celery task)
+  POST          /sources/{source_id}/sync/cancel      Cancel the running sync
+  GET           /sources/{source_id}/sync/status      Latest sync job
+  GET           /sources/{source_id}/sync/history     Recent sync jobs
+  POST          /sources/{source_id}/reindex          Delete the Source's documents + full re-sync
+  POST          /sources/{source_id}/preview          Sample 5 docs (dry-run)
+  GET           /sources/{source_id}/stats            Totals
+  GET           /ingestion/documents                  Indexed documents of a Source
+  GET           /ingestion/dlq                        DLQ listing
+  POST          /ingestion/dlq/{dlq_id}/retry         Retry one DLQ entry now
+  GET           /ingestion/quota                      Tenant quota
+  GET           /ingestion/cost                       Cost breakdown
 """
 
 from __future__ import annotations
@@ -156,6 +159,63 @@ async def get_catalogue(request: Request) -> list[dict]:
     from app.ingestion.connector_registry import get_connector_metadata
 
     return get_connector_metadata()
+
+
+@router.post("/validate", response_model=dict)
+async def validate_source(
+    request: Request,
+    body: CreateSourceRequest,
+    check_connection: bool = Query(default=True),
+) -> dict:
+    """Validate a Source config before saving it; nothing is persisted.
+
+    Field-level problems (e.g. an unsupported chunking strategy) are a 422 like
+    on create. Semantic problems are reported in ``errors`` — unknown family, no
+    connector for ``source_type`` — and, unless ``check_connection=false``, the
+    connector's own connection probe runs against the unsaved config.
+    """
+    tenant = _require_tenant(request)
+    errors: list[str] = []
+    try:
+        family = SourceFamily(body.family)
+    except ValueError:
+        errors.append(f"Unknown family: {body.family!r}")
+        family = None
+    connector_cls: Any = None
+    try:
+        from app.ingestion.connector_registry import get_connector
+
+        connector_cls = get_connector(body.source_type)
+    except KeyError:
+        connector_cls = None
+    if connector_cls is None:
+        errors.append(f"No connector for source_type={body.source_type!r}")
+    connection: dict | None = None
+    if not errors and check_connection and family is not None:
+        config = SourceConfig(
+            source_id=f"validate-{uuid.uuid4().hex[:12]}",
+            tenant_id=tenant.tenant_id,
+            name=body.name,
+            family=family,
+            source_type=body.source_type,
+            connection_config=body.connection_config,
+            sync_mode=body.sync_mode,
+            collection_id=body.collection_id,
+            include_patterns=body.include_patterns,
+            exclude_patterns=body.exclude_patterns,
+        )
+        try:
+            health = await connector_cls().validate_connection(config)
+            connection = {
+                "ok": bool(health.ok),
+                "latency_ms": health.latency_ms,
+                "error": health.error or None,
+            }
+        except Exception as exc:
+            connection = {"ok": False, "latency_ms": None, "error": str(exc)[:300]}
+        if not connection["ok"]:
+            errors.append(f"Connection check failed: {connection['error'] or 'unknown error'}")
+    return {"valid": not errors, "errors": errors, "connection": connection}
 
 
 # ── Sources CRUD ──────────────────────────────────────────────────────────────
@@ -368,17 +428,99 @@ async def sync_status(source_id: str, request: Request) -> dict:
     tracker = _get_tracker(request)
     if tracker is None:
         return {"status": "unknown"}
-    # The durable job row: syncs run in the Celery worker, not in this process.
+    # Durable history: syncs run in Celery workers, so this process's in-memory
+    # job map (which this used to read) never saw them — "never_synced" forever.
     try:
-        latest = await tracker.latest_job(source_id, tenant.tenant_id)
+        jobs = await tracker.list_jobs(source_id, tenant.tenant_id, limit=1)
     except Exception as exc:
-        _log.exception("ingestion_sync_status_read_failed", source_id=source_id)
-        raise HTTPException(status_code=503, detail="Sync status is unavailable") from exc
-    if latest is None:
+        _log.exception("ingestion_sync_status_failed", source_id=source_id)
+        raise HTTPException(status_code=503, detail="Sync history is unavailable") from exc
+    if not jobs:
         return {"status": "never_synced"}
-    import dataclasses
+    return dict(jobs[0])
 
-    return dataclasses.asdict(latest)
+
+@router.get("/{source_id}/sync/history", response_model=list[dict])
+async def sync_history(
+    source_id: str, request: Request, limit: int = Query(default=20, ge=1, le=200)
+) -> list[dict]:
+    """The Source's recent sync jobs, newest first."""
+    tenant = _require_tenant(request)
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    tracker = _get_tracker(request)
+    if tracker is None:
+        raise HTTPException(status_code=503, detail="Ingestion framework not configured")
+    try:
+        return [dict(j) for j in await tracker.list_jobs(source_id, tenant.tenant_id, limit=limit)]
+    except Exception as exc:
+        _log.exception("ingestion_sync_history_failed", source_id=source_id)
+        raise HTTPException(status_code=503, detail="Sync history is unavailable") from exc
+
+
+@router.post("/{source_id}/sync/cancel", response_model=dict, status_code=202)
+async def cancel_sync(source_id: str, request: Request) -> dict:
+    """Cancel the Source's running sync.
+
+    The worker stops between documents: what it already indexed stays indexed
+    and the cursor is committed, so the next sync resumes from there. 409 when
+    no sync is running.
+    """
+    tenant = _require_tenant(request)
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    tracker = _get_tracker(request)
+    if tracker is None:
+        raise HTTPException(status_code=503, detail="Ingestion framework not configured")
+    try:
+        job_id = await tracker.request_cancel(source_id, tenant.tenant_id)
+    except Exception as exc:
+        _log.exception("ingestion_sync_cancel_failed", source_id=source_id)
+        raise HTTPException(status_code=503, detail="Sync could not be cancelled") from exc
+    if job_id is None:
+        raise HTTPException(status_code=409, detail="No sync is running for this source")
+    return {"status": "cancelling", "job_id": job_id}
+
+
+@router.post("/{source_id}/reindex", response_model=dict, status_code=202)
+async def reindex_source(source_id: str, request: Request) -> dict:
+    """Delete everything this Source indexed and re-sync it from the start.
+
+    Runs as the durable ``ingestion.sync_source`` task with ``reindex=True``
+    under the Source's sync lock (409 while another sync runs).
+    """
+    tenant = _require_tenant(request)
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    tracker = _get_tracker(request)
+    if tracker is None:
+        raise HTTPException(status_code=503, detail="Ingestion framework not configured")
+    job_id = await tracker.acquire_lock(source_id, tenant.tenant_id)
+    if job_id is None:
+        raise HTTPException(status_code=409, detail="A sync is already running for this source")
+    from app.ingestion.scheduler import sync_source_task
+
+    try:
+        sync_source_task.apply_async(
+            kwargs={
+                "source_id": source_id,
+                "tenant_id": tenant.tenant_id,
+                "triggered_by": "reindex",
+                "job_id": job_id,
+                "reindex": True,
+            },
+            queue="ingestion",
+        )
+    except Exception as exc:
+        await tracker.release_lock(source_id, tenant.tenant_id, job_id)
+        _log.exception("ingestion_reindex_enqueue_failed", source_id=source_id)
+        raise HTTPException(
+            status_code=503, detail="Reindex could not be queued; try again shortly"
+        ) from exc
+    return {"status": "queued", "job_id": job_id}
 
 
 # ── Preview (dry-run) ─────────────────────────────────────────────────────────
@@ -634,6 +776,41 @@ async def list_dlq(
         raise HTTPException(status_code=503, detail="Ingestion DLQ is unavailable") from exc
 
 
+@documents_router.post("/dlq/{dlq_id}/retry", response_model=dict, status_code=202)
+async def retry_dlq_entry(dlq_id: str, request: Request) -> dict:
+    """Replay one of the tenant's DLQ entries now (even past the automatic retry cap).
+
+    Queued as ``ingestion.retry_dlq_entry`` on the ingestion queue; the entry is
+    resolved, or its retry count/error updated, by the worker. 404 unknown entry,
+    409 already resolved, 503 without a database.
+    """
+    tenant = _require_tenant(request)
+    tracker = _get_tracker(request)
+    if tracker is None or getattr(tracker, "_db", None) is None:
+        raise HTTPException(status_code=503, detail="Ingestion DLQ requires a database")
+    try:
+        entry = await tracker.get_dlq_entry(dlq_id, tenant.tenant_id)
+    except Exception as exc:
+        _log.exception("ingestion_dlq_lookup_failed")
+        raise HTTPException(status_code=503, detail="Ingestion DLQ is unavailable") from exc
+    if entry is None:
+        raise HTTPException(status_code=404, detail="DLQ entry not found")
+    if entry.get("resolved_at") is not None:
+        raise HTTPException(status_code=409, detail="DLQ entry is already resolved")
+    from app.ingestion.scheduler import retry_dlq_entry_task
+
+    try:
+        retry_dlq_entry_task.apply_async(
+            kwargs={"dlq_id": dlq_id, "tenant_id": tenant.tenant_id}, queue="ingestion"
+        )
+    except Exception as exc:
+        _log.exception("ingestion_dlq_retry_enqueue_failed")
+        raise HTTPException(
+            status_code=503, detail="Retry could not be queued; try again shortly"
+        ) from exc
+    return {"status": "queued", "dlq_id": dlq_id}
+
+
 # ── Background sync task ──────────────────────────────────────────────────────
 
 
@@ -651,6 +828,7 @@ async def _run_sync(
     job = await tracker.create_job(source, job_id=job_id, triggered_by="manual")
 
     indexed = skipped = failed = chunks = 0
+    cancelled = False
     # Captured before the loop runs: tracker.update_cursor() mutates
     # source.cursor_value in place, so comparing last_cursor against
     # source.cursor_value *after* the loop would always be equal (bug) —
@@ -664,6 +842,9 @@ async def _run_sync(
         connector = connector_cls()
 
         async for raw_doc, new_cursor in connector.get_delta(source, source.cursor_value or None):
+            if await tracker.is_cancel_requested(source.tenant_id, job.job_id) is True:
+                cancelled = True
+                break
             if pipeline is not None:
                 result = await pipeline.ingest(raw_doc, source)
                 indexed += 1 if result.status == "indexed" else 0
@@ -681,7 +862,7 @@ async def _run_sync(
                 await tracker.update_cursor(job, new_cursor, source)
                 last_cursor = new_cursor or last_cursor
 
-        await tracker.complete_job(job)
+        await tracker.complete_job(job, cancelled=cancelled)
 
     except Exception as exc:
         _log.error("sync_error source=%s: %s", source.source_id, exc)

@@ -109,8 +109,37 @@ export function useSyncStatus(sourceId: string) {
   });
 }
 
-// No sync-history hook: the backend has no /sources/{id}/sync/history route
-// (only /sync/status, the current job).
+export function useSyncHistory(sourceId: string, limit = 20) {
+  return useQuery({
+    queryKey: [...INGESTION_KEYS.syncStatus(sourceId), 'history', limit] as const,
+    queryFn: () => apiFetch<IngestionJob[]>(`/sources/${sourceId}/sync/history?limit=${limit}`),
+    enabled: !!sourceId,
+  });
+}
+
+export function useCancelSync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sourceId: string) =>
+      apiFetch<{ status: string; job_id: string }>(`/sources/${sourceId}/sync/cancel`, { method: 'POST' }),
+    onSuccess: (_d, sourceId) => {
+      qc.invalidateQueries({ queryKey: INGESTION_KEYS.syncStatus(sourceId) });
+    },
+  });
+}
+
+/** Delete everything the source indexed and re-sync it from the start. */
+export function useReindexSource() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (sourceId: string) =>
+      apiFetch<{ status: string; job_id: string }>(`/sources/${sourceId}/reindex`, { method: 'POST' }),
+    onSuccess: (_d, sourceId) => {
+      qc.invalidateQueries({ queryKey: INGESTION_KEYS.syncStatus(sourceId) });
+      qc.invalidateQueries({ queryKey: INGESTION_KEYS.documents(sourceId) });
+    },
+  });
+}
 
 // ── Preview ───────────────────────────────────────────────────────────────────
 
@@ -143,9 +172,17 @@ export function useIngestionDLQ() {
   });
 }
 
-// Ingestion DLQ entries are read-only: there is no /ingestion/dlq/{id}/retry
-// route (trigger DLQ retry lives at /triggers/dlq/{id}/retry — see
-// features/triggers/hooks.ts), so no retry hook is offered here.
+/** Replay one DLQ entry now (POST /ingestion/dlq/{id}/retry, queued on the worker). */
+export function useRetryDLQEntry() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dlqId: string) =>
+      apiFetch<{ status: string; dlq_id: string }>(`/ingestion/dlq/${dlqId}/retry`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: INGESTION_KEYS.dlq() });
+    },
+  });
+}
 
 // ── Quota & Cost ──────────────────────────────────────────────────────────────
 

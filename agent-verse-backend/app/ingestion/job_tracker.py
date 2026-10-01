@@ -48,6 +48,7 @@ class IngestionJobTracker:
         self._jobs: dict[str, IngestionJob] = {}
         self._source_cursors: dict[str, str] = {}  # source_id → cursor
         self._locks: dict[str, str] = {}  # source_id → job_id
+        self._cancelled: set[str] = set()  # job ids with a cancel request
 
     # ── Distributed locking (LAW-14) ─────────────────────────────────────────
 
@@ -103,6 +104,41 @@ class IngestionJobTracker:
                 del self._locks[source_id]
         else:
             self._locks.pop(source_id, None)
+
+    async def running_job_id(self, source_id: str, tenant_id: str) -> str | None:
+        """The job id holding the source's sync lock (a sync is running), or None."""
+        if self._redis is not None:
+            value = await self._redis.get(f"ingestion_lock:{tenant_id}:{source_id}")
+            if value is None:
+                return None
+            return value.decode() if isinstance(value, bytes | bytearray) else str(value)
+        return self._locks.get(source_id)
+
+    # ── Cancellation (KB-15) ──────────────────────────────────────────────────
+    # A cancel request is a Redis flag keyed by job id, so the API replica that
+    # receives it and the worker running the sync need not be the same process.
+    # The sync loop checks it between documents and stops cleanly: what was
+    # indexed stays indexed and the cursor is committed, so the next sync resumes.
+
+    async def request_cancel(self, source_id: str, tenant_id: str) -> str | None:
+        """Flag the running sync of a source for cancellation; its job id, or None."""
+        job_id = await self.running_job_id(source_id, tenant_id)
+        if job_id is None:
+            return None
+        if self._redis is not None:
+            await self._redis.set(f"ingestion_cancel:{tenant_id}:{job_id}", "1", ex=3600)
+        else:
+            self._cancelled.add(job_id)
+        return job_id
+
+    async def is_cancel_requested(self, tenant_id: str, job_id: str) -> bool:
+        if self._redis is not None:
+            try:
+                return bool(await self._redis.get(f"ingestion_cancel:{tenant_id}:{job_id}"))
+            except Exception as exc:
+                _log.warning("ingestion_cancel_check_failed job=%s: %s", job_id, exc)
+                return False
+        return job_id in self._cancelled
 
     # ── Job lifecycle ─────────────────────────────────────────────────────────
 
@@ -175,9 +211,11 @@ class IngestionJobTracker:
         job.tokens_consumed += tokens
         job.docs_discovered += indexed + skipped + failed
 
-    async def complete_job(self, job: IngestionJob, *, error: str = "") -> None:
-        """Mark the job as completed or failed."""
-        job.status = "failed" if error else "completed"
+    async def complete_job(
+        self, job: IngestionJob, *, error: str = "", cancelled: bool = False
+    ) -> None:
+        """Mark the job as completed, failed, or cancelled (by an operator)."""
+        job.status = "failed" if error else ("cancelled" if cancelled else "completed")
         job.error_message = error[:2048] if error else ""
         job.completed_at = datetime.now(UTC).isoformat()
 
@@ -264,6 +302,53 @@ class IngestionJobTracker:
             error_message=str(row["error_message"] or ""),
             created_at=_ts(row["created_at"]) or "",
         )
+
+    async def list_jobs(
+        self, source_id: str, tenant_id: str, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """A source's sync jobs, newest first (``ingestion_jobs`` under tenant RLS).
+
+        Syncs run in Celery workers, so this process's in-memory job map only
+        knows jobs it ran itself; with a DB the table is the history.
+        """
+        import dataclasses
+
+        if self._db is None:
+            jobs = [
+                j for j in self._jobs.values()
+                if j.source_id == source_id and j.tenant_id == tenant_id
+            ]
+            jobs.sort(key=lambda j: j.created_at, reverse=True)
+            return [dataclasses.asdict(j) for j in jobs[:limit]]
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id AS job_id, source_id, tenant_id, status, sync_mode, "
+                        "triggered_by, started_at, completed_at, docs_discovered, "
+                        "docs_indexed, docs_skipped, docs_failed, chunks_created, "
+                        "bytes_processed, tokens_consumed, cursor_before, cursor_after, "
+                        "error_message, created_at FROM ingestion_jobs "
+                        "WHERE source_id = :sid AND tenant_id = :tid "
+                        "ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"sid": source_id, "tid": tenant_id, "lim": limit},
+                )
+            ).mappings().all()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("started_at", "completed_at", "created_at"):
+                value = item.get(key)
+                item[key] = value.isoformat() if isinstance(value, datetime) else value
+            out.append(item)
+        return out
 
     # ── DB persistence (no-ops when DB not available) ─────────────────────────
     #
@@ -695,6 +780,33 @@ class IngestionJobTracker:
             "chunks_created": int(row[3] or 0),
             "bytes_processed": int(row[4] or 0),
         }
+
+    async def get_dlq_entry(self, dlq_id: str, tenant_id: str) -> dict[str, Any] | None:
+        """One of the tenant's DLQ rows (for an operator retry), or None.
+
+        Raises when no DB is wired or the query fails.
+        """
+        if self._db is None:
+            raise RuntimeError("ingestion DLQ requires a database")
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT id AS dlq_id, tenant_id, source_id, job_id, doc_id, "
+                        "error_message, raw_doc_json, retry_count, resolved_at, "
+                        "COALESCE(permanent_failure, false) AS permanent_failure "
+                        "FROM ingestion_dlq WHERE id = :id AND tenant_id = :tid"
+                    ),
+                    {"id": dlq_id, "tid": tenant_id},
+                )
+            ).mappings().first()
+        return dict(row) if row is not None else None
 
     async def resolve_dlq_entry(self, dlq_id: str, tenant_id: str) -> None:
         """Mark a DLQ entry as resolved (successfully retried).
