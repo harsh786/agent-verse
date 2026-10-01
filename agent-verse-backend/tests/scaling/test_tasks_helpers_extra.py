@@ -240,6 +240,10 @@ async def test_decrement_after_completion_success_path() -> None:
     fake_limits_module = MagicMock(name="app.tenancy.limits")
     fake_limits_module.decrement_concurrent_goals = AsyncMock()
 
+    # No goal id in context: only the slot is released (a run_goal earlier in this
+    # thread may have left one set; the dedup release is covered in
+    # tests/services/test_goal_dedup_atomic.py).
+    token = tasks._RUN_GOAL_ID.set("")
     with patch.dict(
         "sys.modules",
         {
@@ -249,6 +253,7 @@ async def test_decrement_after_completion_success_path() -> None:
         },
     ):
         await tasks._decrement_after_completion("t1", "redis://localhost:6379")
+    tasks._RUN_GOAL_ID.reset(token)
 
     fake_redis_asyncio.from_url.assert_called_once_with(
         "redis://localhost:6379", decode_responses=True

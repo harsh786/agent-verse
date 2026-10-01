@@ -2979,19 +2979,11 @@ class GoalService:
 
             if _holds_concurrency_slot(record.execution_context):
                 await decrement_concurrent_goals(tenant_id=record.tenant_id, redis=self._redis)
-            # Release dedup key so future identical goals can be submitted
-            try:
-                from app.services.dedup import _default_deduplicator as _goal_dedup
+            # Release this goal's dedup claim (compare-and-delete by goal_id, so a
+            # newer identical goal's claim survives) so identical goals can run.
+            from app.services.dedup import _default_deduplicator as _goal_dedup
 
-                _goal_text = getattr(record, "goal_text", "") or ""
-                if _goal_text:
-                    await _goal_dedup.release(
-                        record.tenant_id,
-                        _goal_text,
-                        scope=str(record.execution_context.get(_DEDUP_SCOPE_KEY, "") or ""),
-                    )
-            except Exception:
-                pass
+            await _goal_dedup.release_goal(record.goal_id)
         # Usage metering (in-process runs; worker-run goals meter in the worker).
         # Dry runs execute nothing and are not metered.
         if not record.dry_run and etype in _METERED_EVENT_TYPES:
@@ -4121,35 +4113,36 @@ class GoalService:
                 roles=getattr(tenant_ctx, "roles", ()) or (),
                 scopes=getattr(tenant_ctx, "scopes", ()) or (),
             )
-            try:
-                from app.services.dedup import _default_deduplicator as _goal_dedup
+            from app.agent.supervisor import SUBGOAL_MARKER
+            from app.services.dedup import _default_deduplicator as _goal_dedup
 
-                _dedup_redis = getattr(self, "_redis", None)
-                if _dedup_redis is not None and not hasattr(_goal_dedup, "_redis_wired"):
-                    _goal_dedup._redis = _dedup_redis
-                    _goal_dedup._redis_wired = True  # type: ignore[attr-defined]
-                from app.agent.supervisor import SUBGOAL_MARKER
+            _dedup_redis = getattr(self, "_redis", None)
+            if _dedup_redis is not None and not hasattr(_goal_dedup, "_redis_wired"):
+                _goal_dedup._redis = _dedup_redis
+                _goal_dedup._redis_wired = True  # type: ignore[attr-defined]
 
-                # A supervisor's sub-goal is a distinct unit of work even when its
-                # text matches an in-flight goal — typically its own parent, which
-                # dedup returned, so the parent waited on itself forever.
-                _is_subgoal = bool((execution_context or {}).get(SUBGOAL_MARKER))
-                _existing_id = (
-                    None
-                    if _is_subgoal
-                    else await _goal_dedup.get_existing(
-                        tenant_ctx.tenant_id, goal, scope=_dedup_scope
-                    )
+            goal_id = uuid.uuid4().hex
+            # A supervisor's sub-goal is a distinct unit of work even when its
+            # text matches an in-flight goal — typically its own parent, which
+            # dedup returned, so the parent waited on itself forever.
+            _is_subgoal = bool((execution_context or {}).get(SUBGOAL_MARKER))
+            # ONE atomic claim (SET NX): get_existing + register were separate
+            # calls, so two concurrent identical submissions both ran (SVC-01).
+            # Redis unavailable -> claim() logs and answers "run" (no dedup).
+            _existing_id = (
+                None
+                if _is_subgoal
+                else await _goal_dedup.claim(
+                    tenant_ctx.tenant_id, goal, goal_id, scope=_dedup_scope
                 )
-                if _existing_id:
-                    return {
-                        "goal_id": _existing_id,
-                        "status": "running",
-                        "deduplicated": True,
-                        "message": "Identical goal already in progress",
-                    }
-            except Exception as _dd_exc:
-                _svc_logger.debug("goal_dedup_skipped", error=str(_dd_exc)[:60])
+            )
+            if _existing_id:
+                return {
+                    "goal_id": _existing_id,
+                    "status": "running",
+                    "deduplicated": True,
+                    "message": "Identical goal already in progress",
+                }
 
             # Take a concurrency slot only for a goal that will actually run. It
             # used to be taken BEFORE the dedup check, and the dedup early-return
@@ -4161,22 +4154,16 @@ class GoalService:
 
             _takes_slot = _holds_concurrency_slot(execution_context)
             if _takes_slot:
-                await check_and_increment_concurrent_goals(
-                    tenant_ctx=tenant_ctx,
-                    redis=getattr(self, "_redis", None),
-                )
-
-            goal_id = uuid.uuid4().hex
-
-            # Register goal_id for deduplication (allow others to find it)
-            try:
-                from app.services.dedup import _default_deduplicator as _goal_dedup
-
-                await _goal_dedup.register(
-                    tenant_ctx.tenant_id, goal, goal_id, scope=_dedup_scope
-                )
-            except Exception:
-                pass
+                try:
+                    await check_and_increment_concurrent_goals(
+                        tenant_ctx=tenant_ctx,
+                        redis=getattr(self, "_redis", None),
+                    )
+                except BaseException:
+                    # Refused (429): the claim must not dedup the retry onto a
+                    # goal that never existed.
+                    await _goal_dedup.release_goal(goal_id)
+                    raise
 
             # Auto-route to best agent when agent_id not specified
             if agent_id is None and self._app_state is not None:
@@ -4225,6 +4212,9 @@ class GoalService:
                                     r for r in _ma_results if isinstance(r, dict) and "goal_id" in r
                                 ]
                                 if _ma_valid:
+                                    # This submission's own goal_id is never
+                                    # created: drop its dedup claim.
+                                    await _goal_dedup.release_goal(goal_id)
                                     return {
                                         "mode": "multi_agent",
                                         "goal_ids": [r["goal_id"] for r in _ma_valid],
@@ -4472,6 +4462,7 @@ class GoalService:
                         _svc_logger.warning(
                             "counter_decrement_failed_on_error", error=str(_dec_exc)
                         )
+                    await _goal_dedup.release_goal(goal_id)
                     raise
             elif self._db is not None:
                 self._track_db_task(

@@ -23,7 +23,7 @@ async def test_dedup_hit_takes_no_concurrency_slot() -> None:
     inc = AsyncMock()
     with (
         patch("app.tenancy.limits.check_and_increment_concurrent_goals", inc),
-        patch("app.services.dedup._default_deduplicator.get_existing",
+        patch("app.services.dedup._default_deduplicator.claim",
               AsyncMock(return_value="existing-goal")),
     ):
         result = await svc.submit_goal(goal="same goal", priority="normal", dry_run=False,

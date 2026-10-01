@@ -270,6 +270,11 @@ def _start_goal_heartbeat(
 _SUBGOAL_RUN: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "agentverse_subgoal_run", default=False
 )
+# The goal this worker thread is running (set by run_goal on every invocation),
+# so its terminal exits release the goal's submission-dedup claim (SVC-01).
+_RUN_GOAL_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "agentverse_run_goal_id", default=""
+)
 
 
 async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
@@ -279,7 +284,14 @@ async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
     counter must be decremented explicitly here at every terminal exit of
     ``run_goal``. A supervisor sub-goal holds no slot of its own (unless
     SUBGOALS_SHARE_PARENT_SLOT=false): nothing to do.
+
+    Also releases the goal's submission-dedup claim: only the API's local event
+    dispatch released it, so a worker-run goal kept identical submissions
+    deduplicated onto a finished goal for the claim's TTL.
     """
+    goal_id = _RUN_GOAL_ID.get()
+    if goal_id:
+        await _release_goal_dedup_claim(goal_id, redis_url)
     if _SUBGOAL_RUN.get():
         from app.services.goal_service import subgoals_share_parent_slot
 
@@ -295,6 +307,21 @@ async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
         await r.aclose()
     except Exception as exc:
         logger.warning("counter_decrement_failed: %s", exc)
+
+
+async def _release_goal_dedup_claim(goal_id: str, redis_url: str) -> None:
+    try:
+        import redis.asyncio as aioredis
+
+        from app.services.dedup import release_goal_claim
+
+        r = aioredis.from_url(redis_url, decode_responses=True)
+        try:
+            await release_goal_claim(r, goal_id)
+        finally:
+            await r.aclose()
+    except Exception as exc:  # the claim still expires with its TTL
+        logger.warning("goal_dedup_release_failed: %s", exc)
 
 
 # Register builtin MCP handlers in the worker process so that the
@@ -2211,6 +2238,7 @@ def run_goal(
     effective_goal = goal_text or goal_template
     # Set on EVERY invocation (the worker thread is reused across tasks).
     _SUBGOAL_RUN.set(bool(subgoal))
+    _RUN_GOAL_ID.set(goal_id)
 
     # The tenant's plan is what the API enqueued with the goal. It used to be
     # read from a "plan" field of the LLM-config cache that nothing writes, so

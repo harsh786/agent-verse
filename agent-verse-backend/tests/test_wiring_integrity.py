@@ -29,7 +29,7 @@ class TestGoalServiceWiring:
         """0B.10: goal_service must call dedup release on terminal states."""
         from app.services import goal_service
         source = inspect.getsource(goal_service)
-        assert "release(" in source and "dedup" in source.lower(), \
+        assert "release_goal(" in source and "dedup" in source.lower(), \
             "0B.10: GoalDeduplicator.release() never called in goal_service"
 
 
