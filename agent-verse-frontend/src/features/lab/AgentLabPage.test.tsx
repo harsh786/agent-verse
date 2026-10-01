@@ -993,3 +993,40 @@ describe('AgentLabPage', () => {
     });
   });
 });
+
+describe('AgentLabPage — challenger win rate (MEM-28)', () => {
+  beforeEach(() => {
+    useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function mockVariants(report: (id: string) => unknown) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      const u = String(url);
+      const m = u.match(/\/intelligence\/prompt-variants\/([^/]+)\/report/);
+      if (m) return new Response(JSON.stringify(report(m[1])), { status: 200 });
+      if (u.includes('/intelligence/prompt-variants')) {
+        return new Response(JSON.stringify([
+          { id: 'v1', key: 'planner', name: 'Control', prompt_text: 'c', is_control: true, run_count: 20, mean_score: 0.5, p95_score: 0.6, promoted_at: null },
+          { id: 'v2', key: 'planner', name: 'Fast', prompt_text: 'f', is_control: false, run_count: 20, mean_score: 0.9, p95_score: 0.95, promoted_at: null },
+          { id: 'v3', key: 'planner', name: 'New', prompt_text: 'n', is_control: false, run_count: 1, mean_score: 0.4, p95_score: 0.4, promoted_at: null },
+        ]), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+  }
+
+  test('shows the computed win rate and "not computed" when null', async () => {
+    mockVariants((id) => ({
+      id, key: 'planner', name: id, mean_score: null, p95_score: null, run_count: 0,
+      win_rate: id === 'v2' ? 0.97 : null,
+      statistical_significance: id === 'v2' ? 0.99 : null,
+    }));
+    renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: /prompt lab/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('win-rate-v2')).toHaveTextContent('97% (significance 99%)'),
+    );
+    expect(screen.getByTestId('win-rate-v3')).toHaveTextContent('not computed');
+  });
+});

@@ -553,6 +553,14 @@ function VariantCard({
   promoting: boolean;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
+  // MEM-28: win rate / significance vs the control, computed by the backend
+  // from recorded outcomes ("not computed" until both have enough runs).
+  const { data: report } = useQuery({
+    queryKey: ["prompt-variant-report", variant.id, variant.run_count],
+    queryFn: () => promptVariantsApi.report(variant.id),
+  });
+  const winRate = report?.win_rate;
+  const significance = report?.statistical_significance;
 
   return (
     <div className="bg-card border border-border rounded-xl p-4 space-y-2">
@@ -590,6 +598,14 @@ function VariantCard({
           </span>
           <span>
             p95: {variant.p95_score != null ? variant.p95_score.toFixed(3) : "—"}
+          </span>
+          <span data-testid={`win-rate-${variant.id}`}>
+            Win rate vs control:{" "}
+            {winRate != null
+              ? `${Math.round(winRate * 100)}%${
+                  significance != null ? ` (significance ${Math.round(significance * 100)}%)` : ""
+                }`
+              : "not computed"}
           </span>
         </div>
         <div className="flex gap-1.5">

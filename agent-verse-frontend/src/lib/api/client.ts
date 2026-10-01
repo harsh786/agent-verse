@@ -2361,8 +2361,12 @@ export interface PromptVariantReport {
   mean_score: number | null;
   p95_score: number | null;
   run_count: number;
+  /** P(variant beats its control), from recorded scores; null = not computed. */
   win_rate: number | null;
-  statistical_significance: string | null;
+  /** 1 - two-sided p-value of the comparison with the control; null = not computed. */
+  statistical_significance: number | null;
+  /** The control variant the comparison was made against. */
+  compared_to?: string | null;
 }
 
 export const promptVariantsApi = {

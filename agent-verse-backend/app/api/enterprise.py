@@ -1555,7 +1555,30 @@ async def get_variant_report(request: Request, variant_id: str) -> dict[str, Any
         raise HTTPException(status_code=404, detail="Variant not found")
     body = _variant_json(opt, target)
     body.pop("prompt_text", None)
-    return {**body, "win_rate": None, "statistical_significance": None}
+    # MEM-28: compare against the control of the same prompt key (same scope).
+    from app.intelligence.prompt_optimizer import VariantStats, compare_to_control
+
+    if _db_mode(opt):
+        peers = await opt.alist(ctx.tenant_id, target.prompt_key)
+    else:
+        peers = [
+            v
+            for scope in (ctx.tenant_id, "global")
+            for v in opt._variants.get(scope, {}).values()
+            if v.prompt_key == target.prompt_key
+        ]
+    control = next(
+        (v for v in peers if v.is_control and v.variant_id != target.variant_id), None
+    )
+    win_rate, significance = compare_to_control(
+        VariantStats.of(target), VariantStats.of(control) if control is not None else None
+    )
+    return {
+        **body,
+        "win_rate": win_rate,
+        "statistical_significance": significance,
+        "compared_to": control.variant_id if control is not None else None,
+    }
 
 
 # ── P2.10: Async GDPR Export + Consent Management ─────────────────────────────

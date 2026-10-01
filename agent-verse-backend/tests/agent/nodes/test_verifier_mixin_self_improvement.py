@@ -569,9 +569,10 @@ async def test_ab_testing_engine_records_cross_goal_result_when_arm_present() ->
 
 @pytest.mark.asyncio
 async def test_prompt_optimizer_records_and_persists_winning_outcome() -> None:
-    """A goal scoring >= 0.7 must be recorded as a WIN for its planner prompt
-    variant, both in-memory (record_result) and durably (persist_outcome) —
-    otherwise the prompt A/B loop never learns which variants actually work."""
+    """A goal's eval score is recorded for its planner prompt variant
+    (record_result on a DB-less optimizer; arecord_result in DB mode) —
+    otherwise the prompt A/B loop never learns which variants actually work.
+    MEM-28: the legacy non-RLS persist_outcome write is gone."""
     mock_eval = MagicMock(spec=EvalRunner)
     mock_scorecard = MagicMock()
     mock_scorecard.average_score.return_value = 0.9
@@ -595,9 +596,7 @@ async def test_prompt_optimizer_records_and_persists_winning_outcome() -> None:
         # cost_usd is now the goal's real (planner+verifier) LLM spend, not None.
         variant_id="variant-win", eval_score=0.9, cost_usd=ANY, latency_ms=None
     )
-    prompt_optimizer.persist_outcome.assert_called_once()
-    _, po_kwargs = prompt_optimizer.persist_outcome.call_args
-    assert po_kwargs["won"] is True
+    prompt_optimizer.persist_outcome.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -624,9 +623,10 @@ async def test_prompt_optimizer_records_losing_outcome_below_threshold() -> None
     await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
     await asyncio.sleep(0)
 
-    prompt_optimizer.persist_outcome.assert_called_once()
-    _, po_kwargs = prompt_optimizer.persist_outcome.call_args
-    assert po_kwargs["won"] is False
+    prompt_optimizer.record_result.assert_called_once_with(
+        variant_id="variant-lose", eval_score=0.65, cost_usd=ANY, latency_ms=None
+    )
+    prompt_optimizer.persist_outcome.assert_not_called()
 
 
 # ===========================================================================

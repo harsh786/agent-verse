@@ -892,7 +892,6 @@ class VerifierMixin:
         if scorecard is not None and hasattr(agent_state, "context"):
             _planner_variant_id = agent_state.context.get("planner_variant_id")
             _avg_score = scorecard.average_score()
-            _won = _avg_score >= 0.7
             if self._prompt_optimizer is not None and _planner_variant_id:
                 _cost = agent_state.context.get("total_cost_usd")
                 _latency = agent_state.context.get("_latency_ms")
@@ -909,20 +908,17 @@ class VerifierMixin:
                                 latency_ms=float(_latency) if _latency is not None else None,
                             )
                         )
+                        self._background_tasks.add(_po_task)
+                        _po_task.add_done_callback(self._background_tasks.discard)
                     else:
+                        # DB-less optimizer: this process is the store (the
+                        # legacy non-RLS persist_outcome was removed, MEM-28).
                         self._prompt_optimizer.record_result(
                             variant_id=_planner_variant_id,
                             eval_score=_avg_score,
                             cost_usd=float(_cost) if _cost is not None else None,
                             latency_ms=float(_latency) if _latency is not None else None,
                         )
-                        _po_task = asyncio.create_task(
-                            self._prompt_optimizer.persist_outcome(
-                                _planner_variant_id, won=_won, db=self._db_session_factory
-                            )
-                        )
-                    self._background_tasks.add(_po_task)
-                    _po_task.add_done_callback(self._background_tasks.discard)
                 except Exception:
                     pass
 

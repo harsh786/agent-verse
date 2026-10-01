@@ -94,6 +94,38 @@ class VariantStats:
                    v.cost_samples, tuple(v.latency_hist))
 
 
+def compare_to_control(
+    variant: VariantStats, control: VariantStats | None
+) -> tuple[float | None, float | None]:
+    """``(win_rate, statistical_significance)`` of *variant* against its control.
+
+    MEM-28: computed from the recorded score aggregates with a Welch z-test on
+    the mean eval score. ``win_rate`` is the probability the variant's true mean
+    exceeds the control's (normal approximation); ``statistical_significance``
+    is 1 - the two-sided p-value. ``(None, None)`` when there is no control or
+    either side has fewer than two runs.
+    """
+    import math
+
+    if control is None or variant.variant_id == control.variant_id:
+        return None, None
+    if variant.run_count < 2 or control.run_count < 2:
+        return None, None
+    diff = variant.mean - control.mean
+    se = math.sqrt(variant.variance / variant.run_count + control.variance / control.run_count)
+    if se == 0.0:
+        if diff == 0.0:
+            return 0.5, 0.0
+        return (1.0 if diff > 0 else 0.0), 1.0
+    z = diff / se
+
+    def _phi(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    p_two_sided = 2.0 * (1.0 - _phi(abs(z)))
+    return round(_phi(z), 4), round(1.0 - p_two_sided, 4)
+
+
 @dataclass(frozen=True, slots=True)
 class PromotionVerdict:
     promoted_variant_id: str | None
@@ -153,35 +185,26 @@ class PromptOptimizer:
     # ------------------------------------------------------------------
 
     def add_variant(self, variant: PromptVariant, tenant_id: str, db: Any = None) -> None:
-        """Register a pre-built PromptVariant for the given tenant.
+        """Register a pre-built PromptVariant in THIS process (DB-less mode).
 
-        If *db* is None, the variant is stored in-memory only and WILL BE LOST
-        on process restart.  Always pass *db* in production so the variant is
-        persisted to the ``prompt_variants`` table.
+        Durable, tenant-scoped variants go through the DB mode (``set_db`` +
+        ``aregister``). The legacy fire-and-forget ``db`` persistence wrote
+        without the tenant RLS context and swallowed errors (MEM-28); passing
+        ``db`` is refused.
         """
-        if db is None:
-            import logging as _log
+        if db is not None:
+            raise ValueError("legacy prompt-variant persistence was removed; use set_db()")
+        import logging as _log
 
-            _log.getLogger(__name__).warning(
-                "prompt_variant_no_db_in_memory_only variant_id=%s tenant_id=%s "
-                "will_be_lost_on_restart=True",
-                variant.variant_id,
-                tenant_id,
-            )
+        _log.getLogger(__name__).warning(
+            "prompt_variant_no_db_in_memory_only variant_id=%s tenant_id=%s "
+            "will_be_lost_on_restart=True",
+            variant.variant_id,
+            tenant_id,
+        )
         self._variants.setdefault(tenant_id, {})[variant.variant_id] = variant
         if variant.is_control:
             self._active.setdefault(tenant_id, {})[variant.prompt_key] = variant.variant_id
-        if db is not None:
-            import asyncio
-
-            try:
-                loop = asyncio.get_running_loop()
-                task = loop.create_task(self.persist_variant(variant, tenant_id, db))
-                # Hold a strong reference so the GC does not collect the task early.
-                self._pending_tasks.add(task)
-                task.add_done_callback(self._pending_tasks.discard)
-            except RuntimeError:
-                pass  # Not in an async context — caller must persist separately.
 
     def register_variant(
         self,
@@ -193,11 +216,13 @@ class PromptOptimizer:
         is_control: bool = False,
         db: Any = None,
     ) -> PromptVariant:
-        """Register a new prompt variant for A/B testing.
+        """Register a new prompt variant in THIS process (DB-less mode).
 
-        If *db* is provided (an async session factory), the variant is also
-        persisted to ``prompt_variants`` as a fire-and-forget task.
+        Durable variants use the DB mode (``aregister``); passing ``db`` is
+        refused (the legacy path had no RLS and swallowed errors, MEM-28).
         """
+        if db is not None:
+            raise ValueError("legacy prompt-variant persistence was removed; use set_db()")
         variant_id = str(uuid.uuid4())
         variant = PromptVariant(
             variant_id=variant_id,
@@ -210,16 +235,6 @@ class PromptOptimizer:
         self._variants.setdefault(tenant_id, {})[variant_id] = variant
         if is_control:
             self._active.setdefault(tenant_id, {})[prompt_key] = variant_id
-
-        # Persist to DB if available (fire-and-forget)
-        if db is not None:
-            import asyncio
-
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self.persist_variant(variant, tenant_id, db))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-            except RuntimeError:
-                pass  # Not in async context — caller can persist separately
 
         return variant
 
@@ -237,114 +252,6 @@ class PromptOptimizer:
             return
         with contextlib.suppress(Exception):
             await self._redis.publish("prompt_variant_invalidate", "reload")
-
-    async def persist_variant(self, variant: PromptVariant, tenant_id: str, db: Any) -> None:
-        """Persist a variant to the prompt_variants table."""
-        if db is None:
-            return
-        try:
-            from sqlalchemy import text
-
-            async with db() as session, session.begin():
-                await session.execute(
-                    text("""
-                    INSERT INTO prompt_variants
-                        (id, tenant_id, prompt_key, variant_name, prompt_text, is_control,
-                         win_count, loss_count, is_active, created_at, updated_at)
-                    VALUES
-                        (:id, :tid, :key, :name, :text, :ctrl, 0, 0, TRUE, NOW(), NOW())
-                    ON CONFLICT (tenant_id, prompt_key, variant_name)
-                    DO UPDATE SET
-                        prompt_text = EXCLUDED.prompt_text,
-                        is_control  = EXCLUDED.is_control,
-                        is_active   = TRUE,
-                        updated_at  = NOW()
-                """),
-                    {
-                        "id": variant.variant_id,
-                        "tid": tenant_id,
-                        "key": variant.prompt_key,
-                        "name": variant.name,
-                        "text": variant.prompt_text,
-                        "ctrl": variant.is_control,
-                    },
-                )
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("prompt_variant_persist_failed: %s", exc)
-
-    async def persist_outcome(self, variant_id: str, won: bool, db: Any) -> None:
-        """Update win/loss counts in DB after A/B test result."""
-        if db is None:
-            return
-        try:
-            from sqlalchemy import text
-
-            col = "win_count" if won else "loss_count"
-            async with db() as session, session.begin():
-                await session.execute(
-                    text(
-                        f"UPDATE prompt_variants SET {col} = {col} + 1, updated_at = NOW() WHERE id = :id"  # noqa: E501
-                    ),
-                    {"id": variant_id},
-                )
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("prompt_outcome_persist_failed: %s", exc)
-
-    async def load_from_db(self, db: Any) -> int:
-        """Load all active variants from DB into in-process cache.
-
-        Call at startup and after Redis invalidation.
-        Returns count of variants loaded.
-        """
-        if db is None:
-            return 0
-        try:
-            from sqlalchemy import text
-
-            async with db() as session:
-                rows = (
-                    await session.execute(
-                        text("""
-                    SELECT id, tenant_id, prompt_key, variant_name, prompt_text,
-                           is_control, win_count, loss_count
-                    FROM prompt_variants
-                    WHERE is_active = TRUE
-                    ORDER BY tenant_id, prompt_key, is_control DESC
-                """)
-                    )
-                ).fetchall()
-
-            # Clear and rebuild from DB
-            self._variants.clear()
-            for row in rows:
-                vid, tid, key, name, text_val, ctrl, wins, losses = row
-                v = PromptVariant(
-                    variant_id=vid,
-                    prompt_key=key,
-                    name=name,
-                    prompt_text=text_val or "",
-                    is_control=bool(ctrl),
-                )
-                # Store win/loss on the variant if the dataclass supports it
-                if hasattr(v, "win_count"):
-                    v.win_count = wins or 0
-                if hasattr(v, "loss_count"):
-                    v.loss_count = losses or 0
-                self._variants.setdefault(tid, {})[vid] = v
-
-            from app.observability.logging import get_logger
-
-            get_logger(__name__).info("prompt_variants_loaded", count=len(rows))
-            return len(rows)
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("prompt_variants_load_failed: %s", exc)
-            return 0
 
     def select_variant(self, prompt_key: str, *, tenant_id: str = "global") -> PromptVariant | None:
         """Select which prompt variant to use for this request.

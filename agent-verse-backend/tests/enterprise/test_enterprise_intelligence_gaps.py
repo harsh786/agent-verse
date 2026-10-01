@@ -324,3 +324,32 @@ def test_run_eval_suite_no_runner_returns_error_or_404() -> None:
     client = TestClient(_make_app(eval_suite_runner=None), raise_server_exceptions=False)
     resp = client.post("/intelligence/eval-suites/suite-1/run", headers=_HDR)
     assert resp.status_code in (404, 422, 500, 503)
+
+
+def test_variant_report_computes_win_rate_and_significance() -> None:
+    """MEM-28: the report hard-coded win_rate/statistical_significance to None."""
+    from app.intelligence.prompt_optimizer import PromptOptimizer
+
+    opt = PromptOptimizer()
+    control = opt.register_variant("planner", "control", "c", tenant_id=_CTX.tenant_id,
+                                   is_control=True)
+    challenger = opt.register_variant("planner", "challenger", "x", tenant_id=_CTX.tenant_id)
+    for s in (0.50, 0.55, 0.45, 0.52, 0.48, 0.50):
+        opt.record_result(control.variant_id, s)
+    for s in (0.90, 0.85, 0.95, 0.88, 0.92, 0.90):
+        opt.record_result(challenger.variant_id, s)
+    client = TestClient(_make_app(prompt_optimizer=opt), raise_server_exceptions=False)
+
+    body = client.get(
+        f"/intelligence/prompt-variants/{challenger.variant_id}/report", headers=_HDR
+    ).json()
+    assert body["win_rate"] is not None and body["win_rate"] > 0.99
+    assert body["statistical_significance"] is not None
+    assert body["statistical_significance"] > 0.95
+    assert body["compared_to"] == control.variant_id
+
+    ctrl = client.get(
+        f"/intelligence/prompt-variants/{control.variant_id}/report", headers=_HDR
+    ).json()
+    # The control is the baseline: nothing to compare it with.
+    assert ctrl["win_rate"] is None and ctrl["statistical_significance"] is None
