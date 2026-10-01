@@ -80,7 +80,17 @@ interface FetchOpts {
   mission?: Record<string, unknown> | null;
   events?: unknown[];
   goal?: unknown;
+  /** Org approval-gate list (GET /v1/org/o1/approvals). */
+  orgApprovals?: unknown[];
+  /** Governance HITL list (GET /governance/approvals). */
+  hitl?: unknown[];
+  /** Status for the decision POSTs (approvals/.../approve|reject). */
+  decisionStatus?: number;
+  decisionBody?: unknown;
 }
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
 function mockFetch(opts: FetchOpts = {}) {
   const mission = opts.mission === undefined ? makeMission() : opts.mission;
@@ -90,10 +100,12 @@ function mockFetch(opts: FetchOpts = {}) {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (/\/missions\/m1\/status$/.test(url) && method === 'POST')
       return new Response(JSON.stringify(makeMission({ status: 'active' })), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (/\/tasks\/m1\/approve$/.test(url) && method === 'POST')
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (/\/tasks\/m1\/reject$/.test(url) && method === 'POST')
-      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (/\/approvals\/[^/]+\/(approve|reject)$/.test(url) && method === 'POST')
+      return json(opts.decisionBody ?? { status: 'approved' }, opts.decisionStatus ?? 200);
+    if (/\/v1\/org\/o1\/approvals$/.test(url))
+      return json({ data: opts.orgApprovals ?? [], org_id: ORG_ID, total: (opts.orgApprovals ?? []).length });
+    if (/\/governance\/approvals$/.test(url))
+      return json(opts.hitl ?? []);
     if (/\/missions\/m1\/timeline$/.test(url))
       return new Response(JSON.stringify(TIMELINE), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (/\/missions\/m1$/.test(url))
@@ -202,19 +214,92 @@ describe('MissionDetail', () => {
     );
   });
 
-  test('the waiting_human callout approves via the tasks approve endpoint', async () => {
+  const GATE = {
+    id: 'gate1', task_id: 'gate1', mission_id: MISSION_ID, status: 'pending',
+    title: 'Approval gate: deploy', action: 'deploy',
+  };
+  const OTHER_GATE = { ...GATE, id: 'gate9', task_id: 'gate9', mission_id: 'm9', title: 'Approval gate: other' };
+
+  const decisionCalls = (spy: ReturnType<typeof mockFetch>) =>
+    spy.mock.calls
+      .filter(([, i]) => ((i as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'POST')
+      .map(([u]) => String(u));
+
+  test("a gated mission's Approve posts the approval-gate id, never the mission id", async () => {
     const spy = mockFetch({
-      mission: makeMission({ status: 'active', metadata: { goal_id: 'g1' } }),
-      goal: { goal_id: 'g1', status: 'waiting_human', plan: [], steps: [] },
+      mission: makeMission({ status: 'review' }),
+      orgApprovals: [OTHER_GATE, GATE],
     });
     renderDetail();
     expect(await screen.findByText('Human Approval Required')).toBeInTheDocument();
+    expect(screen.getByText('Approval gate: deploy')).toBeInTheDocument();
+    // Another mission's gate is not offered here.
+    expect(screen.queryByText('Approval gate: other')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Approve/i }));
     await waitFor(() =>
-      expect(
-        spy.mock.calls.some(([u, i]) => /\/tasks\/m1\/approve$/.test(String(u)) && (i as RequestInit)?.method === 'POST'),
-      ).toBe(true),
+      expect(decisionCalls(spy).some((u) => /\/v1\/org\/o1\/approvals\/gate1\/approve$/.test(u))).toBe(true),
     );
+    expect(decisionCalls(spy).some((u) => u.includes('/tasks/m1/'))).toBe(false);
+    // Approving does not flip the mission status client-side: the server dispatches.
+    expect(decisionCalls(spy).some((u) => /\/missions\/m1\/status$/.test(u))).toBe(false);
+  });
+
+  test('a refused approval (403) renders an alert instead of failing silently', async () => {
+    mockFetch({
+      mission: makeMission({ status: 'review' }),
+      orgApprovals: [GATE],
+      decisionStatus: 403,
+      decisionBody: { detail: 'Requires org role team_lead' },
+    });
+    renderDetail();
+    await screen.findByText('Approval gate: deploy');
+    fireEvent.click(screen.getByRole('button', { name: /Approve/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/team_lead/);
+  });
+
+  test('Reject posts the gate id and a 404 is shown, not swallowed', async () => {
+    const spy = mockFetch({
+      mission: makeMission({ status: 'review' }),
+      orgApprovals: [GATE],
+      decisionStatus: 404,
+      decisionBody: { detail: 'Approval gate1 not found' },
+    });
+    renderDetail();
+    await screen.findByText('Approval gate: deploy');
+    fireEvent.click(screen.getByRole('button', { name: /Reject/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/not found/);
+    expect(decisionCalls(spy).some((u) => /\/v1\/org\/o1\/approvals\/gate1\/reject$/.test(u))).toBe(true);
+  });
+
+  test("a goal waiting on a human resolves that goal's HITL request", async () => {
+    const spy = mockFetch({
+      mission: makeMission({ status: 'active', metadata: { goal_id: 'g1' } }),
+      goal: { goal_id: 'g1', status: 'waiting_human', plan: [], steps: [] },
+      hitl: [
+        { request_id: 'r-other', goal_id: 'g-other', action: 'other', status: 'pending' },
+        { request_id: 'r1', goal_id: 'g1', action: 'deploy to prod', status: 'pending' },
+      ],
+    });
+    renderDetail();
+    expect(await screen.findByText('Human Approval Required')).toBeInTheDocument();
+    expect(await screen.findByText('deploy to prod')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Approve/i }));
+    await waitFor(() =>
+      expect(decisionCalls(spy).some((u) => /\/governance\/approvals\/r1\/approve$/.test(u))).toBe(true),
+    );
+    expect(decisionCalls(spy).some((u) => u.includes('/tasks/m1/'))).toBe(false);
+  });
+
+  test('a failing approvals list is reported, not shown as nothing to approve', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (/\/v1\/org\/o1\/approvals$/.test(url)) return json({ detail: 'boom' }, 500);
+      if (/\/missions\/m1$/.test(url)) return json(makeMission({ status: 'review' }));
+      if (/\/missions\/m1\/timeline$/.test(url)) return json(TIMELINE);
+      return json([]);
+    });
+    renderDetail();
+    expect(await screen.findByText(/Could not load pending approvals/i)).toBeInTheDocument();
   });
 
   test('close button and Escape key both invoke onClose; missing mission shows not-found', async () => {

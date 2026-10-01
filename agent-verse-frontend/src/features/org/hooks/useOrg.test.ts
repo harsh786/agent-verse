@@ -389,11 +389,12 @@ describe('useApprovals', () => {
     expect(result.current.data).toEqual([{ request_id: 'a2' }]);
   });
 
-  test('falls back to an empty array on failure', async () => {
+  test('surfaces a failure as an error, never as an empty queue', async () => {
     apiFetchMock.mockRejectedValue(new Error('boom'));
     const { result } = renderHook(() => useApprovals('o1'), { wrapper });
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data).toEqual([]);
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.data).toBeUndefined();
+    expect((result.current.error as Error).message).toBe('boom');
   });
 
   test('is disabled without an orgId', () => {

@@ -16,7 +16,10 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { getAuthHeader } from '@/stores/auth';
-import { useMission, useOrgEvents, useUpdateMissionStatus } from '../hooks/useOrg';
+import {
+  useApprovals, useGoalHitlRequests, useHitlDecision, useMission, useOrgApprovalDecision,
+  useOrgEvents, useUpdateMissionStatus,
+} from '../hooks/useOrg';
 import { MissionDeliverable } from './MissionDeliverable';
 import { MissionGantt } from './MissionGantt';
 import type { OrgMission, MissionStatus } from '../types';
@@ -174,6 +177,142 @@ export function MissionDetail({ orgId, missionId, onClose }: MissionDetailProps)
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
+function errorText(e: unknown): string {
+  if (e instanceof Error && e.message) return e.message;
+  return 'Request failed';
+}
+
+interface PendingDecision {
+  kind: 'org' | 'hitl';
+  id: string;
+  label: string;
+}
+
+/**
+ * Approve/reject what this mission is actually waiting on.
+ *
+ * A gated mission waits on org approval-gate TASKS (their id, not the mission id,
+ * goes to POST /v1/org/{org}/approvals/{id}/approve|reject); a running goal that
+ * hit an in-loop human gate waits on a governance HITL request for that goal.
+ * Both decisions surface their errors (403 needs a team lead, 404/409 gone).
+ */
+function PendingApprovalsCallout({
+  orgId, missionId, missionStatus, goalId, goalWaiting,
+}: {
+  orgId: string;
+  missionId: string;
+  missionStatus: MissionStatus;
+  goalId: string | undefined;
+  goalWaiting: boolean;
+}) {
+  const gatesQuery = useApprovals(orgId);
+  const hitlQuery = useGoalHitlRequests(goalId, goalWaiting);
+  const orgDecision = useOrgApprovalDecision(orgId);
+  const hitlDecision = useHitlDecision();
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const decisions: PendingDecision[] = [
+    ...(gatesQuery.data ?? [])
+      .filter((g) => g.mission_id === missionId && g.status === 'pending')
+      .map((g) => ({ kind: 'org' as const, id: g.id, label: g.title || g.action || 'Approval gate' })),
+    ...(goalWaiting ? hitlQuery.data ?? [] : []).map((r) => ({
+      kind: 'hitl' as const, id: r.request_id, label: r.action || 'Approval request',
+    })),
+  ];
+  const gatesFailed = gatesQuery.isError && (missionStatus === 'review' || goalWaiting);
+  const hitlFailed = goalWaiting && hitlQuery.isError;
+
+  if (decisions.length === 0 && !goalWaiting && !gatesFailed) return null;
+
+  const decide = async (d: PendingDecision, action: 'approve' | 'reject') => {
+    setPendingId(d.id);
+    setError(null);
+    const note = action === 'approve' ? 'Approved from mission panel' : 'Rejected from mission panel';
+    try {
+      if (d.kind === 'org') {
+        await orgDecision.mutateAsync({ approvalId: d.id, action, note });
+      } else {
+        await hitlDecision.mutateAsync({ requestId: d.id, action, note });
+      }
+    } catch (e) {
+      setError(`Could not ${action}: ${errorText(e)}`);
+    } finally {
+      setPendingId(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-amber-400 text-sm" aria-hidden>⏳</span>
+        <span className="text-[12px] font-semibold text-amber-400">Human Approval Required</span>
+      </div>
+
+      {gatesFailed && (
+        <p role="status" className="text-[11px] text-rose-400 mb-2">
+          Could not load pending approvals: {errorText(gatesQuery.error)}{' '}
+          <button type="button" className="underline" onClick={() => gatesQuery.refetch()}>Retry</button>
+        </p>
+      )}
+      {hitlFailed && (
+        <p role="status" className="text-[11px] text-rose-400 mb-2">
+          Could not load the goal&apos;s approval request: {errorText(hitlQuery.error)}
+        </p>
+      )}
+
+      {decisions.length > 0 ? (
+        <ul className="space-y-2 mb-2">
+          {decisions.map((d) => (
+            <li key={`${d.kind}:${d.id}`} className="space-y-1.5">
+              <p className="text-[11px] text-[#94A3B8]">{d.label}</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  disabled={pendingId !== null}
+                  aria-label={`Approve ${d.label}`}
+                  className="flex-1 py-1.5 text-[11px] font-medium bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg transition-colors"
+                  onClick={() => decide(d, 'approve')}
+                >
+                  {pendingId === d.id ? '…' : '✓ Approve'}
+                </button>
+                <button
+                  type="button"
+                  disabled={pendingId !== null}
+                  aria-label={`Reject ${d.label}`}
+                  className="flex-1 py-1.5 text-[11px] font-medium bg-red-900/60 hover:bg-red-900 disabled:opacity-50 text-red-300 rounded-lg transition-colors"
+                  onClick={() => decide(d, 'reject')}
+                >
+                  {pendingId === d.id ? '…' : '✕ Reject'}
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        !gatesFailed && !hitlFailed && (
+          <p className="text-[11px] text-[#94A3B8] mb-2">
+            {gatesQuery.isLoading || hitlQuery.isLoading
+              ? 'Loading the pending approval…'
+              : 'This mission is waiting on a human decision. Review it in the approvals inbox.'}
+          </p>
+        )
+      )}
+
+      {error && (
+        <p role="alert" className="text-[11px] text-rose-400 mb-2">{error}</p>
+      )}
+
+      <a
+        href="/approvals"
+        className="text-[11px] text-amber-400 hover:text-amber-300 font-medium whitespace-nowrap"
+      >
+        Full view →
+      </a>
+    </div>
+  );
+}
+
 function MissionBody({
   mission, events, onStatusChange, reduce, liveRef, orgId, missionId,
 }: {
@@ -190,9 +329,6 @@ function MissionBody({
   const isActive    = mission.status === 'active';
   const isPaused    = mission.status === 'paused';
   const isCompleted = ['completed', 'failed', 'cancelled'].includes(mission.status);
-  const [approving, setApproving] = useState(false);
-  const [rejecting, setRejecting] = useState(false);
-  const updateStatus = useUpdateMissionStatus(orgId);
 
   // Extract goal_id from metadata
   const meta = mission.metadata as Record<string, unknown> | undefined;
@@ -282,6 +418,17 @@ function MissionBody({
         publishPending={Boolean(mission.publish_pending)}
       />
 
+      {/* ── Human approval: the mission's pending gates / the goal's HITL request ── */}
+      {!isCompleted && (
+        <PendingApprovalsCallout
+          orgId={orgId}
+          missionId={missionId}
+          missionStatus={mission.status}
+          goalId={goalId}
+          goalWaiting={goalState?.status === 'waiting_human' || (mission.status as string) === 'waiting_human'}
+        />
+      )}
+
       {/* ── Live Agent Execution Panel ── */}
       {goalId && (
         <div className="space-y-2">
@@ -364,69 +511,6 @@ function MissionBody({
           {goalState?.error_message && (
             <div className="rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-400">
               {goalState.error_message.slice(0, 120)}
-            </div>
-          )}
-
-          {/* G-07: Approval required callout — when goal is waiting_human */}
-          {(goalState?.status === 'waiting_human' || (mission.status as string) === 'waiting_human') && (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-amber-400 text-sm">⏳</span>
-                <span className="text-[12px] font-semibold text-amber-400">Human Approval Required</span>
-                <motion.div
-                  className="ml-auto h-2 w-2 rounded-full bg-amber-400"
-                  animate={{ opacity: [1, 0.3, 1] }}
-                  transition={{ duration: 1.2, repeat: Infinity }}
-                />
-              </div>
-              <p className="text-[11px] text-[#94A3B8] mb-3">
-                This mission step needs your approval to proceed.
-              </p>
-              <div className="flex gap-2">
-                <button
-                  disabled={approving || rejecting}
-                  className="flex-1 py-1.5 text-[11px] font-medium bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white rounded-lg transition-colors"
-                  onClick={async () => {
-                    setApproving(true);
-                    try {
-                      const r = await fetch(`${API_BASE}/v1/org/${orgId}/tasks/${missionId}/approve`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
-                        body: JSON.stringify({ approver: 'user', note: 'Approved from mission panel' }),
-                      });
-                      if (r.ok) await updateStatus.mutateAsync({ missionId, status: 'active' });
-                    } finally {
-                      setApproving(false);
-                    }
-                  }}
-                >
-                  {approving ? '…' : '✓ Approve'}
-                </button>
-                <button
-                  disabled={approving || rejecting}
-                  className="flex-1 py-1.5 text-[11px] font-medium bg-red-900/60 hover:bg-red-900 disabled:opacity-50 text-red-300 rounded-lg transition-colors"
-                  onClick={async () => {
-                    setRejecting(true);
-                    try {
-                      await fetch(`${API_BASE}/v1/org/${orgId}/tasks/${missionId}/reject`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
-                        body: JSON.stringify({ approver: 'user', note: 'Rejected from mission panel' }),
-                      });
-                    } finally {
-                      setRejecting(false);
-                    }
-                  }}
-                >
-                  {rejecting ? '…' : '✕ Reject'}
-                </button>
-                <a
-                  href="/approvals"
-                  className="px-2 py-1.5 text-[11px] text-amber-400 hover:text-amber-300 font-medium self-center whitespace-nowrap"
-                >
-                  Full view →
-                </a>
-              </div>
             </div>
           )}
 

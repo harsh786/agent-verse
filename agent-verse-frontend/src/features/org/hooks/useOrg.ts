@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
-import { apiFetch } from '@/lib/api/client';
+import { apiFetch, governanceApi } from '@/lib/api/client';
 import { orgApi } from '../api';
 import type {
   Organization,
@@ -305,16 +305,80 @@ export function useMissionStream(orgId: string, missionId: string | null | undef
   return events;
 }
 
-/** Hook for approval queue. */
-export function useApprovals(orgId: string | null | undefined) {
+/** One org approval gate as listed by GET /v1/org/{org}/approvals. */
+export interface OrgApprovalItem {
+  id: string;
+  task_id?: string;
+  mission_id: string | null;
+  status: string;
+  title?: string;
+  action?: string;
+  description?: string;
+  risk_level?: string;
+}
+
+/**
+ * Hook for the org approval queue.
+ *
+ * Errors propagate (no catch → []): a 403/500 must render as an error, never as
+ * "nothing to approve" while gates are actually waiting.
+ */
+export function useApprovals(orgId: string | null | undefined, opts: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: ['approvals', orgId],
     queryFn: () =>
-      apiFetch<any>(`/v1/org/${orgId!}/approvals`)
-        .then(r => (Array.isArray(r) ? r : r?.data ?? []))
-        .catch(() => []),
-    enabled: !!orgId,
+      apiFetch<{ data?: OrgApprovalItem[] } | OrgApprovalItem[]>(`/v1/org/${orgId!}/approvals`)
+        .then(r => (Array.isArray(r) ? r : r?.data ?? [])),
+    enabled: !!orgId && (opts.enabled ?? true),
     staleTime: 15_000,
     refetchInterval: 30_000,
+  });
+}
+
+/** Approve/reject an org approval gate by its gate (task) id — never a mission id. */
+export function useOrgApprovalDecision(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ approvalId, action, note }: {
+      approvalId: string; action: 'approve' | 'reject'; note?: string;
+    }) =>
+      apiFetch<{ status: string }>(`/v1/org/${orgId}/approvals/${approvalId}/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({ note: note ?? '' }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['approvals', orgId] });
+      qc.invalidateQueries({ queryKey: ['orgs', orgId] });
+    },
+  });
+}
+
+/** Pending governance HITL requests raised by one goal (an in-loop human gate). */
+export function useGoalHitlRequests(goalId: string | null | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['governance', 'approvals', 'goal', goalId],
+    queryFn: () =>
+      governanceApi.listApprovals().then(rows =>
+        (rows ?? []).filter(r => r.goal_id === goalId && (!r.status || r.status === 'pending'))),
+    enabled: !!goalId && enabled,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+}
+
+/** Approve/reject a governance HITL request (the approver is the caller's key server-side). */
+export function useHitlDecision() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ requestId, action, note }: {
+      requestId: string; action: 'approve' | 'reject'; note?: string;
+    }) =>
+      action === 'approve'
+        ? governanceApi.approve(requestId, '', note ?? '')
+        : governanceApi.reject(requestId, '', note ?? ''),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['governance', 'approvals'] });
+      qc.invalidateQueries({ queryKey: ['goal-exec'] });
+    },
   });
 }
