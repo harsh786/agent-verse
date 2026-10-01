@@ -2031,15 +2031,13 @@ async def org_emergency_stop(
         redis = getattr(request.app.state, "_redis", None)
         from app.governance.emergency_stop import (
             EmergencyStopUnavailableError,
-            activate_stop,
-            org_stop_key,
+            activate_org_stop,
         )
 
-        stop_key = org_stop_key(tenant_id, org_id)
         try:
             # Read by app.governance.emergency_stop at submit, start and each step.
-            await activate_stop(
-                redis, stop_key, activated_by=str(getattr(ctx, "api_key_id", "") or "")
+            await activate_org_stop(
+                redis, tenant_id, org_id, activated_by=str(getattr(ctx, "api_key_id", "") or "")
             )
         except EmergencyStopUnavailableError as exc:
             # Answering "stopped" without persisting the flag told operators the
@@ -2095,12 +2093,11 @@ async def org_emergency_resume(
         redis = getattr(request.app.state, "_redis", None)
         from app.governance.emergency_stop import (
             EmergencyStopUnavailableError,
-            clear_stop,
-            org_stop_key,
+            clear_org_stop,
         )
 
         try:
-            await clear_stop(redis, org_stop_key(tenant_id, org_id))
+            await clear_org_stop(redis, tenant_id, org_id)
         except EmergencyStopUnavailableError as exc:
             # The stop may still be set: never answer "resumed".
             raise HTTPException(

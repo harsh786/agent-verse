@@ -7,7 +7,6 @@ goals kept running. In-process (API) execution checked no flag at all.
 """
 from __future__ import annotations
 
-import fnmatch
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,15 +24,15 @@ from app.tenancy.context import PlanTier, TenantContext
 TID = "t1"
 
 
-class _SyncRedis:
-    def __init__(self, keys: dict[str, str]) -> None:
-        self.keys = keys
+def _SyncRedis(keys: dict[str, str]) -> Any:
+    """A Redis holding ``keys`` as raw flags (written before the org-stop index
+    existed — the reader indexes them on first use, WF-17)."""
+    import fakeredis
 
-    def get(self, k: str) -> str | None:
-        return self.keys.get(k)
-
-    def scan_iter(self, match: str, count: int = 100) -> Any:
-        return iter([k.encode() for k in self.keys if fnmatch.fnmatchcase(k, match)])
+    r = fakeredis.FakeRedis()
+    for k, v in keys.items():
+        r.set(k, v)
+    return r
 
 
 class _AsyncRedis:

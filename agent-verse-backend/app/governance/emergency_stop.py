@@ -19,6 +19,7 @@ a stop lasts until an operator lifts it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -49,16 +50,45 @@ def _is_set(value: Any) -> bool:
     return isinstance(value, (bytes, str, int)) and bool(value)
 
 
-def _stopped_org_ids_sync(redis: Any, tenant_id: str) -> set[str]:
-    prefix = f"{tenant_stop_key(tenant_id)}:"
-    out: set[str] = set()
-    for raw in redis.scan_iter(match=f"{prefix}*", count=100):
-        if not isinstance(raw, (bytes, str)):
+def org_stop_index_key(tenant_id: str) -> str:
+    """Per-tenant SET of the org ids that have an active stop (WF-17)."""
+    return f"emergency_stop_orgs:{tenant_id}"
+
+
+# Set once the org-stop index has been rebuilt from flags written before it
+# existed (one keyspace SCAN per deployment, not per goal start).
+ORG_STOP_INDEX_READY_KEY = "emergency_stop_orgs:__index_ready__"
+
+
+def _decode(raw: Any) -> str | None:
+    if isinstance(raw, bytes):
+        return raw.decode()
+    return raw if isinstance(raw, str) else None
+
+
+def _backfill_org_stop_index_sync(redis: Any) -> None:
+    """Index org stop flags that predate the index (runs once per Redis)."""
+    for raw in redis.scan_iter(match="emergency_stop:*:*", count=1000):
+        key = _decode(raw)
+        if key is None:
             continue
-        key = raw.decode() if isinstance(raw, bytes) else str(raw)
-        if key.startswith(prefix) and len(key) > len(prefix):
-            out.add(key[len(prefix):])
-    return out
+        parts = key.split(":")
+        if len(parts) == 3 and parts[1] and parts[2]:
+            redis.sadd(org_stop_index_key(parts[1]), parts[2])
+    redis.set(ORG_STOP_INDEX_READY_KEY, "1")
+
+
+def _stopped_org_ids_sync(redis: Any, tenant_id: str) -> set[str]:
+    """The tenant's stopped org ids: one SMEMBERS of the per-tenant index.
+
+    Used to SCAN ``emergency_stop:{tenant}:*`` on every goal start — a walk of
+    the WHOLE keyspace in 100-key steps (thousands of round trips at millions
+    of keys). Errors propagate: the caller fails closed.
+    """
+    if not _is_set(redis.get(ORG_STOP_INDEX_READY_KEY)):
+        _backfill_org_stop_index_sync(redis)
+    members = redis.smembers(org_stop_index_key(tenant_id)) or set()
+    return {m for m in (_decode(raw) for raw in members) if m}
 
 
 def emergency_stop_reason_sync(
@@ -71,7 +101,7 @@ def emergency_stop_reason_sync(
     """Return why a goal must not start, or ``None`` if it may run.
 
     ``resolve_org_id`` is only called when at least one org of the tenant is
-    stopped (so the common path costs one GET + one SCAN, no DB). If it raises
+    stopped (so the common path costs two GETs + one SMEMBERS, no DB). If it raises
     while an org stop is active the goal is blocked (fail closed): a kill
     switch that is skipped whenever a lookup hiccups is not a kill switch.
     """
@@ -89,7 +119,12 @@ def emergency_stop_reason_sync(
         except Exception as exc:
             _log.warning("emergency_stop_org_resolve_failed", error=str(exc))
             return ORG_UNVERIFIED_REASON
-    if goal_org and str(goal_org) in stopped:
+    # The flag is the source of truth; the index only narrows the lookup.
+    if (
+        goal_org
+        and str(goal_org) in stopped
+        and _is_set(redis.get(org_stop_key(tenant_id, str(goal_org))))
+    ):
         return ORG_STOP_REASON
     return None
 
@@ -153,6 +188,35 @@ async def activate_stop(
     except Exception as exc:
         raise EmergencyStopUnavailableError(str(exc)) from exc
     return record
+
+
+async def activate_org_stop(
+    redis: Any, tenant_id: str, org_id: str, *, activated_by: str, reason: str = ""
+) -> dict[str, Any]:
+    """Org stop: the flag plus its entry in the tenant's org-stop index (WF-17)."""
+    record = await activate_stop(
+        redis, org_stop_key(tenant_id, org_id), activated_by=activated_by, reason=reason
+    )
+    try:
+        await redis.sadd(org_stop_index_key(tenant_id), str(org_id))
+    except Exception as exc:
+        # The worker start check reads the index; an unindexed flag would only
+        # be honoured at step boundaries. Undo and refuse instead.
+        with contextlib.suppress(Exception):
+            await redis.delete(org_stop_key(tenant_id, org_id))
+        raise EmergencyStopUnavailableError(str(exc)) from exc
+    return record
+
+
+async def clear_org_stop(redis: Any, tenant_id: str, org_id: str) -> None:
+    """Lift an org stop: drop the flag first, then its index entry."""
+    await clear_stop(redis, org_stop_key(tenant_id, org_id))
+    try:
+        await redis.srem(org_stop_index_key(tenant_id), str(org_id))
+    except Exception as exc:
+        # A stale index entry only costs the reader an org lookup; the flag
+        # itself is gone, so the org is resumed.
+        _log.warning("emergency_stop_index_clear_failed", tenant_id=tenant_id, error=str(exc))
 
 
 async def clear_stop(redis: Any, key: str) -> None:
