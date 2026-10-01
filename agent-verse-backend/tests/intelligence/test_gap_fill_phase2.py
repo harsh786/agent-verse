@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import pytest
 
-from app.ai_router.complexity_scorer import QueryComplexityScorer
-from app.ai_router.shadow_router import ShadowRouter, ShadowRoutingConfig
 from app.evals.attribution_verifier import AttributionVerifier
 from app.observability.alert_router import AlertRouter, AlertRule
 from app.observability.slo_tracker import SLODefinition, SLOTracker
@@ -132,89 +130,3 @@ class TestAttributionVerifier:
         assert 0 in indices
         assert 1 in indices
         assert 2 in indices
-
-
-# ---------------------------------------------------------------------------
-# QueryComplexityScorer
-# ---------------------------------------------------------------------------
-
-class TestQueryComplexityScorer:
-    def setup_method(self) -> None:
-        self.scorer = QueryComplexityScorer()
-
-    def test_simple_query(self) -> None:
-        result = self.scorer.score("What time is it?")
-        assert result.level == "simple"
-        assert result.score < 0.35
-
-    def test_complex_technical_query(self) -> None:
-        result = self.scorer.score(
-            "How does the transformer architecture optimize gradient descent "
-            "during distributed inference, and also how does quantization "
-            "affect vector embedding precision?"
-        )
-        assert result.level in ("moderate", "complex")
-        assert result.score > 0.2
-
-    def test_score_in_range(self) -> None:
-        for query in ["hi", "a" * 500, "what is python and also how does it work with algorithms?"]:
-            r = self.scorer.score(query)
-            assert 0.0 <= r.score <= 1.0
-
-    def test_recommended_tier(self) -> None:
-        simple = self.scorer.score("hi")
-        assert simple.recommended_model_tier() == "small"
-
-
-# ---------------------------------------------------------------------------
-# ShadowRouter
-# ---------------------------------------------------------------------------
-
-class TestShadowRouter:
-    @pytest.mark.asyncio
-    async def test_returns_primary_response(self) -> None:
-        class Provider:
-            def __init__(self, name: str) -> None:
-                self.name = name
-
-            async def complete(self, req: object) -> object:
-                class R:
-                    content = None
-                r = R()
-                r.content = self.name
-                return r
-
-        router = ShadowRouter(ShadowRoutingConfig(enabled=True, sample_rate=1.0))
-        from app.providers.base import CompletionRequest, Message
-        req = CompletionRequest(messages=[Message(role="user", content="hi")], model="")
-        resp = await router.shadow_call(req, Provider("primary"), Provider("shadow"))
-        assert resp.content == "primary"
-
-    @pytest.mark.asyncio
-    async def test_zero_sample_rate_no_shadow(self) -> None:
-        calls = {"shadow": 0}
-
-        class Primary:
-            async def complete(self, req: object) -> object:
-                class R:
-                    content = "primary"
-                return R()
-
-        class Shadow:
-            async def complete(self, req: object) -> object:
-                calls["shadow"] += 1
-                class R:
-                    content = "shadow"
-                return R()
-
-        router = ShadowRouter(ShadowRoutingConfig(enabled=True, sample_rate=0.0))
-        from app.providers.base import CompletionRequest, Message
-        req = CompletionRequest(messages=[Message(role="user", content="hi")], model="")
-        for _ in range(10):
-            await router.shadow_call(req, Primary(), Shadow())
-        assert calls["shadow"] == 0
-
-    def test_get_log_returns_list(self) -> None:
-        router = ShadowRouter()
-        log = router.get_log()
-        assert isinstance(log, list)

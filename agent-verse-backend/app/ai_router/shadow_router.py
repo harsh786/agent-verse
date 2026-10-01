@@ -1,158 +1,146 @@
-"""Shadow Router — fire requests to a candidate model alongside the primary.
+"""Shadow routing — evaluate a candidate model on sampled real traffic (PROV-24).
 
-Shadow routing lets you compare a new model's responses against the production
-model without any user impact. Only the primary response is returned to the
-caller; shadow results are stored for offline analysis.
+Behind a flag (``AGENTVERSE_SHADOW_MODEL`` = the candidate model id, served by
+the same provider; ``AGENTVERSE_SHADOW_SAMPLE_RATE`` = 0.0-1.0, default 0), a
+sampled :func:`app.providers.guarded_completion.complete_decision` call is
+repeated against the candidate in the background. Only the primary response is
+ever returned; the shadow:
 
-Use cases:
-- Evaluate a cheaper model before switching
-- Validate that a new model version produces equivalent quality
-- A/B experiment data collection
+* runs through ``complete_decision`` itself — circuit breaker, timeout, GenAI
+  span and provider-health feed — as an *uncharged platform job* (system job
+  ``shadow_eval``): the platform's evaluation is never billed to the tenant;
+* is metered: its cost goes to the ``llm`` cost metric and into the log entry;
+* is logged to a cross-replica shadow log (the Redis ModelRegistryStore when
+  wired, else per process) read by ``GET /models/shadow-log`` (platform admin).
+
+The previous ``ShadowRouter`` called providers directly (no metering, no
+tracing, failures swallowed) and was wired nowhere.
 """
 
 from __future__ import annotations
 
 import asyncio
+import collections
+import dataclasses
+import logging
+import os
+import random
 import time
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from app.providers.base import CompletionRequest, CompletionResponse, LLMProvider
-
-
-@dataclass
-class ShadowRoutingConfig:
-    enabled: bool = False
-    shadow_provider_id: str = ""
-    sample_rate: float = 0.1  # 0.0–1.0: fraction of requests to shadow
+_log = logging.getLogger(__name__)
+_LOCAL_LOG: collections.deque[dict[str, Any]] = collections.deque(maxlen=200)
+_TASKS: set[asyncio.Task[None]] = set()
+_SHADOW_TIMEOUT_S = 60.0
 
 
-@dataclass
-class ShadowResult:
-    primary_response: CompletionResponse
-    shadow_response: CompletionResponse | None
-    latency_primary_ms: float
-    latency_shadow_ms: float | None
-    shadow_provider_id: str
-    fired_at: float = field(default_factory=time.time)
-    metadata: dict[str, Any] = field(default_factory=dict)
+def shadow_config() -> tuple[str, float]:
+    """(candidate model, sample rate) from the environment; rate clamped to [0, 1]."""
+    model = (os.getenv("AGENTVERSE_SHADOW_MODEL") or "").strip()
+    try:
+        rate = float(os.getenv("AGENTVERSE_SHADOW_SAMPLE_RATE", "0") or 0)
+    except ValueError:
+        rate = 0.0
+    return model, min(1.0, max(0.0, rate))
 
 
-class ShadowRouter:
-    """Fire primary + shadow requests concurrently; return primary to caller.
-
-    The shadow call is always best-effort — if it fails, the primary
-    response is still returned cleanly.
-
-    Parameters
-    ----------
-    config : ShadowRoutingConfig
-        Controls whether shadowing is enabled and the sample rate.
-    log_buffer_size : int
-        Number of shadow results to keep in-memory for the `/shadow-log` API.
-    """
-
-    def __init__(
-        self,
-        config: ShadowRoutingConfig | None = None,
-        log_buffer_size: int = 100,
-    ) -> None:
-        self._config = config or ShadowRoutingConfig()
-        self._log: list[ShadowResult] = []
-        self._log_size = log_buffer_size
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    async def shadow_call(
-        self,
-        request: CompletionRequest,
-        primary_provider: LLMProvider,
-        shadow_provider: LLMProvider | None = None,
-    ) -> CompletionResponse:
-        """Fire primary (and optionally shadow) call; return primary response.
-
-        The shadow call is fired concurrently with the primary but its result
-        is never returned to the caller. Shadow failures are silently ignored.
-
-        Parameters
-        ----------
-        request : CompletionRequest
-            The completion request to send.
-        primary_provider : LLMProvider
-            The production model provider.
-        shadow_provider : LLMProvider | None
-            The candidate model. If None or config is disabled, behaves as a
-            plain primary call.
-        """
-        should_shadow = self._config.enabled and shadow_provider is not None and self._sample()
-
-        if not should_shadow:
-            return await primary_provider.complete(request)
-
-        # Fire both concurrently
-        t_start = time.monotonic()
-        primary_task = asyncio.create_task(primary_provider.complete(request))
-        shadow_task = asyncio.create_task(shadow_provider.complete(request))
-
-        # Await primary — always return this
-        primary_response = await primary_task
-        t_primary = (time.monotonic() - t_start) * 1000.0
-
-        # Collect shadow result (non-blocking timeout)
-        shadow_response = None
-        t_shadow = None
-        try:
-            t_shadow_start = time.monotonic()
-            shadow_response = await asyncio.wait_for(shadow_task, timeout=30.0)
-            t_shadow = (time.monotonic() - t_shadow_start) * 1000.0
-        except Exception:
-            shadow_task.cancel()
-
-        # Log result
-        result = ShadowResult(
-            primary_response=primary_response,
-            shadow_response=shadow_response,
-            latency_primary_ms=t_primary,
-            latency_shadow_ms=t_shadow,
-            shadow_provider_id=self._config.shadow_provider_id,
+def maybe_fire_shadow(
+    provider: Any, request: Any, *, role: str, primary: Any, primary_latency_ms: float
+) -> None:
+    """Schedule a shadow of this call when the flag is on and the sample hits."""
+    model, rate = shadow_config()
+    if not model or rate <= 0.0 or role.startswith("shadow"):
+        return
+    if (getattr(request, "model", "") or "") == model or random.random() >= rate:
+        return
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _run_shadow(provider, request, model, role, primary, primary_latency_ms)
         )
-        self._record(result)
+    except RuntimeError:  # no running loop
+        return
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
 
-        return primary_response
 
-    def get_log(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Return recent shadow results as serialisable dicts."""
-        return [
-            {
-                "fired_at": r.fired_at,
-                "shadow_provider": r.shadow_provider_id,
-                "latency_primary_ms": r.latency_primary_ms,
-                "latency_shadow_ms": r.latency_shadow_ms,
-                "primary_content": (r.primary_response.content or "")[:200],
-                "shadow_content": (r.shadow_response.content or "")[:200]
-                if r.shadow_response
-                else None,
-            }
-            for r in self._log[-limit:]
-        ]
+async def drain_shadow_tasks() -> None:
+    """Wait for in-flight shadow calls (tests / graceful shutdown)."""
+    while _TASKS:
+        await asyncio.gather(*list(_TASKS), return_exceptions=True)
 
-    def configure(self, config: ShadowRoutingConfig) -> None:
-        self._config = config
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+async def _run_shadow(
+    provider: Any,
+    request: Any,
+    model: str,
+    role: str,
+    primary: Any,
+    primary_latency_ms: float,
+) -> None:
+    from app.intelligence.cost_tracker import calculate_cost
+    from app.observability.metrics import record_cost_usd
+    from app.providers.guarded_completion import complete_decision, uncharged_platform_call
 
-    def _sample(self) -> bool:
-        """Return True with probability equal to sample_rate."""
-        import random
+    entry: dict[str, Any] = {
+        "fired_at": time.time(),
+        "role": role,
+        "primary_model": str(getattr(primary, "model", "") or getattr(request, "model", "")),
+        "shadow_model": model,
+        "latency_primary_ms": round(primary_latency_ms, 1),
+        "latency_shadow_ms": None,
+        "shadow_cost_usd": 0.0,
+        "primary_content": str(getattr(primary, "content", "") or "")[:200],
+        "shadow_content": None,
+        "error": None,
+    }
+    started = time.monotonic()
+    try:
+        with uncharged_platform_call("shadow_eval"):
+            resp = await complete_decision(
+                provider,
+                dataclasses.replace(request, model=model),
+                role=f"shadow_{role}",
+                timeout_seconds=_SHADOW_TIMEOUT_S,
+            )
+        cost = float(
+            calculate_cost(
+                str(getattr(resp, "model", "") or model),
+                int(getattr(resp, "input_tokens", 0) or 0),
+                int(getattr(resp, "output_tokens", 0) or 0),
+            )
+        )
+        record_cost_usd("llm", cost)
+        entry.update(
+            latency_shadow_ms=round((time.monotonic() - started) * 1000, 1),
+            shadow_cost_usd=cost,
+            shadow_content=str(getattr(resp, "content", "") or "")[:200],
+        )
+    except Exception as exc:  # the shadow never affects the primary
+        entry["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    _record(entry)
 
-        return random.random() < self._config.sample_rate
 
-    def _record(self, result: ShadowResult) -> None:
-        self._log.append(result)
-        if len(self._log) > self._log_size:
-            self._log = self._log[-self._log_size :]
+def _record(entry: dict[str, Any]) -> None:
+    from app.ai_router.registry_store import get_model_registry_store
+
+    store = get_model_registry_store()
+    if store is not None:
+        try:
+            store.push_shadow_result(entry)
+            return
+        except Exception as exc:
+            _log.warning("shadow_log_store_write_failed: %s", str(exc)[:160])
+    _LOCAL_LOG.append(entry)
+
+
+def shadow_log(limit: int = 50) -> list[dict[str, Any]]:
+    """Most recent shadow results, newest last."""
+    from app.ai_router.registry_store import get_model_registry_store
+
+    store = get_model_registry_store()
+    if store is not None:
+        try:
+            return list(store.list_shadow_results())[-limit:]
+        except Exception as exc:
+            _log.warning("shadow_log_store_read_failed: %s", str(exc)[:160])
+    return list(_LOCAL_LOG)[-limit:]

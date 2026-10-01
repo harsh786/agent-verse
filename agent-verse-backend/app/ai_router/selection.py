@@ -27,6 +27,11 @@ _TASK_CAPABILITY: dict[TaskType, ModelCapability] = {
     TaskType.VISION: ModelCapability.VISION,
 }
 
+# Capabilities a task needs ON TOP of its base capability.
+_TASK_REQUIRED_CAPABILITIES: dict[TaskType, tuple[ModelCapability, ...]] = {
+    TaskType.EXECUTION: (ModelCapability.TOOL_USE,),
+}
+
 _TASK_ALIASES: dict[str, TaskType] = {
     "planning": TaskType.PLANNING,
     "plan": TaskType.PLANNING,
@@ -123,6 +128,14 @@ def select_configured_model_id(
         return ""
 
     candidates = reg.list_configured(capability)
+    # PROV-24: capability enforcement — executing a step means calling tools, so a
+    # model without tool use (e.g. a chat-only provider) is never picked for it.
+    for required in _TASK_REQUIRED_CAPABILITIES.get(task_type, ()):
+        candidates = [
+            m for m in candidates
+            if required in m.capabilities
+            or (required is ModelCapability.TOOL_USE and m.supports_tools)
+        ]
     if require_tools:
         candidates = [m for m in candidates if m.supports_tools]
     if require_vision:

@@ -28,10 +28,6 @@ _TRACING = (
     "complete_decision / complete_with_failover, which apply budget, breaker and timeout"
 )
 _NOT_LLM = "receiver is not an LLM provider"
-_DEBT_UNMETERED = (
-    "known debt: direct calls with NO metering, tracing, breaker or timeout; the module "
-    "is not wired anywhere (PROV-24 decides wire-or-delete). Not a guarded wrapper."
-)
 
 # "<path relative to app/>::<qualname>": (number of .complete( calls, reason)
 ALLOWED: dict[str, tuple[int, str]] = {
@@ -43,8 +39,6 @@ ALLOWED: dict[str, tuple[int, str]] = {
         1,
         _NOT_LLM + " (ProspectiveMemoryService.complete marks an intention done)",
     ),
-    # ── known debt (must never be mistaken for a metered wrapper) ─────────────
-    "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _DEBT_UNMETERED),
 }
 
 # Entries that ARE guarded wrappers (metering / tracing around an inner call).

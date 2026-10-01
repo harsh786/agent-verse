@@ -47,7 +47,7 @@ _log = logging.getLogger(__name__)
 # Platform work that is deliberately not charged to any tenant. A decision call
 # outside a goal, with no tenant and no system job, is refused once cost
 # services are configured (PROV-05): it used to be silently free.
-SYSTEM_JOBS: frozenset[str] = frozenset({"model_probe"})
+SYSTEM_JOBS: frozenset[str] = frozenset({"model_probe", "shadow_eval"})
 
 
 class DecisionBudgetExceededError(RuntimeError):
@@ -126,6 +126,24 @@ def system_job_scope(name: str) -> Iterator[None]:
         yield
     finally:
         _system_job.reset(token)
+
+
+@contextlib.contextmanager
+def uncharged_platform_call(job: str) -> Iterator[None]:
+    """Run decision calls as an uncharged platform system job.
+
+    Clears any goal / tenant charge scope (so a background job spawned from a
+    request or a goal is not billed to that tenant) and enters
+    :func:`system_job_scope` (``job`` must be allowlisted).
+    """
+    goal_token = _scope.set(None)
+    tenant_token = _tenant_scope.set(None)
+    try:
+        with system_job_scope(job):
+            yield
+    finally:
+        _tenant_scope.reset(tenant_token)
+        _scope.reset(goal_token)
 
 
 def _timeout(explicit: float | None) -> float:
@@ -394,9 +412,12 @@ async def complete_decision(
                 latency_ms=(time.monotonic() - started) * 1000, error=str(exc),
             )
         raise
-    record_llm_outcome(
-        provider=provider, model=model, ok=True, latency_ms=(time.monotonic() - started) * 1000
-    )
+    _latency_ms = (time.monotonic() - started) * 1000
+    record_llm_outcome(provider=provider, model=model, ok=True, latency_ms=_latency_ms)
+    # PROV-24: sampled shadow of a candidate model (flag-gated, uncharged, metered).
+    from app.ai_router.shadow_router import maybe_fire_shadow
+
+    maybe_fire_shadow(provider, request, role=role, primary=resp, primary_latency_ms=_latency_ms)
     if charge:
         await _charge(
             scope,

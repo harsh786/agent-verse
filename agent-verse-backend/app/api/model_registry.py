@@ -173,6 +173,19 @@ async def model_plan_cap(
     }
 
 
+@router.get("/shadow-log")
+async def get_shadow_log(
+    request: Request, limit: int = Query(default=50, ge=1, le=200)
+) -> dict[str, Any]:
+    """Recent shadow-evaluation results (platform admin): primary vs candidate model."""
+    _require_tenant(request)
+    _require_platform_admin(request)
+    from app.ai_router.shadow_router import shadow_config, shadow_log
+
+    model, rate = shadow_config()
+    return {"shadow_model": model, "sample_rate": rate, "entries": shadow_log(limit)}
+
+
 @router.get("/health")
 async def get_provider_health(request: Request) -> dict[str, Any]:
     """Get health status for all providers."""

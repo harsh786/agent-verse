@@ -22,6 +22,8 @@ _KEY = "model_registry:configured"
 _POLICY_KEY_PREFIX = "model_registry:route_policies:"
 _HEALTH_KEY_PREFIX = "model_registry:health:"
 _CIRCUIT_KEY_PREFIX = "model_registry:provider_circuit:"
+_SHADOW_LOG_KEY = "model_registry:shadow_log"
+_SHADOW_LOG_MAX = 200
 # Bumped on every override change so every replica / worker re-seeds (PROV-17).
 _VERSION_KEY = "model_registry:configured:version"
 
@@ -139,6 +141,17 @@ class ModelRegistryStore:
 
     def set_provider_circuit(self, provider: str, state: dict[str, Any]) -> None:
         self._redis.set(f"{_CIRCUIT_KEY_PREFIX}{provider}", json.dumps(state))
+
+    # ── Shadow-evaluation log (PROV-24), newest last, capped ──────────────────
+
+    def list_shadow_results(self) -> list[dict[str, Any]]:
+        raw = self._redis.get(_SHADOW_LOG_KEY)
+        data = json.loads(raw) if raw else []
+        return data if isinstance(data, list) else []
+
+    def push_shadow_result(self, entry: dict[str, Any]) -> None:
+        items = [*self.list_shadow_results(), entry][-_SHADOW_LOG_MAX:]
+        self._redis.set(_SHADOW_LOG_KEY, json.dumps(items))
 
 
 # ── Module-level singleton (wired from create_app when Redis is available) ──────
