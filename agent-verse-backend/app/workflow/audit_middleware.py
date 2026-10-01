@@ -198,14 +198,83 @@ class AutoAuditMiddleware:
     ) -> None:
         try:
             from app.governance.audit import AuditEvent  # local import avoids circulars
+            from app.tenancy.context import PlanTier, TenantContext
 
             event = AuditEvent(
                 goal_id=state.get("run_id", ""),
                 tool_name=f"workflow.{event_type}",
                 action_level=ActionLevel.ALLOW_LOG,
                 outcome=event_type,
-                step_id=data.get("step_id", ""),
+                step_id=str(data.get("step_id", "") or "")[:64],
+                note=_note(data),
             )
-            self._audit.record(state.get("tenant_id", ""), event)
+            # AuditLog.record(event, *, tenant_ctx=...). It used to be called as
+            # record(tenant_id, event): every emit raised TypeError, was
+            # swallowed below, and no workflow audit event was ever written.
+            self._audit.record(
+                event,
+                tenant_ctx=TenantContext(
+                    tenant_id=str(state.get("tenant_id", "") or ""),
+                    plan=PlanTier.FREE,
+                    api_key_id="workflow-engine",
+                ),
+            )
         except Exception as exc:
             _log.warning("auto_audit_emit_failed", event_type=event_type, error=str(exc))
+
+
+def _note(data: dict[str, Any]) -> str:
+    """Compact ``k=v`` note (hashes / ids only — never raw step payloads)."""
+    parts = [f"{k}={v}" for k, v in data.items() if v not in (None, "") and k != "step_id"]
+    return "; ".join(parts)[:1000]
+
+
+def record_workflow_action(
+    request: Any,
+    action: str,
+    *,
+    workflow_id: str,
+    outcome: str = "success",
+    note: str = "",
+    approver: str | None = None,
+    step_id: str = "",
+) -> None:
+    """Audit one workflow API action (create/update/publish/run/approve ...).
+
+    Written as ``tool_name="workflow.<action>"`` with ``goal_id=<workflow_id>``
+    under the CALLER's tenant (tenant-scoped like every audit row), carrying the
+    caller's API key, IP, user agent and request id. Auditing never breaks the
+    call path (AuditLog persistence is fire-and-forget by design).
+    """
+    audit_log = getattr(request.app.state, "audit_log", None)
+    tenant = getattr(request.state, "tenant", None)
+    if tenant is None:
+        tenant = getattr(request.app.state, "tenant_context", None)
+    if audit_log is None or tenant is None:
+        return
+    try:
+        from app.governance.audit import AuditEvent
+
+        headers = getattr(request, "headers", {}) or {}
+        client = getattr(request, "client", None)
+        key_id = str(getattr(tenant, "api_key_id", "") or "") or None
+        audit_log.record(
+            AuditEvent(
+                goal_id=str(workflow_id)[:64],  # audit_log.goal_id is VARCHAR(64)
+                tool_name=f"workflow.{action}",
+                action_level=(
+                    ActionLevel.DENY if outcome == "denied" else ActionLevel.ALLOW_LOG
+                ),
+                outcome=outcome[:100],
+                step_id=step_id[:64],
+                approver=approver,
+                note=note[:1000],
+                ip_address=getattr(client, "host", None),
+                user_agent=headers.get("user-agent"),
+                api_key_id=key_id,
+                request_id=headers.get("x-request-id"),
+            ),
+            tenant_ctx=tenant,
+        )
+    except Exception as exc:  # auditing must never break the call path
+        _log.warning("workflow_action_audit_failed", action=action, error=str(exc))

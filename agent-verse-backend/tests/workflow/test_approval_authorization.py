@@ -167,9 +167,12 @@ async def test_admin_override_is_allowed_and_audited(gw: HITLWorkflowGateway) ->
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["reviewed_by"] == "key-root"
-    assert len(audit.events) == 1
+    # The override is audited, and so is the decision itself (WF-AUDIT).
+    assert [e.tool_name for e, _ in audit.events] == [
+        "workflow.approval.admin_override",
+        "workflow.approval_decided",
+    ]
     event, ctx = audit.events[0]
-    assert event.tool_name == "workflow.approval.admin_override"
     assert event.approver == "key-root" and event.outcome == "decide"
     assert rid in event.note and "key-alice" in event.note
     assert ctx.tenant_id == _T

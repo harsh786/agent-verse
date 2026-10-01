@@ -21,11 +21,12 @@ class AuditLog(Base):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     # No FK to tenants — audit entries survive tenant deletion
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # 64: workflow/run ids are dashed UUIDs (migration a7e3c9d2f4b1).
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tool_name: Mapped[str] = mapped_column(String(200), nullable=False)
     action_level: Mapped[str] = mapped_column(String(20), nullable=False)
     outcome: Mapped[str] = mapped_column(String(100), nullable=False)
-    step_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
+    step_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default="")
     approver: Mapped[str | None] = mapped_column(String(200), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     # SOC2 fields (migration 0016) — the table has these columns, so the model

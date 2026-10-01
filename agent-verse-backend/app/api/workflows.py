@@ -87,6 +87,13 @@ def _get_store(request: Request) -> _WorkflowStore:
     return store
 
 
+def _audit(request: Request, action: str, workflow_id: str, note: str = "") -> None:
+    """WF-AUDIT: tenant-scoped audit row for a workflow action on this router."""
+    from app.workflow.audit_middleware import record_workflow_action
+
+    record_workflow_action(request, action, workflow_id=workflow_id, note=note)
+
+
 def _workflow_to_out(w: dict[str, Any]) -> WorkflowOut:
     def _iso(v: Any) -> str:
         if isinstance(v, datetime):
@@ -553,6 +560,7 @@ async def create_workflow(request: Request, body: WorkflowCreate) -> WorkflowOut
         description=body.description,
         definition=body.definition,
     )
+    _audit(request, "created", str(wf["id"]), f"name={body.name}")
     return _workflow_to_out(wf)
 
 
@@ -601,6 +609,7 @@ async def update_workflow(
     )
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    _audit(request, "updated", workflow_id, "changed=name,description,definition")
 
 
 @router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -611,6 +620,7 @@ async def delete_workflow(workflow_id: str, request: Request) -> None:
     deleted = await store.delete(tenant.tenant_id, workflow_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    _audit(request, "deleted", workflow_id)
 
 
 class WorkflowRunRequest(BaseModel):
@@ -709,6 +719,7 @@ async def run_workflow(
             run_status = str(rec["status"])
     except Exception:  # pragma: no cover - status read is informational
         pass
+    _audit(request, "run_triggered", workflow_id, f"run_id={run_id}; dry_run=False")
     return {
         "run_id": run_id,
         "status": run_status,

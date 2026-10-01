@@ -305,7 +305,23 @@ async def decide_approval(request_id: str, body: DecideRequest, request: Request
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _audit_decision(request, req, body.action)
     return req.__dict__
+
+
+def _audit_decision(request: Request, req: Any, action: str) -> None:
+    """WF-AUDIT: every reviewer decision is a tenant-scoped audit row."""
+    from app.workflow.audit_middleware import record_workflow_action
+
+    record_workflow_action(
+        request,
+        "approval_decided",
+        workflow_id=str(req.workflow_id or req.run_id or req.request_id),
+        outcome=action,
+        approver=_user_id(request),
+        step_id=str(req.step_id or ""),
+        note=f"request_id={req.request_id}; run_id={req.run_id}",
+    )
 
 
 def _conflict(exc: ApprovalAlreadyDecidedError) -> HTTPException:
@@ -386,6 +402,8 @@ async def bulk_decide(body: BulkDecideRequest, request: Request) -> dict[str, An
         if allowed
         else []
     )
+    for decided in results:
+        _audit_decision(request, decided, body.action)
     return {
         "decided": len(results),
         "request_ids": [r.request_id for r in results],

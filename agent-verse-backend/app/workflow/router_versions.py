@@ -107,6 +107,11 @@ async def restore_version(workflow_id: str, version: int, request: Request) -> d
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from app.workflow.audit_middleware import record_workflow_action
+
+    record_workflow_action(
+        request, "version_restored", workflow_id=workflow_id, note=f"version={version}"
+    )
     return result
 
 
@@ -158,7 +163,10 @@ def _principal(request: Request) -> str:
     return str(getattr(tenant, "api_key_id", "") or "")
 
 
-async def _approval_call(coro: Any) -> dict[str, Any]:
+async def _approval_call(
+    request: Request, workflow_id: str, action: str, coro: Any, *, note: str = ""
+) -> dict[str, Any]:
+    from app.workflow.audit_middleware import record_workflow_action
     from app.workflow.service import WorkflowPersistenceUnavailableError
 
     try:
@@ -166,9 +174,20 @@ async def _approval_call(coro: Any) -> dict[str, Any]:
     except WorkflowPersistenceUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
+        record_workflow_action(
+            request, action, workflow_id=workflow_id, outcome="denied", note=str(exc)
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    approver = _principal(request) if action != "publish_submitted" else None
+    record_workflow_action(
+        request,
+        action,
+        workflow_id=workflow_id,
+        approver=approver,
+        note=f"version={result.get('version')}" + (f"; note={note}" if note else ""),
+    )
     return dict(result)
 
 
@@ -182,6 +201,9 @@ async def submit_for_approval(workflow_id: str, request: Request) -> dict[str, A
     svc = _svc(request)
     tenant_id = _tenant_id(request)
     return await _approval_call(
+        request,
+        workflow_id,
+        "publish_submitted",
         svc.submit_for_approval(
             tenant_id=tenant_id, workflow_id=workflow_id, submitted_by=_principal(request)
         )
@@ -200,12 +222,16 @@ async def approve_publish(
     svc = _svc(request)
     tenant_id = _tenant_id(request)
     return await _approval_call(
+        request,
+        workflow_id,
+        "publish_approved",
         svc.approve_publish(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
             approver_id=_principal(request),
             note=body.note,
-        )
+        ),
+        note=body.note,
     )
 
 
@@ -221,12 +247,16 @@ async def reject_publish(
     svc = _svc(request)
     tenant_id = _tenant_id(request)
     return await _approval_call(
+        request,
+        workflow_id,
+        "publish_rejected",
         svc.reject_publish(
             tenant_id=tenant_id,
             workflow_id=workflow_id,
             approver_id=_principal(request),
             note=body.note,
-        )
+        ),
+        note=body.note,
     )
 
 

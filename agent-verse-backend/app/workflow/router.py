@@ -37,6 +37,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 from pydantic import BaseModel, Field, field_validator
 
 from app.observability.logging import get_logger
+from app.workflow.audit_middleware import record_workflow_action
 from app.workflow.dsl import WorkflowDefinition
 from app.workflow.permissions import caller_access, require_workflow_access, workflow_access
 from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
@@ -216,9 +217,12 @@ async def create_workflow(
             definition=body.definition,
             labels=body.labels,
         )
-        return result
     except WorkflowValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    record_workflow_action(
+        request, "created", workflow_id=str(result["id"]), note=f"name={body.name}"
+    )
+    return result
 
 
 @router.get("", response_model=PaginatedWorkflows)
@@ -363,8 +367,13 @@ async def update_workflow(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    changed = sorted(updates)
     if requires_approval is not None:
+        changed.append(f"requires_publish_approval={requires_approval}")
         result = {**result, "requires_publish_approval": requires_approval}
+    record_workflow_action(
+        request, "updated", workflow_id=workflow_id, note="changed=" + ",".join(changed)
+    )
     return result
 
 
@@ -376,6 +385,7 @@ async def delete_workflow(workflow_id: str, request: Request) -> None:
     ok = await svc.archive(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    record_workflow_action(request, "archived", workflow_id=workflow_id)
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +410,9 @@ async def publish_workflow(workflow_id: str, request: Request) -> Any:
             published_by=str(getattr(tenant, "api_key_id", "") or "") or None,
         )
     except PublishApprovalRequiredError as exc:
+        record_workflow_action(
+            request, "published", workflow_id=workflow_id, outcome="denied", note=str(exc)
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except WorkflowPersistenceUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -407,6 +420,9 @@ async def publish_workflow(workflow_id: str, request: Request) -> Any:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    record_workflow_action(
+        request, "published", workflow_id=workflow_id, note=f"version={result.get('version')}"
+    )
     return result
 
 
@@ -418,6 +434,7 @@ async def unpublish_workflow(workflow_id: str, request: Request) -> Any:
     result = await svc.unpublish(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
+    record_workflow_action(request, "unpublished", workflow_id=workflow_id)
     return result
 
 
@@ -451,7 +468,6 @@ async def trigger_workflow(
             dry_run=body.dry_run,
             callback_url=body.callback_url,
         )
-        return run
     except WorkflowValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except WorkflowEngineUnavailableError as exc:
@@ -459,6 +475,14 @@ async def trigger_workflow(
     except Exception as exc:
         _log.error("trigger_failed", workflow_id=workflow_id, error=str(exc))
         raise HTTPException(status_code=500, detail="Trigger failed") from exc
+    run_id = run.get("run_id") if isinstance(run, dict) else getattr(run, "run_id", None)
+    record_workflow_action(
+        request,
+        "run_triggered",
+        workflow_id=workflow_id,
+        note=f"run_id={run_id}; dry_run={body.dry_run}",
+    )
+    return run
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +595,12 @@ async def add_permission(workflow_id: str, body: PermissionRequest, request: Req
         role=body.role,
         subject_type=body.subject_type,
     )
+    record_workflow_action(
+        request,
+        "permission_granted",
+        workflow_id=workflow_id,
+        note=f"{body.subject_type}={body.subject}; level={body.role}",
+    )
     return perm
 
 
@@ -589,6 +619,12 @@ async def remove_permission(workflow_id: str, permission_id: str, request: Reque
     )
     if not ok:
         raise HTTPException(status_code=404, detail="Permission not found")
+    record_workflow_action(
+        request,
+        "permission_revoked",
+        workflow_id=workflow_id,
+        note=f"permission_id={permission_id}",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +728,7 @@ async def rotate_webhook_token(workflow_id: str, request: Request) -> dict[str, 
         raise HTTPException(status_code=404, detail="Workflow not found") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    record_workflow_action(request, "webhook_rotated", workflow_id=workflow_id)
     return {
         "workflow_id": workflow_id,
         "webhook_path": hook["webhook_path"],
