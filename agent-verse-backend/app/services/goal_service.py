@@ -920,30 +920,14 @@ class GoalService:
                             payload = data.get("payload", {})
 
                             if goal_id:
+                                # Only goals this replica already holds a record
+                                # of (a local run, or an SSE subscriber here). A
+                                # stub record per unknown goal made every replica
+                                # track every worker goal fleet-wide, unbounded
+                                # (SVC-07); nobody here listens to those events.
                                 record = self._goals.get(goal_id)
-                                if record is None:
-                                    # Create stub record for goals executed by Celery workers
-                                    # that haven't been synced to this API process yet
-                                    try:
-                                        record = GoalRecord(
-                                            goal_id=goal_id,
-                                            goal_text="",  # Will be filled when DB syncs
-                                            status=GoalStatus.EXECUTING,
-                                            tenant_id=tenant_id,
-                                            priority="normal",
-                                            dry_run=False,
-                                            created_at="",
-                                        )
-                                        self._goals[goal_id] = record
-                                        self._logger.debug(
-                                            "created_stub_goal_record_for_bridge",
-                                            goal_id=goal_id,
-                                        )
-                                    except Exception as exc:
-                                        self._logger.warning(
-                                            "bridge_stub_creation_failed", error=str(exc)
-                                        )
-
+                                if record is not None and record.tenant_id != tenant_id:
+                                    record = None
                                 if record is not None:
                                     # Feed into SSE subscriber queues
                                     event = {
@@ -985,6 +969,12 @@ class GoalService:
                                             with suppress(Exception):
                                                 q.put_nowait(_SENTINEL)
                                         record.status = _final
+                                        if _final in _TERMINAL_STATUSES:
+                                            # Starts its eviction TTL (SVC-30).
+                                            record.completed_at = (
+                                                record.completed_at
+                                                or datetime.now(UTC).isoformat()
+                                            )
                         except Exception as exc:
                             self._logger.warning("celery_event_bridge_parse_failed", error=str(exc))
             except Exception as exc:

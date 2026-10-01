@@ -3,7 +3,7 @@
 Targets specific large uncovered branches identified via
 ``--cov=app.services.goal_service --cov-report=term-missing``:
 
-  - ``_subscribe_celery_goal_events`` (Celery -> SSE bridge): stub-record
+  - ``_subscribe_celery_goal_events`` (Celery -> SSE bridge): no stub-record
     creation, event fan-out, dead-subscriber pruning, terminal-event status
     updates, and the outer redis-connect error path.
   - ``_run_agent_loop_persistent``: success, exhausted-attempts, cancellation,
@@ -106,23 +106,26 @@ class TestSubscribeCeleryGoalEvents:
             with suppress(asyncio.CancelledError):
                 await task
 
-    async def test_creates_stub_record_for_unknown_goal(self):
-        """No existing GoalRecord -> a stub is created from the bridged event."""
+    async def test_unknown_goals_create_no_records(self):
+        """SVC-07: every replica receives every worker goal's events; a stub
+        GoalRecord per unknown goal grew memory without bound. Events for goals
+        this replica holds no record of are dropped (nobody here listens)."""
         svc = _svc()
         goal_id = "celery-goal-stub"
 
         async def _async_gen():
-            yield {
-                "type": "pmessage",
-                "data": json.dumps(
-                    {
-                        "goal_id": goal_id,
-                        "tenant_id": "cb-t1",
-                        "type": "step_started",
-                        "payload": {"i": 1},
-                    }
-                ),
-            }
+            for i in range(10_000):
+                yield {
+                    "type": "pmessage",
+                    "data": json.dumps(
+                        {
+                            "goal_id": f"{goal_id}-{i}",
+                            "tenant_id": "cb-t1",
+                            "type": "goal_complete" if i % 2 else "step_started",
+                            "payload": {"i": i},
+                        }
+                    ),
+                }
             raise asyncio.CancelledError()
 
         mock_pubsub = AsyncMock()
@@ -139,9 +142,7 @@ class TestSubscribeCeleryGoalEvents:
             with suppress(asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=2.0)
 
-        record = svc._goals[goal_id]
-        assert record.tenant_id == "cb-t1"
-        assert record.status == GoalStatus.EXECUTING
+        assert svc._goals == {}
 
     async def test_dispatches_to_subscribers_prunes_dead_and_marks_terminal(self):
         """Existing GoalRecord with subscribers -> event fanned to queues, a
