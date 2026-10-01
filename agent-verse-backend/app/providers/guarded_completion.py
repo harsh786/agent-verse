@@ -246,6 +246,24 @@ async def _charge(
         raise DecisionBudgetExceededError("tenant LLM budget exhausted by this call")
 
 
+async def _traced_call(provider: Any, request: Any, role: str, timeout: float) -> Any:
+    """complete_with_failover inside a GenAI span (PROV-23): decision calls were
+    untraced. A provider that is already a TracedProvider records its own span."""
+    from app.observability.traced_provider import TracedProvider
+
+    if isinstance(provider, TracedProvider):
+        return await complete_with_failover(provider, request, timeout_seconds=timeout)
+    from app.observability.genai import record_generation
+    from app.observability.traced_provider import provider_system_of, record_response
+
+    async with record_generation(
+        request, provider_system=provider_system_of(provider), role=role
+    ) as rec:
+        resp = await complete_with_failover(provider, request, timeout_seconds=timeout)
+        record_response(rec, resp)
+        return resp
+
+
 async def preflight_decision(
     *, role: str, tenant_ctx: Any = None, tenant_id: str | None = None
 ) -> None:
@@ -368,9 +386,7 @@ async def complete_decision(
     model = str(getattr(request, "model", "") or "")
     started = time.monotonic()
     try:
-        resp = await complete_with_failover(
-            provider, request, timeout_seconds=_timeout(timeout_seconds)
-        )
+        resp = await _traced_call(provider, request, role, _timeout(timeout_seconds))
     except Exception as exc:
         if getattr(exc, "provider_failure", True):
             record_llm_outcome(

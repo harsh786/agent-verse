@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 
+from app.observability.traced_provider import TracedProvider
+
 from app.providers.onprem import MultiEndpointLLMProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -96,6 +98,11 @@ def _capture_graph(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     return captured
 
 
+def _raw(provider: object) -> object:
+    """The provider inside a TracedProvider (PROV-23 wraps worker role providers)."""
+    return getattr(provider, "_inner", provider)
+
+
 def test_worker_agent_runner_gets_multi_endpoint_provider_and_role_map(
     monkeypatch: pytest.MonkeyPatch, hybrid_env: list[int]
 ) -> None:
@@ -108,10 +115,13 @@ def test_worker_agent_runner_gets_multi_endpoint_provider_and_role_map(
 
     assert len(captured) == 2
     kw = captured[0]
-    assert isinstance(kw["planner"], MultiEndpointLLMProvider)
-    assert isinstance(kw["executor"], MultiEndpointLLMProvider)
+    # PROV-23: worker role providers are traced (GenAI spans); the provider inside
+    # is the multi-endpoint dispatcher.
+    assert isinstance(kw["planner"], TracedProvider)
+    assert isinstance(_raw(kw["planner"]), MultiEndpointLLMProvider)
+    assert isinstance(_raw(kw["executor"]), MultiEndpointLLMProvider)
     # The verifier must be able to serve the role map's verification model.
-    assert isinstance(kw["verifier"], MultiEndpointLLMProvider)
+    assert isinstance(_raw(kw["verifier"]), MultiEndpointLLMProvider)
     router = kw["model_router"]
     assert router is not None
     assert router.role_map == {
@@ -124,7 +134,7 @@ def test_worker_agent_runner_gets_multi_endpoint_provider_and_role_map(
     assert router.model_for("verification") == _QWEN
     # Built once per worker process and reused across goals.
     assert hybrid_env == [1]
-    assert captured[1]["planner"] is kw["planner"]
+    assert _raw(captured[1]["planner"]) is _raw(kw["planner"])
 
 
 def test_tenant_configured_provider_still_wins_over_deployment_cluster(
@@ -141,6 +151,6 @@ def test_tenant_configured_provider_still_wins_over_deployment_cluster(
 
     tasks.run_goal.run("goal-tenant-prov", "tenant-1", "tenant goal", "normal", False)
 
-    assert captured and captured[0]["planner"] is tenant_provider
+    assert captured and _raw(captured[0]["planner"]) is tenant_provider
     router = captured[0]["model_router"]
     assert router is None or router.role_map == {}

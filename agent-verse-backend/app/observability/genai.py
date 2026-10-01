@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator, Iterator
+from typing import TYPE_CHECKING, Any
 
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
@@ -102,6 +102,18 @@ class GenerationRecorder:
                     "gen_ai.content.completion",
                     {"gen_ai.completion": _redact(str(response.content))[:8000]},
                 )
+
+
+@contextlib.contextmanager
+def record_embedding(request: Any, *, provider_system: str) -> Iterator[None]:
+    """A ``gen_ai.embeddings`` span (model + input count, never the texts)."""
+    with _tracer.start_as_current_span("gen_ai.embeddings", kind=SpanKind.CLIENT) as span:
+        with contextlib.suppress(Exception):
+            span.set_attribute("gen_ai.operation.name", "embeddings")
+            span.set_attribute("gen_ai.system", provider_system)
+            span.set_attribute("gen_ai.request.model", str(getattr(request, "model", "") or ""))
+            span.set_attribute("gen_ai.request.input_count", len(getattr(request, "texts", ())))
+        yield
 
 
 @contextlib.asynccontextmanager

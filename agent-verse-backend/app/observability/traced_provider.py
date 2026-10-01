@@ -33,6 +33,13 @@ def provider_system_of(inner: Any) -> str:
     base_url when possible. Never raises.
     """
     try:
+        # The configured provider type wins (set by the registry / tenant
+        # provider / on-prem dispatcher); a MultiEndpointLLMProvider used to
+        # report its class name.
+        for holder in (type(inner), inner):
+            ptype = getattr(holder, "_agentverse_provider_type", None)
+            if isinstance(ptype, str) and ptype:
+                return ptype
         cls = type(inner).__name__.lower()
         if "anthropic" in cls:
             return "anthropic"
@@ -56,6 +63,29 @@ def provider_system_of(inner: Any) -> str:
         return "unknown"
 
 
+def _cost_usd(resp: Any) -> float | None:
+    """The call's cost from the single pricing source (None when not computable)."""
+    try:
+        from app.intelligence.cost_tracker import calculate_cost
+
+        return float(
+            calculate_cost(
+                str(getattr(resp, "model", "") or ""),
+                int(getattr(resp, "input_tokens", 0) or 0),
+                int(getattr(resp, "output_tokens", 0) or 0),
+            )
+        )
+    except Exception:
+        return None
+
+
+def record_response(rec: Any, resp: Any) -> None:
+    """Attach the response, its cost and whether it was served from a cache."""
+    rec.set_response(
+        resp, cost_usd=_cost_usd(resp), cache_hit=bool(getattr(resp, "cache_hit", False))
+    )
+
+
 class TracedProvider:
     """Transparent tracing wrapper around an ``LLMProvider``."""
 
@@ -73,7 +103,7 @@ class TracedProvider:
             request, provider_system=self._system, role=_role(request, self._default_role)
         ) as rec:
             resp = await self._inner.complete(request)
-            rec.set_response(resp)
+            record_response(rec, resp)
             return resp
 
     async def stream_tokens(
@@ -85,13 +115,15 @@ class TracedProvider:
             request, provider_system=self._system, role=_role(request, self._default_role)
         ) as rec:
             resp = await self._inner.stream_tokens(request, on_token)
-            rec.set_response(resp)
+            record_response(rec, resp)
             return resp
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
-        # Embeddings are high-volume and low-signal for the trace tree; delegate
-        # without a per-call span (covered by aggregate metrics instead).
-        return await self._inner.embed(request)
+        # A light span (no content): embeddings were invisible in traces.
+        from app.observability.genai import record_embedding
+
+        with record_embedding(request, provider_system=self._system):
+            return await self._inner.embed(request)
 
     # -- transparent delegation for everything else ----------------------------
 

@@ -23,6 +23,27 @@ from app.observability.logging import get_logger
 _log = get_logger(__name__)
 
 
+_ROLE_PROVIDER_KEYS = ("planner", "executor", "verifier")
+
+
+def _traced_graph_services(graph_services: dict[str, Any]) -> dict[str, Any]:
+    """Role providers wrapped in TracedProvider (PROV-23).
+
+    Only GoalService wrapped them, so Celery-run goals — the production path —
+    emitted no GenAI spans. Already-traced providers are left as they are.
+    """
+    from app.observability.traced_provider import TracedProvider, provider_system_of
+
+    out = dict(graph_services)
+    for role in _ROLE_PROVIDER_KEYS:
+        provider = out.get(role)
+        if provider is not None and not isinstance(provider, TracedProvider):
+            out[role] = TracedProvider(
+                provider, provider_system=provider_system_of(provider), default_role=role
+            )
+    return out
+
+
 def build_profiled_graph(
     runtime_profile: Any | None,
     graph_services: dict[str, Any],
@@ -44,6 +65,8 @@ def build_profiled_graph(
     from app.orchestration.execution_drivers import describe_agent_graph_execution
     from app.orchestration.graph_factory import GraphFactory
     from app.orchestration.strategy_adapters import ExecutionTier
+
+    graph_services = _traced_graph_services(graph_services)
 
     strategy_execution: dict[str, Any] = {"driver": "agent_graph"}
     downgrades: list[dict[str, str]] = []
