@@ -120,12 +120,19 @@ _SLA_ACTOR = "system:sla"
 class ApprovalAlreadyDecidedError(Exception):
     """Someone else already decided this approval (HTTP 409)."""
 
-    def __init__(self, req: WorkflowHITLRequest) -> None:
+    def __init__(self, req: WorkflowHITLRequest, message: str | None = None) -> None:
         self.request = req
-        super().__init__(
-            f"Already decided by {req.reviewed_by or 'someone else'} "
-            f"({req.action_taken or req.status})"
-        )
+        if message is None:
+            if req.status == "cancelled":
+                message = "This approval was withdrawn: its workflow run was cancelled"
+            elif req.status == "expired":
+                message = "This approval expired: its workflow run already ended"
+            else:
+                message = (
+                    f"Already decided by {req.reviewed_by or 'someone else'} "
+                    f"({req.action_taken or req.status})"
+                )
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -332,6 +339,11 @@ class HITLWorkflowGateway:
         # Claim the decision atomically; only the winner resumes the run.
         if not await self._claim_decision(req):
             current = await self.get_request(request_id, tenant_id)
+            if current is not None and current.status == "pending":
+                # Still pending, so the claim lost on the run: it already ended.
+                raise ApprovalAlreadyDecidedError(
+                    current, "The workflow run is no longer waiting for this approval"
+                )
             return self._already_decided(current or req, action, actor_id, idempotent)
 
         # Resume the workflow

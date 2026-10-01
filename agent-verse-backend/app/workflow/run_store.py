@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Collection
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -126,6 +127,7 @@ class WorkflowRunStore(Protocol):
         current_step_id: str | None = None,
         cost_usd: float | None = None,
         tokens_used: int | None = None,
+        only_from: Collection[str] | None = None,
     ) -> bool: ...
 
     async def get_workflow_id(self, run_id: str, tenant_id: str | None = None) -> str: ...
@@ -403,12 +405,34 @@ class PostgresWorkflowRunStore:
         current_step_id: str | None = None,
         cost_usd: float | None = None,
         tokens_used: int | None = None,
+        only_from: Collection[str] | None = None,
     ) -> bool:
+        """Set a run's status (and optional result fields). True if it changed.
+
+        * A terminal status (complete / failed / cancelled / timed_out) is
+          FINAL: a later write never replaces it (a late resume, failure or
+          finalize after a cancel used to flip a cancelled run to failed).
+        * ``only_from``: apply only when the current status is one of these —
+          the compare-and-set a caller needs instead of read-then-write.
+        * Entering a terminal status withdraws the run's still-pending
+          approvals in the same transaction (``cancelled`` for a cancel,
+          ``expired`` otherwise), so nobody can act on a gate of a run that
+          ended, and a late decision finds a non-pending approval (HTTP 409).
+        """
         from sqlalchemy import text as sa_text
 
         status_str = _as_str(status)
         sets = ["status = :status"]
-        params: dict[str, Any] = {"status": status_str, "rid": run_id, "tid": tenant_id}
+        params: dict[str, Any] = {
+            "status": status_str,
+            "rid": run_id,
+            "tid": tenant_id,
+            "terminal": sorted(_TERMINAL_STATUSES),
+        }
+        guard = "AND status <> ALL(CAST(:terminal AS text[])) "
+        if only_from is not None:
+            guard += "AND status = ANY(CAST(:only_from AS text[])) "
+            params["only_from"] = [_as_str(s) for s in only_from]
         # Stamp started_at the first time a run leaves 'pending'.
         if status_str == "running":
             sets.append("started_at = COALESCE(started_at, NOW())")
@@ -444,13 +468,17 @@ class PostgresWorkflowRunStore:
                         f"UPDATE workflow_runs r SET {', '.join(sets)} "
                         "FROM (SELECT id, status AS old_status FROM workflow_runs "
                         "      WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid) "
-                        "      FOR UPDATE) o "
+                        f"     {guard}FOR UPDATE) o "
                         "WHERE r.id = o.id "
                         "RETURNING o.old_status, r.workflow_id"
                     ),
                     params,
                 )
             ).first()
+            if row is not None and status_str in _TERMINAL_STATUSES:
+                await self._withdraw_pending_approvals(
+                    session, tenant_id=tenant_id, run_id=run_id, run_status=status_str
+                )
             if row is not None:
                 await self._audit_run_transition(
                     session,
@@ -464,6 +492,34 @@ class PostgresWorkflowRunStore:
                 )
             await session.commit()
             return row is not None
+
+    @staticmethod
+    async def _withdraw_pending_approvals(
+        session: Any, *, tenant_id: str, run_id: str, run_status: str
+    ) -> None:
+        """Mark the run's pending approvals ``cancelled`` / ``expired``.
+
+        Same transaction as the terminal status write: a reviewer's concurrent
+        decision either committed first (it then holds the row and this skips
+        it) or finds the approval no longer pending.
+        """
+        from sqlalchemy import text as sa_text
+
+        new_status = "cancelled" if run_status == "cancelled" else "expired"
+        note = (
+            "Withdrawn: the run was cancelled"
+            if new_status == "cancelled"
+            else f"Expired: the run ended ({run_status}) before a decision"
+        )
+        await session.execute(
+            sa_text(
+                "UPDATE workflow_approvals SET status = :ast, updated_at = NOW(), "
+                " payload = payload || jsonb_build_object('status', CAST(:ast AS text), "
+                "                                         'note', CAST(:note AS text)) "
+                "WHERE run_id = :rid AND tenant_id = CAST(:tid AS uuid) AND status = 'pending'"
+            ),
+            {"ast": new_status, "note": note, "rid": str(run_id), "tid": tenant_id},
+        )
 
     @staticmethod
     async def _audit_run_transition(

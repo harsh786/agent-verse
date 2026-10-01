@@ -854,6 +854,9 @@ class WorkflowService:
         run = await self._run_store.get(tenant_id, run_id)
         if run is None or run.get("status") in _TERMINAL_STATUSES:
             return False
+        # One atomic write: the store never replaces a terminal status (a run
+        # that finished meanwhile stays finished) and withdraws the run's
+        # pending approvals in the same transaction.
         return await self._run_store.update_status(
             run_id, WorkflowRunStatus.CANCELLED, tenant_id=tenant_id
         )

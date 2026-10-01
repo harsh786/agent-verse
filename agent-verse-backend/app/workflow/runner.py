@@ -465,10 +465,19 @@ class WorkflowRunner:
                     status=current_status,
                 )
                 return
+            started = True
             with contextlib.suppress(Exception):
-                await self._run_store.update_status(
-                    run_id, WorkflowRunStatus.RUNNING, tenant_id=tenant_id
+                # Compare-and-set: a cancel / pause landing between the read
+                # above and this write wins.
+                started = await self._run_store.update_status(
+                    run_id,
+                    WorkflowRunStatus.RUNNING,
+                    tenant_id=tenant_id,
+                    only_from=(WorkflowRunStatus.PENDING.value, WorkflowRunStatus.RUNNING.value),
                 )
+            if not started:
+                _log.info("workflow_run_start_skipped_status_changed", run_id=run_id)
+                return
         try:
             final_state = await compiled.ainvoke(initial_state, config)
         except WorkflowCancelled:
@@ -564,8 +573,33 @@ class WorkflowRunner:
 
         compiled = self._compiler.compile(definition)
         config = {"configurable": {"thread_id": f"{run_id}::resume"}}
+        # Compare-and-set the run back to RUNNING. A run cancelled (or paused /
+        # finished) after the decision was recorded must not be resumed: the
+        # resume used to run anyway and turn WorkflowCancelled into FAILED.
+        # ('running'/'pending' are allowed: a reviewer can decide before the
+        # suspending worker has persisted waiting_hitl.)
+        if self._run_store is not None:
+            resumed = await self._run_store.update_status(
+                run_id,
+                WorkflowRunStatus.RUNNING,
+                tenant_id=tenant_id,
+                only_from=(
+                    WorkflowRunStatus.WAITING_HITL.value,
+                    WorkflowRunStatus.RUNNING.value,
+                    WorkflowRunStatus.PENDING.value,
+                ),
+            )
+            if not resumed:
+                _log.info("workflow_resume_skipped_run_not_waiting", run_id=run_id)
+                return
         try:
             final_state = await compiled.ainvoke(initial_state, config)
+        except WorkflowCancelled:
+            _log.info("workflow_resume_cancelled", run_id=run_id)
+            return  # already CANCELLED via the API; never mark it failed
+        except WorkflowPaused:
+            _log.info("workflow_resume_paused", run_id=run_id)
+            return
         except Exception as exc:
             _log.error(
                 "workflow_resume_failed_worker", run_id=run_id, error=repr(exc), exc_info=True

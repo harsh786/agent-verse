@@ -138,7 +138,8 @@ class PostgresWorkflowApprovalStore:
             )
 
     async def decide_if_pending(self, req: WorkflowHITLRequest) -> bool:
-        """Record ``req``'s decision only if the approval is still pending.
+        """Record ``req``'s decision only if the approval is still pending AND
+        its run has not reached a terminal status.
 
         One conditional UPDATE, so of two reviewers (on any replicas) deciding
         the same approval exactly one gets ``True`` — the other must not resume
@@ -156,6 +157,12 @@ class PostgresWorkflowApprovalStore:
                         " payload = CAST(:payload AS jsonb), updated_at = NOW() "
                         "WHERE request_id = :rid AND status = 'pending' "
                         "AND tenant_id = CAST(:tid AS uuid) "
+                        # The run must still be live: a decision on a gate of a
+                        # cancelled / finished run must not resume it.
+                        "AND EXISTS (SELECT 1 FROM workflow_runs r "
+                        "  WHERE r.id::text = workflow_approvals.run_id "
+                        "  AND r.tenant_id = CAST(:tid AS uuid) "
+                        "  AND r.status NOT IN ('complete', 'failed', 'cancelled', 'timed_out')) "
                         "RETURNING request_id"
                     ),
                     {
