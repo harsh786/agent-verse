@@ -6,6 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+
+def _no_byok_store():
+    """A durable LLM-config store confirming the tenant has no BYOK (PROV-12:
+    without a store the worker fails closed instead of assuming "no BYOK")."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    return MagicMock(get_config=AsyncMock(return_value=None))
+
 class TestStripSecretRedisScheduleFields:
     def test_removes_secret_fields(self):
         from app.scaling.tasks import _strip_secret_redis_schedule_fields
@@ -139,7 +147,7 @@ class TestGetLlmProvider:
     def test_returns_none_when_no_redis_url(self, monkeypatch):
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.delenv("REDIS_URL", raising=False)
-        with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+        with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=_no_byok_store()):
             result = _get_llm_provider("tenant1")
         assert result is None
 

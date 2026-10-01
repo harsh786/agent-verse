@@ -21,6 +21,14 @@ import pytest
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
+def _no_byok_store():
+    """A durable LLM-config store confirming the tenant has no BYOK (PROV-12:
+    without a store the worker fails closed instead of assuming "no BYOK")."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    return MagicMock(get_config=AsyncMock(return_value=None))
+
 def _run_in_new_loop(coro):
     """Run a coroutine in a fresh event loop (substitutes asyncio.run in tests)."""
     loop = asyncio.new_event_loop()
@@ -38,7 +46,7 @@ class TestGetLlmProvider:
     def test_returns_none_when_no_redis_url(self, monkeypatch):
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.delenv("REDIS_URL", raising=False)
-        with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+        with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=_no_byok_store()):
             assert _get_llm_provider("t1") is None
 
     def test_redis_raises_and_no_durable_store_fails_closed(self, monkeypatch):
@@ -55,7 +63,7 @@ class TestGetLlmProvider:
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
         mock_r.get = MagicMock(return_value=None)
-        with patch("redis.from_url", return_value=mock_r), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+        with patch("redis.from_url", return_value=mock_r), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=_no_byok_store()):
             assert _get_llm_provider("t1") is None
 
     def test_raises_when_no_encrypted_key(self, monkeypatch):

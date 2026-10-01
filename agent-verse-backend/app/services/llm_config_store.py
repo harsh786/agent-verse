@@ -254,8 +254,10 @@ async def aget_llm_api_key_for_tenant(tenant_id: str) -> str:
     """
     store = get_or_create_worker_llm_config_store()
     if store is None:
-        return ""
-    config = await store.get_config(tenant_id)
+        # Unknown whether the tenant has BYOK: never hand out the platform key.
+        raise LLMConfigReadError("the tenant LLM config store is unavailable")
+    # Strict: a DB error must not read as "no BYOK" ('' → platform key).
+    config = await store.get_config(tenant_id, strict=True)
     encrypted = str((config or {}).get("encrypted_key") or "")
     if not encrypted:
         return ""

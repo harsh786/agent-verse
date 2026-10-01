@@ -12,6 +12,14 @@ import pytest
 
 # ── _scheduled_goal_id ────────────────────────────────────────────────────────
 
+
+def _no_byok_store():
+    """A durable LLM-config store confirming the tenant has no BYOK (PROV-12:
+    without a store the worker fails closed instead of assuming "no BYOK")."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    return MagicMock(get_config=AsyncMock(return_value=None))
+
 class TestScheduledGoalId:
     def test_returns_string_with_prefix(self) -> None:
         from app.scaling.tasks import _scheduled_goal_id
@@ -225,7 +233,7 @@ class TestGetSyncRedis:
 class TestGetLlmProvider:
     def test_returns_none_when_no_redis_url(self) -> None:
         from app.scaling.tasks import _get_llm_provider
-        with patch.dict("os.environ", {"REDIS_URL": ""}), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+        with patch.dict("os.environ", {"REDIS_URL": ""}), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=_no_byok_store()):
             result = _get_llm_provider("tenant-1")
         assert result is None
 
@@ -235,7 +243,7 @@ class TestGetLlmProvider:
         mock_redis.get = MagicMock(return_value=None)
 
         with patch.dict("os.environ", {"REDIS_URL": "redis://localhost:6379"}):
-            with patch("redis.from_url", return_value=mock_redis), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+            with patch("redis.from_url", return_value=mock_redis), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=_no_byok_store()):
                 result = _get_llm_provider("tenant-1")
 
         assert result is None

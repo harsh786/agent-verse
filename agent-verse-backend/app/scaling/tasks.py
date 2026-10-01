@@ -628,10 +628,13 @@ def _get_llm_provider(tenant_id: str) -> Any:
             from app.services.llm_config_store import get_or_create_worker_llm_config_store
 
             store = get_or_create_worker_llm_config_store()
-            if store is not None:
-                config = _run_async(store.get_config(tenant_id, strict=True))
-            elif cache_error is not None:
-                raise RuntimeError(f"cache read failed and no durable store: {cache_error}")
+            if store is None:
+                # PROV-12: no durable store means "BYOK unknown", not "no BYOK".
+                raise RuntimeError(
+                    "no durable tenant LLM config store"
+                    + (f" (cache read failed: {cache_error})" if cache_error else "")
+                )
+            config = _run_async(store.get_config(tenant_id, strict=True))
         except Exception as exc:
             raise TenantProviderError(
                 f"tenant LLM config could not be read ({type(exc).__name__}); the goal "

@@ -25,6 +25,14 @@ import pytest
 # _monotonic
 # ===========================================================================
 
+
+def _no_byok_store():
+    """A durable LLM-config store confirming the tenant has no BYOK (PROV-12:
+    without a store the worker fails closed instead of assuming "no BYOK")."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    return MagicMock(get_config=AsyncMock(return_value=None))
+
 def test_monotonic_returns_positive_float() -> None:
     from app.scaling.tasks import _monotonic
     t = _monotonic()
@@ -238,7 +246,7 @@ def test_record_schedule_fire_metric_swallows_exceptions() -> None:
 def test_get_llm_provider_returns_none_when_no_redis_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REDIS_URL", raising=False)
     from app.scaling.tasks import _get_llm_provider
-    with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+    with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=_no_byok_store()):
         result = _get_llm_provider("tenant-1")
     assert result is None
 
@@ -249,7 +257,7 @@ def test_get_llm_provider_returns_none_when_no_config(monkeypatch: pytest.Monkey
     mock_redis = MagicMock()
     mock_redis.get.return_value = None  # No config key in Redis
 
-    with patch("redis.from_url", return_value=mock_redis), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+    with patch("redis.from_url", return_value=mock_redis), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=_no_byok_store()):
         from app.scaling.tasks import _get_llm_provider
         result = _get_llm_provider("tenant-1")
 
