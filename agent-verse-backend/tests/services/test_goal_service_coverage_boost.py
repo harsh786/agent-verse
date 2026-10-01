@@ -522,7 +522,7 @@ class TestSubmitGoalAutoRouting:
         ctx = _ctx("cb-dedup-1")
 
         fake_dedup = MagicMock()
-        fake_dedup.get_existing = AsyncMock(return_value="existing-goal-id")
+        fake_dedup.claim = AsyncMock(return_value="existing-goal-id")
         fake_dedup.register = AsyncMock()
 
         with patch("app.services.dedup._default_deduplicator", fake_dedup):

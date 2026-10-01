@@ -1097,8 +1097,8 @@ class TestSubmitGoal:
              patch("app.tenancy.limits.check_daily_goal_limit"), \
              patch("app.tenancy.limits.decrement_concurrent_goals", AsyncMock()), \
              patch("app.services.dedup._default_deduplicator") as mock_dedup:
-            mock_dedup.get_existing = AsyncMock(return_value=None)
-            mock_dedup.register = AsyncMock(return_value=True)
+            mock_dedup.claim = AsyncMock(return_value=None)
+            mock_dedup.release_goal = AsyncMock()
             await svc.submit_goal("Do x", "normal", True, ctx)
         mock_redis.decr.assert_called_once()
 
@@ -1110,8 +1110,8 @@ class TestSubmitGoal:
         with patch("app.tenancy.limits.check_and_increment_concurrent_goals", AsyncMock()), \
              patch("app.tenancy.limits.check_daily_goal_limit"), \
              patch("app.services.dedup._default_deduplicator") as mock_dedup:
-            mock_dedup.get_existing = AsyncMock(return_value=None)
-            mock_dedup.register = AsyncMock(return_value=True)
+            mock_dedup.claim = AsyncMock(return_value=None)
+            mock_dedup.release_goal = AsyncMock()
             result = await svc.submit_goal("Do x", "normal", False, ctx)
         mock_queue.enqueue_goal.assert_called_once()
         assert "goal_id" in result
