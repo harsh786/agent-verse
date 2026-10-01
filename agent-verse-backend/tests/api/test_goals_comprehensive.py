@@ -182,7 +182,10 @@ def test_submit_goal_multi_agent_mode() -> None:
 
 def test_submit_goal_multi_agent_surfaces_failed_submissions() -> None:
     svc = AsyncMock()
-    svc.submit_goal.side_effect = [{"goal_id": "sub-1"}, RuntimeError("agent-b unavailable")]
+    svc.submit_goal.side_effect = [
+        {"goal_id": "sub-1"},
+        RuntimeError("connect to postgres://svc:hunter2@db-internal:5432/av failed"),
+    ]
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.post(
         "/goals",
@@ -193,8 +196,32 @@ def test_submit_goal_multi_agent_surfaces_failed_submissions() -> None:
     body = resp.json()
     assert body["success"] is False
     assert body["sub_goal_ids"] == ["sub-1"]
-    assert body["failed_submissions"] == [
-        {"agent_id": "agent-b", "error": "agent-b unavailable"}
+    # CORE-35: no internal exception text (DSN, SQL) reaches the client — only
+    # a generic message, the exception class and a correlation id for the logs.
+    [failed] = body["failed_submissions"]
+    assert failed["agent_id"] == "agent-b"
+    assert failed["error"] == "submission failed"
+    assert failed["error_type"] == "RuntimeError"
+    assert failed["correlation_id"]
+    assert "postgres://" not in resp.text and "hunter2" not in resp.text
+
+
+def test_submit_goal_multi_agent_keeps_http_exception_detail() -> None:
+    from fastapi import HTTPException
+
+    svc = AsyncMock()
+    svc.submit_goal.side_effect = [
+        {"goal_id": "sub-1"},
+        HTTPException(429, "Daily goal limit reached"),
+    ]
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
+    resp = client.post(
+        "/goals",
+        json={"goal": "x", "workflow_mode": "multi_agent", "agent_ids": ["agent-a", "agent-b"]},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.json()["failed_submissions"] == [
+        {"agent_id": "agent-b", "error": "Daily goal limit reached", "status_code": 429}
     ]
 
 

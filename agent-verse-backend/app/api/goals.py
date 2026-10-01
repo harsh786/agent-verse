@@ -414,18 +414,31 @@ async def _submit_goal_unguarded(
         results = await asyncio.gather(*tasks, return_exceptions=True)
         valid = [r for r in results if isinstance(r, dict) and "goal_id" in r]
         # Failed submissions used to be dropped silently; surface each one.
+        def _failure(aid: str, r: Any) -> dict[str, Any]:
+            if isinstance(r, HTTPException):
+                # A deliberate client-facing refusal (429, 404, ...): as is.
+                return {"agent_id": aid, "error": str(r.detail), "status_code": r.status_code}
+            if isinstance(r, BaseException):
+                # CORE-35: internal exception text (SQL, DSN fragments) never
+                # reaches the client — class + a correlation id for the logs.
+                cid = uuid.uuid4().hex
+                _logger.warning(
+                    "multi_agent_submission_failed",
+                    correlation_id=cid,
+                    agent_id=aid,
+                    error_type=type(r).__name__,
+                    error=str(r)[:500],
+                )
+                return {
+                    "agent_id": aid,
+                    "error": "submission failed",
+                    "error_type": type(r).__name__,
+                    "correlation_id": cid,
+                }
+            return {"agent_id": aid, "error": "submission returned no goal_id"}
+
         failed_submissions = [
-            {
-                "agent_id": aid,
-                "error": (
-                    str(r.detail)
-                    if isinstance(r, HTTPException)
-                    else str(r)
-                    if isinstance(r, BaseException)
-                    else "submission returned no goal_id"
-                ),
-                **({"status_code": r.status_code} if isinstance(r, HTTPException) else {}),
-            }
+            _failure(aid, r)
             for aid, r in zip(dispatched_ids, results, strict=True)
             if not (isinstance(r, dict) and "goal_id" in r)
         ]
