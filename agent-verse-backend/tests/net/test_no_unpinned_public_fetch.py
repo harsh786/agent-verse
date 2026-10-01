@@ -210,3 +210,70 @@ def test_scanner_detects_every_unpinned_form(tmp_path: Path) -> None:
         ("m.py", "e"),
         ("m.py", "outer.inner"),
     ]
+
+
+# ── WebSockets (SSRF-05) ──────────────────────────────────────────────────────
+# ``websockets.connect`` resolves the host itself (and honours env proxies), so
+# a URL checked beforehand can rebind to an internal address at connect time.
+# Outbound WebSockets go through app.net.ssrf_guard.connect_public_websocket.
+
+
+def _ws_connect_sites(path: Path, root: Path = _APP) -> list[tuple[str, int]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    rel = path.relative_to(root).as_posix()
+    module_aliases: set[str] = set()
+    connect_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] == "websockets":
+                    module_aliases.add(alias.asname or "websockets")
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("websockets"):
+            for alias in node.names:
+                if alias.name == "connect":
+                    connect_names.add(alias.asname or alias.name)
+    found: list[tuple[str, int]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "connect":
+            base = node.value
+            if (isinstance(base, ast.Name) and base.id in module_aliases) or (
+                isinstance(base, ast.Attribute) and base.attr == "client"
+            ):
+                found.append((rel, node.lineno))
+        elif isinstance(node, ast.Name) and node.id in connect_names:
+            found.append((rel, node.lineno))
+    return sorted(found)
+
+
+def test_no_raw_websockets_connect_outside_the_guard() -> None:
+    offenders: list[tuple[str, int]] = []
+    for path in sorted(_APP.rglob("*.py")):
+        if path.relative_to(_APP).as_posix() == "net/ssrf_guard.py":
+            continue
+        offenders.extend(_ws_connect_sites(path))
+    assert not offenders, (
+        "Raw websockets.connect re-resolves DNS at connect time (rebinding). Use "
+        "app.net.ssrf_guard.connect_public_websocket:\n"
+        + "\n".join(f"  {p}:{line}" for p, line in offenders)
+    )
+
+
+def test_ws_scanner_detects_every_form(tmp_path: Path) -> None:
+    src = (
+        "import websockets\n"
+        "import websockets.asyncio.client as wac\n"
+        "from websockets.asyncio.client import connect as wsc\n"
+        "async def a(u):\n"
+        "    await websockets.connect(u)\n"
+        "async def b(u):\n"
+        "    await wac.connect(u)\n"
+        "async def c(u):\n"
+        "    await wsc(u)\n"
+        "async def d(u):\n"
+        "    await websockets.asyncio.client.connect(u)\n"
+        "async def ok(db):\n"
+        "    await db.connect()\n"
+    )
+    target = tmp_path / "m.py"
+    target.write_text(src)
+    assert [line for _p, line in _ws_connect_sites(target, root=tmp_path)] == [5, 7, 9, 11]

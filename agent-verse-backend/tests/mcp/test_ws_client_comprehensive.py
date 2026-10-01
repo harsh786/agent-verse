@@ -13,6 +13,15 @@ from app.mcp.ws_client import _RECONNECT_BASE, _RECONNECT_MAX, MCPWebSocketClien
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """connect() resolves + SSRF-checks the host (SSRF-05); treat test hosts as public."""
+    import app.net.ssrf_guard as guard
+
+    monkeypatch.setattr(guard, "_resolve_host", lambda host: ["93.184.216.34"])
+
+
 def _make_ws_mock() -> MagicMock:
     """Create a mock websocket that can be iterated and sent to."""
     ws = MagicMock()
@@ -68,8 +77,8 @@ async def test_connect_with_auth_header():
     mock_ws = _make_ws_mock()
     captured_headers = {}
 
-    async def mock_connect(url, extra_headers=None, **kwargs):
-        captured_headers.update(extra_headers or {})
+    async def mock_connect(url, additional_headers=None, **kwargs):
+        captured_headers.update(additional_headers or {})
         return mock_ws
 
     with patch("websockets.connect", side_effect=mock_connect), patch("asyncio.create_task"):
@@ -84,8 +93,8 @@ async def test_connect_without_auth_no_auth_header():
     mock_ws = _make_ws_mock()
     captured_headers = {}
 
-    async def mock_connect(url, extra_headers=None, **kwargs):
-        captured_headers.update(extra_headers or {})
+    async def mock_connect(url, additional_headers=None, **kwargs):
+        captured_headers.update(additional_headers or {})
         return mock_ws
 
     with patch("websockets.connect", side_effect=mock_connect), patch("asyncio.create_task"):

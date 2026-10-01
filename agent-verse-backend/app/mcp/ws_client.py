@@ -55,15 +55,21 @@ class MCPWebSocketClient:
     async def connect(self) -> MCPWebSocketClient:
         """Open WebSocket connection. Returns self for use as async context manager."""
         try:
-            import websockets  # type: ignore[import-untyped]
+            import websockets  # noqa: F401
         except ImportError as _b904_exc:
             raise RuntimeError("websockets is not installed. Install with: pip install websockets") from _b904_exc  # noqa: E501
+        from app.net.ssrf_guard import connect_public_websocket
 
         headers = {}
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
 
-        self._ws = await websockets.connect(self._ws_url, extra_headers=headers)
+        # Resolved + checked once and dialled to the checked IP: a plain
+        # websockets.connect re-resolved the tenant's host after the SSRF check
+        # (DNS rebinding to 127.0.0.1 / metadata). Every reconnect re-checks.
+        self._ws = await connect_public_websocket(
+            self._ws_url, additional_headers=headers, context="MCP websocket"
+        )
         self._connected = True
         logger.info("MCPWebSocketClient connected to %s", self._ws_url)
         # Start message dispatcher

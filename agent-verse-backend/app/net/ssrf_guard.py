@@ -394,6 +394,55 @@ def public_client(*, allowed_domains: list[str] | None = None, **kwargs: Any) ->
     return httpx.Client(transport=transport, **kwargs)
 
 
+_WS_SCHEMES = {"ws": "http", "wss": "https"}
+# Arguments that would let a caller steer the socket away from the checked IP.
+_WS_PINNED_KWARGS = frozenset({"host", "port", "sock", "unix", "proxy"})
+
+
+async def connect_public_websocket(
+    ws_url: str,
+    *,
+    allowed_domains: list[str] | None = None,
+    context: str = "websocket",
+    **kwargs: Any,
+) -> Any:
+    """Open a ``websockets`` client connection pinned to validated IPs.
+
+    ``websockets.connect(url)`` resolves the host itself, so checking the URL
+    first and connecting afterwards leaves a DNS-rebinding window (public at
+    check time, 127.0.0.1 / 169.254.169.254 at connect time). This resolves and
+    checks once, then dials the socket to the checked address via ``host=``.
+    The URI is unchanged, so the Host header, TLS SNI and certificate
+    verification still use the hostname. Env proxies are disabled (a proxy
+    would resolve the name itself); cross-origin redirects are refused by
+    ``websockets`` when ``host`` is explicit, same-origin ones stay pinned.
+    """
+    import websockets
+
+    overridden = _WS_PINNED_KWARGS & set(kwargs)
+    if overridden:
+        raise ValueError(
+            f"connect_public_websocket: {sorted(overridden)} cannot override the pinned target"
+        )
+    scheme, sep, rest = (ws_url or "").partition("://")
+    http_scheme = _WS_SCHEMES.get(scheme.lower()) if sep else None
+    if http_scheme is None:
+        raise SSRFError(f"SSRF guard [{context}]: only ws:// and wss:// URLs are allowed")
+    ips = await assert_public_url_async(
+        f"{http_scheme}://{rest}", context=context, allowed_domains=allowed_domains
+    )
+    if not ips:
+        raise SSRFError(f"SSRF guard [{context}]: no checked address to connect to — fail closed")
+    last_exc: Exception | None = None
+    for ip in ips:
+        try:
+            return await websockets.connect(ws_url, host=ip, proxy=None, **kwargs)
+        except (OSError, TimeoutError) as exc:  # try the next checked address
+            last_exc = exc
+    assert last_exc is not None
+    raise last_exc
+
+
 def is_public_url(url: str, *, allowed_domains: list[str] | None = None) -> bool:
     """Non-raising version of assert_public_url. Returns False if blocked."""
     try:
