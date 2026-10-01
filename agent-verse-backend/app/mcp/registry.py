@@ -122,21 +122,50 @@ class MCPRegistry:
 
         The marker lives in the shared Redis, so it holds across replicas and
         workers, and a built-in the tenant later removes is not re-added here.
-        A failure is logged and retried on the next listing (marker unset).
+        It records the built-in catalogue fingerprint and the credential-free
+        ids provisioned: when a release changes the catalogue, the tenant's next
+        listing refreshes its built-in tool lists and inserts only built-ins
+        that are NEW since then (what the removed per-tenant startup loop used
+        to do on every boot, for every tenant). A failure is logged and retried
+        on the next listing (marker unchanged).
         """
+        import json
+
+        from app.mcp.servers.registry_wiring import (
+            builtin_catalog_fingerprint,
+            credential_free_builtin_ids,
+            register_builtin_servers,
+        )
+
         marker = self._builtins_marker_key(tenant_ctx.tenant_id)
-        if await self._redis.get(marker):
-            return
-        from app.mcp.servers.registry_wiring import register_builtin_servers
+        raw = await self._redis.get(marker)
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        fingerprint = builtin_catalog_fingerprint()
+        insert_ids: set[str] | None = None  # never provisioned: insert all absent
+        current_ids = credential_free_builtin_ids()
+        if raw:
+            try:
+                state = json.loads(raw)
+            except ValueError:
+                state = None
+            if isinstance(state, dict):
+                if state.get("fp") == fingerprint:
+                    return
+                insert_ids = current_ids - {str(i) for i in state.get("ids") or []}
+            else:
+                # Legacy marker ("1"): provisioned before fingerprints existed.
+                # Refresh the tool lists; insert nothing (it may have been removed).
+                insert_ids = set()
 
         try:
-            await register_builtin_servers(self, tenant_ctx)
+            await register_builtin_servers(self, tenant_ctx, insert_ids=insert_ids)
         except Exception as exc:
             logging.getLogger(__name__).warning(
                 "builtin_lazy_provision_failed tenant=%s error=%s", tenant_ctx.tenant_id, exc
             )
             return
-        await self._redis.set(marker, "1")
+        await self._redis.set(marker, json.dumps({"fp": fingerprint, "ids": sorted(current_ids)}))
 
     async def register(
         self,

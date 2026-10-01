@@ -53,7 +53,16 @@ class TenantService:
     and for unit tests.  Wire as ``app.state.tenant_service`` in the factory.
     """
 
-    def __init__(self, db_session_factory: Any = None) -> None:
+    def __init__(
+        self,
+        db_session_factory: Any = None,
+        *,
+        system_db_session_factory: Any = None,
+    ) -> None:
+        # Cross-tenant maintenance factory (BYPASSRLS role when configured): lets
+        # the startup sync load every active API key in ONE query instead of one
+        # RLS-scoped query per tenant. Optional; falls back to the per-tenant loop.
+        self._system_db: Any = system_db_session_factory
         # tenant_id → {tenant_id, name, email, plan, created_at}
         self._tenants: dict[str, dict[str, Any]] = {}
         # normalised email → tenant_id (fast duplicate-email detection)
@@ -902,6 +911,8 @@ class TenantService:
             from app.db.rls import sqlalchemy_rls_context
 
             loaded = 0
+            # Before opening the request-role session: never hold two connections.
+            batched_keys = await self._load_active_keys_batched()
             async with self._db() as session:
                 # Load all active tenants
                 result = await session.execute(
@@ -919,40 +930,74 @@ class TenantService:
                         }
                         self._email_index[t.email.lower()] = t.id
                         loaded += 1
-                # api_keys has tenant RLS enabled, so load keys under each tenant context.
-                for tenant_id in list(self._tenants):
-                    async with sqlalchemy_rls_context(session, tenant_id):
-                        key_result = await session.execute(
-                            select(ApiKey).where(
-                                ApiKey.tenant_id == tenant_id,
-                                ApiKey.is_active == True,  # noqa: E712
+                # api_keys has tenant RLS enabled. One cross-tenant query when the
+                # role may bypass RLS; otherwise one RLS-scoped query per tenant.
+                keys = batched_keys
+                if keys is None:
+                    keys = []
+                    for tenant_id in list(self._tenants):
+                        async with sqlalchemy_rls_context(session, tenant_id):
+                            key_result = await session.execute(
+                                select(ApiKey).where(
+                                    ApiKey.tenant_id == tenant_id,
+                                    ApiKey.is_active == True,  # noqa: E712
+                                )
                             )
-                        )
-                    keys = key_result.scalars().all()
-                    for k in keys:
-                        key_data = {
-                            "key_id": k.id,
-                            "tenant_id": k.tenant_id,
-                            "name": k.name,
-                            "scopes": list(k.scopes or []),
-                            "roles": list(k.roles or ["admin"]),
-                            "expires_at": k.expires_at.isoformat() if k.expires_at else None,
-                            "key_hash": k.key_hash,
-                            "is_active": True,
-                            "created_at": k.created_at.isoformat() if k.created_at else "",
-                        }
-                        # Always update from DB (not just on first load) so role/scope
-                        # changes made via DB or API are picked up on next sync.
-                        self._keys[k.id] = key_data
-                        self._hash_to_key_id[k.key_hash] = k.id
-                        self._tenant_keys.setdefault(k.tenant_id, [])
-                        if k.id not in self._tenant_keys[k.tenant_id]:
-                            self._tenant_keys[k.tenant_id].append(k.id)
+                        keys.extend(key_result.scalars().all())
+                for k in keys:
+                    if k.tenant_id not in self._tenants:
+                        continue
+                    key_data = {
+                        "key_id": k.id,
+                        "tenant_id": k.tenant_id,
+                        "name": k.name,
+                        "scopes": list(k.scopes or []),
+                        "roles": list(k.roles or ["admin"]),
+                        "expires_at": k.expires_at.isoformat() if k.expires_at else None,
+                        "key_hash": k.key_hash,
+                        "is_active": True,
+                        "created_at": k.created_at.isoformat() if k.created_at else "",
+                    }
+                    # Always update from DB (not just on first load) so role/scope
+                    # changes made via DB or API are picked up on next sync.
+                    self._keys[k.id] = key_data
+                    self._hash_to_key_id[k.key_hash] = k.id
+                    self._tenant_keys.setdefault(k.tenant_id, [])
+                    if k.id not in self._tenant_keys[k.tenant_id]:
+                        self._tenant_keys[k.tenant_id].append(k.id)
             logging.getLogger(__name__).info("Synced %d tenants from DB", loaded)
             return loaded
         except Exception as exc:
             logging.getLogger(__name__).warning("DB sync failed: %s", exc)
             return 0
+
+    async def _load_active_keys_batched(self) -> list[Any] | None:
+        """All active API keys in one cross-tenant query, or None when not allowed.
+
+        Uses ``system_session`` (``SET LOCAL row_security = off``) on the system
+        factory. Under a NOBYPASSRLS role the SELECT raises instead of silently
+        returning nothing, so a failure means "fall back to the per-tenant loop".
+        """
+        factory = self._system_db
+        if factory is None:
+            return None
+        try:
+            from sqlalchemy import select
+
+            from app.db.models.tenant import ApiKey
+            from app.db.rls import system_session
+
+            async with factory() as session, session.begin(), system_session(session):
+                result = await session.execute(
+                    select(ApiKey).where(ApiKey.is_active == True)  # noqa: E712
+                )
+                return list(result.scalars().all())
+        except Exception as exc:
+            logging.getLogger(__name__).info(
+                "api_key_batched_sync_unavailable (per-tenant fallback): %s",
+                type(exc).__name__,
+            )
+            return None
 
     # ── Redis read-through cache helpers ──────────────────────────────────────
 

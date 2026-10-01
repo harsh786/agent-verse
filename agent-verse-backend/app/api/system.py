@@ -31,6 +31,35 @@ async def health(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=200 if healthy else 503)
 
 
+@router.get("/health/ready")
+async def ready(request: Request) -> JSONResponse:
+    """Readiness: 503 until the lifespan's essential phase AND every gating
+    background warm-up (app.core.startup) has finished, then the dependency checks.
+
+    Uvicorn binds as soon as essential state is loaded; warm caches, catalogue
+    seeding and memory hydration continue in the background. A load balancer or
+    orchestrator should route traffic on this endpoint; ``/health`` stays the
+    fast liveness/dependency probe.
+    """
+    tracker = getattr(request.app.state, "startup", None)
+    if tracker is not None and not tracker.ready:
+        snapshot = tracker.snapshot()
+        return JSONResponse(
+            {
+                "status": "starting",
+                "essential_done": snapshot["essential_done"],
+                "pending": snapshot["pending"],
+            },
+            status_code=503,
+        )
+    registry: HealthRegistry = request.app.state.health
+    healthy, checks = await registry.run()
+    payload: dict[str, Any] = {"status": "ready" if healthy else "unhealthy", "checks": checks}
+    if tracker is not None:
+        payload["startup_seconds"] = tracker.snapshot()["startup_seconds"]
+    return JSONResponse(payload, status_code=200 if healthy else 503)
+
+
 def _embedder_capability(request: Request) -> dict[str, Any]:
     """Embedder status for the unauthenticated /health route (no error text)."""
     resolution = getattr(request.app.state, "embedder_resolution", None)

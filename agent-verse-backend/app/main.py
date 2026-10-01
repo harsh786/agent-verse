@@ -54,6 +54,7 @@ from app.collab.store import CollaborationStore
 from app.core.config import Settings, get_settings
 from app.core.errors import InternalError, PlatformError
 from app.core.pools import ConnectionPools
+from app.core.startup import StartupTracker
 from app.enterprise.compliance import ComplianceController
 from app.enterprise.compliance_v2 import ComplianceChecker
 from app.enterprise.marketplace import Marketplace
@@ -983,6 +984,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        # Serve fast, report readiness honestly: non-essential warm-ups run as
+        # tracked background tasks gating GET /health/ready (app.core.startup).
+        _startup = StartupTracker()
+        app.state.startup = _startup
+
         async def close_retrieval_gateways() -> None:
             active_gateway = getattr(app.state, "retrieval_gateway", None)
             if active_gateway is not None:
@@ -1425,7 +1431,10 @@ def create_app(
                 _usage_svc._db = db_factory
                 logger.info("usage_service_db_wired")
 
-            _tenant_svc_with_db = TenantService(db_session_factory=db_factory)
+            _tenant_svc_with_db = TenantService(
+                db_session_factory=db_factory,
+                system_db_session_factory=app.state.system_db_session_factory,
+            )
             _goal_svc_with_db = GoalService(
                 audit_log=_audit_log,
                 hitl=_hitl,
@@ -1435,10 +1444,27 @@ def create_app(
             )
             _agent_store_with_db = AgentStore(db_session_factory=db_factory)
 
-            # Hydrate in-memory state from DB (idempotent — skips keys already present)
+            # Hydrate in-memory state from DB (idempotent — skips keys already present).
+            # Tenants/API keys and agents are essential (auth + sync agent lookups).
+            # The goal mirror is only a warm cache (get/list goals read the DB), so it
+            # loads in the background together with restart recovery, which needs it
+            # (see "goal_warm_cache" below).
             await _tenant_svc_with_db.sync_from_db()
-            await _goal_svc_with_db.sync_from_db()
             await _agent_store_with_db.sync_from_db()
+
+            async def _warm_goal_cache(recover: bool) -> None:
+                await _goal_svc_with_db.sync_from_db()
+                if not recover:
+                    return
+                # Restart recovery needs Redis (runner heartbeats + worker locks)
+                # to tell an orphaned in-process goal from a live/worker one, and
+                # the goal mirror loaded just above to find candidates.
+                try:
+                    _recovered = await _goal_svc_with_db.recover_interrupted_goals()
+                    if _recovered:
+                        logger.info("interrupted_goals_recovered", count=_recovered)
+                except Exception as _rec_exc:
+                    logger.warning("interrupted_goal_recovery_failed", error=str(_rec_exc))
 
             app.state.tenant_service = _tenant_svc_with_db
             app.state.goal_service = _goal_svc_with_db
@@ -1483,34 +1509,20 @@ def create_app(
                 _marketplace_state._agent_store = _agent_store_with_db
                 logger.info("marketplace_agent_store_rewired")
 
-            # Wire built-in MCP servers for every active tenant: handlers plus
-            # tool definitions for connectors the tenant configured itself, and
-            # credential-free built-ins inserted only if absent. Platform env
-            # credentials (GITHUB_TOKEN, ...) are never wired into a tenant's
-            # connectors — see register_builtin_servers for the old bug.
+            # Built-in MCP handlers are process-local and stateless: register them
+            # (no I/O). Per-tenant connector rows for the credential-free built-ins
+            # are provisioned lazily on a tenant's first listing, and refreshed there
+            # when the built-in catalogue changes (MCPRegistry._ensure_builtins). The
+            # per-tenant loop that used to run here cost ~325 Redis round trips per
+            # tenant on every boot (76 s for ~390 tenants in Docker, minutes from the
+            # host). Platform env credentials are never wired into tenant connectors
+            # — see register_builtin_servers.
             try:
-                from app.mcp.servers.registry_wiring import register_builtin_servers
-                from app.tenancy.context import PlanTier, TenantContext
+                from app.mcp.servers.registry_wiring import register_builtin_handlers
 
-                builtin_registered = 0
-                for tenant_id, tenant_data in getattr(_tenant_svc_with_db, "_tenants", {}).items():
-                    try:
-                        tenant_plan = PlanTier(tenant_data.get("plan", "free"))
-                    except Exception:
-                        tenant_plan = PlanTier.FREE
-                    tenant_ctx = TenantContext(
-                        tenant_id=tenant_id,
-                        plan=tenant_plan,
-                        api_key_id="builtin-registration",
-                        roles=("admin",),
-                    )
-                    builtin_registered += await register_builtin_servers(
-                        app.state.mcp_registry,
-                        tenant_ctx,
-                    )
-                logger.info("builtin_mcp_servers_registered", count=builtin_registered)
+                logger.info("builtin_mcp_handlers_registered", count=register_builtin_handlers())
             except Exception as _builtin_exc:
-                logger.warning("builtin_mcp_server_registration_failed", error=str(_builtin_exc))
+                logger.warning("builtin_mcp_handler_registration_failed", error=str(_builtin_exc))
 
             # H-3: Wire DB into ExecutionMemory for persistence
             _exec_memory._db = db_factory
@@ -1528,7 +1540,6 @@ def create_app(
 
             # Seed execution memory from DB for faster cold-start recall()
             try:
-                import asyncio as _em_asyncio
 
                 async def _hydrate_exec_memory() -> None:
                     try:
@@ -1550,7 +1561,7 @@ def create_app(
                             "execution_memory_hydration_failed", error=str(_em_inner_err)
                         )
 
-                _em_asyncio.create_task(_hydrate_exec_memory())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
+                _startup.spawn("execution_memory_hydration", _hydrate_exec_memory)
             except Exception as _em_exc:
                 logger.warning("execution_memory_hydration_setup_failed", error=str(_em_exc))
 
@@ -1825,11 +1836,19 @@ def create_app(
             # Wire DB into MarketplaceV2 and seed builtin templates
             _marketplace_v2._db = db_factory
             app.state.marketplace_v2 = _marketplace_v2
-            try:
-                _seeded = await _marketplace_v2.seed_builtins()
-                logger.info("marketplace_v2_builtins_seeded", count=_seeded)
-            except Exception as _seed_exc:
-                logger.warning("marketplace_v2_seed_failed", error=str(_seed_exc))
+
+
+            # Idempotent catalogue seeding (reads ~400 content files, upserts
+            # templates): not needed to serve, so it runs in the background and
+            # gates readiness instead of the socket bind.
+            async def _seed_marketplace_v2() -> None:
+                try:
+                    _seeded = await _marketplace_v2.seed_builtins()
+                    logger.info("marketplace_v2_builtins_seeded", count=_seeded)
+                except Exception as _seed_exc:
+                    logger.warning("marketplace_v2_seed_failed", error=str(_seed_exc))
+
+            _startup.spawn("marketplace_v2_seed", _seed_marketplace_v2)
 
             # Wire DB into NotificationService for persistent channel storage
             _notif_svc = getattr(app.state, "notification_service", None)
@@ -1998,16 +2017,9 @@ def create_app(
                 # (a single shared Redis client cannot serve multiple blocking subscribers).
                 if settings.redis_url:
                     _goal_svc_with_db._redis_url_for_pubsub = str(settings.redis_url)
-                # Restart recovery needs Redis (runner heartbeats + worker locks)
-                # to tell an orphaned in-process goal from a live/worker one; it
-                # used to run inside sync_from_db before Redis was wired and
-                # re-enqueue every unfinished goal on every replica start.
-                try:
-                    _recovered = await _goal_svc_with_db.recover_interrupted_goals()
-                    if _recovered:
-                        logger.info("interrupted_goals_recovered", count=_recovered)
-                except Exception as _rec_exc:
-                    logger.warning("interrupted_goal_recovery_failed", error=str(_rec_exc))
+                # Restart recovery needs Redis (runner heartbeats + worker locks);
+                # it runs right after the goal mirror loads, in the background.
+                _startup.spawn("goal_warm_cache", lambda: _warm_goal_cache(recover=True))
 
                 # CostController: Redis for cross-replica budget accuracy.
                 _cost_ctrl = getattr(app.state, "cost_controller", None)
@@ -2255,6 +2267,9 @@ def create_app(
                 except Exception as _obs_exc:
                     logger.warning("observability_log_store_wire_failed", error=str(_obs_exc))
 
+            if "goal_warm_cache" not in _startup.snapshot()["tasks"]:
+                _startup.spawn("goal_warm_cache", lambda: _warm_goal_cache(recover=False))
+
             # ── On-prem context windows: never give a reasoning role to a model
             # whose window cannot hold an agent prompt (vLLM /v1/models) ────────
             if settings.onprem_enabled:
@@ -2364,12 +2379,13 @@ def create_app(
             # ── M-3: Warm permission cache for recently-active tenants ────────────
             if redis_for_runtime is not None:
                 try:
-                    import asyncio as _asyncio_cw
-
                     from app.auth.cache_warmer import warm_permission_cache
 
-                    _asyncio_cw.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                        warm_permission_cache(redis=redis_for_runtime, db_factory=db_factory)
+                    _cw_redis = redis_for_runtime
+                    _startup.spawn(
+                        "permission_cache_warming",
+                        lambda: warm_permission_cache(redis=_cw_redis, db_factory=db_factory),
+                        gating=False,
                     )
                     logger.info("permission_cache_warming_started")
                 except Exception as _cw_exc:
@@ -2567,9 +2583,11 @@ def create_app(
 
             start_process_reranker_warmup()
             await start_voice_runtime()
+            _startup.mark_essential_done()
             try:
                 yield
             finally:
+                await _startup.cancel_all()
                 await stop_voice_runtime()
                 # WT-4: Stop the trigger consumers (cancel + await all tasks).
                 _tc = getattr(app.state, "trigger_consumers", None)
@@ -2591,9 +2609,12 @@ def create_app(
                     await _repo_asyncio.gather(*_repo_tasks, return_exceptions=True)
                 if _ps_task := getattr(app.state, "_policy_pubsub_task", None):
                     _ps_task.cancel()
+                    import asyncio as _ps_asyncio
                     import contextlib
 
-                    with contextlib.suppress(Exception):
+                    # Awaiting the task we just cancelled re-raises CancelledError
+                    # (a BaseException): it must not abort the rest of shutdown.
+                    with contextlib.suppress(Exception, _ps_asyncio.CancelledError):
                         await _ps_task
                 if _siem_fwd := getattr(app.state, "siem_forwarder", None):
                     import contextlib
@@ -2615,9 +2636,11 @@ def create_app(
         else:
             start_process_reranker_warmup()
             await start_voice_runtime()
+            _startup.mark_essential_done()
             try:
                 yield
             finally:
+                await _startup.cancel_all()
                 await stop_voice_runtime()
                 await close_retrieval_gateways()
                 await close_process_rerankers()

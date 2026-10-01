@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from collections.abc import Collection
 from typing import Any
 
 # NOTE: built-ins are no longer activated from platform env vars at all (see
@@ -3415,7 +3416,75 @@ def has_tenant_credentials(credentials: dict[str, Any], required_env: tuple[str,
     return endpoint_only and any(credentials.get(k) for k in _ENDPOINT_KEYS)
 
 
-async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
+_CATALOG_FINGERPRINT: tuple[int, str] | None = None
+
+
+def builtin_catalog_fingerprint() -> str:
+    """Stable digest of the built-in catalogue (ids + platform-owned tool lists).
+
+    Stored in each tenant's lazy-provisioning marker: when a release changes the
+    catalogue, the next listing for a tenant refreshes its built-ins once. The
+    catalogue is static for a process, so the digest is computed once per
+    process (``reset_builtin_catalog_cache`` for tests that swap it).
+    """
+    global _CATALOG_FINGERPRINT
+    source = get_builtin_server_configs
+    if _CATALOG_FINGERPRINT is not None and _CATALOG_FINGERPRINT[0] == id(source):
+        return _CATALOG_FINGERPRINT[1]
+    import hashlib
+    import json
+
+    payload = sorted(
+        (
+            str(cfg["server_id"]),
+            sorted(cfg.get("requires_env", []) or []),
+            cfg.get("tool_definitions") or [],
+        )
+        for cfg in source()
+    )
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode()
+    digest = hashlib.sha256(encoded).hexdigest()[:32]
+    _CATALOG_FINGERPRINT = (id(source), digest)
+    return digest
+
+
+def reset_builtin_catalog_cache() -> None:
+    global _CATALOG_FINGERPRINT
+    _CATALOG_FINGERPRINT = None
+
+
+def credential_free_builtin_ids() -> set[str]:
+    """Ids of the built-ins every tenant gets without configuring credentials."""
+    return {
+        str(cfg["server_id"])
+        for cfg in get_builtin_server_configs()
+        if not (cfg.get("requires_env") or ())
+    }
+
+
+def register_builtin_handlers() -> int:
+    """Register every built-in handler in the process-local registry (no I/O).
+
+    Handlers are stateless callables that dispatch with the calling tenant's own
+    credentials. Every process that executes tools needs them registered; this
+    is all the API lifespan does at boot now (per-tenant connector rows are
+    provisioned lazily on a tenant's first listing — see
+    ``MCPRegistry._ensure_builtins``).
+    """
+    from app.mcp.registry import MCPRegistry
+
+    configs = get_builtin_server_configs()
+    for cfg in configs:
+        MCPRegistry.register_builtin_handler(cfg["server_id"], cfg["handler"])
+    return len(configs)
+
+
+async def register_builtin_servers(
+    registry: Any,
+    tenant_ctx: Any,
+    *,
+    insert_ids: Collection[str] | None = None,
+) -> int:
     """Wire the built-in MCP servers for one tenant.
 
     * Every handler is registered in the process-local handler registry, so a
@@ -3431,6 +3500,10 @@ async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
     token — a confused deputy where each tenant's agent acted as the platform.
     Platform env credentials are never wired into tenant connectors now; a
     tenant must add its own credentials (vault-backed auth_config) instead.
+
+    ``insert_ids`` limits which absent credential-free built-ins are inserted
+    (``None`` = all). A catalogue refresh passes only the ids that are new since
+    the tenant was last provisioned, so one the tenant removed is not re-added.
 
     Returns the number of connectors newly inserted for this tenant.
     """
@@ -3479,6 +3552,8 @@ async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
 
         if requires_env:
             continue  # the tenant must configure its own credentials for this one
+        if insert_ids is not None and server_id not in insert_ids:
+            continue  # removed by the tenant earlier — do not re-add on a refresh
 
         try:
             await registry.register(
