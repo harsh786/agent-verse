@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-from app.providers.vault import CredentialVault
+from app.providers.vault import CredentialVault, rotate_master_key
 
 
 class _Tx:
@@ -51,29 +51,45 @@ class _Session:
         return MagicMock()
 
 
+class _Rows:
+    def fetchall(self) -> list[Any]:
+        return []
+
+
+class _RowSession(_Session):
+    async def execute(self, stmt: Any, params: Any = None) -> Any:
+        await super().execute(stmt, params)
+        return _Rows()
+
+
 async def test_rotation_records_key_version_inside_system_session() -> None:
-    vault = CredentialVault(master_key="a" * 32)
-    session = _Session()
+    session = _RowSession()
 
-    result = await vault.rotate_key(b"n" * 32, db=lambda: session)
+    result = await rotate_master_key(
+        old=CredentialVault(master_key="a" * 32),
+        new=CredentialVault(master_key="n" * 32),
+        system_db=lambda: session,
+    )
 
-    assert result["status"] == "rotation_complete"
+    assert result["status"] == "complete"
     sqls = [s for s, _ in session.statements]
     assert all(in_tx for _, in_tx in session.statements), "must run in one transaction"
     assert sqls[0].strip() == "SET LOCAL row_security = off"
-    assert "UPDATE vault_key_versions" in sqls[1]
-    assert "INSERT INTO vault_key_versions" in sqls[2]
+    assert any("UPDATE vault_key_versions" in s for s in sqls)
+    assert any("INSERT INTO vault_key_versions" in s for s in sqls)
     assert not any("app.tenant_id" in s for s in sqls), "platform table: no tenant GUC"
 
 
-async def test_rotation_under_api_role_fails_loudly_but_rotation_still_completes() -> None:
-    """Passed the NOBYPASSRLS API factory by mistake, the record fails (and is
-    logged) instead of silently writing — the in-process key still rotates."""
-    vault = CredentialVault(master_key="a" * 32)
-    session = _Session(fail_on="UPDATE vault_key_versions")
+async def test_rotation_under_api_role_fails_loudly_and_reports_failed() -> None:
+    """Passed the NOBYPASSRLS API factory by mistake, the rotation fails and says
+    so (it used to report rotation_complete after the swallowed failure)."""
+    session = _RowSession(fail_on="UPDATE vault_key_versions")
 
-    result = await vault.rotate_key(b"m" * 32, db=lambda: session)
+    result = await rotate_master_key(
+        old=CredentialVault(master_key="a" * 32),
+        new=CredentialVault(master_key="m" * 32),
+        system_db=lambda: session,
+    )
 
-    assert result["status"] == "rotation_complete"
+    assert result["status"] == "failed"
     assert not any("INSERT INTO vault_key_versions" in s for s, _ in session.statements)
-    assert vault.encrypt("x") and vault.decrypt(vault.encrypt("x")) == "x"

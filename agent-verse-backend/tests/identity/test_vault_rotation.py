@@ -4,11 +4,13 @@ import pytest
 from tests._paths import MIGRATIONS_DIR
 
 
-def test_vault_has_rotate_key_method():
-    from app.providers.vault import CredentialVault
-    assert hasattr(CredentialVault, "rotate_key"), "CredentialVault must have rotate_key()"
+def test_vault_rotation_is_an_offline_operation():
+    """PROV-13: rotation re-encrypts every store offline (agentverse vault-rotate)."""
     import asyncio
-    assert asyncio.iscoroutinefunction(CredentialVault.rotate_key)
+
+    from app.providers.vault import CredentialVault, rotate_master_key
+    assert not hasattr(CredentialVault, "rotate_key")
+    assert asyncio.iscoroutinefunction(rotate_master_key)
 
 
 def test_vault_has_from_byok():
@@ -39,26 +41,6 @@ def test_vault_byok_can_encrypt_and_decrypt():
     assert ciphertext != plaintext
     decrypted = vault.decrypt(ciphertext)
     assert decrypted == plaintext
-
-
-def test_vault_rotate_key_returns_dict():
-    """rotate_key without a DB should still return a valid dict."""
-    import asyncio
-
-    from app.providers.vault import CredentialVault
-    vault = CredentialVault(master_key="test-master-key")
-    result = asyncio.run(vault.rotate_key(new_master_key=b"newkey_32_bytes_long_padding__xx"))
-    assert isinstance(result, dict)
-    assert "status" in result
-
-
-def test_vault_rotate_key_rejects_short_key():
-    import asyncio
-
-    from app.providers.vault import CredentialVault
-    vault = CredentialVault(master_key="test-master-key")
-    with pytest.raises(ValueError):
-        asyncio.run(vault.rotate_key(new_master_key=b"short"))
 
 
 def test_migration_0040_exists():

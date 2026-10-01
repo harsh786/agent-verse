@@ -456,5 +456,52 @@ def run_tests(
     raise typer.Exit(result.returncode)
 
 
+@app.command(name="vault-rotate")
+def vault_rotate(
+    new_key_env: str = typer.Option(
+        "VAULT_NEW_MASTER_KEY",
+        help="Name of the env var holding the NEW master key (never pass keys on argv).",
+    ),
+) -> None:
+    """Re-encrypt stored secrets from the current vault master key to a new one.
+
+    Offline, operator-run, against the deployment's Postgres (maintenance role,
+    MAINTENANCE_DATABASE_URL) and Redis. Procedure: set the new key in
+    ``new_key_env``, run this, then deploy with VAULT_MASTER_KEY=<new> and
+    VAULT_PREVIOUS_MASTER_KEYS=<old> until every store listed under
+    ``not_reencrypted_stores`` has been migrated. Exits 1 unless every step
+    succeeded.
+    """
+    import asyncio
+
+    from app.providers.vault import CredentialVault, get_vault, rotate_master_key
+
+    new_key = os.environ.get(new_key_env, "")
+    if len(new_key) < 32:
+        typer.echo(f"Error: {new_key_env} must hold a master key of at least 32 chars", err=True)
+        raise typer.Exit(1)
+
+    async def _run() -> dict:  # type: ignore[type-arg]
+        from app.db.session import get_system_session_factory
+
+        redis_client = None
+        redis_url = os.environ.get("REDIS_URL", "")
+        if redis_url:
+            import redis.asyncio as aioredis
+
+            redis_client = aioredis.from_url(redis_url, decode_responses=True)
+        return await rotate_master_key(
+            old=get_vault(),
+            new=CredentialVault(master_key=new_key),
+            redis=redis_client,
+            system_db=get_system_session_factory(),
+        )
+
+    result = asyncio.run(_run())
+    typer.echo(json.dumps(result, indent=2))
+    if result.get("status") != "complete":
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

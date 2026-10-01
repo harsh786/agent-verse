@@ -221,32 +221,24 @@ def test_wrong_key_decrypt_does_not_leak_partial_plaintext_in_exception() -> Non
 # ===========================================================================
 
 
-@pytest.mark.asyncio
-async def test_key_rotation_scenario_new_key_encrypts_and_decrypts() -> None:
-    """After rotate_key(), the SAME vault instance must transparently use the
-    new key for both new encryptions and decrypting them back — the whole
-    point of in-place rotation."""
-    vault = _vault("original-master-key")
-    await vault.rotate_key(b"r" * 32)
+def test_key_rotation_scenario_previous_key_keeps_old_ciphertext_readable() -> None:
+    """During rotation every replica runs with the new key plus the old one in
+    VAULT_PREVIOUS_MASTER_KEYS: new writes use the new key, old ciphertext still
+    decrypts (PROV-13)."""
+    from app.providers.vault import CredentialVault
 
-    ciphertext = vault.encrypt("secret encrypted after rotation")
-    assert vault.decrypt(ciphertext) == "secret encrypted after rotation"
+    old_ciphertext = _vault("original-master-key").encrypt("secret before rotation")
+    rotating = CredentialVault("rotated-master-key", previous_master_keys=("original-master-key",))
+    assert rotating.decrypt(old_ciphertext) == "secret before rotation"
+    assert rotating.decrypt(rotating.encrypt("after")) == "after"
 
 
-@pytest.mark.asyncio
-async def test_key_rotation_scenario_old_ciphertext_unreadable_without_reencryption() -> None:
-    """A secret encrypted BEFORE rotation, that was never re-encrypted (e.g.
-    no Redis store was passed to rotate_key, so nothing was migrated), must
-    NOT be decryptable with the vault's new in-memory key — this is exactly
-    why rotate_key's Redis path re-encrypts every stored secret before
-    swapping self._fernet, and this test documents/guards that necessity."""
-    vault = _vault("original-master-key")
-    old_ciphertext = vault.encrypt("secret encrypted before rotation")
-
-    await vault.rotate_key(b"r" * 32)
-
+def test_key_rotation_scenario_old_ciphertext_unreadable_without_previous_key() -> None:
+    """Without the previous key configured, un-migrated ciphertext is unreadable —
+    why the old key must stay in VAULT_PREVIOUS_MASTER_KEYS until vault-rotate ran."""
+    old_ciphertext = _vault("original-master-key").encrypt("secret before rotation")
     with pytest.raises(InvalidToken):
-        vault.decrypt(old_ciphertext)
+        _vault("rotated-master-key").decrypt(old_ciphertext)
 
 
 # ===========================================================================
