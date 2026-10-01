@@ -947,12 +947,15 @@ class TestDbHelpers:
         svc = _svc()
         assert await svc._db_get_goal_record("g1", _ctx()) is None
 
-    async def test_db_get_goal_record_exception_returns_none(self):
-        """Lines 2229-2233: DB exception returns None."""
+    async def test_db_get_goal_record_exception_is_service_unavailable(self):
+        """GOAL-LOOKUP-503: a DB error is a 503, not None (which read as 404)."""
+        from app.core.errors import ServiceUnavailableError
+
         db, _ = _make_mock_db()
         db.side_effect = Exception("db error")
         svc = GoalService(db_session_factory=db)
-        assert await svc._db_get_goal_record("g1", _ctx()) is None
+        with pytest.raises(ServiceUnavailableError):
+            await svc._db_get_goal_record("g1", _ctx())
 
 
 # ── _dispatch_event ───────────────────────────────────────────────────────────

@@ -1239,6 +1239,13 @@ async def test_cancel_goal_persists_status_to_db() -> None:
         ) -> None:
             captured.append((goal_id, tenant_id, status))
 
+        async def _db_get_goal_record(  # type: ignore[override]
+            self, goal_id: str, tenant_ctx: Any
+        ) -> None:
+            # The placeholder factory below is not a real DB; a lookup error is
+            # now a 503 (GOAL-LOOKUP-503), so stub "no persisted row" here.
+            return None
+
     svc = _SpyService(db_session_factory=object())
     created = await svc.submit_goal(
         goal="Long running analysis", priority="normal", dry_run=True, tenant_ctx=_CTX_A
@@ -1271,6 +1278,13 @@ async def test_pause_goal_persists_status_to_db() -> None:
             self, goal_id: str, tenant_id: str, status: str, *a: Any, **k: Any
         ) -> None:
             captured.append((goal_id, tenant_id, status))
+
+        async def _db_get_goal_record(  # type: ignore[override]
+            self, goal_id: str, tenant_ctx: Any
+        ) -> None:
+            # The placeholder factory below is not a real DB; a lookup error is
+            # now a 503 (GOAL-LOOKUP-503), so stub "no persisted row" here.
+            return None
 
     svc = _SpyService(db_session_factory=object())
     created = await svc.submit_goal(

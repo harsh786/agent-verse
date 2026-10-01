@@ -5890,15 +5890,21 @@ class GoalService:
     async def _db_get_goal_record(
         self, goal_id: str, tenant_ctx: TenantContext
     ) -> GoalRecord | None:
-        """Load one goal from PostgreSQL when this process has no memory record."""
+        """Load one goal from PostgreSQL when this process has no memory record.
+
+        ``None`` means the row does not exist (for this tenant). A database
+        error raises :class:`ServiceUnavailableError` (HTTP 503): it used to be
+        logged and returned as ``None`` too, so an outage answered 404 "Goal not
+        found" and clients concluded the goal was gone.
+        """
         if self._db is None:
             return None
+        from sqlalchemy import select
+
+        from app.db.models.goal import Goal
+        from app.db.rls import sqlalchemy_rls_context
+
         try:
-            from sqlalchemy import select
-
-            from app.db.models.goal import Goal
-            from app.db.rls import sqlalchemy_rls_context
-
             async with (
                 self._db() as session,
                 session.begin(),
@@ -5911,39 +5917,43 @@ class GoalService:
                     )
                 )
                 row = result.scalar_one_or_none()
-            if row is None:
-                return None
-            try:
-                status = GoalStatus(row.status)
-            except ValueError:
-                status = GoalStatus.PLANNING
-            record = GoalRecord(
-                goal_id=row.id,
-                goal_text=row.goal_text,
-                status=status,
-                tenant_id=row.tenant_id,
-                priority=row.priority,
-                dry_run=row.dry_run,
-                created_at=row.created_at.isoformat() if row.created_at else "",
-                agent_id=row.agent_id,
-                workflow_mode=row.workflow_mode,
-                execution_context=row.execution_context or {},
-            )
-            # A refresh must not orphan live SSE subscribers: subscribe_events
-            # registers its queue on the cached record, and the Celery bridge /
-            # _dispatch_event fan out via self._goals[goal_id].subscribers. Share
-            # the same list object (and keep a running local task) so the queue
-            # stays reachable after the DB copy replaces the cached record.
-            previous = self._goals.get(row.id)
-            if previous is not None and previous.tenant_id == record.tenant_id:
-                record.subscribers = previous.subscribers
-                if record.task is None:
-                    record.task = previous.task
-            self._goals[row.id] = record
-            return record
         except Exception as exc:
             _svc_logger.warning("DB get goal failed: %s", exc)
+            raise ServiceUnavailableError(
+                "The goal store is unavailable; try again.",
+                code="GOAL_STORE_UNAVAILABLE",
+                cause=exc,
+            ) from exc
+        if row is None:
             return None
+        try:
+            status = GoalStatus(row.status)
+        except ValueError:
+            status = GoalStatus.PLANNING
+        record = GoalRecord(
+            goal_id=row.id,
+            goal_text=row.goal_text,
+            status=status,
+            tenant_id=row.tenant_id,
+            priority=row.priority,
+            dry_run=row.dry_run,
+            created_at=row.created_at.isoformat() if row.created_at else "",
+            agent_id=row.agent_id,
+            workflow_mode=row.workflow_mode,
+            execution_context=row.execution_context or {},
+        )
+        # A refresh must not orphan live SSE subscribers: subscribe_events
+        # registers its queue on the cached record, and the Celery bridge /
+        # _dispatch_event fan out via self._goals[goal_id].subscribers. Share
+        # the same list object (and keep a running local task) so the queue
+        # stays reachable after the DB copy replaces the cached record.
+        previous = self._goals.get(row.id)
+        if previous is not None and previous.tenant_id == record.tenant_id:
+            record.subscribers = previous.subscribers
+            if record.task is None:
+                record.task = previous.task
+        self._goals[row.id] = record
+        return record
 
     async def _db_update_goal_status(
         self,
