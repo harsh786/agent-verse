@@ -103,15 +103,29 @@ def build_raft_inference_providers(
     on the account that owns it.
     """
     from app.providers.registry import instantiate_configured_provider
+    from app.rag.raft_compat_provider import OpenAICompatibleFineTuneProvider
 
     providers: dict[str, FineTunedInferenceProvider] = {}
-    for provider_id in fine_tune_providers:
-        provider_type = _SERVING_PROVIDER_TYPES.get(provider_id)
+    for provider_id, fine_tune_provider in fine_tune_providers.items():
+        model = ""
+        if isinstance(fine_tune_provider, OpenAICompatibleFineTuneProvider):
+            # A model trained on an OpenAI-compatible vendor is served by that
+            # vendor's chat endpoint, with the key it was trained with.
+            provider_type: str | None = "openai_compatible"
+            credentials: tuple[str, str] | None = (
+                str(getattr(settings, "raft_compat_fine_tune_api_key", "") or ""),
+                fine_tune_provider.base_url,
+            )
+            # The registry demands a model for generic endpoints; RAFT always
+            # sends the job's fine-tuned model id per request, never this one.
+            model = "raft-fine-tuned-model-per-request"
+        else:
+            provider_type = _SERVING_PROVIDER_TYPES.get(provider_id)
+            credentials = _credentials(settings, provider_id)
         if provider_type is None:
             logger.warning("raft_no_serving_provider_type", provider_id=provider_id)
             continue
-        credentials = _credentials(settings, provider_id)
-        if credentials is None:
+        if credentials is None or not credentials[0]:
             continue
         api_key, base_url = credentials
         try:
@@ -119,6 +133,7 @@ def build_raft_inference_providers(
                 provider_type,
                 api_key=api_key,
                 base_url=base_url,
+                model=model,
             )
         except Exception as exc:
             logger.warning(

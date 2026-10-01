@@ -419,6 +419,13 @@ class Settings(BaseSettings):
     # --- RAFT (retrieval-augmented fine-tuning) ---
     # Cap on curated chunks read into one training dataset (keyset-paged).
     raft_max_training_chunks: int = Field(default=2000, ge=1, le=100_000)
+    # KB-32: RAFT on any vendor exposing OpenAI's fine-tuning REST API (files +
+    # fine_tuning/jobs) and an OpenAI-compatible chat endpoint to serve the model.
+    raft_compat_fine_tune_base_url: str = ""
+    raft_compat_fine_tune_api_key: str = ""
+    raft_compat_fine_tune_provider_id: str = "openai_compatible"
+    raft_compat_fine_tune_usd_per_example: str = "0.008"
+    raft_compat_fine_tune_allow_internal: bool = False
     raft_chunk_page_size: int = Field(default=500, ge=1, le=10_000)
     # Held-out examples scored (one inference call each) by POST .../evaluate.
     raft_max_eval_examples: int = Field(default=50, ge=1, le=1000)

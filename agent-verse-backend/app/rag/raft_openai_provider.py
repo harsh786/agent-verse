@@ -181,4 +181,17 @@ def build_raft_providers(settings: Settings) -> dict[str, FineTuneProvider]:
         providers[_PROVIDER_ID] = OpenAIFineTuneProvider(
             api_key=api_key, base_url=base_url
         )
+    # KB-32: any vendor exposing OpenAI's fine-tuning REST API, by configuration.
+    from app.rag.raft_compat_provider import build_compat_fine_tune_provider
+
+    compat = build_compat_fine_tune_provider(settings)
+    if compat is not None:
+        if compat.provider_id in providers:
+            logger.error(
+                "raft_compat_provider_id_conflict",
+                provider_id=compat.provider_id,
+                detail="RAFT_COMPAT_FINE_TUNE_PROVIDER_ID collides with a built-in provider",
+            )
+        else:
+            providers[compat.provider_id] = compat
     return providers
