@@ -525,7 +525,7 @@ def test_check_email_goals_disabled_by_default() -> None:
 def test_consolidate_memories_task_has_real_sql() -> None:
     from app.scaling.tasks import consolidate_memories_task
     src = inspect.getsource(consolidate_memories_task)
-    assert "long_term_memory" in src
+    assert "consolidate_long_term_memory" in src
     assert "noop" not in src.lower()
 
 

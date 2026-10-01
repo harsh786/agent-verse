@@ -6414,46 +6414,28 @@ async def _do_check_email_goals() -> dict[str, Any]:
 
 @celery_app.task(name="agentverse.maintenance.consolidate_memories")
 def consolidate_memories_task() -> dict:
-    """Consolidate and deduplicate long-term memories older than 7 days."""
+    """Consolidate (dedup) and expire long_term_memory, per tenant (MEM-17).
+
+    Tenant scan on the maintenance (BYPASSRLS) factory; every DELETE on the
+    app factory under the tenant's RLS, bounded per transaction, skipping
+    legal-holds and honouring each tenant's retention_days (see
+    ``app.memory.ltm_maintenance``). An error FAILS the task — it used to be
+    folded into ``results["error"]`` and returned as a success.
+    """
 
     async def _run() -> dict:
-        from sqlalchemy import text
+        from app.db.session import get_session_factory, get_system_session_factory
+        from app.memory.ltm_maintenance import consolidate_long_term_memory
 
-        from app.db.session import get_session_factory as _get_fresh_db
+        return await consolidate_long_term_memory(
+            system_db=get_system_session_factory(), app_db=get_session_factory()
+        )
 
-        db = _get_fresh_db()
-        results: dict = {}
-        try:
-            async with db() as session, session.begin():
-                result = await session.execute(
-                    text("""
-                    DELETE FROM long_term_memory
-                    WHERE id NOT IN (
-                        SELECT DISTINCT ON (tenant_id, content) id
-                        FROM long_term_memory
-                        ORDER BY tenant_id, content, created_at DESC
-                    )
-                """)
-                )
-                results["duplicates_removed"] = result.rowcount
-
-                import os as _os
-
-                retention = int(_os.getenv("DATA_RETENTION_DAYS", "90"))
-                result = await session.execute(
-                    text(
-                        "DELETE FROM long_term_memory "
-                        "WHERE created_at < NOW() - (:days * INTERVAL '1 day')"
-                    ),
-                    {"days": retention},
-                )
-                results["expired_removed"] = result.rowcount
-        except Exception as exc:
-            results["error"] = str(exc)
-
-        return results
-
-    return _run_async(_run())
+    try:
+        return _run_async(_run())
+    except Exception:
+        logger.exception("consolidate_memories_failed")
+        raise
 
 
 # Register consolidate_memories in the Celery beat schedule (3 AM UTC daily)

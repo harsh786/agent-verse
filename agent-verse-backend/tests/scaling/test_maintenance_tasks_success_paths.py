@@ -95,20 +95,39 @@ class TestCheckEmailGoalsTask:
 
 
 class TestConsolidateMemoriesTaskFullPath:
-    def test_success_reports_both_counts(self, monkeypatch):
+    def test_success_reports_the_consolidation_counts(self):
         from app.scaling.tasks import consolidate_memories_task
 
-        monkeypatch.setenv("DATA_RETENTION_DAYS", "90")
-        session = _session_with_begin(
-            execute_side_effect=[
-                MagicMock(rowcount=3),
-                MagicMock(rowcount=7),
-            ]
-        )
-        db_factory = _db_factory(session)
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
-            result = consolidate_memories_task.run()
-        assert result == {"duplicates_removed": 3, "expired_removed": 7}
+        totals = {
+            "tenants_scanned": 2,
+            "tenants_skipped_legal_hold": 0,
+            "duplicates_removed": 3,
+            "expired_removed": 7,
+        }
+        with (
+            patch("app.db.session.get_session_factory", return_value=MagicMock()),
+            patch("app.db.session.get_system_session_factory", return_value=MagicMock()),
+            patch(
+                "app.memory.ltm_maintenance.consolidate_long_term_memory",
+                AsyncMock(return_value=totals),
+            ),
+        ):
+            assert consolidate_memories_task.run() == totals
+
+    def test_db_error_fails_the_task(self):
+        """MEM-17: an error used to be returned as results["error"] (a success)."""
+        from app.scaling.tasks import consolidate_memories_task
+
+        with (
+            patch("app.db.session.get_session_factory", return_value=MagicMock()),
+            patch("app.db.session.get_system_session_factory", return_value=MagicMock()),
+            patch(
+                "app.memory.ltm_maintenance.consolidate_long_term_memory",
+                AsyncMock(side_effect=RuntimeError("db down")),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            consolidate_memories_task.run()
 
 
 # ── reindex_stale_knowledge / purge_expired_artifacts (success path) ─────────
