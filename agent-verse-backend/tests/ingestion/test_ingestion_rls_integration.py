@@ -366,3 +366,78 @@ async def test_dlq_retry_scans_as_maintenance_and_acts_per_tenant(dbs: SimpleNam
     assert rows["dlq-b"]["resolved_at"] is not None  # tenant B's row, under B's context
     assert rows["dlq-cap"]["permanent_failure"] is True
     assert rows["dlq-cap"]["resolved_at"] is None
+
+
+# ── stale-job reaper (KB-SYNC-WORKER) ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reaper_fails_orphaned_running_jobs_across_tenants(dbs: SimpleNamespace) -> None:
+    """A worker killed mid-sync leaves its job ``running`` forever; the beat
+    reaper (maintenance role, cross-tenant) fails it once it is older than the
+    lock TTL, and leaves live and finished jobs alone."""
+    from app.ingestion.scheduler import _reap_stale_jobs_async
+
+    store = SourceConfigStore(db=dbs.app)
+    worker = IngestionJobTracker(db=dbs.app)
+    await store.create(_source(TENANT_A, "reap-a"))
+    await store.create(_source(TENANT_B, "reap-b"))
+    await worker.create_job(_source(TENANT_A, "reap-a"), job_id="orphan-a")
+    await worker.create_job(_source(TENANT_B, "reap-b"), job_id="orphan-b")
+    await worker.create_job(_source(TENANT_A, "reap-a"), job_id="live-a")
+    done = await worker.create_job(_source(TENANT_B, "reap-b"), job_id="done-b")
+    await worker.complete_job(done)
+    async with dbs.admin() as s, s.begin():
+        await s.execute(
+            text(
+                "UPDATE ingestion_jobs SET started_at = NOW() - interval '3 hours', "
+                "created_at = NOW() - interval '3 hours' "
+                "WHERE id IN ('orphan-a', 'orphan-b', 'done-b')"
+            )
+        )
+
+    # The application (NOBYPASSRLS) role cannot run the cross-tenant scan.
+    with pytest.raises(Exception, match="row-level security"):
+        await IngestionJobTracker(db=dbs.app, system_db=dbs.app).reap_stale_jobs(
+            older_than_seconds=7200
+        )
+
+    result = await _reap_stale_jobs_async(
+        tracker=IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
+    )
+    assert result == {"reaped": 2, "older_than_seconds": 7200}
+
+    async with dbs.admin() as s:
+        found = (
+            await s.execute(
+                text(
+                    "SELECT id, status, error_message, completed_at FROM ingestion_jobs "
+                    "WHERE id IN ('orphan-a', 'orphan-b', 'live-a', 'done-b')"
+                )
+            )
+        ).mappings().all()
+    rows = {r["id"]: r for r in found}
+    for job_id in ("orphan-a", "orphan-b"):
+        assert rows[job_id]["status"] == "failed"
+        assert "orphaned" in rows[job_id]["error_message"]
+        assert rows[job_id]["completed_at"] is not None
+    assert rows["live-a"]["status"] == "running"
+    assert rows["done-b"]["status"] == "completed"
+
+    # The API's sync status (the durable row) reports the reaped job honestly.
+    latest = await IngestionJobTracker(db=dbs.app).latest_job("reap-a", TENANT_A)
+    assert latest is not None
+    assert latest.job_id == "live-a"  # newest; the orphan is failed underneath
+    # Idempotent: a second pass reaps nothing.
+    again = await _reap_stale_jobs_async(
+        tracker=IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
+    )
+    assert again["reaped"] == 0
+
+
+def test_reaper_is_on_the_beat_schedule() -> None:
+    from app.scaling.celery_app import celery_app
+
+    entry = celery_app.conf.beat_schedule["ingestion-reap-stale-jobs"]
+    assert entry["task"] == "ingestion.reap_stale_jobs"
+    assert entry["options"]["queue"] == "ingestion"

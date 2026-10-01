@@ -387,36 +387,56 @@ async def trigger_sync(source_id: str, request: Request) -> dict:
         raise HTTPException(status_code=422, detail=connector_error_message(exc)) from exc
 
     tracker = _get_tracker(request)
-    pipeline = _get_pipeline(request)
 
     if tracker is None:
         return {"status": "accepted", "message": "Ingestion framework not configured"}
 
-    # LAW-14: try to acquire lock
-    job_id = await tracker.acquire_lock(source_id, tenant.tenant_id)
+    try:
+        job_id = await enqueue_source_sync(tracker, source_id, tenant.tenant_id)
+    except SyncEnqueueError as exc:
+        raise HTTPException(
+            status_code=503, detail="Sync could not be queued; try again shortly"
+        ) from exc
     if job_id is None:
         return {"status": "already_running", "message": "Sync already in progress for this source"}
+    return {"status": "queued", "job_id": job_id}
 
-    del pipeline  # the worker builds its own fully wired pipeline
+
+class SyncEnqueueError(RuntimeError):
+    """The sync task could not be handed to the broker (the lock was released)."""
+
+
+async def enqueue_source_sync(
+    tracker: Any, source_id: str, tenant_id: str, *, triggered_by: str = "manual"
+) -> str | None:
+    """Take the source's lock and queue the durable ``ingestion.sync_source`` task.
+
+    Returns the job id (the lock token the worker adopts), or None when a sync
+    already holds the lock. Every manual sync path goes through here, so none
+    runs inside an API process (a restart or scale-down used to lose it with the
+    job stuck ``running``). Raises :class:`SyncEnqueueError` after releasing the
+    lock when the broker refuses the task.
+    """
+    job_id = await tracker.acquire_lock(source_id, tenant_id)  # LAW-14
+    if job_id is None:
+        return None
     from app.ingestion.scheduler import sync_source_task
 
     try:
         sync_source_task.apply_async(
             kwargs={
                 "source_id": source_id,
-                "tenant_id": tenant.tenant_id,
-                "triggered_by": "manual",
+                "tenant_id": tenant_id,
+                "triggered_by": triggered_by,
                 "job_id": job_id,
             },
             queue="ingestion",
         )
     except Exception as exc:
-        await tracker.release_lock(source_id, tenant.tenant_id, job_id)
-        _log.exception("ingestion_manual_sync_enqueue_failed", source_id=source_id)
-        raise HTTPException(
-            status_code=503, detail="Sync could not be queued; try again shortly"
-        ) from exc
-    return {"status": "queued", "job_id": job_id}
+        await tracker.release_lock(source_id, tenant_id, job_id)
+        _log.exception("ingestion_sync_enqueue_failed", source_id=source_id)
+        raise SyncEnqueueError(str(exc)) from exc
+    return str(job_id)
 
 
 @router.get("/{source_id}/sync/status", response_model=dict)

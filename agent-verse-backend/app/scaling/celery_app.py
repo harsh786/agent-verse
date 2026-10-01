@@ -265,6 +265,12 @@ celery_app.conf.update(
             "schedule": 300.0,
             "options": {"queue": "ingestion"},
         },
+        # Fail jobs a lost worker left "running" (older than the lock TTL).
+        "ingestion-reap-stale-jobs": {
+            "task": "ingestion.reap_stale_jobs",
+            "schedule": 600.0,
+            "options": {"queue": "ingestion"},
+        },
         # (reindex-stale-knowledge removed: it marked a legacy table nothing
         # reads — see app.scaling.tasks.reindex_stale_knowledge. Freshness comes
         # from per-Source re-sync via ingestion-dispatch-due-sources.)

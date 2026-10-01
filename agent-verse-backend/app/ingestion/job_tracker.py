@@ -33,6 +33,13 @@ _BYTES_MARKER = "__bytes_b64__"
 _log = logging.getLogger(__name__)
 
 
+def _orphan_reason(older_than_seconds: int) -> str:
+    return (
+        f"orphaned: no worker finished this job within {older_than_seconds}s "
+        "(the worker was lost or restarted); trigger the sync again"
+    )
+
+
 class IngestionJobTracker:
     """Manages ingestion job lifecycle: create, update cursor, complete.
 
@@ -483,6 +490,60 @@ class IngestionJobTracker:
         from app.db.session import get_system_session_factory
 
         return get_system_session_factory()
+
+    async def reap_stale_jobs(self, *, older_than_seconds: int) -> list[dict[str, Any]]:
+        """Mark orphaned jobs failed: ``running``/``pending`` rows nobody finished.
+
+        A worker killed mid-sync (deploy, OOM, node loss) never reaches
+        ``complete_job``, so its row stayed ``running`` forever and the Sources
+        UI showed a sync that would never end. Any job older than
+        ``older_than_seconds`` — chosen above the source lock TTL, so a live
+        sync still holding its lock is never touched — is failed with an honest
+        reason. Cross-tenant beat scan → the maintenance role. Returns the rows
+        reaped (id, tenant_id, source_id).
+        """
+        if self._db is None and self._system_db is None:
+            reaped: list[dict[str, Any]] = []
+            cutoff = datetime.now(UTC).timestamp() - older_than_seconds
+            for job in self._jobs.values():
+                started = job.started_at or job.created_at
+                if job.status in ("running", "pending") and started and (
+                    datetime.fromisoformat(started).timestamp() < cutoff
+                ):
+                    job.status = "failed"
+                    job.error_message = _orphan_reason(older_than_seconds)
+                    job.completed_at = datetime.now(UTC).isoformat()
+                    reaped.append(
+                        {"id": job.job_id, "tenant_id": job.tenant_id, "source_id": job.source_id}
+                    )
+            return reaped
+        from sqlalchemy import text
+
+        async with (
+            self._system_factory()() as session,
+            session.begin(),
+            system_session(session),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE ingestion_jobs
+                       SET status = 'failed',
+                           completed_at = NOW(),
+                           error_message = :reason
+                     WHERE status IN ('running', 'pending')
+                       AND COALESCE(started_at, created_at)
+                           < NOW() - make_interval(secs => :age)
+                 RETURNING id, tenant_id, source_id
+                """),
+                {"reason": _orphan_reason(older_than_seconds), "age": older_than_seconds},
+            )
+            rows = [dict(row) for row in result.mappings()]
+        for row in rows:
+            job = self._jobs.get(str(row["id"]))
+            if job is not None:
+                job.status = "failed"
+                job.error_message = _orphan_reason(older_than_seconds)
+        return rows
 
     async def load_config(self, source_id: str, tenant_id: str) -> SourceConfig | None:
         """Load a SourceConfig from DB or in-memory store. Returns None if not found."""

@@ -414,6 +414,30 @@ async def _sync_source_async(
         await tracker.release_lock(source_id, tenant_id)
 
 
+@shared_task(name="ingestion.reap_stale_jobs", bind=True)
+def reap_stale_jobs_task(self) -> dict:
+    """Celery beat: fail ingestion jobs a lost worker left ``running`` (KB-SYNC-WORKER)."""
+    return asyncio.get_event_loop().run_until_complete(_reap_stale_jobs_async())
+
+
+async def _reap_stale_jobs_async(*, tracker: object | None = None) -> dict:
+    from app.core.config import get_settings
+    from app.ingestion.job_tracker import IngestionJobTracker
+
+    age = max(3600, int(getattr(get_settings(), "ingestion_stale_job_seconds", 7200)))
+    if tracker is None:
+        from app.db.session import get_system_session_factory
+
+        tracker = IngestionJobTracker(system_db=get_system_session_factory())
+    reaped = await tracker.reap_stale_jobs(older_than_seconds=age)  # type: ignore[attr-defined]
+    for row in reaped:
+        _log.warning(
+            "ingestion_job_reaped job=%s tenant=%s source=%s",
+            row["id"], row["tenant_id"], row["source_id"],
+        )
+    return {"reaped": len(reaped), "older_than_seconds": age}
+
+
 @shared_task(name="ingestion.dispatch_due_sources", bind=True)
 def dispatch_due_sources_task(self) -> dict:
     """Celery beat entry point — find all sources due for sync and enqueue them.

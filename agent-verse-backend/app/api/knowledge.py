@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -3058,18 +3057,23 @@ async def reingest_document(
 
 
 @router.post("/collections/{collection_id}/sync", status_code=202)
-async def sync_collection(
-    collection_id: str,
-    request: Request,
-    background_tasks: BackgroundTasks,
-) -> dict[str, Any]:
+async def sync_collection(collection_id: str, request: Request) -> dict[str, Any]:
     """Sync every ingestion source that feeds one of the caller's collections.
 
-    Each source goes through the same locked sync as ``POST
-    /ingestion/sources/{id}/sync``. It used to answer 200 "unsupported" for any
-    collection id, the caller's or not.
+    Each source is queued exactly like ``POST /sources/{id}/sync``: its lock is
+    taken and the durable ``ingestion.sync_source`` Celery task is enqueued on
+    the ingestion queue. These syncs used to run in this API process's
+    BackgroundTasks, so a restart or scale-down lost them and left the jobs
+    ``running`` forever (KB-SYNC-WORKER).
     """
-    from app.api.ingestion import _get_pipeline, _get_source_store, _get_tracker, _run_sync
+    from app.api.ingestion import (
+        SyncEnqueueError,
+        _available_connector,
+        _get_source_store,
+        _get_tracker,
+        enqueue_source_sync,
+    )
+    from app.ingestion.connector_registry import connector_error_message
 
     tenant = _require_tenant(request)
     await _owned_collection_or_404(request, collection_id, tenant)
@@ -3083,19 +3087,36 @@ async def sync_collection(
     ]
     queued: list[dict[str, str]] = []
     already_running: list[str] = []
-    pipeline = _get_pipeline(request)
+    unavailable: list[dict[str, str]] = []
+    not_queued: list[str] = []
     for source in sources:
-        job_id = await tracker.acquire_lock(source.source_id, tenant.tenant_id)
+        try:
+            _available_connector(str(getattr(source, "source_type", "")))
+        except (KeyError, RuntimeError) as exc:
+            unavailable.append(
+                {"source_id": source.source_id, "error": connector_error_message(exc)}
+            )
+            continue
+        try:
+            job_id = await enqueue_source_sync(tracker, source.source_id, tenant.tenant_id)
+        except SyncEnqueueError:
+            not_queued.append(source.source_id)
+            continue
         if job_id is None:
             already_running.append(source.source_id)
-            continue
-        background_tasks.add_task(_run_sync, source, pipeline, tracker, job_id, source_store)
-        queued.append({"source_id": source.source_id, "job_id": job_id})
+        else:
+            queued.append({"source_id": source.source_id, "job_id": job_id})
+    if not_queued and not queued:
+        raise HTTPException(
+            status_code=503, detail="Sync could not be queued; try again shortly"
+        )
     return {
         "status": "queued" if queued else ("already_running" if already_running else "no_sources"),
         "collection_id": collection_id,
         "queued": queued,
         "already_running": already_running,
+        "unavailable": unavailable,
+        "not_queued": not_queued,
     }
 
 

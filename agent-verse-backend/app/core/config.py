@@ -494,6 +494,9 @@ class Settings(BaseSettings):
     # (no DNS-rebinding window). A driver that resolves hosts outside Python and
     # cannot be pinned (confluent-kafka / librdkafka) is refused while this is on.
     ingestion_egress_strict_pinning: bool = True
+    # Ingestion jobs still running/pending after this long are reaped as failed
+    # (orphaned by a lost worker). Must exceed the source lock TTL (3600s).
+    ingestion_stale_job_seconds: int = 7200
 
     # --- owner decisions (defaults = shipped behaviour) ---
     # Shortest gap a plan may schedule between fires (cron, interval, api_poll

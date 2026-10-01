@@ -731,31 +731,59 @@ def test_sync_without_ingestion_framework_is_503() -> None:
     assert resp.status_code == 503
 
 
-def test_sync_queues_each_source_of_the_collection() -> None:
+def test_sync_queues_each_source_of_the_collection_on_the_celery_ingestion_queue() -> None:
+    """KB-SYNC-WORKER: syncs run in the durable worker, not in this API process."""
     from types import SimpleNamespace
 
     client = _client(embedder=_make_embedder())
     coll_id, _ = _collection_with_doc(client, "text")
-    mine = SimpleNamespace(source_id="s1", collection_id=coll_id)
-    busy = SimpleNamespace(source_id="s2", collection_id=coll_id)
+    mine = SimpleNamespace(source_id="s1", collection_id=coll_id, source_type="github")
+    busy = SimpleNamespace(source_id="s2", collection_id=coll_id, source_type="github")
     other = SimpleNamespace(source_id="s3", collection_id="another-collection")
     source_store = SimpleNamespace(list=AsyncMock(return_value=[mine, busy, other]))
     tracker = SimpleNamespace(
-        acquire_lock=AsyncMock(side_effect=lambda sid, tid: None if sid == "s2" else f"job-{sid}")
+        acquire_lock=AsyncMock(side_effect=lambda sid, tid: None if sid == "s2" else f"job-{sid}"),
+        release_lock=AsyncMock(),
     )
     run_sync = AsyncMock()
     with (
         patch("app.api.ingestion._get_source_store", return_value=source_store),
         patch("app.api.ingestion._get_tracker", return_value=tracker),
-        patch("app.api.ingestion._get_pipeline", return_value=object()),
         patch("app.api.ingestion._run_sync", new=run_sync),
+        patch("app.ingestion.scheduler.sync_source_task") as task,
     ):
         resp = client.post(f"/knowledge/collections/{coll_id}/sync", headers=_auth())
     assert resp.status_code == 202
     body = resp.json()
     assert body["queued"] == [{"source_id": "s1", "job_id": "job-s1"}]
     assert body["already_running"] == ["s2"]
-    assert run_sync.await_count == 1
+    run_sync.assert_not_awaited()  # nothing runs in the API process
+    task.apply_async.assert_called_once()
+    call = task.apply_async.call_args.kwargs
+    assert call["queue"] == "ingestion"
+    assert call["kwargs"] == {
+        "source_id": "s1", "tenant_id": _CTX.tenant_id, "triggered_by": "manual", "job_id": "job-s1",
+    }
+    tracker.release_lock.assert_not_awaited()
+
+
+def test_sync_enqueue_failure_releases_the_lock_and_is_503() -> None:
+    from types import SimpleNamespace
+
+    client = _client(embedder=_make_embedder())
+    coll_id, _ = _collection_with_doc(client, "text")
+    src = SimpleNamespace(source_id="s1", collection_id=coll_id, source_type="github")
+    source_store = SimpleNamespace(list=AsyncMock(return_value=[src]))
+    tracker = SimpleNamespace(acquire_lock=AsyncMock(return_value="job-1"), release_lock=AsyncMock())
+    with (
+        patch("app.api.ingestion._get_source_store", return_value=source_store),
+        patch("app.api.ingestion._get_tracker", return_value=tracker),
+        patch("app.ingestion.scheduler.sync_source_task") as task,
+    ):
+        task.apply_async.side_effect = ConnectionError("broker down")
+        resp = client.post(f"/knowledge/collections/{coll_id}/sync", headers=_auth())
+    assert resp.status_code == 503
+    tracker.release_lock.assert_awaited_once_with("s1", _CTX.tenant_id, "job-1")
 
 
 # ---------------------------------------------------------------------------
