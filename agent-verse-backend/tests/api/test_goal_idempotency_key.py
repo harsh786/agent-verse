@@ -125,8 +125,8 @@ def test_idempotency_store_error_fails_closed_with_503() -> None:
 async def test_store_claim_complete_release_roundtrip() -> None:
     store = _store()
     assert await store.claim("k", "t") is None
-    assert await store.claim("k", "t") == {"state": "pending"}
+    assert (await store.claim("k", "t"))["state"] == "pending"
     await store.complete("k", "t", {"goal_id": "g1"})
-    assert await store.claim("k", "t") == {"state": "done", "response": {"goal_id": "g1"}}
+    assert (await store.claim("k", "t"))["response"] == {"goal_id": "g1"}
     await store.release("k", "t")
     assert await store.claim("k", "t") is None
