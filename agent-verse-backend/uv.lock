@@ -49,6 +49,7 @@ dependencies = [
     { name = "faster-whisper" },
     { name = "feedparser" },
     { name = "fpdf2" },
+    { name = "google-genai" },
     { name = "httpx" },
     { name = "kokoro-onnx" },
     { name = "langgraph" },
@@ -123,9 +124,6 @@ connectors = [
 docx = [
     { name = "python-docx" },
 ]
-gemini = [
-    { name = "google-genai" },
-]
 local-embed = [
     { name = "sentence-transformers" },
 ]
@@ -196,7 +194,7 @@ requires-dist = [
     { name = "google-cloud-bigquery", marker = "extra == 'connectors'", specifier = ">=3.25" },
     { name = "google-cloud-pubsub", marker = "extra == 'connectors'", specifier = ">=2.23" },
     { name = "google-cloud-storage", marker = "extra == 'connectors'", specifier = ">=2.18" },
-    { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.33.0" },
+    { name = "google-genai", specifier = ">=1.33.0" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "influxdb-client", marker = "extra == 'connectors'", specifier = ">=1.40" },
     { name = "kokoro-onnx", specifier = ">=0.3.4" },

@@ -51,6 +51,10 @@ dependencies = [
     "langgraph-checkpoint-redis>=0.0.1",
     "boto3>=1.40.61",
     "openai>=2.44.0",
+    # Gemini LLM + embedding provider (app/providers/gemini_provider.py) is offered
+    # whenever GOOGLE_API_KEY / a tenant Gemini key is set, so the SDK is a runtime
+    # dependency, not an opt-in extra (an image without it failed at first use).
+    "google-genai>=1.33.0",
     "tiktoken>=0.7.0",
     "pyotp>=2.10.0",
     "qrcode[pil]>=8.2",
@@ -95,7 +99,7 @@ agentverse = "app.cli.main:app"
 [project.optional-dependencies]
 # LLM providers (install as needed)
 voyage = []
-gemini = ["google-genai>=1.33.0"]
+gemini = []  # kept for compatibility: google-genai is now a core dependency
 local-embed = ["sentence-transformers>=3.0.0"]
 browser = ["playwright>=1.48.0"]  # route_web_socket (browser SSRF guard)
 artifacts = ["aioboto3>=13.0"]
