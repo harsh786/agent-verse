@@ -6,7 +6,6 @@ import asyncio
 import contextvars
 import dataclasses
 import hashlib
-import inspect
 import json
 import time
 from typing import Any
@@ -1326,28 +1325,21 @@ class ExecutorMixin:
         gateway = self._hitl_gateway
         if gateway is None:  # callers check first; never wait on nothing
             raise PermissionError("No approval gateway is configured; the step was not executed.")
-        durable = getattr(gateway, "request_approval_async", None)
-        if durable is not None and inspect.iscoroutinefunction(durable):
-            try:
-                return str(
-                    await durable(
-                        goal_id=goal_id,
-                        action=action,
-                        risk_level=risk_level,
-                        tenant_ctx=tenant_ctx,
-                        require_persisted=True,
-                    )
-                )
-            except HITLDeliveryError as exc:
-                raise PermissionError(
-                    f"Approval request for '{action[:120]}' could not be persisted, so no "
-                    f"approver can see it; the step was not executed ({exc})."
-                ) from exc
-        return str(
-            gateway.request_approval(
-                goal_id=goal_id, action=action, risk_level=risk_level, tenant_ctx=tenant_ctx
+        from app.agent.hitl_filing import file_persisted_approval
+
+        try:
+            return await file_persisted_approval(
+                gateway,
+                goal_id=goal_id,
+                action=action,
+                risk_level=risk_level,
+                tenant_ctx=tenant_ctx,
             )
-        )
+        except HITLDeliveryError as exc:
+            raise PermissionError(
+                f"Approval request for '{action[:120]}' could not be persisted, so no "
+                f"approver can see it; the step was not executed ({exc})."
+            ) from exc
 
     async def _execute_step(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str:
         """Run the governed per-step pipeline and record its real output for dedup.

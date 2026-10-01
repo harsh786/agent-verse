@@ -20,6 +20,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from app.agent.hitl_filing import HITLDeliveryError, file_persisted_approval
 from app.agent.nodes._helpers import resolve_effective_tool_risk
 from app.agent.tool_risk import classify_tool_risk
 from app.governance.grants import enforce_tool_call
@@ -182,14 +183,23 @@ class GovernedToolGate:
                 f"'{tool_name}' requires approval ({self._autonomy_mode} mode awaits none); "
                 "run the goal in supervised mode to approve it",
             )
-        req_id = str(
-            self._hitl.request_approval(
+        # CORE-27: filed durably. A request whose row could not be written is
+        # invisible to every other replica, so nobody could approve it: deny now
+        # instead of waiting out the timeout on it.
+        try:
+            req_id = await file_persisted_approval(
+                self._hitl,
                 goal_id=goal_id,
                 action=f"{tool_name}: {step}"[:500],
                 risk_level="high",
                 tenant_ctx=tenant_ctx,
             )
-        )
+        except HITLDeliveryError as exc:
+            return GateDecision(
+                False,
+                f"'{tool_name}' approval request could not be persisted, so no approver "
+                f"can see it; the tool was not run ({type(exc).__name__})",
+            )
         from app.agent.step_watchdog import approval_wait
 
         with approval_wait():  # a human decision is not step time

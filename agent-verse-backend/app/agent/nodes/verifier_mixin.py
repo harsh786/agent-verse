@@ -234,6 +234,7 @@ class VerifierMixin:
                         summary=summary,
                         model=_verify_model,
                     )
+                    _primary_reason = reason
                     success = consensus_result.success
                     reason = consensus_result.majority_reason or reason
                     # HITL if disagreement. Only a supervised run pauses on the
@@ -252,15 +253,36 @@ class VerifierMixin:
                                 f"{consensus_result.majority_reason or ''}"
                             )[:1000]
                     elif consensus_result.requires_hitl and self._hitl_gateway is not None:
-                        req_id = str(
-                            self._hitl_gateway.request_approval(
+                        # CORE-27: filed durably, so the waiting_human pause always
+                        # corresponds to a persisted row another replica can list
+                        # and approve. If it cannot be persisted nobody can
+                        # adjudicate it: the primary FAIL verdict stands.
+                        from app.agent.hitl_filing import (
+                            HITLDeliveryError,
+                            file_persisted_approval,
+                        )
+
+                        try:
+                            req_id = await file_persisted_approval(
+                                self._hitl_gateway,
                                 goal_id=agent_state.goal_id,
                                 action=f"Consensus disagreement on goal: {agent_state.goal[:100]}",
                                 risk_level="high",
                                 tenant_ctx=tenant_ctx,
                             )
-                        )
-                        self._logger.info("consensus_hitl_requested", req_id=req_id)
+                            self._logger.info("consensus_hitl_requested", req_id=req_id)
+                        except HITLDeliveryError as exc:
+                            success = False
+                            agent_state.context["verification_retry"] = retry
+                            reason = (
+                                "Consensus verification disputed and the human-review "
+                                "request could not be persisted "
+                                f"({type(exc).__name__}); primary verdict stands: "
+                                f"{_primary_reason}"
+                            )[:1000]
+                            self._logger.warning(
+                                "consensus_hitl_not_persisted", error=type(exc).__name__
+                            )
             except Exception as exc:
                 self._logger.warning("consensus_verify_failed", error=str(exc)[:80])
 

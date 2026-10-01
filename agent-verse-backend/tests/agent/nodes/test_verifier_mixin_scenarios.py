@@ -442,6 +442,54 @@ async def test_verify_consensus_risk_lookup_handles_dict_tool_calls() -> None:
     assert result["agent_state"].verification_success is False
 
 
+class _BrokenSession:
+    async def __aenter__(self) -> None:
+        raise ConnectionError("approval_requests unreachable")
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_verify_consensus_hitl_unpersistable_keeps_primary_fail() -> None:
+    """CORE-27: the consensus-disagreement approval is filed durably. When it
+    cannot be persisted nobody can adjudicate it, so the disputed majority must
+    not win and the goal must not park in waiting_human on an invisible row."""
+    hitl = HITLGateway(db_session_factory=_BrokenSession)
+    consensus_result = MagicMock()
+    consensus_result.success = True
+    consensus_result.majority_reason = "2 of 3 verifiers say it worked"
+    consensus_result.requires_hitl = True
+    consensus = MagicMock()
+    consensus.verify = AsyncMock(return_value=consensus_result)
+    verifier = FakeProvider(
+        responses=['{"success": false, "reason": "looked broken", "retry": true}']
+    )
+    graph = _make_graph(
+        verifier=verifier,
+        consensus_verifier=consensus,
+        hitl_gateway=hitl,
+        autonomy_mode="supervised",
+    )
+    agent_state = _agent_state("delete production database backups")
+    agent_state.steps.append(
+        StepResult(
+            description="delete backups",
+            status=StepStatus.COMPLETE,
+            output="deleted",
+            tool_calls=[{"tool_name": "db.delete", "risk_level": "destructive"}],
+        )
+    )
+
+    result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+
+    state = result["agent_state"]
+    assert state.verification_success is False
+    assert "could not be persisted" in (state.verification_feedback or "")
+    assert hitl._requests == {}
+    assert graph._route({"agent_state": state, "tenant_ctx": T}) != "waiting_human"
+
+
 # ===========================================================================
 # Grounding gate
 # ===========================================================================

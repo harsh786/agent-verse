@@ -159,3 +159,30 @@ async def test_charge_llm_controller_error_denies_spend() -> None:
     gate = GovernedToolGate(cost_controller=cc, guardrails=None)
     resp = SimpleNamespace(model="gpt-4o", usage=None, input_tokens=10, output_tokens=5)
     assert await gate.charge_llm(goal_id="g1", tenant_ctx=T, resp=resp) is False
+
+
+class _BrokenSession:
+    async def __aenter__(self) -> None:
+        raise ConnectionError("approval_requests unreachable")
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+async def test_unpersistable_approval_denies_workflow_tool_immediately() -> None:
+    """CORE-27: the gate files its approval durably. When the row cannot be
+    written no other replica can see it, so the tool is denied now — it used to
+    be filed fire-and-forget and the gate waited out its whole timeout."""
+    from app.governance.hitl import HITLGateway
+
+    hitl = HITLGateway(db_session_factory=_BrokenSession)
+    hitl.wait_for_approval = AsyncMock(return_value=ApprovalStatus.APPROVED)  # type: ignore[method-assign]
+    gate = GovernedToolGate(
+        hitl_gateway=hitl, autonomy_mode="supervised", guardrails=None, hitl_timeout=0.1
+    )
+    result, mcp = await _run_tool_step(gate, tool="create_invoice")
+    assert result["status"] == "denied"
+    assert "could not be persisted" in result["error"]
+    hitl.wait_for_approval.assert_not_awaited()
+    assert hitl._requests == {}  # no invisible, process-local request left behind
+    mcp.call_tool.assert_not_called()
