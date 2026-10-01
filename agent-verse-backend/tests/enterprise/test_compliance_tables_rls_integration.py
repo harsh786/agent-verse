@@ -531,8 +531,9 @@ async def test_compliance_request_paths_work_and_isolate_under_nobypassrls(
             # Tenant B sees none of it.
             assert (await c.get("/enterprise/contracts", headers=hb)).json() == []
             assert (await c.get(f"/compliance/export/jobs/{job_id}", headers=hb)).status_code == 404
-            # ...and B revoking "analytics" does not touch A's consent.
-            assert (await c.delete("/compliance/consent/analytics", headers=hb)).status_code == 200
+            # ...and B revoking "analytics" does not touch A's consent: B has no
+            # active consent for it, so the revoke is a 404 (never a fake 'revoked').
+            assert (await c.delete("/compliance/consent/analytics", headers=hb)).status_code == 404
     task.delay.assert_called_once_with(job_id, a)
 
     async with admin() as s:
