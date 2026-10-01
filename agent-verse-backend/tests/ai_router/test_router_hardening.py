@@ -92,8 +92,8 @@ def test_provider_for_model_helper() -> None:
     assert orch.provider_for_model("gpt-5.2") == "openai"
     assert orch.provider_for_model("claude-3-5-sonnet") == "anthropic"
     assert orch.provider_for_model("gemini-2.5-pro") == "google"
-    # Unknown model defaults to openai (safe default).
-    assert orch.provider_for_model("totally-unknown") == "openai"
+    # PROV-19: an unknown model is "unknown" — never attributed to openai.
+    assert orch.provider_for_model("totally-unknown") == "unknown"
 
 
 def test_both_providers_down_returns_a_usable_model() -> None:

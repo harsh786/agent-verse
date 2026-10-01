@@ -62,14 +62,50 @@ _MODEL_PROVIDER: dict[str, str] = {
 }
 
 
-def provider_for_model(model: str) -> str:
-    """Module-level model→provider map (defaults to ``openai`` for unknown models).
+_UNKNOWN_PROVIDER = "unknown"
 
-    Mirror of :meth:`ModelOrchestrator.provider_for_model`; exposed so call sites
-    that only have a model name (e.g. the executor's provider-health wiring) can
-    resolve the provider without an orchestrator instance.
+
+def provider_for_model(model: str) -> str:
+    """The provider serving *model*: the configured registry first (the deployment's
+    own models, e.g. NVIDIA / on-prem), then the reference slugs, else ``"unknown"``.
+
+    Unknown models used to map to ``"openai"``, so an NVIDIA / on-prem model's
+    failures were recorded against openai and health failover targeted the wrong
+    provider.
     """
-    return _MODEL_PROVIDER.get(model, "openai")
+    if not model:
+        return _UNKNOWN_PROVIDER
+    try:
+        from app.ai_router.registry import model_registry
+
+        for endpoint in model_registry.list_configured():
+            if endpoint.model_id == model:
+                return endpoint.provider
+    except Exception:  # pragma: no cover - never block selection
+        pass
+    return _MODEL_PROVIDER.get(model, _UNKNOWN_PROVIDER)
+
+
+def _configured_for_tier(tier: str) -> str:
+    """Best CONFIGURED text model within *tier* (highest quality, then cheaper), or "".
+
+    Tier models come from what the deployment serves; the static OpenAI table is
+    only the fallback when nothing is configured.
+    """
+    try:
+        from app.ai_router.models import ModelCapability
+        from app.ai_router.registry import model_registry
+
+        allowed = [
+            m
+            for m in model_registry.list_configured(ModelCapability.TEXT_GENERATION)
+            if _TIER_RANK[model_quality_tier(m.model_id)] <= _TIER_RANK[tier]
+        ]
+    except Exception:  # pragma: no cover - never block selection
+        return ""
+    if not allowed:
+        return ""
+    return max(allowed, key=lambda m: (m.quality_score, -m.cost_per_1k_input)).model_id
 
 
 # Health-based failover target: when a provider's circuit is open, prefer this
@@ -249,8 +285,14 @@ class ModelOrchestrator:
 
         tier_models = _TIER_MODELS[tier]
 
+        configured = _configured_for_tier(tier)
+
         def resolve(role: str, hint: str) -> str:
-            model = hint if hint and hint != "default" else tier_models.get(role, "gpt-4o-mini")
+            model = (
+                hint
+                if hint and hint != "default"
+                else configured or tier_models.get(role, "gpt-4o-mini")
+            )
             return self._with_failover(model)
 
         latency_class = "realtime" if time_sens == "realtime" else "interactive"
@@ -258,7 +300,7 @@ class ModelOrchestrator:
             planner=resolve("planner", config.model_planner),
             executor=resolve("executor", config.model_executor),
             verifier=resolve("verifier", config.model_verifier),
-            judge=tier_models["judge"],
+            judge=configured or tier_models["judge"],
             embedder=tier_models["embedder"],
             reranker=tier_models["reranker"],
             classifier=resolve("classifier", config.model_classifier),
@@ -307,8 +349,8 @@ class ModelOrchestrator:
         )
 
     def provider_for_model(self, model: str) -> str:
-        """Map a model name to its provider (defaults to ``openai`` for unknown models)."""
-        return _MODEL_PROVIDER.get(model, "openai")
+        """Map a model name to its provider (``"unknown"`` when it cannot be told)."""
+        return provider_for_model(model)
 
     def record_provider_result(
         self,
@@ -353,8 +395,8 @@ class ModelOrchestrator:
         requires_vision: bool = False,
         requires_audio: bool = False,
     ) -> str:
-        provider = _MODEL_PROVIDER.get(model, "openai")
-        if not self._provider_open(provider):
+        provider = provider_for_model(model)
+        if provider == _UNKNOWN_PROVIDER or not self._provider_open(provider):
             return model
 
         # Sweep providers (preferred fallback first) for a healthy one that still
@@ -569,4 +611,6 @@ class ModelOrchestratorAdapter:
         learns. Accepts a *model* name (the executor's call site has the model, not the
         provider), maps it to its provider, and delegates to the orchestrator."""
         provider = self._orchestrator.provider_for_model(model)
+        if provider == _UNKNOWN_PROVIDER:
+            return  # never attribute an unidentified model's outcome to some provider
         self._orchestrator.record_provider_result(provider, ok=ok, latency_ms=latency_ms)
