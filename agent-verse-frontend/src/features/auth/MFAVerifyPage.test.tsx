@@ -2,7 +2,7 @@
  * Tests for MFAVerifyPage — the post-login two-factor verification screen.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
@@ -84,13 +84,38 @@ describe('MFAVerifyPage', () => {
   });
 
   test('strips non-digits and does not auto-submit before 6 digits', async () => {
-    const spy = mockFetch();
-    renderPage();
-    fireEvent.change(screen.getByLabelText('TOTP verification code'), { target: { value: '12ab3' } });
-    // Only 3 digits survived the filter → no verify request yet.
-    expect(screen.getByLabelText('TOTP verification code')).toHaveValue('123');
-    await new Promise((r) => setTimeout(r, 200));
-    expect(spy.mock.calls.some(([u]) => String(u).includes('/auth/mfa/verify'))).toBe(false);
+    // Fake timers: the auto-submit delay is driven explicitly instead of a real
+    // 200 ms sleep (during which earlier tests' stray auto-submit timers fired).
+    vi.useFakeTimers();
+    try {
+      const spy = mockFetch();
+      renderPage();
+      fireEvent.change(screen.getByLabelText('TOTP verification code'), { target: { value: '12ab3' } });
+      // Only 3 digits survived the filter → no verify request, however long we wait.
+      expect(screen.getByLabelText('TOTP verification code')).toHaveValue('123');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(spy.mock.calls.some(([u]) => String(u).includes('/auth/mfa/verify'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a pending auto-submit is cancelled when the page unmounts', async () => {
+    vi.useFakeTimers();
+    try {
+      const spy = mockFetch();
+      const { unmount } = renderPage();
+      fireEvent.change(screen.getByLabelText('TOTP verification code'), { target: { value: '123456' } });
+      unmount(); // navigated away inside the auto-submit delay
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      expect(spy.mock.calls.some(([u]) => String(u).includes('/auth/mfa/verify'))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('switching to recovery mode verifies an 11-char recovery code on submit', async () => {

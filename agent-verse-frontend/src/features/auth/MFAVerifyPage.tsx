@@ -3,7 +3,7 @@
  *
  * Flow: Login → (MFA required) → this page → verify code → app
  */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
 import { Shield, Loader2, KeyRound, RefreshCw } from 'lucide-react';
@@ -53,12 +53,27 @@ export default function MFAVerifyPage() {
     verifyMutation.mutate();
   };
 
-  // Auto-submit when 6 digits entered (TOTP mode)
+  // Auto-submit when 6 digits entered (TOTP mode). The short delay lets the 6th
+  // digit render first; the pending timer is cancelled by a further edit and on
+  // unmount — it used to fire after navigating away and verify anyway.
+  const autoSubmitTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelAutoSubmit = () => {
+    if (autoSubmitTimer.current !== null) {
+      clearTimeout(autoSubmitTimer.current);
+      autoSubmitTimer.current = null;
+    }
+  };
+  useEffect(() => cancelAutoSubmit, []);
+
   const handleCodeChange = (v: string) => {
     const clean = mode === 'totp' ? v.replace(/\D/g, '').slice(0, 6) : v.slice(0, 11);
     setCode(clean);
+    cancelAutoSubmit();
     if (mode === 'totp' && clean.length === 6) {
-      setTimeout(() => verifyMutation.mutate(), 100);
+      autoSubmitTimer.current = setTimeout(() => {
+        autoSubmitTimer.current = null;
+        verifyMutation.mutate();
+      }, 100);
     }
   };
 

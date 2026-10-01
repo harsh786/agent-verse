@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { WorkflowBuilderPage } from './WorkflowBuilderPage';
@@ -9,7 +9,9 @@ vi.mock('@/stores/auth', () => {
   const useAuthStore = (sel: any) => sel(mockState);
   // API client calls useAuthStore.getState() in request()
   (useAuthStore as any).getState = () => ({ ...mockState, logout: vi.fn() });
-  return { useAuthStore };
+  // request() also adds the MFA session header; without this export the mock made
+  // every API call throw before fetch (the page's catch swallowed it as a toast).
+  return { useAuthStore, getMfaHeader: () => ({}) };
 });
 
 vi.mock('@/stores/toast', () => ({
@@ -170,15 +172,17 @@ describe('WorkflowBuilderPage', () => {
     const genBtn = screen.getByRole('button', { name: /generate/i });
     expect(genBtn).toBeDefined();
 
-    // Click and flush all async work including the fetch call
     await act(async () => {
       fireEvent.click(genBtn);
     });
 
     // Verify that fetch was called with /workflows/generate, not /goals
-    expect(
-      mockFetch.mock.calls.some((c) => String(c[0]).includes('/workflows/generate'))
-    ).toBe(true);
+    await waitFor(() =>
+      expect(
+        mockFetch.mock.calls.some((c) => String(c[0]).includes('/workflows/generate'))
+      ).toBe(true),
+    );
+    expect(mockFetch.mock.calls.some((c) => /\/goals(\?|$)/.test(String(c[0])))).toBe(false);
   });
 
   it('templates modal opens when Templates button is clicked', () => {
