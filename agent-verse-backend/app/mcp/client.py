@@ -1762,5 +1762,11 @@ class MCPClient:
             if token is not None and not token.is_expired() and token.access_token:
                 return str(token.access_token)
         except Exception as exc:
-            logger.warning("oauth_token_lookup_failed server_id=%s error=%s", server_id, exc)
+            from app.mcp.oauth import OAuthReauthorizationRequiredError
+
+            if isinstance(exc, OAuthReauthorizationRequiredError):
+                # No token is sent: the connection must be authorized again.
+                logger.error("oauth_reauthorization_required server_id=%s", server_id)
+            else:
+                logger.warning("oauth_token_lookup_failed server_id=%s error=%s", server_id, exc)
         return None

@@ -49,6 +49,20 @@ class OAuthToken:
         return time.time() > self.obtained_at + self.expires_in - 60
 
 
+class OAuthReauthorizationRequiredError(RuntimeError):
+    """A connection's stored OAuth token cannot be used (it cannot be decrypted, or
+    the connection was already marked): the tenant must authorize it again.
+
+    Never a fallback: the stored value used to be returned as the token when the
+    vault could not decrypt it, so the *ciphertext* went out as a Bearer token.
+    """
+
+    def __init__(self, message: str, *, server_id: str = "", tenant_id: str = "") -> None:
+        super().__init__(message)
+        self.server_id = server_id
+        self.tenant_id = tenant_id
+
+
 _OAUTH_STATE_TTL = 600  # 10 minutes
 # How long a token read from the durable store is served from process memory
 # before it is re-read (another replica/worker may have refreshed or revoked it).
@@ -107,13 +121,21 @@ class OAuthFlowManager:
         return value
 
     def _decrypt_token(self, value: str) -> str:
-        """Decrypt *value* using the vault if available, else return as-is."""
-        if self._vault is not None and value:
-            try:
-                return self._vault.decrypt(value)
-            except Exception:
-                pass
-        return value
+        """Decrypt *value* with the vault; without a vault (dev) it is plaintext.
+
+        A value the vault cannot decrypt raises :class:`OAuthReauthorizationRequiredError`
+        (fail closed). It used to be returned unchanged — the ciphertext was then
+        sent to the provider as the access/refresh token.
+        """
+        if self._vault is None or not value:
+            return value
+        try:
+            return str(self._vault.decrypt(value))
+        except Exception as exc:
+            raise OAuthReauthorizationRequiredError(
+                f"stored OAuth token cannot be decrypted ({type(exc).__name__}); "
+                "re-authorize the connector"
+            ) from exc
 
     async def _tenant_vault(self, tenant_id: str) -> Any:
         """The tenant's envelope vault (``None`` = no key / no DB). Raises when unreadable."""
@@ -400,7 +422,8 @@ class OAuthFlowManager:
             row = (
                 await session.execute(
                     text(
-                        "SELECT access_token, refresh_token, expires_at, token_type, scope "
+                        "SELECT access_token, refresh_token, expires_at, token_type, scope, "
+                        "needs_reauth "
                         "FROM oauth_tokens WHERE tenant_id = :tid AND server_id = :sid"
                     ),
                     {"tid": tenant_id, "sid": server_id},
@@ -417,6 +440,11 @@ class OAuthFlowManager:
         which never ran the OAuth flow — is found. A row that no longer exists
         (connector disconnected / token revoked) is not served from stale memory.
         If the store cannot be read, the in-process copy is used.
+
+        A stored token that cannot be decrypted marks the connection as needing
+        re-authorization (``oauth_tokens.needs_reauth``) and raises
+        :class:`OAuthReauthorizationRequiredError`; so does a connection already
+        marked, until a new token is stored (OAuth callback / refresh).
         """
         key = (tenant_id, server_id)
         cached = self._tokens.get(key)
@@ -439,12 +467,54 @@ class OAuthFlowManager:
         if row is None:
             self._drop_cached(key)
             return None
+        if len(row) > 5 and row[5]:
+            self._drop_cached(key)
+            raise OAuthReauthorizationRequiredError(
+                "the connector's OAuth authorization is no longer usable; re-authorize it",
+                server_id=server_id,
+                tenant_id=tenant_id,
+            )
         # A tv1 token whose tenant key is gone raises TenantVaultError (never
         # served as ciphertext or opened with another key).
-        token = self._token_from_row(*row[:5], tenant_vault=tenant_vault)
+        try:
+            token = self._token_from_row(*row[:5], tenant_vault=tenant_vault)
+        except OAuthReauthorizationRequiredError as exc:
+            self._drop_cached(key)
+            await self._mark_needs_reauth(tenant_id, server_id, str(row[0] or ""))
+            raise OAuthReauthorizationRequiredError(
+                str(exc), server_id=server_id, tenant_id=tenant_id
+            ) from exc
         self._cache_token(key, token)
         await self._rewrap_row(tenant_id, server_id, row, token, tenant_vault)
         return token
+
+    async def _mark_needs_reauth(self, tenant_id: str, server_id: str, access_enc: str) -> None:
+        """Durably flag the connection (every replica and the worker then refuse it
+        without retrying the decrypt). Compare-and-swap on the ciphertext that
+        failed, so a token stored concurrently is not flagged. Best effort: the
+        caller raises either way."""
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        "UPDATE oauth_tokens SET needs_reauth = true "
+                        "WHERE tenant_id = :tid AND server_id = :sid AND access_token = :at"
+                    ),
+                    {"tid": tenant_id, "sid": server_id, "at": access_enc},
+                )
+        except Exception as exc:
+            _log.warning("oauth_mark_reauth_failed server_id=%s error=%s", server_id, exc)
+        _log.error(
+            "oauth_reauthorization_required tenant_id=%s server_id=%s", tenant_id, server_id
+        )
 
     async def _rewrap_row(
         self,
@@ -537,8 +607,10 @@ class OAuthFlowManager:
             if self._db_session_factory is not None:
                 try:
                     row = await self._fetch_token_row(resolved_tenant_id, server_id)
-                    if row is not None:
-                        current = self._token_from_row(*row[:5])
+                    if row is not None and not (len(row) > 5 and row[5]):
+                        current = self._token_from_row(
+                            *row[:5], tenant_vault=await self._tenant_vault(resolved_tenant_id)
+                        )
                 except Exception as exc:
                     _log.warning("oauth_token_read_failed server_id=%s error=%s", server_id, exc)
             if current is not None and current.access_token != existing.access_token:
@@ -629,6 +701,7 @@ class OAuthFlowManager:
                             ON CONFLICT (tenant_id, server_id)
                             DO UPDATE SET access_token=EXCLUDED.access_token,
                                 refresh_token=EXCLUDED.refresh_token,
+                                needs_reauth=false,
                                 token_type=EXCLUDED.token_type,
                                 scope=EXCLUDED.scope,
                                 expires_at=EXCLUDED.expires_at"""
