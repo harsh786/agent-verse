@@ -297,8 +297,13 @@ describe('OrgPage — command panel cohesion', () => {
   // OrgPage and its tree of children evaluate.
   let OrgPageLazy: React.ComponentType;
 
-  it('mounts the full Situation Room command panel without crashing', async () => {
+  // Import once, outside the per-test timeout: transforming OrgPage's whole
+  // module tree cold can take longer than a test's budget on a busy machine.
+  beforeAll(async () => {
     ({ OrgPage: OrgPageLazy } = await import('../OrgPage'));
+  }, 180_000);
+
+  it('mounts the full Situation Room command panel without crashing', async () => {
     renderOrgPage();
 
     // Reduced-motion is mocked true, so the JARVIS boot screen is skipped and
@@ -330,7 +335,6 @@ describe('OrgPage — command panel cohesion', () => {
   });
 
   it('renders the sections in Situation Room order: live → comms → brain → control', async () => {
-    ({ OrgPage: OrgPageLazy } = await import('../OrgPage'));
     renderOrgPage();
     const panel = await screen.findByLabelText('Command panel');
 
