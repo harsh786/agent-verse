@@ -115,3 +115,33 @@ def test_backfill_is_runnable_as_a_celery_task() -> None:
     )
     src = inspect.getsource(tasks.backfill_canonical_memory)
     assert "run_reflexion_lessons_backfill" in src
+
+
+def test_backfill_repository_carries_the_shared_embedder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MEM-10: the backfill built its repository with no embedder (vector-less rows)."""
+    from types import SimpleNamespace
+
+    from app.scaling import tasks
+
+    async def _embed(_req: Any) -> Any:
+        return SimpleNamespace(embeddings=[[0.1] * 1536])
+
+    provider = SimpleNamespace(embed=_embed, embed_model="text-embedding-3-small")
+    monkeypatch.setattr(
+        "app.providers.embedder_factory.build_query_embedder", lambda *a, **k: provider
+    )
+    repo = tasks._canonical_memory_repository(object())
+    assert repo.embedding_model == "text-embedding-3-small"
+
+
+def test_canonical_memory_maintenance_is_scheduled_daily() -> None:
+    from app.scaling import tasks
+    from app.scaling.celery_app import celery_app
+
+    assert tasks.canonical_memory_maintenance.name == (
+        "agentverse.maintenance.canonical_memory_maintenance"
+    )
+    entry = celery_app.conf.beat_schedule["canonical-memory-maintenance-daily"]
+    assert entry["task"] == "agentverse.maintenance.canonical_memory_maintenance"
+    src = inspect.getsource(tasks.canonical_memory_maintenance)
+    assert "reembed_pending" in src and "system_session" in src

@@ -37,13 +37,22 @@ def fit_memory_vector(vec: list[float] | tuple[float, ...]) -> tuple[float, ...]
 
 
 def _provider_model_id(provider: Any) -> str:
-    model = (
-        getattr(provider, "embed_model", None)
-        or getattr(provider, "embedding_model", None)
-        or getattr(provider, "default_model", None)
-        or ""
-    )
-    return f"{type(provider).__name__}:{model}"[:128]
+    """The configured embedding MODEL name (MEM-10).
+
+    It used to be ``<wrapper class>:<model>``, so the same model behind a
+    different wrapper (traced, routed, BYOK) never matched at recall time. The
+    class name is used only when the provider exposes no model name.
+    """
+    from app.providers.embedder_factory import embedder_model_name
+
+    name = embedder_model_name(provider)
+    if not name or name == type(provider).__name__:
+        for attr in ("embedding_model", "default_model", "model"):
+            value = getattr(provider, attr, None)
+            if isinstance(value, str) and value:
+                name = value
+                break
+    return (name or type(provider).__name__)[:128]
 
 
 class ProviderMemoryEmbedder:

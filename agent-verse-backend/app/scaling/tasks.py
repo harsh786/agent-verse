@@ -6470,12 +6470,11 @@ def backfill_canonical_memory(
 
         from app.db.session import get_session_factory as _get_fresh_db
         from app.memory.backfill_runner import run_reflexion_lessons_backfill
-        from app.memory.postgres_repository import PostgresMemoryRepository
 
         db = _get_fresh_db()
         result = await run_reflexion_lessons_backfill(
             db,
-            PostgresMemoryRepository(db),
+            _canonical_memory_repository(db),
             tenant_id=tenant_id,
             batch_size=batch_size,
             max_rows=max_rows,
@@ -6484,6 +6483,89 @@ def backfill_canonical_memory(
         return asdict(result)
 
     return cast(dict[str, Any], _run_async(_run()))
+
+
+def _canonical_memory_repository(db: Any) -> Any:
+    """The canonical memory repository WITH the shared resolved embedder (MEM-10).
+
+    The backfill used to build it without one, so every backfilled lesson was
+    stored vector-less (lexical recall only).
+    """
+    from app.memory.embedding import memory_embedder_from_provider
+    from app.memory.postgres_repository import PostgresMemoryRepository
+    from app.providers.embedder_factory import build_query_embedder
+
+    return PostgresMemoryRepository(
+        db, embedder=memory_embedder_from_provider(build_query_embedder())
+    )
+
+
+@celery_app.task(name="agentverse.maintenance.canonical_memory_maintenance")
+def canonical_memory_maintenance(max_rows: int = 1_000, reembed_limit: int = 200) -> dict:
+    """Daily: finish every tenant's legacy backfill and re-embed vector-less or
+    stale-model canonical records (MEM-10). Tenants are found on the
+    maintenance factory; all work runs per tenant under its RLS. Bounded per
+    tenant per run; a tenant failure fails the task after the others ran.
+    """
+
+    async def _run() -> dict:
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+        from app.db.session import get_session_factory, get_system_session_factory
+        from app.memory.backfill_runner import run_reflexion_lessons_backfill
+
+        system_db = get_system_session_factory()
+        async with system_db() as session, session.begin(), system_session(session):
+            tenants = [
+                str(r[0])
+                for r in (
+                    await session.execute(
+                        text(
+                            "SELECT tenant_id FROM memory_records "
+                            "UNION SELECT l.tenant_id FROM reflexion_lessons l "
+                            "WHERE NOT EXISTS (SELECT 1 FROM memory_backfill_checkpoints c "
+                            "WHERE c.tenant_id = l.tenant_id "
+                            "AND c.source_table = 'reflexion_lessons' AND c.completed)"
+                        )
+                    )
+                ).fetchall()
+            ]
+        db = get_session_factory()
+        repo = _canonical_memory_repository(db)
+        totals = {"tenants": len(tenants), "backfilled": 0, "reembedded": 0, "failed": 0}
+        for tid in tenants:
+            try:
+                result = await run_reflexion_lessons_backfill(
+                    db, repo, tenant_id=tid, max_rows=max_rows
+                )
+                totals["backfilled"] += result.written
+                totals["reembedded"] += await repo.reembed_pending(tid, limit=reembed_limit)
+            except Exception as exc:
+                totals["failed"] += 1
+                logger.warning("canonical_memory_maintenance_failed tenant=%s: %s", tid, exc)
+        if totals["failed"]:
+            raise RuntimeError(
+                f"canonical memory maintenance failed for {totals['failed']} tenants"
+            )
+        return totals
+
+    return cast(dict, _run_async(_run()))
+
+
+try:
+    from celery.schedules import crontab as _cm_crontab
+
+    celery_app.conf.beat_schedule["canonical-memory-maintenance-daily"] = {
+        "task": "agentverse.maintenance.canonical_memory_maintenance",
+        "schedule": _cm_crontab(hour=3, minute=30),
+        "options": {"queue": "maintenance"},
+    }
+    celery_app.conf.task_routes.update(
+        {"agentverse.maintenance.canonical_memory_maintenance": {"queue": "maintenance"}}
+    )
+except Exception as _cm_sched_exc:  # pragma: no cover - defensive
+    logger.warning("canonical_memory_maintenance beat registration failed: %s", _cm_sched_exc)
 
 
 @celery_app.task(name="agentverse.maintenance.reindex_stale_knowledge")

@@ -54,10 +54,25 @@ async def test_adapter_degrades_to_no_vector_on_provider_failure() -> None:
     assert await embedder("hello") is None
 
 
-def test_model_id_names_the_provider_and_model() -> None:
-    embedder = memory_embedder_from_provider(_Provider(1536))
-    assert embedder is not None
-    assert embedder.model_id == "_Provider:embed-small"
+def test_model_id_is_the_configured_model_not_the_wrapper_class() -> None:
+    """MEM-10: the same model behind two wrapper classes must match at recall."""
+
+    class _OtherWrapper(_Provider):
+        pass
+
+    a = memory_embedder_from_provider(_Provider(1536))
+    b = memory_embedder_from_provider(_OtherWrapper(1536))
+    assert a is not None and b is not None
+    assert a.model_id == "embed-small" == b.model_id
+
+
+def test_model_id_falls_back_to_the_class_without_a_model_name() -> None:
+    class _Bare:
+        async def embed(self, request: Any) -> Any:
+            return SimpleNamespace(embeddings=[])
+
+    embedder = memory_embedder_from_provider(_Bare())
+    assert embedder is not None and embedder.model_id == "_Bare"
 
 
 def test_no_provider_means_no_embedder() -> None:

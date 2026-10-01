@@ -249,6 +249,58 @@ class PostgresMemoryRepository:
                 **{key: value for key, value in values.items() if key not in {"id", "embedding"}},
             )
 
+    async def reembed_pending(self, tenant_id: str, *, limit: int = 200) -> int:
+        """Embed a tenant's records that have no vector or a stale-model one (MEM-10).
+
+        Writes whose embedding returned None stayed vector-less forever, and
+        vectors of a previous model are never compared at recall. Sensitive
+        (sealed) records are never embedded. Bounded per call; returns how many
+        records got a current vector. Raises on a DB error.
+        """
+        model_id = self.embedding_model
+        if self._embedder is None or model_id is None:
+            return 0
+        rec = CanonicalMemoryRecord
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            pending = (
+                await db.execute(
+                    select(rec.id, rec.safe_summary)
+                    .where(
+                        rec.tenant_id == tenant_id,
+                        rec.classification.not_in(sorted(_SENSITIVE)),
+                        rec.lifecycle_state.in_(["active", "disputed"]),
+                        or_(
+                            rec.embedding.is_(None),
+                            rec.embedding_source_model.is_(None),
+                            rec.embedding_source_model != model_id,
+                        ),
+                    )
+                    .order_by(rec.updated_at.desc(), rec.id)
+                    .limit(max(1, limit))
+                )
+            ).all()
+        done = 0
+        for memory_id, summary in pending:
+            vector = await self._embed(str(summary or ""))
+            if vector is None:
+                continue
+            async with (
+                self._sessions() as db,
+                db.begin(),
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
+                await db.execute(
+                    update(rec)
+                    .where(rec.tenant_id == tenant_id, rec.id == memory_id)
+                    .values(embedding=list(vector), embedding_source_model=model_id)
+                )
+            done += 1
+        return done
+
     async def read_sensitive_content(self, tenant_id: str, memory_id: str) -> str:
         """Open the sealed payload of a sensitive record (tenant RLS-scoped).
 
