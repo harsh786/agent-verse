@@ -1331,3 +1331,47 @@ describe('KnowledgePage – Analytics tab', () => {
     expect(await screen.findByText(/no collections to analyze/i)).toBeInTheDocument();
   });
 });
+
+describe('KnowledgePage – Documents tab (KB-UI-HIDES-ERRORS)', () => {
+  function failDocuments(status: number, detail: string) {
+    const spy = mockFetch({ documents: [] });
+    const original = spy.getMockImplementation()!;
+    spy.mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/documents') && url.includes('/knowledge/collections/') && (init?.method ?? 'GET') === 'GET')
+        return new Response(JSON.stringify({ detail }), { status, headers: { 'Content-Type': 'application/json' } });
+      return original(input, init);
+    });
+    return spy;
+  }
+
+  test('a failed document listing shows an error, never an empty collection', async () => {
+    failDocuments(503, 'Knowledge persistence is unavailable');
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-documents'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/could not load documents/i);
+    expect(alert).toHaveTextContent(/knowledge persistence is unavailable/i);
+    expect(screen.queryByText(/no documents in this collection/i)).not.toBeInTheDocument();
+    // The count does not pretend to be zero.
+    expect(screen.queryByText(/^0 documents$/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+
+  test('retry refetches the listing and shows the documents once it succeeds', async () => {
+    const spy = failDocuments(503, 'Knowledge persistence is unavailable');
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-documents'));
+    await screen.findByRole('alert');
+
+    spy.mockRestore();
+    mockFetch({ documents: [{ id: 'd9', title: 'Recovered.md', source_type: 'text', chunk_count: 1 }] });
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    expect(await screen.findByText('Recovered.md')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+});

@@ -1070,15 +1070,21 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
   const [sourceTypeFilter, setSourceTypeFilter] = useState<string | null>(null);
   const PAGE_SIZE = 20;
 
-  const { data, isLoading } = useQuery({
+  // A failed listing is an error state, never an empty collection: the old
+  // `.catch(() => ({ documents: [], total: 0 }))` turned every 503 into
+  // "No documents in this collection" (KB-UI-HIDES-ERRORS).
+  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['knowledge-docs', selectedCollection, page, search],
     queryFn: () =>
-      apiFetch<{ documents: Record<string, unknown>[]; total: number }>(
+      apiFetch<{ documents: Record<string, unknown>[]; total: number; total_capped?: boolean }>(
         `/knowledge/collections/${selectedCollection}/documents?limit=${PAGE_SIZE}&offset=${(page - 1) * PAGE_SIZE}${search ? `&search=${encodeURIComponent(search)}` : ''}`
-      ).catch(() => ({ documents: [], total: 0 })),
+      ),
     enabled: !!selectedCollection,
     staleTime: 30_000,
   });
+  const listError = isError
+    ? (error instanceof Error && error.message ? error.message : 'Unknown error')
+    : null;
 
   // Source-provenance filtering (WS-13): the backend `/documents` endpoint has
   // no `source_type` query param, so this filters the real `source_type` field
@@ -1161,9 +1167,11 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
           />
         </div>
 
-        <span className="text-xs text-muted-foreground">
-          {data?.total ?? 0} documents
-        </span>
+        {!listError && !isLoading && (
+          <span className="text-xs text-muted-foreground">
+            {data?.total ?? 0}{data?.total_capped ? '+' : ''} documents
+          </span>
+        )}
 
         <button
           onClick={() => syncMutation.mutate()}
@@ -1207,6 +1215,23 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-16 rounded-lg" />
           ))}
+        </div>
+      ) : listError ? (
+        <div
+          role="alert"
+          className="flex flex-col items-center justify-center gap-2 h-32 border border-destructive/40 bg-destructive/5 rounded-xl text-center px-4"
+        >
+          <XCircle className="h-6 w-6 text-destructive" />
+          <p className="text-sm font-medium text-destructive">Could not load documents</p>
+          <p className="text-xs text-muted-foreground">{listError}</p>
+          <button
+            onClick={() => void refetch()}
+            disabled={isFetching}
+            className="flex items-center gap-1.5 px-3 py-1 text-xs border border-input rounded-lg hover:bg-muted/50 disabled:opacity-50"
+          >
+            {isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+            Retry
+          </button>
         </div>
       ) : filteredDocuments.length === 0 ? (
         <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
