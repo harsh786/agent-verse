@@ -47,7 +47,24 @@ def test_validate_inputs_required_with_default_ok() -> None:
         steps=[],
     )
     runner = WorkflowRunner(compiler=MagicMock())
-    runner._validate_inputs(wf, {})  # no exception
+    # The default is MERGED into the inputs (not merely used to skip the check).
+    merged = runner.apply_input_defaults(wf, {})
+    assert merged == {"count": 5}
+    runner._validate_inputs(wf, merged)  # no exception
+
+
+def test_apply_input_defaults_supplied_value_wins_and_null_gets_default() -> None:
+    wf = WorkflowDefinition(
+        name="def",
+        inputs={
+            "team": InputDefinition(type="string", default="platform"),
+            "week": InputDefinition(type="string", required=False, default="W40"),
+            "note": InputDefinition(type="string", required=False),
+        },
+        steps=[],
+    )
+    merged = WorkflowRunner.apply_input_defaults(wf, {"team": "infra", "week": None})
+    assert merged == {"team": "infra", "week": "W40"}
 
 
 def test_validate_inputs_enum_check() -> None:

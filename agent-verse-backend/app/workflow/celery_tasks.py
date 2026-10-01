@@ -667,6 +667,7 @@ async def fire_due_workflow_schedules_async() -> dict[str, int]:
 
     from app.db.rls import system_session
     from app.db.session import get_system_session_factory
+    from app.workflow.runner import WorkflowValidationError
     from app.workflow.trigger_extract import extract_triggers, schedule_cron
 
     runner = _get_runner()
@@ -756,6 +757,25 @@ async def fire_due_workflow_schedules_async() -> dict[str, int]:
                     run_id=run_id,
                     scheduled_for=prev.isoformat(),
                 )
+            except WorkflowValidationError as exc:
+                # E.g. a required input with no default: a schedule has no caller
+                # to answer with a 422, so record a visible FAILED run naming the
+                # reason instead of a log line nobody reads.
+                _log.warning("workflow_schedule_inputs_rejected", workflow_id=wf_id, error=str(exc))
+                try:
+                    await runner.record_rejected_run(
+                        workflow_id=wf_id,
+                        tenant_id=tenant_id,
+                        trigger_type="schedule",
+                        trigger_payload={"scheduled_for": prev.isoformat(), "cron": cron},
+                        error=f"scheduled run refused: {exc}",
+                    )
+                except Exception as rec_exc:
+                    _log.error(
+                        "workflow_schedule_reject_record_failed",
+                        workflow_id=wf_id,
+                        error=str(rec_exc),
+                    )
             except Exception as exc:
                 _log.error("workflow_schedule_fire_failed", workflow_id=wf_id, error=str(exc))
 

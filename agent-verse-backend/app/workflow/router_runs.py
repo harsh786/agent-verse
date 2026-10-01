@@ -59,6 +59,7 @@ class RunDetailResponse(BaseModel):
     workflow_id: str
     workflow_name: str | None = None
     status: str
+    trigger_type: str | None = None  # api | webhook | schedule | retry | sub_workflow
     inputs: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None

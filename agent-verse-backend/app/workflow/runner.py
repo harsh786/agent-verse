@@ -14,6 +14,7 @@ Responsibilities:
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import uuid
 from typing import Any
@@ -166,7 +167,8 @@ class WorkflowRunner:
             transformed = self._ctx.resolve_dict(definition.trigger_transform, base_state)
             inputs = {**inputs, **transformed}
 
-        # 4. Validate inputs
+        # 4. Apply declared defaults, then validate (required / enum)
+        inputs = self.apply_input_defaults(definition, inputs)
         self._validate_inputs(definition, inputs)
 
         # 5. Build initial state
@@ -235,6 +237,37 @@ class WorkflowRunner:
                 queue=f"workflows.{plan_tier}",
             )
 
+        return run_id
+
+    async def record_rejected_run(
+        self,
+        *,
+        workflow_id: str,
+        tenant_id: str,
+        trigger_type: str,
+        trigger_payload: dict[str, Any] | None,
+        error: str,
+    ) -> str | None:
+        """Persist a FAILED run for a trigger whose inputs were refused.
+
+        An API / webhook caller gets the refusal as a 422; a schedule has no
+        caller, so without this the occurrence vanished into a log line. Returns
+        the run id, or None without a persistent store.
+        """
+        if self._run_store is None:
+            return None
+        run_id = str(uuid.uuid4())
+        await self._run_store.create(
+            run_id=run_id,
+            workflow_id=workflow_id,
+            tenant_id=tenant_id,
+            trigger_type=trigger_type,
+            trigger_payload=trigger_payload,
+            inputs={},
+        )
+        await self._run_store.update_status(
+            run_id, WorkflowRunStatus.FAILED, tenant_id=tenant_id, error=error
+        )
         return run_id
 
     async def resume(self, run_id: str, tenant_id: str) -> None:
@@ -377,6 +410,9 @@ class WorkflowRunner:
                 # trigger's callback_url never reached the process that finishes
                 # the run.
                 run_metadata = record.get("run_metadata") or None
+        # A run persisted before defaults were merged at trigger time still
+        # gets them here (idempotent for runs persisted since).
+        inputs = self.apply_input_defaults(definition, inputs)
         initial_state = self._build_initial_state(
             run_id=run_id,
             workflow_id=workflow_id,
@@ -505,6 +541,9 @@ class WorkflowRunner:
                 # trigger's callback_url never reached the process that finishes
                 # the run.
                 run_metadata = record.get("run_metadata") or None
+        # A run persisted before defaults were merged at trigger time still
+        # gets them here (idempotent for runs persisted since).
+        inputs = self.apply_input_defaults(definition, inputs)
         initial_state = self._build_initial_state(
             run_id=run_id,
             workflow_id=workflow_id,
@@ -786,10 +825,30 @@ class WorkflowRunner:
         return WorkflowDefinition(name="test", id=workflow_id)
 
     @staticmethod
-    def _validate_inputs(definition: WorkflowDefinition, inputs: dict[str, Any]) -> None:
+    def apply_input_defaults(
+        definition: WorkflowDefinition, inputs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``inputs`` with every declared default filled in for an input that was
+        not supplied (absent or null). A supplied value always wins.
+
+        Old bug: defaults were only used to skip the required check and never
+        merged, so a schedule / webhook / ``{}`` run rendered ``{{inputs.x}}`` as
+        ``''`` (the resolver's value for a missing input).
+        """
+        merged = dict(inputs or {})
         for name, input_def in definition.inputs.items():
-            if input_def.required and name not in inputs and input_def.default is None:
-                raise WorkflowValidationError(f"Required input {name!r} is missing")
+            if merged.get(name) is None and input_def.default is not None:
+                merged[name] = copy.deepcopy(input_def.default)
+        return merged
+
+    @staticmethod
+    def _validate_inputs(definition: WorkflowDefinition, inputs: dict[str, Any]) -> None:
+        """Validate inputs AFTER :meth:`apply_input_defaults`."""
+        for name, input_def in definition.inputs.items():
+            if input_def.required and inputs.get(name) is None:
+                raise WorkflowValidationError(
+                    f"Required input {name!r} is missing and has no default"
+                )
             if name in inputs and input_def.enum and inputs[name] not in input_def.enum:
                 raise WorkflowValidationError(
                     f"Input {name!r} value {inputs[name]!r} not in enum {input_def.enum}"
