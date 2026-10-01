@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
+import math
+import uuid
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from app.db.rls import sqlalchemy_rls_context
 
@@ -19,8 +21,16 @@ def _require_tenant(request: Request) -> Any:
     return ctx
 
 
+# Per-text and per-request caps: the endpoint used to forward any amount of
+# text to a paid provider.
+MAX_EMBED_TEXT_CHARS = 32_000
+MAX_EMBED_TOTAL_CHARS = 400_000
+
+
 class EmbedRequest(BaseModel):
-    texts: list[str] = Field(..., max_length=100)
+    texts: list[Annotated[str, StringConstraints(max_length=MAX_EMBED_TEXT_CHARS)]] = Field(
+        ..., max_length=100
+    )
     # Omit both to use the configured embedder's model. A requested model is
     # forwarded; one the provider does not serve is a 422 (it used to be
     # ignored, returning the default model's vectors).
@@ -30,6 +40,12 @@ class EmbedRequest(BaseModel):
     # hashing vectors (no semantic meaning) are returned and flagged as such.
     # The default used to be True — callers silently got fake 384-dim vectors.
     fallback_lexical: bool = False
+
+    @model_validator(mode="after")
+    def _bounded_payload(self) -> EmbedRequest:
+        if sum(len(text) for text in self.texts) > MAX_EMBED_TOTAL_CHARS:
+            raise ValueError(f"texts exceed {MAX_EMBED_TOTAL_CHARS} characters in total")
+        return self
 
 
 @router.post("/embed")
@@ -41,15 +57,43 @@ async def embed_texts(request: Request, body: EmbedRequest) -> dict[str, Any]:
     ran, and ``model`` is what produced the vectors.
     """
     tenant = _require_tenant(request)
+    from app.embedding.metering import (
+        EMBED_BATCH_SIZE,
+        EmbeddingBudgetExceededError,
+        EmbeddingBudgetUnverifiableError,
+        charge_embedding_batch,
+        resolve_cost_controller,
+    )
     from app.embedding.router import (
         EmbeddingModelUnavailableError,
         EmbeddingUnavailableError,
         embedding_router,
     )
 
-    provider = getattr(request.app.state, "embedder", None) or getattr(
-        request.app.state, "_app_provider", None
-    )
+    # Only the configured EMBEDDER: the chat provider (``_app_provider``) used
+    # to be used as a fallback, embedding in another model's vector space.
+    provider = getattr(request.app.state, "embedder", None)
+    # KB-48: reserve every provider-sized batch against the tenant's budget
+    # BEFORE spending (429 when spent, 503 when the budget cannot be checked).
+    try:
+        controller = resolve_cost_controller(request.app.state)
+        operation_id = uuid.uuid4().hex
+        for batch_index in range(max(1, math.ceil(len(body.texts) / EMBED_BATCH_SIZE))):
+            await charge_embedding_batch(
+                controller,
+                tenant_ctx=tenant,
+                operation_id=operation_id,
+                batch_index=batch_index,
+                label="embeddings-api",
+            )
+    except EmbeddingBudgetExceededError as exc:
+        raise HTTPException(
+            status_code=429, detail="Embedding budget exhausted for this tenant"
+        ) from exc
+    except EmbeddingBudgetUnverifiableError as exc:
+        raise HTTPException(
+            status_code=503, detail="Budget state could not be verified; embedding refused"
+        ) from exc
     try:
         result = await embedding_router.embed_texts_report(
             body.texts,
