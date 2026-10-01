@@ -220,15 +220,26 @@ class KnowledgeGraphStore:
             )
         )
 
-    async def aupsert(self, nodes: Sequence[GraphNode], edges: Sequence[GraphEdge]) -> int:
-        """Batch-upsert nodes then edges; returns the number of elements written.
+    async def aupsert(
+        self,
+        nodes: Sequence[GraphNode],
+        edges: Sequence[GraphEdge],
+        *,
+        mentions: Sequence[tuple[str, str, str, str | None]] = (),
+    ) -> int:
+        """Batch-upsert nodes, edges and mentions; returns nodes + edges written.
 
         One transaction per tenant, ``executemany`` in batches of 500. This is
         the write path at ingestion scale: the previous design opened one session
         per node and per edge, fire-and-forget, which under a bulk load is a
         connection storm whose failures were logged at DEBUG and lost.
+
+        ``mentions`` are ``(tenant_id, node_id, chunk_id, document_id)`` rows for
+        ``knowledge_node_mentions`` (KB-53): a node shared by many documents keeps
+        one mention per chunk, so deleting one document removes only its own
+        mentions and the node survives while any other chunk still mentions it.
         """
-        if not nodes and not edges:
+        if not nodes and not edges and not mentions:
             return 0
         if self._db is None:
             for n in nodes:
@@ -241,15 +252,20 @@ class KnowledgeGraphStore:
 
         from sqlalchemy import text
 
-        by_tenant: dict[str, tuple[list[GraphNode], list[GraphEdge]]] = {}
+        by_tenant: dict[
+            str,
+            tuple[list[GraphNode], list[GraphEdge], list[tuple[str, str, str, str | None]]],
+        ] = {}
         for n in nodes:
-            by_tenant.setdefault(n.tenant_id, ([], []))[0].append(n)
+            by_tenant.setdefault(n.tenant_id, ([], [], []))[0].append(n)
         for e in edges:
-            by_tenant.setdefault(e.tenant_id, ([], []))[1].append(e)
+            by_tenant.setdefault(e.tenant_id, ([], [], []))[1].append(e)
+        for m in mentions:
+            by_tenant.setdefault(m[0], ([], [], []))[2].append(m)
 
         now = datetime.now(UTC)
         written = 0
-        for tenant_id, (t_nodes, t_edges) in by_tenant.items():
+        for tenant_id, (t_nodes, t_edges, t_mentions) in by_tenant.items():
             async with self._session(tenant_id) as session:
                 for batch in _chunks(t_nodes, _UPSERT_BATCH):
                     await session.execute(
@@ -317,6 +333,24 @@ class KnowledgeGraphStore:
                         ],
                     )
                     written += len(batch)
+                for batch in _chunks(t_mentions, _UPSERT_BATCH):
+                    await session.execute(
+                        text(
+                            "INSERT INTO knowledge_node_mentions "
+                            "(tenant_id, node_id, chunk_id, document_id) "
+                            "VALUES (:tid, :node_id, :chunk_id, :document_id) "
+                            "ON CONFLICT DO NOTHING"
+                        ),
+                        [
+                            {
+                                "tid": m[0],
+                                "node_id": m[1],
+                                "chunk_id": m[2][:255],
+                                "document_id": m[3][:255] if m[3] else None,
+                            }
+                            for m in batch
+                        ],
+                    )
         return written
 
     async def delete_tenant_graph(self, tenant_id: str) -> None:
@@ -332,6 +366,10 @@ class KnowledgeGraphStore:
         from sqlalchemy import text
 
         async with self._session(tenant_id) as session:
+            await session.execute(
+                text("DELETE FROM knowledge_node_mentions WHERE tenant_id = :tid"),
+                {"tid": tenant_id},
+            )
             await session.execute(
                 text("DELETE FROM knowledge_edges WHERE tenant_id = :tid"), {"tid": tenant_id}
             )

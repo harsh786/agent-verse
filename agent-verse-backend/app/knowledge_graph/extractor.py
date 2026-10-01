@@ -194,7 +194,13 @@ class EntityExtractor:
 
                 edges.append(
                     GraphEdge(
-                        edge_id=str(uuid.uuid4()),
+                        edge_id=edge_id_for(
+                            tenant_id,
+                            src_node.node_id,
+                            tgt_node.node_id,
+                            edge_type.value,
+                            source_id or "",
+                        ),
                         tenant_id=tenant_id,
                         source_node_id=src_node.node_id,
                         target_node_id=tgt_node.node_id,
@@ -210,6 +216,21 @@ class EntityExtractor:
         except Exception as exc:
             _log.warning("LLM relationship extraction failed: %s", exc)
             return []
+
+
+def edge_id_for(
+    tenant_id: str, source_node_id: str, target_node_id: str, edge_type: str, provenance: str
+) -> str:
+    """Deterministic edge id (KB-53): re-extracting the same chunk upserts, never duplicates.
+
+    Random ids made every re-extraction (re-sync, re-ingest) add a duplicate of
+    every edge it found.
+    """
+    key = "\x1f".join((tenant_id, source_node_id, target_node_id, edge_type, provenance))
+    return str(uuid.uuid5(_EDGE_NS, key))
+
+
+_EDGE_NS = uuid.UUID("8d4b6e2a-1c3f-4a5b-9e7d-0f2a4c6e8b1d")
 
 
 # Module-level singleton

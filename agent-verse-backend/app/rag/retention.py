@@ -188,13 +188,25 @@ async def _expire_tenant_documents(
 async def delete_document_graph(
     session: Any, tenant_id: str, document_id: str, removed: list[Any]
 ) -> tuple[int, int]:
-    """Delete the KG rows extracted from ``document_id``.
+    """Delete the KG rows extracted from the removed chunks of ``document_id``.
 
-    ``removed`` rows are ``(bytes, chunk_index, chunk_id)``. ``KGIngestionHook``
-    stamps nodes with the id of the chunk they came from; nodes written before
-    that carry ``f"{doc}:{i}"``. Both are enumerable from the removed chunks — an
-    ``= ANY`` lookup on ``(tenant_id, source_id)`` instead of a ``LIKE`` scan
-    over the tenant's whole graph.
+    ``removed`` rows are ``(bytes, chunk_index, chunk_id)``. Graph rows are keyed
+    by the chunk they came from: ``KGIngestionHook`` stamps the chunk id; rows
+    written before that carry ``f"{doc}:{i}"`` (or the document id). All of
+    those keys are enumerable from the removed chunks.
+
+    KB-53 — mentions are reference counts:
+
+    1. the removed chunks' rows in ``knowledge_node_mentions`` are deleted; the
+       nodes they pointed at (plus legacy nodes stamped with a removed key) are
+       the candidates;
+    2. edges extracted FROM a removed chunk (``provenance``) are deleted;
+    3. only candidates left with NO mention are deleted, with every edge still
+       touching them; an entity another document mentions survives (and is
+       re-pointed at a chunk that still mentions it).
+
+    Every statement is an indexed ``= ANY`` probe on the tenant's rows — never a
+    scan of the tenant's whole graph. Returns ``(nodes_deleted, edges_deleted)``.
     """
     from sqlalchemy import text
 
@@ -204,33 +216,83 @@ async def delete_document_graph(
         *[str(r[2]) for r in removed if len(r) > 2 and r[2]],
         *[f"{document_id}:{i}" for i in range(span)],
     ]
-    node_ids = [
-        row[0]
+    params = {"tid": tenant_id, "sids": source_ids}
+    candidates = {
+        str(row[0])
+        for row in (
+            await session.execute(
+                text(
+                    "DELETE FROM knowledge_node_mentions "
+                    "WHERE tenant_id = :tid AND chunk_id = ANY(:sids) RETURNING node_id"
+                ),
+                params,
+            )
+        ).fetchall()
+    }
+    candidates.update(
+        str(row[0])
         for row in (
             await session.execute(
                 text(
                     "SELECT id FROM knowledge_nodes "
                     "WHERE tenant_id = :tid AND source_id = ANY(:sids)"
                 ),
-                {"tid": tenant_id, "sids": source_ids},
+                params,
+            )
+        ).fetchall()
+    )
+    edges = int(
+        (
+            await session.execute(
+                text(
+                    "DELETE FROM knowledge_edges "
+                    "WHERE tenant_id = :tid AND provenance = ANY(:sids)"
+                ),
+                params,
+            )
+        ).rowcount
+        or 0
+    )
+    if not candidates:
+        return 0, edges
+    ids = sorted(candidates)
+    orphaned = [
+        str(row[0])
+        for row in (
+            await session.execute(
+                text(
+                    "DELETE FROM knowledge_nodes n WHERE n.tenant_id = :tid "
+                    "AND n.id = ANY(:ids) AND NOT EXISTS ("
+                    "  SELECT 1 FROM knowledge_node_mentions m "
+                    "  WHERE m.tenant_id = :tid AND m.node_id = n.id) "
+                    "RETURNING n.id"
+                ),
+                {"tid": tenant_id, "ids": ids},
             )
         ).fetchall()
     ]
-    if not node_ids:
-        return 0, 0
-    edges = (
-        await session.execute(
-            text(
-                "DELETE FROM knowledge_edges WHERE tenant_id = :tid "
-                "AND (source_node_id = ANY(:ids) OR target_node_id = ANY(:ids))"
-            ),
-            {"tid": tenant_id, "ids": node_ids},
+    if orphaned:
+        edges += int(
+            (
+                await session.execute(
+                    text(
+                        "DELETE FROM knowledge_edges WHERE tenant_id = :tid "
+                        "AND (source_node_id = ANY(:ids) OR target_node_id = ANY(:ids))"
+                    ),
+                    {"tid": tenant_id, "ids": orphaned},
+                )
+            ).rowcount
+            or 0
         )
-    ).rowcount
-    nodes = (
-        await session.execute(
-            text("DELETE FROM knowledge_nodes WHERE tenant_id = :tid AND id = ANY(:ids)"),
-            {"tid": tenant_id, "ids": node_ids},
-        )
-    ).rowcount
-    return int(nodes or 0), int(edges or 0)
+    # Survivors whose display source_id named a removed chunk point at one that
+    # still mentions them (GraphRAG and the graph UI show it as provenance).
+    await session.execute(
+        text(
+            "UPDATE knowledge_nodes n SET source_id = ("
+            "  SELECT m.chunk_id FROM knowledge_node_mentions m "
+            "  WHERE m.tenant_id = :tid AND m.node_id = n.id ORDER BY m.chunk_id LIMIT 1) "
+            "WHERE n.tenant_id = :tid AND n.id = ANY(:ids) AND n.source_id = ANY(:sids)"
+        ),
+        {"tid": tenant_id, "ids": ids, "sids": source_ids},
+    )
+    return len(orphaned), edges

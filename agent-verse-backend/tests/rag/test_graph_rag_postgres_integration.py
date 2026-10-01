@@ -47,7 +47,7 @@ pytestmark = pytest.mark.integration
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _ROLE_PREFIX = "test_app_graphrag"
-KG_TABLES = ("knowledge_nodes", "knowledge_edges")
+KG_TABLES = ("knowledge_nodes", "knowledge_edges", "knowledge_node_mentions")
 
 TENANT_A = "tenant-graph-a"
 TENANT_B = "tenant-graph-b"

@@ -46,7 +46,11 @@ _SCHEMA = [
         updated_at TIMESTAMPTZ)""",
     """CREATE TABLE knowledge_nodes (id TEXT PRIMARY KEY, tenant_id TEXT, source_id TEXT)""",
     """CREATE TABLE knowledge_edges (
-        id TEXT PRIMARY KEY, tenant_id TEXT, source_node_id TEXT, target_node_id TEXT)""",
+        id TEXT PRIMARY KEY, tenant_id TEXT, source_node_id TEXT, target_node_id TEXT,
+        provenance TEXT)""",
+    """CREATE TABLE knowledge_node_mentions (
+        tenant_id TEXT NOT NULL, node_id TEXT NOT NULL, chunk_id TEXT NOT NULL,
+        document_id TEXT, PRIMARY KEY (tenant_id, node_id, chunk_id))""",
     *[
         f"""CREATE TABLE {_chunk_table(dim)} (
             id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL,
@@ -69,7 +73,12 @@ async def db(postgres_url: str) -> AsyncIterator[async_sessionmaker]:  # type: i
     async with engine.begin() as conn:
         tables = [_chunk_table(d) for d in SUPPORTED_EMBEDDING_DIMENSIONS]
         for table in [
-            *tables, "knowledge_collections", "knowledge_nodes", "knowledge_edges", "legal_holds"
+            *tables,
+            "knowledge_collections",
+            "knowledge_nodes",
+            "knowledge_edges",
+            "knowledge_node_mentions",
+            "legal_holds",
         ]:
             await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
         for ddl in _SCHEMA:

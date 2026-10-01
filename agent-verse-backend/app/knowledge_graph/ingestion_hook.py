@@ -86,17 +86,31 @@ async def _guardrail_gate_graph_extract(text: str, tenant_id: str, source_id: st
         return text
 
 
-async def _upsert(store: Any, nodes: list[Any], edges: list[Any]) -> None:
+async def _upsert(
+    store: Any,
+    nodes: list[Any],
+    edges: list[Any],
+    *,
+    chunk_id: str | None = None,
+    document_id: str | None = None,
+) -> None:
     """Persist one chunk's extraction as a single awaited, batched upsert.
 
     The previous per-element ``add_node``/``add_edge`` calls each opened their
     own session fire-and-forget — at bulk-ingestion scale a connection storm
     whose failures were logged at DEBUG and lost. Duck-typed stores without
     ``aupsert`` (test doubles) still get the per-element calls.
+
+    With ``chunk_id`` every node also gets a mention row for that chunk (KB-53),
+    so an entity found in many documents is reference-counted by its mentions.
     """
     upsert = getattr(store, "aupsert", None)
     if callable(upsert):
-        await upsert(nodes, edges)
+        if chunk_id:
+            mentions = [(n.tenant_id, n.node_id, chunk_id, document_id) for n in nodes]
+            await upsert(nodes, edges, mentions=mentions)
+        else:
+            await upsert(nodes, edges)
         return
     for node in nodes:
         store.add_node(node)
@@ -162,7 +176,7 @@ async def extract_and_store_graph(
         nodes = extractor.extract_entities_deterministic(text, tenant_id, source_id)
         edges = []
 
-    await _upsert(store, nodes, edges)
+    await _upsert(store, nodes, edges, chunk_id=source_id)
     added = len(nodes) + len(edges)
 
     _log.debug(
@@ -239,7 +253,9 @@ class KGIngestionHook:
             else:
                 nodes = self._extractor.extract_entities_deterministic(text, tenant_id, source_id)
                 edges = []
-            await _upsert(self._store, nodes, edges)
+            await _upsert(
+                self._store, nodes, edges, chunk_id=source_id, document_id=document_id
+            )
             entities += len(nodes)
             relations += len(edges)
         return {"entities": entities, "relations": relations}

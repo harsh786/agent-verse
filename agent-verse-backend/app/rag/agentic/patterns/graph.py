@@ -70,6 +70,13 @@ async def query_graph_evidence(
     if request.filters:
         params["metadata_filter"] = json.dumps(request.filters)
 
+    # KB-53: a node is seeded by ANY chunk that mentions it (knowledge_node_mentions),
+    # not only by the first chunk it was extracted from (its source_id).
+    seeded_node, seeded_source, seeded_target = (
+        f"{alias}.id IN (SELECT mention.node_id FROM knowledge_node_mentions AS mention "
+        "WHERE mention.tenant_id = :tenant_id AND mention.chunk_id = ANY(:seed_chunk_ids))"
+        for alias in ("node", "source_node", "target_node")
+    )
     entity_rows = (
         await session.execute(
             text(
@@ -82,6 +89,7 @@ async def query_graph_evidence(
                   AND node.node_type IN ('entity', 'concept')
                   AND (
                     node.source_id = ANY(:seed_chunk_ids)
+                    OR {seeded_node}
                     OR to_tsvector('english', node.label || ' ' || COALESCE(node.content, ''))
                        @@ plainto_tsquery('english', :query)
                   )
@@ -111,6 +119,8 @@ async def query_graph_evidence(
                   AND (
                     source_node.source_id = ANY(:seed_chunk_ids)
                     OR target_node.source_id = ANY(:seed_chunk_ids)
+                    OR {seeded_source}
+                    OR {seeded_target}
                     OR to_tsvector(
                          'english',
                          source_node.label || ' ' || target_node.label || ' '
@@ -136,6 +146,7 @@ async def query_graph_evidence(
                     WHERE node.tenant_id = :tenant_id
                       AND (
                         node.source_id = ANY(:seed_chunk_ids)
+                        OR {seeded_node}
                         OR to_tsvector(
                              'english', node.label || ' ' || COALESCE(node.content, '')
                            ) @@ plainto_tsquery('english', :query)
