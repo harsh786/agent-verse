@@ -12,7 +12,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import (
     EgressPins,
     dsn_with_pinned_hosts,
@@ -89,9 +94,11 @@ class PostgreSQLConnector(BaseConnector):
 
         try:
             import asyncpg
-        except ImportError:
-            _log.error("asyncpg not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "asyncpg is not installed on this server; the connector cannot run"
+            ) from exc
 
         async with pin_source_dsn(dsn, context="postgresql") as pins:
             try:

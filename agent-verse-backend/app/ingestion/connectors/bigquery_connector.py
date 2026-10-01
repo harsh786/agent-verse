@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorUnavailableError,
     row_identity,
     stable_doc_id,
 )
@@ -83,9 +84,11 @@ class BigQueryConnector(BaseConnector):
 
         try:
             from google.cloud import bigquery  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("google-cloud-bigquery not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "google-cloud-bigquery is not installed on this server; the connector cannot run"
+            ) from exc
 
         cc = config.connection_config
         creds_json = cc.get("service_account_json")

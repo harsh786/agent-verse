@@ -6,6 +6,10 @@ faking the whole module.
 """
 from __future__ import annotations
 
+import pytest
+
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -90,11 +94,11 @@ class TestValidateConnection:
 
 
 class TestGetDelta:
-    async def test_no_asyncpg_installed_yields_nothing(self):
+    async def test_no_asyncpg_installed_fails_loudly(self):
         config = _make_config({"tables": ["orders"]})
         with patch.dict(sys.modules, {"asyncpg": None}):
-            docs = await _collect(PostgreSQLConnector().get_delta(config, None))
-        assert docs == []
+            with pytest.raises(ConnectorUnavailableError):
+                await _collect(PostgreSQLConnector().get_delta(config, None))
 
     async def test_connect_failure_yields_nothing(self):
         config = _make_config({"tables": ["orders"]})

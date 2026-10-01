@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 from app.ingestion.connectors.clickhouse_connector import ClickHouseConnector
 from app.ingestion.source_config import SourceConfig, SourceFamily
 
@@ -68,10 +70,10 @@ async def test_validate_connection_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_delta_not_installed_yields_nothing() -> None:
+async def test_get_delta_not_installed_fails_loudly() -> None:
     with patch.dict("sys.modules", {"clickhouse_connect": None}):
-        docs = [d async for d in ClickHouseConnector().get_delta(_config(), None)]
-    assert docs == []
+        with pytest.raises(ConnectorUnavailableError):
+            [d async for d in ClickHouseConnector().get_delta(_config(), None)]
 
 
 @pytest.mark.asyncio

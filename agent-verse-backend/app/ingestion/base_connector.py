@@ -8,6 +8,7 @@ LAW-21: Every connector exposes validate_connection() health probe
 
 from __future__ import annotations
 
+import functools
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -90,6 +91,28 @@ class BaseConnector(ABC):
             source_type = "s3"
             ...
     """
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Guard every connector's entry points on its SDK being installed.
+
+        A connector whose SDK is missing used to log and ``return`` from
+        ``get_delta`` — reported as a successful, empty sync. Each subclass's own
+        ``get_delta`` / ``on_webhook`` / ``validate_connection`` is wrapped so that,
+        before any connector code runs, a missing SDK (per
+        :mod:`app.ingestion.connector_sdks`) raises
+        :class:`ConnectorUnavailableError` / returns an unhealthy result with the
+        reason.
+        """
+        super().__init_subclass__(**kwargs)
+        own = vars(cls)
+        if "get_delta" in own:
+            cls.get_delta = _sdk_guarded_stream(own["get_delta"])  # type: ignore[method-assign]
+        if "on_webhook" in own:
+            cls.on_webhook = _sdk_guarded_stream(own["on_webhook"])  # type: ignore[method-assign]
+        if "validate_connection" in own:
+            cls.validate_connection = _sdk_guarded_validate(  # type: ignore[method-assign]
+                own["validate_connection"]
+            )
 
     # ── Subclass MUST set these ───────────────────────────────────────────────
 
@@ -246,3 +269,43 @@ class BaseConnector(ABC):
         if include and not any(fnmatch.fnmatch(name, p) for p in include):
             return False
         return not (exclude and any(fnmatch.fnmatch(name, p) for p in exclude))
+
+
+# ── SDK availability guard (see BaseConnector.__init_subclass__) ──────────────
+
+
+def _sdk_reason(connector: Any) -> str:
+    from app.ingestion.connector_sdks import unavailable_reason
+
+    source_type = getattr(connector, "source_type", "")
+    return unavailable_reason(source_type) if isinstance(source_type, str) else ""
+
+
+def _sdk_guarded_stream(fn: Any) -> Any:
+    """Wrap an async-generator entry point (get_delta / on_webhook)."""
+
+    @functools.wraps(fn)
+    async def guarded(self: Any, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        reason = _sdk_reason(self)
+        if reason:
+            raise ConnectorUnavailableError(reason)
+        stream = fn(self, *args, **kwargs)
+        try:
+            async for item in stream:
+                yield item
+        finally:
+            await stream.aclose()
+
+    return guarded
+
+
+def _sdk_guarded_validate(fn: Any) -> Any:
+    @functools.wraps(fn)
+    async def guarded(self: Any, *args: Any, **kwargs: Any) -> ConnectionHealth:
+        reason = _sdk_reason(self)
+        if reason:
+            return ConnectionHealth(ok=False, error=reason)
+        result: ConnectionHealth = await fn(self, *args, **kwargs)
+        return result
+
+    return guarded

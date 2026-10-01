@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 from app.ingestion.connectors.s3_connector import S3Connector
 from app.ingestion.source_config import SourceConfig
 
@@ -74,11 +76,11 @@ def _obj(key, last_modified, size=100):
 
 
 class TestGetDelta:
-    async def test_no_library_yields_nothing(self):
+    async def test_no_library_fails_loudly(self):
         sys.modules["boto3"] = None
         connector = S3Connector()
-        docs = [d async for d in connector.get_delta(_make_config(), None)]
-        assert docs == []
+        with pytest.raises(ConnectorUnavailableError):
+            [d async for d in connector.get_delta(_make_config(), None)]
 
     async def test_yields_objects_and_advances_cursor(self):
         t1 = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)

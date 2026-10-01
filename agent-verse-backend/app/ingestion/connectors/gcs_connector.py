@@ -14,7 +14,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 
@@ -103,9 +108,11 @@ class GCSConnector(BaseConnector):
 
         try:
             from google.cloud import storage  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("google-cloud-storage not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "google-cloud-storage is not installed on this server; the connector cannot run"
+            ) from exc
 
         creds_json = config.connection_config.get("service_account_json")
         bucket_name = config.connection_config.get("bucket", "")

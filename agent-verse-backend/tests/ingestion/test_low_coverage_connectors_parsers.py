@@ -148,13 +148,14 @@ class TestGCSConnectorGetDelta:
         blob.download_as_bytes.return_value = content
         return blob
 
-    def test_import_error_yields_nothing(self):
+    def test_import_error_fails_loudly(self):
+        from app.ingestion.base_connector import ConnectorUnavailableError
         from app.ingestion.connectors.gcs_connector import GCSConnector
 
         config = _config("gcs", {"bucket": "b1"})
         with patch.dict("sys.modules", {"google.cloud.storage": None}):
-            docs = _run(_collect(GCSConnector().get_delta(config, None)))
-        assert docs == []
+            with pytest.raises(ConnectorUnavailableError):
+                _run(_collect(GCSConnector().get_delta(config, None)))
 
     def test_yields_documents_and_advances_cursor(self):
         from app.ingestion.connectors.gcs_connector import GCSConnector

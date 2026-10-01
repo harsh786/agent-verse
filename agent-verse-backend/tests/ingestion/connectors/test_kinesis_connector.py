@@ -6,6 +6,10 @@ works transparently with plain (synchronous) MagicMock methods.
 """
 from __future__ import annotations
 
+import pytest
+
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 import json
 from unittest.mock import MagicMock, patch
 
@@ -67,10 +71,10 @@ class TestValidateConnection:
 
 
 class TestGetDelta:
-    async def test_no_boto3_yields_nothing(self):
+    async def test_no_boto3_fails_loudly(self):
         with patch.dict("sys.modules", {"boto3": None}):
-            docs = await _collect(KinesisConnector().get_delta(_make_config(), None))
-        assert docs == []
+            with pytest.raises(ConnectorUnavailableError):
+                await _collect(KinesisConnector().get_delta(_make_config(), None))
 
     async def test_yields_records_from_all_shards(self):
         kinesis_client = MagicMock()

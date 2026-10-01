@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorUnavailableError,
     row_identity,
     stable_doc_id,
 )
@@ -85,9 +86,12 @@ class SnowflakeConnector(BaseConnector):
 
         try:
             import snowflake.connector  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("snowflake-connector-python not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "snowflake-connector-python is not installed on this server; "
+                "the connector cannot run"
+            ) from exc
 
         cc = config.connection_config
         mode = cc.get("mode", "query")

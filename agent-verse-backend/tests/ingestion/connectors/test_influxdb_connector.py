@@ -12,6 +12,8 @@ import types
 
 import pytest
 
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 from app.ingestion.connectors.influxdb_connector import InfluxDBConnector
 from app.ingestion.source_config import SourceConfig
 
@@ -138,11 +140,11 @@ class TestValidateConnection:
 
 
 class TestGetDelta:
-    async def test_no_library_yields_nothing(self):
+    async def test_no_library_fails_loudly(self):
         sys.modules["influxdb_client"] = None  # simulate a server without it
         connector = InfluxDBConnector()
-        docs = [d async for d in connector.get_delta(_make_config(), None)]
-        assert docs == []
+        with pytest.raises(ConnectorUnavailableError):
+            [d async for d in connector.get_delta(_make_config(), None)]
 
     async def test_yields_documents_and_advances_cursor(self):
         records = [

@@ -13,7 +13,11 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+)
 from app.ingestion.connector_egress import (
     pin_source_urls,
     pin_source_urls_sync,
@@ -143,9 +147,11 @@ class S3Connector(BaseConnector):
 
         try:
             import boto3  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("boto3 not installed — cannot ingest from S3")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "boto3 is not installed on this server; the connector cannot run"
+            ) from exc
 
         bucket = config.connection_config.get("bucket", "")
         prefix = config.connection_config.get("prefix", "")

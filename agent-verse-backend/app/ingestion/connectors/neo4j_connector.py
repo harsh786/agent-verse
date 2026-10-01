@@ -10,7 +10,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import pin_source_dsn, run_driver_call
 from app.ingestion.connector_registry import register
 
@@ -91,9 +96,11 @@ class Neo4jConnector(BaseConnector):
         async with pin_source_dsn(neo4j_uri, context="neo4j"):
             try:
                 import neo4j  # type: ignore[import-not-found]  # noqa: F401
-            except ImportError:
-                _log.error("neo4j not installed")
-                return
+            except ImportError as exc:
+                # Returning nothing here reported a successful, empty sync.
+                raise ConnectorUnavailableError(
+                    "neo4j is not installed on this server; the connector cannot run"
+                ) from exc
             # A neo4j:// routing table makes the driver dial hosts the *server*
             # names; run_driver_call egress-checks every one of those lookups.
             records = await run_driver_call(_run_query, context="neo4j")

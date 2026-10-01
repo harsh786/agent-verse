@@ -11,7 +11,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_hosts
 from app.ingestion.connector_registry import register
 
@@ -103,9 +108,11 @@ class MQTTConnector(BaseConnector):
 
         try:
             import paho.mqtt.client as mqtt  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("paho-mqtt not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "paho-mqtt is not installed on this server; the connector cannot run"
+            ) from exc
 
         cc = config.connection_config
         host = _broker_host(cc)

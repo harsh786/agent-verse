@@ -14,6 +14,7 @@ Connectors that only need core dependencies (httpx, stdlib) are absent here.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from dataclasses import dataclass
 
 __all__ = ["CONNECTOR_SDKS", "SdkRequirement", "missing_sdks", "unavailable_reason"]
@@ -62,6 +63,10 @@ CONNECTOR_SDKS: dict[str, tuple[SdkRequirement, ...]] = {
 
 
 def _importable(module: str) -> bool:
+    if module in sys.modules:
+        # Already imported (or provided by a stand-in without a __spec__), or
+        # explicitly blocked with sys.modules[name] = None.
+        return sys.modules[module] is not None
     try:
         return importlib.util.find_spec(module) is not None
     except (ImportError, ValueError):

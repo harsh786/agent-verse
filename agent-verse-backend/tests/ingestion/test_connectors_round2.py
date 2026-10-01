@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 from app.ingestion.source_config import SourceConfig
 
 
@@ -515,16 +517,16 @@ class TestKafkaConnector:
         assert health.ok is False
         assert "conn refused" in health.error
 
-    def test_get_delta_not_installed_yields_nothing(self):
+    def test_get_delta_not_installed_fails_loudly(self):
         from app.ingestion.connectors.kafka_connector import KafkaConnector
 
         config = _make_config("kafka", {"topics": ["t1"]})
         connector = KafkaConnector()
 
         with patch.dict(sys.modules, {"confluent_kafka": None}):
-            docs = list(asyncio.run(_collect_async(connector.get_delta(config, None))))
+            with pytest.raises(ConnectorUnavailableError):
+                list(asyncio.run(_collect_async(connector.get_delta(config, None))))
 
-        assert docs == []
 
     def test_get_delta_yields_messages(self):
         from app.ingestion.connectors.kafka_connector import KafkaConnector
@@ -675,16 +677,16 @@ class TestMQTTConnector:
         assert health.ok is False
         assert "bad host" in health.error
 
-    def test_get_delta_not_installed_yields_nothing(self):
+    def test_get_delta_not_installed_fails_loudly(self):
         from app.ingestion.connectors.mqtt_connector import MQTTConnector
 
         config = _make_config("mqtt", {})
         connector = MQTTConnector()
 
         with patch.dict(sys.modules, {"paho": None, "paho.mqtt": None, "paho.mqtt.client": None}):
-            docs = list(asyncio.run(_collect_async(connector.get_delta(config, None))))
+            with pytest.raises(ConnectorUnavailableError):
+                list(asyncio.run(_collect_async(connector.get_delta(config, None))))
 
-        assert docs == []
 
     def test_get_delta_yields_messages(self):
         from app.ingestion.connectors.mqtt_connector import MQTTConnector
@@ -787,16 +789,16 @@ class TestNeo4jConnector:
         assert health.ok is False
         assert "unreachable" in health.error
 
-    def test_get_delta_not_installed_yields_nothing(self):
+    def test_get_delta_not_installed_fails_loudly(self):
         from app.ingestion.connectors.neo4j_connector import Neo4jConnector
 
         config = _make_config("neo4j", {"uri": "bolt://neo4j.test:7687"})
         connector = Neo4jConnector()
 
         with patch.dict(sys.modules, {"neo4j": None}):
-            docs = list(asyncio.run(_collect_async(connector.get_delta(config, None))))
+            with pytest.raises(ConnectorUnavailableError):
+                list(asyncio.run(_collect_async(connector.get_delta(config, None))))
 
-        assert docs == []
 
     def test_get_delta_yields_nodes(self):
         from app.ingestion.connectors.neo4j_connector import Neo4jConnector
@@ -928,16 +930,16 @@ class TestBigQueryConnector:
         assert health.ok is False
         assert "denied" in health.error
 
-    def test_get_delta_not_installed_yields_nothing(self):
+    def test_get_delta_not_installed_fails_loudly(self):
         from app.ingestion.connectors.bigquery_connector import BigQueryConnector
 
         config = _make_config("bigquery", {})
         connector = BigQueryConnector()
 
         with patch.dict(sys.modules, {"google.cloud": None, "google.cloud.bigquery": None}):
-            docs = list(asyncio.run(_collect_async(connector.get_delta(config, None))))
+            with pytest.raises(ConnectorUnavailableError):
+                list(asyncio.run(_collect_async(connector.get_delta(config, None))))
 
-        assert docs == []
 
     def test_get_delta_query_mode(self):
         from app.ingestion.connectors.bigquery_connector import BigQueryConnector

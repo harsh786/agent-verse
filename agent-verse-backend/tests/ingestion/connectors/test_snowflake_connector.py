@@ -7,6 +7,10 @@ ImportError for the "not installed" branch.
 """
 from __future__ import annotations
 
+import pytest
+
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -107,10 +111,10 @@ class TestValidateConnection:
 
 
 class TestGetDelta:
-    async def test_no_library_yields_nothing(self):
+    async def test_no_library_fails_loudly(self):
         with patch.dict(sys.modules, {"snowflake": None, "snowflake.connector": None}):
-            docs = await _collect(SnowflakeConnector().get_delta(_make_config(), None))
-        assert docs == []
+            with pytest.raises(ConnectorUnavailableError):
+                await _collect(SnowflakeConnector().get_delta(_make_config(), None))
 
     async def test_query_mode_yields_rows(self):
         rows = [

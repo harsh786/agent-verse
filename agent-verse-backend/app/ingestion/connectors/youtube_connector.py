@@ -11,7 +11,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -60,9 +65,11 @@ class YouTubeConnector(BaseConnector):
                 TranscriptsDisabled,
                 YouTubeTranscriptApi,
             )
-        except ImportError:
-            _log.error("youtube-transcript-api not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "youtube-transcript-api is not installed on this server; the connector cannot run"
+            ) from exc
 
         cc = config.connection_config
         video_ids = cc.get("video_ids") or []

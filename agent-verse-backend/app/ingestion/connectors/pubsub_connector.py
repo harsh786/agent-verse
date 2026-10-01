@@ -11,7 +11,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import run_blocking
 
@@ -61,9 +66,11 @@ class PubSubConnector(BaseConnector):
 
         try:
             from google.cloud import pubsub_v1  # type: ignore[import-not-found]
-        except ImportError:
-            _log.error("google-cloud-pubsub not installed")
-            return
+        except ImportError as exc:
+            # Returning nothing here reported a successful, empty sync.
+            raise ConnectorUnavailableError(
+                "google-cloud-pubsub is not installed on this server; the connector cannot run"
+            ) from exc
 
         cc = config.connection_config
         project = cc.get("project", "")

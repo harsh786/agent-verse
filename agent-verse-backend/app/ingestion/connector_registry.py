@@ -107,6 +107,18 @@ def get_connector(source_type: str, *, settings: object | None = None) -> type[B
                 f"feature flag {flag_attr}=False. Set it to True to enable."
             )
 
+    # A connector whose SDK is not installed cannot run: refuse it here with the
+    # reason (the scheduler records it on a failed job) rather than let a sync
+    # start and end empty.
+    from app.ingestion.base_connector import ConnectorUnavailableError
+    from app.ingestion.connector_sdks import unavailable_reason
+
+    reason = unavailable_reason(source_type)
+    if reason:
+        raise ConnectorUnavailableError(
+            f"The {source_type!r} connector is unavailable on this server: {reason}"
+        )
+
     return _REGISTRY[source_type]
 
 
@@ -133,9 +145,12 @@ def list_registered() -> list[str]:
 
 def get_connector_metadata() -> list[dict]:
     """Return metadata for all registered connectors (for catalogue API)."""
+    from app.ingestion.connector_sdks import CONNECTOR_SDKS, unavailable_reason
+
     result = []
     for source_type, cls in sorted(_REGISTRY.items()):
         instance = cls.__new__(cls)
+        reason = unavailable_reason(source_type)
         result.append(
             {
                 "source_type": source_type,
@@ -144,6 +159,12 @@ def get_connector_metadata() -> list[dict]:
                 "supports_acl": getattr(instance, "supports_acl_propagation", False),
                 "supports_deletion": getattr(instance, "supports_deletion_tracking", False),
                 "feature_flag": _FEATURE_FLAGS.get(source_type),
+                # The Sources UI greys out a connector whose SDK is missing.
+                "available": not reason,
+                "unavailable_reason": reason,
+                "required_packages": sorted(
+                    {req.package for req in CONNECTOR_SDKS.get(source_type, ())}
+                ),
             }
         )
     return result

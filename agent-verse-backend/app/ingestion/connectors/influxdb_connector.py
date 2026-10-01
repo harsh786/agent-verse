@@ -10,7 +10,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import pin_source_urls, run_driver_call
 from app.ingestion.connector_registry import register
 
@@ -107,9 +112,11 @@ class InfluxDBConnector(BaseConnector):
         async with pin_source_urls([url], context="influxdb"):
             try:
                 import influxdb_client  # type: ignore[import-not-found]  # noqa: F401
-            except ImportError:
-                _log.error("influxdb-client not installed")
-                return
+            except ImportError as exc:
+                # Returning nothing here reported a successful, empty sync.
+                raise ConnectorUnavailableError(
+                    "influxdb-client is not installed on this server; the connector cannot run"
+                ) from exc
             rows = await run_driver_call(_query, context="influxdb")
 
         new_cursor = cursor or range_start

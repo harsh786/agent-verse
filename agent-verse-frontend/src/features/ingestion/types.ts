@@ -118,6 +118,10 @@ export interface ConnectorMeta {
   supports_acl:       boolean;
   supports_deletion:  boolean;
   feature_flag:       string | null;
+  /** False when the connector's SDK is not installed on the server. */
+  available?:          boolean;
+  unavailable_reason?: string;
+  required_packages?:  string[];
 }
 
 // ── Family metadata ───────────────────────────────────────────────────────────

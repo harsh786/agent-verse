@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.ingestion.base_connector import ConnectorUnavailableError
+
 from app.ingestion.connectors.youtube_connector import YouTubeConnector
 from app.ingestion.source_config import SourceConfig
 
@@ -95,11 +97,11 @@ class TestValidateConnection:
 
 
 class TestGetDelta:
-    async def test_no_library_yields_nothing(self):
+    async def test_no_library_fails_loudly(self):
         sys.modules["youtube_transcript_api"] = None  # simulate a server without it
         connector = YouTubeConnector()
-        docs = [d async for d in connector.get_delta(_make_config(), None)]
-        assert docs == []
+        with pytest.raises(ConnectorUnavailableError):
+            [d async for d in connector.get_delta(_make_config(), None)]
 
     async def test_explicit_video_ids_no_api_key(self):
         _install_fake_ytapi(transcript_result=[{"text": "hello"}, {"text": "world"}])
