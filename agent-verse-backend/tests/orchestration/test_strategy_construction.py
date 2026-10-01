@@ -156,7 +156,22 @@ _FAKE_RESPONSES: dict[str, list[str]] = {
     "supervisor": ['{"steps": [{"id": "s1", "summary": "do it"}]}', "done", "final: done"],
     "goal_tree": ['{"steps": [{"id": "s1", "summary": "do it"}]}', "done", "final: done"],
     "debate": ["proposal", "critique", "proposer-a"],
+    "voyager": ['{"steps": [{"id": "s1", "summary": "greet"}]}', "hello", "final: hello"],
 }
+
+
+class _AsyncSkillLibrary:
+    """Stand-in for PostgresVoyagerSkillStore (validates, records provenance)."""
+
+    def __init__(self) -> None:
+        self.published: list[tuple[Any, dict[str, Any]]] = []
+
+    async def publish(self, skill: Any, *, provenance: Any = None, **ctx: Any) -> Any:
+        from app.memory.procedural_validator import validate_procedure
+
+        validate_procedure(skill, tenant_id=skill.tenant_id, **ctx)
+        self.published.append((skill, dict(provenance or {})))
+        return skill
 
 
 @pytest.mark.asyncio
@@ -173,7 +188,9 @@ async def test_every_admitted_strategy_builds_and_runs_a_trivial_goal(strategy_i
     )
     runner = StrategyRunner(
         build_default_registry(),
-        executor=DistributedStrategyExecutor(context_store=context_store),
+        executor=DistributedStrategyExecutor(
+            context_store=context_store, skill_store=_AsyncSkillLibrary()
+        ),
         admission=default_distributed_admission,
     )
     result = await runner.run(_request(strategy_id), _limits())

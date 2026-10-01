@@ -21,6 +21,9 @@ satisfied purely from a goal string and an LLM provider:
   goal into sub-tasks with the LLM, execute each sub-task with the LLM, synthesize the final
   answer with the LLM.
 * ``debate`` — independent LLM proposals, LLM cross-critique, LLM vote, majority decision.
+* ``voyager`` — LLM curriculum, evidence-backed tasks, and a validated, immutable skill
+  published into the tenant's persistent library (``PostgresVoyagerSkillStore``; refused
+  without it). High-risk goals need a persisted human approval first.
 
 The remaining DISTRIBUTED strategies genuinely need infrastructure this change does not wire
 (production sandboxes, policy runtimes, coordination outboxes, memory repositories) — faking
@@ -74,6 +77,26 @@ class BudgetExceededError(RuntimeError):
     """The cost controller denied a strategy LLM call's spend."""
 
 
+class StrategyGateError(RuntimeError):
+    """A strategy could not pass a required gate (skill library / human approval)."""
+
+    def __init__(self, reason_code: str, message: str) -> None:
+        super().__init__(f"{reason_code}: {message}")
+        self.reason_code = reason_code
+
+
+_VOYAGER_MAX_TASKS = 4
+_VOYAGER_CAPABILITY = "llm_reasoning"
+_DEFAULT_APPROVAL_TIMEOUT_S = 3_600.0
+
+
+def _resolve(dep: Any, probe: str) -> Any:
+    """``dep`` itself, or ``dep()`` when it is a zero-arg getter (lifespan swaps)."""
+    if dep is not None and not hasattr(dep, probe) and callable(dep):
+        return dep()
+    return dep
+
+
 def _provider_model(provider: Any) -> str:
     """The provider's configured model id ('' → the provider uses its own default)."""
     for attr in ("default_model", "_default_model", "model"):
@@ -112,11 +135,19 @@ class DistributedStrategyExecutor:
         context_store: StrategyGoalContextStore,
         cost_controller: Callable[[], Any] | Any = None,
         pattern_bridge: Any = None,
+        skill_store: Callable[[], Any] | Any = None,
+        hitl_gateway: Callable[[], Any] | Any = None,
+        approval_timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_S,
     ) -> None:
         self._context_store = context_store
         # Runs magentic / MoA / CAMEL / generative / swarm / auction goals on a
         # coordination session (app.coordination.pattern_runs.goal_bridge).
         self._pattern_bridge = pattern_bridge
+        # Voyager's persistent, tenant-scoped skill library (PostgresVoyagerSkillStore)
+        # and the HITL gateway - objects or zero-arg getters (lifespan swaps).
+        self._skill_store = skill_store
+        self._hitl_gateway = hitl_gateway
+        self._approval_timeout = approval_timeout_seconds
         # A cost controller (or a zero-arg getter, so the lifespan's Redis-backed
         # swap is picked up). Every LLM call is charged to the goal/tenant budget.
         self._cost_controller = cost_controller
@@ -200,6 +231,25 @@ class DistributedStrategyExecutor:
             cost_usd += call_cost
             await self._charge(request, context, call_cost)
             return response.content
+
+        if strategy_id == "voyager":
+            skill_store = _resolve(self._skill_store, "publish")
+            if skill_store is None:
+                # The in-process library would lose skills on restart and hide
+                # them from other replicas: refuse rather than pretend.
+                raise StrategyGateError(
+                    "voyager_skill_store_unavailable",
+                    "voyager needs the persistent skill library",
+                )
+            runtime = create_runtime(
+                checkpoint_store=self._checkpoint_store_for(request), skill_store=skill_store
+            )
+            answer = await self._run_voyager(runtime, request, context, complete, cancelled)
+            return StrategyRunOutput(
+                answer=answer,
+                metrics=ExecutionMetrics(calls=calls, tokens=tokens, cost_usd=round(cost_usd, 6)),
+                safe_rationale_summary="voyager strategy executed via StrategyRunner.",
+            )
 
         runtime = create_runtime(checkpoint_store=self._checkpoint_store_for(request))
 
@@ -331,6 +381,127 @@ class DistributedStrategyExecutor:
                 f"phase={state.phase} reason={state.terminal_reason}"
             )
         return answer
+
+    async def _require_approval(
+        self, request: StrategyExecutionRequest, context: Any, action: str
+    ) -> None:
+        """Persisted human approval before a high-risk run (fail closed)."""
+        from app.governance.hitl import ApprovalStatus
+
+        gateway = _resolve(self._hitl_gateway, "request_approval_async")
+        tenant_ctx = getattr(context, "tenant_ctx", None)
+        if gateway is None or tenant_ctx is None:
+            raise StrategyGateError(
+                "approval_unavailable", "a high-risk strategy run needs an approval gateway"
+            )
+        try:
+            request_id = await gateway.request_approval_async(
+                goal_id=request.goal_id,
+                action=action,
+                step_description=action,
+                risk_level="high",
+                tenant_ctx=tenant_ctx,
+                require_persisted=True,
+            )
+        except Exception as exc:
+            raise StrategyGateError("approval_unavailable", str(exc)) from exc
+        status = await gateway.wait_for_approval(
+            request_id, tenant_ctx=tenant_ctx, timeout=self._approval_timeout
+        )
+        if status != ApprovalStatus.APPROVED:
+            raise StrategyGateError(
+                f"approval_{str(status).lower()}", f"strategy run approval {status}"
+            )
+
+    async def _run_voyager(
+        self,
+        runtime: Any,
+        request: StrategyExecutionRequest,
+        context: Any,
+        complete: Any,
+        cancelled: Any,
+    ) -> str:
+        """Curriculum -> evidence-backed tasks -> governed skill publication.
+
+        The LLM proposes up to four concrete sub-tasks (the curriculum); each is
+        carried out and its result is the task's evidence; the learned procedure
+        is published as an immutable, validated skill into the tenant's
+        persistent library; the results are combined into the answer. High-risk
+        goal text or tasks need a persisted human approval first.
+        """
+        import hashlib
+
+        from app.agent.nodes._helpers import _is_high_risk_step
+
+        goal_text = str(context.goal_text)
+        raw = await complete(
+            f"List 1-{_VOYAGER_MAX_TASKS} concrete sub-tasks needed to accomplish this goal.\n"
+            f"Goal: {goal_text}\n"
+            'Respond with strict JSON: {"steps": [{"id": "step-1", "summary": "..."}]}'
+        )
+        steps = self._parse_steps(raw, fallback_summary=goal_text)
+        tasks = tuple(dict.fromkeys(step["summary"][:500] for step in steps))
+        if _is_high_risk_step(goal_text) or any(_is_high_risk_step(t) for t in tasks):
+            await self._require_approval(request, context, f"voyager: {goal_text[:200]}")
+
+        results: dict[str, str] = {}
+
+        async def run_task(task: str) -> dict[str, str]:
+            answer = await complete(
+                f"Carry out this task for the goal '{goal_text}' and report the result.\n"
+                f"Task: {task}"
+            )
+            if not answer.strip():
+                return {"evidence_ref": ""}  # no result, no evidence: the run fails
+            ref = f"strategy-run://{uuid.uuid4()}"
+            results[ref] = answer
+            return {"evidence_ref": ref}
+
+        goal_key = hashlib.sha256(goal_text.strip().lower().encode()).hexdigest()[:16]
+        curriculum = sorted(set(tasks))[:_VOYAGER_MAX_TASKS]
+
+        def synthesize_skill(
+            ordered: tuple[str, ...], evidence: tuple[str, ...]
+        ) -> dict[str, Any]:
+            version = hashlib.sha256("\n".join(ordered).encode()).hexdigest()[:12]
+            return {
+                "procedure_id": f"voyager-{goal_key}",
+                "skill_version": f"v-{version}",
+                "tool_sequence": (),
+                "required_capabilities": frozenset({_VOYAGER_CAPABILITY}),
+                "tool_schema_versions": {},
+                "connector_ids": frozenset(),
+                "policy_fingerprint": request.policy_ref,
+            }
+
+        state = await runtime.execute(
+            session_id=request.tenant_id,
+            execution_id=request.goal_id,
+            tenant_id=request.tenant_id,
+            capability_gaps=tasks,
+            run_task=run_task,
+            synthesize_skill=synthesize_skill,
+            maximum_tasks=_VOYAGER_MAX_TASKS,
+            publication_context={
+                "available_tools": {},
+                "allowed_capabilities": frozenset({_VOYAGER_CAPABILITY}),
+                "ready_connectors": frozenset(),
+                "policy_fingerprint": request.policy_ref,
+                "provenance": {"goal_id": request.goal_id, "steps": curriculum},
+            },
+            cancelled=cancelled,
+        )
+        if state.phase != "completed":
+            raise RuntimeError(
+                f"voyager did not complete: phase={state.phase} reason={state.terminal_reason}"
+            )
+        joined = "\n".join(f"- {results[ref]}" for ref in state.evidence_refs if ref in results)
+        return str(
+            await complete(
+                "Combine these task results into one final answer for the goal "
+                f"'{goal_text}':\n{joined}"
+            )
+        )
 
     async def _run_debate(
         self,

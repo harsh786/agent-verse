@@ -34,11 +34,10 @@ _SKILL_LIBRARY: VoyagerSkillStore | None = None
 def default_skill_library() -> VoyagerSkillStore:
     """The skill library voyager publishes into when none is injected.
 
-    One governed library per process, so every run publishes into the same
-    store and skill versions stay immutable across runs. It is NOT durable or
-    shared across replicas — which is one reason voyager stays denied at
-    StrategyRunner admission (``strategy_execution_not_implemented``) until a
-    persistent skill store is wired in via ``skill_store=``.
+    One governed library per process (tests / no-DB dev). It is NOT durable or
+    shared across replicas: the StrategyRunner executor runs voyager goals only
+    with the Postgres library (``PostgresVoyagerSkillStore``) injected via
+    ``skill_store=`` and refuses them without it.
     """
     global _SKILL_LIBRARY
     if _SKILL_LIBRARY is None:
@@ -113,7 +112,8 @@ class VoyagerRuntime:
             await self._checkpoints.save(state)
         raw_skill = dict(await invoke(synthesize_skill, tasks, state.evidence_refs))
         skill = ProcedureContract(tenant_id=tenant_id, **raw_skill)
-        published = self._skills.publish(skill, **publication_context)
+        # Sync (in-process library) or async (Postgres library) publish.
+        published = await invoke(self._skills.publish, skill, **publication_context)
         state = state.model_copy(
             update={"phase": "completed", "published_skill_id": published.procedure_id}
         )

@@ -70,7 +70,7 @@ COORDINATION_PATTERN_STRATEGIES: frozenset[str] = frozenset(
     }
 )
 STRATEGY_RUNNER_STRATEGIES: frozenset[str] = (
-    frozenset({"supervisor", "goal_tree", "debate"}) | COORDINATION_PATTERN_STRATEGIES
+    frozenset({"supervisor", "goal_tree", "debate", "voyager"}) | COORDINATION_PATTERN_STRATEGIES
 )
 
 # Sentinel the selector emits for "no multi-agent coordination" — not a strategy.

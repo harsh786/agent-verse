@@ -508,6 +508,20 @@ def _make_workflow_hitl_resume_callback(
 # ── error handlers ─────────────────────────────────────────────────────────────
 
 
+def _voyager_skill_store(state: Any) -> Any:
+    """The Postgres voyager skill library once the lifespan wired the DB, else None."""
+    db = getattr(state, "db_session_factory", None)
+    if db is None:
+        return None
+    store = getattr(state, "voyager_skill_store", None)
+    if store is None or getattr(store, "_db", None) is not db:
+        from app.memory.voyager_skills_pg import PostgresVoyagerSkillStore
+
+        store = PostgresVoyagerSkillStore(db)
+        state.voyager_skill_store = store
+    return store
+
+
 def _strategy_budget_reserver(state: Any) -> Any:
     """StrategyRunner ``reserve_budget``: refuse when the tenant has no budget left.
 
@@ -2742,6 +2756,10 @@ def create_app(
                 getattr(app.state, "redis_cost_controller", None)
                 or getattr(app.state, "cost_controller", None)
             ),
+            # VOYAGER-PERSIST: voyager publishes into the Postgres skill library
+            # (None until the lifespan wires the DB -> voyager goals are refused).
+            skill_store=lambda: _voyager_skill_store(app.state),
+            hitl_gateway=lambda: getattr(app.state, "hitl_gateway", None),
         ),
         admission=default_distributed_admission,
         reserve_budget=_strategy_budget_reserver(app.state),
