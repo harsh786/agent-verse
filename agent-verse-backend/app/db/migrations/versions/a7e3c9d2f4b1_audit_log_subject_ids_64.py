@@ -8,7 +8,7 @@ since audit persistence is fire-and-forget, silently. Widening a VARCHAR is a
 catalog-only change in Postgres (no table rewrite, no row trigger fires).
 
 Revision ID: a7e3c9d2f4b1
-Revises: e5c8f2a9d1b4
+Revises: 4075a45ac5a5
 Create Date: 2026-10-01
 """
 
@@ -20,7 +20,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a7e3c9d2f4b1"
-down_revision: str | None = "e5c8f2a9d1b4"
+down_revision: str | None = "4075a45ac5a5"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
