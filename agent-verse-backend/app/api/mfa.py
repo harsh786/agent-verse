@@ -424,6 +424,66 @@ class MFAStore:
             raise MFAStateUnavailableError(f"MFA state could not be saved: {exc}") from exc
         self._cache[tenant_id] = state
 
+    # ── MFA-KEY-RING: re-seal a secret still under a previous SECRET_KEY ──────
+
+    async def _read_encrypted_secret(self, tenant_id: str) -> str | None:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text("SELECT encrypted_secret FROM tenant_mfa WHERE tenant_id = :t"),
+                    {"t": tenant_id},
+                )
+            ).fetchone()
+        return str(row[0]) if row is not None and row[0] else None
+
+    async def _swap_encrypted_secret(self, tenant_id: str, old: str, new: str) -> bool:
+        """Compare-and-swap: a concurrent re-enrolment / disable always wins."""
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            result = await session.execute(
+                text(
+                    "UPDATE tenant_mfa SET encrypted_secret = :new, updated_at = NOW() "
+                    "WHERE tenant_id = :t AND encrypted_secret = :old"
+                ),
+                {"t": tenant_id, "old": old, "new": new},
+            )
+        return bool(getattr(result, "rowcount", 0))
+
+    async def reseal_if_needed(self, tenant_id: str) -> bool:
+        """After a successful verify: re-seal the stored TOTP secret with the
+        current SECRET_KEY when it is still under a previous key (or a legacy
+        ``.b64`` row). Best effort — the verify already succeeded. True if
+        re-sealed."""
+        if self._db is None:
+            return False
+        from app.api.mfa_crypto import needs_reseal, reseal
+
+        try:
+            current = await self._read_encrypted_secret(tenant_id)
+            if not current or not needs_reseal(current):
+                return False
+            return await self._swap_encrypted_secret(tenant_id, current, reseal(current))
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("mfa_reseal_failed", error=type(exc).__name__)
+            return False
+
 
 # Module-level singleton
 _mfa_db_store = MFAStore()
@@ -771,6 +831,9 @@ async def verify_mfa(request: Request, body: VerifyRequest) -> dict[str, Any]:
         )
 
     await _reject_replayed_totp(request, tenant.tenant_id, body.code.strip())
+    # MFA-KEY-RING: a secret still sealed with a previous SECRET_KEY moves to the
+    # current one, so SECRET_KEY_PREVIOUS can be retired.
+    await _mfa_db_store.reseal_if_needed(tenant.tenant_id)
 
     # Issue a short-lived session token (1-hour TTL); frontend stores as X-MFA-Token
     try:

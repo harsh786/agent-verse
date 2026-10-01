@@ -516,5 +516,45 @@ def vault_rotate(
         raise typer.Exit(1)
 
 
+@app.command(name="mfa-rotate")
+def mfa_rotate(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Count what would change; write nothing."
+    ),
+    batch_size: int = typer.Option(200, min=1, max=10_000, help="Rows per transaction."),
+) -> None:
+    """Re-seal every stored MFA (TOTP) secret with the current SECRET_KEY.
+
+    Sibling of ``vault-rotate`` for the SECRET_KEY-sealed MFA secrets: deploy with
+    SECRET_KEY=<new> and SECRET_KEY_PREVIOUS=<old> (users keep logging in), run
+    this until it reports ``complete`` (``previous_keys_retirable: true``), then
+    drop SECRET_KEY_PREVIOUS. Batched, per tenant under its RLS context,
+    resumable and idempotent; progress as JSON lines on stderr. Exits 1 unless
+    complete (or a clean dry run).
+    """
+    import asyncio
+
+    from app.api.mfa_crypto import rotate_mfa_secrets
+
+    def _progress(event: dict) -> None:  # type: ignore[type-arg]
+        typer.echo(json.dumps(event), err=True)
+
+    async def _run() -> dict:  # type: ignore[type-arg]
+        from app.db.session import get_session_factory, get_system_session_factory
+
+        return await rotate_mfa_secrets(
+            system_db=get_system_session_factory(),
+            tenant_db=get_session_factory(),
+            dry_run=dry_run,
+            batch_size=batch_size,
+            progress=_progress,
+        )
+
+    result = asyncio.run(_run())
+    typer.echo(json.dumps(result, indent=2))
+    if result.get("status") not in ("complete", "dry_run") or result.get("unreadable"):
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

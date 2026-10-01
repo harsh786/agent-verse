@@ -388,11 +388,19 @@ async def rotate_all_stores(
     dry_run: bool = False,
     batch_size: int = 200,
     progress: Callable[[dict[str, Any]], None] | None = None,
+    pg_stores: tuple[PgStore, ...] = PG_STORES,
+    record_key_version: bool = True,
 ) -> dict[str, Any]:
-    """Rotate every store; see the module docstring. Returns the run report."""
-    run = _Run({s.name: StoreReport() for s in (*PG_STORES,)})
-    for name in REDIS_STORES:
-        run.reports[name] = StoreReport()
+    """Rotate every store; see the module docstring. Returns the run report.
+
+    ``pg_stores`` / ``record_key_version`` let a sibling rotation reuse the engine
+    over its own stores (``agentverse mfa-rotate``: SECRET_KEY-sealed MFA secrets,
+    which are not vault ciphertext and have no vault key version).
+    """
+    run = _Run({s.name: StoreReport() for s in pg_stores})
+    if redis is not None:
+        for name in REDIS_STORES:
+            run.reports[name] = StoreReport()
     result: dict[str, Any] = {
         "status": "failed",
         "rotation_id": rotation_id,
@@ -431,9 +439,9 @@ async def rotate_all_stores(
             result["errors"].append(f"tenants: {type(exc).__name__}: {exc}"[:300])
             result["stores"] = run.as_dict()
             return result
-        names = [s.name for s in PG_STORES]
+        names = [s.name for s in pg_stores]
         start_store = names.index(position["store"]) if position.get("store") in names else 0
-        for store in PG_STORES[start_store:]:
+        for store in pg_stores[start_store:]:
             at_store = store.name == position.get("store")
             for tenant in tenants:
                 if at_store and (
@@ -498,7 +506,8 @@ async def rotate_all_stores(
         return result
     if system_db is not None:
         try:
-            await _record_key_version(system_db, rotation_id)
+            if record_key_version:
+                await _record_key_version(system_db, rotation_id)
             await _save_checkpoint(
                 system_db, rotation_id, {"store": "__done__"}, run.as_dict(), "complete"
             )
