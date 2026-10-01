@@ -216,8 +216,8 @@ describe('EvalPage SuitesTab handlers', () => {
     await openSuitesTab();
     await userEvent.click(await screen.findByText('Regression Suite'));
 
-    expect(await screen.findByText(/t-slow: timed out/i)).toBeInTheDocument();
-    expect(screen.getByText(/t-broken: error/i)).toBeInTheDocument();
+    expect(await screen.findByTestId('task-outcome-t-slow')).toHaveTextContent(/fail · timed out/i);
+    expect(screen.getByTestId('task-outcome-t-broken')).toHaveTextContent(/fail · error/i);
     expect(screen.getByText(/2 not scored/i)).toBeInTheDocument();
   });
 
@@ -327,6 +327,7 @@ describe('EvalPage SuitesTab handlers', () => {
 
       await userEvent.click(screen.getByRole('button', { name: /\+ task/i }));
       await userEvent.type(screen.getByPlaceholderText(/what should the agent do/i), 'Will fail');
+      await userEvent.type(screen.getByPlaceholderText(/shell:execute, db:delete/i), 'shell:execute');
       await userEvent.click(screen.getByRole('button', { name: /^add task$/i }));
 
       // Mutation errors are swallowed by react-query here (no onError handler),
@@ -335,6 +336,64 @@ describe('EvalPage SuitesTab handlers', () => {
         expect(screen.getByText('Add Golden Task')).toBeInTheDocument();
       });
     });
+  });
+
+  // ─── MEM-51: tasks must check something; outcomes are shown per task ───────
+
+  test('a task without checks cannot be submitted, and the payload uses the API field names', async () => {
+    const { fetchImpl } = makeSuitesFetch({ suites: [baseSuite] });
+    renderPage();
+    await openSuitesTab();
+    await screen.findByText('Regression Suite');
+
+    await userEvent.click(screen.getByRole('button', { name: /\+ task/i }));
+    await userEvent.type(screen.getByPlaceholderText(/what should the agent do/i), 'Summarise the policy');
+    const submitBtn = screen.getByRole('button', { name: /^add task$/i });
+    expect(submitBtn).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveTextContent(/at least one check/i);
+
+    await userEvent.type(screen.getByLabelText(/expected tools/i), 'kb.search');
+    await userEvent.type(screen.getByLabelText(/reference answer/i), 'a summary');
+    expect(submitBtn).toBeEnabled();
+    await userEvent.click(submitBtn);
+
+    await waitFor(() => {
+      const call = fetchImpl.mock.calls.find(
+        ([u, i]) => String(u).endsWith('/tasks') && (i as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse(String((call![1] as RequestInit).body));
+      expect(body).toMatchObject({
+        goal: 'Summarise the policy',
+        expected_tools: ['kb.search'],
+        expected_output: 'a summary',
+        min_score: 0.8,
+      });
+      expect(body).not.toHaveProperty('input');
+    });
+  });
+
+  test('each task shows its terminal outcome and score', async () => {
+    makeSuitesFetch({
+      suites: [baseSuite],
+      suiteResults: {
+        s1: [{
+          run_id: 'r1', passed: 1, failed: 2,
+          task_results: [
+            { task_id: 't-good', passed: true, status: 'scored', terminal_event: 'goal_complete', score: 0.92, judge: { overall: 0.92, llm_judged: true } },
+            { task_id: 't-failed', passed: false, status: 'scored', terminal_event: 'goal_failed', score: 0, failure_reasons: ['goal ended goal_failed'] },
+            { task_id: 't-empty', passed: false, status: 'invalid' },
+          ],
+        }],
+      },
+    });
+    renderPage();
+    await openSuitesTab();
+    await userEvent.click(await screen.findByText('Regression Suite'));
+
+    expect(await screen.findByTestId('task-outcome-t-good')).toHaveTextContent(/pass · completed · score 0.92 \(judge\)/);
+    expect(screen.getByTestId('task-outcome-t-failed')).toHaveTextContent(/fail · goal failed · score 0.00/);
+    expect(screen.getByTestId('task-outcome-t-empty')).toHaveTextContent(/invalid \(no checks\)/);
   });
 
   // ─── Create suite form ──────────────────────────────────────────────────────

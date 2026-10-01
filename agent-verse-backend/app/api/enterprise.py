@@ -1220,8 +1220,28 @@ class AddGoldenTaskRequest(BaseModel):
     expected_tools: list[str] = []
     forbidden_tools: list[str] = []
     expected_output_contains: list[str] = []
+    # Reference answer: scored by the LLM judge (or lexically without one).
+    expected_output: str = Field(default="", max_length=10_000)
+    # The task's score (judge overall, else fraction of checks) must reach this.
+    min_score: float = Field(default=0.8, ge=0.0, le=1.0)
     max_iterations: int = Field(default=15, ge=1, le=100)
     tags: list[str] = []
+
+    @model_validator(mode="after")
+    def _has_checks(self) -> AddGoldenTaskRequest:
+        # MEM-51: a task with no checks measures nothing — it passed whenever
+        # its goal returned, so a failing agent could clear the rollout gate.
+        if not (
+            self.expected_tools
+            or self.forbidden_tools
+            or [p for p in self.expected_output_contains if p.strip()]
+            or self.expected_output.strip()
+        ):
+            raise ValueError(
+                "a golden task needs at least one check: expected_tools, "
+                "forbidden_tools, expected_output_contains or expected_output"
+            )
+        return self
 
 
 def _eval_store(request: Request) -> Any:
@@ -1292,7 +1312,9 @@ async def add_golden_task(
         goal=body.goal,
         expected_tools=body.expected_tools,
         forbidden_tools=body.forbidden_tools,
-        expected_output_contains=body.expected_output_contains,
+        expected_output_contains=[p for p in body.expected_output_contains if p.strip()],
+        expected_output=body.expected_output or None,
+        min_score=body.min_score,
         max_iterations=body.max_iterations,
         tags=body.tags,
     )
@@ -1303,7 +1325,7 @@ async def add_golden_task(
 
 async def _execute_eval_run(
     store: Any, runner: Any, goal_service: Any, ctx: Any, suite_id: str, run_id: str,
-    tasks: list[Any],
+    tasks: list[Any], judge: Any = None,
 ) -> None:
     """Background body of a suite run: execute, then record the outcome durably.
 
@@ -1316,7 +1338,7 @@ async def _execute_eval_run(
     try:
         result = await runner.run_suite(
             suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx,
-            tasks=tasks, run_id=run_id,
+            tasks=tasks, run_id=run_id, judge=judge,
         )
         await store.finish_run(suite_id, run_id, result=result)
     except Exception as exc:
@@ -1356,8 +1378,13 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
     running: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault(
         "_eval_run_tasks", set()
     )
+    from app.intelligence.eval_suite import platform_judge
+
+    # MEM-51: every task is judged (charged to the tenant) when a real LLM is
+    # configured, and its score must reach the task's min_score.
+    judge = platform_judge(getattr(request.app.state, "_app_provider", None))
     task = asyncio.create_task(
-        _execute_eval_run(store, runner, goal_service, ctx, suite_id, run_id, tasks)
+        _execute_eval_run(store, runner, goal_service, ctx, suite_id, run_id, tasks, judge)
     )
     running.add(task)  # keep a strong reference until it finishes
     task.add_done_callback(running.discard)

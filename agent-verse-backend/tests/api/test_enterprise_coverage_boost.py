@@ -470,7 +470,9 @@ def test_run_eval_suite_success() -> None:
         "/intelligence/eval-suites", json={"suite_id": "suite-1"}, headers=_headers()
     ).status_code == 201
     client.post(
-        "/intelligence/eval-suites/suite-1/tasks", json={"goal": "g"}, headers=_headers()
+        "/intelligence/eval-suites/suite-1/tasks",
+        json={"goal": "g", "expected_tools": ["t"]},
+        headers=_headers(),
     )
 
     resp = client.post("/intelligence/eval-suites/suite-1/run", headers=_headers())

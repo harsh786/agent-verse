@@ -731,7 +731,7 @@ def test_add_golden_task_no_runner() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/intelligence/eval-suites/s1/tasks",
-        json={"goal": "do X"},
+        json={"goal": "do X", "expected_tools": ["jira.search"]},
         headers=_headers(),
     )
     assert resp.status_code == 503
@@ -755,7 +755,9 @@ def test_add_golden_task_with_runner() -> None:
     suite = client.get("/intelligence/eval-suites/suite-1", headers=_headers()).json()
     assert suite["task_count"] == 1 and suite["tasks"][0]["expected_tools"] == ["jira.search"]
     missing = client.post(
-        "/intelligence/eval-suites/nope/tasks", json={"goal": "x"}, headers=_headers()
+        "/intelligence/eval-suites/nope/tasks",
+        json={"goal": "x", "expected_tools": ["t"]},
+        headers=_headers(),
     )
     assert missing.status_code == 404
 

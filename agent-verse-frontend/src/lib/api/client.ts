@@ -2257,13 +2257,45 @@ export interface EvalSuiteResult {
   passed: number;
   failed: number;
   completed_at: string;
-  task_results?: Array<{
-    task_id: string;
-    passed: boolean;
-    /** "timeout" / "error": the goal never finished, so the task was not scored. */
-    status?: "scored" | "timeout" | "error";
-    failure_reasons?: string[];
-  }>;
+  task_results?: Array<EvalSuiteTaskResult>;
+}
+
+export interface EvalSuiteTaskResult {
+  task_id: string;
+  passed: boolean;
+  /**
+   * "timeout" / "error": the goal never finished (or the judge failed), so the
+   * task was not scored. "invalid": the task has no checks.
+   */
+  status?: "scored" | "timeout" | "error" | "invalid";
+  failure_reasons?: string[];
+  goal_id?: string | null;
+  /** goal_complete / goal_failed / goal_cancelled / goal_rejected */
+  terminal_event?: string | null;
+  /** Judge overall score, or the fraction of checks passed. */
+  score?: number | null;
+  judge?: { overall?: number; reasoning?: string; llm_judged?: boolean } | null;
+}
+
+export interface GoldenTaskInput {
+  goal: string;
+  expected_tools?: string[];
+  forbidden_tools?: string[];
+  expected_output_contains?: string[];
+  expected_output?: string;
+  min_score?: number;
+  max_iterations?: number;
+  tags?: string[];
+}
+
+/** A golden task must check something (MEM-51); the API refuses one that doesn't. */
+export function goldenTaskHasChecks(task: GoldenTaskInput): boolean {
+  return Boolean(
+    (task.expected_tools ?? []).some((t) => t.trim()) ||
+      (task.forbidden_tools ?? []).some((t) => t.trim()) ||
+      (task.expected_output_contains ?? []).some((t) => t.trim()) ||
+      (task.expected_output ?? "").trim(),
+  );
 }
 
 export const evalSuitesApi = {
@@ -2274,7 +2306,7 @@ export const evalSuitesApi = {
       body: JSON.stringify({ name, description }),
     }),
   getSuite: (id: string) => request<EvalSuite>(`/intelligence/eval-suites/${id}`),
-  addTask: (suiteId: string, task: { input: string; expected_output?: string; tags?: string[]; forbidden_tools?: string[]; min_score?: number }) =>
+  addTask: (suiteId: string, task: GoldenTaskInput) =>
     request<void>(`/intelligence/eval-suites/${suiteId}/tasks`, {
       method: "POST",
       body: JSON.stringify(task),

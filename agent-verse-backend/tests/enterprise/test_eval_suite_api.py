@@ -56,6 +56,30 @@ async def test_get_suite_results_empty(authed_client):
 
 
 @pytest.mark.asyncio
+async def test_golden_task_without_checks_is_rejected(authed_client):
+    """MEM-51: a task with no checks measures nothing and would always pass."""
+    suite_id = (await authed_client.post("/intelligence/eval-suites", json={})).json()["suite_id"]
+    r = await authed_client.post(
+        f"/intelligence/eval-suites/{suite_id}/tasks", json={"goal": "Do whatever"}
+    )
+    assert r.status_code == 422
+    suite = (await authed_client.get(f"/intelligence/eval-suites/{suite_id}")).json()
+    assert suite["task_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_golden_task_keeps_min_score_and_reference_answer(authed_client):
+    suite_id = (await authed_client.post("/intelligence/eval-suites", json={})).json()["suite_id"]
+    r = await authed_client.post(
+        f"/intelligence/eval-suites/{suite_id}/tasks",
+        json={"goal": "Summarise", "expected_output": "a summary", "min_score": 0.6},
+    )
+    assert r.status_code == 201
+    (task,) = (await authed_client.get(f"/intelligence/eval-suites/{suite_id}")).json()["tasks"]
+    assert task["min_score"] == 0.6 and task["expected_output"] == "a summary"
+
+
+@pytest.mark.asyncio
 async def test_eval_suite_auth_required(app):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         assert (await c.get("/intelligence/eval-suites")).status_code == 401

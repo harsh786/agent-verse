@@ -63,6 +63,16 @@ class GoldenTask:
         self.expected_tools = self.expected_tool_calls
         self.forbidden_tools = forbidden_tools or []
 
+    @property
+    def has_checks(self) -> bool:
+        """Does the task check anything? A task without checks measures nothing (MEM-51)."""
+        return bool(
+            self.expected_tool_calls
+            or self.forbidden_tools
+            or self.expected_output_contains
+            or (self.expected_output or "").strip()
+        )
+
 
 @dataclass
 class GoldenTaskResult:
@@ -74,8 +84,16 @@ class GoldenTaskResult:
     duration_seconds: float = 0.0
     actual_output: str = ""  # actual agent output for LLM judge evaluation
     # "scored" — the goal reached a terminal state and was checked;
-    # "timeout" / "error" — it did not, so it was NOT scored (and never passes).
+    # "timeout" / "error" — it did not, so it was NOT scored (and never passes);
+    # "invalid" — the task has no checks, so it cannot be scored (never passes).
     status: str = "scored"
+    goal_id: str | None = None
+    # The goal's terminal event (goal_complete / goal_failed / ...), or None.
+    terminal_event: str | None = None
+    # 0.0-1.0: the LLM judge's overall score when a judge ran, else the
+    # fraction of deterministic checks that passed. Compared with min_score.
+    score: float | None = None
+    judge: dict[str, Any] | None = None
 
 
 @dataclass
@@ -112,8 +130,14 @@ class LLMJudge:
         actual_output: str,
         tools_called: list[str],
         forbidden_tools: list[str],
+        tenant_ctx: Any = None,
+        goal_id: str | None = None,
     ) -> dict[str, float | bool | str]:
-        """Score the goal execution result on multiple dimensions."""
+        """Score the goal execution result on multiple dimensions.
+
+        The call is charged to ``tenant_ctx`` (circuit breaker + timeout via
+        ``complete_decision``).
+        """
         if self._provider is None:
             return self._heuristic_score(
                 expected_output, actual_output, tools_called, forbidden_tools
@@ -164,6 +188,8 @@ class LLMJudge:
                     max_tokens=300,
                 ),
                 role="eval_judge",
+                tenant_ctx=tenant_ctx,
+                goal_id=goal_id,
             )
 
             import json
@@ -235,6 +261,147 @@ async def cancel_unscored_goal(goal_service: Any, goal_id: str, tenant_ctx: Any)
         await cancel(goal_id, tenant_ctx)
     except Exception as exc:
         logger.warning("eval_goal_cancel_failed", goal_id=goal_id, error=str(exc)[:200])
+
+
+def platform_judge(provider: Any) -> LLMJudge | None:
+    """The LLM judge for golden tasks, or None when only FakeProvider is configured."""
+    if provider is None:
+        return None
+    from app.providers.fake import FakeProvider
+
+    return None if isinstance(provider, FakeProvider) else LLMJudge(provider=provider)
+
+
+def invalid_task_result(task: GoldenTask) -> GoldenTaskResult:
+    """A task with no checks is never run and never passes (MEM-51)."""
+    return GoldenTaskResult(
+        task_id=task.task_id,
+        goal=task.goal,
+        passed=False,
+        failure_reasons=[
+            "task has no checks (expected tools, forbidden tools, expected phrases "
+            "or a reference answer); it cannot measure the agent"
+        ],
+        status="invalid",
+    )
+
+
+async def score_golden_task(
+    task: GoldenTask,
+    *,
+    events: list[dict[str, Any]],
+    goal_id: str | None,
+    judge: LLMJudge | None,
+    tenant_ctx: Any,
+    duration_seconds: float = 0.0,
+) -> GoldenTaskResult:
+    """Score one golden task from its goal's events (which end in a terminal event).
+
+    A task passes only when ALL of these hold (MEM-51):
+
+    * its goal COMPLETED — goal_failed / goal_cancelled / goal_rejected fail it;
+    * every deterministic check passed (required tools called, forbidden tools
+      not called, expected phrases present);
+    * its score reaches ``task.min_score``: the LLM judge's overall score when a
+      judge is configured, else the fraction of checks that passed.
+
+    A configured judge that fails (provider error, unparseable output) makes the
+    task an unscored ``error`` — never a silent heuristic pass.
+    """
+    if not task.has_checks:
+        return invalid_task_result(task)
+    terminal = next(
+        (str(e.get("type")) for e in reversed(events) if e.get("type") in _TERMINAL_EVENTS),
+        None,
+    )
+    tools_called = [
+        str(e.get("tool_name") or e.get("tool") or "")
+        for e in events
+        if e.get("type") == "tool_call_complete"
+    ]
+    all_output = " ".join(str(e.get("output", "")) for e in events)
+    failure_reasons: list[str] = []
+    checks = 0
+    passed_checks = 0.0
+
+    def _check(ok: bool, reason: str) -> None:
+        nonlocal checks, passed_checks
+        checks += 1
+        if ok:
+            passed_checks += 1
+        else:
+            failure_reasons.append(reason)
+
+    if terminal != "goal_complete":
+        failure_reasons.append(f"goal ended {terminal or 'without a terminal event'}")
+    for expected in task.expected_tools:
+        _check(
+            any(expected in t for t in tools_called),
+            f"Required tool '{expected}' was not called",
+        )
+    for forbidden in task.forbidden_tools:
+        _check(
+            not any(forbidden in t for t in tools_called),
+            f"Forbidden tool '{forbidden}' was called",
+        )
+    for phrase in task.expected_output_contains:
+        _check(phrase.lower() in all_output.lower(), f"Output missing '{phrase}'")
+
+    result = GoldenTaskResult(
+        task_id=task.task_id,
+        goal=task.goal,
+        passed=False,
+        failure_reasons=failure_reasons,
+        tools_called=tools_called,
+        duration_seconds=duration_seconds,
+        actual_output=all_output,
+        goal_id=goal_id,
+        terminal_event=terminal,
+    )
+    if terminal != "goal_complete":
+        # A goal that did not complete fails the task; there is nothing to judge.
+        result.score = 0.0
+        return result
+
+    # A judge without a provider is the heuristic scorer, not an LLM judge: the
+    # deterministic checks below are the honest score in that case.
+    if judge is not None and getattr(judge, "_provider", None) is not None:
+        from app.evals.ai_ops_runner import _extract_output
+
+        scores = await judge.score(
+            goal=task.goal,
+            expected_output=task.expected_output,
+            actual_output=_extract_output(events) or all_output,
+            tools_called=tools_called,
+            forbidden_tools=task.forbidden_tools,
+            tenant_ctx=tenant_ctx,
+            goal_id=goal_id,
+        )
+        if not scores.get("llm_judged", False):
+            result.status = "error"
+            result.failure_reasons.append("LLM judge failed; the task was not scored")
+            result.judge = dict(scores)
+            return result
+        result.judge = dict(scores)
+        result.score = float(scores.get("overall", 0.0))
+    else:
+        reference = (task.expected_output or "").strip()
+        if reference:
+            # No judge: the reference answer is compared lexically (a partial
+            # credit check), so a reference-only task still measures something.
+            from app.evals.ai_ops_runner import _extract_output, lexical_similarity
+
+            checks += 1
+            passed_checks += lexical_similarity(reference, _extract_output(events) or all_output)
+        result.score = round(passed_checks / checks, 4) if checks else 1.0
+
+    if result.score < task.min_score:
+        result.failure_reasons.append(
+            f"score {result.score:.2f} is below min_score {task.min_score:.2f}"
+        )
+    result.passed = not result.failure_reasons
+    return result
+
 
 
 class EvalSuiteRunner:
@@ -309,6 +476,7 @@ class EvalSuiteRunner:
         tasks: list[GoldenTask] | None = None,
         run_id: str | None = None,
         concurrency: int = 4,
+        judge: LLMJudge | None = None,
     ) -> EvalSuiteResult:
         """Run golden tasks and score them.
 
@@ -324,10 +492,11 @@ class EvalSuiteRunner:
         if run_id:
             result.run_id = run_id
         gate = asyncio.Semaphore(max(1, concurrency))
+        active_judge = judge if judge is not None else self._llm_judge
 
         async def _one(task: GoldenTask) -> GoldenTaskResult:
             async with gate:
-                return await self._run_task(task, goal_service, tenant_ctx)
+                return await self._run_task(task, goal_service, tenant_ctx, active_judge)
 
         for task_result in await asyncio.gather(*(_one(t) for t in tasks)):
             result.task_results.append(task_result)
@@ -342,10 +511,17 @@ class EvalSuiteRunner:
         return result
 
     async def _run_task(
-        self, task: GoldenTask, goal_service: Any, tenant_ctx: Any
+        self,
+        task: GoldenTask,
+        goal_service: Any,
+        tenant_ctx: Any,
+        judge: LLMJudge | None = None,
     ) -> GoldenTaskResult:
         t0 = time.monotonic()
         events: list[dict[str, Any]] = []
+        if not task.has_checks:
+            # Nothing to check: running the goal would spend money to measure nothing.
+            return invalid_task_result(task)
 
         try:
             sub = await goal_service.submit_goal(
@@ -395,34 +571,13 @@ class EvalSuiteRunner:
                 status=status,
             )
 
-        tools_called = [
-            str(e.get("tool_name") or e.get("tool") or "")
-            for e in events
-            if e.get("type") == "tool_call_complete"
-        ]
-        all_output = " ".join(str(e.get("output", "")) for e in events)
-        failure_reasons: list[str] = []
-
-        for expected in task.expected_tools:
-            if not any(expected in t for t in tools_called):
-                failure_reasons.append(f"Required tool '{expected}' was not called")
-
-        for forbidden in task.forbidden_tools:
-            if any(forbidden in t for t in tools_called):
-                failure_reasons.append(f"Forbidden tool '{forbidden}' was called")
-
-        for phrase in task.expected_output_contains:
-            if phrase.lower() not in all_output.lower():
-                failure_reasons.append(f"Output missing '{phrase}'")
-
-        return GoldenTaskResult(
-            task_id=task.task_id,
-            goal=task.goal,
-            passed=len(failure_reasons) == 0,
-            failure_reasons=failure_reasons,
-            tools_called=tools_called,
+        return await score_golden_task(
+            task,
+            events=events,
+            goal_id=goal_id,
+            judge=judge,
+            tenant_ctx=tenant_ctx,
             duration_seconds=time.monotonic() - t0,
-            actual_output=all_output,
         )
 
     async def run_with_llm_judge(
@@ -441,8 +596,8 @@ class EvalSuiteRunner:
         judge_results: list[dict[str, Any]] = []
         judge_failures = 0
         for task, task_result in zip(tasks, suite_result.task_results, strict=False):
-            scores: dict[str, Any] = {}
-            if self._llm_judge is not None:
+            scores: dict[str, Any] = dict(task_result.judge or {})
+            if not scores and self._llm_judge is not None:
                 # Use the actual agent output for evaluation, not the goal prompt
                 all_output = (
                     task_result.actual_output or task_result.goal
@@ -463,8 +618,8 @@ class EvalSuiteRunner:
                 # scores into `aggregate_score` while still reporting
                 # `llm_judged: True` for the whole run. Count failures so the
                 # suite-level flag can honestly reflect degraded judging.
-                if not scores.get("llm_judged", False):
-                    judge_failures += 1
+            if self._llm_judge is not None and not scores.get("llm_judged", False):
+                judge_failures += 1
             judge_results.append(
                 {
                     "task_id": task_result.task_id,

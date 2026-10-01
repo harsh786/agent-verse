@@ -165,8 +165,10 @@ def test_list_suites_returns_suite_ids():
 async def test_pass_rate_calculation_correct():
     """pass_rate equals passed_tasks / total_tasks."""
     runner = EvalSuiteRunner()
-    # 2 tasks: one with a required tool (will pass), one with a missing tool (will fail)
-    t_pass = GoldenTask(goal="ok")
+    # 2 tasks: one whose check holds (will pass), one with a missing tool (will fail).
+    # A task with no checks at all is invalid (MEM-51), so the passing one checks
+    # that a forbidden tool was not called.
+    t_pass = GoldenTask(goal="ok", forbidden_tools=["never_called"])
     t_fail = GoldenTask(goal="fail", expected_tools=["not_called"])
     runner.create_suite("rates", [t_pass, t_fail])
     svc = _svc({"type": "goal_complete"})

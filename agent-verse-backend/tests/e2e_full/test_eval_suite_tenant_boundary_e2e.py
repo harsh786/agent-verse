@@ -50,7 +50,11 @@ async def test_eval_suites_are_isolated_and_runs_are_async(app: Any, client: Any
 
         add = await owner.post(
             "/intelligence/eval-suites/shared-name/tasks",
-            json={"goal": "Summarise the onboarding policy", "tags": ["smoke"]},
+            json={
+                "goal": "Summarise the onboarding policy",
+                "expected_output_contains": ["onboarding"],
+                "tags": ["smoke"],
+            },
         )
         assert add.status_code == 201, add.text
 
@@ -94,7 +98,7 @@ async def test_eval_suites_are_isolated_and_runs_are_async(app: Any, client: Any
         # A suite the caller does not have: 404 everywhere, never a write.
         for method, path, body in [
             ("GET", "/intelligence/eval-suites/shared-name", None),
-            ("POST", "/intelligence/eval-suites/shared-name/tasks", {"goal": "inject"}),
+            ("POST", "/intelligence/eval-suites/shared-name/tasks", {"goal": "inject", "expected_tools": ["x"]}),
             ("POST", "/intelligence/eval-suites/shared-name/run", None),
             ("GET", "/intelligence/eval-suites/shared-name/results", None),
         ]:

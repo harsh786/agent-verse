@@ -52,6 +52,8 @@ def task_to_dict(task: GoldenTask) -> dict[str, Any]:
         "expected_tools": list(task.expected_tools),
         "forbidden_tools": list(task.forbidden_tools),
         "expected_output_contains": list(task.expected_output_contains),
+        "expected_output": task.expected_output or "",
+        "min_score": task.min_score,
         "max_iterations": task.max_iterations,
         "tags": list(task.tags),
     }
@@ -67,6 +69,8 @@ def task_from_dict(suite_id: str, data: dict[str, Any]) -> GoldenTask:
         expected_tools=list(data.get("expected_tools") or []),
         forbidden_tools=list(data.get("forbidden_tools") or []),
         expected_output_contains=list(data.get("expected_output_contains") or []),
+        expected_output=str(data.get("expected_output") or "") or None,
+        min_score=float(data["min_score"]) if data.get("min_score") is not None else 0.8,
         max_iterations=int(data.get("max_iterations") or 15),
         tags=list(data.get("tags") or []),
     )
@@ -253,6 +257,10 @@ class EvalSuiteStore:
                 "status": r.status,
                 "failure_reasons": r.failure_reasons,
                 "duration_seconds": round(r.duration_seconds, 2),
+                "goal_id": r.goal_id,
+                "terminal_event": r.terminal_event,
+                "score": r.score,
+                "judge": r.judge,
             }
             for r in (result.task_results if result is not None else [])
         ]

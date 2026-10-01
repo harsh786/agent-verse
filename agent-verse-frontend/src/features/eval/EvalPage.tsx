@@ -9,6 +9,9 @@ import {
   API_BASE,
   apiFetch,
   evalSuitesApi,
+  goldenTaskHasChecks,
+  type EvalSuiteTaskResult,
+  type GoldenTaskInput,
   goalsApi,
   simulationApi,
   type EvalSuiteResult,
@@ -815,7 +818,60 @@ interface GoldenTaskForm {
   expected_output_contains: string;
   expected_tools: string;
   forbidden_tools: string;
+  expected_output: string;
   min_score: string;
+}
+
+const EMPTY_TASK_FORM: GoldenTaskForm = {
+  goal: '', expected_output_contains: '', expected_tools: '', forbidden_tools: '', expected_output: '', min_score: '0.8',
+};
+
+function splitList(value: string): string[] {
+  return value.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+function taskFormToInput(form: GoldenTaskForm): GoldenTaskInput {
+  return {
+    goal: form.goal.trim(),
+    expected_tools: splitList(form.expected_tools),
+    forbidden_tools: splitList(form.forbidden_tools),
+    expected_output_contains: splitList(form.expected_output_contains),
+    expected_output: form.expected_output.trim() || undefined,
+    min_score: form.min_score ? Number(form.min_score) : undefined,
+  };
+}
+
+const TERMINAL_LABEL: Record<string, string> = {
+  goal_complete: 'completed',
+  goal_failed: 'goal failed',
+  goal_cancelled: 'goal cancelled',
+  goal_rejected: 'goal rejected',
+};
+
+function TaskOutcome({ t }: { t: EvalSuiteTaskResult }) {
+  const tone = t.passed
+    ? 'border-emerald-500/30 text-emerald-500'
+    : t.status && t.status !== 'scored'
+      ? 'border-amber-500/30 text-amber-500'
+      : 'border-red-500/30 text-red-500';
+  const outcome = t.status === 'timeout'
+    ? 'timed out'
+    : t.status === 'error'
+      ? 'error'
+      : t.status === 'invalid'
+        ? 'invalid (no checks)'
+        : TERMINAL_LABEL[t.terminal_event ?? ''] ?? (t.terminal_event || 'no outcome');
+  return (
+    <span
+      data-testid={`task-outcome-${t.task_id}`}
+      title={t.failure_reasons?.join('; ')}
+      className={`text-[10px] px-1.5 py-0.5 rounded border ${tone}`}
+    >
+      {t.task_id}: {t.passed ? 'pass' : 'fail'} · {outcome}
+      {typeof t.score === 'number' && ` · score ${t.score.toFixed(2)}`}
+      {t.judge?.llm_judged && ' (judge)'}
+    </span>
+  );
 }
 
 function SuitesTab({ apiKey }: { apiKey: string }) {
@@ -826,9 +882,9 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
   const [activeSuiteId, setActiveSuiteId] = useState<string | null>(null);
   const [showAddTask, setShowAddTask] = useState(false);
   const [deleteSuiteId, setDeleteSuiteId] = useState<string | null>(null);
-  const [taskForm, setTaskForm] = useState<GoldenTaskForm>({
-    goal: '', expected_output_contains: '', expected_tools: '', forbidden_tools: '', min_score: '0.8',
-  });
+  const [taskForm, setTaskForm] = useState<GoldenTaskForm>(EMPTY_TASK_FORM);
+  const taskInput = taskFormToInput(taskForm);
+  const taskHasChecks = goldenTaskHasChecks(taskInput);
 
   const deleteSuiteMutation = useMutation({
     mutationFn: (suiteId: string) => evalSuitesApi.deleteSuite(suiteId),
@@ -874,17 +930,13 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
   });
 
   const addTaskMutation = useMutation({
-    mutationFn: () => evalSuitesApi.addTask(activeSuiteId!, {
-      input: taskForm.goal,
-      expected_output: taskForm.expected_output_contains || undefined,
-      tags: taskForm.expected_tools ? taskForm.expected_tools.split(',').map((t) => t.trim()) : [],
-      forbidden_tools: taskForm.forbidden_tools ? taskForm.forbidden_tools.split(',').map((t) => t.trim()) : undefined,
-      min_score: taskForm.min_score ? Number(taskForm.min_score) : undefined,
-    }),
+    mutationFn: () => evalSuitesApi.addTask(activeSuiteId!, taskInput),
     onSuccess: () => {
       setShowAddTask(false);
-      setTaskForm({ goal: '', expected_output_contains: '', expected_tools: '', forbidden_tools: '', min_score: '0.8' });
+      setTaskForm(EMPTY_TASK_FORM);
+      qc.invalidateQueries({ queryKey: ['eval-suites'] });
     },
+    onError: (e) => toast({ kind: 'error', message: String(e) }),
   });
 
   const runMutation = useMutation({
@@ -998,7 +1050,8 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
                   <h4 className="text-xs font-semibold text-muted-foreground mb-2">Recent Runs</h4>
                   <div className="space-y-1.5">
                     {(suiteResultsMap.get(suite.suite_id) ?? []).slice(-5).map((r, i) => {
-                      const unscored = (r.task_results ?? []).filter((t) => t.status === 'timeout' || t.status === 'error');
+                      const tasks = r.task_results ?? [];
+                      const unscored = tasks.filter((t) => t.status && t.status !== 'scored');
                       return (
                         <div key={r.run_id ?? i} className="space-y-1">
                           <div className="flex items-center gap-3 text-xs">
@@ -1014,17 +1067,9 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
                               <span className="text-amber-500">{unscored.length} not scored</span>
                             )}
                           </div>
-                          {unscored.length > 0 && (
+                          {tasks.length > 0 && (
                             <div className="flex flex-wrap gap-1 pl-6">
-                              {unscored.map((t) => (
-                                <span
-                                  key={t.task_id}
-                                  title={t.failure_reasons?.join('; ')}
-                                  className="text-[10px] px-1.5 py-0.5 rounded border border-amber-500/30 text-amber-500"
-                                >
-                                  {t.task_id}: {t.status === 'timeout' ? 'timed out' : 'error'}
-                                </span>
-                              ))}
+                              {tasks.map((t) => <TaskOutcome key={t.task_id} t={t} />)}
                             </div>
                           )}
                         </div>
@@ -1053,11 +1098,13 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
               { label: 'Expected output contains', key: 'expected_output_contains', placeholder: 'Expected substring in output' },
               { label: 'Expected tools (comma-separated)', key: 'expected_tools', placeholder: 'github:list_issues, slack:send_message' },
               { label: 'Forbidden tools', key: 'forbidden_tools', placeholder: 'shell:execute, db:delete' },
+              { label: 'Reference answer (judged)', key: 'expected_output', placeholder: 'What a correct answer says' },
               { label: 'Min score', key: 'min_score', placeholder: '0.8' },
             ].map(({ label, key, placeholder }) => (
               <div key={key}>
                 <label className="text-xs text-muted-foreground block mb-1">{label}</label>
                 <input
+                  aria-label={label}
                   value={taskForm[key as keyof GoldenTaskForm]}
                   onChange={(e) => setTaskForm((f) => ({ ...f, [key]: e.target.value }))}
                   placeholder={placeholder}
@@ -1065,13 +1112,19 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
                 />
               </div>
             ))}
+            {taskForm.goal.trim() && !taskHasChecks && (
+              <p role="alert" className="text-xs text-amber-500">
+                Add at least one check — an expected tool, a forbidden tool, an expected phrase or a
+                reference answer. A task without checks cannot measure the agent.
+              </p>
+            )}
             <div className="flex gap-2 justify-end">
               <button onClick={() => setShowAddTask(false)} className="px-4 py-2 border border-border text-muted-foreground text-sm rounded-lg">
                 Cancel
               </button>
               <button
                 onClick={() => addTaskMutation.mutate()}
-                disabled={!taskForm.goal.trim() || addTaskMutation.isPending}
+                disabled={!taskForm.goal.trim() || !taskHasChecks || addTaskMutation.isPending}
                 className="px-4 py-2 bg-indigo-600 text-foreground text-sm rounded-lg disabled:opacity-50"
               >
                 {addTaskMutation.isPending ? 'Adding…' : 'Add Task'}
