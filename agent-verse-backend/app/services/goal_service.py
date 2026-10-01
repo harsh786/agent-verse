@@ -155,6 +155,18 @@ _COMPLETED_GOAL_TTL_SECONDS = 3600  # 1 hour
 # Delay before a crashed background Redis subscriber is restarted.
 _SUBSCRIBER_RESTART_DELAY_S = 5.0
 _EVICTION_INTERVAL_SECONDS = 60  # evict at most once every 60 seconds
+# Hard cap on cached GoalRecords per replica (SVC-30): Postgres is the source of
+# truth, so read traffic over many distinct goals must not grow the heap. Records
+# with a live local task or SSE subscribers are never dropped by the cap.
+_MAX_CACHED_GOALS = 5_000
+
+
+def _row_completed_at(row: Any, status: GoalStatus) -> str | None:
+    """completed_at for a record built from a goals row (terminal rows only)."""
+    if status not in (GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED):
+        return None
+    ts = getattr(row, "completed_at", None) or getattr(row, "updated_at", None)
+    return ts.isoformat() if ts is not None else None
 
 
 def _monotonic() -> float:
@@ -1000,17 +1012,21 @@ class GoalService:
         cutoff = datetime.now(UTC) - timedelta(seconds=_COMPLETED_GOAL_TTL_SECONDS)
         terminal = (GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED)
         to_evict: list[str] = []
+        now_iso = datetime.now(UTC).isoformat()
         for goal_id, record in self._goals.items():
-            if record.status in terminal:
+            if record.status in terminal and not self._is_pinned(record):
                 completed_at = getattr(record, "completed_at", None)
-                if completed_at and isinstance(completed_at, str):
-                    try:
-                        dt = datetime.fromisoformat(completed_at.rstrip("Z"))
-                        if dt.replace(tzinfo=UTC) < cutoff:
-                            to_evict.append(goal_id)
-                    except Exception:
-                        pass
-                # else: no timestamp yet — skip (don't evict; goal might have just completed)
+                if not completed_at or not isinstance(completed_at, str):
+                    # No timestamp (bridge stub, legacy load): start its TTL now.
+                    # Skipping it forever is how these records piled up.
+                    record.completed_at = now_iso
+                    continue
+                try:
+                    dt = datetime.fromisoformat(completed_at.rstrip("Z"))
+                    if dt.replace(tzinfo=UTC) < cutoff:
+                        to_evict.append(goal_id)
+                except Exception:
+                    to_evict.append(goal_id)
         for gid in to_evict:
             del self._goals[gid]
             _GOAL_PAUSE_EVENTS.pop(gid, None)
@@ -1020,6 +1036,36 @@ class GoalService:
     async def _evict_async(self) -> int:
         """Async wrapper so eviction runs in the event loop without thread race."""
         return self._evict_stale_goals()
+
+    @staticmethod
+    def _is_pinned(record: GoalRecord) -> bool:
+        """A record this replica must keep: a live local task or SSE subscribers."""
+        task = record.task
+        return bool(record.subscribers) or (task is not None and not task.done())
+
+    def _cache_goal(self, record: GoalRecord) -> None:
+        """Cache *record* as most-recently used, then keep the cache bounded:
+        TTL eviction at most every _EVICTION_INTERVAL_SECONDS (it used to run
+        only on submit), and an LRU cap of _MAX_CACHED_GOALS unpinned records.
+        """
+        self._goals.pop(record.goal_id, None)
+        self._goals[record.goal_id] = record
+        now = time.monotonic()
+        if now - self._last_eviction_time > _EVICTION_INTERVAL_SECONDS:
+            self._last_eviction_time = now
+            self._evict_stale_goals()
+        excess = len(self._goals) - _MAX_CACHED_GOALS
+        if excess <= 0 or self._db is None:
+            # Without a DB this map IS the goal store: never drop by size.
+            return
+        for gid in list(self._goals):
+            if excess <= 0:
+                break
+            if gid == record.goal_id or self._is_pinned(self._goals[gid]):
+                continue
+            del self._goals[gid]
+            _GOAL_PAUSE_EVENTS.pop(gid, None)
+            excess -= 1
 
     def _sweep_pause_events(self) -> int:
         """Remove pause events for goals that are no longer tracked."""
@@ -6081,6 +6127,7 @@ class GoalService:
             agent_id=row.agent_id,
             workflow_mode=row.workflow_mode,
             execution_context=row.execution_context or {},
+            completed_at=_row_completed_at(row, status),
         )
         # A refresh must not orphan live SSE subscribers: subscribe_events
         # registers its queue on the cached record, and the Celery bridge /
@@ -6092,7 +6139,7 @@ class GoalService:
             record.subscribers = previous.subscribers
             if record.task is None:
                 record.task = previous.task
-        self._goals[row.id] = record
+        self._cache_goal(record)
         return record
 
     async def _db_update_goal_status(
@@ -6253,8 +6300,9 @@ class GoalService:
                                 agent_id=g.agent_id,
                                 workflow_mode=g.workflow_mode,
                                 execution_context=g.execution_context or {},
+                                completed_at=_row_completed_at(g, _g_status),
                             )
-                            self._goals[g.id] = record
+                            self._cache_goal(record)
                             loaded += 1
 
             _svc_logger.info("Synced %d recent goals from DB", loaded)
