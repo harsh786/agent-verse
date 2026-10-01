@@ -209,15 +209,17 @@ class TargetClass(StrEnum):
     PRIVILEGE = "privilege"
     INFRA = "infrastructure"
     AUDIENCE = "audience"
+    # One person / account as the object of a change ("update the customer");
+    # not a broadcast audience and not data on its own.
+    PEOPLE = "people"
 
 
 _TARGET_WORDS: dict[TargetClass, frozenset[str]] = {
     TargetClass.PRODUCTION: frozenset({"prod", "production", "prd"}),
     TargetClass.DATA: frozenset(
         {
-            "customer", "customers", "pii", "phi", "database", "databases", "db", "schema",
-            "backup", "backups", "records", "record", "accounts", "account", "patients",
-            "patient", "employees", "users", "tenant", "tenants", "gdpr", "ssn", "ledger",
+            "pii", "phi", "database", "databases", "db", "schema", "backup", "backups",
+            "records", "accounts", "gdpr", "ssn", "ledger",
         }
     ),
     TargetClass.SECRET: frozenset(
@@ -253,8 +255,12 @@ _TARGET_WORDS: dict[TargetClass, frozenset[str]] = {
         {
             "everyone", "public", "publicly", "press", "media", "external", "subscribers",
             "newsletter", "partners", "investors", "regulators", "twitter", "linkedin",
-            "facebook", "mailing", "broadcast", "vendors", "clients",
+            "facebook", "mailing", "broadcast", "vendors", "clients", "customers", "users",
+            "employees", "patients", "members", "contacts", "staff",
         }
+    ),
+    TargetClass.PEOPLE: frozenset(
+        {"customer", "user", "employee", "patient", "client", "member", "subscriber"}
     ),
 }
 
@@ -270,6 +276,8 @@ _TARGET_PHRASES: tuple[tuple[tuple[str, ...], TargetClass], ...] = (
     (("user", "data"), TargetClass.DATA),
     (("personal", "data"), TargetClass.DATA),
     (("customer", "data"), TargetClass.DATA),
+    (("customer", "list"), TargetClass.DATA),
+    (("customer", "records"), TargetClass.DATA),
     (("api", "key"), TargetClass.SECRET),
     (("api", "keys"), TargetClass.SECRET),
     (("private", "key"), TargetClass.SECRET),
@@ -440,11 +448,12 @@ class TextRisk:
         reasons.extend(f"destructive command '{c}'" for c in self.commands)
         for target in sorted(self.targets & _ALWAYS_HIGH_TARGETS):
             reasons.append(f"{target.value} target")
-        sensitive = self.targets - {TargetClass.AUDIENCE}
-        if sensitive and VerbClass.MUTATING in classes:
+        changeable = self.targets - {TargetClass.AUDIENCE}
+        sensitive = changeable - {TargetClass.PEOPLE}
+        if changeable and VerbClass.MUTATING in classes:
             reasons.append(
                 "change to a sensitive target ("
-                + ", ".join(sorted(t.value for t in sensitive)) + ")"
+                + ", ".join(sorted(t.value for t in changeable)) + ")"
             )
         if VerbClass.COMMUNICATION in classes and self.targets & _COMMUNICATION_SENSITIVE:
             reasons.append(

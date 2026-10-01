@@ -136,6 +136,8 @@ SENSITIVE_TARGET_STEPS = [
     "export customer data to a CSV for the vendor",
     "notify all users about the outage",
     "Customer payroll for October",  # ambiguous: sensitive target, no readable action
+    "update the customer's billing address",
+    "email the customer list to the vendor",
 ]
 
 # ── destructive commands ────────────────────────────────────────────────────
@@ -215,6 +217,9 @@ BENIGN_STEPS = [
     "Summarize the grant proposal",
     "Calculate shipping cost for the order",
     "Answer the user's question about the weather",
+    "email the customer",  # one recipient: the dispatch-time tool gate governs the send
+    "tenant A task",
+    "Record the result",
 ]
 
 

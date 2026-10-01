@@ -450,7 +450,7 @@ async def test_graph_requires_approval_for_atlassian_update_jira_issue_tool_call
 
 
 async def test_graph_denies_destructive_jira_tool_call() -> None:
-    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["review Jira issue BAU-1"]}'])
     executor = FakeProvider(
         responses=[
             '{"tool": "jira_delete_issue", "arguments": {"issue_key": "BAU-1"}}'
@@ -471,7 +471,7 @@ async def test_graph_denies_destructive_jira_tool_call() -> None:
     )
 
     state = await g.run(
-        goal="Delete BAU-1",
+        goal="Review BAU-1",
         tenant_ctx=T,
         initial_context={"tool_context": _jira_tool_context("jira_delete_issue")},
         event_callback=cb,
@@ -489,7 +489,7 @@ async def test_graph_denies_destructive_jira_tool_call() -> None:
 
 
 async def test_graph_denies_generic_delete_issue_on_jira_connector() -> None:
-    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["review Jira issue BAU-1"]}'])
     executor = FakeProvider(
         responses=['{"tool": "delete_issue", "arguments": {"issue_key": "BAU-1"}}']
     )
@@ -504,7 +504,7 @@ async def test_graph_denies_generic_delete_issue_on_jira_connector() -> None:
     )
 
     state = await g.run(
-        goal="Delete BAU-1",
+        goal="Review BAU-1",
         tenant_ctx=T,
         initial_context={"tool_context": _jira_tool_context("delete_issue")},
     )
@@ -603,7 +603,7 @@ async def test_graph_executes_generic_search_on_jira_connector_as_read() -> None
 
 
 async def test_graph_denies_camel_case_delete_jira_issue_tool_call() -> None:
-    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["review Jira issue BAU-1"]}'])
     executor = FakeProvider(
         responses=['{"tool": "deleteJiraIssue", "arguments": {"issue_key": "BAU-1"}}']
     )
@@ -618,7 +618,7 @@ async def test_graph_denies_camel_case_delete_jira_issue_tool_call() -> None:
     )
 
     state = await g.run(
-        goal="Delete BAU-1",
+        goal="Review BAU-1",
         tenant_ctx=T,
         initial_context={
             "tool_context": _jira_tool_context(
@@ -664,7 +664,7 @@ async def test_graph_executes_atlassian_search_jira_issues_tool_call_as_read() -
 
 
 async def test_graph_denies_atlassian_delete_jira_issue_tool_call() -> None:
-    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["review Jira issue BAU-1"]}'])
     executor = FakeProvider(
         responses=[
             '{"tool": "delete_jira_issue", "arguments": {"issue_key": "BAU-1"}}'
@@ -685,7 +685,7 @@ async def test_graph_denies_atlassian_delete_jira_issue_tool_call() -> None:
     )
 
     state = await g.run(
-        goal="Delete BAU-1",
+        goal="Review BAU-1",
         tenant_ctx=T,
         initial_context={"tool_context": _jira_tool_context("delete_jira_issue")},
         event_callback=cb,
