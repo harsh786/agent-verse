@@ -2663,6 +2663,11 @@ def run_goal(
                         auto_approve=bool(getattr(cfg, "auto_approve", False)),
                     )
                 )
+        # Same tool on several connections (two MongoDB connections): give each
+        # a distinct "<connection>__<tool>" name so the model can target one.
+        from app.mcp.tool_naming import qualify_colliding_tools
+
+        tools = qualify_colliding_tools(tools)
         return redis_client, mcp_client, ToolContext(connectors=connectors, tools=tools)
 
     if not _loop_is_patched:

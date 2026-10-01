@@ -394,7 +394,9 @@ class MCPClient:
                 from app.mcp.registry import MCPRegistry as _MCPReg
 
                 _restored = (
-                    _MCPReg.get_builtin_handler(server_id)  # e.g. 'builtin-jira'
+                    # By built-in TYPE first: several connections share one type.
+                    (_MCPReg.get_builtin_handler(cfg.builtin_type) if cfg.builtin_type else None)
+                    or _MCPReg.get_builtin_handler(server_id)  # e.g. 'builtin-jira'
                     or _MCPReg.get_builtin_handler(cfg.server_id)  # UUID fallback
                 )
                 if _restored is not None:
@@ -426,7 +428,7 @@ class MCPClient:
                 from app.mcp.servers import registry_wiring as _rw
 
                 for _bcfg in _rw.get_builtin_server_configs():
-                    if _bcfg.get("server_id") == server_id:
+                    if _bcfg.get("server_id") in (server_id, cfg.builtin_type):
                         _tool_defs = _bcfg.get("tool_definitions", [])
                         return [
                             ToolDefinition(
@@ -589,7 +591,11 @@ class MCPClient:
             try:
                 from app.mcp.registry import MCPRegistry as _MCPReg
 
-                handler = _MCPReg.get_builtin_handler(server.server_id)
+                handler = (
+                    _MCPReg.get_builtin_handler(server.builtin_type)
+                    if server.builtin_type
+                    else None
+                ) or _MCPReg.get_builtin_handler(server.server_id)
             except Exception:
                 pass
         if handler is None:
@@ -690,7 +696,7 @@ class MCPClient:
                     server_id=server.server_id,
                 )
 
-        _required_env = builtin_required_env(server.server_id, server.name)
+        _required_env = builtin_required_env(server.builtin_type or server.server_id, server.name)
         if _required_env and not has_tenant_credentials(credentials, _required_env):
             return ToolCallResult(
                 tool_name=tool_name,
@@ -971,9 +977,11 @@ class MCPClient:
                 # registration is stored) while the builtin handler is registered under
                 # the canonical builtin server_id (e.g. 'builtin-jira').
                 # Try cfg.server_id first, then fall back to the original server_id arg.
-                _restored = _MCPReg.get_builtin_handler(
-                    cfg.server_id
-                ) or _MCPReg.get_builtin_handler(server_id)
+                _restored = (
+                    (_MCPReg.get_builtin_handler(cfg.builtin_type) if cfg.builtin_type else None)
+                    or _MCPReg.get_builtin_handler(cfg.server_id)
+                    or _MCPReg.get_builtin_handler(server_id)
+                )
                 # The process-local handler registry is only populated when THIS
                 # process registered the connector (or wired it at startup with a
                 # valid env key). A Celery worker that runs the goal has neither,
@@ -987,7 +995,11 @@ class MCPClient:
 
                         _name = (cfg.name or "").strip().lower()
                         for _bcfg in _gbsc():
-                            if _bcfg.get("server_id") in (cfg.server_id, server_id) or (
+                            if _bcfg.get("server_id") in (
+                                cfg.builtin_type,
+                                cfg.server_id,
+                                server_id,
+                            ) or (
                                 _name and _bcfg.get("name", "").strip().lower() == _name
                             ):
                                 _restored = _bcfg.get("handler")
@@ -1259,6 +1271,13 @@ class MCPClient:
                 error=f"Server {server_id} not found",
             )
 
+        # A tool exposed by several connections is offered as
+        # "<connection>__<tool>" (app/mcp/tool_naming.py); this call is already
+        # routed to its connection, so dispatch the real tool name.
+        from app.mcp.tool_naming import strip_connection_prefix
+
+        tool_name = strip_connection_prefix(tool_name, cfg.name)
+
         _tenant_id = getattr(tenant_ctx, "tenant_id", "")
         _t0 = _time.monotonic()
 
@@ -1483,25 +1502,68 @@ class MCPClient:
         """Dispatch a tool by NAME, resolving which registered server exposes it.
 
         Convenience for callers that only know the tool name (e.g. workflow tool
-        steps) rather than the server_id. Discovers the tenant's servers, finds
-        the first that exposes ``tool_name``, and calls :meth:`call_tool`.
+        steps) rather than the server_id. ``tool_name`` may name the connection:
+        ``"<connection name>.<tool>"`` or ``"<connection_slug>__<tool>"``. A bare
+        name exposed by SEVERAL connections (two MongoDB connections both have
+        ``mongodb_find``) is refused as ambiguous — it used to run on whichever
+        connection was listed first.
         """
+        from app.mcp.tool_naming import connection_slug, strip_connection_prefix
+
         try:
             records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
         except Exception as exc:
             return ToolCallResult(tool_name=tool_name, success=False, error=str(exc))
-        for server_id, _cfg in records:
+
+        def _wanted(conn_name: str) -> str | None:
+            """The bare tool name if ``tool_name`` addresses this connection."""
+            if not conn_name:
+                return None
+            if "." in tool_name:
+                conn, _, bare = tool_name.rpartition(".")
+                same = connection_slug(conn) == connection_slug(conn_name)
+                return bare if same else None
+            stripped = strip_connection_prefix(tool_name, conn_name)
+            if stripped != tool_name:
+                return stripped
+            return None
+
+        targeted: list[tuple[str, str]] = []
+        bare_hits: list[tuple[str, str]] = []
+        for server_id, cfg in records:
+            conn_name = str(getattr(cfg, "name", "") or "")
+            wanted = _wanted(conn_name)
             try:
                 tools = await self.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
             except Exception:
                 continue
-            if any(getattr(t, "name", None) == tool_name for t in tools):
-                return await self.call_tool(
-                    server_id=server_id,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    tenant_ctx=tenant_ctx,
-                )
+            names = {getattr(t, "name", None) for t in tools}
+            if wanted is not None and wanted in names:
+                targeted.append((server_id, wanted))
+            elif tool_name in names:
+                bare_hits.append((server_id, conn_name or server_id))
+        if len(targeted) == 1:
+            server_id, bare = targeted[0]
+            return await self.call_tool(
+                server_id=server_id, tool_name=bare, arguments=arguments, tenant_ctx=tenant_ctx
+            )
+        if len(bare_hits) == 1 and not targeted:
+            return await self.call_tool(
+                server_id=bare_hits[0][0],
+                tool_name=tool_name,
+                arguments=arguments,
+                tenant_ctx=tenant_ctx,
+            )
+        if len(bare_hits) > 1 or len(targeted) > 1:
+            names = ", ".join(sorted(f"'{name}'" for _, name in bare_hits))
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=(
+                    f"tool '{tool_name}' is exposed by several connectors ({names}); "
+                    "name the connector, e.g. '<connector name>.<tool>'"
+                ),
+            )
         return ToolCallResult(
             tool_name=tool_name,
             success=False,

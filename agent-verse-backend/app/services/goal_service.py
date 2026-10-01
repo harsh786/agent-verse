@@ -2534,7 +2534,11 @@ class GoalService:
         if connector_errors:
             connector_metadata["connector_errors"] = connector_errors
 
-        all_tools = tools  # full list (RPA + discovered connectors)
+        # Same tool on several connections (two MongoDB connections): give each
+        # a distinct "<connection>__<tool>" name so the model can target one.
+        from app.mcp.tool_naming import qualify_colliding_tools
+
+        all_tools = qualify_colliding_tools(tools)  # full list (RPA + discovered connectors)
 
         # NEW: if we have a goal, ToolSelector, and enough tools, use tiered selection
         tool_selector = getattr(self._app_state, "tool_selector", None)

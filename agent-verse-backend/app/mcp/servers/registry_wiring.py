@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import re
 from collections.abc import Collection
 from typing import Any
 
@@ -3390,9 +3391,66 @@ def _required_env_index() -> dict[str, tuple[str, ...]]:
     return index
 
 
+def _type_key(value: str) -> str:
+    """Normalise a built-in type / id / display name: 'builtin-google-sheets',
+    'Google Sheets' and 'google_sheets' all become 'googlesheets'."""
+    text = value.strip().lower()
+    text = text.split(":", 1)[0] if text.startswith("builtin-") else text
+    text = text.removeprefix("builtin-")
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+@functools.lru_cache(maxsize=1)
+def _type_index() -> dict[str, dict[str, Any]]:
+    """Normalised canonical id (first) and display name → built-in config."""
+    index: dict[str, dict[str, Any]] = {}
+    configs = get_builtin_server_configs()
+    for cfg in configs:
+        index.setdefault(_type_key(str(cfg["server_id"])), cfg)
+    for cfg in configs:
+        index.setdefault(_type_key(str(cfg.get("name", ""))), cfg)
+    return index
+
+
+def builtin_config_for_type(value: str) -> dict[str, Any] | None:
+    """The built-in config for a declared type ('mongodb', 'MongoDB',
+    'builtin-mongodb', or a connection id 'builtin-mongodb:orders-db')."""
+    key = _type_key(value or "")
+    return _type_index().get(key) if key else None
+
+
+def infer_builtin_type_from_name(name: str) -> str | None:
+    """Canonical built-in id implied by a connector NAME, only when unambiguous.
+
+    An exact match ('MongoDB') wins; otherwise a leading-token match
+    ('mongodb-prod', 'Slack alerts') is used when exactly one built-in fits.
+    """
+    exact = builtin_config_for_type(name)
+    if exact is not None:
+        return str(exact["server_id"])
+    tokens = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t]
+    matches: set[str] = set()
+    for end in range(1, len(tokens)):
+        cfg = _type_index().get("".join(tokens[:end]))
+        if cfg is not None:
+            matches.add(str(cfg["server_id"]))
+    return matches.pop() if len(matches) == 1 else None
+
+
+def builtin_type_of(cfg: Any) -> str:
+    """The canonical built-in id a connector config dispatches to ('' if none)."""
+    declared = str(getattr(cfg, "builtin_type", "") or "")
+    if declared:
+        return declared
+    server_id = str(getattr(cfg, "server_id", "") or "")
+    return server_id.split(":", 1)[0] if server_id.startswith("builtin-") else ""
+
+
 def builtin_required_env(server_id: str, name: str = "") -> tuple[str, ...]:
     """The vendor credentials a built-in server needs (empty = credential-free)."""
     index = _required_env_index()
+    if server_id.startswith("builtin-"):
+        server_id = server_id.split(":", 1)[0]  # a connection id: builtin-<type>:<slug>
     if server_id in index:
         return index[server_id]
     return index.get(f"name:{name.strip().lower()}", ())

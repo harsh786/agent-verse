@@ -93,11 +93,12 @@ def test_register_jira_auto_wires_builtin_handler():
     cfg = asyncio.run(
         registry.get(server_id, tenant_ctx=_TENANT)
     )
-    # Handler is re-attached via MCPRegistry.register_builtin_handler
+    # Handler is re-attached by the connection's built-in TYPE (several
+    # connections of one type share it; the id is per connection).
     from app.mcp.registry import _BUILTIN_HANDLER_REGISTRY
-    assert server_id in _BUILTIN_HANDLER_REGISTRY, (
-        f"Expected builtin handler registered for {server_id}; got keys: {list(_BUILTIN_HANDLER_REGISTRY)}"
-    )
+    assert cfg.builtin_type == "builtin-jira"
+    assert "builtin-jira" in _BUILTIN_HANDLER_REGISTRY
+    assert cfg.builtin_handler is not None
 
 
 @pytest.mark.asyncio

@@ -6,13 +6,15 @@ import base64
 import contextlib
 import logging
 import os
+import re
 import time
+import uuid
 from collections.abc import Callable
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
@@ -45,49 +47,73 @@ _SENSITIVE_AUTH_KEY_PARTS = {
     "token",
 }
 
-_BUILTIN_HANDLER_CACHE: dict[str, object] | None = None
+def _builtin_config_for_type(value: str) -> dict[str, Any] | None:
+    """The built-in server config for a declared type / canonical id, or None."""
+    try:
+        from app.mcp.servers.registry_wiring import builtin_config_for_type
+
+        return builtin_config_for_type(value)
+    except Exception:
+        return None
 
 
-def _get_builtin_handler_for_name(connector_name: str):
-    """Return the builtin handler callable for connector_name, or None."""
-    global _BUILTIN_HANDLER_CACHE
-    if _BUILTIN_HANDLER_CACHE is None:
-        try:
-            from app.mcp.servers.registry_wiring import get_builtin_server_configs
+def _infer_builtin_type(name: str) -> str | None:
+    try:
+        from app.mcp.servers.registry_wiring import infer_builtin_type_from_name
 
-            _BUILTIN_HANDLER_CACHE = {
-                cfg["name"].lower(): cfg["handler"] for cfg in get_builtin_server_configs()
-            }
-        except Exception:
-            _BUILTIN_HANDLER_CACHE = {}
-    return _BUILTIN_HANDLER_CACHE.get(connector_name.lower().strip())
+        return infer_builtin_type_from_name(name)
+    except Exception:
+        return None
 
 
-_BUILTIN_CONFIG_CACHE: dict[str, dict] | None = None
+def _name_key(name: str) -> str:
+    return " ".join(name.split()).casefold()
 
 
-def _get_builtin_config_for_name(connector_name: str) -> dict | None:
-    """Return the builtin server config (canonical server_id, tool_definitions)
-    for connector_name, or None. Used so a UI-registered builtin connector adopts
-    the canonical server_id — otherwise its randomly-generated UUID never matches
-    the startup-wired handler / tool-definition lookup (both keyed on the
-    canonical id), leaving the connector with no usable tools after a restart."""
-    global _BUILTIN_CONFIG_CACHE
-    if _BUILTIN_CONFIG_CACHE is None:
-        try:
-            from app.mcp.servers.registry_wiring import get_builtin_server_configs
+def _connection_slug(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40].strip("-")
+    return slug or "connection"
 
-            _BUILTIN_CONFIG_CACHE = {
-                cfg["name"].lower(): cfg for cfg in get_builtin_server_configs()
-            }
-        except Exception:
-            _BUILTIN_CONFIG_CACHE = {}
-    return _BUILTIN_CONFIG_CACHE.get(connector_name.lower().strip())
+
+async def _assert_unique_name(
+    reg: Any, name: str, *, tenant_ctx: Any, exclude_id: str | None = None
+) -> None:
+    """409 when another connector of this tenant already uses ``name``."""
+    if not hasattr(reg, "list_server_records"):
+        return
+    wanted = _name_key(name)
+    for sid, cfg in await reg.list_server_records(tenant_ctx=tenant_ctx):
+        if sid != exclude_id and _name_key(cfg.name) == wanted:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"A connector named '{name}' already exists (server_id {sid}). "
+                    "Connector names must be unique; choose a different name."
+                ),
+            )
+
+
+async def _new_connection_id(reg: Any, canonical: str, name: str, *, tenant_ctx: Any) -> str:
+    """A distinct id per connection of a built-in type: builtin-<type>:<slug>."""
+    candidate = f"{canonical}:{_connection_slug(name)}"
+    getter = getattr(reg, "get", None)
+    try:
+        taken = getter is not None and await getter(candidate, tenant_ctx=tenant_ctx) is not None
+    except Exception:
+        taken = False
+    return f"{candidate}-{uuid.uuid4().hex[:6]}" if taken else candidate
 
 
 class RegisterConnectorRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     name: str
     url: str
+    # Declared built-in type ("mongodb", "MongoDB" or "builtin-mongodb"). Sent as
+    # "type" by the UI. When omitted it is inferred from the name, but only when
+    # that is unambiguous ("MongoDB", "mongodb-prod"); otherwise the connector is
+    # a plain remote MCP server. Several connections may share one type.
+    builtin_type: str | None = Field(default=None, alias="type")
     # The enum, not ``str``: an unknown value used to pass request validation and
     # then blow up constructing MCPServerConfig inside the registry — an
     # unhandled pydantic error, i.e. HTTP 500 on ordinary bad input. Now a 422
@@ -302,13 +328,22 @@ def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     # so the frontend can show the ⚡ Built-in badge on registered connectors.
     from app.mcp.registry import MCPRegistry as _MCPReg
 
+    builtin_type = cfg.builtin_type
+    builtin_cfg = _builtin_config_for_type(builtin_type) if builtin_type else None
     data["has_builtin"] = (
-        cfg.builtin_handler is not None or _MCPReg.get_builtin_handler(server_id) is not None
+        cfg.builtin_handler is not None
+        or builtin_cfg is not None
+        or _MCPReg.get_builtin_handler(server_id) is not None
     )
+    # Display name (unique per tenant) and the built-in type it dispatches to, so
+    # the UI can list several connections of one type by name (server_id is opaque).
+    data["display_name"] = cfg.name
+    data["builtin_type"] = builtin_type
+    data["builtin_type_name"] = str(builtin_cfg.get("name", "")) if builtin_cfg else ""
     # The stored url is "builtin://" for built-in connectors (a dispatch marker);
     # surface the real upstream API endpoint separately so the UI can show it.
     if (cfg.url or "").startswith("builtin://"):
-        data["upstream_url"] = _upstream_url_for(cfg.name)
+        data["upstream_url"] = _upstream_url_for(data["builtin_type_name"] or cfg.name)
     return {"server_id": server_id, **data}
 
 
@@ -470,18 +505,37 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
     )
     pending_secrets: dict[str, str] = {}
 
-    # When the connector matches a built-in server, adopt its canonical
-    # server_id and tool definitions so the startup-wired handler and tool
-    # lookup (both keyed on the canonical id) resolve it — a random UUID would
-    # leave the connector with no usable tools after a process restart.
-    _builtin_cfg = _get_builtin_config_for_name(body.name)
+    # Display names are unique per tenant: they are how a user, an agent's
+    # connector picker and a workflow step tell connections apart.
+    await _assert_unique_name(reg, body.name, tenant_ctx=tenant_ctx)
+
+    # Built-in type: declared ("type"), else inferred from the name only when
+    # that is unambiguous. Each connection gets its OWN id
+    # (builtin-<type>:<slug>) — adopting the canonical id made a second
+    # connection of the same type silently overwrite the first (config AND its
+    # stored secrets). The handler is resolved by builtin_type, not by id.
+    if body.builtin_type:
+        _builtin_cfg = _builtin_config_for_type(body.builtin_type)
+        if _builtin_cfg is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Unknown connector type '{body.builtin_type}'",
+            )
+    else:
+        _inferred = _infer_builtin_type(body.name)
+        _builtin_cfg = _builtin_config_for_type(_inferred) if _inferred else None
     _canonical_id = str(_builtin_cfg.get("server_id")) if _builtin_cfg else ""
     _builtin_tool_defs = list(_builtin_cfg.get("tool_definitions", [])) if _builtin_cfg else []
+    _connection_id = (
+        await _new_connection_id(reg, _canonical_id, body.name, tenant_ctx=tenant_ctx)
+        if _canonical_id
+        else ""
+    )
 
     def _config_for(server_id: str) -> MCPServerConfig:
-        sid = _canonical_id or server_id
+        sid = _connection_id or server_id
         return MCPServerConfig(
-            server_id=sid,  # canonical builtin id when known, else generated
+            server_id=sid,
             name=body.name,
             url=body.url,
             auth_type=body.auth_type,
@@ -494,14 +548,14 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             priority=body.priority,
             tool_definitions=_builtin_tool_defs,
             auto_approve=body.auto_approve,
+            builtin_type=_canonical_id,
         )
 
     server_id = await reg.register(_config_for, tenant_ctx=tenant_ctx)
 
-    # Auto-assign builtin handler when this connector matches a known builtin type.
-    builtin_handler = _get_builtin_handler_for_name(body.name)
-    if builtin_handler is not None:
-        MCPRegistry.register_builtin_handler(server_id, builtin_handler)
+    # The process-local handler registry is keyed by built-in TYPE.
+    if _builtin_cfg is not None:
+        MCPRegistry.register_builtin_handler(_canonical_id, _builtin_cfg["handler"])
 
     try:
         await _persist_connector_secrets(
@@ -515,7 +569,13 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="connector secret storage failed",
         ) from exc
-    return {"server_id": server_id, "name": body.name, "url": body.url}
+    return {
+        "server_id": server_id,
+        "name": body.name,
+        "display_name": body.name,
+        "url": body.url,
+        "builtin_type": _canonical_id,
+    }
 
 
 @router.put("/{server_id}")
@@ -530,6 +590,8 @@ async def update_connector(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Connector {server_id} not found",
         )
+    if _name_key(body.name) != _name_key(existing.name):
+        await _assert_unique_name(reg, body.name, tenant_ctx=tenant_ctx, exclude_id=server_id)
     auth_config = _preserve_redacted_auth_config(body.auth_config, dict(existing.auth_config))
     # Update had no SSRF guard at all (only registration did).
     await _assert_connector_urls_public(body.url, auth_config, context="connector update")
@@ -562,6 +624,8 @@ async def update_connector(
         # keeps its tools (a fresh UUID would strip them after a restart).
         server_id=existing.server_id,
         tool_definitions=list(existing.tool_definitions or []),
+        # The connection's built-in type never changes on update.
+        builtin_type=existing.builtin_type,
     )
     updated = await reg.update(server_id, cfg, tenant_ctx=tenant_ctx)
     if not updated:
@@ -585,6 +649,9 @@ _CONNECTOR_TEST_TOOLS: dict[str, tuple[str, dict]] = {
     "gitlab": ("gitlab_list_projects", {"per_page": 1}),
     "confluence": ("confluence_list_spaces", {"limit": 1}),
     "sentry": ("sentry_list_issues", {"project_slug": "test", "limit": 1}),
+    "mongodb": ("mongodb_list_collections", {}),
+    "redis": ("redis_list_keys", {"pattern": "*"}),
+    "postgresql": ("postgres_list_tables", {}),
 }
 
 # ---------------------------------------------------------------------------
@@ -981,7 +1048,9 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     # Overlay resolved values onto a copy of cfg so test functions see plain text
     cfg = cfg.model_copy(update={"auth_config": resolved_auth_config})
 
-    connector_name = cfg.name.lower().strip()
+    # Test by built-in TYPE ("orders-db" is a MongoDB connection), not display name.
+    _type_cfg = _builtin_config_for_type(cfg.builtin_type) if cfg.builtin_type else None
+    connector_name = str(_type_cfg.get("name", "") if _type_cfg else cfg.name).lower().strip()
 
     # Test-time SSRF guard. Registration/update check the URL, but rows written
     # before those checks existed, or a DNS name re-pointed since (rebinding),

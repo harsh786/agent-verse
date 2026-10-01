@@ -67,6 +67,13 @@ class MCPServerConfig(BaseModel):
     # tools are auto-approved in autonomous (non-supervised) goals instead of
     # stalling on human approval. Explicit, scoped consent — default-secure OFF.
     auto_approve: bool = False
+    # Canonical built-in this connection dispatches to (e.g. "builtin-mongodb").
+    # The handler is looked up by TYPE, not by server_id, so a tenant can hold
+    # several connections of one type ("builtin-mongodb:orders-db",
+    # "builtin-mongodb:analytics-db"), each with its own credentials, and the
+    # lookup survives a restart. Older rows stored under the canonical id itself
+    # ("builtin-mongodb") infer it from that id.
+    builtin_type: str = ""
     # Callable for built-in server dispatch — excluded from JSON serialization
     builtin_handler: Any = Field(default=None, exclude=True)
     # Transport: "http" (default) | "ws" | "websocket"
@@ -81,6 +88,9 @@ class MCPServerConfig(BaseModel):
             self.url = self.base_url
         elif self.url and not self.base_url:
             self.base_url = self.url
+        if not self.builtin_type and self.server_id.startswith("builtin-"):
+            # Compat: legacy "builtin-<name>" ids and "builtin-<type>:<slug>" ids.
+            self.builtin_type = self.server_id.split(":", 1)[0]
         return self
 
 
@@ -202,8 +212,12 @@ class MCPRegistry:
         if raw is None:
             return None
         cfg = MCPServerConfig.model_validate_json(raw)
-        # Re-attach builtin handler from process-local registry (lost on Redis round-trip)
-        handler = _BUILTIN_HANDLER_REGISTRY.get(server_id)
+        # Re-attach builtin handler from process-local registry (lost on Redis
+        # round-trip) — by the connection's built-in TYPE first, so every
+        # connection of one type resolves the same handler after a restart.
+        handler = (
+            _BUILTIN_HANDLER_REGISTRY.get(cfg.builtin_type) if cfg.builtin_type else None
+        ) or _BUILTIN_HANDLER_REGISTRY.get(server_id)
         if handler is not None:
             cfg.builtin_handler = handler
         return cfg
