@@ -10,8 +10,22 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app.ingestion.source_config import SourceConfig, SourceFamily
 from app.ingestion.source_store import SourceConfigStore, _iso, _row_to_config
+
+
+@pytest.fixture(autouse=True)
+def _no_tenant_envelope_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake sessions here model only the store's own table: no tenant has an
+    envelope key (tenant_vault_keys is covered by test_tenant_envelope_all)."""
+
+    async def _no_key(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.providers.tenant_vault.ensure_tenant_vault", _no_key)
+
 
 
 def _make_config(**overrides) -> SourceConfig:

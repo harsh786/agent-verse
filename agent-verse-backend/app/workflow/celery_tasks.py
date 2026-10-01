@@ -15,6 +15,14 @@ from app.scaling.celery_app import celery_app
 
 _log = get_logger(__name__)
 
+
+def _tv_session_factory() -> Any:
+    """Session factory used to load a tenant's envelope key (TENANT-ENVELOPE-ALL)."""
+    from app.db.session import get_session_factory
+
+    return get_session_factory()
+
+
 # A scheduled cron occurrence is only fired when it came due within this many
 # seconds of the scan. The beat scan runs every 60s, so this tolerates a couple
 # of missed scans (beat restart / brief outage) without replaying occurrences
@@ -115,7 +123,9 @@ def _build_worker_runner() -> Any:
             _os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
         )
         _WORKER_RUNNER_CLIENTS.append(_wf_redis)
-        _wf_secret_store = RedisConnectorSecretStore(redis=_wf_redis, vault=get_vault())
+        _wf_secret_store = RedisConnectorSecretStore(
+            redis=_wf_redis, vault=get_vault(), db_factory=_tv_session_factory()
+        )
 
         async def _wf_resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
             return await resolve_connector_secret_ref_for_tenant(

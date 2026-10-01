@@ -1279,6 +1279,11 @@ def create_app(
             from app.db.session import get_session_factory
 
             db_factory = get_session_factory()
+            # TENANT-ENVELOPE-ALL: connector secrets of a tenant with its own vault
+            # key are sealed with it (needs the DB to read tenant_vault_keys).
+            _css = getattr(app.state, "connector_secret_store", None)
+            if _css is not None and hasattr(_css, "_db_factory"):
+                _css._db_factory = db_factory
             app.state.db_session_factory = db_factory
             # Cross-tenant system work (never request paths) — see
             # app.db.session.get_system_session_factory.

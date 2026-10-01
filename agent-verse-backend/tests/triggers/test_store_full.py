@@ -15,6 +15,18 @@ from app.tenancy.context import PlanTier, TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.store import ScheduleStore
 
+
+@pytest.fixture(autouse=True)
+def _no_tenant_envelope_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake sessions here model only the store's own table: no tenant has an
+    envelope key (tenant_vault_keys is covered by test_tenant_envelope_all)."""
+
+    async def _no_key(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.providers.tenant_vault.ensure_tenant_vault", _no_key)
+
+
 T = TenantContext(tenant_id="sched-full-t1", plan=PlanTier.PROFESSIONAL, api_key_id="sf1")
 T_B = TenantContext(tenant_id="sched-full-t2", plan=PlanTier.FREE, api_key_id="sf2")
 

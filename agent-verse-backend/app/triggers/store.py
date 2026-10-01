@@ -120,26 +120,29 @@ def apply_config_to_spec(spec: TriggerSpec, config: Any) -> None:
 _UNDECRYPTABLE_SECRET = "\x00undecryptable-webhook-secret\x00"
 
 
-def encrypt_webhook_secret(secret: str) -> str:
+def encrypt_webhook_secret(secret: str, tenant_vault: Any = None) -> str:
     """Fernet-encrypt a webhook signing secret for the ``schedules`` row.
 
-    Raises when no vault key is available (production without a key) — a
-    signing secret is never written in plaintext.
+    With ``tenant_vault`` (the tenant's own envelope key, TENANT-ENVELOPE-ALL)
+    it is sealed with that key (``tv1:``). Raises when no vault key is available
+    (production without a key) — a signing secret is never written in plaintext.
     """
     if not secret:
         return ""
-    from app.providers.vault import get_vault
+    from app.providers.tenant_vault import seal_for_tenant
 
-    return get_vault().encrypt(secret)
+    return seal_for_tenant(tenant_vault, secret)
 
 
-def decrypt_webhook_secret(ciphertext: str) -> str:
+def decrypt_webhook_secret(ciphertext: str, tenant_vault: Any = None) -> str:
+    """Open a stored secret; a ``tv1:`` value without its tenant key (or any value
+    that cannot be decrypted) becomes the unmatchable sentinel — fail closed."""
     if not ciphertext:
         return ""
     try:
-        from app.providers.vault import get_vault
+        from app.providers.tenant_vault import open_for_tenant
 
-        return get_vault().decrypt(ciphertext)
+        return open_for_tenant(tenant_vault, ciphertext)
     except Exception as exc:
         _log.error("webhook secret decrypt failed (failing closed): %s", type(exc).__name__)
         return _UNDECRYPTABLE_SECRET
@@ -234,6 +237,12 @@ class ScheduleStore:
         self._system_db = system_db_session_factory
         self._db_tasks: set[asyncio.Future[None]] = set()
         self._redis_tasks: set[asyncio.Future[None]] = set()
+
+    async def _tenant_vault(self, tenant_id: str) -> Any:
+        """The tenant's envelope key (``None`` = none / no DB); raises when unreadable."""
+        from app.providers.tenant_vault import ensure_tenant_vault
+
+        return await ensure_tenant_vault(self._db, tenant_id)
 
     @staticmethod
     def _redis_key(tenant_id: str, schedule_id: str) -> str:
@@ -467,6 +476,7 @@ class ScheduleStore:
             from app.db.models.scheduling import Schedule
             from app.db.rls import sqlalchemy_rls_context
 
+            tenant_vault = await self._tenant_vault(tenant_id)
             async with (
                 self._db() as session,
                 session.begin(),
@@ -503,7 +513,7 @@ class ScheduleStore:
                     config=spec_config(spec),
                     paused=False,
                     webhook_signature_secret_enc=encrypt_webhook_secret(
-                        getattr(spec, "webhook_signature_secret", "") or ""
+                        getattr(spec, "webhook_signature_secret", "") or "", tenant_vault
                     ),
                 )
                 session.add(row)
@@ -540,12 +550,17 @@ class ScheduleStore:
         prev = getattr(spec, "webhook_signature_secret", "") or ""
         grace_until = datetime.now(UTC) + timedelta(seconds=max(0, grace_period_seconds))
         if self._db is not None:
+            tenant_vault = await self._tenant_vault(tenant_id)
             updated = await self._db_update_values(
                 schedule_id,
                 tenant_id,
                 {
-                    "webhook_signature_secret_enc": encrypt_webhook_secret(new_secret),
-                    "webhook_signature_secret_prev_enc": encrypt_webhook_secret(prev),
+                    "webhook_signature_secret_enc": encrypt_webhook_secret(
+                        new_secret, tenant_vault
+                    ),
+                    "webhook_signature_secret_prev_enc": encrypt_webhook_secret(
+                        prev, tenant_vault
+                    ),
                     "webhook_secret_grace_until": grace_until,
                 },
             )
@@ -671,7 +686,8 @@ class ScheduleStore:
             }
             if spec is not None:
                 values["webhook_signature_secret_enc"] = encrypt_webhook_secret(
-                    new_spec.webhook_signature_secret or ""
+                    new_spec.webhook_signature_secret or "",
+                    await self._tenant_vault(tenant_id),
                 )
             if not await self._db_update_values(schedule_id, tenant_id, values):
                 self._data.pop((tenant_id, schedule_id), None)
@@ -683,7 +699,7 @@ class ScheduleStore:
 
     # ── DB read-through (Postgres is the source of truth) ────────────────────
 
-    def _record_from_row(self, row: Any) -> dict[str, Any]:
+    def _record_from_row(self, row: Any, tenant_vault: Any = None) -> dict[str, Any]:
         from app.triggers.models import TriggerType
 
         try:
@@ -701,7 +717,7 @@ class ScheduleStore:
             condition=row.condition or "",
             description=row.description or "",
             webhook_signature_secret=decrypt_webhook_secret(
-                str(getattr(row, "webhook_signature_secret_enc", "") or "")
+                str(getattr(row, "webhook_signature_secret_enc", "") or ""), tenant_vault
             ),
         )
         # Rehydrate the family-specific config (file-watch path, RSS/poll URL,
@@ -725,7 +741,7 @@ class ScheduleStore:
             "last_fired_at": getattr(row, "last_fired_at", None),
             "next_fire_at": getattr(row, "next_fire_at", None),
             "previous_webhook_secret": decrypt_webhook_secret(
-                str(getattr(row, "webhook_signature_secret_prev_enc", "") or "")
+                str(getattr(row, "webhook_signature_secret_prev_enc", "") or ""), tenant_vault
             ),
             "secret_grace_until": (
                 grace_dt.timestamp() if isinstance(grace_dt, datetime) else 0.0
@@ -766,24 +782,81 @@ class ScheduleStore:
             if limit is not None:
                 # Paginate in SQL (TRG-30), in a stable order.
                 stmt = stmt.order_by(Schedule.created_at, Schedule.id).limit(limit).offset(offset)
+            tenant_vault = await self._tenant_vault(tenant_id)
             async with (
                 self._db() as session,
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
                 rows = list((await session.execute(stmt)).scalars().all())
-            records = [self._record_from_row(row) for row in rows]
+            records = [self._record_from_row(row, tenant_vault) for row in rows]
         except Exception as exc:
             _log.warning("DB schedule read failed tenant=%s: %s", tenant_id, exc)
             if strict:
                 raise ScheduleStoreUnavailableError(f"schedule read failed: {exc}") from exc
             return None
+        await self._rewrap_secrets(tenant_id, rows, records, tenant_vault)
         for rec in records:
             self._data[(tenant_id, rec["schedule_id"])] = rec
         if schedule_id is not None and not records:
             # Deleted elsewhere — drop the stale cache entry.
             self._data.pop((tenant_id, schedule_id), None)
         return records
+
+    async def _rewrap_secrets(
+        self,
+        tenant_id: str,
+        rows: list[Any],
+        records: list[dict[str, Any]],
+        tenant_vault: Any,
+    ) -> None:
+        """Lazy re-wrap: re-seal platform-vault (or replaced-tenant-key) webhook
+        secrets with the tenant's current key. Compare-and-swap on the stored
+        ciphertext (a concurrent rotation wins); never re-seals the undecryptable
+        sentinel; best effort (the read already succeeded)."""
+        from app.providers.tenant_vault import needs_rewrap
+
+        if tenant_vault is None:
+            return
+        for row, rec in zip(rows, records, strict=True):
+            cur = str(getattr(row, "webhook_signature_secret_enc", "") or "")
+            prev = str(getattr(row, "webhook_signature_secret_prev_enc", "") or "")
+            if not (needs_rewrap(tenant_vault, cur) or needs_rewrap(tenant_vault, prev)):
+                continue
+            cur_plain = getattr(rec["spec"], "webhook_signature_secret", "") or ""
+            prev_plain = str(rec.get("previous_webhook_secret") or "")
+            if _UNDECRYPTABLE_SECRET in (cur_plain, prev_plain):
+                continue
+            try:
+                from sqlalchemy import update
+
+                from app.db.models.scheduling import Schedule
+                from app.db.rls import sqlalchemy_rls_context
+
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
+                    await session.execute(
+                        update(Schedule)
+                        .where(
+                            Schedule.id == row.id,
+                            Schedule.tenant_id == tenant_id,
+                            Schedule.webhook_signature_secret_enc == cur,
+                            Schedule.webhook_signature_secret_prev_enc == prev,
+                        )
+                        .values(
+                            webhook_signature_secret_enc=encrypt_webhook_secret(
+                                cur_plain, tenant_vault
+                            ),
+                            webhook_signature_secret_prev_enc=encrypt_webhook_secret(
+                                prev_plain, tenant_vault
+                            ),
+                        )
+                    )
+            except Exception as exc:
+                _log.warning("webhook secret re-wrap failed schedule=%s: %s", row.id, exc)
 
     async def _get_for_tenant_async(
         self, tenant_id: str, schedule_id: str, *, strict: bool = False
@@ -1152,6 +1225,23 @@ class ScheduleStore:
             if strict:
                 raise ScheduleStoreUnavailableError(f"schedule delete failed: {exc}") from exc
 
+    async def _startup_tenant_vault(self, row: Any) -> Any:
+        """The row's tenant key when it holds ``tv1:`` secrets (loaded under that
+        tenant's RLS context). Unreadable → ``None``: the secret then opens to the
+        unmatchable sentinel (fail closed) and the next tenant read retries."""
+        from app.providers.tenant_vault import is_tenant_encrypted
+
+        if not any(
+            is_tenant_encrypted(str(getattr(row, col, "") or ""))
+            for col in ("webhook_signature_secret_enc", "webhook_signature_secret_prev_enc")
+        ):
+            return None
+        try:
+            return await self._tenant_vault(str(row.tenant_id))
+        except Exception as exc:
+            _log.warning("tenant vault unreadable at startup tenant=%s: %s", row.tenant_id, exc)
+            return None
+
     async def sync_from_db(self) -> int:
         """Load schedules from PostgreSQL into memory (startup warm-up).
 
@@ -1189,7 +1279,9 @@ class ScheduleStore:
                 for row in rows:
                     key = (row.tenant_id, row.id)
                     if key not in self._data:
-                        self._data[key] = self._record_from_row(row)
+                        self._data[key] = self._record_from_row(
+                            row, await self._startup_tenant_vault(row)
+                        )
                         self._write_redis_schedule(row.tenant_id, self._data[key])
                         loaded += 1
             return loaded

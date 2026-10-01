@@ -25,6 +25,11 @@ response boundary (``app/api/ingestion.py``):
   re-encrypts the row in the same transaction (read-through migration: no
   offline data migration is needed and the vault key never has to be available
   to Alembic).
+* **Tenant envelope key** (TENANT-ENVELOPE-ALL): for a tenant that set its own
+  vault key (``tenant_vault_keys``) secrets are stored ``enc:v1:tv1:<fernet>``
+  under that key. Platform-vault values of such a tenant are reported for
+  re-wrap exactly like legacy plaintext, and a ``tv1:`` value whose tenant key
+  is not available is never opened with another key (fail closed).
 """
 
 from __future__ import annotations
@@ -111,11 +116,30 @@ def _has_value(value: object) -> bool:
     return value not in (None, "", {}, [])
 
 
-def encrypt_connection_config(config: dict[str, Any] | None) -> dict[str, Any]:
+def _seal(value: Any, tenant_vault: Any) -> str:
+    if tenant_vault is None:
+        return ENC_PREFIX + _vault().encrypt(json.dumps(value))
+    from app.providers.tenant_vault import TENANT_CIPHER_PREFIX
+
+    return ENC_PREFIX + TENANT_CIPHER_PREFIX + tenant_vault.encrypt(json.dumps(value))
+
+
+def _open(body: str, tenant_vault: Any) -> Any:
+    from app.providers.tenant_vault import is_tenant_encrypted, open_for_tenant
+
+    if is_tenant_encrypted(body):
+        return json.loads(open_for_tenant(tenant_vault, body))
+    return json.loads(_vault().decrypt(body))
+
+
+def encrypt_connection_config(
+    config: dict[str, Any] | None, tenant_vault: Any = None
+) -> dict[str, Any]:
     """Return a copy of ``config`` with every secret value vault-encrypted.
 
-    Already-encrypted values are left alone (idempotent), empty values stay
-    empty, and nested dicts under non-secret keys are walked.
+    With ``tenant_vault`` (the tenant's own envelope key) secrets are sealed with
+    it (``enc:v1:tv1:``). Already-encrypted values are left alone (idempotent),
+    empty values stay empty, and nested dicts under non-secret keys are walked.
     """
     out: dict[str, Any] = {}
     for key, value in (config or {}).items():
@@ -123,45 +147,63 @@ def encrypt_connection_config(config: dict[str, Any] | None) -> dict[str, Any]:
             if _is_encrypted(value) or not _has_value(value):
                 out[key] = value
             else:
-                out[key] = ENC_PREFIX + _vault().encrypt(json.dumps(value))
+                out[key] = _seal(value, tenant_vault)
         elif isinstance(value, dict):
-            out[key] = encrypt_connection_config(value)
+            out[key] = encrypt_connection_config(value, tenant_vault)
         else:
             out[key] = value
     return out
 
 
 def decrypt_connection_config(
-    config: dict[str, Any] | None,
+    config: dict[str, Any] | None, tenant_vault: Any = None
 ) -> tuple[dict[str, Any], bool]:
-    """Return ``(plaintext_config, had_legacy_plaintext)``.
+    """Return ``(plaintext_config, needs_reencrypt)``.
 
-    ``had_legacy_plaintext`` is True when a secret key held a non-empty value that
-    was never encrypted — the caller should re-persist the row encrypted. A value
-    that *is* encrypted but cannot be decrypted is dropped to ``""`` (the
-    connector then fails authentication — fail closed, never a garbage credential)
-    and logged.
+    ``needs_reencrypt`` is True when the caller should re-persist the row
+    encrypted: a secret key held a non-empty value that was never encrypted, or
+    (with ``tenant_vault``) a value sealed with the platform vault / a replaced
+    tenant key (lazy re-wrap). A value that *is* encrypted but cannot be
+    decrypted — including a ``tv1:`` value without its tenant key — is dropped to
+    ``""`` (the connector then fails authentication — fail closed, never a
+    garbage credential) and logged; such a config is never reported for
+    re-encryption, so the stored secret is not overwritten with the blank.
     """
+    out, reencrypt, failed = _decrypt(config, tenant_vault)
+    return out, reencrypt and not failed
+
+
+def _decrypt(
+    config: dict[str, Any] | None, tenant_vault: Any
+) -> tuple[dict[str, Any], bool, bool]:
+    from app.providers.tenant_vault import needs_rewrap
+
     out: dict[str, Any] = {}
-    legacy = False
+    reencrypt = False
+    failed = False
     for key, value in (config or {}).items():
         if is_secret_key(key) and _is_encrypted(value):
+            body = value[len(ENC_PREFIX):]
             try:
-                out[key] = json.loads(_vault().decrypt(value[len(ENC_PREFIX):]))
+                out[key] = _open(body, tenant_vault)
             except Exception as exc:
                 _log.error(
                     "source_secret_decrypt_failed", key=key, error=type(exc).__name__
                 )
                 out[key] = ""
+                failed = True
+                continue
+            reencrypt = reencrypt or needs_rewrap(tenant_vault, body)
         elif is_secret_key(key):
             out[key] = value
-            legacy = legacy or _has_value(value)
+            reencrypt = reencrypt or _has_value(value)
         elif isinstance(value, dict):
-            out[key], nested_legacy = decrypt_connection_config(value)
-            legacy = legacy or nested_legacy
+            out[key], nested_re, nested_failed = _decrypt(value, tenant_vault)
+            reencrypt = reencrypt or nested_re
+            failed = failed or nested_failed
         else:
             out[key] = value
-    return out, legacy
+    return out, reencrypt, failed
 
 
 def mask_connection_config(config: dict[str, Any] | None) -> tuple[dict[str, Any], bool]:

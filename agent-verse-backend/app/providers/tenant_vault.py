@@ -1,16 +1,20 @@
-"""Per-tenant vault keys (BYOK for the secret vault) — envelope encryption (PROV-15).
+"""Per-tenant vault keys (BYOK for the secret vault) — envelope encryption.
 
 A tenant may bring its own 32-byte vault key (``POST /tenants/me/vault-key``).
 It is stored in ``tenant_vault_keys`` *wrapped* by the platform vault (the
 platform master key is the key-encryption key; the tenant key is the data key),
-never in plaintext. Secrets written for that tenant afterwards — its LLM API key
-(``PUT /tenants/me/llm``) — are encrypted with the tenant key and tagged
-``tv1:``; everything else, and tenants without a key, keep the platform vault.
+never in plaintext. Every tenant secret written afterwards — its LLM API key,
+connector secrets, OAuth tokens, ingestion source credentials and trigger
+webhook secrets (TENANT-ENVELOPE-ALL) — is encrypted with the tenant key and
+tagged ``tv1:``; tenants without a key keep the platform vault. Platform-vault
+values of a tenant that has a key are re-wrapped lazily when they are read.
 
 Decrypting a ``tv1:`` value needs the tenant key: if it is missing or cannot be
 read the caller gets :class:`TenantVaultError` (fail closed — never a fallback to
-another key). Replacing a tenant key re-encrypts the tenant's ``tv1:`` LLM key in
-the same transaction, so nothing is orphaned.
+another key). Replacing a tenant key keeps the previous keys (wrapped, in the
+same row) for decryption only, so no ``tv1:`` value anywhere is orphaned; new
+writes and lazy re-wraps use the new key. The tenant's ``tv1:`` LLM key is also
+re-encrypted in the replacing transaction.
 """
 
 from __future__ import annotations
@@ -38,12 +42,32 @@ def key_fingerprint(key: bytes) -> str:
     return hashlib.sha256(b"agentverse-tenant-vault-v1:" + key).hexdigest()[:16]
 
 
-def _unwrap(wrapped: str) -> CredentialVault:
+def _unwrap_keys(wrapped: str) -> list[bytes]:
+    """The tenant's keys, current first (the wrapped value is ``b64,b64,...``)."""
     try:
-        key = base64.b64decode(_vault_mod.get_vault().decrypt(wrapped))
-        return CredentialVault.from_byok(key)
+        plain = _vault_mod.get_vault().decrypt(wrapped)
+        keys = [base64.b64decode(part) for part in plain.split(",") if part]
     except Exception as exc:
         raise TenantVaultError(f"tenant vault key cannot be unwrapped: {exc}") from exc
+    if not keys or any(len(k) != 32 for k in keys):
+        raise TenantVaultError("tenant vault key cannot be unwrapped: malformed key material")
+    return keys
+
+
+def _vault_from_keys(keys: list[bytes]) -> CredentialVault:
+    """Encrypts with ``keys[0]``; decrypts with any of them (previous tenant keys)."""
+    from cryptography.fernet import Fernet, MultiFernet
+
+    vault = CredentialVault.from_byok(keys[0])
+    if len(keys) > 1:
+        vault._fernet = MultiFernet([Fernet(base64.urlsafe_b64encode(k)) for k in keys])
+        # Opening with the current key only tells a stale tv1 value apart (re-wrap).
+        vault._primary_only = CredentialVault.from_byok(keys[0])  # type: ignore[attr-defined]
+    return vault
+
+
+def _unwrap(wrapped: str) -> CredentialVault:
+    return _vault_from_keys(_unwrap_keys(wrapped))
 
 
 async def _read_wrapped(session: Any, tenant_id: str) -> str | None:
@@ -76,6 +100,75 @@ async def load_tenant_vault(db_factory: Any, tenant_id: str) -> CredentialVault 
     return _unwrap(wrapped) if wrapped else None
 
 
+# ── process cache (secrets are read on hot paths: tool calls, webhook checks) ──
+
+_CACHE_TTL_S = 30.0
+# Keyed by (session factory, tenant): a factory bound to another database never
+# sees a key read through a different one.
+_CACHE: dict[tuple[int, str], tuple[float, CredentialVault | None]] = {}
+
+
+async def ensure_tenant_vault(
+    db_factory: Any, tenant_id: str, *, refresh: bool = False
+) -> CredentialVault | None:
+    """:func:`load_tenant_vault` through a short process cache (raises on read errors)."""
+    import time
+
+    if db_factory is None:
+        return None
+    now = time.monotonic()
+    key = (id(db_factory), tenant_id)
+    hit = _CACHE.get(key)
+    if hit is not None and not refresh and now - hit[0] < _CACHE_TTL_S:
+        return hit[1]
+    vault = await load_tenant_vault(db_factory, tenant_id)
+    _CACHE[key] = (now, vault)
+    return vault
+
+
+def invalidate_tenant_vault(tenant_id: str | None = None) -> None:
+    """Drop cached keys of one tenant (all tenants with ``None``)."""
+    for key in [k for k in _CACHE if tenant_id is None or k[1] == tenant_id]:
+        _CACHE.pop(key, None)
+
+
+def seal_for_tenant(tenant_vault: CredentialVault | None, plaintext: str) -> str:
+    """``tv1:`` ciphertext under the tenant key when it has one, else the platform vault."""
+    if tenant_vault is None:
+        return _vault_mod.get_vault().encrypt(plaintext)
+    return TENANT_CIPHER_PREFIX + tenant_vault.encrypt(plaintext)
+
+
+def open_for_tenant(tenant_vault: CredentialVault | None, ciphertext: str) -> str:
+    """Open either kind; a ``tv1:`` value without the tenant key raises TenantVaultError."""
+    if not is_tenant_encrypted(ciphertext):
+        return _vault_mod.get_vault().decrypt(ciphertext)
+    if tenant_vault is None:
+        raise TenantVaultError("value is tenant-vault encrypted but the tenant key is not loaded")
+    try:
+        return tenant_vault.decrypt(ciphertext[len(TENANT_CIPHER_PREFIX) :])
+    except Exception as exc:
+        raise TenantVaultError(f"tenant-vault value cannot be decrypted: {exc}") from exc
+
+
+def needs_rewrap(tenant_vault: CredentialVault | None, ciphertext: str) -> bool:
+    """True when a stored value should be re-sealed with the tenant's current key:
+    a platform-vault value of a tenant that now has a key, or a ``tv1:`` value
+    under one of its previous (replaced) keys."""
+    if tenant_vault is None or not ciphertext:
+        return False
+    if not is_tenant_encrypted(ciphertext):
+        return True
+    primary_only: CredentialVault | None = getattr(tenant_vault, "_primary_only", None)
+    if primary_only is None:
+        return False
+    try:
+        primary_only.decrypt(ciphertext[len(TENANT_CIPHER_PREFIX) :])
+    except Exception:
+        return True
+    return False
+
+
 async def encrypt_tenant_secret(db_factory: Any, tenant_id: str, plaintext: str) -> str:
     """Encrypt with the tenant key when it has one (``tv1:``), else the platform vault."""
     tenant = await load_tenant_vault(db_factory, tenant_id)
@@ -100,8 +193,9 @@ async def decrypt_tenant_secret(db_factory: Any, tenant_id: str, ciphertext: str
 async def store_tenant_vault_key(db_factory: Any, tenant_id: str, key: bytes) -> str:
     """Persist (or replace) the tenant's key, wrapped; returns its fingerprint.
 
-    On replacement the tenant's ``tv1:`` LLM key is re-encrypted with the new key
-    in the same transaction.
+    On replacement the previous keys stay in the row (decrypt only) so ``tv1:``
+    values in every store keep opening and are re-wrapped lazily; the tenant's
+    ``tv1:`` LLM key is re-encrypted with the new key in the same transaction.
     """
     if len(key) != 32:
         raise ValueError("Key must be 32 bytes when decoded")
@@ -110,7 +204,6 @@ async def store_tenant_vault_key(db_factory: Any, tenant_id: str, key: bytes) ->
     from app.db.rls import sqlalchemy_rls_context
 
     new_vault = CredentialVault.from_byok(key)
-    wrapped = _vault_mod.get_vault().encrypt(base64.b64encode(key).decode())
     fingerprint = key_fingerprint(key)
     async with (
         db_factory() as session,
@@ -118,8 +211,13 @@ async def store_tenant_vault_key(db_factory: Any, tenant_id: str, key: bytes) ->
         sqlalchemy_rls_context(session, tenant_id),
     ):
         old_wrapped = await _read_wrapped(session, tenant_id)
+        old_keys = _unwrap_keys(old_wrapped) if old_wrapped else []
+        keyring = [key, *(k for k in old_keys if k != key)]
+        wrapped = _vault_mod.get_vault().encrypt(
+            ",".join(base64.b64encode(k).decode() for k in keyring)
+        )
         if old_wrapped:
-            old_vault = _unwrap(old_wrapped)
+            old_vault = _vault_from_keys(old_keys)
             row = (
                 await session.execute(
                     text(
@@ -146,6 +244,7 @@ async def store_tenant_vault_key(db_factory: Any, tenant_id: str, key: bytes) ->
             ),
             {"t": tenant_id, "w": wrapped, "f": fingerprint},
         )
+    invalidate_tenant_vault(tenant_id)
     return fingerprint
 
 

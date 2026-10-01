@@ -32,6 +32,18 @@ from app.ingestion.source_store import SourceConfigStore
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
+
+@pytest.fixture(autouse=True)
+def _no_tenant_envelope_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake sessions here model only the store's own table: no tenant has an
+    envelope key (tenant_vault_keys is covered by test_tenant_envelope_all)."""
+
+    async def _no_key(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.providers.tenant_vault.ensure_tenant_vault", _no_key)
+
+
 _SECRET = "jira-api-token-DO-NOT-LEAK"
 _CTX = TenantContext(tenant_id="tid-sec", plan=PlanTier.PROFESSIONAL, api_key_id="k")
 _KEY = "av_professional_secrets"

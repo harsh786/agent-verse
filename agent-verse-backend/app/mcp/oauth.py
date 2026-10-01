@@ -115,6 +115,30 @@ class OAuthFlowManager:
                 pass
         return value
 
+    async def _tenant_vault(self, tenant_id: str) -> Any:
+        """The tenant's envelope vault (``None`` = no key / no DB). Raises when unreadable."""
+        if self._vault is None or self._db_session_factory is None or not tenant_id:
+            return None
+        from app.providers.tenant_vault import ensure_tenant_vault
+
+        return await ensure_tenant_vault(self._db_session_factory, tenant_id)
+
+    def _seal_token(self, value: str, tenant_vault: Any) -> str:
+        """Encrypt for storage: the tenant key (``tv1:``) when it has one (TENANT-ENVELOPE-ALL)."""
+        if tenant_vault is None or not value:
+            return self._encrypt_token(value)
+        from app.providers.tenant_vault import TENANT_CIPHER_PREFIX
+
+        return TENANT_CIPHER_PREFIX + str(tenant_vault.encrypt(value))
+
+    def _open_token(self, value: str, tenant_vault: Any) -> str:
+        """Decrypt a stored token; a ``tv1:`` value without the tenant key raises (fail closed)."""
+        from app.providers.tenant_vault import is_tenant_encrypted, open_for_tenant
+
+        if value and is_tenant_encrypted(value):
+            return open_for_tenant(tenant_vault, value)
+        return self._decrypt_token(value)
+
     def _cleanup_expired_flows(self) -> None:
         """Remove OAuth state tokens older than 10 minutes."""
         now = time.time()
@@ -341,6 +365,7 @@ class OAuthFlowManager:
         expires_at: Any,
         token_type: str | None,
         scope: str | None,
+        tenant_vault: Any = None,
     ) -> OAuthToken:
         """Build an OAuthToken from a stored oauth_tokens row (decrypting it)."""
         from datetime import UTC, datetime
@@ -352,9 +377,9 @@ class OAuthFlowManager:
                 expires_at = expires_at.replace(tzinfo=UTC)
             expires_in = int((expires_at - datetime.now(UTC)).total_seconds())
         return OAuthToken(
-            access_token=self._decrypt_token(access_enc),
+            access_token=self._open_token(access_enc, tenant_vault),
             token_type=token_type or "Bearer",
-            refresh_token=self._decrypt_token(refresh_enc) if refresh_enc else "",
+            refresh_token=self._open_token(refresh_enc, tenant_vault) if refresh_enc else "",
             # An access token that expired while we were down keeps expires_in=0
             # (is_expired) so the first use refreshes it with the refresh token.
             expires_in=max(0, expires_in),
@@ -407,15 +432,62 @@ class OAuthFlowManager:
             return cached
         try:
             row = await self._fetch_token_row(tenant_id, server_id)
+            tenant_vault = await self._tenant_vault(tenant_id) if row is not None else None
         except Exception as exc:
             _log.warning("oauth_token_read_failed server_id=%s error=%s", server_id, exc)
             return cached
         if row is None:
             self._drop_cached(key)
             return None
-        token = self._token_from_row(*row[:5])
+        # A tv1 token whose tenant key is gone raises TenantVaultError (never
+        # served as ciphertext or opened with another key).
+        token = self._token_from_row(*row[:5], tenant_vault=tenant_vault)
         self._cache_token(key, token)
+        await self._rewrap_row(tenant_id, server_id, row, token, tenant_vault)
         return token
+
+    async def _rewrap_row(
+        self,
+        tenant_id: str,
+        server_id: str,
+        row: tuple[Any, ...],
+        token: OAuthToken,
+        tenant_vault: Any,
+    ) -> None:
+        """Lazy re-wrap: re-seal a platform-vault (or old-tenant-key) token row with the
+        tenant's current key. Compare-and-swap on the old ciphertext so a concurrent
+        refresh is never overwritten; best effort (the token was already read)."""
+        from app.providers.tenant_vault import needs_rewrap
+
+        access_enc, refresh_enc = str(row[0] or ""), str(row[1] or "")
+        if not (needs_rewrap(tenant_vault, access_enc) or needs_rewrap(tenant_vault, refresh_enc)):
+            return
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        "UPDATE oauth_tokens SET access_token = :at, refresh_token = :rt "
+                        "WHERE tenant_id = :tid AND server_id = :sid "
+                        "AND access_token = :old_at"
+                    ),
+                    {
+                        "at": self._seal_token(token.access_token, tenant_vault),
+                        "rt": self._seal_token(token.refresh_token or "", tenant_vault),
+                        "tid": tenant_id,
+                        "sid": server_id,
+                        "old_at": access_enc,
+                    },
+                )
+        except Exception as exc:
+            _log.warning("oauth_token_rewrap_failed server_id=%s error=%s", server_id, exc)
 
     def _get_refresh_lock(self, tenant_id: str, server_id: str) -> asyncio.Lock:
         key = (tenant_id, server_id)
@@ -535,8 +607,11 @@ class OAuthFlowManager:
             from app.db.rls import sqlalchemy_rls_context
 
             expires_at = datetime.now(UTC) + timedelta(seconds=max(token.expires_in, 60))
-            access_enc = self._encrypt_token(token.access_token)
-            refresh_enc = self._encrypt_token(token.refresh_token or "")
+            # Sealed with the tenant's own key when it has one; an unreadable
+            # tenant key aborts the write (never a fallback to the platform key).
+            tenant_vault = await self._tenant_vault(tenant_id)
+            access_enc = self._seal_token(token.access_token, tenant_vault)
+            refresh_enc = self._seal_token(token.refresh_token or "", tenant_vault)
             # The write needs the tenant's RLS context (FORCE RLS), and the upsert
             # key (tenant_id, server_id) only exists since migration f1a2b3c4d5e7:
             # before it every insert was rejected, so no token was ever persisted.
@@ -612,11 +687,21 @@ class OAuthFlowManager:
             get_logger(__name__).warning("oauth_load_from_db_failed", error=str(exc))
             return 0
         loaded = 0
+        from app.providers.tenant_vault import is_tenant_encrypted
+
         for row in rows:
             try:
+                # tv1 rows need that tenant's key (loaded under its RLS context).
+                tenant_vault = (
+                    await self._tenant_vault(str(row[0]))
+                    if is_tenant_encrypted(str(row[2] or ""))
+                    or is_tenant_encrypted(str(row[3] or ""))
+                    else None
+                )
                 token = self._token_from_row(
                     row[2], row[3], row[4], row[5] if len(row) > 5 else None,
                     row[6] if len(row) > 6 else None,
+                    tenant_vault=tenant_vault,
                 )
             except Exception as exc:
                 _log.warning("oauth_token_restore_failed server_id=%s error=%s", row[1], exc)

@@ -993,9 +993,10 @@ async def set_byok_vault_key(
 ) -> dict:
     """Set a Bring-Your-Own-Key (BYOK) key for this tenant's secret vault.
 
-    Stored wrapped by the platform vault (envelope encryption); the tenant's new
-    secrets (its LLM API key) are encrypted with it. Replacing the key
-    re-encrypts those secrets in the same transaction.
+    Stored wrapped by the platform vault (envelope encryption); the tenant's
+    secrets (LLM API key, connector secrets, OAuth tokens, source credentials,
+    trigger secrets) are encrypted with it. Replacing the key keeps the previous
+    keys for decryption only; older values are re-wrapped as they are read.
     """
     import base64 as _b64
 
@@ -1022,7 +1023,7 @@ async def set_byok_vault_key(
         "key_length": len(key_bytes),
         "persisted": True,
         "fingerprint": fingerprint,
-        "message": "Stored (wrapped by the platform vault); used for this tenant's new secrets.",
+        "message": "Stored (wrapped by the platform vault); used for this tenant's secrets.",
     }
 
 

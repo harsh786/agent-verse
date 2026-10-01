@@ -571,6 +571,13 @@ def _worker_role_map(provider: Any) -> dict[str, str]:
     return {}
 
 
+def _tv_session_factory() -> Any:
+    """Session factory used to load a tenant's envelope key (TENANT-ENVELOPE-ALL)."""
+    from app.db.session import get_session_factory
+
+    return get_session_factory()
+
+
 def _worker_db_session() -> Any:
     """A session from the CURRENT module engine (the worker disposes it per task)."""
     from app.db.session import get_session_factory
@@ -917,7 +924,9 @@ class _WorkerMCPAgentRunner:
             if self._rpa_executor is not None and redis_client is not None:
                 from app.providers.vault import RedisConnectorSecretStore, get_vault
 
-                _rpa_secret_store = RedisConnectorSecretStore(redis=redis_client, vault=get_vault())
+                _rpa_secret_store = RedisConnectorSecretStore(
+                    redis=redis_client, vault=get_vault(), db_factory=_tv_session_factory()
+                )
                 self._rpa_executor._secret_store_resolver = lambda: _rpa_secret_store
             if tool_context is not None:
                 context.update(
@@ -1715,7 +1724,9 @@ def publish_mission_deliverable(
 
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
         try:
-            secret_store = RedisConnectorSecretStore(redis=redis_client, vault=get_vault())
+            secret_store = RedisConnectorSecretStore(
+                    redis=redis_client, vault=get_vault(), db_factory=_tv_session_factory()
+                )
 
             async def _resolve_secret(ref: str, tctx: Any = None) -> str | None:
                 return await resolve_connector_secret_ref_for_tenant(
@@ -2755,7 +2766,9 @@ def run_goal(
             logger.warning("worker_builtin_handler_restore_failed: %s", _bh_exc)
 
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
-        secret_store = RedisConnectorSecretStore(redis=redis_client, vault=get_vault())
+        secret_store = RedisConnectorSecretStore(
+                    redis=redis_client, vault=get_vault(), db_factory=_tv_session_factory()
+                )
 
         async def _resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
             return await resolve_connector_secret_ref_for_tenant(

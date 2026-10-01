@@ -82,18 +82,19 @@ def _iso(value: Any) -> str:
     return str(value)
 
 
-def _json_param(field_name: str, value: Any) -> str:
+def _json_param(field_name: str, value: Any, tenant_vault: Any = None) -> str:
     """JSON-encode a JSON column for the DB; credentials are encrypted first.
 
     ``connection_config`` secrets are vault-encrypted at rest (see
-    ``app.ingestion.source_secrets``) — they used to be stored in plaintext.
+    ``app.ingestion.source_secrets``) — they used to be stored in plaintext —
+    with the tenant's own envelope key when it has one.
     """
     import json as _json
 
     if field_name == "connection_config":
         from app.ingestion.source_secrets import encrypt_connection_config
 
-        value = encrypt_connection_config(value)
+        value = encrypt_connection_config(value, tenant_vault)
     return _json.dumps(value)
 
 
@@ -102,12 +103,14 @@ def _row_to_config(row: Any) -> SourceConfig:
     return _row_to_config_checked(row)[0]
 
 
-def _row_to_config_checked(row: Any) -> tuple[SourceConfig, bool]:
+def _row_to_config_checked(row: Any, tenant_vault: Any = None) -> tuple[SourceConfig, bool]:
     """Like :func:`_row_to_config`, also reporting a legacy plaintext secret.
 
     The in-memory SourceConfig always carries decrypted credentials (connectors
     need them); the bool is True when the row still stores a secret unencrypted,
-    so the caller can re-encrypt it (read-through migration of legacy rows).
+    so the caller can re-encrypt it (read-through migration of legacy rows) —
+    also when it is sealed with the platform vault although the tenant now has
+    its own key (``tenant_vault``; lazy re-wrap).
     """
     from app.ingestion.source_secrets import decrypt_connection_config
 
@@ -136,7 +139,7 @@ def _row_to_config_checked(row: Any) -> tuple[SourceConfig, bool]:
     legacy_plaintext = False
     if isinstance(kwargs.get("connection_config"), dict):
         kwargs["connection_config"], legacy_plaintext = decrypt_connection_config(
-            kwargs["connection_config"]
+            kwargs["connection_config"], tenant_vault
         )
     kwargs["last_synced_at"] = _iso(d.get("last_synced_at")) or None
     kwargs["created_at"] = _iso(d.get("created_at"))
@@ -144,7 +147,9 @@ def _row_to_config_checked(row: Any) -> tuple[SourceConfig, bool]:
     return SourceConfig(**kwargs), legacy_plaintext
 
 
-async def _reencrypt_legacy(session: Any, config: SourceConfig) -> None:
+async def _reencrypt_legacy(
+    session: Any, config: SourceConfig, tenant_vault: Any = None
+) -> None:
     """Rewrite a legacy plaintext ``connection_config`` encrypted, in the caller's
     (tenant RLS) transaction. Best-effort: a failure here must not fail the read."""
     from sqlalchemy import text
@@ -157,7 +162,9 @@ async def _reencrypt_legacy(session: Any, config: SourceConfig) -> None:
                     "WHERE id = :id AND tenant_id = :tid"
                 ),
                 {
-                    "cc": _json_param("connection_config", config.connection_config),
+                    "cc": _json_param(
+                        "connection_config", config.connection_config, tenant_vault
+                    ),
                     "id": config.source_id,
                     "tid": config.tenant_id,
                 },
@@ -180,6 +187,12 @@ class SourceConfigStore:
         self._system_db = system_db
         self._mem: dict[str, SourceConfig] = {}
 
+    async def _tenant_vault(self, tenant_id: str) -> Any:
+        """The tenant's envelope key (TENANT-ENVELOPE-ALL); raises when unreadable."""
+        from app.providers.tenant_vault import ensure_tenant_vault
+
+        return await ensure_tenant_vault(self._db, tenant_id)
+
     # ── writes ────────────────────────────────────────────────────────────────
 
     async def create(self, config: SourceConfig) -> SourceConfig:
@@ -199,8 +212,9 @@ class SourceConfigStore:
         for f in _SCALAR_FIELDS:
             if f != "family":
                 params[f] = getattr(config, f)
+        tenant_vault = await self._tenant_vault(config.tenant_id)
         for f in _JSON_FIELDS:
-            params[f] = _json_param(f, getattr(config, f))
+            params[f] = _json_param(f, getattr(config, f), tenant_vault)
         cols = ["id", "tenant_id", "family", *[f for f in _SCALAR_FIELDS if f != "family"]]
         json_cols = list(_JSON_FIELDS)
         placeholders = [f":{c}" for c in cols] + [f"CAST(:{c} AS jsonb)" for c in json_cols]
@@ -239,10 +253,13 @@ class SourceConfigStore:
 
         set_parts: list[str] = []
         params: dict[str, Any] = {"source_id": source_id, "tenant_id": tenant_id}
+        tenant_vault = (
+            await self._tenant_vault(tenant_id) if "connection_config" in fields else None
+        )
         for k, v in fields.items():
             if k in _JSON_FIELDS:
                 set_parts.append(f"{k} = CAST(:{k} AS jsonb)")
-                params[k] = _json_param(k, v)
+                params[k] = _json_param(k, v, tenant_vault)
             elif k == "family":
                 set_parts.append("family = :family")
                 params["family"] = v.value if hasattr(v, "value") else str(v)
@@ -335,6 +352,7 @@ class SourceConfigStore:
 
         from app.db.rls import sqlalchemy_rls_context
 
+        tenant_vault = await self._tenant_vault(tenant_id)
         async with (
             self._db() as session,
             session.begin(),
@@ -351,9 +369,9 @@ class SourceConfigStore:
             ).mappings().first()
             if row is None:
                 return None
-            config, legacy = _row_to_config_checked(row)
+            config, legacy = _row_to_config_checked(row, tenant_vault)
             if legacy:
-                await _reencrypt_legacy(session, config)
+                await _reencrypt_legacy(session, config, tenant_vault)
         return config
 
     async def list(self, tenant_id: str) -> list[SourceConfig]:
@@ -363,6 +381,7 @@ class SourceConfigStore:
 
         from app.db.rls import sqlalchemy_rls_context
 
+        tenant_vault = await self._tenant_vault(tenant_id)
         async with (
             self._db() as session,
             session.begin(),
@@ -376,9 +395,9 @@ class SourceConfigStore:
             ).mappings().all()
             configs: list[SourceConfig] = []
             for r in rows:
-                config, legacy = _row_to_config_checked(r)
+                config, legacy = _row_to_config_checked(r, tenant_vault)
                 if legacy:
-                    await _reencrypt_legacy(session, config)
+                    await _reencrypt_legacy(session, config, tenant_vault)
                 configs.append(config)
         return configs
 

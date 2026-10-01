@@ -1623,12 +1623,25 @@ async def oauth_callback(
             "message": "Invalid OAuth state parameter — flow may have expired",
         }
 
-    # Encrypt and persist tokens in the credential vault via auth_config
-    from app.providers.vault import get_vault
+    # Encrypt and persist tokens via auth_config — with the tenant's own vault
+    # key when it set one (TENANT-ENVELOPE-ALL), else the platform vault. A
+    # tenant key that cannot be read fails the callback (never a weaker key).
+    from app.providers.tenant_vault import (
+        TenantVaultError,
+        ensure_tenant_vault,
+        seal_for_tenant,
+    )
 
-    vault = get_vault()
-    encrypted_access = vault.encrypt(token.access_token)
-    encrypted_refresh = vault.encrypt(token.refresh_token) if token.refresh_token else ""
+    try:
+        tenant_vault = await ensure_tenant_vault(
+            getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
+        )
+    except TenantVaultError as exc:
+        raise HTTPException(503, f"Tenant vault key could not be read: {exc}") from exc
+    encrypted_access = seal_for_tenant(tenant_vault, token.access_token)
+    encrypted_refresh = (
+        seal_for_tenant(tenant_vault, token.refresh_token) if token.refresh_token else ""
+    )
 
     if cfg is not None:
 

@@ -117,10 +117,14 @@ class RedisConnectorSecretStore:
         redis: Any,
         vault: CredentialVault,
         key_prefix: str = "mcp:connector_secrets",
+        db_factory: Any = None,
     ) -> None:
         self._redis = redis
         self._vault = vault
         self._key_prefix = key_prefix
+        # With a DB, a tenant that set its own vault key (tenant_vault_keys) gets
+        # its connector secrets sealed with it (TENANT-ENVELOPE-ALL).
+        self._db_factory = db_factory
 
     def _redis_key(self, ref: str, tenant_ctx: Any = None) -> str:
         # Handle both "vault://connectors/<server>/<key>" and
@@ -137,16 +141,54 @@ class RedisConnectorSecretStore:
         tenant_id = getattr(tenant_ctx, "tenant_id", "global") or "global"
         return f"{self._key_prefix}:{tenant_id}:{server_id}:{key}"
 
+    async def _tenant_vault(self, tenant_ctx: Any) -> CredentialVault | None:
+        tenant_id = getattr(tenant_ctx, "tenant_id", None)
+        if self._db_factory is None or not tenant_id:
+            return None
+        from app.providers.tenant_vault import ensure_tenant_vault
+
+        return await ensure_tenant_vault(self._db_factory, str(tenant_id))
+
     async def store(self, ref: str, value: str, *, tenant_ctx: Any = None) -> None:
-        encrypted = self._vault.encrypt(value)
+        tenant_vault = await self._tenant_vault(tenant_ctx)
+        if tenant_vault is not None:
+            from app.providers.tenant_vault import seal_for_tenant
+
+            encrypted = seal_for_tenant(tenant_vault, value)
+        else:
+            encrypted = self._vault.encrypt(value)
         await self._redis.set(self._redis_key(ref, tenant_ctx), encrypted)
 
     async def resolve(self, ref: str, *, tenant_ctx: Any = None) -> str | None:
-        raw = await self._redis.get(self._redis_key(ref, tenant_ctx))
+        key = self._redis_key(ref, tenant_ctx)
+        raw = await self._redis.get(key)
         if raw is None:
             return None
         encrypted = raw.decode() if isinstance(raw, bytes) else str(raw)
-        return self._vault.decrypt(encrypted)
+        from app.providers.tenant_vault import (
+            is_tenant_encrypted,
+            needs_rewrap,
+            open_for_tenant,
+            seal_for_tenant,
+        )
+
+        tenant_vault: CredentialVault | None
+        if is_tenant_encrypted(encrypted):
+            # Needs the tenant key: missing / unreadable raises (fail closed).
+            tenant_vault = await self._tenant_vault(tenant_ctx)
+            plaintext = open_for_tenant(tenant_vault, encrypted)
+        else:
+            plaintext = self._vault.decrypt(encrypted)
+            try:  # the tenant key is only needed to re-wrap here: best effort
+                tenant_vault = await self._tenant_vault(tenant_ctx)
+            except Exception as exc:
+                _vault_log.warning("connector_secret_rewrap_skipped: %s", type(exc).__name__)
+                tenant_vault = None
+        if needs_rewrap(tenant_vault, encrypted):
+            # Lazy re-wrap: a platform-vault (or replaced-tenant-key) secret of a
+            # tenant that has its own key is re-sealed with the current key.
+            await self._redis.set(key, seal_for_tenant(tenant_vault, plaintext))
+        return plaintext
 
 
 async def store_connector_secret_for_tenant(
