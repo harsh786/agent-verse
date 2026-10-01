@@ -68,6 +68,34 @@ class HybridSearchResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class KnowledgeLegalHoldError(RuntimeError):
+    """A deletion was refused: the collection, a document in it, or the tenant is held."""
+
+
+# An in-force legal hold covering collection :cid of tenant :tid — tenant-wide,
+# on the collection id, or on ANY document of the collection (the same coverage
+# as app.rag.retention._NOT_UNDER_LEGAL_HOLD). Driven from the (few) holds: each
+# held resource id probes the chunk table's (collection_id, document_id, ...)
+# unique index, so the check never scans a large collection.
+_COLLECTION_HELD_SQL = (
+    "SELECT 1 FROM legal_holds lh WHERE lh.tenant_id = :tid "
+    "AND lh.status = 'active' AND (lh.expires_at IS NULL OR lh.expires_at > now()) "
+    "AND (lh.resource_type = 'tenant' "
+    "OR lh.resource_ids @> jsonb_build_array(CAST(:cid AS text)) "
+    "{documents}) LIMIT 1"
+)
+_HELD_DOCUMENT_SQL = (
+    "OR EXISTS (SELECT 1 FROM jsonb_array_elements_text(lh.resource_ids) AS r(rid) "
+    "JOIN {table} c ON c.collection_id = :cid AND c.document_id = r.rid "
+    "AND c.tenant_id = :tid)"
+)
+
+
+def _collection_held_sql(table: str | None) -> str:
+    documents = _HELD_DOCUMENT_SQL.format(table=table) if table else ""
+    return _COLLECTION_HELD_SQL.format(documents=documents)
+
+
 class EmbeddingProviderUnavailableError(RuntimeError):
     """A vector ingestion request has no usable embedding provider."""
 
@@ -869,6 +897,55 @@ class KnowledgeStore:
         return _document_page(documents, limit=limit, counted=min(len(grouped),
                                                                   _DOCUMENT_COUNT_CAP + 1))
 
+    async def collection_under_legal_hold_async(
+        self, collection_id: str, *, tenant_ctx: TenantContext
+    ) -> bool:
+        """True when an in-force hold covers the tenant, the collection or any of its documents.
+
+        Errors propagate: the caller must refuse the deletion when this cannot
+        be answered. Without a database there are no durable holds.
+        """
+        if self._db is None:
+            return False
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            table = await self._collection_chunk_table(session, collection_id, tenant_ctx)
+            row = (
+                await session.execute(
+                    text(_collection_held_sql(table)),
+                    {"tid": tenant_ctx.tenant_id, "cid": collection_id},
+                )
+            ).fetchone()
+        return row is not None
+
+    async def _collection_chunk_table(
+        self, session: Any, collection_id: str, tenant_ctx: TenantContext
+    ) -> str | None:
+        from sqlalchemy import text
+
+        dimension_row = (
+            await session.execute(
+                text(
+                    "SELECT embedding_dim FROM knowledge_collections "
+                    "WHERE id = :id AND tenant_id = :tenant_id"
+                ),
+                {"id": collection_id, "tenant_id": tenant_ctx.tenant_id},
+            )
+        ).fetchone()
+        if dimension_row is None or dimension_row[0] is None:
+            return None
+        dimension = int(dimension_row[0])
+        if dimension not in SUPPORTED_EMBEDDING_DIMENSIONS:
+            return None
+        return _chunk_table(dimension)
+
     async def delete_collection_async(
         self,
         collection_id: str,
@@ -900,30 +977,28 @@ class KnowledgeStore:
             session.begin(),
             sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
         ):
-            dimension_row = (
-                await session.execute(
-                    text(
-                        "SELECT embedding_dim FROM knowledge_collections "
-                        "WHERE id = :id AND tenant_id = :tenant_id"
-                    ),
-                    {"id": collection_id, "tenant_id": tenant_ctx.tenant_id},
+            table = await self._collection_chunk_table(session, collection_id, tenant_ctx)
+        held_sql = text(_collection_held_sql(table))
+        held_params = {"tid": tenant_ctx.tenant_id, "cid": collection_id}
+
+        async def _refuse_if_held(session: Any) -> None:
+            # Re-checked inside every batch's transaction: a hold placed while a
+            # large collection is being deleted stops the rest of the delete.
+            if (await session.execute(held_sql, held_params)).fetchone() is not None:
+                raise KnowledgeLegalHoldError(
+                    f"collection {collection_id} or one of its documents is under legal hold"
                 )
-            ).fetchone()
-        dimension = (
-            int(dimension_row[0])
-            if dimension_row is not None and dimension_row[0] is not None
-            else None
-        )
+
         # An unknown width has no chunk table to batch through; the collection
         # row's cascade below is then the only cleanup there is.
-        if dimension in SUPPORTED_EMBEDDING_DIMENSIONS:
-            table = _chunk_table(int(dimension))  # type: ignore[arg-type]
+        if table is not None:
             while True:
                 async with (
                     self._db() as session,
                     session.begin(),
                     sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
+                    await _refuse_if_held(session)
                     removed = (
                         await session.execute(
                             text(
@@ -953,6 +1028,7 @@ class KnowledgeStore:
             session.begin(),
             sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
         ):
+            await _refuse_if_held(session)
             deleted = (
                 await session.execute(
                     text(

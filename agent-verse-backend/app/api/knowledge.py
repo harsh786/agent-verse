@@ -68,6 +68,7 @@ from app.rag.store import (
     DuplicateContentError,
     EmbeddingDimensionError,
     EmbeddingProviderUnavailableError,
+    KnowledgeLegalHoldError,
     KnowledgeStore,
 )
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
@@ -679,6 +680,11 @@ async def _refuse_if_under_legal_hold(
         ) from exc
 
 
+_COLLECTION_HELD_DETAIL = (
+    "A document in this collection is under legal hold; the collection cannot be deleted"
+)
+
+
 @router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_collection(request: Request, collection_id: str) -> None:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -694,12 +700,32 @@ async def delete_collection(request: Request, collection_id: str) -> None:
 
     # H-5: Block deletion if a legal hold is active on this resource
     await _refuse_if_under_legal_hold(request, tenant_ctx, collection_id)
+    # KB-33: ... or on any document in it (a document hold used to be bypassed
+    # by deleting its collection). Fail closed when it cannot be checked.
+    try:
+        documents_held = await store.collection_under_legal_hold_async(
+            collection_id, tenant_ctx=tenant_ctx
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Legal hold state could not be verified; deletion refused",
+        ) from exc
+    if documents_held:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_COLLECTION_HELD_DETAIL,
+        )
 
     try:
         deleted = await store.delete_collection_async(
             collection_id,
             tenant_ctx=tenant_ctx,
         )
+    except KnowledgeLegalHoldError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=_COLLECTION_HELD_DETAIL
+        ) from exc
     except Exception as exc:
         raise HTTPException(
             status_code=503,

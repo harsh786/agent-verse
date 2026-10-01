@@ -61,6 +61,11 @@ class _AwaitedStore(KnowledgeStore):
         KnowledgeStore.create_collection(self, collection, tenant_ctx=TENANT)
         self._db = database
 
+    async def collection_under_legal_hold_async(
+        self, collection_id: str, *, tenant_ctx: TenantContext
+    ) -> bool:
+        return False
+
     async def get_collection_async(
         self,
         collection_id: str,

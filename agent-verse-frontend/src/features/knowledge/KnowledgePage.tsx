@@ -149,6 +149,15 @@ function CollectionsTab() {
       void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });
       setDeleteCollectionId(null);
     },
+    onError: (e) => {
+      setDeleteCollectionId(null);
+      toast({
+        kind: 'error',
+        message: e instanceof ApiError && e.status === 409
+          ? 'A document in this collection is under legal hold; the collection cannot be deleted.'
+          : 'Delete failed',
+      });
+    },
   });
 
   if (isLoading) return <div className="flex justify-center py-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;

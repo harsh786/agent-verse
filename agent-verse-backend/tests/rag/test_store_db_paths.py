@@ -83,6 +83,9 @@ class _ScriptedSession:
         # positional _Result through for it.
         if "document_id = :did LIMIT 1" in sql:
             return _Result(scalar=None)
+        # KB-33 legal-hold probes before/within a collection delete: not held.
+        if "FROM legal_holds" in sql:
+            return _Result()
         if self._results:
             return self._results.pop(0)
         return _Result()

@@ -1065,6 +1065,28 @@ describe('KnowledgePage – Collections tab (error paths & inputs)', () => {
     expect(screen.queryByText(/delete collection\?/i)).not.toBeInTheDocument();
     expect(spy.mock.calls.some(([u, i]) => String(u).includes('col-1') && (i as RequestInit)?.method === 'DELETE')).toBe(false);
   });
+
+  test('KB-33: a 409 from collection delete says a document is under legal hold', async () => {
+    useToastStore.setState({ toasts: [] });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/knowledge/collections/col-1') && method === 'DELETE')
+        return new Response(JSON.stringify({ detail: 'held' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/knowledge/collections'))
+        return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    await screen.findByTestId(`collection-card-${COLLECTION.collection_id}`);
+    await userEvent.click(screen.getByTestId(`delete-collection-${COLLECTION.collection_id}`));
+    await userEvent.click(screen.getByRole('button', { name: /delete collection/i }));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some(
+        (t) => t.kind === 'error' && /document in this collection is under legal hold/i.test(t.message),
+      )).toBe(true),
+    );
+  });
 });
 
 describe('KnowledgePage – Ask AI tab (hover on source row)', () => {

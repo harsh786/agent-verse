@@ -34,6 +34,11 @@ CTX = TenantContext(tenant_id=TENANT, plan=PlanTier.PROFESSIONAL, api_key_id="k"
 TABLE = _chunk_table(768)
 
 _SCHEMA = [
+    """CREATE TABLE legal_holds (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        tenant_id TEXT NOT NULL, name TEXT NOT NULL, resource_type TEXT NOT NULL,
+        resource_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+        status TEXT NOT NULL DEFAULT 'active', expires_at TIMESTAMPTZ)""",
     """CREATE TABLE knowledge_collections (
         id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, embedding_dim INT NOT NULL,
         is_active BOOLEAN DEFAULT TRUE, chunk_count INT DEFAULT 0,
@@ -63,7 +68,9 @@ async def db(postgres_url: str) -> AsyncIterator[async_sessionmaker]:  # type: i
     engine = create_async_engine(postgres_url)
     async with engine.begin() as conn:
         tables = [_chunk_table(d) for d in SUPPORTED_EMBEDDING_DIMENSIONS]
-        for table in [*tables, "knowledge_collections", "knowledge_nodes", "knowledge_edges"]:
+        for table in [
+            *tables, "knowledge_collections", "knowledge_nodes", "knowledge_edges", "legal_holds"
+        ]:
             await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
         for ddl in _SCHEMA:
             await conn.execute(text(ddl))
