@@ -60,8 +60,10 @@ class MicrosoftTeamsAdapter(ChannelAdapter):
 
     channel_name = "teams"
 
-    def __init__(self) -> None:
-        self._app_id = os.getenv("TEAMS_APP_ID", "")
+    def __init__(self, app_id: str | None = None) -> None:
+        # ``app_id`` — a tenant binding's own Bot Framework app (TRG-42); the
+        # platform app from TEAMS_APP_ID otherwise.
+        self._app_id = app_id or os.getenv("TEAMS_APP_ID", "")
         self._app_password = os.getenv("TEAMS_APP_PASSWORD", "")
         self._token: str | None = None
 

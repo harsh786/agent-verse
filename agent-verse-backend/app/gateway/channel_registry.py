@@ -5,9 +5,11 @@ tenant by the *addressee* — the bot that received the message (Telegram bot id
 WhatsApp business number). This registry maps ``(channel, addressee)`` to the
 owning tenant so an inbound message resolves to the right tenant before any
 tenant-scoped work. Each binding carries its OWN inbound secret: the addressee
-selects the binding, the binding's secret authenticates the request. Process
-memory, seeded from ``CHANNEL_TENANT_MAP``; the ``channel_tenant_mappings`` table
-is not read yet (every replica must be seeded with the same env).
+selects the binding, the binding's secret authenticates the request.
+
+This class is the OPERATOR fallback, seeded from ``CHANNEL_TENANT_MAP``. Tenant
+bindings are durable rows in ``channel_tenant_mappings`` resolved by
+:class:`app.gateway.binding_store.ChannelBindingStore` (TRG-42), consulted first.
 """
 
 from __future__ import annotations
@@ -28,6 +30,9 @@ class ChannelBinding:
     # secret, so a tenant holding its own channel secret cannot address another
     # tenant's bot. A binding without a secret is refused (fail closed).
     secret: str = ""
+    # Teams only: the tenant's Bot Framework app id — the audience its inbound
+    # JWTs must carry (TRG-42).
+    app_id: str = ""
 
 
 class ChannelRegistry:

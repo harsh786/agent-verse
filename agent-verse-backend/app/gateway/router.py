@@ -89,21 +89,66 @@ def _verify_binding_secret(
 
     Same wire formats as the platform adapters: Telegram's static
     ``X-Telegram-Bot-Api-Secret-Token``; WhatsApp's ``X-Hub-Signature-256`` and
-    the generic ``X-Webhook-Signature`` HMAC-SHA256 over the raw body.
+    the generic ``X-Webhook-Signature`` HMAC-SHA256 over the raw body; Slack's
+    ``v0`` signature over ``v0:{timestamp}:{body}`` with a 5-minute window
+    (TRG-42 — Slack /chat used to be refused outright).
     """
     import hashlib
     import hmac
+    import time as _time
 
     if not secret:
         return False
     if channel == "telegram":
         presented = headers.get("x-telegram-bot-api-secret-token", "")
         return bool(presented) and hmac.compare_digest(secret.encode(), presented.encode())
+    if channel == "slack":
+        timestamp = headers.get("x-slack-request-timestamp", "")
+        signature = headers.get("x-slack-signature", "")
+        try:
+            if abs(_time.time() - int(timestamp)) > 300:
+                return False
+        except (TypeError, ValueError):
+            return False
+        base = b"v0:" + timestamp.encode() + b":" + raw_body
+        expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+        return bool(signature) and hmac.compare_digest(expected, signature)
     header = {"whatsapp": "x-hub-signature-256", "webhook": "x-webhook-signature"}.get(channel)
     if header is None:
         return False
     expected = "sha256=" + hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, headers.get(header, ""))
+
+
+def _teams_activity_tenant(raw: dict[str, Any]) -> str:
+    from app.api.channels.ingestion import _normalize_m365_tenant_id
+
+    channel_data = raw.get("channelData") if isinstance(raw.get("channelData"), dict) else {}
+    tenant = channel_data.get("tenant") if isinstance(channel_data.get("tenant"), dict) else {}
+    conversation = raw.get("conversation") if isinstance(raw.get("conversation"), dict) else {}
+    return _normalize_m365_tenant_id(tenant.get("id") or conversation.get("tenantId") or "")
+
+
+async def _verify_binding(
+    channel: str,
+    binding: Any,
+    addressee: str,
+    headers: dict[str, str],
+    raw: dict[str, Any],
+    raw_body: bytes,
+) -> bool:
+    """Authenticate a delivery against the binding it addressed (TRG-42).
+
+    Teams carries no shared secret: the Bot Framework JWT must be valid for THIS
+    binding's app id, and the activity must come from the bound Microsoft 365
+    organisation. Every other channel checks the binding's own secret.
+    """
+    if channel == "teams":
+        app_id = str(getattr(binding, "app_id", "") or "")
+        if not app_id or _teams_activity_tenant(raw) != addressee:
+            return False
+        return bool(await MicrosoftTeamsAdapter(app_id=app_id).verify_auth(headers, raw))
+    return _verify_binding_secret(channel, binding.secret, headers, raw_body)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -792,6 +837,10 @@ _CHAT_ADAPTERS: dict[str, Any] = {
     "telegram": _telegram,
     "whatsapp": _whatsapp,
     "webhook": _webhook,
+    # TRG-42: per-tenant Slack / Teams bindings (Slack v0 signature with the
+    # binding's signing secret; Teams Bot Framework JWT for the binding's app).
+    "slack": _slack,
+    "teams": _teams,
 }
 
 
@@ -807,6 +856,11 @@ def _chat_addressee(channel: str, raw: dict[str, Any], binding_id: str) -> str:
     """
     if binding_id:
         return binding_id.strip()
+    if channel == "slack":
+        team = raw.get("team") if isinstance(raw.get("team"), dict) else {}
+        return str(raw.get("team_id") or team.get("id") or "")
+    if channel == "teams":
+        return _teams_activity_tenant(raw)
     if channel == "whatsapp":
         with suppress(Exception):
             entry = (raw.get("entry") or [{}])[0]
@@ -832,6 +886,11 @@ async def _send_chat_reply(
         result = await adapter.send_text(
             to=chat_id, text=text, token=token, phone_number_id=addressee
         )
+    elif channel == "slack":
+        posted = await SlackChannelAdapter(bot_token=token).post_message(
+            chat_id, OrgResponse(command_id="", text=text)
+        )
+        result = posted if isinstance(posted, dict) and posted.get("ok") else None
     return result is not None
 
 
@@ -869,7 +928,6 @@ async def _channel_chat(channel: str, request: Request, *, binding_id: str) -> d
     channel = channel.strip().lower()
     adapter = _CHAT_ADAPTERS.get(channel)
     chat_service = getattr(request.app.state, "chat_service", None)
-    registry = getattr(request.app.state, "channel_registry", None)
     if adapter is None or chat_service is None:
         raise HTTPException(status_code=404, detail=f"channel {channel!r} not available")
 
@@ -887,18 +945,36 @@ async def _channel_chat(channel: str, request: Request, *, binding_id: str) -> d
     # channel secret, which every tenant configuring a bot would share and could
     # therefore use to address any other tenant's bot.
     addressee = _chat_addressee(channel, raw, binding_id)
-    binding = registry.resolve(channel, addressee) if registry is not None else None
+    # TRG-42: tenant bindings are durable DB rows (every replica resolves the
+    # same binding); the CHANNEL_TENANT_MAP env registry is only the fallback.
+    from app.gateway.binding_store import (
+        ChannelBindingStoreUnavailableError,
+        resolve_binding,
+    )
+
+    try:
+        binding = await resolve_binding(request.app.state, channel, addressee)
+    except ChannelBindingStoreUnavailableError:
+        # Unknown, not "unbound": the sender retries on 503.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Channel bindings are temporarily unavailable",
+        ) from None
     if binding is not None:
-        if not binding.secret:
+        has_credential = binding.app_id if channel == "teams" else binding.secret
+        if not has_credential:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=f"{channel} binding has no per-tenant secret configured",
             )
-        if not _verify_binding_secret(channel, binding.secret, headers, raw_body):
+        if not await _verify_binding(channel, binding, addressee, headers, raw, raw_body):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Invalid {channel} webhook credentials",
             )
+        if channel == "slack" and raw.get("type") == "url_verification":
+            # Slack's (signed) Events URL handshake for this binding.
+            return {"challenge": raw.get("challenge")}
         tenant_id = binding.tenant_id
     else:
         # No binding: only the operator's own relay (platform channel secret +
@@ -1006,9 +1082,9 @@ async def generic_webhook(
 # credentials the frontend sends — so they now answer 501 honestly instead.
 
 _GATEWAY_CONFIG_NOT_IMPLEMENTED = (
-    "Gateway channel configuration is not implemented: channels are configured via "
-    "environment (TELEGRAM_*/SLACK_*/WHATSAPP_*/TEAMS_*, GATEWAY_INGRESS_SECRET, "
-    "VOICE_PHONE_*) and nothing is persisted per org."
+    "Per-org gateway config flags are not stored. Manage your channel bindings "
+    "(Telegram bots, WhatsApp numbers, Slack workspaces, Teams organisations, generic "
+    "webhooks) with the authenticated /channels/bindings API (TRG-42)."
 )
 
 

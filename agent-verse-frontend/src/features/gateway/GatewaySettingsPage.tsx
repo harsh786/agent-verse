@@ -23,6 +23,7 @@ import {
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { apiRequest } from '@/lib/api/client';
+import { ChannelBindings } from './ChannelBindings';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -230,9 +231,9 @@ function ConnectModal({ channelId, onClose }: { channelId: string; onClose: () =
           </div>
         </div>
         <p className="text-[13px] text-[#94A3B8] mb-5">
-          Connecting channels from the UI is not available. {channel?.name ?? 'This channel'} is
-          configured by the server operator through environment variables; no credentials are
-          accepted or stored here.
+          Connecting from this card is not available. Add a binding for{' '}
+          {channel?.name ?? 'this channel'} under <strong>Channel bindings</strong> on this page:
+          ownership is verified and its secrets are stored encrypted by the server.
         </p>
         <motion.button
           type="button" onClick={onClose}
@@ -341,6 +342,9 @@ export function GatewaySettingsPage({ orgId: orgIdProp }: GatewaySettingsPagePro
           ))}
         </JARVISStagger>
       </section>
+
+      {/* TRG-42: tenant-managed bindings (Telegram/WhatsApp/Slack/Teams/webhook) */}
+      <ChannelBindings />
 
       {/* Gateway settings */}
       <section aria-label="Gateway security settings" className="bg-[#1A1F2E] border border-[#2D3748] rounded-xl p-5">

@@ -103,7 +103,7 @@ describe('GatewaySettingsPage', () => {
         headers: { 'Content-Type': 'application/json' },
       }));
     renderPage('org-1');
-    expect(await screen.findByRole('alert')).toHaveTextContent(/not implemented/i);
+    expect((await screen.findAllByRole('alert'))[0]).toHaveTextContent(/not implemented/i);
     expect(screen.queryByText('100/h')).not.toBeInTheDocument();
     expect(screen.queryByText('change-autonomy')).not.toBeInTheDocument();
     expect(screen.getAllByText('Unknown').length).toBeGreaterThanOrEqual(2);
@@ -126,7 +126,7 @@ describe('GatewaySettingsPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404, headers: { 'Content-Type': 'application/json' } }));
     renderPage('org-1');
-    expect(await screen.findByRole('alert')).toHaveTextContent(/configuration is unavailable/i);
+    expect((await screen.findAllByRole('alert'))[0]).toHaveTextContent(/configuration is unavailable/i);
     expect(screen.queryByText(/commands\/hour/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Connected')).not.toBeInTheDocument();
   });
