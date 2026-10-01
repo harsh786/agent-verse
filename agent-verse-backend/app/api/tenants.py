@@ -518,25 +518,54 @@ _PROVIDER_ENV_KEYS: dict[str, str | None] = {
 }
 
 
+async def _tenant_byok_provider_name(request: Request, tenant_id: str) -> str | None:
+    """The provider of the tenant's own LLM config, when it carries a key."""
+    from app.providers.tenant_provider import _normalise
+    from app.services.llm_config_store import get_llm_config_store
+
+    store = getattr(request.app.state, "llm_config_store", None) or get_llm_config_store()
+    if store is None:
+        return None
+    try:
+        cfg = await store.get_config(tenant_id)
+    except Exception:
+        return None
+    if not cfg or not str(cfg.get("encrypted_key") or ""):
+        return None
+    return _normalise(str(cfg.get("provider") or "")) or None
+
+
 @router.get("/me/providers")
 async def get_provider_catalog(request: Request) -> dict:
-    """Return provider capabilities and config state — never returns secrets."""
+    """Return provider capabilities and config state — never returns secrets.
+
+    ``configured_by`` says who configured a provider: ``"tenant"`` for the
+    tenant's own key (BYOK, PUT /tenants/me/llm — it used to be reported as
+    unconfigured), ``"platform"`` for a deployment env key, else ``None``.
+    """
     import os
 
-    _require_tenant(request)
+    ctx = _require_tenant(request)
+    tenant_provider = await _tenant_byok_provider_name(request, ctx.tenant_id)
 
     providers = []
     for provider_name, caps in _PROVIDER_CAPABILITIES.items():
         env_key_name = _PROVIDER_ENV_KEYS.get(provider_name)
-        is_configured = (
+        platform_configured = (
             env_key_name is None  # No key needed (e.g. Ollama)
             or bool(os.getenv(env_key_name, ""))
+        )
+        configured_by = (
+            "tenant"
+            if provider_name == tenant_provider
+            else ("platform" if platform_configured else None)
         )
         providers.append(
             {
                 "name": provider_name,
                 "display_name": provider_name.replace("_", " ").title(),
-                "configured": is_configured,
+                "configured": configured_by is not None,
+                "configured_by": configured_by,
                 "capabilities": caps,
                 "env_var": env_key_name,  # name only, never the value
             }
