@@ -29,12 +29,22 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+
+# Per-workflow ACL — the same levels /api/v1/workflows enforces
+# (app/workflow/permissions.py). The visual builder still saves and runs through
+# these routes, so they used to be an unchecked side door: a 'viewer' grant
+# restricted nothing here.
+def _access(level: str) -> Any:
+    from app.workflow.permissions import workflow_access
+
+    return [Depends(workflow_access(level))]
 
 
 # ─── Pydantic schemas ────────────────────────────────────────────────────────
@@ -580,7 +590,7 @@ async def generate_workflow(request: Request, body: GenerateWorkflowRequest) -> 
     return _plan_to_canvas(plan)
 
 
-@router.get("/{workflow_id}", response_model=WorkflowOut)
+@router.get("/{workflow_id}", response_model=WorkflowOut, dependencies=_access("viewer"))
 async def get_workflow(workflow_id: str, request: Request) -> WorkflowOut:
     """Retrieve a single workflow by ID."""
     tenant = _require_tenant(request)
@@ -591,15 +601,31 @@ async def get_workflow(workflow_id: str, request: Request) -> WorkflowOut:
     return _workflow_to_out(wf)
 
 
-@router.put("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.put(
+    "/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=_access("editor")
+)
 async def update_workflow(
     workflow_id: str,
     request: Request,
     body: WorkflowUpdate,
 ) -> None:
-    """Update an existing workflow.  Increments the version counter."""
+    """Update an existing workflow.  Increments the version counter.
+
+    Refused (409) while the workflow is pending publish approval: the approver
+    reviews exactly what was submitted (same rule as PATCH /api/v1/workflows)."""
     tenant = _require_tenant(request)
     store = _get_store(request)
+    current = await store.get(tenant.tenant_id, workflow_id)
+    if current is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    if current.get("status") == "pending_approval":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "workflow is pending publish approval; reject it (or unpublish) "
+                "before editing"
+            ),
+        )
     result = await store.update(
         tenant_id=tenant.tenant_id,
         workflow_id=workflow_id,
@@ -612,7 +638,9 @@ async def update_workflow(
     _audit(request, "updated", workflow_id, "changed=name,description,definition")
 
 
-@router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=_access("editor")
+)
 async def delete_workflow(workflow_id: str, request: Request) -> None:
     """Permanently delete a workflow."""
     tenant = _require_tenant(request)
@@ -633,6 +661,7 @@ class WorkflowRunRequest(BaseModel):
 @router.post(
     "/{workflow_id}/run",
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_access("runner"),
 )
 async def run_workflow(
     workflow_id: str,
