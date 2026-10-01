@@ -2004,9 +2004,23 @@ export interface ZapierCompletedGoal {
   [key: string]: unknown;
 }
 
+/** A tenant's claim on an external channel (GET /channels/mappings). */
+export interface ChannelBinding {
+  id: string;
+  channel_type: string;
+  channel_id: string;
+  status?: string;
+  verified_at?: string | null;
+}
+
 export const integrationsApi = {
   zapierCompletedGoals: () =>
     request<ZapierCompletedGoal[]>("/integrations/zapier/goals"),
+  /** TRG-02: Slack commands route by the workspace's verified binding. */
+  slackWorkspaces: async () =>
+    (await request<ChannelBinding[]>("/channels/mappings")).filter(
+      (m) => m.channel_type === "slack",
+    ),
 };
 
 // ── Governance real-time helpers + Audit ──────────────────────────────────────

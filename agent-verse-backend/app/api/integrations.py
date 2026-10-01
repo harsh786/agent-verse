@@ -87,10 +87,6 @@ async def _dispatch_alert(
     return event
 
 
-def _get_slack_tenant_id() -> str:
-    return os.getenv("SLACK_TENANT_ID", "")
-
-
 def _get_zapier_tenant_id() -> str:
     return os.getenv("ZAPIER_TENANT_ID", "")
 
@@ -177,18 +173,22 @@ async def slack_slash_command(
 
     from app.tenancy.context import TenantContext
 
-    slack_tenant_id = _get_slack_tenant_id()
+    # TRG-02: the tenant is the one bound to THIS (signature-verified) workspace
+    # through its verified channel_tenant_mappings row. It used to be the single
+    # SLACK_TENANT_ID env tenant, so every workspace's users submitted autonomous
+    # goals into that one tenant. An unbound workspace submits nothing.
+    team_id = str(params.get("team_id", "") or "")
+    slack_tenant_id = await _slack_bound_tenant(request, {"team_id": team_id})
     if not slack_tenant_id:
-        # Try legacy settings attribute before failing
-        slack_tenant_id = (
-            request.app.state.settings.slack_tenant_id
-            if hasattr(request.app.state.settings, "slack_tenant_id")
-            else ""
-        )
-    if not slack_tenant_id:
+        import logging
+
+        logging.getLogger(__name__).warning("slack_command_unbound_workspace team_id=%s", team_id)
         return {
             "response_type": "ephemeral",
-            "text": "⚠️ Slack integration not configured. Ask admin to set SLACK_TENANT_ID env var.",
+            "text": (
+                "This Slack workspace is not linked to an AgentVerse tenant. "
+                "Ask an AgentVerse admin to add and verify it under Channels."
+            ),
         }
 
     ctx = TenantContext(

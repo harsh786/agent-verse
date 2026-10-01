@@ -22,7 +22,7 @@ const PROVIDERS: ProviderConfig[] = [
       { label: 'Events', path: '/integrations/slack/events' },
       { label: 'Interactive', path: '/integrations/slack/interactive' },
     ],
-    secretEnv: ['SLACK_SIGNING_SECRET', 'SLACK_TENANT_ID'],
+    secretEnv: ['SLACK_SIGNING_SECRET'],
   },
   {
     name: 'Zapier',
@@ -61,6 +61,11 @@ export function IntegrationsPage() {
     queryKey: ['zapier-goals'],
     queryFn: () => integrationsApi.zapierCompletedGoals(),
   });
+  const { data: slackWorkspaces = [], isError: slackWorkspacesError } = useQuery({
+    queryKey: ['slack-workspaces'],
+    queryFn: () => integrationsApi.slackWorkspaces(),
+  });
+  const routable = (s?: string) => s === 'verified' || s === 'legacy_unverified';
 
   return (
     <JARVISPageShell className="bg-[#0A0F1A] min-h-screen">
@@ -118,6 +123,37 @@ export function IntegrationsPage() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* TRG-02: Slack commands and buttons act in the tenant bound to the workspace */}
+      <div className="bg-card border border-border rounded-xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-border">
+          <h2 className="font-semibold text-sm">Slack — bound workspaces</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            /agentverse and approval buttons only work from a workspace verified under Channels.
+          </p>
+        </div>
+        {slackWorkspacesError ? (
+          <p className="px-5 py-4 text-sm text-red-400">Could not load Slack workspace bindings.</p>
+        ) : slackWorkspaces.length === 0 ? (
+          <p className="px-5 py-4 text-sm text-muted-foreground">
+            No Slack workspace is bound to this tenant. Add your workspace (team ID) on the Channels
+            page and verify it.
+          </p>
+        ) : (
+          <ul className="divide-y divide-border">
+            {slackWorkspaces.map((w) => (
+              <li key={w.id} className="px-5 py-2 flex items-center justify-between gap-3">
+                <code className="text-sm">{w.channel_id}</code>
+                <span
+                  className={`text-xs ${routable(w.status) ? 'text-green-400' : 'text-yellow-400'}`}
+                >
+                  {routable(w.status) ? 'bound' : `not routing (${w.status ?? 'unknown'})`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {/* Zapier delivery visibility */}

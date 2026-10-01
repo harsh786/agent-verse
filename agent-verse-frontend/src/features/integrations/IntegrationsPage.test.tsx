@@ -94,6 +94,28 @@ describe('IntegrationsPage', () => {
     expect(await screen.findByText('Investigate outage')).toBeInTheDocument();
   });
 
+  test('TRG-02: shows the Slack workspaces bound to this tenant, not SLACK_TENANT_ID', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/channels/mappings'))
+        return new Response(
+          JSON.stringify([
+            { id: 'm1', channel_type: 'slack', channel_id: 'T-BOUND', status: 'verified' },
+            { id: 'm2', channel_type: 'slack', channel_id: 'T-PENDING', status: 'pending_verification' },
+            { id: 'm3', channel_type: 'teams', channel_id: 'not-slack', status: 'verified' },
+          ]),
+          { status: 200 }
+        );
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    expect(await screen.findByText('T-BOUND')).toBeInTheDocument();
+    expect(screen.getByText('bound')).toBeInTheDocument();
+    expect(screen.getByText('not routing (pending_verification)')).toBeInTheDocument();
+    expect(screen.queryByText('not-slack')).not.toBeInTheDocument();
+    expect(screen.queryByText('SLACK_TENANT_ID')).not.toBeInTheDocument();
+  });
+
   test('shows Zapier delivery from /integrations/zapier/goals', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);

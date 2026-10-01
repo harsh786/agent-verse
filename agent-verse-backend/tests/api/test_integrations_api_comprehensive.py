@@ -130,74 +130,88 @@ def test_slack_command_invalid_signature_returns_403(monkeypatch) -> None:
     assert resp.status_code == 403
 
 
-def test_slack_command_valid_signature_but_no_tenant_id(monkeypatch) -> None:
+def _bound(team_to_tenant: dict[str, str]) -> Any:
+    async def _resolve(channel_type: str, channel_id: str, db: object) -> str | None:
+        return team_to_tenant.get(channel_id) if channel_type == "slack" else None
+
+    return patch("app.api.channels.ingestion._resolve_tenant_from_channel", _resolve)
+
+
+def test_slack_command_from_unbound_workspace_is_refused(monkeypatch) -> None:
+    """TRG-02: no verified workspace binding -> nothing is submitted."""
     secret = "test-secret"
     monkeypatch.setenv("SLACK_SIGNING_SECRET", secret)
-    monkeypatch.delenv("SLACK_TENANT_ID", raising=False)
-    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("SLACK_TENANT_ID", "env-tenant-must-be-ignored")
 
-    body = urllib.parse.urlencode({"text": "run daily report", "user_id": "U1"}).encode()
+    body = urllib.parse.urlencode(
+        {"text": "run daily report", "user_id": "U1", "team_id": "T-NONE"}
+    ).encode()
     ts, sig = _slack_sig(body, secret)
 
-    # Provide a goal_service so we get past the "service unavailable" check
-    # and reach the SLACK_TENANT_ID validation
     mock_svc = MagicMock()
-    client = TestClient(_make_app(goal_service=mock_svc))
-    resp = client.post(
-        "/integrations/slack/commands",
-        content=body,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "X-Slack-Signature": sig,
-            "X-Slack-Request-Timestamp": ts,
-        },
-    )
+    mock_svc.submit_goal = AsyncMock()
+    with _bound({}):
+        client = TestClient(_make_app(goal_service=mock_svc))
+        resp = client.post(
+            "/integrations/slack/commands",
+            content=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Slack-Signature": sig,
+                "X-Slack-Request-Timestamp": ts,
+            },
+        )
     data = resp.json()
     assert data["response_type"] == "ephemeral"
-    # Message mentions SLACK_TENANT_ID is not configured
-    assert "SLACK_TENANT_ID" in data["text"] or "not configured" in data["text"].lower()
+    assert "not linked" in data["text"].lower()
+    mock_svc.submit_goal.assert_not_awaited()
 
 
 def test_slack_command_with_tenant_and_goal_service(monkeypatch) -> None:
     secret = "my-secret"
     monkeypatch.setenv("SLACK_SIGNING_SECRET", secret)
-    monkeypatch.setenv("SLACK_TENANT_ID", "slack-tenant-1")
 
     mock_svc = MagicMock()
     mock_svc.submit_goal = AsyncMock(return_value={"goal_id": "g123"})
 
-    body = urllib.parse.urlencode({"text": "summarize daily report", "user_id": "U2"}).encode()
+    body = urllib.parse.urlencode(
+        {"text": "summarize daily report", "user_id": "U2", "team_id": "T1"}
+    ).encode()
     ts, sig = _slack_sig(body, secret)
 
-    client = TestClient(_make_app(goal_service=mock_svc))
-    resp = client.post(
-        "/integrations/slack/commands",
-        content=body,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "X-Slack-Signature": sig,
-            "X-Slack-Request-Timestamp": ts,
-        },
-    )
+    with _bound({"T1": "slack-tenant-1"}):
+        client = TestClient(_make_app(goal_service=mock_svc))
+        resp = client.post(
+            "/integrations/slack/commands",
+            content=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "X-Slack-Signature": sig,
+                "X-Slack-Request-Timestamp": ts,
+            },
+        )
     data = resp.json()
     assert data["response_type"] == "in_channel"
     assert "g123" in data["text"]
+    assert mock_svc.submit_goal.await_args.kwargs["tenant_ctx"].tenant_id == "slack-tenant-1"
 
 
 def test_slack_command_goal_service_exception(monkeypatch) -> None:
     monkeypatch.setenv("ENVIRONMENT", "development")
-    monkeypatch.setenv("SLACK_TENANT_ID", "t1")
 
     mock_svc = MagicMock()
     mock_svc.submit_goal = AsyncMock(side_effect=RuntimeError("service down"))
 
-    body = urllib.parse.urlencode({"text": "failing goal", "user_id": "U3"}).encode()
-    client = TestClient(_make_app(goal_service=mock_svc))
-    resp = client.post(
-        "/integrations/slack/commands",
-        content=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
+    body = urllib.parse.urlencode(
+        {"text": "failing goal", "user_id": "U3", "team_id": "T1"}
+    ).encode()
+    with _bound({"T1": "t1"}):
+        client = TestClient(_make_app(goal_service=mock_svc))
+        resp = client.post(
+            "/integrations/slack/commands",
+            content=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
     data = resp.json()
     assert data["response_type"] == "ephemeral"
     assert "Error" in data["text"]

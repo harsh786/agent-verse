@@ -38,20 +38,11 @@ def test_redis_cost_controller_importable():
     assert RedisCostController is not None
 
 
-def test_slack_tenant_id_from_env(monkeypatch):
-    """Slack uses env var SLACK_TENANT_ID, not hardcoded string."""
-    monkeypatch.setenv("SLACK_TENANT_ID", "my-slack-tenant")
-    # Force reimport to pick up env var at call time
-    from app.api.integrations import _get_slack_tenant_id
+def test_slack_command_has_no_env_tenant(monkeypatch):
+    """TRG-02: the slash command routes by workspace binding, never SLACK_TENANT_ID."""
+    import app.api.integrations as integrations
 
-    assert _get_slack_tenant_id() == "my-slack-tenant"
-
-
-def test_slack_tenant_id_empty_without_env(monkeypatch):
-    monkeypatch.delenv("SLACK_TENANT_ID", raising=False)
-    from app.api.integrations import _get_slack_tenant_id
-
-    assert _get_slack_tenant_id() == ""
+    assert not hasattr(integrations, "_get_slack_tenant_id")
 
 
 def test_zapier_tenant_id_from_env(monkeypatch):
