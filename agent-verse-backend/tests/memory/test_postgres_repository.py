@@ -73,6 +73,9 @@ class _FakeResult:
     def scalar_one_or_none(self):
         return self._scalar
 
+    def scalar(self):
+        return self._scalar
+
     def scalars(self):
         return self._scalars_seq
 
@@ -80,10 +83,13 @@ class _FakeResult:
 class _FakeSession:
     """Minimal async session: scripted results consumed in execute() order."""
 
-    def __init__(self, results=None, get_results=None):
+    def __init__(self, results=None, get_results=None, tenant_vectors=0, pgvector="0.8.0"):
         self.executed: list = []
         self._results = list(results or [])
         self._get_results = list(get_results or [])
+        # MEM-09 sizing / capability probes answer without consuming the queue.
+        self._tenant_vectors = tenant_vectors
+        self._pgvector = pgvector
 
     async def __aenter__(self):
         return self
@@ -102,6 +108,10 @@ class _FakeSession:
         text = str(stmt)
         if "set_config" in text or "row_security" in text:
             return _FakeResult()
+        if "count(*)" in text:
+            return _FakeResult(scalar=self._tenant_vectors)
+        if "pg_extension" in text or text.startswith("SET LOCAL hnsw"):
+            return _FakeResult(scalar=self._pgvector)
         if self._results:
             return self._results.pop(0)
         return _FakeResult()
@@ -143,11 +153,8 @@ def _insert_params(session: _FakeSession) -> dict:
 
 
 def _data_statements(session: _FakeSession) -> list:
-    return [
-        stmt
-        for stmt in session.executed
-        if "set_config" not in str(stmt) and "row_security" not in str(stmt)
-    ]
+    probes = ("set_config", "row_security", "count(*)", "pg_extension", "SET LOCAL hnsw")
+    return [stmt for stmt in session.executed if not any(p in str(stmt) for p in probes)]
 
 
 def _write_request(**overrides) -> MemoryWriteRequest:
@@ -433,6 +440,45 @@ class TestRecall:
             assert "memory_records.agent_id" in sql
             assert "memory_records.lifecycle_state IN" in sql
             assert "memory_records.expires_at IS NULL" in sql
+
+    async def _vector_recall(self, session):
+        class _Embedder:
+            model_id = "model-a"
+
+            async def __call__(self, _query):
+                return tuple([1.0] * 1536)
+
+        await _repo(session, embedder=_Embedder()).recall(self._request())
+        from sqlalchemy.dialects import postgresql
+
+        return [
+            str(stmt.compile(dialect=postgresql.dialect()))
+            for stmt in _data_statements(session)
+        ]
+
+    async def test_small_tenant_uses_exact_vector_search(self):
+        """MEM-09: a small tenant is not searched through the global HNSW index."""
+        session = _FakeSession(tenant_vectors=12)
+        sqls = await self._vector_recall(session)
+        relevance = next(q for q in sqls if "<=>" in q)
+        order_key = relevance.split("ORDER BY", 1)[1].split(",")[0]
+        # ``distance + 0``: exact order, but not usable by the HNSW index.
+        assert "<=>" in order_key and "+" in order_key
+        assert not [s for s in session.executed if "SET LOCAL hnsw" in str(s)]
+
+    async def test_large_tenant_uses_hnsw_with_iterative_scan(self):
+        session = _FakeSession(tenant_vectors=50_000, pgvector="0.8.0")
+        sqls = await self._vector_recall(session)
+        relevance = next(q for q in sqls if "<=>" in q)
+        assert "+" not in relevance.split("ORDER BY", 1)[1].split(",")[0]
+        settings = [str(s) for s in session.executed if "SET LOCAL hnsw" in str(s)]
+        assert any("iterative_scan" in s for s in settings)
+        assert any("ef_search" in s for s in settings)
+
+    async def test_old_pgvector_skips_iterative_scan_settings(self):
+        session = _FakeSession(tenant_vectors=50_000, pgvector="0.7.4")
+        await self._vector_recall(session)
+        assert not [s for s in session.executed if "SET LOCAL hnsw" in str(s)]
 
     async def test_duplicate_candidates_are_merged(self):
         row = _row(safe_summary="retry evidence")

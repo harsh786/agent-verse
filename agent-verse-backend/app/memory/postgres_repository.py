@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, delete, func, insert, or_, select, update
+from sqlalchemy import Select, delete, func, insert, literal, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.coordination.store import OptimisticConflictError
@@ -35,6 +35,13 @@ _SENSITIVE = frozenset({"confidential", "restricted"})
 # many rows (deterministically ordered), however large the tenant's memory is.
 _MIN_CANDIDATES = 40
 _MAX_CANDIDATES = 200
+# MEM-09: a tenant with at most this many embedded records is searched exactly
+# (its rows via the tenant index, ordered by true distance) instead of through
+# the one global HNSW index, whose post-filter can starve a small tenant.
+_EXACT_SEARCH_MAX_ROWS = 5_000
+# Larger tenants keep the HNSW index, with pgvector >= 0.8 iterative scans so
+# the tenant filter cannot empty the candidate set.
+_HNSW_EF_SEARCH = 200
 
 
 def _candidate_limit(request: MemoryRecallRequest) -> int:
@@ -46,6 +53,7 @@ def recall_candidate_queries(
     *,
     query_embedding: tuple[float, ...] | None,
     embedding_model: str | None,
+    exact_vector: bool = False,
 ) -> tuple[Select[tuple[CanonicalMemoryRecord]], ...]:
     """The bounded SQL candidate queries behind :meth:`PostgresMemoryRepository.recall`.
 
@@ -84,10 +92,15 @@ def recall_candidate_queries(
             if embedding_model is not None
             else model.embedding_source_model.is_(None)
         )
+        distance = model.embedding.cosine_distance(list(query_embedding))
+        if exact_vector:
+            # ``+ 0`` keeps the ordering exact but makes it unusable by the HNSW
+            # index, so the planner filters by tenant first (MEM-09).
+            distance = distance + literal(0.0)
         relevance = (
             select(model)
             .where(*filters, model.embedding.is_not(None), same_model)
-            .order_by(model.embedding.cosine_distance(list(query_embedding)).asc(), model.id)
+            .order_by(distance.asc(), model.id)
             .limit(limit)
         )
     else:
@@ -265,6 +278,37 @@ class PostgresMemoryRepository:
             self._get_cipher(), tenant_id=tenant_id, memory_id=memory_id, sealed=sealed
         )
 
+    async def _iterative_scan_supported(self, db: AsyncSession) -> bool:
+        cached: bool | None = getattr(self, "_iterative_scan", None)
+        if cached is not None:
+            return cached
+        version = (
+            await db.execute(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'"))
+        ).scalar()
+        try:
+            parts = tuple(int(p) for p in str(version or "0").split(".")[:2])
+        except ValueError:
+            parts = (0, 0)
+        self._iterative_scan = parts >= (0, 8)
+        return self._iterative_scan
+
+    async def _use_exact_vector_search(self, db: AsyncSession, tenant_id: str) -> bool:
+        """True for a small tenant (exact search); tunes HNSW for a large one."""
+        model = CanonicalMemoryRecord
+        bounded = (
+            select(model.id)
+            .where(model.tenant_id == tenant_id, model.embedding.is_not(None))
+            .limit(_EXACT_SEARCH_MAX_ROWS + 1)
+            .subquery()
+        )
+        count = int((await db.execute(select(func.count()).select_from(bounded))).scalar() or 0)
+        if count <= _EXACT_SEARCH_MAX_ROWS:
+            return True
+        if await self._iterative_scan_supported(db):
+            await db.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+            await db.execute(text(f"SET LOCAL hnsw.ef_search = {_HNSW_EF_SEARCH}"))
+        return False
+
     async def recall(self, request: MemoryRecallRequest) -> tuple[MemoryRecallHit, ...]:
         query_embedding = await self._embed(request.query)
         embedding_model = self.embedding_model
@@ -273,9 +317,17 @@ class PostgresMemoryRepository:
             db.begin(),
             sqlalchemy_rls_context(db, request.tenant_id),
         ):
+            exact = (
+                await self._use_exact_vector_search(db, request.tenant_id)
+                if query_embedding is not None
+                else False
+            )
             rows: dict[str, CanonicalMemoryRecord] = {}
             for stmt in recall_candidate_queries(
-                request, query_embedding=query_embedding, embedding_model=embedding_model
+                request,
+                query_embedding=query_embedding,
+                embedding_model=embedding_model,
+                exact_vector=exact,
             ):
                 for row in (await db.execute(stmt)).scalars():
                     rows.setdefault(row.id, row)
