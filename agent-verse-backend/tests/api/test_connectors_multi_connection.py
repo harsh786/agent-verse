@@ -202,6 +202,44 @@ def test_type_inferred_from_name_only_when_unambiguous(world: dict[str, Any]) ->
     assert other.status_code == 201 and other.json()["builtin_type"] == ""
 
 
+def test_remote_mcp_server_is_not_reclassified_as_a_builtin_by_its_name(
+    world: dict[str, Any],
+) -> None:
+    """A connector pointing at a remote MCP endpoint is that MCP server.
+
+    "Jira MCP" at https://…/mcp used to be inferred as the built-in Jira type
+    from its leading name token, so the agent's calls went to the built-in REST
+    handler (``jira_search_issues`` against ``<mcp-url>/rest/api/3/…``) instead
+    of the MCP server's own tools. An exact built-in name or an explicit
+    ``type`` still selects the built-in.
+    """
+    c = world["client"]
+    remote = c.post(
+        "/connectors",
+        json={
+            "name": "Jira MCP",
+            "url": "https://mcp.acme.example/v1/mcp",
+            "auth_type": "none",
+            "auth_config": {},
+        },
+        headers=HDR,
+    )
+    declared = c.post(
+        "/connectors",
+        json={
+            "name": "Jira via MCP",
+            "url": "https://mcp.acme.example/v1/mcp",
+            "auth_type": "none",
+            "auth_config": {},
+            "type": "jira",
+        },
+        headers=HDR,
+    )
+
+    assert remote.status_code == 201 and remote.json()["builtin_type"] == ""
+    assert declared.status_code == 201 and declared.json()["builtin_type"] == "builtin-jira"
+
+
 def test_unknown_declared_type_is_422(world: dict[str, Any]) -> None:
     resp = _create(world["client"], "x", ORDERS_URI, type="no-such-connector")
     assert resp.status_code == 422

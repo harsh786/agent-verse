@@ -86,10 +86,24 @@ def _declared_type_on_update(body: RegisterConnectorRequest) -> str:
     return str(cfg["server_id"])
 
 
-def _infer_builtin_type(name: str) -> str | None:
-    try:
-        from app.mcp.servers.registry_wiring import infer_builtin_type_from_name
+def _infer_builtin_type(name: str, url: str = "") -> str | None:
+    """The built-in type a connector NAME implies (``None`` when it implies none).
 
+    A connector whose URL is a remote MCP endpoint IS that MCP server: only an
+    exact built-in name ("Jira") selects the built-in there. The leading-token
+    match ("mongodb-prod") must not turn "Jira MCP" at ``https://…/mcp`` into the
+    built-in Jira REST handler — its calls would no longer reach the MCP server
+    the user registered.
+    """
+    try:
+        from app.mcp.servers.registry_wiring import (
+            builtin_config_for_type,
+            infer_builtin_type_from_name,
+        )
+
+        if url and _is_mcp_endpoint(url):
+            exact = builtin_config_for_type(name)
+            return str(exact["server_id"]) if exact is not None else None
         return infer_builtin_type_from_name(name)
     except Exception:
         return None
@@ -280,7 +294,8 @@ async def _build_auth_headers(
 
 
 def _is_mcp_endpoint(url: str) -> bool:
-    return url.rstrip("/").endswith("/mcp")
+    path = url.split("?", 1)[0].rstrip("/")
+    return path.endswith("/mcp") or path.endswith("/mcp/authv2")
 
 
 def _mask_auth_config(auth_config: dict[str, Any]) -> dict[str, Any]:
@@ -562,7 +577,7 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
                 detail=f"Unknown connector type '{body.builtin_type}'",
             )
     else:
-        _inferred = _infer_builtin_type(body.name)
+        _inferred = _infer_builtin_type(body.name, body.url)
         _builtin_cfg = _builtin_config_for_type(_inferred) if _inferred else None
     _canonical_id = str(_builtin_cfg.get("server_id")) if _builtin_cfg else ""
     _builtin_tool_defs = list(_builtin_cfg.get("tool_definitions", [])) if _builtin_cfg else []
