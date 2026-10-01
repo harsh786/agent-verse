@@ -31,6 +31,9 @@ RUN groupadd --system app && useradd --system --gid app --create-home app
 # venv (changes only with pyproject.toml/uv.lock), the Playwright browser, then the
 # application source (a few MB), so a code-only change rebuilds just the last layer.
 # Install Playwright system dependencies for Chromium (must run as root).
+# libxmlsec1(-openssl): XML-DSig runtime for SAML SSO (python3-saml/xmlsec). The
+# xmlsec manylinux wheel bundles its own copy; the system library keeps the image
+# working if a platform without a wheel builds xmlsec from source.
 # apt over HTTPS: on some networks plain-HTTP responses from deb.debian.org arrive
 # altered ("invalid signature" on InRelease, "Hash Sum mismatch" on .debs).
 RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
@@ -42,6 +45,7 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
     tesseract-ocr \
     tesseract-ocr-hin \
     poppler-utils \
+    libxml2 libxmlsec1 libxmlsec1-openssl \
     && rm -rf /var/lib/apt/lists/*
 
 # The project is not pip-installed, so provide its `agentverse` console script here.

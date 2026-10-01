@@ -1,11 +1,10 @@
 """SAML 2.0 provider — enterprise SSO integration.
 
-Supports python3-saml (onelogin/python3-saml) when installed. It is an OPTIONAL
-extra (``uv sync --extra saml`` / ``pip install "agent-verse-backend[saml]"``)
-because it pulls in ``xmlsec``, which needs the native libxmlsec1/libxml2
-libraries at build time. The module always imports; without the library the
-login/ACS flows raise :class:`SAMLNotInstalledError`, which the API maps to 501.
-SP metadata still renders from a static template.
+Validation uses python3-saml (onelogin/python3-saml, strict mode), a core
+dependency (SAML-02; xmlsec ships binary wheels and the Docker image carries
+libxmlsec1-openssl). The module still imports without it (a broken build): the
+login/ACS flows then raise :class:`SAMLNotInstalledError`, which the API maps to
+501. SP metadata still renders from a static template.
 
 Amendment 8.4: SAML replay protection via Redis assertion-ID cache.
 

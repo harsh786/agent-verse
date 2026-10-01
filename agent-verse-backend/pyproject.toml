@@ -30,6 +30,9 @@ dependencies = [
     "cryptography>=44.0.0",
     # SSO (Keycloak JWT validation)
     "python-jose[cryptography]>=3.3.0",
+    # SAML 2.0 SSO (signature/assertion validation). xmlsec ships binary wheels
+    # bundling libxmlsec1; the Docker image also carries libxmlsec1-openssl.
+    "python3-saml>=1.16.0",
     # observability
     "structlog>=24.4.0",
     "opentelemetry-api>=1.29.0",
@@ -116,10 +119,8 @@ ocr = [
     "pytesseract>=0.3.13",
     "Pillow>=10.0.0",
     "pdf2image>=1.17.0"]
-# SAML 2.0 SSO (/enterprise/saml/*). Optional because python3-saml depends on
-# xmlsec, which builds against the native libxmlsec1 + libxml2 (e.g.
-# `apt-get install libxmlsec1-dev pkg-config` / `brew install libxmlsec1`).
-# Without it the SAML login/ACS endpoints return 501 "SAML not installed".
+# Kept for compatibility with `uv sync --extra saml`; python3-saml is now a core
+# dependency (SAML-02), so this extra adds nothing.
 saml = ["python3-saml>=1.16.0"]
 sandbox = [
     "docker>=7.1",
@@ -234,7 +235,10 @@ filterwarnings = [
     # whose async methods raise NotImplementedError — breaking inline workflow runs in the
     # e2e harness. Scope-ignore this dependency-internal deprecation so tests exercise the
     # same async checkpointer production uses.
-    "ignore:get_async_redis_connection will become async.*:DeprecationWarning"]
+    "ignore:get_async_redis_connection will become async.*:DeprecationWarning",
+    # python3-saml calls datetime.utcnow() while validating a response; as an error
+    # it aborts validation ("invalid_response") in tests only.
+    "ignore:datetime.datetime.utcnow.. is deprecated:DeprecationWarning:onelogin.*"]
 
 [tool.coverage.report]
 # Ratchet, not aspiration. Measured true coverage on the fast tier
