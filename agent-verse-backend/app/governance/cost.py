@@ -379,6 +379,19 @@ class RedisCostController:
             return cfg
         return self._tenant_configs.get(tenant_id, BudgetConfig())
 
+    async def ahas_remaining_budget(self, *, tenant_ctx: TenantContext) -> bool:
+        """Whether the tenant's shared daily spend is still under its budget.
+
+        Same contract as ``CostController.ahas_remaining_budget`` — the
+        StrategyRunner budget reservation and the guarded-completion preflight
+        call it. Missing here, every DISTRIBUTED goal was refused with
+        ``budget_reservation_failed`` once Redis was wired. A Redis/DB error
+        propagates (callers fail closed); it is never read as "budget left".
+        """
+        cfg = await self.resolve_config(tenant_ctx.tenant_id)
+        spent = _parse_float(await self._redis.get(self._daily_key(tenant_ctx.tenant_id)))
+        return spent < cfg.per_tenant_daily_usd
+
     def _daily_key(self, tenant_id: str) -> str:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         return f"cost:daily:{tenant_id}:{today}"

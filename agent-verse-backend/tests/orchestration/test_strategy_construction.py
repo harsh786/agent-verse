@@ -9,11 +9,13 @@ constructed). These tests pin:
 
 * voyager builds through the registry descriptor with the executor's kwargs
   and runs a trivial goal end-to-end with fakes (skill published);
-* every strategy the runner ADMITS builds the same way and runs a trivial goal
-  with a fake provider;
+* every strategy the runner ADMITS has a driver: the coordination patterns go
+  to the executor's coordination pattern bridge (whose pattern table must name
+  exactly the same strategies), every other one builds the same way and runs a
+  trivial goal with a fake provider;
 * the only registered DISTRIBUTED strategies that cannot be built that way are
-  a known set that admission denies — so a strategy can never be admitted
-  while its runtime cannot even be constructed.
+  a known set that is either a bridged coordination pattern or denied at
+  admission (group_chat) — so nothing is admitted that nothing can run.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import pytest
 
 from app.coordination.patterns.common import InMemoryPatternCheckpointStore
 from app.memory.voyager_skills import VoyagerSkillStore
+from app.orchestration.execution_drivers import COORDINATION_PATTERN_STRATEGIES
 from app.orchestration.strategy_adapters import ExecutionTier
 from app.orchestration.strategy_context_store import StrategyGoalContext, StrategyGoalContextStore
 from app.orchestration.strategy_contracts import (
@@ -43,7 +46,8 @@ from app.providers.fake import FakeProvider
 
 # Registered DISTRIBUTED adapters whose runtimes need infrastructure the generic
 # executor does not supply (transcripts, ledgers, repositories, an allocator
-# with no constructor args). They are denied at admission; see below.
+# with no constructor args). They run through the coordination pattern bridge
+# or are denied at admission; see below.
 _NEEDS_EXTRA_RUNTIME_DEPENDENCIES = frozenset(
     {"camel", "group_chat", "magentic", "mixture_of_agents", "market_auction"}
 )
@@ -175,7 +179,9 @@ class _AsyncSkillLibrary:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("strategy_id", sorted(SUPPORTED_DISTRIBUTED_STRATEGIES))
+@pytest.mark.parametrize(
+    "strategy_id", sorted(SUPPORTED_DISTRIBUTED_STRATEGIES - COORDINATION_PATTERN_STRATEGIES)
+)
 async def test_every_admitted_strategy_builds_and_runs_a_trivial_goal(strategy_id: str) -> None:
     _build_with_executor_contract(strategy_id)  # constructible with the executor kwargs
 
@@ -202,8 +208,51 @@ async def test_every_admitted_strategy_builds_and_runs_a_trivial_goal(strategy_i
 def test_registered_distributed_strategy_builds_or_is_never_admitted(strategy_id: str) -> None:
     admitted, _ = default_distributed_admission(_request(strategy_id))
     if strategy_id in _NEEDS_EXTRA_RUNTIME_DEPENDENCIES:
-        assert not admitted, f"{strategy_id} is admitted but cannot be constructed"
+        assert not admitted or strategy_id in COORDINATION_PATTERN_STRATEGIES, (
+            f"{strategy_id} is admitted but neither constructible nor bridged"
+        )
         with pytest.raises(TypeError):
             _build_with_executor_contract(strategy_id)
         return
     assert _build_with_executor_contract(strategy_id) is not None
+
+
+def test_bridged_strategies_match_the_coordination_pattern_table() -> None:
+    """The runner's coordination set and the pattern runtime's table must name the
+    same strategies, or a selected goal reaches a bridge that cannot run it."""
+    from app.coordination.pattern_runs.service import PATTERNS
+
+    assert set(PATTERNS) == set(COORDINATION_PATTERN_STRATEGIES)
+    assert COORDINATION_PATTERN_STRATEGIES <= SUPPORTED_DISTRIBUTED_STRATEGIES
+    assert "group_chat" not in SUPPORTED_DISTRIBUTED_STRATEGIES  # no goal driver exists
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy_id", sorted(COORDINATION_PATTERN_STRATEGIES))
+async def test_every_bridged_strategy_reaches_the_pattern_bridge(strategy_id: str) -> None:
+    from app.orchestration.strategy_runner import ExecutionMetrics, StrategyRunOutput
+
+    seen: list[str] = []
+
+    class _Bridge:
+        async def run(self, request: Any, context: Any, cancelled: Any) -> Any:
+            seen.append(request.strategy_id)
+            return StrategyRunOutput(
+                answer="bridged",
+                metrics=ExecutionMetrics(calls=1, tokens=1, cost_usd=0.0),
+                safe_rationale_summary="fake bridge",
+            )
+
+    context_store = StrategyGoalContextStore()
+    await context_store.put(
+        f"context-{strategy_id}",
+        StrategyGoalContext(goal_text="Say hello", provider=FakeProvider(responses=["x"])),
+    )
+    runner = StrategyRunner(
+        build_default_registry(),
+        executor=DistributedStrategyExecutor(context_store=context_store, pattern_bridge=_Bridge()),
+        admission=default_distributed_admission,
+    )
+    result = await runner.run(_request(strategy_id), _limits())
+    assert result.terminal_state is ExecutionTerminalState.SUCCEEDED, result
+    assert seen == [strategy_id]
