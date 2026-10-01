@@ -588,13 +588,16 @@ async def get_permissions(workflow_id: str, request: Request) -> Any:
 async def add_permission(workflow_id: str, body: PermissionRequest, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
-    perm = await svc.add_permission(
-        tenant_id=tenant.tenant_id,
-        workflow_id=workflow_id,
-        subject=body.subject,
-        role=body.role,
-        subject_type=body.subject_type,
-    )
+    try:
+        perm = await svc.add_permission(
+            tenant_id=tenant.tenant_id,
+            workflow_id=workflow_id,
+            subject=body.subject,
+            role=body.role,
+            subject_type=body.subject_type,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Workflow not found") from None
     record_workflow_action(
         request,
         "permission_granted",

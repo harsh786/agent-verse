@@ -374,17 +374,20 @@ async def test_get_workflow_id_with_and_without_tenant() -> None:
     store = PostgresWorkflowRunStore(db)
     assert await store.get_workflow_id("run-1", tenant_id="t1") == "wf-1"
 
+    sql, params = db.sessions[0].executed[1]
+    assert "tenant_id = CAST(:tid AS uuid)" in sql and params["tid"] == "t1"
+
+    # RUNS-TENANT: no tenant_id -> no unscoped lookup at all (fail closed).
     db2 = FakeDBFactory([[FakeResult(first=("wf-2",))]])
     store2 = PostgresWorkflowRunStore(db2)
-    assert await store2.get_workflow_id("run-1") == "wf-2"
-    # No tenant_id → no set_config call, only the SELECT itself.
-    assert len(db2.sessions[0].executed) == 1
+    assert await store2.get_workflow_id("run-1") == ""
+    assert db2.sessions == []
 
 
 async def test_get_workflow_id_missing_returns_empty_string() -> None:
-    db = FakeDBFactory([[FakeResult(first=None)]])
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=None)]])
     store = PostgresWorkflowRunStore(db)
-    assert await store.get_workflow_id("run-x") == ""
+    assert await store.get_workflow_id("run-x", tenant_id="t1") == ""
 
 
 async def test_get_status_found_and_missing() -> None:
@@ -441,13 +444,25 @@ async def test_get_definition_missing_raises_keyerror() -> None:
 
 
 async def test_record_step_start_returns_uuid_and_commits() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult()]])
+    db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=1)]])
     store = PostgresWorkflowRunStore(db)
     result_id = await store.record_step_start(
         run_id="run-1", tenant_id="t1", step_id="s1", step_type="tool", step_name="Do thing"
     )
     assert isinstance(result_id, str) and len(result_id) > 0
     assert db.sessions[0].committed
+
+
+async def test_record_step_start_raises_when_run_not_in_tenant() -> None:
+    """RUNS-TENANT: the insert selects from the caller's own run; none -> KeyError."""
+    db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=0)]])
+    store = PostgresWorkflowRunStore(db)
+    with pytest.raises(KeyError):
+        await store.record_step_start(
+            run_id="run-1", tenant_id="t1", step_id="s1", step_type="tool"
+        )
+    sql = db.sessions[0].executed[1][0]
+    assert "r.tenant_id = CAST(:tenant_id AS uuid)" in sql
 
 
 async def test_record_step_finish_updates_and_reports_rowcount() -> None:

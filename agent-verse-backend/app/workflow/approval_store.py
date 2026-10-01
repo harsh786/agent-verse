@@ -99,32 +99,43 @@ class PostgresWorkflowApprovalStore:
         payload = self._to_payload(req)
         async with self._db() as session:
             await self._set_tenant(session, req.tenant_id)
-            await session.execute(
-                sa_text(
-                    "INSERT INTO workflow_approvals "
-                    "(request_id, tenant_id, run_id, workflow_id, step_id, status, "
-                    " priority, assigned_to, payload, created_at, updated_at) "
-                    "VALUES (:request_id, CAST(:tenant_id AS uuid), :run_id, :workflow_id, "
-                    " :step_id, :status, :priority, :assigned_to, CAST(:payload AS jsonb), "
-                    " NOW(), NOW()) "
-                    "ON CONFLICT (request_id) DO UPDATE SET "
-                    " status = EXCLUDED.status, priority = EXCLUDED.priority, "
-                    " assigned_to = EXCLUDED.assigned_to, payload = EXCLUDED.payload, "
-                    " updated_at = NOW()"
-                ),
-                {
-                    "request_id": req.request_id,
-                    "tenant_id": req.tenant_id,
-                    "run_id": req.run_id,
-                    "workflow_id": req.workflow_id or None,
-                    "step_id": req.step_id,
-                    "status": req.status,
-                    "priority": req.priority,
-                    "assigned_to": req.assigned_to,
-                    "payload": json.dumps(payload),
-                },
-            )
+            # Explicit tenant guard on the upsert as well as RLS: on a BYPASSRLS
+            # connection a colliding request_id must never rewrite another
+            # tenant's approval. No row back = that collision -> refuse.
+            row = (
+                await session.execute(
+                    sa_text(
+                        "INSERT INTO workflow_approvals "
+                        "(request_id, tenant_id, run_id, workflow_id, step_id, status, "
+                        " priority, assigned_to, payload, created_at, updated_at) "
+                        "VALUES (:request_id, CAST(:tenant_id AS uuid), :run_id, :workflow_id, "
+                        " :step_id, :status, :priority, :assigned_to, CAST(:payload AS jsonb), "
+                        " NOW(), NOW()) "
+                        "ON CONFLICT (request_id) DO UPDATE SET "
+                        " status = EXCLUDED.status, priority = EXCLUDED.priority, "
+                        " assigned_to = EXCLUDED.assigned_to, payload = EXCLUDED.payload, "
+                        " updated_at = NOW() "
+                        "WHERE workflow_approvals.tenant_id = EXCLUDED.tenant_id "
+                        "RETURNING request_id"
+                    ),
+                    {
+                        "request_id": req.request_id,
+                        "tenant_id": req.tenant_id,
+                        "run_id": req.run_id,
+                        "workflow_id": req.workflow_id or None,
+                        "step_id": req.step_id,
+                        "status": req.status,
+                        "priority": req.priority,
+                        "assigned_to": req.assigned_to,
+                        "payload": json.dumps(payload),
+                    },
+                )
+            ).first()
             await session.commit()
+        if row is None:
+            raise PermissionError(
+                f"approval {req.request_id!r} belongs to another tenant; not overwritten"
+            )
 
     async def decide_if_pending(self, req: WorkflowHITLRequest) -> bool:
         """Record ``req``'s decision only if the approval is still pending.
@@ -144,9 +155,11 @@ class PostgresWorkflowApprovalStore:
                         "UPDATE workflow_approvals SET status = :status, "
                         " payload = CAST(:payload AS jsonb), updated_at = NOW() "
                         "WHERE request_id = :rid AND status = 'pending' "
+                        "AND tenant_id = CAST(:tid AS uuid) "
                         "RETURNING request_id"
                     ),
                     {
+                        "tid": req.tenant_id,
                         "status": req.status,
                         "payload": json.dumps(self._to_payload(req)),
                         "rid": req.request_id,
@@ -177,9 +190,9 @@ class PostgresWorkflowApprovalStore:
                 await session.execute(
                     sa_text(
                         "SELECT payload FROM workflow_approvals "
-                        "WHERE request_id = :rid"
+                        "WHERE request_id = :rid AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"rid": request_id},
+                    {"rid": request_id, "tid": tenant_id},
                 )
             ).first()
             if row is None:
@@ -196,8 +209,9 @@ class PostgresWorkflowApprovalStore:
     ) -> tuple[list[WorkflowHITLRequest], int]:
         from sqlalchemy import text as sa_text
 
-        clauses = ["status = 'pending'"]
-        params: dict[str, Any] = {}
+        # Explicit tenant predicate as well as RLS (BYPASSRLS connections).
+        clauses = ["tenant_id = CAST(:tid AS uuid)", "status = 'pending'"]
+        params: dict[str, Any] = {"tid": tenant_id}
         if assigned_to is not None:
             clauses.append("assigned_to = :assigned_to")
             params["assigned_to"] = assigned_to
@@ -254,8 +268,10 @@ class PostgresWorkflowApprovalStore:
             rows = (
                 await session.execute(
                     sa_text(
-                        "SELECT status, payload FROM workflow_approvals"
-                    )
+                        "SELECT status, payload FROM workflow_approvals "
+                        "WHERE tenant_id = CAST(:tid AS uuid)"
+                    ),
+                    {"tid": tenant_id},
                 )
             ).all()
 
@@ -315,9 +331,10 @@ class PostgresWorkflowApprovalStore:
                         "SELECT assigned_to, "
                         " COUNT(*) FILTER (WHERE status = 'pending'), MAX(created_at) "
                         "FROM workflow_approvals WHERE assigned_to = ANY(:users) "
+                        "AND tenant_id = CAST(:tid AS uuid) "
                         "GROUP BY assigned_to"
                     ),
-                    {"users": list(users)},
+                    {"users": list(users), "tid": tenant_id},
                 )
             ).all()
         return {str(r[0]): (int(r[1] or 0), r[2]) for r in rows}
@@ -333,9 +350,10 @@ class PostgresWorkflowApprovalStore:
             rows = (
                 await session.execute(
                     sa_text(
-                        "SELECT payload FROM workflow_approvals WHERE run_id = :run_id"
+                        "SELECT payload FROM workflow_approvals WHERE run_id = :run_id "
+                        "AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"run_id": run_id},
+                    {"run_id": run_id, "tid": tenant_id},
                 )
             ).all()
         return [self._from_payload(r[0]) for r in rows]

@@ -15,6 +15,8 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import pytest
+
 from app.workflow.approval_store import PostgresWorkflowApprovalStore
 from app.workflow.hitl_extension import WorkflowHITLRequest
 
@@ -86,7 +88,7 @@ def _req(**overrides: object) -> WorkflowHITLRequest:
 
 
 async def test_save_sets_tenant_inserts_and_commits() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult()]])
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=("rid",))]])
     store = PostgresWorkflowApprovalStore(db)
     req = _req()
     await store.save(req)
@@ -105,11 +107,21 @@ async def test_save_sets_tenant_inserts_and_commits() -> None:
 
 
 async def test_save_null_workflow_id_becomes_none() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult()]])
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=("rid",))]])
     store = PostgresWorkflowApprovalStore(db)
     await store.save(_req(workflow_id=""))
     _, params = db.sessions[0].executed[1]
     assert params["workflow_id"] is None
+
+
+async def test_save_refuses_to_overwrite_another_tenants_approval() -> None:
+    """RUNS-TENANT: the upsert is tenant-guarded; no row back -> PermissionError."""
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=None)]])
+    store = PostgresWorkflowApprovalStore(db)
+    with pytest.raises(PermissionError):
+        await store.save(_req())
+    sql, _ = db.sessions[0].executed[1]
+    assert "WHERE workflow_approvals.tenant_id = EXCLUDED.tenant_id" in sql
 
 
 # ── get ──────────────────────────────────────────────────────────────────────
@@ -188,7 +200,8 @@ async def test_list_pending_filters_by_assigned_to_and_priority() -> None:
     query_sql, params = db.sessions[0].executed[1]
     assert "assigned_to = :assigned_to" in query_sql
     assert "priority = :priority" in query_sql
-    assert params == {"assigned_to": "alice", "priority": "high"}
+    assert params == {"tid": "tenant-1", "assigned_to": "alice", "priority": "high"}
+    assert "tenant_id = CAST(:tid AS uuid)" in query_sql
 
 
 async def test_list_pending_paginates() -> None:

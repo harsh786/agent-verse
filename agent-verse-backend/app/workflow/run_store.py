@@ -26,6 +26,21 @@ from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
 
+# Tenant isolation: every tenant-scoped query in this module carries an explicit
+# ``tenant_id = CAST(:tid AS uuid)`` predicate IN ADDITION to the RLS GUC. RLS
+# alone does nothing on a SUPERUSER / BYPASSRLS connection (the local compose
+# stack ran as one, and ``GET /runs`` returned every tenant's runs).
+
+# Shared run read (get/list): step count and definition name are joined on the
+# run's own tenant, so a mismatched row can never leak a name or count.
+_RUN_SELECT_TAIL = (
+    " (SELECT COUNT(*) FROM workflow_step_results s "
+    "   WHERE s.run_id = r.id AND s.tenant_id = r.tenant_id) AS step_count "
+    "FROM workflow_runs r "
+    "LEFT JOIN workflow_definitions d "
+    " ON d.id = r.workflow_id AND d.tenant_id = r.tenant_id "
+)
+
 # Statuses that mean the run is finished — used to stamp ``completed_at``.
 _TERMINAL_STATUSES = {"complete", "failed", "cancelled", "timed_out"}
 
@@ -327,13 +342,10 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         "SELECT r.*, d.name AS workflow_name, "
-                        " (SELECT COUNT(*) FROM workflow_step_results s WHERE s.run_id = r.id) "
-                        "   AS step_count "
-                        "FROM workflow_runs r "
-                        "LEFT JOIN workflow_definitions d ON d.id = r.workflow_id "
-                        "WHERE r.id = CAST(:rid AS uuid)"
+                        f"{_RUN_SELECT_TAIL}"
+                        "WHERE r.id = CAST(:rid AS uuid) AND r.tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"rid": run_id},
+                    {"rid": run_id, "tid": tenant_id},
                 )
             ).mappings().first()
             return self._row_to_run(row) if row else None
@@ -349,8 +361,8 @@ class PostgresWorkflowRunStore:
     ) -> tuple[list[dict[str, Any]], int]:
         from sqlalchemy import text as sa_text
 
-        clauses = ["TRUE"]
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        clauses = ["r.tenant_id = CAST(:tid AS uuid)"]
+        params: dict[str, Any] = {"limit": limit, "offset": offset, "tid": tenant_id}
         if workflow_id:
             clauses.append("r.workflow_id = CAST(:workflow_id AS uuid)")
             params["workflow_id"] = workflow_id
@@ -370,10 +382,7 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         "SELECT r.*, d.name AS workflow_name, "
-                        " (SELECT COUNT(*) FROM workflow_step_results s WHERE s.run_id = r.id) "
-                        "   AS step_count "
-                        "FROM workflow_runs r "
-                        "LEFT JOIN workflow_definitions d ON d.id = r.workflow_id "
+                        f"{_RUN_SELECT_TAIL}"
                         f"WHERE {where} "
                         "ORDER BY r.created_at DESC LIMIT :limit OFFSET :offset"
                     ),
@@ -399,7 +408,7 @@ class PostgresWorkflowRunStore:
 
         status_str = _as_str(status)
         sets = ["status = :status"]
-        params: dict[str, Any] = {"status": status_str, "rid": run_id}
+        params: dict[str, Any] = {"status": status_str, "rid": run_id, "tid": tenant_id}
         # Stamp started_at the first time a run leaves 'pending'.
         if status_str == "running":
             sets.append("started_at = COALESCE(started_at, NOW())")
@@ -429,7 +438,7 @@ class PostgresWorkflowRunStore:
             result = await session.execute(
                 sa_text(
                     f"UPDATE workflow_runs SET {', '.join(sets)} "
-                    "WHERE id = CAST(:rid AS uuid)"
+                    "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 ),
                 params,
             )
@@ -439,15 +448,19 @@ class PostgresWorkflowRunStore:
     async def get_workflow_id(self, run_id: str, tenant_id: str | None = None) -> str:
         from sqlalchemy import text as sa_text
 
+        if not tenant_id:
+            # No tenant, no read: an unscoped lookup would resolve any tenant's
+            # run on a BYPASSRLS connection.
+            return ""
         async with self._db() as session:
-            if tenant_id is not None:
-                await self._set_tenant(session, tenant_id)
+            await self._set_tenant(session, tenant_id)
             row = (
                 await session.execute(
                     sa_text(
-                        "SELECT workflow_id FROM workflow_runs WHERE id = CAST(:rid AS uuid)"
+                        "SELECT workflow_id FROM workflow_runs "
+                        "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"rid": run_id},
+                    {"rid": run_id, "tid": tenant_id},
                 )
             ).first()
             return str(row[0]) if row and row[0] is not None else ""
@@ -461,8 +474,11 @@ class PostgresWorkflowRunStore:
             await self._set_tenant(session, tenant_id)
             row = (
                 await session.execute(
-                    sa_text("SELECT status FROM workflow_runs WHERE id = CAST(:rid AS uuid)"),
-                    {"rid": run_id},
+                    sa_text(
+                        "SELECT status FROM workflow_runs "
+                        "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
+                    ),
+                    {"rid": run_id, "tid": tenant_id},
                 )
             ).first()
             return str(row[0]) if row and row[0] is not None else None
@@ -484,9 +500,9 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         "SELECT definition_json FROM workflow_definitions "
-                        "WHERE id = CAST(:wid AS uuid)"
+                        "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"wid": workflow_id},
+                    {"wid": workflow_id, "tid": tenant_id},
                 )
             ).first()
             if not row or row[0] is None:
@@ -510,14 +526,19 @@ class PostgresWorkflowRunStore:
         result_id = str(uuid.uuid4())
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
-            await session.execute(
+            # INSERT ... SELECT from the tenant's own run: the run_id FK check
+            # ignores RLS, so a plain VALUES insert could attach a step row to
+            # another tenant's run.
+            result = await session.execute(
                 sa_text(
                     "INSERT INTO workflow_step_results "
                     "(id, run_id, tenant_id, step_id, step_type, step_name, status, "
                     " resolved_input, attempt_number, started_at) "
-                    "VALUES (:id, CAST(:run_id AS uuid), CAST(:tenant_id AS uuid), :step_id, "
+                    "SELECT :id, r.id, r.tenant_id, :step_id, "
                     " :step_type, :step_name, 'running', CAST(:resolved_input AS jsonb), "
-                    " :attempt_number, NOW())"
+                    " :attempt_number, NOW() "
+                    "FROM workflow_runs r "
+                    "WHERE r.id = CAST(:run_id AS uuid) AND r.tenant_id = CAST(:tenant_id AS uuid)"
                 ),
                 {
                     "id": result_id,
@@ -531,6 +552,8 @@ class PostgresWorkflowRunStore:
                 },
             )
             await session.commit()
+            if not result.rowcount:
+                raise KeyError(f"workflow run {run_id!r} not found for tenant")
             return result_id
 
     async def record_step_finish(
@@ -555,9 +578,10 @@ class PostgresWorkflowRunStore:
                     " status = :status, output = CAST(:output AS jsonb), error = :error, "
                     " cost_usd = COALESCE(:cost_usd, cost_usd), completed_at = NOW(), "
                     " duration_ms = CAST(EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000 AS int) "
-                    "WHERE id = ("
+                    "WHERE tenant_id = CAST(:tid AS uuid) AND id = ("
                     "  SELECT id FROM workflow_step_results "
                     "  WHERE run_id = CAST(:run_id AS uuid) AND step_id = :step_id "
+                    "  AND tenant_id = CAST(:tid AS uuid) "
                     "  ORDER BY attempt_number DESC, started_at DESC LIMIT 1)"
                 ),
                 {
@@ -567,6 +591,7 @@ class PostgresWorkflowRunStore:
                     "cost_usd": cost_usd,
                     "run_id": run_id,
                     "step_id": step_id,
+                    "tid": tenant_id,
                 },
             )
             await session.commit()
@@ -581,10 +606,10 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         "SELECT * FROM workflow_step_results "
-                        "WHERE run_id = CAST(:rid AS uuid) "
+                        "WHERE run_id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid) "
                         "ORDER BY started_at ASC NULLS LAST, step_id ASC"
                     ),
-                    {"rid": run_id},
+                    {"rid": run_id, "tid": tenant_id},
                 )
             ).mappings().all()
             return [self._row_to_step(r) for r in rows]
@@ -605,9 +630,10 @@ class PostgresWorkflowRunStore:
                     sa_text(
                         "SELECT * FROM workflow_step_results "
                         "WHERE run_id = CAST(:rid AS uuid) AND step_id = :step_id "
+                        "AND tenant_id = CAST(:tid AS uuid) "
                         "ORDER BY attempt_number DESC, started_at DESC LIMIT 1"
                     ),
-                    {"rid": run_id, "step_id": step_id},
+                    {"rid": run_id, "step_id": step_id, "tid": tenant_id},
                 )
             ).mappings().first()
             return self._row_to_step(row) if row else None
@@ -638,11 +664,14 @@ class PostgresWorkflowRunStore:
                     " s.started_at, s.completed_at, s.duration_ms "
                     "FROM ("
                     "  SELECT DISTINCT ON (step_id) * FROM workflow_step_results "
-                    "  WHERE run_id = CAST(:from_run AS uuid) "
+                    "  WHERE run_id = CAST(:from_run AS uuid) AND tenant_id = CAST(:tid AS uuid) "
                     "  ORDER BY step_id, attempt_number DESC, started_at DESC"
-                    ") s WHERE s.status = 'complete' AND s.output IS NOT NULL"
+                    ") s WHERE s.status = 'complete' AND s.output IS NOT NULL "
+                    # The target run must be the same tenant's too.
+                    "AND EXISTS (SELECT 1 FROM workflow_runs t "
+                    "  WHERE t.id = CAST(:to_run AS uuid) AND t.tenant_id = CAST(:tid AS uuid))"
                 ),
-                {"from_run": from_run_id, "to_run": to_run_id},
+                {"from_run": from_run_id, "to_run": to_run_id, "tid": tenant_id},
             )
             await session.commit()
             return int(result.rowcount or 0)
@@ -658,9 +687,10 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         "SELECT run_metadata -> 'timer_waits' ->> :step_id "
-                        "FROM workflow_runs WHERE id = CAST(:rid AS uuid)"
+                        "FROM workflow_runs "
+                        "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"rid": run_id, "step_id": step_id},
+                    {"rid": run_id, "step_id": step_id, "tid": tenant_id},
                 )
             ).first()
             return str(row[0]) if row and row[0] else None
@@ -683,9 +713,15 @@ class PostgresWorkflowRunStore:
                     "     COALESCE(run_metadata -> 'timer_waits', '{}'::jsonb) || "
                     "     jsonb_build_object(CAST(:step_id AS text), CAST(:iso AS text))), "
                     " wake_at = LEAST(COALESCE(wake_at, :ts), :ts) "
-                    "WHERE id = CAST(:rid AS uuid)"
+                    "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 ),
-                {"rid": run_id, "step_id": step_id, "iso": wake_at.isoformat(), "ts": wake_at},
+                {
+                    "rid": run_id,
+                    "step_id": step_id,
+                    "iso": wake_at.isoformat(),
+                    "ts": wake_at,
+                    "tid": tenant_id,
+                },
             )
             await session.commit()
 
@@ -780,9 +816,9 @@ class PostgresWorkflowRunStore:
                 sa_text(
                     "UPDATE workflow_runs SET run_metadata = COALESCE(run_metadata, '{}'::jsonb)"
                     " || jsonb_build_object('stuck_redispatched_at', NOW()) "
-                    "WHERE id = CAST(:rid AS uuid)"
+                    "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 ),
-                {"rid": run_id},
+                {"rid": run_id, "tid": tenant_id},
             )
             await session.commit()
 
@@ -796,9 +832,10 @@ class PostgresWorkflowRunStore:
             await session.execute(
                 sa_text(
                     "UPDATE workflow_runs SET status = 'waiting_timer', wake_at = NOW() "
-                    "WHERE id = CAST(:rid AS uuid) AND status = 'pending'"
+                    "WHERE id = CAST(:rid AS uuid) AND status = 'pending' "
+                    "AND tenant_id = CAST(:tid AS uuid)"
                 ),
-                {"rid": run_id},
+                {"rid": run_id, "tid": tenant_id},
             )
             await session.commit()
 
@@ -824,10 +861,11 @@ class PostgresWorkflowRunStore:
                     "   'timer_waits', COALESCE(run_metadata -> 'timer_waits', '{}'::jsonb) "
                     "     || jsonb_build_object(CAST(:step_id AS text), CAST(:iso AS text))), "
                     " wake_at = LEAST(COALESCE(wake_at, :ts), :ts) "
-                    "WHERE id = CAST(:rid AS uuid)"
+                    "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 ),
                 {
                     "rid": run_id,
+                    "tid": tenant_id,
                     "step_id": step_id,
                     "ch": channel,
                     "iso": deadline.isoformat(),
@@ -847,9 +885,10 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         "SELECT run_metadata -> 'event_deliveries' -> :step_id "
-                        "FROM workflow_runs WHERE id = CAST(:rid AS uuid)"
+                        "FROM workflow_runs "
+                        "WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"rid": run_id, "step_id": step_id},
+                    {"rid": run_id, "step_id": step_id, "tid": tenant_id},
                 )
             ).first()
         if not row or row[0] is None:
@@ -868,9 +907,9 @@ class PostgresWorkflowRunStore:
                     " COALESCE(run_metadata, '{}'::jsonb), '{event_waits}', "
                     " COALESCE(run_metadata -> 'event_waits', '{}'::jsonb) "
                     "   - CAST(:step_id AS text))"
-                    " WHERE id = CAST(:rid AS uuid)"
+                    " WHERE id = CAST(:rid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 ),
-                {"rid": run_id, "step_id": step_id},
+                {"rid": run_id, "step_id": step_id, "tid": tenant_id},
             )
             await session.commit()
 
@@ -1126,9 +1165,10 @@ class PostgresWorkflowRunStore:
                         "SELECT COALESCE(requires_publish_approval, FALSE) AS required, "
                         "trigger_config->'publish_submission' AS submission, "
                         "publish_approved_by, publish_approved_at, publish_approval_note "
-                        "FROM workflow_definitions WHERE id = CAST(:wid AS uuid)"
+                        "FROM workflow_definitions "
+                        "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"wid": workflow_id},
+                    {"wid": workflow_id, "tid": tenant_id},
                 )
             ).mappings().first()
         if row is None:
@@ -1154,9 +1194,10 @@ class PostgresWorkflowRunStore:
             result = await session.execute(
                 sa_text(
                     "UPDATE workflow_definitions SET requires_publish_approval = :req, "
-                    "updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                    "updated_at = NOW() "
+                    "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 ),
-                {"wid": workflow_id, "req": bool(required)},
+                {"wid": workflow_id, "req": bool(required), "tid": tenant_id},
             )
             await session.commit()
             return int(result.rowcount or 0) > 0
@@ -1172,16 +1213,18 @@ class PostgresWorkflowRunStore:
                 stmt = (
                     "UPDATE workflow_definitions SET trigger_config = "
                     "COALESCE(trigger_config, '{}'::jsonb) - 'publish_submission', "
-                    "updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                    "updated_at = NOW() "
+                    "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 )
-                params: dict[str, Any] = {"wid": workflow_id}
+                params: dict[str, Any] = {"wid": workflow_id, "tid": tenant_id}
             else:
                 stmt = (
                     "UPDATE workflow_definitions SET trigger_config = jsonb_set("
                     "COALESCE(trigger_config, '{}'::jsonb), '{publish_submission}', "
-                    "CAST(:sub AS jsonb)), updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                    "CAST(:sub AS jsonb)), updated_at = NOW() "
+                    "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 )
-                params = {"wid": workflow_id, "sub": json.dumps(submission)}
+                params = {"wid": workflow_id, "sub": json.dumps(submission), "tid": tenant_id}
             result = await session.execute(sa_text(stmt), params)
             await session.commit()
             return int(result.rowcount or 0) > 0
@@ -1200,9 +1243,15 @@ class PostgresWorkflowRunStore:
                     "publish_approved_by = CAST(:by AS uuid), publish_approved_at = NOW(), "
                     "publish_approval_note = :note, trigger_config = "
                     "COALESCE(trigger_config, '{}'::jsonb) - 'publish_submission', "
-                    "updated_at = NOW() WHERE id = CAST(:wid AS uuid)"
+                    "updated_at = NOW() "
+                    "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                 ),
-                {"wid": workflow_id, "by": _uuid_or_none(approved_by), "note": note or ""},
+                {
+                    "wid": workflow_id,
+                    "by": _uuid_or_none(approved_by),
+                    "note": note or "",
+                    "tid": tenant_id,
+                },
             )
             await session.commit()
             return int(result.rowcount or 0) > 0
@@ -1218,9 +1267,10 @@ class PostgresWorkflowRunStore:
                     sa_text(
                         "SELECT id, subject_type, subject_id, permission, granted_by, granted_at "
                         "FROM workflow_permissions "
-                        "WHERE workflow_id = CAST(:wid AS uuid) ORDER BY granted_at DESC"
+                        "WHERE workflow_id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid) "
+                        "ORDER BY granted_at DESC"
                     ),
-                    {"wid": workflow_id},
+                    {"wid": workflow_id, "tid": tenant_id},
                 )
             ).mappings().all()
             return [
@@ -1251,11 +1301,17 @@ class PostgresWorkflowRunStore:
             row = (
                 await session.execute(
                     sa_text(
+                        # INSERT ... SELECT from the tenant's own definition (the
+                        # workflow_id FK ignores RLS) and never update another
+                        # tenant's grant on conflict.
                         "INSERT INTO workflow_permissions "
                         "  (workflow_id, tenant_id, subject_type, subject_id, permission) "
-                        "VALUES (CAST(:wid AS uuid), CAST(:tid AS uuid), :st, :sid, :perm) "
+                        "SELECT d.id, d.tenant_id, :st, :sid, :perm "
+                        "FROM workflow_definitions d "
+                        "WHERE d.id = CAST(:wid AS uuid) AND d.tenant_id = CAST(:tid AS uuid) "
                         "ON CONFLICT (workflow_id, subject_type, subject_id, permission) "
                         "  DO UPDATE SET granted_at = NOW() "
+                        "  WHERE workflow_permissions.tenant_id = EXCLUDED.tenant_id "
                         "RETURNING id, subject_type, subject_id, permission, granted_at"
                     ),
                     {
@@ -1267,6 +1323,8 @@ class PostgresWorkflowRunStore:
                     },
                 )
             ).mappings().first()
+            if row is None:
+                raise KeyError(f"workflow definition {workflow_id!r} not found")
             return {
                 "id": str(row["id"]),
                 "subject_type": row["subject_type"],
@@ -1285,9 +1343,10 @@ class PostgresWorkflowRunStore:
             result = await session.execute(
                 sa_text(
                     "DELETE FROM workflow_permissions "
-                    "WHERE id = CAST(:pid AS uuid) AND workflow_id = CAST(:wid AS uuid)"
+                    "WHERE id = CAST(:pid AS uuid) AND workflow_id = CAST(:wid AS uuid) "
+                    "AND tenant_id = CAST(:tid AS uuid)"
                 ),
-                {"pid": permission_id, "wid": workflow_id},
+                {"pid": permission_id, "wid": workflow_id, "tid": tenant_id},
             )
             return int(result.rowcount or 0) > 0
 
@@ -1323,9 +1382,10 @@ class PostgresWorkflowRunStore:
                     sa_text(
                         self._STATS_SELECT
                         + "WHERE workflow_id = CAST(:wid AS uuid) "
+                        + "AND tenant_id = CAST(:tid AS uuid) "
                         + "AND created_at >= NOW() - make_interval(days => :days)"
                     ),
-                    {"wid": workflow_id, "days": int(days)},
+                    {"wid": workflow_id, "days": int(days), "tid": tenant_id},
                 )
             ).mappings().first()
             return self._stats_row(row)
@@ -1339,9 +1399,10 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         self._STATS_SELECT
-                        + "WHERE created_at >= NOW() - make_interval(days => :days)"
+                        + "WHERE tenant_id = CAST(:tid AS uuid) "
+                        + "AND created_at >= NOW() - make_interval(days => :days)"
                     ),
-                    {"days": int(days)},
+                    {"days": int(days), "tid": tenant_id},
                 )
             ).mappings().first()
             return self._stats_row(row)
@@ -1357,9 +1418,10 @@ class PostgresWorkflowRunStore:
                 await session.execute(
                     sa_text(
                         "SELECT COALESCE((trigger_config->>'webhook_token_version')::int, 0) "
-                        "FROM workflow_definitions WHERE id = CAST(:wid AS uuid)"
+                        "FROM workflow_definitions "
+                        "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"wid": workflow_id},
+                    {"wid": workflow_id, "tid": tenant_id},
                 )
             ).first()
             return int(row[0]) if row else 0
@@ -1377,10 +1439,10 @@ class PostgresWorkflowRunStore:
                         " COALESCE(trigger_config, '{}'::jsonb), '{webhook_token_version}', "
                         " to_jsonb(COALESCE((trigger_config->>'webhook_token_version')::int, 0)"
                         " + 1)), updated_at = NOW() "
-                        "WHERE id = CAST(:wid AS uuid) "
+                        "WHERE id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid) "
                         "RETURNING (trigger_config->>'webhook_token_version')::int"
                     ),
-                    {"wid": workflow_id},
+                    {"wid": workflow_id, "tid": tenant_id},
                 )
             ).first()
             await session.commit()
@@ -1459,9 +1521,11 @@ class PostgresWorkflowRunStore:
                         " last_error = CASE WHEN :ok THEN last_error ELSE :error END, "
                         " completed_at = CASE WHEN :ok THEN NOW() ELSE completed_at END "
                         "WHERE id = CAST(:eid AS uuid) AND status IN ('pending', 'failed') "
+                        "AND tenant_id = CAST(:tid AS uuid) "
                         "RETURNING status"
                     ),
                     {
+                        "tid": tenant_id,
                         "ok": run_id is not None,
                         "run_id": run_id,
                         "error": (error or "")[:2000],
@@ -1480,14 +1544,14 @@ class PostgresWorkflowRunStore:
 
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
-            params = {"wid": workflow_id, "limit": limit, "offset": offset}
+            params = {"wid": workflow_id, "limit": limit, "offset": offset, "tid": tenant_id}
             total = (
                 await session.execute(
                     sa_text(
                         "SELECT COUNT(*) FROM workflow_webhook_events "
-                        "WHERE workflow_id = CAST(:wid AS uuid)"
+                        "WHERE workflow_id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
                     ),
-                    {"wid": workflow_id},
+                    {"wid": workflow_id, "tid": tenant_id},
                 )
             ).scalar_one()
             rows = (
@@ -1496,7 +1560,7 @@ class PostgresWorkflowRunStore:
                         "SELECT id, webhook_token, status, attempts, last_error, run_id, "
                         " received_at, last_attempted_at, completed_at "
                         "FROM workflow_webhook_events "
-                        "WHERE workflow_id = CAST(:wid AS uuid) "
+                        "WHERE workflow_id = CAST(:wid AS uuid) AND tenant_id = CAST(:tid AS uuid) "
                         "ORDER BY received_at DESC LIMIT :limit OFFSET :offset"
                     ),
                     params,

@@ -365,7 +365,9 @@ class _WorkflowStore:
                 "ON CONFLICT (id) DO UPDATE SET "
                 " name = EXCLUDED.name, description = EXCLUDED.description, "
                 " definition_json = EXCLUDED.definition_json, status = EXCLUDED.status, "
-                " updated_at = NOW()"
+                " updated_at = NOW() "
+                # Never rewrite another tenant's definition (BYPASSRLS connections).
+                "WHERE workflow_definitions.tenant_id = EXCLUDED.tenant_id"
             ),
             {
                 "id": workflow_id,
@@ -397,9 +399,10 @@ class _WorkflowStore:
         await session.execute(
             sa_text(
                 "DELETE FROM workflow_definitions d WHERE d.id = CAST(:id AS uuid) "
+                "AND d.tenant_id = CAST(:tid AS uuid) "
                 "AND NOT EXISTS (SELECT 1 FROM workflow_runs r WHERE r.workflow_id = d.id)"
             ),
-            {"id": workflow_id},
+            {"id": workflow_id, "tid": str(tenant_id)},
         )
 
     async def _update_db(
