@@ -115,22 +115,7 @@ def test_kg_export():
 
 
 def test_skill_update_increments_version():
-    from app.api.skills_runtime import _tenant_skills
+    from app.skills_runtime.tenant_store import bump_patch
 
-    # Pre-populate a skill
-    skill_id = "test-version-skill"
-    _tenant_skills.setdefault("version-test-tenant", []).append({
-        "skill_id": skill_id,
-        "name": "Test Skill",
-        "version": "1.0.0",
-        "description": "Original",
-    })
-
-    # Simulate update logic
-    skill = next(s for s in _tenant_skills["version-test-tenant"] if s["skill_id"] == skill_id)
-    old_version = skill["version"]
-    parts = old_version.split(".")
-    parts[-1] = str(int(parts[-1]) + 1)
-    skill["version"] = ".".join(parts)
-
-    assert skill["version"] == "1.0.1"
+    assert bump_patch("1.0.0") == "1.0.1"
+    assert bump_patch("2.3.9") == "2.3.10"

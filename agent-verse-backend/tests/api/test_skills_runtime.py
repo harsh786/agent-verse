@@ -399,9 +399,8 @@ def test_create_tenant_skill_persists_via_db_factory() -> None:
     assert uuid.UUID(body["skill_id"])
 
 
-def test_create_tenant_skill_db_failure_is_swallowed() -> None:
-    """_db_save_skill fails silently (logs a warning) — the API call still succeeds
-    because the in-memory store is the source of truth."""
+def test_create_tenant_skill_db_failure_is_503_not_created() -> None:
+    """OPS-34: a write that did not commit is never reported as created."""
     tenant_id = _uniq("tenant")
     db_factory = MagicMock(side_effect=RuntimeError("db unavailable"))
 
@@ -415,8 +414,7 @@ def test_create_tenant_skill_db_failure_is_swallowed() -> None:
         json={"name": "Resilient Skill", "description": "d"},
     )
 
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "created"
+    assert resp.status_code == 503
 
 
 # ── enable/disable skill ────────────────────────────────────────────────────
@@ -708,143 +706,10 @@ def test_match_trigger_no_matches() -> None:
     assert resp.json()["matches"] == []
 
 
-# ── DB persistence helpers — direct unit tests ──────────────────────────────
+# ── Tenant skill store (Postgres source of truth, OPS-34) — direct unit tests ──
 
 
-async def test_db_save_skill_noop_without_factory() -> None:
-    from app.api.skills_runtime import _db_save_skill
-
-    # Should return without raising when db_factory is None.
-    await _db_save_skill({"skill_id": "x", "name": "n", "description": "d"}, None)
-
-
-async def test_db_save_skill_executes_insert() -> None:
-    from app.api.skills_runtime import _db_save_skill
-
-    session = AsyncMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=False)
-    session.begin = MagicMock()
-    session.begin.return_value.__aenter__ = AsyncMock(return_value=None)
-    session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
-    session.execute = AsyncMock()
-    db_factory = MagicMock(return_value=session)
-
-    skill_dict = {
-        "skill_id": str(uuid.uuid4()),
-        "tenant_id": "tenant-x",
-        "name": "Persisted",
-        "description": "d",
-        "trigger_hints": ["a"],
-        "instructions": "do it",
-        "allowed_tools": ["tool"],
-        "version": "1.0.0",
-        "created_at": "2024-01-01T00:00:00Z",
-    }
-
-    await _db_save_skill(skill_dict, db_factory)
-
-    # session.execute is called for the tenant RLS context (set_config) and for
-    # the actual INSERT — assert the INSERT happened by checking for the call
-    # carrying the bound INSERT params.
-    assert session.execute.await_count >= 1
-    insert_calls = [
-        call
-        for call in session.execute.await_args_list
-        if len(call.args) > 1 and isinstance(call.args[1], dict) and "id" in call.args[1]
-    ]
-    assert len(insert_calls) == 1
-    assert insert_calls[0].args[1]["name"] == "Persisted"
-    assert insert_calls[0].args[1]["tenant_id"] == "tenant-x"
-    # asyncpg binds timestamptz only from a datetime, never the cached ISO string.
-    import datetime as _dt
-
-    assert isinstance(insert_calls[0].args[1]["created_at"], _dt.datetime)
-
-
-async def test_db_save_skill_runs_under_tenant_rls_not_system_session() -> None:
-    """Request path: the write must set the owning tenant's GUC and must NEVER
-    switch RLS off (``system_session``) — under the NOBYPASSRLS role that made
-    every insert fail, and under a BYPASSRLS role it is a privilege escalation."""
-    from app.api.skills_runtime import _db_save_skill
-
-    session = AsyncMock()
-    session.__aenter__ = AsyncMock(return_value=session)
-    session.__aexit__ = AsyncMock(return_value=False)
-    session.begin = MagicMock()
-    session.begin.return_value.__aenter__ = AsyncMock(return_value=None)
-    session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
-    session.execute = AsyncMock()
-    db_factory = MagicMock(return_value=session)
-
-    await _db_save_skill(
-        {
-            "skill_id": str(uuid.uuid4()),
-            "tenant_id": "tenant-rls",
-            "name": "n",
-            "description": "d",
-            "created_at": "2024-01-01T00:00:00Z",
-        },
-        db_factory,
-    )
-
-    stmts = [str(c.args[0]) for c in session.execute.await_args_list]
-    assert not any("row_security" in st for st in stmts), stmts
-    guc = [c for c in session.execute.await_args_list if "set_config('app.tenant_id'" in str(c.args[0])]
-    assert guc and guc[0].args[1] == {"tid": "tenant-rls"}
-    # GUC is set BEFORE the insert.
-    first_insert = next(i for i, st in enumerate(stmts) if "INSERT INTO skills" in st)
-    first_guc = next(i for i, st in enumerate(stmts) if "set_config('app.tenant_id'" in st)
-    assert first_guc < first_insert
-    # Defense in depth: the upsert can never rewrite another tenant's row.
-    assert "WHERE skills.tenant_id = EXCLUDED.tenant_id" in stmts[first_insert]
-
-
-async def test_db_save_skill_without_tenant_is_skipped() -> None:
-    from app.api.skills_runtime import _db_save_skill
-
-    db_factory = MagicMock()
-    await _db_save_skill({"skill_id": "x", "name": "n", "description": "d"}, db_factory)
-    db_factory.assert_not_called()
-
-
-async def test_db_save_skill_swallows_exception() -> None:
-    from app.api.skills_runtime import _db_save_skill
-
-    db_factory = MagicMock(side_effect=RuntimeError("connection refused"))
-
-    # Must not raise — errors are logged and swallowed (in-memory store is
-    # the source of truth).
-    await _db_save_skill({"skill_id": "x", "name": "n", "description": "d"}, db_factory)
-
-
-async def test_load_tenant_skills_from_db_noop_without_factory() -> None:
-    from app.api.skills_runtime import _load_tenant_skills_from_db
-
-    # Should return immediately without raising.
-    await _load_tenant_skills_from_db("some-tenant-not-loaded", None)
-
-
-async def test_load_tenant_skills_from_db_populates_cache() -> None:
-    from app.api.skills_runtime import _loaded_tenants, _load_tenant_skills_from_db, _tenant_skills
-
-    tenant_id = _uniq("db-load-tenant")
-    row_id = uuid.uuid4().hex  # 32-char hex, matching the String(32) DB schema
-
-    row = MagicMock()
-    row.id = row_id
-    row.tenant_id = tenant_id
-    row.name = "Loaded From DB"
-    row.description = "desc"
-    row.trigger_hints = ["hint"]
-    row.instructions = "do it"
-    row.allowed_tools = ["tool"]
-    row.created_at = None
-    row.version = "1.0.0"
-
-    result = MagicMock()
-    result.fetchall.return_value = [row]
-
+def _fake_session(result: Any = None) -> tuple[Any, Any]:
     session = AsyncMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
@@ -852,34 +717,105 @@ async def test_load_tenant_skills_from_db_populates_cache() -> None:
     session.begin.return_value.__aenter__ = AsyncMock(return_value=None)
     session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
     session.execute = AsyncMock(return_value=result)
-    db_factory = MagicMock(return_value=session)
-
-    assert tenant_id not in _loaded_tenants
-    await _load_tenant_skills_from_db(tenant_id, db_factory)
-
-    assert tenant_id in _loaded_tenants
-    # The SELECT runs under this tenant's RLS GUC.
-    guc = [
-        c for c in session.execute.await_args_list
-        if "set_config('app.tenant_id'" in str(c.args[0])
-    ]
-    assert guc and guc[0].args[1] == {"tid": tenant_id}
-    loaded = _tenant_skills.get(tenant_id, [])
-    assert any(s["name"] == "Loaded From DB" for s in loaded)
-
-    # Idempotent: calling again must not duplicate or re-query.
-    session.execute.reset_mock()
-    await _load_tenant_skills_from_db(tenant_id, db_factory)
-    session.execute.assert_not_called()
+    return session, MagicMock(return_value=session)
 
 
-async def test_load_tenant_skills_from_db_swallows_exception_and_marks_loaded() -> None:
-    from app.api.skills_runtime import _loaded_tenants, _load_tenant_skills_from_db
+async def test_store_create_runs_insert_under_tenant_rls_not_system_session() -> None:
+    """Request path: the write sets the owning tenant's GUC first and never
+    switches RLS off; created_at is bound as a datetime (asyncpg)."""
+    import datetime as _dt
 
-    tenant_id = _uniq("db-load-fail-tenant")
-    db_factory = MagicMock(side_effect=RuntimeError("db down"))
+    from app.skills_runtime.tenant_store import create_tenant_skill
 
-    await _load_tenant_skills_from_db(tenant_id, db_factory)
+    session, db_factory = _fake_session()
+    await create_tenant_skill(
+        db_factory,
+        {
+            "skill_id": str(uuid.uuid4()),
+            "tenant_id": "tenant-rls",
+            "name": "n",
+            "description": "d",
+            "created_at": "2024-01-01T00:00:00Z",
+        },
+    )
+    stmts = [str(c.args[0]) for c in session.execute.await_args_list]
+    assert not any("row_security" in st for st in stmts), stmts
+    first_insert = next(i for i, st in enumerate(stmts) if "INSERT INTO skills" in st)
+    first_guc = next(i for i, st in enumerate(stmts) if "set_config('app.tenant_id'" in st)
+    assert first_guc < first_insert
+    params = session.execute.await_args_list[first_insert].args[1]
+    assert params["tenant_id"] == "tenant-rls"
+    assert isinstance(params["created_at"], _dt.datetime)
 
-    # Marked as loaded even on failure, so we don't retry every request.
-    assert tenant_id in _loaded_tenants
+
+async def test_store_write_failure_raises_instead_of_being_swallowed() -> None:
+    from app.skills_runtime.tenant_store import SkillStoreUnavailableError, create_tenant_skill
+
+    with pytest.raises(SkillStoreUnavailableError):
+        await create_tenant_skill(
+            MagicMock(side_effect=RuntimeError("connection refused")),
+            {"skill_id": str(uuid.uuid4()), "tenant_id": "t", "name": "n", "description": "d"},
+        )
+
+
+async def test_store_list_reads_db_on_every_call_with_tenant_predicate() -> None:
+    """No once-per-process hydration: each call queries Postgres again, so a
+    skill another replica created after this one listed is seen."""
+    from app.skills_runtime.tenant_store import list_tenant_skills
+
+    tenant_id = _uniq("db-list")
+    row = MagicMock()
+    row.id = uuid.uuid4().hex
+    row.tenant_id = tenant_id
+    row.name = "Loaded From DB"
+    row.description = "desc"
+    row.trigger_hints = ["hint"]
+    row.instructions = "do it"
+    row.allowed_tools = ["tool"]
+    row.created_at = None
+    row.updated_at = None
+    row.version = "1.0.0"
+    result = MagicMock()
+    result.fetchall.return_value = [row]
+    session, db_factory = _fake_session(result)
+
+    first = await list_tenant_skills(db_factory, tenant_id)
+    second = await list_tenant_skills(db_factory, tenant_id)
+    assert [s["name"] for s in first] == ["Loaded From DB"] == [s["name"] for s in second]
+    assert str(uuid.UUID(first[0]["skill_id"])) == first[0]["skill_id"]
+    selects = [c for c in session.execute.await_args_list if "FROM skills" in str(c.args[0])]
+    assert len(selects) == 2
+    assert "tenant_id = :tid" in str(selects[0].args[0])
+    assert "LIMIT" in str(selects[0].args[0])
+
+
+async def test_store_read_failure_raises() -> None:
+    from app.skills_runtime.tenant_store import SkillStoreUnavailableError, list_tenant_skills
+
+    with pytest.raises(SkillStoreUnavailableError):
+        await list_tenant_skills(MagicMock(side_effect=RuntimeError("db down")), "t")
+
+
+def test_list_is_503_when_the_skill_store_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.api.skills_runtime as sr
+
+    async def _no_disabled(*_a: Any, **_k: Any) -> set[str]:
+        return set()
+
+    # The disabled-state read succeeds, so the failure is the skill store's.
+    monkeypatch.setattr(sr, "disabled_skills", _no_disabled)
+    app = _make_app(tenant_id=_uniq("tenant"))
+    app.state.db_session_factory = MagicMock(side_effect=RuntimeError("db down"))
+    resp = TestClient(app).get("/skills-runtime", headers=H)
+    assert resp.status_code == 503
+
+
+def test_update_is_503_when_the_db_write_fails() -> None:
+    app = _make_app(tenant_id=_uniq("tenant"))
+    app.state.db_session_factory = MagicMock(side_effect=RuntimeError("db down"))
+    resp = TestClient(app).put(
+        f"/skills-runtime/{uuid.uuid4()}", headers=H, json={"name": "x"}
+    )
+    assert resp.status_code == 503
