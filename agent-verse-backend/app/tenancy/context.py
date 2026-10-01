@@ -72,3 +72,88 @@ class TenantContext:
     # (the roles' scopes apply). Non-empty = the key may use ONLY these scopes, on
     # top of its roles' scopes (TenantMiddleware enforces the intersection).
     scopes: tuple[str, ...] = field(default_factory=tuple)
+    # Set when the request authenticated with an agent-scoped API key
+    # (``av_agent_*``): the key's agent binding and tool/connector restrictions.
+    # It travels with the goal (goals.execution_context) so the worker's tool
+    # gate enforces the same restrictions.
+    agent_key: AgentKeyRestriction | None = None
+
+
+def _matches(names: tuple[str, ...], patterns: tuple[str, ...]) -> bool:
+    import fnmatch
+
+    return any(fnmatch.fnmatchcase(n, p) for n in names for p in patterns)
+
+
+def _opt_tuple(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, list | tuple):
+        return tuple(str(v) for v in value)
+    return ()
+
+
+@dataclass(frozen=True, slots=True)
+class AgentKeyRestriction:
+    """What an agent-scoped API key may do: one agent, a bounded tool set.
+
+    ``allowed_tools`` / ``allowed_connectors`` of ``None`` mean "no restriction";
+    an empty tuple allows nothing. ``denied_tools`` always wins. Patterns are
+    fnmatch globs matched against every governance name of a tool (bare,
+    connection-qualified and ``<connector id>/<tool>``).
+    """
+
+    key_id: str
+    agent_id: str
+    allowed_tools: tuple[str, ...] | None = None
+    denied_tools: tuple[str, ...] = ()
+    allowed_connectors: tuple[str, ...] | None = None
+    # Fail-closed marker: the goal submitter's restriction could not be read,
+    # so no tool may run.
+    deny_all: bool = False
+
+    def tool_denial(self, tool_name: str) -> str | None:
+        """None when the key may call *tool_name*, else the reason it may not."""
+        from app.mcp.tool_naming import governance_names
+
+        if self.deny_all:
+            return "the agent key restriction for this goal could not be verified"
+        names = governance_names(tool_name)
+        if _matches(names, self.denied_tools):
+            return f"tool '{tool_name}' is denied to agent key {self.key_id}"
+        if self.allowed_tools is not None and not _matches(names, self.allowed_tools):
+            return f"tool '{tool_name}' is not in agent key {self.key_id}'s allowed tools"
+        if self.allowed_connectors is not None:
+            connectors = {n.split("/", 1)[0] for n in names if "/" in n}
+            if not connectors & set(self.allowed_connectors):
+                return (
+                    f"tool '{tool_name}' is not served by a connector agent key "
+                    f"{self.key_id} may use"
+                )
+        return None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "key_id": self.key_id,
+            "agent_id": self.agent_id,
+            "allowed_tools": None if self.allowed_tools is None else list(self.allowed_tools),
+            "denied_tools": list(self.denied_tools),
+            "allowed_connectors": (
+                None if self.allowed_connectors is None else list(self.allowed_connectors)
+            ),
+            "deny_all": self.deny_all,
+        }
+
+    @classmethod
+    def from_dict(cls, data: object) -> AgentKeyRestriction:
+        """Rebuild from :meth:`to_dict`; anything malformed denies every tool."""
+        if not isinstance(data, dict) or not data.get("key_id") or not data.get("agent_id"):
+            return cls(key_id="unknown", agent_id="unknown", deny_all=True)
+        return cls(
+            key_id=str(data["key_id"]),
+            agent_id=str(data["agent_id"]),
+            allowed_tools=_opt_tuple(data.get("allowed_tools")),
+            denied_tools=_opt_tuple(data.get("denied_tools")) or (),
+            allowed_connectors=_opt_tuple(data.get("allowed_connectors")),
+            deny_all=bool(data.get("deny_all", False)),
+        )

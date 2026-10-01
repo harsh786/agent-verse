@@ -4073,6 +4073,13 @@ class GoalService:
         with _tracer.start_as_current_span("goal.submit") as span:
             span.set_attribute("tenant_id", tenant_ctx.tenant_id)
             span.set_attribute("goal", goal[:100])
+            # An agent-scoped API key submits only for its own agent, and its
+            # tool restriction travels with the goal to the worker (AGKEY-01).
+            from app.auth.agent_credentials import bind_goal_to_agent_key
+
+            agent_id, execution_context = bind_goal_to_agent_key(
+                tenant_ctx, agent_id, execution_context
+            )
             await self._refresh_agent_record(agent_id, tenant_ctx)
             _agent_record = await self._validate_agent_id(agent_id, tenant_ctx)
 

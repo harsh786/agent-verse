@@ -122,6 +122,11 @@ export function AgentIdentityPanel() {
           generate signed <strong>capability manifests</strong> for external verification,
           and track <strong>delegation lineage</strong> when agents spawn sub-agents.
         </p>
+        <p className="text-sm text-muted-foreground mt-2" data-testid="agent-key-capabilities">
+          What an agent key can do: submit and read goals <strong>for its own agent only</strong>.
+          It cannot manage agents, keys, connectors or tenant settings. Denied tools always win;
+          with an allowlist set, every other tool is refused while the agent runs.
+        </p>
       </div>
 
       {/* Key management */}

@@ -71,9 +71,17 @@ async def revoke_agent_key(agent_id: str, key_id: str, request: Request) -> dict
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Auth required")
-    from app.auth.agent_credentials import _agent_credential_store
+    from app.auth.agent_credentials import (
+        AgentKeyStoreUnavailableError,
+        _agent_credential_store,
+    )
 
-    revoked = await _agent_credential_store.revoke_async(key_id, agent_id, tenant_ctx.tenant_id)
+    try:
+        revoked = await _agent_credential_store.revoke_async(
+            key_id, agent_id, tenant_ctx.tenant_id
+        )
+    except AgentKeyStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not revoked:
         raise HTTPException(status_code=404, detail="Key not found")
     return {"key_id": key_id, "status": "revoked"}

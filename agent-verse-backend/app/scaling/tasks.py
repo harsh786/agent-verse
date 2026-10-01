@@ -2704,6 +2704,13 @@ def run_goal(
         except Exception as _ctx_exc:
             _worker_ctx_unreadable = True
             logger.warning("worker_execution_context_lookup_failed goal=%s: %s", goal_id, _ctx_exc)
+    # An agent-scoped API key's tool restriction (AGKEY-01) travels on the goal;
+    # an unreadable context denies every tool rather than run unrestricted.
+    from app.auth.agent_credentials import apply_goal_agent_key
+
+    tenant_ctx = apply_goal_agent_key(
+        tenant_ctx, _worker_exec_ctx, unreadable=_worker_ctx_unreadable
+    )
     _worker_pattern_flags = _pattern_flags_from_context(_worker_exec_ctx)
     (
         _worker_profile,

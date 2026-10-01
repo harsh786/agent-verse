@@ -489,6 +489,9 @@ async def _submit_goal_unguarded(
 
     # ── Auto-routing: call AgentRouter when agent_id is not specified ─────────
     agent_id = body.agent_id
+    if not agent_id and tenant.agent_key is not None:
+        # An agent-scoped key runs its own agent; never auto-route it elsewhere.
+        agent_id = tenant.agent_key.agent_id
     if not agent_id:
         agent_router = getattr(request.app.state, "agent_router", None)
         if agent_router is not None:

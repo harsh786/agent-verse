@@ -166,6 +166,11 @@ class PolicyEngine:
         parent_policy_ids: list[str] | None = None,
     ) -> PolicyResult:
         """Evaluate tool access. parent_policy_ids allows sub-agents to inherit parent policies."""
+        # An agent-scoped API key's tool restriction bounds every tenant policy.
+        from app.auth.agent_credentials import agent_key_tool_denial
+
+        if agent_key_tool_denial(tenant_ctx, tool_name) is not None:
+            return PolicyResult.DENY
         # Collect applicable policies for this tenant (including inherited)
         applicable_policies = [
             p

@@ -56,6 +56,14 @@ describe('AgentIdentityPanel', () => {
     expect(screen.getByRole('heading', { name: /Delegation Lineage/i })).toBeInTheDocument();
   });
 
+  test('states what an agent key can and cannot do', () => {
+    mockFetch();
+    renderPanel();
+    const caps = screen.getByTestId('agent-key-capabilities');
+    expect(caps).toHaveTextContent(/for its own agent only/i);
+    expect(caps).toHaveTextContent(/cannot manage agents, keys, connectors/i);
+  });
+
   test('populates the agent selector from the agents API', async () => {
     mockFetch();
     renderPanel();

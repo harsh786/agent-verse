@@ -621,6 +621,14 @@ class ExecutorMixin:
         in a supervised run (raising PermissionError unless APPROVED) and is a
         denial everywhere else. An evaluation error fails closed.
         """
+        # Agent-scoped API key restriction (AGKEY-01): enforced at dispatch
+        # whether or not a policy engine is wired.
+        from app.auth.agent_credentials import agent_key_tool_denial
+
+        _key_denial = agent_key_tool_denial(tenant_ctx, tool_name) if tool_name else None
+        if _key_denial is not None:
+            record_tool_call(tool_name, "agent_key", "denied", 0.0)
+            return _key_denial
         if self._policy_engine is None or not tool_name or tool_name == already_checked:
             return None
         try:

@@ -2156,6 +2156,13 @@ def create_app(
                         logger.info("tenant_service_redis_wired")
                 except Exception as _tsvc_exc:
                     logger.warning("tenant_service_redis_wire_failed", error=str(_tsvc_exc))
+                # Agent-scoped API keys: same shared, revoke-invalidated cache.
+                try:
+                    from app.auth.agent_credentials import _agent_credential_store as _acs
+
+                    _acs.set_redis(redis_for_runtime)
+                except Exception as _acs_exc:
+                    logger.warning("agent_credentials_redis_wire_failed", error=str(_acs_exc))
 
                 # ── PromptOptimizer: wire Redis for cross-replica cache invalidation ──
                 try:

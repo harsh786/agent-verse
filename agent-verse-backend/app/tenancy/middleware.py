@@ -325,6 +325,22 @@ async def _try_resolve_agent_jwt(request: Request, token: str) -> TenantContext 
     )
 
 
+async def _resolve_agent_key(request: Request, raw_key: str) -> TenantContext | None:
+    """Resolve an ``av_agent_*`` key; None (→ 401) when unknown or unverifiable."""
+    from app.auth import agent_credentials
+
+    store = agent_credentials._agent_credential_store
+    try:
+        return await store.resolve_context(
+            raw_key, tenant_service=getattr(request.app.state, "tenant_service", None)
+        )
+    except Exception as exc:
+        from app.observability.logging import get_logger
+
+        get_logger(__name__).warning("agent_key_resolution_failed", error=str(exc)[:200])
+        return None
+
+
 # Endpoints a tenant with MFA enabled must reach BEFORE it holds an X-MFA-Token
 # (the second factor itself). Without this, enforcement 401'd /auth/mfa/verify
 # too, so no tenant with MFA enabled could ever obtain a token.
@@ -453,7 +469,15 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
         # Try agent JWTs, then SSO JWTs, when the token looks like a JWT (2+ dots)
         tenant_ctx: TenantContext | None = None
-        if raw_key.count(".") >= 2:
+        from app.auth.agent_credentials import is_agent_key
+
+        if is_agent_key(raw_key):
+            # Agent-scoped key: resolved ONLY by the agent-key store (never the
+            # tenant-key resolver) into an agent-bound, tool-restricted context.
+            tenant_ctx = await _resolve_agent_key(request, raw_key)
+            if tenant_ctx is None:
+                return _auth_error_response()
+        elif raw_key.count(".") >= 2:
             tenant_ctx = await _try_resolve_agent_jwt(request, raw_key)
             if tenant_ctx is None:
                 tenant_ctx = await _try_resolve_sso(request)
