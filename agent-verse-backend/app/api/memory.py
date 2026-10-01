@@ -315,11 +315,22 @@ async def list_long_term_memories(
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ) -> list[dict[str, Any]]:
-    """List long-term memories for this tenant (bounded + offset-pageable)."""
+    """List long-term memories for this tenant (bounded + offset-pageable).
+
+    Read from Postgres under the tenant's RLS (MEM-04) — it listed this
+    replica's per-process cache, so another replica or a restart showed a
+    partial or empty list. A DB failure is 503.
+    """
+    from app.memory.long_term import LongTermMemoryUnavailableError
+
     tenant = _require_tenant(request)
     mem = getattr(request.app.state, "long_term_memory", None)
     if mem is None:
         return []
+    try:
+        memories = await mem.list_all_async(tenant_ctx=tenant, limit=limit, offset=offset)
+    except LongTermMemoryUnavailableError as exc:
+        raise _db_unavailable("list_long_term_memories", exc) from exc
     return [
         {
             "memory_id": m.memory_id,
@@ -329,7 +340,7 @@ async def list_long_term_memories(
             "source_goal_id": getattr(m, "source_goal_id", ""),
             "tags": getattr(m, "tags", []),
         }
-        for m in mem.list_all(tenant_ctx=tenant, limit=limit, offset=offset)
+        for m in memories
     ]
 
 

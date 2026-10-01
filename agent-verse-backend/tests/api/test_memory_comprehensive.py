@@ -179,10 +179,39 @@ def test_list_long_term_memories_no_ltm() -> None:
     assert resp.json() == []
 
 
+def test_list_long_term_reads_postgres_not_the_replica_cache() -> None:
+    """MEM-04: a fresh store (empty per-process cache) returns the DB rows."""
+    from app.memory.long_term import LongTermMemoryStore
+    from tests._rls_recorder import RlsRecordingDb
+
+    rows = [("db-1", "persisted fact", "domain_fact", 0.7, "g9", ["t"])]
+    store = LongTermMemoryStore()
+    store._db_factory = RlsRecordingDb(
+        rows_for=lambda sql, _p: rows if "FROM long_term_memory" in sql else []
+    )
+    client = TestClient(_make_app(store), raise_server_exceptions=False)
+    resp = client.get("/memory/long-term?limit=5&offset=0", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 200
+    assert [r["memory_id"] for r in resp.json()] == ["db-1"]
+
+
+def test_list_long_term_db_failure_is_503() -> None:
+    from app.memory.long_term import LongTermMemoryStore
+
+    class _Broken:
+        def __call__(self) -> Any:
+            raise ConnectionError("db down")
+
+    store = LongTermMemoryStore()
+    store._db_factory = _Broken()
+    client = TestClient(_make_app(store), raise_server_exceptions=False)
+    assert client.get("/memory/long-term", headers={"X-API-Key": _VALID_KEY}).status_code == 503
+
+
 def test_list_long_term_memories_with_ltm() -> None:
     ltm = MagicMock()
     m = _make_memory_entry()
-    ltm.list_all = MagicMock(return_value=[m])
+    ltm.list_all_async = AsyncMock(return_value=[m])
     client = TestClient(_make_app(ltm), raise_server_exceptions=False)
     resp = client.get("/memory/long-term", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
