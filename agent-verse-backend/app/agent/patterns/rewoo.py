@@ -17,6 +17,7 @@ from app.agent.patterns.reasoning_contracts import (
     canonical_json,
     validate_tool_plan,
 )
+from app.agent.tool_outcomes import ToolResultFailedError, is_failed_tool_result
 from app.orchestration.strategy_adapters import ExecutionTier
 
 _VARIABLE = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
@@ -132,6 +133,10 @@ class ReWOORuntime:
                     arguments,
                     idempotency_key=f"{execution_id}:{step.step_id}",
                 )
+                # A dispatcher that REPORTS failure (success=False / isError) did not
+                # produce the step's output; it must not reach synthesis.
+                if is_failed_tool_result(result):
+                    raise ToolResultFailedError(step.tool_name)
                 return step, result
 
             try:

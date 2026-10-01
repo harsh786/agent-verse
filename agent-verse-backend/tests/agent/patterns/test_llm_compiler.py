@@ -109,3 +109,31 @@ async def test_output_schema_failure_and_precancel_fail_closed() -> None:
         synthesize=lambda _outputs: "x",
     )
     assert stopped.phase == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_result",
+    [
+        {"success": False, "error": "MCP down", "value": "stale"},
+        {"isError": True, "value": "x", "content": []},
+    ],
+)
+async def test_a_failed_tool_result_fails_the_compiled_plan(
+    failed_result: dict[str, object],
+) -> None:
+    """A schema-valid output that reports failure is still a failed task."""
+
+    async def dispatch(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return failed_result
+
+    result = await LLMCompilerRuntime(
+        governed_dispatcher=dispatch, tool_catalogue=CATALOGUE
+    ).execute(
+        execution_id="e",
+        tasks=(_task("root"),),
+        limits=_limits(),
+        cancelled=asyncio.Event(),
+        synthesize=lambda _outputs: "answer",
+    )
+    assert result.phase == "failed"

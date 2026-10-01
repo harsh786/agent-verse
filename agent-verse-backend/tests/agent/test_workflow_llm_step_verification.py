@@ -7,8 +7,11 @@ goal done on unverified prose.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.agent.workflow_executor import WorkflowExecutor
 from app.agent.workflow_planner import WorkflowPlan, WorkflowStep
@@ -75,3 +78,32 @@ async def test_verifier_error_leaves_the_step_unverified() -> None:
     result = await WorkflowExecutor(provider=provider)._execute_step(step, T, prior_results={})
 
     assert result["status"] == "unverified"
+
+
+
+@pytest.mark.parametrize(
+    "tool_result",
+    [
+        SimpleNamespace(success=False, error="MCP down", output=None),
+        {"success": False, "error": "denied"},
+        {"isError": True, "content": [{"type": "text", "text": "Jira 503"}]},
+    ],
+)
+async def test_failed_tool_result_is_a_failed_step_whatever_the_verifier_says(
+    tool_result: Any,
+) -> None:
+    """A tool step whose call reported failure is failed — never verified into complete."""
+    provider = StepAndVerdictProvider("Done, all good.", '{"success": true}')
+    mcp = MagicMock()
+    mcp.call_tool = AsyncMock(return_value=tool_result)
+    mcp._registry.list_all = AsyncMock(return_value=[])
+    executor = WorkflowExecutor(provider=provider, mcp_client=mcp)
+    executor._tool_gate.authorize = AsyncMock(  # type: ignore[method-assign]
+        return_value=SimpleNamespace(allowed=True, reason="")
+    )
+    step = WorkflowStep(id="s1", description="Search Jira", tool="jira_search")
+
+    result = await executor._execute_step(step, T, prior_results={})
+
+    assert result["status"] == "failed"
+    assert provider.prompts == []  # no LLM fallback, no verifier upgrade

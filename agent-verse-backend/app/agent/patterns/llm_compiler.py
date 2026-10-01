@@ -18,6 +18,7 @@ from app.agent.patterns.reasoning_contracts import (
 )
 from app.agent.structured_executor import ExecutionCheckpoint, StructuredPlanExecutor
 from app.agent.structured_plan import StructuredPlan, StructuredStep
+from app.agent.tool_outcomes import ToolResultFailedError, is_failed_tool_result
 from app.orchestration.strategy_adapters import ExecutionTier
 from app.orchestration.strategy_contracts import PatternLimits
 
@@ -131,6 +132,9 @@ class LLMCompilerRuntime:
                 step.arguments,
                 idempotency_key=f"{execution_id}:{step.id}",
             )
+            # A reported failure (success=False / isError) is never a task output.
+            if is_failed_tool_result(output):
+                raise ToolResultFailedError(str(step.tool))
             task = next(item for item in ordered if item.task_id == step.id)
             if not self._validate_schema(output, task.output_schema):
                 raise ReasoningContractError(f"invalid output for task: {step.id}")

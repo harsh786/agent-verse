@@ -314,6 +314,11 @@ class AgentGraph(
         self._graph = self._build()
         # Per-run event callback (set in run())
         self._event_callback: EventCallback | None = None
+        # Outcome of every tool call of the current execute pass (from the emitted
+        # events): a failed tool result the verifier cannot overrule.
+        from app.agent.tool_outcomes import ToolOutcomeLedger
+
+        self._tool_outcomes: ToolOutcomeLedger = ToolOutcomeLedger()
         # OTel trace context injected by parent when spawned as sub-agent
         self._parent_trace_context: Any = None
         from opentelemetry import trace as _otel_trace
@@ -1091,6 +1096,9 @@ class AgentGraph(
 
         if "ts" not in event:
             event["ts"] = datetime.now(UTC).isoformat()
+        from app.agent.tool_outcomes import ledger_for
+
+        ledger_for(self).record(event)
         if self._event_callback is not None:
             await self._event_callback(self._sanitize_event(event))
 

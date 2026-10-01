@@ -187,6 +187,19 @@ class VerifierMixin:
                 f"{f.get('step', '?')[:80]} ({f.get('reason', '')[:120]})"
                 for f in _not_executed[:3]
             )
+        # Deterministic gate: a tool call of this pass that failed, errored or was
+        # denied (and was not retried successfully) is a fact, not an opinion —
+        # the verifier can only downgrade a successful tool result, never upgrade
+        # a failed one.
+        from app.agent.tool_outcomes import ledger_for
+
+        _failed_tools = ledger_for(self).unresolved_failures()
+        if _failed_tools and success:
+            success = False
+            retry = True
+            reason = "Tool call(s) failed: " + "; ".join(
+                f"{tool} ({error[:120]})" for tool, error in _failed_tools[:3]
+            )
         agent_state.context["verification_retry"] = retry
 
         # C5: 3-way consensus for high-risk goals

@@ -92,3 +92,32 @@ async def test_hash_mismatch_cancellation_and_tool_denial_fail_closed() -> None:
     )
     assert denied.phase == "failed"
     assert denied.safe_evidence["cancelled_dependency_ids"] == ["root"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_result",
+    [
+        {"success": False, "error": "MCP down"},
+        {"isError": True, "content": [{"type": "text", "text": "denied"}]},
+    ],
+)
+async def test_a_failed_tool_result_fails_the_plan_instead_of_feeding_synthesis(
+    failed_result: dict[str, object],
+) -> None:
+    """A dispatcher that REPORTS failure (rather than raising) never completes a step."""
+    synthesized: list[object] = []
+
+    async def dispatch(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return failed_result
+
+    def synthesize(outputs: object) -> str:
+        synthesized.append(outputs)
+        return "answer"
+
+    result = await ReWOORuntime(governed_dispatcher=dispatch).execute(
+        execution_id="e", plan=(_step("root", "value"),), synthesize=synthesize
+    )
+    assert result.phase == "failed"
+    assert result.terminal_reason.startswith("tool_step_failed")
+    assert synthesized == []

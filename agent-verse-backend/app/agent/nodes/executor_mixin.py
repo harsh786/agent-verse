@@ -718,6 +718,10 @@ class ExecutorMixin:
         # Steps that could not run in THIS execute pass (StepNotExecutedError). The
         # verifier fails verification deterministically when this is non-empty.
         agent_state.context[STEP_FAILURES_KEY] = []
+        # Tool outcomes are judged per pass: a replan's pass starts clean.
+        from app.agent.tool_outcomes import ledger_for
+
+        ledger_for(self).reset()
 
         # Goal-tree decomposition: delegate large plans to parallel sub-agents
         if self._enable_goal_tree and len(plan) >= self._goal_tree_threshold:

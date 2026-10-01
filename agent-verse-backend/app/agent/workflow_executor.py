@@ -389,10 +389,16 @@ class WorkflowExecutor:
 
                     logging.getLogger(__name__).warning("workflow_step_tool_failed: %s", tool_exc)
                     raise
-                if getattr(result, "success", True) is False:
-                    raise RuntimeError(
-                        f"tool '{step.tool}' failed: {getattr(result, 'error', '') or 'error'}"
+                # success=False objects AND failure dicts ({"success": false} /
+                # MCP {"isError": true}) — a dict used to count as complete.
+                from app.agent.tool_outcomes import is_failed_tool_result
+
+                if is_failed_tool_result(result):
+                    _err = (
+                        result.get("error") if isinstance(result, dict)
+                        else getattr(result, "error", "")
                     )
+                    raise RuntimeError(f"tool '{step.tool}' failed: {_err or 'error'}")
                 output = getattr(result, "output", result)
                 step.status = "complete"
                 step.result = str(output)
