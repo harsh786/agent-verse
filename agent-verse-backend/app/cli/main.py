@@ -617,7 +617,7 @@ def connectors_backfill(
         False, "--verify-only", help="Copy and verify but do not record completion."
     ),
 ) -> None:
-    """Copy the legacy Redis connector store (configs, built-in markers) into Postgres.
+    """Copy the legacy Redis connector store (configs, secrets, markers) into Postgres.
 
     Idempotent: nothing already in Postgres is overwritten and no Redis key is
     deleted. Completion is recorded only when every legacy entry verifies as

@@ -110,14 +110,10 @@ def _build_worker_runner() -> Any:
         import redis.asyncio as _aioredis_wf
 
         from app.mcp.client import MCPClient
-        from app.mcp.connector_wiring import build_connector_registry
+        from app.mcp.connector_wiring import build_connector_registry, build_connector_secret_store
         from app.mcp.registry import MCPRegistry
         from app.mcp.servers.registry_wiring import get_builtin_server_configs
-        from app.providers.vault import (
-            RedisConnectorSecretStore,
-            get_vault,
-            resolve_connector_secret_ref_for_tenant,
-        )
+        from app.providers.vault import resolve_connector_secret_ref_for_tenant
 
         for _bcfg in get_builtin_server_configs():
             MCPRegistry.register_builtin_handler(_bcfg["server_id"], _bcfg["handler"])
@@ -125,9 +121,7 @@ def _build_worker_runner() -> Any:
             _os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
         )
         _WORKER_RUNNER_CLIENTS.append(_wf_redis)
-        _wf_secret_store = RedisConnectorSecretStore(
-            redis=_wf_redis, vault=get_vault(), db_factory=_tv_session_factory()
-        )
+        _wf_secret_store = build_connector_secret_store(_wf_redis)
 
         async def _wf_resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
             return await resolve_connector_secret_ref_for_tenant(

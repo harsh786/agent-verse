@@ -29,4 +29,14 @@ def build_connector_registry(
     )
 
 
-__all__ = ["build_connector_registry"]
+def build_connector_secret_store(redis: Any, *, db_factory: Any = None) -> Any:
+    """The Postgres-backed connector secret store with ``redis`` as its cache."""
+    from app.mcp.connector_secrets import DurableConnectorSecretStore
+
+    return DurableConnectorSecretStore(
+        db_factory=db_factory if db_factory is not None else _default_db_factory(),
+        redis=redis,
+    )
+
+
+__all__ = ["build_connector_registry", "build_connector_secret_store"]

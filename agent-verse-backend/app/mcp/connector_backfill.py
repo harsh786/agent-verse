@@ -5,6 +5,8 @@ Copies, per tenant and without overwriting anything already in Postgres
 
 * connector configs   ``mcp:servers:{t}:{id}`` (via the ``mcp:server_ids:{t}`` index)
                       -> ``mcp_servers``
+* connector secrets   ``mcp:connector_secrets:{t}:{id}:{key}`` (ciphertext as-is)
+                      -> ``mcp_credentials``
 * built-in markers    ``mcp:builtins_provisioned:{t}`` -> ``mcp_builtin_provisioning``
 
 Redis keys are NEVER deleted. The run then verifies that every legacy entry is
@@ -19,9 +21,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.mcp.connector_store import (
     BACKFILL_NAME,
     PostgresConnectorRows,
@@ -33,6 +37,7 @@ _log = logging.getLogger(__name__)
 
 _INDEX_PREFIX = "mcp:server_ids:"
 _SERVER_PREFIX = "mcp:servers:"
+_SECRET_PREFIX = "mcp:connector_secrets:"
 _MARKER_PREFIX = "mcp:builtins_provisioned:"
 _LOCK_KEY = 0x6D6370_0001  # pg advisory lock id for the backfill
 
@@ -41,8 +46,59 @@ def _text(raw: Any) -> str:
     return raw.decode() if isinstance(raw, bytes) else str(raw)
 
 
+def _parse_secret_key(redis_key: str) -> tuple[str, str, str] | None:
+    """``mcp:connector_secrets:{tenant}:{server...}:{key}`` -> (tenant, server, key).
+
+    Tenant ids and secret keys contain no ":"; server ids may
+    ("builtin-github:work-org"), so the server id is everything in between.
+    """
+    rest = redis_key[len(_SECRET_PREFIX) :]
+    tenant, _, remainder = rest.partition(":")
+    server, _, key = remainder.rpartition(":")
+    if not tenant or not server or not key:
+        return None
+    return tenant, server, key
+
+
 async def _scan(redis: Any, pattern: str) -> list[str]:
     return [_text(k) async for k in redis.scan_iter(match=pattern, count=500)]
+
+
+async def _secret_present(db: Callable[[], Any], tenant: str, server: str, key: str) -> bool:
+    from sqlalchemy import text
+
+    async with db() as s, s.begin(), sqlalchemy_rls_context(s, tenant):
+        row = (
+            await s.execute(
+                text(
+                    "SELECT 1 FROM mcp_credentials WHERE tenant_id = :t AND server_id = :s "
+                    "AND secret_key = :k"
+                ),
+                {"t": tenant, "s": server, "k": key},
+            )
+        ).fetchone()
+    return row is not None
+
+
+async def _copy_secrets(
+    db: Callable[[], Any], tenant: str, items: list[tuple[str, str, str]]
+) -> int:
+    """Insert (server, key, ciphertext) rows for one tenant; returns rows inserted."""
+    from sqlalchemy import text
+
+    inserted = 0
+    async with db() as s, s.begin(), sqlalchemy_rls_context(s, tenant):
+        for server, key, ciphertext in items:
+            result = await s.execute(
+                text(
+                    "INSERT INTO mcp_credentials (tenant_id, server_id, secret_key, "
+                    "encrypted_value) VALUES (:t, :s, :k, :v) "
+                    "ON CONFLICT (tenant_id, server_id, secret_key) DO NOTHING"
+                ),
+                {"t": tenant, "s": server, "k": key, "v": ciphertext},
+            )
+            inserted += int(getattr(result, "rowcount", 0) or 0)
+    return inserted
 
 
 async def backfill_connectors_from_redis(
@@ -54,6 +110,7 @@ async def backfill_connectors_from_redis(
         "status": "failed",
         "tenants": 0,
         "servers": {"copied": 0, "present": 0, "renamed": 0},
+        "secrets": {"copied": 0, "present": 0},
         "builtin_markers": 0,
         "missing_after_copy": 0,
         "errors": [],
@@ -89,6 +146,37 @@ async def backfill_connectors_from_redis(
             except Exception as exc:
                 report["errors"].append(f"server {tenant}/{sid}: {type(exc).__name__}: {exc}"[:300])
 
+    # ── connector secrets (ciphertext copied as-is) ───────────────────────
+    by_tenant: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+    expected_secrets: list[tuple[str, str, str]] = []
+    try:
+        secret_keys = await _scan(redis, f"{_SECRET_PREFIX}*")
+    except Exception as exc:
+        report["errors"].append(f"redis scan secrets: {type(exc).__name__}"[:300])
+        secret_keys = []
+    for start in range(0, len(secret_keys), 500):
+        chunk = secret_keys[start : start + 500]
+        try:
+            values = await redis.mget(chunk)
+        except Exception as exc:
+            report["errors"].append(f"redis read secrets: {type(exc).__name__}"[:300])
+            continue
+        for redis_key, value in zip(chunk, values, strict=True):
+            parsed = _parse_secret_key(redis_key)
+            if parsed is None or value is None:
+                continue
+            tenant, server, key = parsed
+            tenants.add(tenant)
+            by_tenant[tenant].append((server, key, _text(value)))
+            expected_secrets.append(parsed)
+    for tenant, items in by_tenant.items():
+        try:
+            inserted = await _copy_secrets(db_factory, tenant, items)
+            report["secrets"]["copied"] += inserted
+            report["secrets"]["present"] += len(items) - inserted
+        except Exception as exc:
+            report["errors"].append(f"secrets {tenant}: {type(exc).__name__}: {exc}"[:300])
+
     # ── built-in provisioning markers ─────────────────────────────────────
     try:
         marker_keys = await _scan(redis, f"{_MARKER_PREFIX}*")
@@ -122,6 +210,12 @@ async def backfill_connectors_from_redis(
                 missing += 1
         except Exception:
             missing += 1
+    for tenant, server, key in expected_secrets:
+        try:
+            if not await _secret_present(db_factory, tenant, server, key):
+                missing += 1
+        except Exception:
+            missing += 1
     report["missing_after_copy"] = missing
     report["tenants"] = len(tenants)
 
@@ -134,9 +228,10 @@ async def backfill_connectors_from_redis(
     if record:
         await _record_completion(db_factory, report)
     _log.info(
-        "connector_backfill_complete tenants=%d servers=%s",
+        "connector_backfill_complete tenants=%d servers=%s secrets=%s",
         report["tenants"],
         report["servers"],
+        report["secrets"],
     )
     return report
 

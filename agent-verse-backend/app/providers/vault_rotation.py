@@ -14,7 +14,8 @@ context, with an explicit ``tenant_id`` predicate as well):
 * ``memory_records.sealed_content`` — sealed (confidential) memories;
 * ``source_configs.connection_config`` secret values — ingestion source credentials;
 * ``agent_credentials.private_key_ref`` — agent signing keys;
-* ``auction_registry.sealed_keys`` — sealed-bid auction keys.
+* ``auction_registry.sealed_keys`` — sealed-bid auction keys;
+* ``mcp_credentials.encrypted_value`` — durable connector secrets.
 
 Redis: connector secrets (``mcp:connector_secrets:*``), OAuth tokens copied into
 connector configs (``mcp:servers:*``) and the tenant LLM-config cache
@@ -95,6 +96,14 @@ PG_STORES: tuple[PgStore, ...] = (
         "agent_signing_keys", "agent_credentials", "id", ("private_key_ref",), prefix="vault:v1:"
     ),
     PgStore("auction_keys", "auction_registry", "id", ("sealed_keys",)),
+    # Durable connector secrets (SECRET-01): composite key, so the keyset
+    # position is "<server_id>\x1f<secret_key>" (per tenant, a handful of rows).
+    PgStore(
+        "connector_secrets_pg",
+        "mcp_credentials",
+        "(server_id || chr(31) || secret_key)",
+        ("encrypted_value",),
+    ),
 )
 REDIS_STORES: tuple[str, ...] = ("connector_secrets", "connector_oauth_copies", "llm_config_cache")
 
@@ -296,6 +305,13 @@ async def _rotate_redis(redis: Any, old: Any, new: Any, dry_run: bool) -> dict[s
             for key, value in writes[i : i + 200]:
                 pipe.set(key, value)
             await pipe.execute()
+    if not dry_run:
+        # Short-TTL read caches of the durable connector stores (ciphertext /
+        # configs): dropped, not rewritten (a SET would strip their TTL); they
+        # refill from Postgres, which this run re-encrypted.
+        for pattern in ("mcp:secretcache:v1:*", "mcp:cfgcache:v1:*"):
+            async for key in redis.scan_iter(match=pattern, count=500):
+                await redis.delete(key)
     return reports
 
 

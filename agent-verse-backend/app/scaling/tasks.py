@@ -1163,11 +1163,9 @@ class _WorkerMCPAgentRunner:
             if mcp_client is not None:
                 self._runner._mcp_client = mcp_client
             if self._rpa_executor is not None and redis_client is not None:
-                from app.providers.vault import RedisConnectorSecretStore, get_vault
+                from app.mcp.connector_wiring import build_connector_secret_store
 
-                _rpa_secret_store = RedisConnectorSecretStore(
-                    redis=redis_client, vault=get_vault(), db_factory=_tv_session_factory()
-                )
+                _rpa_secret_store = build_connector_secret_store(redis_client)
                 self._rpa_executor._secret_store_resolver = lambda: _rpa_secret_store
                 # The worker's browsers count toward the tenant's global session cap
                 # and appear in the shared session registry (RPA-02).
@@ -1980,12 +1978,9 @@ def publish_mission_deliverable(
         import redis.asyncio as aioredis
 
         from app.mcp.client import MCPClient
+        from app.mcp.connector_wiring import build_connector_secret_store
         from app.mcp.registry import MCPRegistry
-        from app.providers.vault import (
-            RedisConnectorSecretStore,
-            get_vault,
-            resolve_connector_secret_ref_for_tenant,
-        )
+        from app.providers.vault import resolve_connector_secret_ref_for_tenant
 
         # Builtins are registered at module import; re-register defensively so a
         # fresh worker always has the Python handlers (not just Redis records).
@@ -2000,9 +1995,7 @@ def publish_mission_deliverable(
 
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
         try:
-            secret_store = RedisConnectorSecretStore(
-                    redis=redis_client, vault=get_vault(), db_factory=_tv_session_factory()
-                )
+            secret_store = build_connector_secret_store(redis_client)
 
             async def _resolve_secret(ref: str, tctx: Any = None) -> str | None:
                 return await resolve_connector_secret_ref_for_tenant(
@@ -3067,12 +3060,9 @@ def run_goal(
 
         from app.agent.tool_context import ToolContext, ToolRef
         from app.mcp.client import MCPClient
+        from app.mcp.connector_wiring import build_connector_secret_store
         from app.mcp.registry import MCPRegistry
-        from app.providers.vault import (
-            RedisConnectorSecretStore,
-            get_vault,
-            resolve_connector_secret_ref_for_tenant,
-        )
+        from app.providers.vault import resolve_connector_secret_ref_for_tenant
 
         # Ensure all builtin tool handlers are registered in this worker process.
         # The web process registers them at startup; the Celery worker process
@@ -3087,9 +3077,7 @@ def run_goal(
             logger.warning("worker_builtin_handler_restore_failed: %s", _bh_exc)
 
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
-        secret_store = RedisConnectorSecretStore(
-                    redis=redis_client, vault=get_vault(), db_factory=_tv_session_factory()
-                )
+        secret_store = build_connector_secret_store(redis_client)
 
         async def _resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
             return await resolve_connector_secret_ref_for_tenant(

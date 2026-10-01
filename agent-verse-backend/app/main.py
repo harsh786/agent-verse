@@ -1364,6 +1364,14 @@ def create_app(
             _conn_reg = getattr(app.state, "mcp_registry", None)
             if isinstance(_conn_reg, MCPRegistry):
                 _conn_reg.set_db(db_factory, cache=real_redis)
+            # SECRET-01: connector credentials are durable in Postgres
+            # (mcp_credentials, tenant envelope key); Redis caches ciphertext only.
+            from app.mcp.connector_secrets import DurableConnectorSecretStore
+
+            app.state.connector_secret_store = DurableConnectorSecretStore(
+                db_factory=db_factory, redis=redis_for_runtime
+            )
+            app.state.connector_secret_store_is_production_safe = True
             if real_redis is not None:
                 from app.mcp.connector_backfill import ensure_connector_backfill
 
