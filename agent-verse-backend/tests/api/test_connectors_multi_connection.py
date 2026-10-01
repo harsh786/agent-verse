@@ -99,6 +99,10 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return _Redis(url)
 
     monkeypatch.setattr(aioredis, "from_url", _from_url)
+    import app.mcp.servers.egress as egress
+
+    # Tenant calls dial the checked address (BUILTIN-PINNING); record the URL.
+    monkeypatch.setattr(egress, "pinned_redis_client", lambda url, ip, **kw: _from_url(url))
     monkeypatch.setattr(guard, "_resolve_host", lambda host: ["93.184.216.34"])
     redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
     reg = MCPRegistry(redis=redis)

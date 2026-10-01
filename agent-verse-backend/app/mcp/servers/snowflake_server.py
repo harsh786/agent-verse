@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from app.mcp.servers.credentials import tenant_getenv
+from app.mcp.servers.credentials import in_tenant_scope, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -173,7 +173,21 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
             finally:
                 conn.close()
 
-        return await asyncio.to_thread(_sync)
+        if not in_tenant_scope():
+            return await asyncio.to_thread(_sync)
+        # The connector resolves the account host itself (in its thread): check
+        # and pin it for the call so it dials only the checked address.
+        import re
+
+        from app.ingestion.connector_egress import pin_source_hosts
+
+        account = str(tenant_getenv("SNOWFLAKE_ACCOUNT") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", account):
+            return {"error": "SNOWFLAKE_ACCOUNT must be a Snowflake account identifier"}
+        async with pin_source_hosts(
+            [(f"{account}.snowflakecomputing.com", 443)], context="mcp builtin snowflake"
+        ):
+            return await asyncio.to_thread(_sync)
 
     except ImportError:
         return {

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.mcp.servers.credentials import tenant_getenv
+from app.mcp.servers.credentials import in_tenant_scope, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -73,6 +73,17 @@ def get_tools() -> list[dict[str, Any]]:
     return TOOL_DEFINITIONS
 
 
+async def _connect(asyncpg: Any, db_url: str) -> Any:
+    """On a tenant call, dial only the checked addresses of the DSN's hosts."""
+    if not in_tenant_scope():
+        return await asyncpg.connect(db_url)
+    from app.ingestion.connector_egress import pin_source_dsn
+    from app.mcp.servers.egress import pinned_asyncpg_kwargs
+
+    async with pin_source_dsn(db_url, context="mcp builtin postgres") as pins:
+        return await asyncpg.connect(**pinned_asyncpg_kwargs(db_url, pins))
+
+
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     db_url = tenant_getenv("POSTGRES_MCP_URL", "")
     if not db_url:
@@ -83,7 +94,7 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     try:
         import asyncpg  # type: ignore[import]
 
-        conn = await asyncpg.connect(db_url)
+        conn = await _connect(asyncpg, db_url)
         try:
             if tool_name == "postgres_query":
                 sql = arguments["sql"].strip()

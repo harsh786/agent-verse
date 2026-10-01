@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
-from app.mcp.servers.credentials import tenant_getenv
+from app.mcp.servers.credentials import in_tenant_scope, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -83,14 +83,25 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         import aiomysql  # type: ignore[import]
 
         parsed = urlparse(url)
-        conn = await aiomysql.connect(
-            host=parsed.hostname,
-            port=parsed.port or 3306,
-            user=parsed.username,
-            password=parsed.password or "",
-            db=(parsed.path or "/").lstrip("/"),
-            autocommit=True,
-        )
+        connect_kwargs: dict[str, Any] = {
+            "host": parsed.hostname,
+            "port": parsed.port or 3306,
+            "user": parsed.username,
+            "password": parsed.password or "",
+            "db": (parsed.path or "/").lstrip("/"),
+            "autocommit": True,
+        }
+        if in_tenant_scope():
+            # Dial the address checked for THIS connection (no rebinding window).
+            from app.ingestion.connector_egress import pin_source_hosts
+
+            async with pin_source_hosts(
+                [(parsed.hostname or "", parsed.port or 3306)], context="mcp builtin mysql"
+            ) as pins:
+                connect_kwargs["host"] = pins.ip(parsed.hostname or "")
+                conn = await aiomysql.connect(**connect_kwargs)
+        else:
+            conn = await aiomysql.connect(**connect_kwargs)
         try:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 if tool_name == "mysql_query":

@@ -206,6 +206,9 @@ class tenant_scope:  # noqa: N801 - used like a function: ``with tenant_scope(cr
         self._token: contextvars.Token[_Scope | None] | None = None
 
     def __enter__(self) -> tenant_scope:
+        from app.mcp.servers.egress import install_http_pinning
+
+        install_http_pinning()  # connect-time pinning of every HTTP connection
         self._token = _SCOPE.set(self._scope)
         return self
 

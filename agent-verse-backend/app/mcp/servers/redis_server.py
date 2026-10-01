@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.mcp.servers.credentials import tenant_getenv
+from app.mcp.servers.credentials import in_tenant_scope, tenant_getenv
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -161,7 +161,21 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
     try:
         import redis.asyncio as aioredis  # type: ignore[import]
 
-        client: Any = aioredis.from_url(url, decode_responses=True)
+        client: Any
+        if in_tenant_scope():
+            # Dial the address checked for THIS connection (TLS keeps the hostname).
+            import asyncio
+            from urllib.parse import urlsplit
+
+            from app.mcp.servers.egress import checked_addresses, pinned_redis_client
+
+            parts = urlsplit(url)
+            ips = await asyncio.to_thread(
+                checked_addresses, parts.hostname or "", parts.port or 6379
+            )
+            client = pinned_redis_client(url, ips, decode_responses=True)
+        else:
+            client = aioredis.from_url(url, decode_responses=True)
         try:
             if tool_name == "redis_get":
                 value = await client.get(arguments["key"])

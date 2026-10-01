@@ -35,7 +35,7 @@ def _collect_server_modules() -> list[str]:
     return [
         info.name
         for info in pkgutil.iter_modules(_servers_pkg.__path__)
-        if info.name not in ("registry_wiring", "utils", "credentials")  # shared helpers
+        if info.name not in ("registry_wiring", "utils", "credentials", "egress")  # shared helpers
     ]
 
 

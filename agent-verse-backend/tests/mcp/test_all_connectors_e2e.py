@@ -35,7 +35,7 @@ import app.mcp.servers as _servers_pkg
 SERVER_MODULES: list[str] = sorted(
     info.name
     for info in pkgutil.iter_modules(_servers_pkg.__path__)
-    if info.name not in ("registry_wiring", "utils", "credentials")
+    if info.name not in ("registry_wiring", "utils", "credentials", "egress")
 )
 
 # Servers that use boto3 / asyncpg / motor / etc. instead of httpx
