@@ -85,11 +85,11 @@ async def test_workflow_actions_are_audited_per_tenant(
     rows: list[dict[str, Any]] = []
     for _ in range(40):
         rows = await _audit_rows(tenant_client, wid)
-        if _EXPECTED <= {r["tool_name"] for r in rows}:
+        if {r["tool_name"] for r in rows} >= _EXPECTED:
             break
         await asyncio.sleep(0.25)
     tools = {r["tool_name"] for r in rows}
-    assert _EXPECTED <= tools, sorted(tools)
+    assert tools >= _EXPECTED, sorted(tools)
     approval = next(r for r in rows if r["tool_name"] == "workflow.publish_approved")
     assert approval["approver"] == approver_key_id
 
