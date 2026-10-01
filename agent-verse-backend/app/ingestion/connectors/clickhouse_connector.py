@@ -8,17 +8,34 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator, Mapping
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import pin_source_hosts
+from app.ingestion.connector_egress import pin_source_hosts, run_driver_call
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+# clickhouse-connect's own defaults, stated explicitly: the client is blocking and
+# runs on a worker thread that cannot be interrupted, so these bound the call.
+_CONNECT_TIMEOUT_S = 10
+_SEND_RECEIVE_TIMEOUT_S = 300
+
+
+def _client_kwargs(cc: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "host": cc.get("host", ""),
+        "port": int(cc.get("port", 8123)),
+        "username": cc.get("username", "default"),
+        "password": cc.get("password", ""),
+        "database": cc.get("database", "default"),
+        "connect_timeout": _CONNECT_TIMEOUT_S,
+        "send_receive_timeout": _SEND_RECEIVE_TIMEOUT_S,
+    }
 
 
 @register("clickhouse", feature_flag="ingestion_connector_clickhouse_enabled")
@@ -40,16 +57,12 @@ class ClickHouseConnector(BaseConnector):
             ):
                 import clickhouse_connect  # type: ignore[import-not-found]
 
-                client = clickhouse_connect.get_client(
-                    host=cc.get("host", ""),
-                    port=int(cc.get("port", 8123)),
-                    username=cc.get("username", "default"),
-                    password=cc.get("password", ""),
-                    database=cc.get("database", "default"),
-                    connect_timeout=10,
-                )
-                result = client.query("SELECT version()")
-                version = result.first_row[0]
+                def _version() -> Any:
+                    client = clickhouse_connect.get_client(**_client_kwargs(cc))
+                    return client.query("SELECT version()").first_row[0]
+
+                # Blocking HTTP client: off the event loop, every lookup checked.
+                version = await run_driver_call(_version, context="clickhouse")
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"version": version})
         except ImportError:
@@ -84,14 +97,11 @@ class ClickHouseConnector(BaseConnector):
             except ImportError:
                 _log.error("clickhouse-connect not installed")
                 return
-            client = clickhouse_connect.get_client(
-                host=cc.get("host", ""),
-                port=int(cc.get("port", 8123)),
-                username=cc.get("username", "default"),
-                password=cc.get("password", ""),
-                database=cc.get("database", "default"),
-            )
-            result = client.query(query)
+
+            def _query() -> Any:
+                return clickhouse_connect.get_client(**_client_kwargs(cc)).query(query)
+
+            result = await run_driver_call(_query, context="clickhouse")
         col_names = result.column_names
         new_cursor = cursor or ""
 

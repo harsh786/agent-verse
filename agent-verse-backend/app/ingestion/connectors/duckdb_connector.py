@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -98,13 +99,20 @@ class DuckDBConnector(BaseConnector):
         try:
             import duckdb  # type: ignore[import-not-found]
 
-            con, db_path = _open_confined(
-                duckdb,
-                str(config.connection_config.get("database", ":memory:")),
-                config.tenant_id,
-            )
-            con.execute("SELECT 1")
-            con.close()
+            def _probe() -> str:
+                con, db_path = _open_confined(
+                    duckdb,
+                    str(config.connection_config.get("database", ":memory:")),
+                    config.tenant_id,
+                )
+                try:
+                    con.execute("SELECT 1")
+                finally:
+                    con.close()
+                return db_path
+
+            # In-process engine: file I/O and query work happen on the SDK pool.
+            db_path = await run_blocking(_probe)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"database": db_path})
         except ImportError:
@@ -136,8 +144,10 @@ class DuckDBConnector(BaseConnector):
                 str(cc.get("file", "")), _tenant_root(config.tenant_id), what="file"
             )
 
-        con, db_path = _open_confined(
-            duckdb, str(cc.get("database", ":memory:")), config.tenant_id
+        # In-process engine: opening, querying and fetching are blocking file/CPU
+        # work, so they run on the SDK pool rather than the event loop.
+        con, db_path = await run_blocking(
+            _open_confined, duckdb, str(cc.get("database", ":memory:")), config.tenant_id
         )
         try:
             if mode == "file":
@@ -152,11 +162,14 @@ class DuckDBConnector(BaseConnector):
                 if cursor and "{cursor}" in query:
                     query = query.replace("{cursor}", cursor.replace("'", "''"))
 
-            result = con.execute(query)
-            col_names = [d[0] for d in result.description]
+            def _run(sql: str) -> tuple[list[str], list[Any]]:
+                result = con.execute(sql)
+                return [d[0] for d in result.description], result.fetchall()
+
+            col_names, rows = await run_blocking(_run, query)
             new_cursor = cursor or ""
 
-            for row in result.fetchall():
+            for row in rows:
                 row_dict = dict(zip(col_names, row, strict=False))
                 new_cursor = str(row_dict.get(cursor_col, new_cursor))
                 text = "\n".join(f"{k}: {v}" for k, v in row_dict.items() if v is not None)
@@ -171,4 +184,4 @@ class DuckDBConnector(BaseConnector):
                 )
                 yield doc, new_cursor
         finally:
-            con.close()
+            await run_blocking(con.close)

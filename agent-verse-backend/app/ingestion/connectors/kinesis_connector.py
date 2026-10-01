@@ -10,10 +10,11 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -36,14 +37,17 @@ class KinesisConnector(BaseConnector):
             import boto3  # type: ignore[import-not-found]
 
             cc = config.connection_config
-            session = boto3.Session(
-                aws_access_key_id=cc.get("access_key_id"),
-                aws_secret_access_key=cc.get("secret_access_key"),
-                region_name=cc.get("region", "us-east-1"),
-            )
-            kinesis = session.client("kinesis")
             stream = cc.get("stream_name", "")
-            resp = kinesis.describe_stream_summary(StreamName=stream)
+
+            def _describe() -> Any:
+                session = boto3.Session(
+                    aws_access_key_id=cc.get("access_key_id"),
+                    aws_secret_access_key=cc.get("secret_access_key"),
+                    region_name=cc.get("region", "us-east-1"),
+                )
+                return session.client("kinesis").describe_stream_summary(StreamName=stream)
+
+            resp = await run_blocking(_describe)
             shards = resp["StreamDescriptionSummary"]["OpenShardCount"]
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
@@ -67,20 +71,22 @@ class KinesisConnector(BaseConnector):
             _log.error("boto3 not installed")
             return
 
-        import asyncio
-
         cc = config.connection_config
         stream = cc.get("stream_name", "")
         region = cc.get("region", "us-east-1")
         batch_size = int(cc.get("batch_size", 500))
         cursor_map: dict = json.loads(cursor) if cursor else {}
 
-        session = boto3.Session(
-            aws_access_key_id=cc.get("access_key_id"),
-            aws_secret_access_key=cc.get("secret_access_key"),
-            region_name=region,
-        )
-        kinesis = session.client("kinesis")
+        def _client() -> Any:
+            session = boto3.Session(
+                aws_access_key_id=cc.get("access_key_id"),
+                aws_secret_access_key=cc.get("secret_access_key"),
+                region_name=region,
+            )
+            return session.client("kinesis")
+
+        # boto3 is blocking: every call below runs on the SDK pool.
+        kinesis = await run_blocking(_client)
 
         def _fetch_shard(shard_id: str, seq: str | None) -> list[dict]:
             if seq:
@@ -101,15 +107,14 @@ class KinesisConnector(BaseConnector):
             return records_resp.get("Records", [])
 
         # List all shards
-        resp = kinesis.list_shards(StreamName=stream)
+        resp = await run_blocking(kinesis.list_shards, StreamName=stream)
         shards = [s["ShardId"] for s in resp.get("Shards", [])]
 
         new_cursor_map = dict(cursor_map)
-        loop = asyncio.get_event_loop()
 
         for shard_id in shards:
             seq = cursor_map.get(shard_id)
-            records = await loop.run_in_executor(None, _fetch_shard, shard_id, seq)
+            records = await run_blocking(_fetch_shard, shard_id, seq)
             for rec in records:
                 seq_num = rec["SequenceNumber"]
                 new_cursor_map[shard_id] = seq_num

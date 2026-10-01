@@ -5,6 +5,10 @@ Modes:
   - table: full or incremental scan of a table using a timestamp partition column
 
 Cursor: last row's partition column value.
+
+google-cloud-bigquery is blocking (client construction may itself fetch
+credentials): every call runs on the SDK pool, and result rows are paged in off
+the event loop.
 """
 
 from __future__ import annotations
@@ -12,15 +16,31 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _make_client(bigquery: Any, creds_json: Any, project: str) -> Any:
+    import json
+    import os
+    import tempfile
+
+    if isinstance(creds_json, dict):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            json.dump(creds_json, tmp)
+        try:
+            return bigquery.Client.from_service_account_json(tmp.name, project=project)
+        finally:
+            os.unlink(tmp.name)
+    return bigquery.Client(project=project)
 
 
 @register("bigquery", feature_flag="ingestion_connector_bigquery_enabled")
@@ -34,25 +54,17 @@ class BigQueryConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
-            import json
-            import os
-            import tempfile
-
             from google.cloud import bigquery  # type: ignore[import-not-found]
 
             creds_json = config.connection_config.get("service_account_json")
             project = config.connection_config.get("project", "")
 
-            if isinstance(creds_json, dict):
-                with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
-                    json.dump(creds_json, tmp)
-                client = bigquery.Client.from_service_account_json(tmp.name, project=project)
-                os.unlink(tmp.name)
-            else:
-                client = bigquery.Client(project=project)
+            def _probe() -> None:
+                client = _make_client(bigquery, creds_json, project)
+                # Cheap query to verify access
+                list(client.list_datasets(max_results=1))
 
-            # Cheap query to verify access
-            list(client.list_datasets(max_results=1))
+            await run_blocking(_probe)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"project": project})
         except ImportError:
@@ -71,24 +83,12 @@ class BigQueryConnector(BaseConnector):
             _log.error("google-cloud-bigquery not installed")
             return
 
-        import json
-        import os
-        import tempfile
-
         cc = config.connection_config
         creds_json = cc.get("service_account_json")
         project = cc.get("project", "")
         mode = cc.get("mode", "query")
         cursor_col = cc.get("cursor_column", "updated_at")
         batch_size = int(cc.get("batch_size", 1000))
-
-        if isinstance(creds_json, dict):
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
-                json.dump(creds_json, tmp)
-            client = bigquery.Client.from_service_account_json(tmp.name, project=project)
-            os.unlink(tmp.name)
-        else:
-            client = bigquery.Client(project=project)
 
         if mode == "table":
             table_ref = cc.get("table", "")
@@ -101,8 +101,12 @@ class BigQueryConnector(BaseConnector):
             if cursor and "{cursor}" in sql:
                 sql = sql.replace("{cursor}", cursor)
 
+        def _run_query() -> Any:
+            return _make_client(bigquery, creds_json, project).query(sql).result()
+
+        rows = await run_blocking(_run_query)
         new_cursor = cursor or ""
-        for row in client.query(sql).result():
+        async for row in iterate_blocking(rows, chunk_size=500):
             row_dict = dict(row)
             new_cursor = str(row_dict.get(cursor_col, new_cursor))
             text = "\n".join(f"{k}: {v}" for k, v in row_dict.items() if v is not None)

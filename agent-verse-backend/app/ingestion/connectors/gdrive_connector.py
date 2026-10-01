@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -186,7 +187,10 @@ class GDriveSourceConnector(BaseConnector):
         t0 = time.perf_counter()
         try:
             client = self._client(config)
-            files = client.list_files(config.connection_config.get("folder_id", ""))
+            # googleapiclient is blocking: run it on the SDK pool, not the loop.
+            files = await run_blocking(
+                client.list_files, config.connection_config.get("folder_id", "")
+            )
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency,
                                     metadata={"files_visible": len(files)})
@@ -200,7 +204,7 @@ class GDriveSourceConnector(BaseConnector):
 
         client = self._client(config)
         folder_id = config.connection_config.get("folder_id", "")
-        files = client.list_files(folder_id)
+        files = await run_blocking(client.list_files, folder_id)
         new_cursor = cursor or ""
         for meta in files:
             file_id = meta.get("id", "")
@@ -212,7 +216,7 @@ class GDriveSourceConnector(BaseConnector):
                 continue
             if modified:
                 new_cursor = max(new_cursor, modified)
-            content = client.download_file(file_id, mime)
+            content = await run_blocking(client.download_file, file_id, mime)
             if content is None or not content.strip():
                 continue  # unsupported type, or no text
             doc = RawDocument(

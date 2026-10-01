@@ -8,13 +8,19 @@ Supports any file format via ParserRegistry dispatch.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import pin_source_urls, pin_source_urls_sync
+from app.ingestion.connector_egress import (
+    pin_source_urls,
+    pin_source_urls_sync,
+    run_driver_call,
+)
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -66,6 +72,17 @@ class S3Connector(BaseConnector):
         with pin_source_urls_sync([endpoint], context=self.source_type):
             yield endpoint
 
+    def _runner(self, endpoint_url: str | None) -> Callable[..., Awaitable[Any]]:
+        """How to run a blocking boto3 call off the event loop.
+
+        A tenant ``endpoint_url`` gets the egress-checked driver runner (every
+        host boto3 resolves is checked); AWS's own endpoints get the plain SDK
+        pool — they may legitimately resolve to private VPC-endpoint addresses.
+        """
+        if endpoint_url is None:
+            return run_blocking
+        return functools.partial(run_driver_call, context=self.source_type)
+
     @staticmethod
     def _client_kwargs(endpoint_url: str | None) -> dict[str, Any]:
         """boto3 client kwargs. A custom endpoint is addressed path-style, so every
@@ -89,20 +106,25 @@ class S3Connector(BaseConnector):
             async with self._pinned_endpoint(config) as endpoint_url:
                 import boto3  # type: ignore[import-not-found]
 
-                session = boto3.Session(
-                    aws_access_key_id=credentials.get("access_key_id"),
-                    aws_secret_access_key=credentials.get("secret_access_key"),
-                    region_name=region,
-                )
-                s3 = session.client("s3", **self._client_kwargs(endpoint_url))
-                # Quick check: head bucket
-                s3.head_bucket(Bucket=bucket)
+                def _probe() -> tuple[float, Any]:
+                    session = boto3.Session(
+                        aws_access_key_id=credentials.get("access_key_id"),
+                        aws_secret_access_key=credentials.get("secret_access_key"),
+                        region_name=region,
+                    )
+                    s3 = session.client("s3", **self._client_kwargs(endpoint_url))
+                    # Quick check: head bucket
+                    s3.head_bucket(Bucket=bucket)
+                    latency = (time.perf_counter() - t0) * 1000
+                    # Estimate doc count
+                    resp = s3.list_objects_v2(
+                        Bucket=bucket,
+                        Prefix=config.connection_config.get("prefix", ""),
+                        MaxKeys=1,
+                    )
+                    return latency, resp
 
-                latency = (time.perf_counter() - t0) * 1000
-                # Estimate doc count
-                resp = s3.list_objects_v2(
-                    Bucket=bucket, Prefix=config.connection_config.get("prefix", ""), MaxKeys=1
-                )
+                latency, resp = await self._runner(endpoint_url)(_probe)
             key_count = resp.get("KeyCount", 0)
             return ConnectionHealth(
                 ok=True,
@@ -167,18 +189,28 @@ class S3Connector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
-        session = boto3.Session(
-            aws_access_key_id=credentials.get("access_key_id"),
-            aws_secret_access_key=credentials.get("secret_access_key"),
-            region_name=region,
-        )
-        s3 = session.client("s3", **self._client_kwargs(endpoint_url))
+        run = self._runner(endpoint_url)
 
-        paginator = s3.get_paginator("list_objects_v2")
-        pages = paginator.paginate(Bucket=bucket, Prefix=prefix)
+        def _client() -> Any:
+            session = boto3.Session(
+                aws_access_key_id=credentials.get("access_key_id"),
+                aws_secret_access_key=credentials.get("secret_access_key"),
+                region_name=region,
+            )
+            return session.client("s3", **self._client_kwargs(endpoint_url))
+
+        def _download(key: str) -> tuple[bytes, str]:
+            response = s3.get_object(Bucket=bucket, Key=key)
+            body = response["Body"].read()
+            return body, response.get("ContentType", "application/octet-stream")
+
+        # boto3 is blocking: client setup, each page and each download run on
+        # the SDK pool (see app.ingestion.sdk_executor), never on the loop.
+        s3 = await run(_client)
+        pages = s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
 
         new_cursor = cursor or ""
-        for page in pages:
+        async for page in iterate_blocking(pages, chunk_size=1, runner=run):
             objects = sorted(
                 page.get("Contents", []),
                 key=lambda o: o["LastModified"].isoformat(),
@@ -202,9 +234,7 @@ class S3Connector(BaseConnector):
 
                 # Download object
                 try:
-                    response = s3.get_object(Bucket=bucket, Key=key)
-                    content_bytes = response["Body"].read()
-                    content_type = response.get("ContentType", "application/octet-stream")
+                    content_bytes, content_type = await run(_download, key)
                 except Exception as e:
                     _log.warning("s3_download_error key=%s: %s", key, e)
                     continue
@@ -263,16 +293,20 @@ class S3Connector(BaseConnector):
 
             credentials = config.connection_config.get("credentials", {})
             async with self._pinned_endpoint(config) as endpoint_url:
-                s3 = boto3.client(
-                    "s3",
-                    aws_access_key_id=credentials.get("access_key_id"),
-                    aws_secret_access_key=credentials.get("secret_access_key"),
-                    region_name=config.connection_config.get("region", "us-east-1"),
-                    **self._client_kwargs(endpoint_url),
-                )
-                response = s3.get_object(Bucket=bucket, Key=key)
-                content_bytes = response["Body"].read()
-                content_type = response.get("ContentType", "application/octet-stream")
+
+                def _fetch() -> tuple[bytes, str]:
+                    s3 = boto3.client(
+                        "s3",
+                        aws_access_key_id=credentials.get("access_key_id"),
+                        aws_secret_access_key=credentials.get("secret_access_key"),
+                        region_name=config.connection_config.get("region", "us-east-1"),
+                        **self._client_kwargs(endpoint_url),
+                    )
+                    response = s3.get_object(Bucket=bucket, Key=key)
+                    body = response["Body"].read()
+                    return body, response.get("ContentType", "application/octet-stream")
+
+                content_bytes, content_type = await self._runner(endpoint_url)(_fetch)
             raw = RawDocument(
                 doc_id=f"s3://{bucket}/{key}",
                 source_id=config.source_id,

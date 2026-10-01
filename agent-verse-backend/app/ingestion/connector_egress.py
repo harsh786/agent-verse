@@ -486,16 +486,17 @@ async def run_driver_call[T](
 ) -> T:
     """Run a driver's blocking ``func`` off the event loop, egress-checked.
 
-    The call runs on a worker thread inside :func:`egress_checked_lookups`, so
-    every host the driver resolves — not only the pinned seed — is checked.
+    The call runs on the bounded SDK pool (:mod:`app.ingestion.sdk_executor`)
+    inside :func:`egress_checked_lookups`, so every host the driver resolves —
+    not only the pinned seed — is checked.
     """
-    import asyncio
+    from app.ingestion.sdk_executor import run_blocking
 
     def _call() -> T:
         with egress_checked_lookups(context):
             return func(*args, **kwargs)
 
-    return await asyncio.to_thread(_call)
+    return await run_blocking(_call)
 
 
 def _is_ip_literal(host: str) -> bool:

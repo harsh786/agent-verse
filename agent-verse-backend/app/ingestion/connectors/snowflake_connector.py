@@ -5,6 +5,9 @@ Modes:
   - stream: Snowflake Streams for CDC (INSERT/UPDATE/DELETE tracking)
 
 Cursor: last row's ORDER BY column value (typically a timestamp).
+
+snowflake-connector-python is blocking: connect, execute, fetch and close run on
+the SDK pool (:mod:`app.ingestion.sdk_executor`), never on the event loop.
 """
 
 from __future__ import annotations
@@ -12,15 +15,19 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import iterate_blocking, run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+# Rows fetched per round-trip while streaming a result set.
+_FETCH_CHUNK = 500
 
 
 def _row_to_text(row: dict) -> str:
@@ -41,19 +48,25 @@ class SnowflakeConnector(BaseConnector):
             import snowflake.connector  # type: ignore[import-not-found]
 
             cc = config.connection_config
-            conn = snowflake.connector.connect(
-                user=cc.get("user"),
-                password=cc.get("password"),
-                account=cc.get("account"),
-                warehouse=cc.get("warehouse"),
-                database=cc.get("database"),
-                schema=cc.get("schema", "PUBLIC"),
-                login_timeout=10,
-            )
-            cur = conn.cursor()
-            cur.execute("SELECT CURRENT_VERSION()")
-            version = cur.fetchone()[0]
-            conn.close()
+
+            def _version() -> Any:
+                conn = snowflake.connector.connect(
+                    user=cc.get("user"),
+                    password=cc.get("password"),
+                    account=cc.get("account"),
+                    warehouse=cc.get("warehouse"),
+                    database=cc.get("database"),
+                    schema=cc.get("schema", "PUBLIC"),
+                    login_timeout=10,
+                )
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT CURRENT_VERSION()")
+                    return cur.fetchone()[0]
+                finally:
+                    conn.close()
+
+            version = await run_blocking(_version)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"version": version})
         except ImportError:
@@ -78,7 +91,21 @@ class SnowflakeConnector(BaseConnector):
         cursor_col = cc.get("cursor_column", "UPDATED_AT")
         batch_size = int(cc.get("batch_size", 1000))
 
-        conn = snowflake.connector.connect(
+        if mode == "stream":
+            stream_name = cc.get("stream_name", "")
+            sql = f"SELECT * FROM {stream_name}"
+            if cursor:
+                sql += f" WHERE {cursor_col} > '{cursor}'"
+            sql += f" LIMIT {batch_size}"
+        else:
+            sql = query
+            if cursor and "{cursor}" in sql:
+                sql = sql.replace("{cursor}", cursor)
+            elif cursor:
+                sql += f" WHERE {cursor_col} > '{cursor}' LIMIT {batch_size}"
+
+        conn = await run_blocking(
+            snowflake.connector.connect,
             user=cc.get("user"),
             password=cc.get("password"),
             account=cc.get("account"),
@@ -88,22 +115,11 @@ class SnowflakeConnector(BaseConnector):
         )
         try:
             cur = conn.cursor(snowflake.connector.DictCursor)
-            if mode == "stream":
-                stream_name = cc.get("stream_name", "")
-                sql = f"SELECT * FROM {stream_name}"
-                if cursor:
-                    sql += f" WHERE {cursor_col} > '{cursor}'"
-                sql += f" LIMIT {batch_size}"
-            else:
-                sql = query
-                if cursor and "{cursor}" in sql:
-                    sql = sql.replace("{cursor}", cursor)
-                elif cursor:
-                    sql += f" WHERE {cursor_col} > '{cursor}' LIMIT {batch_size}"
-
-            cur.execute(sql)
+            await run_blocking(cur.execute, sql)
             new_cursor = cursor or ""
-            for row in cur:
+            # The cursor fetches result chunks lazily over the network: page it in
+            # on the pool so the result still streams.
+            async for row in iterate_blocking(cur, chunk_size=_FETCH_CHUNK):
                 row_dict = dict(row)
                 new_cursor = str(row_dict.get(cursor_col, new_cursor))
                 text = _row_to_text(row_dict)
@@ -118,4 +134,4 @@ class SnowflakeConnector(BaseConnector):
                 )
                 yield doc, new_cursor
         finally:
-            conn.close()
+            await run_blocking(conn.close)

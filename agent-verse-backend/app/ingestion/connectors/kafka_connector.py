@@ -21,6 +21,7 @@ from app.ingestion.connector_egress import (
     require_pinnable_driver,
 )
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -82,9 +83,13 @@ class KafkaConnector(BaseConnector):
 
             cc = config.connection_config
             bootstrap = await asyncio.to_thread(_require_bootstrap, cc)
-            admin = AdminClient({"bootstrap.servers": bootstrap})
-            metadata = admin.list_topics(timeout=10)
-            _check_advertised_brokers(metadata)
+            def _metadata() -> Any:
+                metadata = AdminClient({"bootstrap.servers": bootstrap}).list_topics(timeout=10)
+                _check_advertised_brokers(metadata)
+                return metadata
+
+            # librdkafka calls block (up to the 10s timeout): keep them off the loop.
+            metadata = await run_blocking(_metadata)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
                 ok=True,
@@ -166,8 +171,7 @@ class KafkaConnector(BaseConnector):
                 consumer.close()
             return msgs
 
-        loop = asyncio.get_event_loop()
-        messages = await loop.run_in_executor(None, _consume_batch)
+        messages = await run_blocking(_consume_batch)
 
         new_cursor = cursor or ""
         for m in messages:

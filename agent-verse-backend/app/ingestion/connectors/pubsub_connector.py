@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -38,9 +39,13 @@ class PubSubConnector(BaseConnector):
             cc = config.connection_config
             project = cc.get("project", "")
             sub_name = cc.get("subscription", "")
-            subscriber = pubsub_v1.SubscriberClient()
             full_sub = f"projects/{project}/subscriptions/{sub_name}"
-            subscriber.get_subscription(subscription=full_sub)
+
+            def _probe() -> None:
+                subscriber = pubsub_v1.SubscriberClient()
+                subscriber.get_subscription(subscription=full_sub)
+
+            await run_blocking(_probe)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
                 ok=True, latency_ms=latency, metadata={"project": project, "subscription": sub_name}
@@ -60,8 +65,6 @@ class PubSubConnector(BaseConnector):
         except ImportError:
             _log.error("google-cloud-pubsub not installed")
             return
-
-        import asyncio
 
         cc = config.connection_config
         project = cc.get("project", "")
@@ -83,8 +86,7 @@ class PubSubConnector(BaseConnector):
                 subscriber.acknowledge(subscription=full_sub, ack_ids=ack_ids)
             return messages
 
-        loop = asyncio.get_event_loop()
-        messages = await loop.run_in_executor(None, _pull)
+        messages = await run_blocking(_pull)
 
         new_cursor = cursor or sub_name
         for data, attrs, msg_id in messages:

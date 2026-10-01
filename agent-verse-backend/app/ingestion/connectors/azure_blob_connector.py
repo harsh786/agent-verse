@@ -146,15 +146,18 @@ class AzureBlobConnector(BaseConnector):
                 account_key = config.connection_config.get("account_key", "")
                 container = config.connection_config.get("container", "")
 
-                if conn_str:
-                    client = BlobServiceClient.from_connection_string(conn_str)
-                else:
-                    client = BlobServiceClient(
-                        account_url=f"https://{account_name}.blob.core.windows.net",
-                        credential=account_key,
-                    )
-                cc = client.get_container_client(container)
-                props = cc.get_container_properties()
+                def _properties() -> Any:
+                    if conn_str:
+                        client = BlobServiceClient.from_connection_string(conn_str)
+                    else:
+                        client = BlobServiceClient(
+                            account_url=f"https://{account_name}.blob.core.windows.net",
+                            credential=account_key,
+                        )
+                    return client.get_container_client(container).get_container_properties()
+
+                # Blocking SDK: off the event loop, and a redirect is egress-checked.
+                props = await run_driver_call(_properties, context="azure_blob")
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
                 ok=True,
