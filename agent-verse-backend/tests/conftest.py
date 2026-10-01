@@ -208,6 +208,21 @@ def _restore_guardrail_rule_repository():
 
 
 @pytest.fixture(autouse=True)
+def _restore_model_registry_store():
+    """Undo a shared model-registry store bound during a test.
+
+    ``run_goal`` and the API lifespan bind the process-global store to Redis
+    (the test env's Redis is unreachable); left bound, every later routing-policy
+    or configured-model call in the run answers 503 "store unavailable".
+    """
+    from app.ai_router import registry_store
+
+    saved = registry_store._store
+    yield
+    registry_store._store = saved
+
+
+@pytest.fixture(autouse=True)
 def _reset_ip_rate_limit_windows():
     """Reset the in-process per-IP limiter (signup / SSO token endpoints).
 

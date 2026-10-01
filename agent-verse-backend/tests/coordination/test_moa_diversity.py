@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 import pytest
+import structlog
 from structlog.testing import capture_logs
 
 from tests.coordination.pattern_run_support import (
@@ -51,9 +52,16 @@ async def _run_moa(state: Any, session_id: str, **options: Any) -> dict[str, Any
 
 
 @pytest.mark.asyncio
-async def test_single_model_is_labelled_personas_and_warned() -> None:
+async def test_single_model_is_labelled_personas_and_warned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.coordination.pattern_runs import moa as moa_module
+
     state = pattern_state(NamedProvider("only-model"))
     session_id = await active_session(state)
+    # A module-level structlog logger caches its processors on first use, so an
+    # earlier test can leave it outside capture_logs(); give it a fresh proxy.
+    monkeypatch.setattr(moa_module, "logger", structlog.get_logger(moa_module.__name__))
     with capture_logs() as logs:
         result = await _run_moa(state, session_id)
     assert result["phase"] == "completed"

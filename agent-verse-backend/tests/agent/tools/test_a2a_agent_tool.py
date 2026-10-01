@@ -50,10 +50,11 @@ def test_registered_with_the_builtin_agent_tools() -> None:
 
 
 def test_a_tenant_registers_its_agent_as_the_a2a_connector() -> None:
-    """POST /connectors name="A2A Agent" adopts the canonical id + tool list."""
-    from app.api.connectors import _get_builtin_config_for_name
+    """POST /connectors name="A2A Agent" resolves to the A2A built-in type."""
+    from app.api.connectors import _builtin_config_for_type, _infer_builtin_type
 
-    cfg = _get_builtin_config_for_name("A2A Agent")
+    assert _infer_builtin_type("A2A Agent") == "builtin-a2a"
+    cfg = _builtin_config_for_type("builtin-a2a")
     assert cfg is not None and cfg["server_id"] == "builtin-a2a"
 
 

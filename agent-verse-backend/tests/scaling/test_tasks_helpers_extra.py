@@ -213,10 +213,12 @@ def test_run_async_handles_dispose_task_engine_failure() -> None:
     async def _coro() -> str:
         return "result"
 
-    # Inject a failing dispose_task_engine
-    fake_db_session = MagicMock()
-    fake_db_session.dispose_task_engine = AsyncMock(side_effect=RuntimeError("no engine"))
-    with patch.dict("sys.modules", {"app.db.session": fake_db_session}):
+    # _run_async delegates to run_in_fresh_loop; a failing engine disposal in
+    # its teardown must not mask the task's result.
+    with patch(
+        "app.db.session.dispose_task_engine",
+        AsyncMock(side_effect=RuntimeError("no engine")),
+    ):
         result = tasks._run_async(_coro())
     assert result == "result"
 
