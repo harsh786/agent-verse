@@ -653,13 +653,21 @@ async def test_emergency_stop(mock_svc: MagicMock) -> None:
     """POST /v1/org/{id}/emergency-stop persists the flag (no TTL) for an org admin."""
     app = _make_app(mock_svc)
     app.state._redis = MagicMock(set=AsyncMock(), sadd=AsyncMock())
-    with patch("app.org.rbac._resolve_actor_role", return_value="org_admin"):
+    with (
+        patch("app.org.rbac._resolve_actor_role", return_value="org_admin"),
+        patch(
+            "app.scaling.tasks.cancel_goals_for_emergency_stop.apply_async"
+        ) as enqueue,
+    ):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             resp = await c.post(f"/v1/org/{ORG_ID}/emergency-stop")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "stopped"
     app.state._redis.set.assert_awaited_once()
+    # INC-04: the org's running goals are cancelled (off the request path).
+    assert data["goal_cancellation"] == "enqueued"
+    assert enqueue.call_args.kwargs["kwargs"]["org_id"] == ORG_ID
     assert app.state._redis.set.await_args.args[0] == f"emergency_stop:{TENANT_ID}:{ORG_ID}"
     assert "ex" not in app.state._redis.set.await_args.kwargs  # lasts until resumed
     # WF-17: indexed in the tenant's org-stop SET read by the worker start check.

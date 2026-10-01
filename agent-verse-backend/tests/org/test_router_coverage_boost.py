@@ -1081,7 +1081,8 @@ class TestEmergencyStop:
         redis.set = AsyncMock()
         redis.sadd = AsyncMock()
         test_app.state._redis = redis
-        r = await client.post(f"/v1/org/{ORG_ID}/emergency-stop")
+        with patch("app.scaling.tasks.cancel_goals_for_emergency_stop.apply_async"):
+            r = await client.post(f"/v1/org/{ORG_ID}/emergency-stop")
         assert r.status_code == 200
         redis.set.assert_awaited()
         redis.sadd.assert_awaited()

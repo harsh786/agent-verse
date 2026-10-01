@@ -45,6 +45,18 @@ def org_stop_key(tenant_id: str, org_id: str) -> str:
     return f"emergency_stop:{tenant_id}:{org_id}"
 
 
+def stop_channel(tenant_id: str) -> str:
+    """Pub/sub channel announcing a newly activated stop of *tenant_id* (or one of
+    its orgs). Runners subscribe so a stop interrupts them immediately instead of
+    at their next poll; the persisted flag stays the source of truth (INC-04)."""
+    return f"emergency_stop:activated:{tenant_id}"
+
+
+def _tenant_of_key(key: str) -> str:
+    prefix = "emergency_stop:"
+    return key[len(prefix) :].split(":", 1)[0] if key.startswith(prefix) else ""
+
+
 def _is_set(value: Any) -> bool:
     """A Redis flag value (bytes/str/int). Anything else (e.g. a mock) is unset."""
     return isinstance(value, (bytes, str, int)) and bool(value)
@@ -187,6 +199,14 @@ async def activate_stop(
         await redis.set(key, json.dumps(record))
     except Exception as exc:
         raise EmergencyStopUnavailableError(str(exc)) from exc
+    # Interrupt running goals now (they also re-read the flag at every step
+    # boundary and signal poll, so a lost announcement only costs latency).
+    tenant_id = _tenant_of_key(key)
+    if tenant_id:
+        try:
+            await redis.publish(stop_channel(tenant_id), key)
+        except Exception as exc:
+            _log.warning("emergency_stop_announce_failed", key=key, error=str(exc))
     return record
 
 
@@ -258,9 +278,13 @@ async def enforce_emergency_stop(
 
 
 def enforce_emergency_stop_sync(
-    redis: Any, tenant_id: str, org_id: str | None = None
+    redis: Any, tenant_id: str, org_id: str | None = None, *, org_unverified: bool = False
 ) -> str | None:
-    """Sync (Celery worker) variant of :func:`enforce_emergency_stop`."""
+    """Sync (Celery worker) variant of :func:`enforce_emergency_stop`.
+
+    ``org_unverified``: the goal's org could not be read. While any org of the
+    tenant is stopped such a goal is stopped too (fail closed, INC-04).
+    """
     if redis is None:
         return None
     try:
@@ -268,6 +292,8 @@ def enforce_emergency_stop_sync(
             return TENANT_STOP_REASON
         if org_id and _is_set(redis.get(org_stop_key(tenant_id, str(org_id)))):
             return ORG_STOP_REASON
+        if not org_id and org_unverified and _stopped_org_ids_sync(redis, tenant_id):
+            return ORG_UNVERIFIED_REASON
     except Exception as exc:
         _log.warning("emergency_stop_check_failed", tenant_id=tenant_id, error=str(exc))
         return UNVERIFIABLE_REASON
@@ -291,3 +317,71 @@ async def goal_org_id(db_factory: Any, tenant_id: str, goal_id: str) -> str | No
             )
         ).fetchone()
     return str(row[0]) if row and row[0] else None
+
+
+async def cancel_goals_under_stop(
+    db_factory: Any,
+    redis: Any,
+    tenant_id: str,
+    org_id: str | None = None,
+    *,
+    batch_size: int = 500,
+) -> dict[str, int]:
+    """Cancel every non-terminal goal of the tenant (or of one org) in keyset batches.
+
+    Runs off the request path (Celery). Per batch: the Redis cancel flag reaches
+    each goal's runner on any replica/worker, then one conditional UPDATE marks the
+    batch cancelled (a goal that finished meanwhile keeps its real status).
+    Returns ``{"scanned": n, "cancelled": m, "signal_failures": k}``; a DB error
+    propagates so the task is retried (the stop flag still halts the goals).
+    """
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.reliability.goal_lifecycle import signal_cancel
+
+    org_clause = " AND execution_context->>'org_id' = :org" if org_id else ""
+    select_sql = (
+        "SELECT id FROM goals WHERE tenant_id = :tid "
+        "AND status NOT IN ('complete', 'failed', 'cancelled') AND id > :after"
+        f"{org_clause} ORDER BY id LIMIT :lim"
+    )
+    update_sql = (
+        "UPDATE goals SET status = 'cancelled', "
+        "error_message = 'Cancelled by emergency stop' "
+        "WHERE tenant_id = :tid AND id = ANY(:ids) "
+        "AND status NOT IN ('complete', 'failed', 'cancelled')"
+    )
+    after = ""
+    scanned = cancelled = signal_failures = 0
+    while True:
+        params: dict[str, Any] = {"tid": tenant_id, "after": after, "lim": batch_size}
+        if org_id:
+            params["org"] = str(org_id)
+        async with db_factory() as session, session.begin():  # noqa: SIM117
+            async with sqlalchemy_rls_context(session, tenant_id):
+                ids = [str(r[0]) for r in (await session.execute(text(select_sql), params))]
+        if not ids:
+            break
+        scanned += len(ids)
+        for gid in ids:
+            try:
+                await signal_cancel(gid, redis, strict=True)
+            except Exception:
+                signal_failures += 1
+        async with db_factory() as session, session.begin():  # noqa: SIM117
+            async with sqlalchemy_rls_context(session, tenant_id):
+                res = await session.execute(text(update_sql), {"tid": tenant_id, "ids": ids})
+                cancelled += int(getattr(res, "rowcount", 0) or 0)
+        after = ids[-1]
+        if len(ids) < batch_size:
+            break
+    _log.info(
+        "emergency_stop_goals_cancelled",
+        tenant_id=tenant_id,
+        org_id=org_id,
+        scanned=scanned,
+        cancelled=cancelled,
+        signal_failures=signal_failures,
+    )
+    return {"scanned": scanned, "cancelled": cancelled, "signal_failures": signal_failures}

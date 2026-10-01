@@ -2048,6 +2048,33 @@ async def org_emergency_stop(
                 "nothing was stopped",
             ) from exc
 
+        # Mark the org's non-terminal goals cancelled off the request path (keyset
+        # batches on a worker). The flag above already halts them at their next
+        # step / signal poll wherever they run; this records the cancellation.
+        cancellation = "enqueued"
+        try:
+            import asyncio as _asyncio
+
+            from app.scaling.tasks import cancel_goals_for_emergency_stop
+
+            # Bounded: an unreachable broker must not hold the stop response.
+            await _asyncio.wait_for(
+                _asyncio.to_thread(
+                    cancel_goals_for_emergency_stop.apply_async,
+                    kwargs={"tenant_id": tenant_id, "org_id": org_id},
+                    retry=False,
+                ),
+                timeout=5.0,
+            )
+        except Exception as exc:
+            cancellation = "not_enqueued"
+            _log.error(
+                "org.emergency_stop_cancel_enqueue_failed",
+                tenant_id=tenant_id,
+                org_id=org_id,
+                error=type(exc).__name__,
+            )
+
         _log.warning(
             "org.emergency_stop_activated",
             tenant_id=tenant_id,
@@ -2057,6 +2084,7 @@ async def org_emergency_stop(
         return {
             "status": "stopped",
             "org_id": org_id,
+            "goal_cancellation": cancellation,
             "message": (
                 "All autonomous work of this organisation is stopped until resumed: "
                 "no new goal starts and running goals halt at their next step."

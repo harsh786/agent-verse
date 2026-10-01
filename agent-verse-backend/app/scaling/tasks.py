@@ -817,6 +817,7 @@ def _make_worker_pause_gate(
     *,
     tenant_id: str | None = None,
     org_id: str | None = None,
+    org_unverified: bool = False,
 ) -> Any:
     """Step-boundary gate for worker runs, driven by the cross-replica Redis flags.
 
@@ -836,7 +837,9 @@ def _make_worker_pause_gate(
         if is_cancelled_sync(goal_id, sync_r):
             raise GoalCancelledError(f"Goal {goal_id} cancelled")
         if tenant_id:
-            _stop = enforce_emergency_stop_sync(sync_r, tenant_id, org_id)
+            _stop = enforce_emergency_stop_sync(
+                sync_r, tenant_id, org_id, org_unverified=org_unverified
+            )
             if _stop:
                 raise GoalCancelledError(f"Goal {goal_id} stopped: {_stop}")
         if not is_paused_sync(goal_id, sync_r):
@@ -860,8 +863,16 @@ async def _run_with_signals(
     event_callback: Any,
     goal_id: str,
     initial_context: dict[str, Any] | None = None,
+    *,
+    org_id: str | None = None,
+    org_unverified: bool = False,
 ) -> Any:
     """Run agent_runner.run() while observing cross-replica pause/cancel signals.
+
+    *org_id* is the goal's organisation (``goals.execution_context.org_id``,
+    resolved by ``run_goal``): an org emergency stop halts the run too; with
+    *org_unverified* (the org could not be read) any org stop of the tenant
+    does. A stop's pub/sub announcement wakes the poll immediately (INC-04).
 
     The signals are the Redis flags any API replica sets (``pause_goal`` /
     ``cancel_goal`` / ``resume_goal``, app/reliability/goal_lifecycle.py).
@@ -874,13 +885,10 @@ async def _run_with_signals(
       the flag is cleared — never mid tool call, and the run continues where it
       stopped. Legacy runners without a gate fall back to cancel-and-rerun.
     """
-    from app.governance.emergency_stop import enforce_emergency_stop_sync
-    from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
-
     sync_r = _get_sync_redis()
     gate_host = _pause_gate_host(agent_runner)
     _tenant_id = getattr(tenant_ctx, "tenant_id", None)
-    _org = (initial_context or {}).get("org_id")
+    _org = org_id or (initial_context or {}).get("org_id")
     _org_id = str(_org) if _org else None
     if gate_host is not None and sync_r is not None:
         gate_host._pause_gate = _make_worker_pause_gate(
@@ -889,6 +897,7 @@ async def _run_with_signals(
             event_callback,
             tenant_id=_tenant_id,
             org_id=_org_id,
+            org_unverified=org_unverified,
         )
 
     run_task = asyncio.create_task(
@@ -901,8 +910,97 @@ async def _run_with_signals(
         )
     )
 
+    wake = asyncio.Event()
+    listener = (
+        asyncio.create_task(_listen_for_emergency_stop(_tenant_id, wake))
+        if _tenant_id and sync_r is not None
+        else None
+    )
+    try:
+        return await _signal_poll_loop(
+            run_task,
+            wake,
+            sync_r=sync_r,
+            gate_host=gate_host,
+            agent_runner=agent_runner,
+            goal=goal,
+            tenant_ctx=tenant_ctx,
+            event_callback=event_callback,
+            goal_id=goal_id,
+            initial_context=initial_context,
+            tenant_id=_tenant_id,
+            org_id=_org_id,
+            org_unverified=org_unverified,
+        )
+    finally:
+        if listener is not None:
+            listener.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await listener
+
+
+async def _listen_for_emergency_stop(tenant_id: str, wake: asyncio.Event) -> None:
+    """Set *wake* whenever a stop of *tenant_id* (or one of its orgs) is announced.
+
+    Best effort: without Redis pub/sub the run still sees the persisted flag at
+    its next poll / step boundary.
+    """
+    from app.governance.emergency_stop import stop_channel
+
+    redis = _worker_async_redis()
+    if redis is None:
+        return
+    pubsub = None
+    try:
+        pubsub = redis.pubsub()
+        await pubsub.subscribe(stop_channel(tenant_id))
+        while True:
+            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if msg is not None and msg.get("type") == "message":
+                wake.set()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.warning("emergency_stop_listen_failed: %s", type(exc).__name__)
+    finally:
+        if pubsub is not None:
+            with contextlib.suppress(Exception):
+                await pubsub.aclose()
+        with contextlib.suppress(Exception):
+            await redis.aclose()
+
+
+async def _signal_poll_loop(
+    run_task: Any,
+    wake: asyncio.Event,
+    *,
+    sync_r: Any,
+    gate_host: Any,
+    agent_runner: Any,
+    goal: str,
+    tenant_ctx: Any,
+    event_callback: Any,
+    goal_id: str,
+    initial_context: dict[str, Any] | None,
+    tenant_id: str | None,
+    org_id: str | None,
+    org_unverified: bool = False,
+) -> Any:
+    from app.governance.emergency_stop import enforce_emergency_stop_sync
+    from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
+
+    _tenant_id, _org_id = tenant_id, org_id
     while not run_task.done():
-        await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
+        # Sleep one poll interval — or less, when a stop is announced or the run ends.
+        waiter = asyncio.ensure_future(wake.wait())
+        with contextlib.suppress(Exception):
+            await asyncio.wait(
+                {run_task, waiter},
+                timeout=_WORKER_SIGNAL_POLL_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        waiter.cancel()
+        wake.clear()
         # Re-check: task may have completed during the sleep
         if run_task.done():
             break
@@ -916,7 +1014,13 @@ async def _run_with_signals(
             # Emergency stop (tenant/org), fail closed like the step gate: it used
             # to be polled nowhere here, so a runner without a step gate — or one
             # stuck in a long step — ran on through a stop (CORE-13).
-            _stop = enforce_emergency_stop_sync(sync_r, _tenant_id, _org_id) if _tenant_id else None
+            _stop = (
+                enforce_emergency_stop_sync(
+                    sync_r, _tenant_id, _org_id, org_unverified=org_unverified
+                )
+                if _tenant_id
+                else None
+            )
             if _stop:
                 run_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -2324,6 +2428,15 @@ def run_goal(
     from app.db.session import get_session_factory as _es_sf
     from app.governance import emergency_stop as _es
 
+    # The goal's org, resolved by the start check when an org of the tenant is
+    # stopped; the run's step gate / signal poll get it too (INC-04).
+    _goal_org_id: str | None = None
+
+    def _resolve_goal_org() -> str | None:
+        nonlocal _goal_org_id
+        _goal_org_id = _run_async(_es.goal_org_id(_es_sf(), tenant_id, goal_id))
+        return _goal_org_id
+
     # WF-16: an unreadable stop state is not "not stopped". Retry the task with
     # backoff; after the last retry record the goal as blocked — never run it.
     _es_error: Exception | None = None
@@ -2332,7 +2445,7 @@ def run_goal(
         _stop_reason = _es.emergency_stop_reason_sync(
             _lock_r,
             tenant_id,
-            resolve_org_id=lambda: _run_async(_es.goal_org_id(_es_sf(), tenant_id, goal_id)),
+            resolve_org_id=_resolve_goal_org,
         )
     except Exception as _es_exc:
         logger.error("emergency_stop_check_failed goal_id=%s: %s", goal_id, _es_exc)
@@ -3801,6 +3914,8 @@ def run_goal(
                     worker_event_callback,
                     goal_id,
                     initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
+                    org_id=_goal_org_id or _worker_exec_ctx.get("org_id"),
+                    org_unverified=_worker_ctx_unreadable and not _goal_org_id,
                 ),
                 timeout=float(goal_timeout_s),
             )
@@ -7674,6 +7789,42 @@ def flush_audit_wal() -> dict:
             return {"error": str(exc), "flushed": 0}
 
     return _run_async(_run())
+
+
+@celery_app.task(
+    name="app.scaling.tasks.cancel_goals_for_emergency_stop",
+    queue="maintenance",
+    bind=True,
+    max_retries=5,
+)  # type: ignore[untyped-decorator]
+def cancel_goals_for_emergency_stop(
+    self: Any, tenant_id: str, org_id: str | None = None
+) -> dict[str, Any]:
+    """Cancel every non-terminal goal of a stopped tenant / org, in keyset batches.
+
+    Enqueued by the emergency-stop endpoints so a tenant with many goals is not
+    cancelled inside the HTTP request. Idempotent (re-running skips terminal
+    goals); a DB error retries with backoff.
+    """
+
+    async def _run() -> dict[str, Any]:
+        from app.db.session import get_session_factory
+        from app.governance.emergency_stop import cancel_goals_under_stop
+
+        redis = _worker_async_redis()
+        try:
+            return await cancel_goals_under_stop(get_session_factory(), redis, tenant_id, org_id)
+        finally:
+            if redis is not None:
+                with contextlib.suppress(Exception):
+                    await redis.aclose()
+
+    try:
+        result: dict[str, Any] = _run_async(_run())
+    except Exception as exc:
+        logger.warning("emergency_stop_cancel_task_failed: %s", type(exc).__name__)
+        raise self.retry(exc=exc, countdown=min(60, 2 ** (self.request.retries + 1))) from exc
+    return result
 
 
 @celery_app.task(name="app.scaling.tasks.scan_cost_anomalies", queue="maintenance")
