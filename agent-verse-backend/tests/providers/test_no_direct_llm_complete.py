@@ -36,6 +36,10 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "observability/traced_provider.py::TracedProvider.complete": (1, _TRACING),
     "api/goals.py::submit_goal": (1, _NOT_LLM + " (idempotency record)"),
     "scaling/memory_tasks.py::process_due_memories": (1, _NOT_LLM + " (prospective memory)"),
+    "memory/prospective_runtime.py::fire_due_intentions": (
+        1,
+        _NOT_LLM + " (ProspectiveMemoryService.complete marks an intention done)",
+    ),
     # ── pending, owned by later items of this wave ────────────────────────────
     "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _OWNED),
 }
