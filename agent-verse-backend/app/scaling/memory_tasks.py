@@ -27,11 +27,9 @@ async def purge_expired_memories(
     ``expires_at`` was previously only filtered at *read* time, so expired
     memories lingered in storage indefinitely. This drives the repository's
     tenant-scoped hard delete (the Postgres implementation runs inside its RLS
-    context). Returns the number of rows removed.
-
-    FOLLOW-UP: register this as a periodic Celery beat entry. It is intentionally
-    not wired into app/scaling/celery_app.py here to avoid editing the shared
-    beat schedule; expose it as a task and add the beat registration separately.
+    context). Returns the number of rows removed. Scheduled daily per tenant by
+    ``app.scaling.tasks.purge_expired_canonical_memories`` (MEM-16); due
+    prospective intentions are fired by ``process_due_prospective_memories``.
     """
     when = now if now is not None else datetime.now(UTC)
     return await repository.purge_expired(tenant_id, now=when)

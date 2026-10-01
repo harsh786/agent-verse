@@ -1424,6 +1424,10 @@ def create_app(
                 from app.memory.prospective import ProspectiveMemoryService
 
                 app.state.prospective_memory_service = ProspectiveMemoryService()
+            # The builtin-memory agent tool (defer_intention) uses the same store.
+            from app.memory.prospective_runtime import set_prospective_service
+
+            set_prospective_service(app.state.prospective_memory_service)
             app.state.learning_experiment_service = LearningExperimentService()
 
             # Grantex tool-grant store (governance enforcement at the executor gate).
@@ -2790,6 +2794,9 @@ def create_app(
     from app.memory.prospective import ProspectiveMemoryService
 
     app.state.prospective_memory_service = ProspectiveMemoryService()
+    from app.memory.prospective_runtime import set_prospective_service
+
+    set_prospective_service(app.state.prospective_memory_service)
     app.state.learning_experiment_service = LearningExperimentService()
     from app.governance.grants import InMemoryGrantStore
 

@@ -22,6 +22,7 @@ import {
   type MemoryRecordItem,
 } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
+import { DeferredIntentionsPanel } from './DeferredIntentionsPanel';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
@@ -870,6 +871,9 @@ export function MemoryExplorerPage() {
             </div>
           )}
         </div>
+
+        {/* ── Deferred intentions (prospective memory, MEM-16) ─────────────────── */}
+        <DeferredIntentionsPanel />
 
         {/* ── Section 4: Execution Memory ─────────────────────────────────────── */}
         <div className="bg-panel-graphite border border-neural-violet/20 rounded-xl overflow-hidden">

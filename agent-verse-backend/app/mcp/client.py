@@ -737,13 +737,19 @@ class MCPClient:
             try:
                 sig = inspect.signature(handler)
                 accepts_credentials = "credentials" in sig.parameters
+                accepts_tenant = "tenant_ctx" in sig.parameters
             except (ValueError, TypeError):
                 accepts_credentials = False
+                accepts_tenant = False
 
+            extra: dict[str, Any] = {}
             if accepts_credentials:
-                output = await handler(tool_name, arguments, credentials=credentials)
-            else:
-                output = await handler(tool_name, arguments)
+                extra["credentials"] = credentials
+            if accepts_tenant:
+                # Tenant-bound built-ins (e.g. builtin-memory, MEM-16) act only
+                # for the calling tenant.
+                extra["tenant_ctx"] = tenant_ctx
+            output = await handler(tool_name, arguments, **extra)
         except Exception as exc:
             return ToolCallResult(
                 tool_name=tool_name,

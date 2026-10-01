@@ -6594,6 +6594,144 @@ except Exception as _cm_sched_exc:  # pragma: no cover - defensive
     logger.warning("canonical_memory_maintenance beat registration failed: %s", _cm_sched_exc)
 
 
+async def _submit_intention_as_goal(item: Any, plan: str) -> dict[str, Any]:
+    """Run a due prospective intention as a goal for its tenant (MEM-16)."""
+    from app.tenancy.context import PlanTier, TenantContext
+
+    goal_service, _ = _build_worker_goal_service()
+    if goal_service is None:
+        raise RuntimeError("goal service unavailable on this worker")
+    try:
+        tier = PlanTier(plan)
+    except ValueError:
+        tier = PlanTier.FREE  # least privilege for an unknown plan value
+    ctx = TenantContext(tenant_id=item.tenant_id, plan=tier, api_key_id="prospective-memory")
+    result = await goal_service.submit_goal(
+        goal=f"Deferred intention: {item.intention}",
+        priority="normal",
+        dry_run=False,
+        tenant_ctx=ctx,
+        agent_id=(item.policy_snapshot or {}).get("agent_id"),
+        execution_context={
+            "source": "prospective_memory",
+            "prospective_memory_id": item.memory_id,
+            "source_goal_id": item.source_goal_id,
+        },
+    )
+    return {"goal_id": str((result or {}).get("goal_id") or "")}
+
+
+@celery_app.task(name="agentverse.memory.process_due_prospective")
+def process_due_prospective_memories(max_per_tenant: int = 50) -> dict:
+    """Fire due prospective intentions (MEM-16).
+
+    Active tenants with due intentions are found on the maintenance factory;
+    per tenant the Postgres service (tenant RLS) leases the due items with
+    fencing tokens, each is submitted as a goal for that tenant and marked
+    completed with the goal id. A failed submission stays leased and is
+    retried after the lease expires. A scan failure fails the task.
+    """
+
+    async def _run() -> dict:
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+        from app.db.session import get_session_factory, get_system_session_factory
+        from app.memory.prospective_postgres import PostgresProspectiveMemoryService
+        from app.memory.prospective_runtime import fire_due_intentions
+
+        system_db = get_system_session_factory()
+        async with system_db() as session, session.begin(), system_session(session):
+            due = (
+                await session.execute(
+                    text(
+                        "SELECT DISTINCT p.tenant_id, t.plan_tier FROM prospective_memory p "
+                        "JOIN tenants t ON t.id = p.tenant_id "
+                        "WHERE t.is_active AND p.state IN ('pending', 'leased') "
+                        "AND p.due_at <= now()"
+                    )
+                )
+            ).fetchall()
+        service = PostgresProspectiveMemoryService(get_session_factory())
+        totals = {"tenants": len(due), "fired": 0, "failed_tenants": 0}
+        for tenant_id, plan in due:
+            plan_value = str(plan or "free")
+
+            async def _submit(item: Any, _plan: str = plan_value) -> dict[str, Any]:
+                return await _submit_intention_as_goal(item, _plan)
+
+            try:
+                fired = await fire_due_intentions(
+                    service,
+                    tenant_id=str(tenant_id),
+                    submit=_submit,
+                    maximum_items=max_per_tenant,
+                )
+                totals["fired"] += len(fired)
+            except Exception as exc:
+                totals["failed_tenants"] += 1
+                logger.warning("prospective_tenant_failed tenant=%s: %s", tenant_id, exc)
+        return totals
+
+    return cast(dict, _run_async(_run()))
+
+
+@celery_app.task(name="agentverse.memory.purge_expired_canonical")
+def purge_expired_canonical_memories() -> dict:
+    """Hard-delete expired canonical memory records per tenant (retention)."""
+
+    async def _run() -> dict:
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+        from app.db.session import get_session_factory, get_system_session_factory
+        from app.scaling.memory_tasks import purge_expired_memories
+
+        system_db = get_system_session_factory()
+        async with system_db() as session, session.begin(), system_session(session):
+            tenants = [
+                str(r[0])
+                for r in (
+                    await session.execute(
+                        text(
+                            "SELECT DISTINCT tenant_id FROM memory_records "
+                            "WHERE expires_at IS NOT NULL AND expires_at <= now()"
+                        )
+                    )
+                ).fetchall()
+            ]
+        repo = _canonical_memory_repository(get_session_factory())
+        purged = 0
+        for tenant_id in tenants:
+            purged += await purge_expired_memories(repo, tenant_id=tenant_id)
+        return {"tenants": len(tenants), "purged": purged}
+
+    return cast(dict, _run_async(_run()))
+
+
+try:
+    from celery.schedules import crontab as _pm_crontab
+
+    celery_app.conf.beat_schedule["process-due-prospective-memories"] = {
+        "task": "agentverse.memory.process_due_prospective",
+        "schedule": _pm_crontab(minute="*/5"),
+        "options": {"queue": "maintenance"},
+    }
+    celery_app.conf.beat_schedule["purge-expired-canonical-memories-daily"] = {
+        "task": "agentverse.memory.purge_expired_canonical",
+        "schedule": _pm_crontab(hour=4, minute=15),
+        "options": {"queue": "maintenance"},
+    }
+    celery_app.conf.task_routes.update(
+        {
+            "agentverse.memory.process_due_prospective": {"queue": "maintenance"},
+            "agentverse.memory.purge_expired_canonical": {"queue": "maintenance"},
+        }
+    )
+except Exception as _pm_sched_exc:  # pragma: no cover - defensive
+    logger.warning("prospective memory beat registration failed: %s", _pm_sched_exc)
+
+
 @celery_app.task(name="agentverse.maintenance.reindex_stale_knowledge")
 def reindex_stale_knowledge() -> dict:
     """Retired — deliberately does nothing and is NOT on the beat schedule.

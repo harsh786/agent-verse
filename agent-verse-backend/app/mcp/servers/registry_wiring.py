@@ -392,6 +392,7 @@ def get_builtin_server_configs() -> list[dict]:
         zoom_server,
         zuora_server,
     )
+    from app.memory import prospective_runtime as _prospective_runtime
 
     raw_configs = [
         # ── Original ──────────────────────────────────────────────────────────
@@ -429,6 +430,16 @@ def get_builtin_server_configs() -> list[dict]:
             "description": utility_server.SERVER_DESCRIPTION,
             "tool_definitions": utility_server.TOOL_DEFINITIONS,
             "handler": utility_server.call_tool,
+            "requires_env": [],
+        },
+        # ── Agent memory: defer intentions to later (MEM-16) ──────────────────
+        # Tenant-bound handler (MCPClient passes the caller's tenant_ctx).
+        {
+            "server_id": _prospective_runtime.SERVER_ID,
+            "name": _prospective_runtime.SERVER_NAME,
+            "description": _prospective_runtime.SERVER_DESCRIPTION,
+            "tool_definitions": _prospective_runtime.TOOL_DEFINITIONS,
+            "handler": _prospective_runtime.call_tool,
             "requires_env": [],
         },
         # ── Outbound A2A delegation (tenant-registered agent only) ────────────

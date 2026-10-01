@@ -1515,6 +1515,18 @@ export interface MemoryRecordItem {
   updated_at: string | null;
 }
 
+/** A deferred intention (prospective memory) — runs as a goal when due. */
+export interface ProspectiveIntention {
+  id: string;
+  intention: string;
+  due_at: string;
+  expires_at: string;
+  state: string;
+  source_goal_id: string;
+  agent_id: string | null;
+  result: Record<string, unknown> | null;
+}
+
 export interface MemoryRecordsResponse {
   records: MemoryRecordItem[];
   total: number;
@@ -1545,6 +1557,14 @@ export const memoryApi = {
     request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>(
       `/memory/execution?limit=${params.limit ?? 50}&offset=${params.offset ?? 0}`,
     ),
+  listIntentions: () => request<ProspectiveIntention[]>("/memory/prospective"),
+  createIntention: (data: { intention: string; due_at: string; expires_at?: string }) =>
+    request<ProspectiveIntention>("/memory/prospective", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  cancelIntention: (id: string) =>
+    request<void>(`/memory/prospective/${encodeURIComponent(id)}`, { method: "DELETE" }),
   /** Canonical governed records categorized by memory_kind with goal-linkage + TTL. */
   listRecords: (opts: { kind?: MemoryKind; goalId?: string; limit?: number } = {}) => {
     const params = new URLSearchParams();

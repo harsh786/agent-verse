@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -445,6 +446,90 @@ class UpdateMemoryRequest(BaseModel):
 
 
 _UPDATABLE_MEMORY_FIELDS = ("content", "memory_type", "confidence", "tags")
+
+
+class CreateIntentionRequest(BaseModel):
+    intention: str = Field(min_length=1, max_length=2000)
+    due_at: datetime
+    expires_at: datetime | None = None
+    agent_id: str | None = None
+    idempotency_key: str | None = Field(default=None, max_length=200)
+
+
+def _prospective_service(request: Request) -> Any:
+    svc = getattr(request.app.state, "prospective_memory_service", None)
+    if svc is None:
+        raise HTTPException(503, "Prospective memory is not available")
+    return svc
+
+
+@router.post("/prospective", status_code=201)
+async def create_prospective_intention(request: Request, body: CreateIntentionRequest) -> dict:
+    """Schedule a deferred intention; it runs as a goal for this tenant when due (MEM-16)."""
+    from app.memory.long_term import LongTermMemoryBlockedError, LongTermMemoryUnavailableError
+    from app.memory.prospective_runtime import (
+        ProspectiveIntentionError,
+        create_intention,
+        intention_json,
+    )
+
+    tenant = _require_tenant(request)
+    try:
+        item = await create_intention(
+            _prospective_service(request),
+            tenant_id=tenant.tenant_id,
+            intention=body.intention,
+            due_at=body.due_at,
+            expires_at=body.expires_at,
+            agent_id=body.agent_id,
+            idempotency_key=body.idempotency_key,
+        )
+    except ProspectiveIntentionError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except LongTermMemoryBlockedError as exc:
+        raise HTTPException(422, "Intention rejected by the memory-write guardrail") from exc
+    except LongTermMemoryUnavailableError as exc:
+        raise HTTPException(503, "Memory-write guardrail unavailable; nothing stored") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _db_unavailable("create_prospective_intention", exc) from exc
+    return intention_json(item)
+
+
+@router.get("/prospective")
+async def list_prospective_intentions(request: Request) -> list[dict]:
+    """The tenant's pending (non-terminal, unexpired) intentions, due first."""
+    from datetime import UTC
+
+    from app.memory.prospective_runtime import intention_json
+
+    tenant = _require_tenant(request)
+    try:
+        items = await _prospective_service(request).list_active(
+            tenant.tenant_id, now=datetime.now(UTC)
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _db_unavailable("list_prospective_intentions", exc) from exc
+    return [intention_json(i) for i in items]
+
+
+@router.delete("/prospective/{intention_id}", status_code=204)
+async def cancel_prospective_intention(request: Request, intention_id: str) -> None:
+    tenant = _require_tenant(request)
+    svc = _prospective_service(request)
+    try:
+        if await svc.get(tenant.tenant_id, intention_id) is None:
+            raise HTTPException(404, "Intention not found")
+        await svc.cancel(tenant.tenant_id, intention_id, reason="cancelled by user")
+    except HTTPException:
+        raise
+    except (KeyError, LookupError) as exc:
+        raise HTTPException(404, "Intention not found") from exc
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.patch("/{memory_id}")

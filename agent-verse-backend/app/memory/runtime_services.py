@@ -12,7 +12,7 @@ from typing import Any
 
 
 def build_memory_graph_services(db_factory: Any, embedder: Any = None) -> dict[str, Any]:
-    """``{episodic_memory, procedural_memory, tool_reliability_store}`` for a graph.
+    """``{episodic_memory, procedural_memory, tool_reliability_store[, prospective_service]}``.
 
     All three are DB-wired when *db_factory* is given (tenant-scoped under RLS);
     without one they are per-process, which only the DB-less dev/test build uses.
@@ -21,8 +21,14 @@ def build_memory_graph_services(db_factory: Any, embedder: Any = None) -> dict[s
     from app.memory.procedural import ProceduralMemoryStore
     from app.memory.tool_reliability import ToolReliabilityStore
 
-    return {
+    services: dict[str, Any] = {
         "episodic_memory": EpisodicMemoryStore(db_factory=db_factory, embedder=embedder),
         "procedural_memory": ProceduralMemoryStore(db_factory=db_factory),
         "tool_reliability_store": ToolReliabilityStore(db_session_factory=db_factory),
     }
+    if db_factory is not None:
+        # MEM-16: the planner surfaces due/pending intentions on worker goals too.
+        from app.memory.prospective_postgres import PostgresProspectiveMemoryService
+
+        services["prospective_service"] = PostgresProspectiveMemoryService(db_factory)
+    return services
