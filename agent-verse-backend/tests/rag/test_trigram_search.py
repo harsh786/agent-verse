@@ -210,6 +210,8 @@ class _LexicalFakeSession:
         self.calls.append((sql, params or {}))
         if self.raise_on and self.raise_on in sql:
             raise RuntimeError(f"syntax error at or near \"{(params or {}).get('q', '')}\"")
+        if "FROM knowledge_collections" in sql:
+            return _Result([(1536,)])  # the tenant's collection (ownership check)
         if "ts_rank_cd" in sql:
             return _Result(self.fts_rows)
         if "similarity(content" in sql:

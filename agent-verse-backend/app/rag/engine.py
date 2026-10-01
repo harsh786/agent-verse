@@ -404,23 +404,35 @@ async def hybrid_search(
     Returns:
         Fused and sorted list of RetrievalResult
     """
-    # Determine table name — query collection's embedding_dim when not provided (C6 fix).
+    # Argument checks that need no database round-trip come first.
+    if embedding_dim is not None and embedding_dim not in _SUPPORTED_EMBEDDING_DIMENSIONS:
+        if strict:
+            raise RetrievalLegExecutionError("collection_metadata")
+        logger.warning("unsupported_embedding_dimension", embedding_dim=embedding_dim)
+        return []
+    if strict and retrieval_mode in ("hybrid", "vector") and not query_embedding:
+        raise RetrievalLegExecutionError("vector")
+
+    # Ownership check FIRST, on every path (also when the caller already knows
+    # the dimension): the collection must belong to the session's tenant. On a
+    # BYPASSRLS connection RLS would not stop the chunk legs reading another
+    # tenant's collection; this check and the per-leg tenant predicate below do.
+    try:
+        stored_dim = await _collection_metadata(session, collection_id, "embedding_dim")
+    except LookupError:
+        # Not the caller's collection (or gone): nothing to search, and never a
+        # guessed table.
+        logger.warning("collection_not_found_for_tenant", collection_id=collection_id)
+        return []
+    except Exception as exc:
+        if strict:
+            raise RetrievalLegExecutionError("collection_metadata") from exc
+        logger.warning("collection_metadata_unreadable", collection_id=collection_id)
+        return []
+    # Determine table name — the collection's embedding_dim when not provided (C6 fix).
     # Never guess 1536: a collection built by a 768/1024-dim embedder would be
     # searched in the wrong table and silently return nothing.
     if embedding_dim is None:
-        try:
-            stored_dim = await _collection_metadata(session, collection_id, "embedding_dim")
-        except LookupError:
-            # Not the caller's collection (or gone): nothing to search. Never
-            # fall through to a guessed table — the chunk legs would then read
-            # another tenant's collection on a BYPASSRLS connection.
-            logger.warning("collection_not_found_for_tenant", collection_id=collection_id)
-            return []
-        except Exception as exc:
-            if strict:
-                raise RetrievalLegExecutionError("collection_metadata") from exc
-            logger.warning("collection_metadata_unreadable", collection_id=collection_id)
-            return []
         if stored_dim:
             embedding_dim = stored_dim
         elif query_embedding:
@@ -453,7 +465,14 @@ async def hybrid_search(
         f"CAST(:emb AS halfvec({embedding_dim}))" if _use_halfvec else "CAST(:emb AS vector)"
     )
     metadata_clause = " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
-    live_chunk_clause = " AND (expires_at IS NULL OR expires_at > now())"
+    # Every chunk leg (binary prefilter, vector, FTS, trigram, BM25 corpus probe
+    # and scan) carries this clause: live chunks of the session's OWN tenant.
+    # The tenant predicate mirrors the RLS policy so a SUPERUSER / BYPASSRLS
+    # connection cannot return another tenant's chunks.
+    live_chunk_clause = (
+        " AND tenant_id = current_setting('app.tenant_id', TRUE)"
+        " AND (expires_at IS NULL OR expires_at > now())"
+    )
     metadata_params = {"metadata_filter": json.dumps(metadata_filter)} if metadata_filter else {}
 
     # Per-leg result dicts: chunk_id → (content, metadata, rank)
@@ -461,9 +480,6 @@ async def hybrid_search(
     fts_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
     trgm_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
     bm25_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
-
-    if strict and retrieval_mode in ("hybrid", "vector") and not query_embedding:
-        raise RetrievalLegExecutionError("vector")
 
     # Leg 1: pgvector ANN
     vector_started = time.perf_counter()

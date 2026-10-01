@@ -188,8 +188,17 @@ class TestRetrievalResultDataclass:
 async def test_strict_hybrid_search_propagates_required_leg_failure() -> None:
     from app.rag.engine import RetrievalLegExecutionError, hybrid_search
 
+    owned = MagicMock()
+    owned.fetchone.return_value = (1536,)
+
+    async def execute(statement: object, params: object = None) -> object:
+        # The collection-ownership check succeeds; the first leg then fails.
+        if "FROM knowledge_collections" in str(statement):
+            return owned
+        raise RuntimeError("database unavailable")
+
     session = AsyncMock()
-    session.execute.side_effect = RuntimeError("database unavailable")
+    session.execute.side_effect = execute
 
     with pytest.raises(RetrievalLegExecutionError, match="fts"):
         await hybrid_search(
@@ -223,7 +232,8 @@ async def test_strict_hybrid_search_distinguishes_legitimate_zero_results() -> N
     )
 
     assert results == []
-    assert session.execute.await_count == 2
+    # Collection-ownership check + the FTS and trigram legs.
+    assert session.execute.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -564,8 +574,9 @@ async def test_metadata_filter_is_bound_in_sql_before_leg_limits() -> None:
         strict=True,
     )
 
-    assert session.execute.await_count == 2
-    for call in session.execute.await_args_list:
+    # The first call is the collection-ownership check; then the two legs.
+    assert session.execute.await_count == 3
+    for call in session.execute.await_args_list[1:]:
         statement = str(call.args[0])
         params = call.args[1]
         assert "metadata @> CAST(:metadata_filter AS jsonb)" in statement
@@ -803,7 +814,9 @@ class ScriptedSession:
         if self.raise_on and self.raise_on in sql:
             raise RuntimeError(f"boom:{self.raise_on}")
         if "embedding_dim FROM knowledge_collections" in sql:
-            return _FakeCursorResult([self.embedding_dim_row] if self.embedding_dim_row else [])
+            # The collection exists for the session's tenant (the ownership
+            # check hybrid_search runs on every path).
+            return _FakeCursorResult([self.embedding_dim_row or (1536,)])
         if "set_config" in sql:
             return _FakeCursorResult([])
         if "<=>" in sql:
