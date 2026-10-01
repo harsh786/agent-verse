@@ -156,3 +156,42 @@ async def test_purge_on_the_application_role_fails_loudly(pg: tuple[str, str]) -
 
     with pytest.raises(DBAPIError):  # "query would be affected by row-level security"
         await StrategyEvidenceStore(_factory(app_url)).purge_expired(now=NOW)
+
+
+async def test_one_scheduled_run_drains_250k_expired_rows(pg: tuple[str, str]) -> None:
+    """CORE-36: the purge keeps up with write volume — one run removes the backlog."""
+    _, admin_url = pg
+    from app.orchestration.evidence_maintenance import purge_expired_strategy_evidence_once
+
+    conn = await asyncpg.connect(_dsn(admin_url))
+    try:
+        await conn.execute(
+            "INSERT INTO strategy_certification_evidence (id, tenant_id, strategy_id, "
+            "adapter_version, state_schema_version, evidence_type, result, "
+            "artifact_reference, observed_at, expires_at, details) "
+            "SELECT md5(g::text || random()::text), $1, 'react', '1.0.0', 1, "
+            "'production_run', 'passed', 'goal:x', now() - interval '40 days', "
+            "now() - interval '10 days', '{}'::jsonb FROM generate_series(1, 250000) AS g",
+            TENANT,
+        )
+        live_before = await conn.fetchval(
+            "SELECT count(*) FROM strategy_certification_evidence WHERE expires_at > now()"
+        )
+    finally:
+        await conn.close()
+
+    out = await purge_expired_strategy_evidence_once(_factory(admin_url))
+    assert out["drained"] is True and out["deleted"] >= 250_000
+
+    conn = await asyncpg.connect(_dsn(admin_url))
+    try:
+        expired = await conn.fetchval(
+            "SELECT count(*) FROM strategy_certification_evidence WHERE expires_at <= now()"
+        )
+        live_after = await conn.fetchval(
+            "SELECT count(*) FROM strategy_certification_evidence WHERE expires_at > now()"
+        )
+    finally:
+        await conn.close()
+    assert expired == 0
+    assert live_after == live_before  # unexpired evidence untouched

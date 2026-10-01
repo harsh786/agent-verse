@@ -235,23 +235,57 @@ class StrategyEvidenceStore:
         """
         if self._db is None:
             return 0
-        from sqlalchemy import text
-
-        from app.db.rls import system_session
-
         cutoff = now or datetime.now(UTC)
         total = 0
         for _ in range(max(1, int(max_batches))):
-            async with self._db() as session, session.begin(), system_session(session):
-                result = await session.execute(
-                    text(self.purge_batch_query),
-                    {"now": cutoff, "batch_size": max(1, int(batch_size))},
-                )
-                deleted = int(getattr(result, "rowcount", 0) or 0)
+            deleted = await self._purge_batch(cutoff, batch_size)
             total += deleted
             if deleted < batch_size:
                 break
         return total
+
+    async def purge_until_drained(
+        self,
+        *,
+        now: datetime | None = None,
+        batch_size: int = 5000,
+        time_budget_s: float = 240.0,
+        clock: Any = None,
+    ) -> tuple[int, bool]:
+        """Delete expired evidence until a batch comes back short; ``(deleted, drained)``.
+
+        CORE-36: a fixed batch cap (100k rows/day) fell behind one-row-per-goal
+        write volume at scale. This keeps deleting committed, index-ordered
+        batches until the backlog is gone, bounded by *time_budget_s* so one run
+        cannot hold a maintenance worker forever; ``drained=False`` tells the
+        caller to continue in a fresh run. Raises on a DB error.
+        """
+        import time
+
+        tick = clock or time.monotonic
+        cutoff = now or datetime.now(UTC)
+        deadline = tick() + max(0.0, float(time_budget_s))
+        total = 0
+        while True:
+            deleted = await self._purge_batch(cutoff, batch_size)
+            total += deleted
+            if deleted < batch_size:
+                return total, True
+            if tick() >= deadline:
+                return total, False
+
+    async def _purge_batch(self, cutoff: datetime, batch_size: int) -> int:
+        """One committed DELETE of at most *batch_size* expired rows (system role)."""
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+
+        async with self._db() as session, session.begin(), system_session(session):
+            result = await session.execute(
+                text(self.purge_batch_query),
+                {"now": cutoff, "batch_size": max(1, int(batch_size))},
+            )
+            return int(getattr(result, "rowcount", 0) or 0)
 
     @staticmethod
     def is_current(expires_at: datetime, now: datetime) -> bool:

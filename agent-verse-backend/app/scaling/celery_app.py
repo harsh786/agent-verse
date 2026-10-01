@@ -244,7 +244,9 @@ celery_app.conf.update(
         },
         "purge-expired-strategy-evidence": {
             "task": "agentverse.maintenance.purge_expired_strategy_evidence",
-            "schedule": crontab(hour=4, minute=15),  # daily, off-peak
+            # Hourly: one row per strategy per finished goal must be purged at
+            # write rate (CORE-36); each run drains the backlog (time-boxed).
+            "schedule": crontab(minute=15),
             "options": {"queue": "maintenance"},
         },
         "expire-hitl-approvals": {
