@@ -50,7 +50,6 @@ class CivilizationOrchestrator:
         blackboard: Any,  # Blackboard
         goal_service: Any = None,
         debate_orchestrator: Any = None,
-        supervisor_agent: Any = None,
         learning_pipeline: Any = None,
         db_session_factory: Any = None,
         redis: Any = None,
@@ -66,7 +65,6 @@ class CivilizationOrchestrator:
         self._blackboard = blackboard
         self._goal_service = goal_service
         self._debate = debate_orchestrator
-        self._supervisor = supervisor_agent
         self._learning = learning_pipeline
         self._db = db_session_factory
         self._redis = redis
@@ -75,16 +73,22 @@ class CivilizationOrchestrator:
 
     async def submit_goal(self, goal: str, priority: str = "normal") -> dict:
         """Route an incoming goal into the civilization society."""
-        # Check if paused
+        # Check if paused. An unreadable pause flag refuses (503): a paused
+        # civilization must never be waved through by a Redis hiccup.
         if self._governor is not None and self._redis is not None:
-            from app.scaling.tasks import _get_sync_redis
-
             try:
-                sync_r = _get_sync_redis()
-                if self._governor.is_paused_sync(sync_r):
-                    return {"status": "rejected", "reason": "Civilization is paused"}
-            except Exception:
-                pass
+                paused = await self._governor.is_paused()
+            except Exception as exc:
+                logger.warning(
+                    "orchestrator_pause_check_failed",
+                    civilization_id=self._civ_id,
+                    error=type(exc).__name__,
+                )
+                raise CivilizationGoalUnavailableError(
+                    "civilization pause state could not be read"
+                ) from exc
+            if paused:
+                return {"status": "rejected", "reason": "Civilization is paused"}
 
         goal_id = f"civ_{uuid.uuid4().hex}"
 
@@ -109,60 +113,48 @@ class CivilizationOrchestrator:
         )
 
         # Dispatch based on routing mode
-        if mode == "needs_new_agent":
+        if mode == "needs_new_agent" and self._governor is not None:
             # Governor will spawn a new agent
-            if self._governor is not None:
-                from app.civilization.models import SpawnDecision
+            from app.civilization.models import SpawnDecision
 
-                verdict = await self._governor.evaluate_spawn_request(
-                    requester_agent_id="orchestrator",
+            verdict = await self._governor.evaluate_spawn_request(
+                requester_agent_id="orchestrator",
+                requested_capability=goal[:100],
+                goal_text=goal,
+                depth=0,
+                parent_budget_usd=self._constitution.per_agent_budget_usd,
+                parent_policy_ids=list(self._constitution.inherited_policy_ids),
+                tenant_ctx=self._tenant_ctx,
+            )
+            if verdict.decision == SpawnDecision.APPROVED:
+                agent_record = await self._governor.spawn_agent(
+                    verdict=verdict,
                     requested_capability=goal[:100],
                     goal_text=goal,
+                    requester_agent_id="orchestrator",
                     depth=0,
-                    parent_budget_usd=self._constitution.per_agent_budget_usd,
-                    parent_policy_ids=list(self._constitution.inherited_policy_ids),
                     tenant_ctx=self._tenant_ctx,
                 )
-                if verdict.decision == SpawnDecision.APPROVED:
-                    agent_record = await self._governor.spawn_agent(
-                        verdict=verdict,
-                        requested_capability=goal[:100],
-                        goal_text=goal,
-                        requester_agent_id="orchestrator",
-                        depth=0,
-                        tenant_ctx=self._tenant_ctx,
-                    )
-                    agent_id = agent_record.get("agent_id")
-                    await emit_event(
-                        civilization_id=self._civ_id,
-                        tenant_id=self._tenant_id,
-                        event_type=CivEventType.AGENT_SPAWNED,
-                        payload={"agent_id": agent_id, "goal": goal[:200], "depth": 0},
-                        db=self._db,
-                        redis=self._redis,
-                    )
-                else:
-                    return {
-                        "status": "rejected",
-                        "reason": verdict.reason,
-                        "goal_id": goal_id,
-                    }
-
-        elif mode == "multi_agent" and self._supervisor is not None:
-            # SupervisorAgent decomposes and dispatches in parallel
-            try:
-                result = await self._supervisor.run(goal=goal, tenant_ctx=self._tenant_ctx)
+                agent_id = agent_record.get("agent_id")
+                await emit_event(
+                    civilization_id=self._civ_id,
+                    tenant_id=self._tenant_id,
+                    event_type=CivEventType.AGENT_SPAWNED,
+                    payload={"agent_id": agent_id, "goal": goal[:200], "depth": 0},
+                    db=self._db,
+                    redis=self._redis,
+                )
+            else:
                 return {
-                    "status": "accepted",
-                    "mode": "multi_agent",
+                    "status": "rejected",
+                    "reason": verdict.reason,
                     "goal_id": goal_id,
-                    "supervisor_result": getattr(result, "synthesis", str(result))[:500],
                 }
-            except Exception as exc:
-                logger.warning("orchestrator_supervisor_failed", error=str(exc))
-                # Fall through to single agent
 
-        # Submit goal via GoalService for the selected agent
+        # Submit goal via GoalService for the selected agent. A multi-agent goal
+        # is a supervisor-strategy goal: it is queued to a worker (per-plan queue,
+        # bulkhead, checkpointing) like every other goal, never run inline here.
+        workflow_mode = "supervisor" if mode == "multi_agent" else "single_agent"
         # — first, enrich execution_context with blackboard knowledge
         blackboard_context: list[dict] = []
         if self._blackboard is not None:
@@ -192,6 +184,7 @@ class CivilizationOrchestrator:
                 agent_id=agent_id,
                 priority=priority,
                 dry_run=False,
+                workflow_mode=workflow_mode,
                 execution_context={
                     "civilization_id": self._civ_id,
                     "orchestrator_goal_id": goal_id,

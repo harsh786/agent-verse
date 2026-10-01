@@ -325,6 +325,13 @@ class Governor:
         except Exception:
             pass
 
+    async def is_paused(self) -> bool:
+        """Async pause-flag read for request paths; a Redis error propagates."""
+        if self._redis is None:
+            return False
+        value = await self._redis.get(f"civ_paused:{self._tenant_id}:{self._civilization_id}")
+        return bool(value)
+
     def is_paused_sync(self, redis_sync: Any) -> bool:
         """Synchronous check for Celery workers."""
         if redis_sync is None:

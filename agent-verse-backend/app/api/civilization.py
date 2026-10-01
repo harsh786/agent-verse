@@ -185,25 +185,6 @@ def _build_orchestrator(
     except Exception:
         pass
 
-    # GAP 5: Wire SupervisorAgent
-    supervisor = None
-    try:
-        provider = getattr(request.app.state, "_app_provider", None)
-        if provider is not None:
-            from app.agent.supervisor import SupervisorAgent
-
-            goal_svc = getattr(request.app.state, "goal_service", None)
-            from app.providers.guarded_completion import GuardedDecisionProvider
-
-            supervisor = SupervisorAgent(
-                planner_provider=GuardedDecisionProvider(
-                    provider, role="supervisor", tenant_id=tenant_id
-                ),
-                goal_service=goal_svc,
-            )
-    except Exception:
-        pass
-
     return CivilizationOrchestrator(
         civilization_id=civilization_id,
         tenant_id=tenant_id,
@@ -215,7 +196,6 @@ def _build_orchestrator(
         learning_pipeline=learning,
         goal_service=getattr(request.app.state, "goal_service", None),
         debate_orchestrator=debate_orch,
-        supervisor_agent=supervisor,
         db_session_factory=db,
         redis=redis,
         tenant_ctx=tenant_ctx,

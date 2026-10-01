@@ -32,6 +32,7 @@ def _make_orchestrator(**kwargs) -> CivilizationOrchestrator:
 
     mock_governor = AsyncMock()
     mock_governor.is_paused_sync = MagicMock(return_value=False)
+    mock_governor.is_paused = AsyncMock(return_value=False)
     mock_governor.check_breach = AsyncMock(
         return_value=MagicMock(breached=False, reasons=[])
     )
@@ -71,20 +72,34 @@ async def test_submit_goal_accepted():
 @pytest.mark.asyncio
 async def test_submit_goal_rejected_when_paused():
     mock_gov = AsyncMock()
-    mock_gov.is_paused_sync = MagicMock(return_value=True)
-
-    import sys
-
-    sys.modules.setdefault(
-        "app.scaling.tasks",
-        MagicMock(_get_sync_redis=MagicMock(return_value=MagicMock())),
-    )
+    mock_gov.is_paused = AsyncMock(return_value=True)
 
     orch = _make_orchestrator(governor=mock_gov)
     orch._redis = MagicMock()
 
     result = await orch.submit_goal("some goal")
     assert result["status"] == "rejected"
+    orch._goal_service.submit_goal.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_goal_paused_check_fails_closed_when_redis_errors():
+    """ORG-37: an unreadable pause flag refuses (503) instead of waving the goal through."""
+    from app.civilization.governor import Governor
+    from app.civilization.orchestrator import CivilizationGoalUnavailableError
+
+    redis = AsyncMock()
+    redis.get = AsyncMock(side_effect=ConnectionError("redis down"))
+    gov = Governor(
+        constitution=Constitution(),
+        civilization_id="civ-1",
+        tenant_id="t1",
+        redis=redis,
+    )
+    orch = _make_orchestrator(governor=gov, redis=redis)
+    with pytest.raises(CivilizationGoalUnavailableError):
+        await orch.submit_goal("some goal")
+    orch._goal_service.submit_goal.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -286,8 +301,8 @@ async def test_trigger_debate_without_debate_orchestrator():
 
 
 @pytest.mark.asyncio
-async def test_submit_goal_multi_agent_mode():
-    """multi_agent mode dispatches to supervisor agent."""
+async def test_submit_goal_multi_agent_mode_enqueues_a_supervisor_goal():
+    """ORG-37: multi_agent goals go through GoalService (worker queue), never inline."""
     mock_society = AsyncMock()
     mock_society.route_goal = AsyncMock(return_value={
         "mode": "multi_agent",
@@ -295,52 +310,19 @@ async def test_submit_goal_multi_agent_mode():
         "confidence": 0.9,
         "reason": "multi-agent",
     })
-    mock_society.load_members = AsyncMock(return_value=[])
-    mock_society.get_metrics = AsyncMock(return_value={})
-    mock_society.get_lineage_graph = AsyncMock(return_value={"nodes": [], "edges": []})
-
-    mock_supervisor = AsyncMock()
-    supervisor_result = MagicMock(synthesis="Final answer from supervisor agents")
-    mock_supervisor.run = AsyncMock(return_value=supervisor_result)
 
     orch = _make_orchestrator(society=mock_society)
-    orch._supervisor = mock_supervisor
-
-    from app.tenancy.context import PlanTier, TenantContext
-    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
+    supervisor = AsyncMock()
+    orch._supervisor = supervisor  # a stale wiring must not be used inline
 
     result = await orch.submit_goal("Complex multi-step goal")
     assert result["status"] == "accepted"
     assert result["mode"] == "multi_agent"
-    mock_supervisor.run.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_submit_goal_multi_agent_supervisor_failure_falls_through():
-    """If supervisor raises, falls through to single agent path."""
-    mock_society = AsyncMock()
-    mock_society.route_goal = AsyncMock(return_value={
-        "mode": "multi_agent",
-        "agent_id": "fallback-agent",
-        "confidence": 0.7,
-        "reason": "multi-agent",
-    })
-    mock_society.load_members = AsyncMock(return_value=[])
-    mock_society.get_metrics = AsyncMock(return_value={})
-    mock_society.get_lineage_graph = AsyncMock(return_value={"nodes": [], "edges": []})
-
-    mock_supervisor = AsyncMock()
-    mock_supervisor.run = AsyncMock(side_effect=RuntimeError("Supervisor failed"))
-
-    orch = _make_orchestrator(society=mock_society)
-    orch._supervisor = mock_supervisor
-
-    from app.tenancy.context import PlanTier, TenantContext
-    orch._tenant_ctx = TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
-
-    result = await orch.submit_goal("Complex goal (supervisor will fail)")
-    # Falls through to single agent, so accepted
-    assert result["status"] == "accepted"
+    assert result["goal_id"] == "goal-from-service"
+    supervisor.run.assert_not_called()
+    kwargs = orch._goal_service.submit_goal.await_args.kwargs
+    assert kwargs["workflow_mode"] == "supervisor"
+    assert kwargs["dry_run"] is False
 
 
 @pytest.mark.asyncio
