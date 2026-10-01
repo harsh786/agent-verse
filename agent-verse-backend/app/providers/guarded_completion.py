@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import logging
 import os
 import uuid
 from collections.abc import Callable, Iterator
@@ -41,6 +42,12 @@ from typing import Any
 from app.providers.circuit_breaker import complete_with_failover
 
 _DEFAULT_TIMEOUT_S = 20.0
+_log = logging.getLogger(__name__)
+
+# Platform work that is deliberately not charged to any tenant. A decision call
+# outside a goal, with no tenant and no system job, is refused once cost
+# services are configured (PROV-05): it used to be silently free.
+SYSTEM_JOBS: frozenset[str] = frozenset({"model_probe"})
 
 
 class DecisionBudgetExceededError(RuntimeError):
@@ -104,6 +111,23 @@ def tenant_charge_scope(tenant_ctx: Any) -> Iterator[None]:
         _tenant_scope.reset(token)
 
 
+_system_job: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "agentverse_decision_system_job", default=None
+)
+
+
+@contextlib.contextmanager
+def system_job_scope(name: str) -> Iterator[None]:
+    """Run uncharged *platform* decision calls (``name`` must be in :data:`SYSTEM_JOBS`)."""
+    if name not in SYSTEM_JOBS:
+        raise ValueError(f"{name!r} is not an allowlisted system job")
+    token = _system_job.set(name)
+    try:
+        yield
+    finally:
+        _system_job.reset(token)
+
+
 def _timeout(explicit: float | None) -> float:
     if explicit is not None:
         return explicit
@@ -136,12 +160,31 @@ def _tenant(tenant_ctx: Any, tenant_id: str | None) -> Any:
 
 
 def _platform() -> tuple[Any, Any]:
+    """The configured cost services, ``(None, None)`` when none are registered.
+
+    A resolver that fails is an unknown budget: fail closed (it used to return
+    ``(None, None)`` so the charge was silently skipped).
+    """
     if _platform_services is None:
         return None, None
     try:
         return _platform_services()
-    except Exception:
-        return None, None
+    except Exception as exc:
+        _log.warning("decision_cost_services_unavailable: %s", str(exc)[:200])
+        raise DecisionBudgetExceededError(f"cost services unavailable: {exc}") from exc
+
+
+def _require_attribution(scope: _ChargeScope | None, tenant: Any) -> None:
+    """Refuse a call nobody can be charged for (outside a goal, no tenant, no system job)."""
+    if scope is not None or tenant is not None or _system_job.get() is not None:
+        return
+    controller, tracker = _platform()
+    if controller is None and tracker is None:
+        return  # no cost enforcement configured at all (bare library / unit-test use)
+    raise DecisionBudgetExceededError(
+        "no tenant to charge this LLM call to (run it in a goal, a tenant scope or a "
+        "system job)"
+    )
 
 
 async def _preflight(scope: _ChargeScope | None, tenant: Any) -> None:
@@ -276,6 +319,7 @@ async def complete_decision(
     scope = _scope.get()
     tenant = _tenant(tenant_ctx, tenant_id)
     if charge:
+        _require_attribution(scope, tenant)
         await _preflight(scope, tenant)
     resp = await complete_with_failover(
         provider, request, timeout_seconds=_timeout(timeout_seconds)

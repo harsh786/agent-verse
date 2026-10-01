@@ -16,6 +16,8 @@ import uuid
 from datetime import UTC
 from typing import Any, cast
 
+from celery.signals import task_postrun as _task_postrun
+from celery.signals import task_prerun as _task_prerun
 from celery.signals import worker_init as _worker_init
 
 from app.observability.logging import get_logger
@@ -122,6 +124,33 @@ def _setup_worker_checkpointer(**kwargs: Any) -> None:
         "celery_worker_checkpointer: using MemorySaver (in-process, no persistence)"
     )
     # _WORKER_CHECKPOINTER stays None → AgentGraph will use MemorySaver()
+
+    # PROV-05: one cost-services resolver per worker process (per-loop controller
+    # + ledger tracker), instead of a module global re-installed by every run_goal.
+    from app.scaling.worker_cost import install_worker_cost_services
+
+    install_worker_cost_services()
+
+
+@_task_prerun.connect
+def _enter_task_tenant_charge_scope(
+    task_id: str | None = None, task: Any = None, args: Any = None, kwargs: Any = None,
+    **_: Any,
+) -> None:
+    """Charge a tenant-serving task's out-of-goal LLM decision calls to that tenant."""
+    if task_id and task is not None:
+        from app.scaling.worker_cost import enter_task_tenant_scope
+
+        with contextlib.suppress(Exception):
+            enter_task_tenant_scope(task_id, task, args, kwargs)
+
+
+@_task_postrun.connect
+def _exit_task_tenant_charge_scope(task_id: str | None = None, **_: Any) -> None:
+    if task_id:
+        from app.scaling.worker_cost import exit_task_tenant_scope
+
+        exit_task_tenant_scope(task_id)
 
 
 class _SyncGoalLock:
@@ -2715,11 +2744,8 @@ def run_goal(
             if db_factory is not None:
                 _cost.set_budget_db(db_factory)
             # Decision calls outside the goal scope (e.g. post-run eval scoring)
-            # charge this worker's controller, like the API's lifespan wiring.
-            from app.providers.guarded_completion import set_platform_cost_services
-
-            _decision_cost = _cost
-            set_platform_cost_services(lambda: (_decision_cost, None))
+            # charge the worker's per-task cost services installed once at
+            # worker start (app.scaling.worker_cost) — never a per-run global.
 
             # Build a model router matched to the provider type so the graph
             # uses the correct model names (e.g. gpt-4-turbo not claude-opus-4-8).

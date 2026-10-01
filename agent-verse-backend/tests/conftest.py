@@ -557,3 +557,20 @@ def in_memory_goal_lock(monkeypatch: pytest.MonkeyPatch) -> _GuardLocks:
     locks = _GuardLocks()
     monkeypatch.setattr(tasks_mod, "_goal_lock_client", lambda _url: locks)
     return locks
+
+
+@pytest.fixture(autouse=True)
+def _restore_decision_cost_services():
+    """Unregister the process-global decision cost services after each test.
+
+    ``create_app()`` (and the worker's ``worker_init``) register them module-wide;
+    since PROV-05 a decision call with no goal / tenant is refused while they are
+    registered, so an app built by one test (or at module import) must not leak
+    them into the next. Each test starts unregistered; tests that need them
+    register them (or build an app) themselves.
+    """
+    from app.providers import guarded_completion as _gc
+
+    _gc.set_platform_cost_services(None)
+    yield
+    _gc.set_platform_cost_services(None)
