@@ -488,3 +488,65 @@ async def test_kafka_validate_is_off_loop(allow_unpinnable_drivers: None) -> Non
             lambda: KafkaConnector().validate_connection(_config("kafka", bootstrap_servers="db"))
         )
     assert health.ok, health.error
+
+
+# ── mqtt (MQTT-BLOCK) ─────────────────────────────────────────────────────────
+
+
+class _SlowMqttClient:
+    """paho's loop_stop() joins the network thread and disconnect() writes to the
+    socket — both block the caller (here: SLOW seconds each)."""
+
+    def __init__(self, *_a: Any, **_k: Any) -> None:
+        self.on_connect: Any = None
+        self.on_message: Any = None
+
+    def username_pw_set(self, *_a: Any) -> None: ...
+
+    def connect(self, *_a: Any) -> None:
+        time.sleep(SLOW)
+
+    def connect_async(self, *_a: Any) -> None: ...
+
+    def subscribe(self, *_a: Any, **_k: Any) -> None: ...
+
+    def loop_start(self) -> None:
+        if self.on_connect is not None:
+            self.on_connect(self, None, {}, 0)
+        if self.on_message is not None:
+            self.on_message(self, None, MagicMock(payload=b'{"t": 1}', topic="a/b", qos=0))
+
+    def loop_stop(self) -> None:
+        time.sleep(SLOW)
+
+    def disconnect(self) -> None:
+        time.sleep(SLOW)
+
+
+def _fake_paho() -> dict[str, ModuleType]:
+    paho = ModuleType("paho")
+    mqtt = ModuleType("paho.mqtt")
+    client_mod = ModuleType("paho.mqtt.client")
+    client_mod.Client = _SlowMqttClient  # type: ignore[attr-defined]
+    mqtt.client = client_mod  # type: ignore[attr-defined]
+    paho.mqtt = mqtt  # type: ignore[attr-defined]
+    return {"paho": paho, "paho.mqtt": mqtt, "paho.mqtt.client": client_mod}
+
+
+async def test_mqtt_validate_is_off_loop() -> None:
+    from app.ingestion.connectors.mqtt_connector import MQTTConnector
+
+    with patch.dict(sys.modules, _fake_paho()):
+        health = await _assert_off_loop(
+            lambda: MQTTConnector().validate_connection(_config("mqtt", host="db", port=1883))
+        )
+    assert health.ok, health.error
+
+
+async def test_mqtt_get_delta_is_off_loop() -> None:
+    from app.ingestion.connectors.mqtt_connector import MQTTConnector
+
+    cfg = _config("mqtt", host="db", port=1883, topics=["a/#"], timeout_seconds=0.05)
+    with patch.dict(sys.modules, _fake_paho()):
+        docs = await _assert_off_loop(lambda: _drain(MQTTConnector().get_delta(cfg, None)))
+    assert len(docs) == 1

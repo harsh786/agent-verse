@@ -19,6 +19,7 @@ from app.ingestion.base_connector import (
 )
 from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_hosts
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -31,6 +32,19 @@ def _payload_digest(payload: object) -> str:
     import hashlib
 
     return hashlib.sha256(str(payload).encode()).hexdigest()
+
+
+def _shutdown(client: Any) -> None:
+    """Stop paho's network thread and disconnect.
+
+    Both block the caller — ``loop_stop`` joins the network thread (up to its
+    select timeout) and ``disconnect`` writes to the socket — so this runs on the
+    SDK pool, never on the event loop. Runs even if the sync is cancelled.
+    """
+    try:
+        client.loop_stop()
+    finally:
+        client.disconnect()
 
 
 def _broker_host(cc: dict[str, Any]) -> str:
@@ -80,12 +94,13 @@ class MQTTConnector(BaseConnector):
                 client.on_connect = on_connect
                 client.connect_async(host, port, 10)
                 client.loop_start()
-                for _ in range(50):  # 5 second timeout
-                    if connected:
-                        break
-                    await asyncio.sleep(0.1)
-                client.loop_stop()
-                client.disconnect()
+                try:
+                    for _ in range(50):  # 5 second timeout
+                        if connected:
+                            break
+                        await asyncio.sleep(0.1)
+                finally:
+                    await run_blocking(_shutdown, client)
             latency = (time.perf_counter() - t0) * 1000
             if connected:
                 return ConnectionHealth(
@@ -122,7 +137,6 @@ class MQTTConnector(BaseConnector):
         timeout_seconds = float(cc.get("timeout_seconds", 10.0))
 
         messages: list[dict] = []
-        asyncio.Lock()
 
         def on_message(client, userdata, msg):
             payload = msg.payload
@@ -143,13 +157,14 @@ class MQTTConnector(BaseConnector):
             if cc.get("username"):
                 client.username_pw_set(cc["username"], cc.get("password", ""))
             client.on_message = on_message
-            await asyncio.to_thread(client.connect, host, port, 60)
-            for topic in topics:
-                client.subscribe(topic, qos=cc.get("qos", 0))
-            client.loop_start()
-            await asyncio.sleep(timeout_seconds)
-            client.loop_stop()
-            client.disconnect()
+            await run_blocking(client.connect, host, port, 60)
+            try:
+                for topic in topics:
+                    client.subscribe(topic, qos=cc.get("qos", 0))
+                client.loop_start()
+                await asyncio.sleep(timeout_seconds)
+            finally:
+                await run_blocking(_shutdown, client)
 
         import time as _time
 
