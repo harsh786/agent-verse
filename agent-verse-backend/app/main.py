@@ -1345,6 +1345,9 @@ def create_app(
             app.state.swarm_repository = PostgresSwarmRepository(db_factory)
             app.state.auction_repository = PostgresAuctionRepository(db_factory)
             app.state.auction_bid_inbox = PostgresSealedBidInbox(db_factory)
+            from app.coordination.auction.registry import PostgresAuctionRegistry
+
+            app.state.auction_registry = PostgresAuctionRegistry(db_factory)
             app.state.coordination_session_authorizer = DatabaseSessionAuthorizer(
                 lambda: db_factory
             )
@@ -2833,6 +2836,21 @@ def create_app(
     app.state.swarm_repository = InMemorySwarmRepository()
     app.state.auction_repository = InMemoryAuctionRepository()
     app.state.auction_bid_inbox = InMemorySealedBidInbox()
+    from app.coordination.auction.registry import (
+        AuctionRegistryService,
+        InMemoryAuctionRegistry,
+    )
+    from app.providers.vault import get_vault as _auction_vault
+
+    # AUCTION-KEYS: per-auction key registry (keys sealed with the vault); the
+    # getters pick up the lifespan's Postgres swaps.
+    app.state.auction_registry = InMemoryAuctionRegistry()
+    app.state.auction_registry_service = AuctionRegistryService(
+        registry=lambda: app.state.auction_registry,
+        bid_inbox=lambda: app.state.auction_bid_inbox,
+        read_model=lambda: getattr(app.state, "auction_repository", None),
+        vault=_auction_vault,
+    )
     app.state.magentic_human_review = MagenticHumanReviewService()
     app.state.magentic_run_repository = InMemoryMagenticRunRepository()
     app.state.moa_run_repository = InMemoryMoARunRepository()

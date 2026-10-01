@@ -404,4 +404,37 @@ for _table_name, _domain_columns in TABLE_COLUMNS.items():
     )
 
 
-__all__ = ["COORDINATION_TABLES", "TABLE_COLUMNS"]
+# Registry-backed sealed-bid auctions (AUCTION-KEYS): the announcement and public
+# key are public; ``sealed_keys`` is vault ciphertext of the auction's private key
+# and bidder signing secrets, bound to (tenant, auction). FORCE RLS per tenant.
+AUCTION_REGISTRY = sa.Table(
+    "auction_registry",
+    Base.metadata,
+    sa.Column("id", sa.String(32), primary_key=True),
+    sa.Column(
+        "tenant_id", sa.String(32), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    ),
+    sa.Column("session_id", sa.Text(), nullable=False),
+    sa.Column("state", sa.Text(), nullable=False),
+    sa.Column("deadline", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("announcement", JSONB(), nullable=False),
+    sa.Column("public_key", sa.Text(), nullable=False),
+    sa.Column("sealed_keys", sa.Text(), nullable=False),
+    sa.Column("result", JSONB(), nullable=True),
+    sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("idempotency_key", sa.Text(), nullable=False),
+    sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
+    sa.Column(
+        "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    ),
+    sa.Column(
+        "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+    ),
+    sa.UniqueConstraint(
+        "tenant_id", "session_id", "idempotency_key", name="uq_auction_registry_key"
+    ),
+    sa.Index("ix_auction_registry_tenant_session", "tenant_id", "session_id"),
+)
+
+
+__all__ = ["AUCTION_REGISTRY", "COORDINATION_TABLES", "TABLE_COLUMNS"]

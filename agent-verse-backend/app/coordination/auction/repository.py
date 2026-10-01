@@ -40,10 +40,28 @@ class SealedBidReceipt(BaseModel):
     idempotency_key: str
 
 
+class SealedEnvelope(BaseModel):
+    """One stored (still sealed) bid envelope, as the auctioneer reads it at close."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    bidder_digest: str
+    bid_version: int
+    ciphertext: str
+    nonce: str
+    signature: str
+    submitted_at: datetime
+
+
+def bidder_digest(bidder_id: str) -> str:
+    return hashlib.sha256(bidder_id.encode()).hexdigest()
+
+
 class InMemorySealedBidInbox:
     def __init__(self) -> None:
         self._receipts: dict[tuple[str, str], SealedBidReceipt] = {}
         self._versions: dict[tuple[str, str, str], int] = {}
+        self._envelopes: dict[tuple[str, str], list[SealedEnvelope]] = {}
         self._lock = asyncio.Lock()
 
     async def submit(
@@ -57,12 +75,14 @@ class InMemorySealedBidInbox:
         nonce: str,
         signature: str,
         idempotency_key: str,
+        auction_id: str | None = None,
     ) -> SealedBidReceipt:
         command = (tenant_id, idempotency_key)
+        auction = auction_id or session_id
         async with self._lock:
             if command in self._receipts:
                 return self._receipts[command]
-            bidder = (tenant_id, session_id, bidder_id)
+            bidder = (tenant_id, auction, bidder_id)
             if bid_version <= self._versions.get(bidder, 0):
                 raise ValueError("bid version must increase")
             digest = hashlib.sha256(f"{ciphertext}:{nonce}:{signature}".encode()).hexdigest()
@@ -77,7 +97,20 @@ class InMemorySealedBidInbox:
             )
             self._versions[bidder] = bid_version
             self._receipts[command] = receipt
+            self._envelopes.setdefault((tenant_id, auction), []).append(
+                SealedEnvelope(
+                    bidder_digest=bidder_digest(bidder_id),
+                    bid_version=bid_version,
+                    ciphertext=ciphertext,
+                    nonce=nonce,
+                    signature=signature,
+                    submitted_at=receipt.submitted_at,
+                )
+            )
             return receipt
+
+    async def envelopes(self, tenant_id: str, auction_id: str) -> tuple[SealedEnvelope, ...]:
+        return tuple(self._envelopes.get((tenant_id, auction_id), ()))
 
     async def count(self, tenant_id: str, session_id: str) -> int:
         return sum(
@@ -104,9 +137,13 @@ class PostgresSealedBidInbox:
         nonce: str,
         signature: str,
         idempotency_key: str,
+        auction_id: str | None = None,
     ) -> SealedBidReceipt:
         command_id = uuid.uuid5(uuid.NAMESPACE_URL, f"sealed-bid:{tenant_id}:{idempotency_key}").hex
-        bidder_digest = hashlib.sha256(bidder_id.encode()).hexdigest()
+        digest_of_bidder = bidder_digest(bidder_id)
+        # work_item_id carries the session; auction_id the registry auction (or the
+        # session for legacy, registry-less intake).
+        auction = auction_id or session_id
         envelope_digest = hashlib.sha256(f"{ciphertext}:{nonce}:{signature}".encode()).hexdigest()
         now = datetime.now(UTC)
         async with (
@@ -125,8 +162,8 @@ class PostgresSealedBidInbox:
                 await db.execute(
                     select(func.max(self._table.c.bid_version)).where(
                         self._table.c.tenant_id == tenant_id,
-                        self._table.c.auction_id == session_id,
-                        self._table.c.bidder_agent_id == bidder_digest,
+                        self._table.c.auction_id == auction,
+                        self._table.c.bidder_agent_id == digest_of_bidder,
                     )
                 )
             ).scalar_one_or_none()
@@ -137,10 +174,10 @@ class PostgresSealedBidInbox:
                     id=command_id,
                     tenant_id=tenant_id,
                     work_item_id=session_id,
-                    bidder_agent_id=bidder_digest,
+                    bidder_agent_id=digest_of_bidder,
                     sealed=True,
                     score=0,
-                    auction_id=session_id,
+                    auction_id=auction,
                     bid_version=bid_version,
                     governor_attestation="api-authenticated",
                     sealed_payload=ciphertext,
@@ -175,16 +212,48 @@ class PostgresSealedBidInbox:
                 .select_from(self._table)
                 .where(
                     self._table.c.tenant_id == tenant_id,
-                    self._table.c.auction_id == session_id,
+                    self._table.c.work_item_id == session_id,
                 )
             )
         return int(value or 0)
+
+    async def envelopes(self, tenant_id: str, auction_id: str) -> tuple[SealedEnvelope, ...]:
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            rows = (
+                (
+                    await db.execute(
+                        select(self._table)
+                        .where(
+                            self._table.c.tenant_id == tenant_id,
+                            self._table.c.auction_id == auction_id,
+                        )
+                        .order_by(self._table.c.created_at)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(
+            SealedEnvelope(
+                bidder_digest=str(row["bidder_agent_id"]),
+                bid_version=int(str(row["bid_version"])),
+                ciphertext=str(row["sealed_payload"]),
+                nonce=str(row["nonce"]),
+                signature=str(row["signature"]),
+                submitted_at=row["created_at"],
+            )
+            for row in rows
+        )
 
 
 def _receipt(row: Any, *, bidder_id: str, idempotency_key: str) -> SealedBidReceipt:
     return SealedBidReceipt(
         tenant_id=str(row["tenant_id"]),
-        session_id=str(row["auction_id"]),
+        session_id=str(row["work_item_id"]),
         bidder_id=bidder_id,
         bid_version=int(str(row["bid_version"])),
         envelope_digest=str(row["commitment"]),
@@ -199,4 +268,6 @@ __all__ = [
     "PostgresAuctionRepository",
     "PostgresSealedBidInbox",
     "SealedBidReceipt",
+    "SealedEnvelope",
+    "bidder_digest",
 ]
