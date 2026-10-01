@@ -124,6 +124,7 @@ def get_builtin_server_configs() -> list[dict]:
         etsy_server,
         eventbrite_server,
         evernote_server,
+        expensify_server,
         facebook_conversions_server,
         facebook_lead_ads_server,
         facebook_pages_server,
@@ -179,6 +180,7 @@ def get_builtin_server_configs() -> list[dict]:
         gorgias_server,
         # ── Events & Webinars ────────────────────────────────────────────────────
         gotowebinar_server,
+        grafana_server,
         gravity_forms_server,
         # ── HR, Recruiting & Payroll ─────────────────────────────────────────────
         greenhouse_server,
@@ -222,6 +224,7 @@ def get_builtin_server_configs() -> list[dict]:
         livestorm_server,
         loggly_server,
         logmein_server,
+        looker_server,
         loom_server,
         loops_server,
         magento_server,
@@ -3342,6 +3345,31 @@ def get_builtin_server_configs() -> list[dict]:
             "tool_definitions": pagerduty_server.TOOL_DEFINITIONS,
             "handler": pagerduty_server.call_tool,
             "requires_env": ["PAGERDUTY_API_KEY"],
+        },
+        # ── Wired in UNWIRED-SERVERS (real implementations, tenant credentials) ──
+        {
+            "server_id": "builtin-expensify",
+            "name": "Expensify",
+            "description": "Expensify expenses and expense reports",
+            "tool_definitions": expensify_server.TOOL_DEFINITIONS,
+            "handler": expensify_server.call_tool,
+            "requires_env": ["EXPENSIFY_PARTNER_USER_ID", "EXPENSIFY_PARTNER_USER_SECRET"],
+        },
+        {
+            "server_id": "builtin-grafana",
+            "name": "Grafana",
+            "description": "Grafana dashboards, datasource queries, annotations and alerts",
+            "tool_definitions": grafana_server.TOOL_DEFINITIONS,
+            "handler": grafana_server.call_tool,
+            "requires_env": ["GRAFANA_URL", "GRAFANA_API_KEY"],
+        },
+        {
+            "server_id": "builtin-looker",
+            "name": "Looker",
+            "description": "Looker looks, dashboards, explores and model queries",
+            "tool_definitions": looker_server.TOOL_DEFINITIONS,
+            "handler": looker_server.call_tool,
+            "requires_env": ["LOOKER_BASE_URL", "LOOKER_CLIENT_ID", "LOOKER_CLIENT_SECRET"],
         },
         {
             "server_id": "builtin-terraform",

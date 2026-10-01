@@ -66,14 +66,15 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-_PARTNER_USER_ID = tenant_getenv("EXPENSIFY_PARTNER_USER_ID", "")
-_PARTNER_USER_SECRET = tenant_getenv("EXPENSIFY_PARTNER_USER_SECRET", "")
 _API_URL = "https://integrations.expensify.com/Integration-Server/ExpensifyIntegrations"
 
 
 async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
-    if not _PARTNER_USER_ID:
-        return {"error": "EXPENSIFY_PARTNER_USER_ID not configured"}
+    # Read per call: on a tenant call these come from the connector only.
+    partner_user_id = tenant_getenv("EXPENSIFY_PARTNER_USER_ID", "")
+    partner_user_secret = tenant_getenv("EXPENSIFY_PARTNER_USER_SECRET", "")
+    if not partner_user_id or not partner_user_secret:
+        return {"error": "Expensify partner user ID and secret are not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
@@ -81,8 +82,8 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 request_json = {
                     "type": "create",
                     "credentials": {
-                        "partnerUserID": _PARTNER_USER_ID,
-                        "partnerUserSecret": _PARTNER_USER_SECRET,
+                        "partnerUserID": partner_user_id,
+                        "partnerUserSecret": partner_user_secret,
                     },
                     "inputSettings": {
                         "type": "expenses",
@@ -110,8 +111,8 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 request_json = {
                     "type": "get",
                     "credentials": {
-                        "partnerUserID": _PARTNER_USER_ID,
-                        "partnerUserSecret": _PARTNER_USER_SECRET,
+                        "partnerUserID": partner_user_id,
+                        "partnerUserSecret": partner_user_secret,
                     },
                     "inputSettings": {
                         "type": "reportInfos",
@@ -134,8 +135,8 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 request_json = {
                     "type": "update",
                     "credentials": {
-                        "partnerUserID": _PARTNER_USER_ID,
-                        "partnerUserSecret": _PARTNER_USER_SECRET,
+                        "partnerUserID": partner_user_id,
+                        "partnerUserSecret": partner_user_secret,
                     },
                     "inputSettings": {
                         "type": "report",

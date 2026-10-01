@@ -44,6 +44,31 @@ _CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
             hint="Create at id.atlassian.com/manage-profile/security/api-tokens",
         ),
     ],
+    "expensify": [
+        AuthFieldSpec("partner_user_id", "Partner User ID", "aa_api_xxxxx", "text"),
+        AuthFieldSpec(
+            "partner_user_secret",
+            "Partner User Secret",
+            "xxxxxxxxxxxx",
+            "password",
+            hint="Create at expensify.com/tools/integrations",
+        ),
+    ],
+    "grafana": [
+        AuthFieldSpec("url", "Grafana URL", "https://mycompany.grafana.net", "url"),
+        AuthFieldSpec(
+            "api_key",
+            "Service Account Token",
+            "glsa_xxxxxxxx",
+            "password",
+            hint="Administration -> Service accounts -> Add token",
+        ),
+    ],
+    "looker": [
+        AuthFieldSpec("base_url", "Looker URL", "https://mycompany.looker.com", "url"),
+        AuthFieldSpec("client_id", "API Client ID", "xxxxxxxx", "text"),
+        AuthFieldSpec("client_secret", "API Client Secret", "xxxxxxxx", "password"),
+    ],
     "github": [
         AuthFieldSpec(
             "token",
@@ -256,6 +281,37 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         category="observability",
         builtin_server_id="builtin-sentry",
         display_name="Sentry",
+    ),
+    ConnectorSpec(
+        name="grafana",
+        description="Grafana — dashboards, datasource queries, annotations, alert rules",
+        auth_type="api_key",
+        default_url="https://grafana.com",
+        icon="grafana",
+        category="observability",
+        builtin_server_id="builtin-grafana",
+        display_name="Grafana",
+    ),
+    ConnectorSpec(
+        name="looker",
+        description="Looker — looks, dashboards, explores and model queries",
+        # API3 client id/secret on the connector (the handler logs in itself).
+        auth_type="api_key",
+        default_url="https://looker.com",
+        icon="looker",
+        category="analytics",
+        builtin_server_id="builtin-looker",
+        display_name="Looker",
+    ),
+    ConnectorSpec(
+        name="expensify",
+        description="Expensify — create expenses, list and approve expense reports",
+        auth_type="api_key",
+        default_url="https://integrations.expensify.com",
+        icon="expensify",
+        category="finance",
+        builtin_server_id="builtin-expensify",
+        display_name="Expensify",
     ),
     ConnectorSpec(
         name="datadog",

@@ -75,41 +75,50 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-_BASE_URL = tenant_getenv("LOOKER_BASE_URL", "").rstrip("/")
-_CLIENT_ID = tenant_getenv("LOOKER_CLIENT_ID", "")
-_CLIENT_SECRET = tenant_getenv("LOOKER_CLIENT_SECRET", "")
-_token_cache: dict[str, Any] = {}
+# Per-connection token cache keyed by (base URL, client id, secret digest): it
+# used to be ONE dict for every caller, so a tenant could be served another
+# tenant's Looker token.
+_token_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
 
 
-async def _get_token(client: httpx.AsyncClient) -> str:
-    """Obtain a Looker API bearer token (cached)."""
+async def _get_token(
+    client: httpx.AsyncClient, base_url: str, client_id: str, client_secret: str
+) -> str:
+    """Obtain a Looker API bearer token for these credentials (cached per connection)."""
+    import hashlib
     import time
 
-    if _token_cache.get("token") and _token_cache.get("expires_at", 0) > time.time() + 60:
-        return _token_cache["token"]
+    key = (base_url, client_id, hashlib.sha256(client_secret.encode()).hexdigest())
+    cached = _token_cache.get(key)
+    if cached and cached[1] > time.time() + 60:
+        return cached[0]
     resp = await client.post(
-        f"{_BASE_URL}/api/4.0/login",
-        data={"client_id": _CLIENT_ID, "client_secret": _CLIENT_SECRET},
+        f"{base_url}/api/4.0/login",
+        data={"client_id": client_id, "client_secret": client_secret},
     )
     resp.raise_for_status()
     data = resp.json()
-    _token_cache["token"] = data["access_token"]
-    _token_cache["expires_at"] = time.time() + data.get("token_ttl", 3600)
-    return _token_cache["token"]
+    token = str(data["access_token"])
+    _token_cache[key] = (token, time.time() + data.get("token_ttl", 3600))
+    return token
 
 
 async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
-    if not _BASE_URL:
-        return {"error": "LOOKER_BASE_URL not configured"}
+    # Read per call: on a tenant call these come from the connector only.
+    base_url = str(tenant_getenv("LOOKER_BASE_URL", "") or "").rstrip("/")
+    client_id = str(tenant_getenv("LOOKER_CLIENT_ID", "") or "")
+    client_secret = str(tenant_getenv("LOOKER_CLIENT_SECRET", "") or "")
+    if not base_url or not client_id or not client_secret:
+        return {"error": "Looker base URL, client ID and client secret are not configured"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
-            token = await _get_token(client)
+            token = await _get_token(client, base_url, client_id, client_secret)
             headers = {"Authorization": f"token {token}"}
 
             if tool_name == "looker_run_look":
                 resp = await client.get(
-                    f"{_BASE_URL}/api/4.0/looks/{params['look_id']}/run/{params.get('result_format', 'json')}",  # noqa: E501
+                    f"{base_url}/api/4.0/looks/{params['look_id']}/run/{params.get('result_format', 'json')}",  # noqa: E501
                     params={"limit": params.get("limit", 500)},
                     headers=headers,
                 )
@@ -118,7 +127,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
 
             if tool_name == "looker_list_dashboards":
                 resp = await client.get(
-                    f"{_BASE_URL}/api/4.0/dashboards",
+                    f"{base_url}/api/4.0/dashboards",
                     params={
                         "fields": params.get("fields", "id,title,description"),
                         "limit": params.get("limit", 20),
@@ -137,7 +146,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                     "limit": str(params.get("limit", 500)),
                 }
                 resp = await client.post(
-                    f"{_BASE_URL}/api/4.0/queries/run/json",
+                    f"{base_url}/api/4.0/queries/run/json",
                     json=body,
                     headers=headers,
                 )
@@ -146,7 +155,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
 
             if tool_name == "looker_list_explores":
                 resp = await client.get(
-                    f"{_BASE_URL}/api/4.0/lookml_models/{params['model']}/explores",
+                    f"{base_url}/api/4.0/lookml_models/{params['model']}/explores",
                     headers=headers,
                 )
                 resp.raise_for_status()

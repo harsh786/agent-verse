@@ -16,8 +16,6 @@ from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-_BASE_URL = tenant_getenv("GRAFANA_URL", "").rstrip("/")
-_API_KEY = tenant_getenv("GRAFANA_API_KEY", "")
 
 TOOL_DEFINITIONS = [
     {
@@ -100,23 +98,27 @@ TOOL_DEFINITIONS = [
 
 
 async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
-    if not _BASE_URL:
-        return {"error": "GRAFANA_URL not configured"}
+    # Read per call: on a tenant call these come from the connector only (and the
+    # URL passes the egress policy; connections are pinned to checked addresses).
+    base_url = str(tenant_getenv("GRAFANA_URL", "") or "").rstrip("/")
+    api_key = tenant_getenv("GRAFANA_API_KEY", "")
+    if not base_url or not api_key:
+        return {"error": "Grafana URL and API key are not configured"}
 
-    headers = {"Authorization": f"Bearer {_API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             if tool_name == "grafana_get_dashboard":
                 resp = await client.get(
-                    f"{_BASE_URL}/api/dashboards/uid/{params['uid']}", headers=headers
+                    f"{base_url}/api/dashboards/uid/{params['uid']}", headers=headers
                 )
                 resp.raise_for_status()
                 return resp.json()
 
             if tool_name == "grafana_list_dashboards":
                 resp = await client.get(
-                    f"{_BASE_URL}/api/search",
+                    f"{base_url}/api/search",
                     params={
                         "query": params.get("query", ""),
                         "type": "dash-db",
@@ -139,7 +141,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                     "from": params.get("from", "now-1h"),
                     "to": params.get("to", "now"),
                 }
-                resp = await client.post(f"{_BASE_URL}/api/ds/query", json=body, headers=headers)
+                resp = await client.post(f"{base_url}/api/ds/query", json=body, headers=headers)
                 resp.raise_for_status()
                 return resp.json()
 
@@ -153,7 +155,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 }
                 if "dashboard_id" in params:
                     body["dashboardId"] = params["dashboard_id"]
-                resp = await client.post(f"{_BASE_URL}/api/annotations", json=body, headers=headers)
+                resp = await client.post(f"{base_url}/api/annotations", json=body, headers=headers)
                 resp.raise_for_status()
                 return resp.json()
 
@@ -161,7 +163,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 state = params.get("state", "all")
                 qs = {} if state == "all" else {"state": state}
                 resp = await client.get(
-                    f"{_BASE_URL}/api/v1/provisioning/alert-rules", params=qs, headers=headers
+                    f"{base_url}/api/v1/provisioning/alert-rules", params=qs, headers=headers
                 )
                 resp.raise_for_status()
                 return {"alert_rules": resp.json()}
@@ -170,7 +172,7 @@ async def call_tool(tool_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 # Send a test alert notification
                 body = {"message": params.get("message", "Manual alert from AgentVerse")}
                 resp = await client.post(
-                    f"{_BASE_URL}/api/v1/provisioning/alert-rules/{params['rule_uid']}/test",
+                    f"{base_url}/api/v1/provisioning/alert-rules/{params['rule_uid']}/test",
                     json=body,
                     headers=headers,
                 )
