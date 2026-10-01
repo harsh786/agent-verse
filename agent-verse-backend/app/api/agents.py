@@ -93,6 +93,23 @@ async def _load_snapshots_from_db(tenant_id: str, agent_id: str, db: Any) -> lis
 # ---------------------------------------------------------------------------
 
 
+# The routing document (CORE-33); identical to the ix_agents_routing_fts index
+# expression (migration b9d4f2a6c8e1) so Postgres can use the GIN index.
+_ROUTING_TSV_SQL = (
+    "to_tsvector('simple', coalesce(name, '') || ' ' || coalesce(goal_template, '') "
+    "|| ' ' || coalesce(connector_ids::text, ''))"
+)
+_MAX_ROUTING_TOKENS = 32
+
+
+def _routing_tokens(text_: str) -> set[str]:
+    """Lower-case alphanumeric tokens (safe to splice into a tsquery), bounded."""
+    import re
+
+    toks = sorted({t for t in re.findall(r"[a-z0-9]+", (text_ or "").lower()) if len(t) > 1})
+    return set(toks[:_MAX_ROUTING_TOKENS])
+
+
 class AgentStore:
     """Per-tenant in-memory agent registry.
 
@@ -311,6 +328,84 @@ class AgentStore:
         if limit is not None:
             return rows_mem[offset : offset + limit]
         return rows_mem
+
+    async def routing_candidates(
+        self, *, tenant_ctx: TenantContext, goal: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """At most *limit* active agents for auto-routing, best text match first (CORE-33).
+
+        Auto-routing used to load the tenant's whole agents table per submission
+        and then keep only the 50 NEWEST, so older agents were never candidates.
+        Postgres pre-filters with a full-text match of the goal against the
+        agent's name / goal template / connector ids (GIN index
+        ``ix_agents_routing_fts``), ranked, and tops up with the newest agents
+        only when fewer than *limit* match. Without a DB the same ranking runs
+        over the in-memory cache.
+        """
+        limit = max(1, int(limit))
+        tokens = _routing_tokens(goal)
+        if self._db is not None:
+            try:
+                return await self._db_routing_candidates(tenant_ctx, tokens, limit)
+            except Exception as exc:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning(
+                    "agent_routing_candidates_db_failed", error=type(exc).__name__
+                )
+        rows = self.list_all(tenant_ctx=tenant_ctx)
+
+        def _hits(rec: dict[str, Any]) -> int:
+            text_ = " ".join(
+                [str(rec.get("name", "")), str(rec.get("goal_template", ""))]
+                + [str(c) for c in rec.get("connector_ids", []) or []]
+            )
+            return len(tokens & _routing_tokens(text_))
+
+        newest_first = sorted(rows, key=lambda r: str(r.get("created_at", "")), reverse=True)
+        return sorted(newest_first, key=_hits, reverse=True)[:limit]
+
+    async def _db_routing_candidates(
+        self, tenant_ctx: TenantContext, tokens: set[str], limit: int
+    ) -> list[dict[str, Any]]:
+        from sqlalchemy import func, literal_column, select
+
+        from app.db.models.agent import Agent
+        from app.db.rls import sqlalchemy_rls_context
+
+        # Must match the ix_agents_routing_fts index expression exactly.
+        document = literal_column(_ROUTING_TSV_SQL)
+        base = select(Agent).where(
+            Agent.tenant_id == tenant_ctx.tenant_id,
+            Agent.is_active == True,  # noqa: E712
+        )
+        async with (
+            self._db() as session,
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            matched: list[Any] = []
+            if tokens:
+                query = func.to_tsquery("simple", " | ".join(sorted(tokens)))
+                matched = list(
+                    (
+                        await session.execute(
+                            base.where(document.op("@@")(query))
+                            .order_by(
+                                func.ts_rank(document, query).desc(), Agent.created_at.desc()
+                            )
+                            .limit(limit)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            if len(matched) < limit:
+                seen = [r.id for r in matched]
+                stmt = base.order_by(Agent.created_at.desc()).limit(limit - len(matched))
+                if seen:
+                    stmt = stmt.where(Agent.id.not_in(seen))
+                matched.extend((await session.execute(stmt)).scalars().all())
+        return [self._row_to_dict(r) for r in matched]
 
     async def count_async(self, *, tenant_ctx: TenantContext) -> int:
         """COUNT of a tenant's active agents (for limit enforcement) without

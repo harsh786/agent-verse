@@ -206,7 +206,7 @@ def test_submit_goal_agent_router_exception_is_non_fatal() -> None:
 
 
 def test_preview_routing_with_agent_store() -> None:
-    """Line 240: /goals/route with agent_store set calls list_async."""
+    """CORE-33: /goals/route lets the router fetch its own bounded candidates."""
     svc = AsyncMock()
 
     mock_agent_store = AsyncMock()
@@ -227,7 +227,8 @@ def test_preview_routing_with_agent_store() -> None:
     resp = client.get("/goals/route", params={"goal": "deploy service"}, headers={"X-API-Key": _KEY})
 
     assert resp.status_code == 200
-    mock_agent_store.list_async.assert_called_once()
+    mock_agent_store.list_async.assert_not_called()  # never the whole table
+    assert "available_agents" not in mock_agent_router.route.call_args.kwargs
 
 
 # ── line 478: get_goal_traces db=None fallback ───────────────────────────────

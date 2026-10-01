@@ -457,12 +457,9 @@ async def _submit_goal_unguarded(
             agent_store = getattr(request.app.state, "agent_store", None)
             if agent_store is not None:
                 try:
-                    agents = await agent_store.list_async(tenant_ctx=tenant)
-                    decision = await agent_router.route(
-                        goal=body.goal,
-                        tenant_ctx=tenant,
-                        available_agents=agents,
-                    )
+                    # The router fetches its own bounded, relevance-ranked
+                    # candidates (CORE-33) — never the tenant's whole table.
+                    decision = await agent_router.route(goal=body.goal, tenant_ctx=tenant)
                     agent_id = decision.agent_id
                     # Inject routing decision into execution context
                     exec_ctx["routing_decision"] = decision.to_dict()
@@ -566,13 +563,10 @@ async def preview_routing(
     """Preview routing decision for a goal without executing it."""
     tenant = _require_tenant(request)
     agent_router = getattr(request.app.state, "agent_router", None)
-    agent_store = getattr(request.app.state, "agent_store", None)
     if agent_router is None:
         return {"mode": "no_router", "reason": "Agent router not configured"}
-    agents: list = []
-    if agent_store is not None:
-        agents = await agent_store.list_async(tenant_ctx=tenant)
-    decision = await agent_router.route(goal=goal, tenant_ctx=tenant, available_agents=agents)
+    # Same bounded candidate pre-filter as submission (CORE-33).
+    decision = await agent_router.route(goal=goal, tenant_ctx=tenant)
     return decision.to_dict()
 
 

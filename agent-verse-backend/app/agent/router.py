@@ -471,11 +471,18 @@ class AgentRouter:
         agent achieves a composite score ≥ 0.3.
         """
         if available_agents is None:
-            # DB-backed per-tenant read (active agents, newest first) — the
-            # process-local list missed agents created on another replica and
-            # still offered ones deleted there.
+            # CORE-33: a bounded, relevance-ranked pre-filter (SQL full-text match,
+            # index-backed) — never the tenant's whole agents table, and an older
+            # agent that matches the goal is a candidate (truncating to the 50
+            # newest used to drop it).
+            candidates = getattr(self._agent_store, "routing_candidates", None)
             lister = getattr(self._agent_store, "list_async", None)
-            if lister is not None and inspect.iscoroutinefunction(lister):
+            if candidates is not None and inspect.iscoroutinefunction(candidates):
+                agents = await candidates(
+                    tenant_ctx=tenant_ctx, goal=goal, limit=MAX_ROUTING_CANDIDATES
+                )
+            elif lister is not None and inspect.iscoroutinefunction(lister):
+                # DB-backed per-tenant read (active agents, newest first).
                 agents = await lister(tenant_ctx=tenant_ctx, limit=MAX_ROUTING_CANDIDATES)
             else:
                 agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
