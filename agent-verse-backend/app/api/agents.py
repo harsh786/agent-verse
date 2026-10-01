@@ -708,6 +708,97 @@ async def _create_agent_record(
         ) from exc
 
 
+_NO_SCHEDULE_TRIGGERS = ("", "manual")
+
+
+def _agent_trigger_spec(cfg: dict[str, Any], tenant_ctx: TenantContext) -> Any:
+    """The TriggerSpec an agent's ``trigger_config`` asks for, validated (TRG-50).
+
+    ``None`` for a manual / absent trigger. Anything else must be a creatable
+    spec for the tenant's plan (supported type, valid fields, cron plan floor),
+    else 422 - before the agent is created.
+    """
+    import dataclasses
+
+    from app.triggers.models import TriggerSpec, TriggerType
+    from app.triggers.validation import creatable_error
+
+    trigger_type = str(cfg.get("trigger_type", "") or "").strip()
+    if trigger_type in _NO_SCHEDULE_TRIGGERS:
+        return None
+    try:
+        ttype = TriggerType(trigger_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail=f"trigger_config: unknown trigger_type {trigger_type!r}"
+        ) from None
+    names = {f.name for f in dataclasses.fields(TriggerSpec)} - {"trigger_type"}
+    try:
+        spec = TriggerSpec(
+            trigger_type=ttype, **{k: v for k, v in cfg.items() if k in names}
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"trigger_config: {exc}") from exc
+    plan = str(getattr(tenant_ctx, "plan", "free") or "free")
+    reason = creatable_error(spec, plan=plan)
+    if reason is not None:
+        raise HTTPException(status_code=422, detail=f"trigger_config: {reason}")
+    return spec
+
+
+async def _create_agent_schedule(
+    request: Request,
+    agents: AgentStore,
+    spec: Any,
+    *,
+    agent_id: str,
+    goal_template: str,
+    tenant_ctx: TenantContext,
+) -> str | None:
+    """Durably create the agent's schedule with PLAN_MAX_TRIGGERS enforced.
+
+    On quota (403), store outage (503) or no schedule store (503) the agent just
+    created is deleted again, so the API never reports an agent whose trigger
+    silently does not exist.
+    """
+    if spec is None:
+        return None
+    from app.triggers.quota import TriggerQuotaExceeded
+    from app.triggers.store import ScheduleStoreUnavailableError
+
+    schedule_store = getattr(request.app.state, "schedule_store", None)
+    status_code, detail = 503, "Schedules are unavailable; the agent was not created"
+    if schedule_store is not None and hasattr(schedule_store, "create_async"):
+        try:
+            return str(
+                await schedule_store.create_async(
+                    goal_id=uuid.uuid4().hex,
+                    spec=spec,
+                    tenant_ctx=tenant_ctx,
+                    agent_id=agent_id,
+                    goal_template=goal_template,
+                    quota_plan=str(getattr(tenant_ctx, "plan", "free") or "free"),
+                )
+            )
+        except TriggerQuotaExceeded as exc:
+            status_code, detail = 403, str(exc)
+        except ScheduleStoreUnavailableError:
+            pass
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning("agent_schedule_create_failed: %s", exc)
+    try:
+        await agents.delete_async(agent_id, tenant_ctx=tenant_ctx)
+    except Exception as exc:  # report the schedule failure either way
+        import logging
+
+        logging.getLogger(__name__).error(
+            "agent_schedule_rollback_failed agent_id=%s: %s", agent_id, exc
+        )
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -749,6 +840,8 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
     existing_count = await store.count_async(tenant_ctx=tenant_ctx)
     check_agent_limit(tenant_ctx, existing_count)
 
+    trigger_spec = _agent_trigger_spec(body.trigger_config or {}, tenant_ctx)
+
     record: dict[str, Any] = {
         "name": body.name,
         "goal_template": body.goal_template,
@@ -771,34 +864,22 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
     record["pattern_flags"] = _flags
     agent_id = await _create_agent_record(store, record, tenant_ctx=tenant_ctx)
 
-    # FIX 5: auto-create a schedule if trigger_config specifies a cron/interval/event trigger
-    trigger_cfg = body.trigger_config or {}
-    trigger_type = trigger_cfg.get("trigger_type", "")
-    schedule_store = getattr(request.app.state, "schedule_store", None)
+    # TRG-50: the agent's schedule goes through the same gate as POST /triggers
+    # (validated before the agent exists; durable, quota-enforced create; any
+    # failure removes the agent and is reported - never a 201 without it).
+    schedule_id = await _create_agent_schedule(
+        request,
+        store,
+        trigger_spec,
+        agent_id=agent_id,
+        goal_template=body.goal_template or record.get("goal_template", ""),
+        tenant_ctx=tenant_ctx,
+    )
 
-    if schedule_store is not None and trigger_type in ("cron", "interval", "event"):
-        try:
-            from app.triggers.models import TriggerSpec, TriggerType
-
-            spec = TriggerSpec(
-                trigger_type=TriggerType(trigger_type),
-                cron_expression=trigger_cfg.get("cron_expression", ""),
-                interval_seconds=trigger_cfg.get("interval_seconds", 0),
-                event_channel=trigger_cfg.get("event_channel", ""),
-            )
-            schedule_store.create(
-                goal_id=uuid.uuid4().hex,
-                spec=spec,
-                tenant_ctx=tenant_ctx,
-                agent_id=agent_id,
-                goal_template=body.goal_template or record.get("goal_template", ""),
-            )
-        except Exception as _sched_exc:
-            import logging
-
-            logging.getLogger(__name__).warning("trigger_schedule_create_failed: %s", _sched_exc)
-
-    return store.get(agent_id, tenant_ctx=tenant_ctx)  # type: ignore[return-value]
+    created = store.get(agent_id, tenant_ctx=tenant_ctx) or {}
+    if schedule_id:
+        created = {**created, "schedule_id": schedule_id}
+    return created
 
 
 # Note: /create must be declared before /{agent_id} so the exact path wins.

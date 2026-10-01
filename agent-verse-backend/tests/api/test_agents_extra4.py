@@ -333,9 +333,9 @@ def test_agent_store_update_async_db_with_allowed_fields() -> None:
 # ---------------------------------------------------------------------------
 
 def test_create_agent_with_cron_trigger_creates_schedule() -> None:
-    """Lines 562-579: create_agent with cron trigger creates a schedule."""
+    """A cron trigger_config creates its schedule durably (create_async, quota)."""
     schedule_store = MagicMock()
-    schedule_store.create = MagicMock(return_value=None)
+    schedule_store.create_async = AsyncMock(return_value="sched-1")
     client = TestClient(_make_app(schedule_store=schedule_store), raise_server_exceptions=False)
 
     resp = client.post(
@@ -351,14 +351,14 @@ def test_create_agent_with_cron_trigger_creates_schedule() -> None:
         headers=H,
     )
     assert resp.status_code == 201
-    # Schedule creation should have been attempted
-    schedule_store.create.assert_called_once()
+    schedule_store.create_async.assert_awaited_once()
+    assert schedule_store.create_async.await_args.kwargs["quota_plan"] == "enterprise"
+    assert resp.json()["schedule_id"] == "sched-1"
 
 
 def test_create_agent_with_interval_trigger_creates_schedule() -> None:
-    """Lines 562-579: interval trigger also creates a schedule."""
     schedule_store = MagicMock()
-    schedule_store.create = MagicMock(return_value=None)
+    schedule_store.create_async = AsyncMock(return_value="sched-2")
     client = TestClient(_make_app(schedule_store=schedule_store), raise_server_exceptions=False)
 
     resp = client.post(
@@ -373,14 +373,18 @@ def test_create_agent_with_interval_trigger_creates_schedule() -> None:
         headers=H,
     )
     assert resp.status_code == 201
-    schedule_store.create.assert_called_once()
+    schedule_store.create_async.assert_awaited_once()
 
 
-def test_create_agent_schedule_creation_failure_is_non_fatal() -> None:
-    """Lines 577-581: Schedule creation exception is swallowed."""
+def test_create_agent_schedule_creation_failure_is_reported_not_swallowed() -> None:
+    """TRG-50: a failed schedule create is no longer a silent 201."""
     schedule_store = MagicMock()
-    schedule_store.create = MagicMock(side_effect=Exception("Schedule error"))
-    client = TestClient(_make_app(schedule_store=schedule_store), raise_server_exceptions=False)
+    schedule_store.create_async = AsyncMock(side_effect=Exception("Schedule error"))
+    agents = AgentStore()
+    client = TestClient(
+        _make_app(agent_store=agents, schedule_store=schedule_store),
+        raise_server_exceptions=False,
+    )
 
     resp = client.post(
         "/agents",
@@ -390,7 +394,8 @@ def test_create_agent_schedule_creation_failure_is_non_fatal() -> None:
         },
         headers=H,
     )
-    assert resp.status_code == 201  # Exception swallowed
+    assert resp.status_code == 503
+    assert agents.list_all(tenant_ctx=_CTX) == []  # the agent was rolled back
 
 
 # ---------------------------------------------------------------------------
