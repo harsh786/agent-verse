@@ -606,3 +606,31 @@ def _restore_decision_cost_services():
     _gc.set_platform_cost_services(None)
     yield
     _gc.set_platform_cost_services(None)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_model_registry_store(monkeypatch):
+    """Keep the process-global ModelRegistryStore per test (PROV-20).
+
+    Worker goals read tenant routing policies from it and fail closed when it
+    cannot be read; the suite's REDIS_URL is deliberately unreachable, so the
+    worker must not auto-wire a store pointing there. Tests that exercise the
+    store wire a fake one themselves.
+    """
+    from app.ai_router import registry_store as _rs
+
+    saved = _rs.get_model_registry_store()
+    _rs._store = None
+    import app.scaling.tasks as _tasks_mod
+
+    monkeypatch.setattr(_tasks_mod, "_wire_worker_model_registry_store", lambda: None)
+
+    # A worker goal now FAILS when its goal-level model_override cannot be read
+    # (the suite's DB is unreachable): default to "no override"; tests of the
+    # lookup call _read_goal_model_override directly.
+    async def _no_goal_override(goal_id: str, tenant_id: str) -> str:
+        return ""
+
+    monkeypatch.setattr(_tasks_mod, "_goal_model_override", _no_goal_override)
+    yield
+    _rs._store = saved

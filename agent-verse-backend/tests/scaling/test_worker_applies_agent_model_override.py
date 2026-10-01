@@ -85,7 +85,7 @@ async def test_worker_goal_model_override_lookup_reads_execution_context() -> No
         patch("app.db.session.get_session_factory", return_value=lambda: _Ctx()),
         patch("app.db.rls.sqlalchemy_rls_context", return_value=_Ctx()),
     ):
-        value = await tasks._goal_model_override("g1", "t1")
+        value = await tasks._read_goal_model_override("g1", "t1")
     assert value == "worker-goal-model"
     sql = str(session.execute.await_args.args[0])
     assert "model_override" in sql and "execution_context" in sql

@@ -317,11 +317,21 @@ class ModelRegistry:
                 out[task] = policy
         return out
 
-    def get_route_policy(self, tenant_id: str, task_type: TaskType) -> ModelRoutePolicy | None:
+    def get_route_policy(
+        self, tenant_id: str, task_type: TaskType, *, strict: bool = False
+    ) -> ModelRoutePolicy | None:
+        """A tenant's policy for *task_type*.
+
+        ``strict`` (the worker / goal-execution path) raises when the shared store
+        cannot be read instead of silently using this process's (possibly empty)
+        copy — a goal must not run while ignoring its tenant's routing policy.
+        """
         try:
             return self.list_route_policies(tenant_id).get(task_type.value)
         except Exception:
-            # Read path used for model *selection*: degrade to this process's copy.
+            if strict:
+                raise
+            # API read path: degrade to this process's copy.
             return self._tenant_policies.get(tenant_id, {}).get(task_type.value)
 
 

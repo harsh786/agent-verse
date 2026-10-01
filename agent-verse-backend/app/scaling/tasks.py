@@ -130,6 +130,11 @@ def _setup_worker_checkpointer(**kwargs: Any) -> None:
     from app.scaling.worker_cost import install_worker_cost_services
 
     install_worker_cost_services()
+    # PROV-20: routing policies / model overrides are read from the shared store.
+    try:
+        _wire_worker_model_registry_store()
+    except Exception as exc:  # re-tried per goal by _worker_tenant_policy_roles
+        _logging.getLogger(__name__).warning("worker_model_registry_store_failed: %s", exc)
 
 
 @_task_prerun.connect
@@ -1900,7 +1905,12 @@ async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
     """The goal-level ``model_override`` persisted in goals.execution_context ("" if none).
 
     The API path applies it (GoalService); worker-run goals used to ignore it.
+    Raises when it cannot be read (PROV-20): never run on a different model.
     """
+    return await _read_goal_model_override(goal_id, tenant_id)
+
+
+async def _read_goal_model_override(goal_id: str, tenant_id: str) -> str:
     try:
         from sqlalchemy import text
 
@@ -1919,9 +1929,49 @@ async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
                 )
             ).scalar()
     except Exception as exc:
-        logger.warning("goal_model_override_lookup_failed goal=%s: %s", goal_id, exc)
-        return ""
+        # Fail the goal rather than run it on a model the caller did not ask for.
+        logger.error("goal_model_override_lookup_failed goal=%s: %s", goal_id, exc)
+        raise RuntimeError(f"goal model_override could not be read: {exc}") from exc
     return str(value or "")
+
+
+def _wire_worker_model_registry_store() -> None:
+    """Wire the shared (Redis) ModelRegistryStore once per worker process.
+
+    Tenant routing policies and configured-model overrides live there; read
+    before it is wired, a fresh worker's first goal saw an empty local copy.
+    """
+    _connect_model_registry_store()
+
+
+def _connect_model_registry_store() -> None:
+    from app.ai_router.registry_store import (
+        ModelRegistryStore,
+        get_model_registry_store,
+        set_model_registry_store,
+    )
+
+    if get_model_registry_store() is not None or not REDIS_URL:
+        return
+    import redis as _sync_redis_mod
+
+    set_model_registry_store(
+        ModelRegistryStore(_sync_redis_mod.from_url(REDIS_URL, decode_responses=True))
+    )
+
+
+def _worker_tenant_policy_roles(tenant_id: str, real_provider: Any) -> dict[str, str]:
+    """The tenant's routing-policy role pins for a worker goal — fail closed."""
+    from app.ai_router.deployment_roles import servable_models as _sm
+    from app.ai_router.registry import tenant_policy_role_models
+
+    _wire_worker_model_registry_store()
+    try:
+        return tenant_policy_role_models(
+            tenant_id, servable=_sm(real_provider) if real_provider else None
+        )
+    except Exception as exc:
+        raise RuntimeError(f"tenant routing policies could not be read: {exc}") from exc
 
 
 _TERMINAL_GOAL_STATUSES = ("complete", "failed", "cancelled")
@@ -2779,18 +2829,12 @@ def run_goal(
             _worker_roles = _worker_role_map(real_provider) if real_provider else {}
             # Tenant routing policies (PUT /models/routing-policies) — same as the
             # API path; they were stored in one API process and never applied.
-            try:
-                from app.ai_router.deployment_roles import servable_models as _sm
-                from app.ai_router.registry import tenant_policy_role_models
-
-                _worker_roles = {
-                    **_worker_roles,
-                    **tenant_policy_role_models(
-                        tenant_id, servable=_sm(real_provider) if real_provider else None
-                    ),
-                }
-            except Exception as _tp_exc:
-                logger.warning("worker_tenant_routing_policy_failed: %s", _tp_exc)
+            # PROV-20: store wired first; an unreadable store fails the goal
+            # instead of running it while ignoring the tenant's policy.
+            _worker_roles = {
+                **_worker_roles,
+                **_worker_tenant_policy_roles(tenant_id, real_provider),
+            }
             if _worker_roles:
                 try:
                     if _model_router is None:
@@ -3010,18 +3054,9 @@ def run_goal(
             # worker's cost-aware model selection reflects env + UI overrides,
             # including any registered since the worker started.
             try:
-                import redis as _sync_redis_mod
-
-                from app.ai_router.registry_store import (
-                    ModelRegistryStore,
-                    get_model_registry_store,
-                    set_model_registry_store,
-                )
                 from app.ai_router.seeder import seed_registry_from_config
 
-                if get_model_registry_store() is None:
-                    _mr_redis = _sync_redis_mod.from_url(REDIS_URL, decode_responses=True)
-                    set_model_registry_store(ModelRegistryStore(_mr_redis))
+                _wire_worker_model_registry_store()
                 seed_registry_from_config()
             except Exception as _mr_exc:  # pragma: no cover - defensive
                 logger.warning("model_registry_store_wire_failed: %s", _mr_exc)
