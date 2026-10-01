@@ -113,8 +113,9 @@ def test_health_history_for_other_tenants_connector_is_empty() -> None:
     server_id = created["server_id"]
 
     resp = client.get(f"/connectors/{server_id}/health", headers={"X-API-Key": _KEY_B})
-    assert resp.status_code == 200
-    assert resp.json() == []
+    # No DB here: an honest 503 (MCPREG-02) — and never tenant A's snapshots.
+    assert resp.status_code == 503
+    assert "checked_at" not in resp.text
 
 
 def test_usage_for_other_tenants_connector_never_returns_other_tenants_goals() -> None:

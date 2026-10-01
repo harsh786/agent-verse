@@ -811,8 +811,9 @@ class TestConnectorsExtra:
         app.state.db_session_factory = _db
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/connectors/srv-999/health", headers=_H)
-        assert resp.status_code == 200
-        assert resp.json() == []
+        # A DB error is a 503, never an empty "never checked" list (MCPREG-02).
+        assert resp.status_code == 503
+        assert "db error" not in resp.text
 
     # lines 480–482 — _default_redirect_uri uses frontend_url from settings
     def test_default_redirect_uri_uses_frontend_url(self) -> None:

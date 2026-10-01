@@ -830,6 +830,9 @@ def test_get_connector_health_history_with_db() -> None:
         def all(self) -> list:
             return [fake_row]
 
+        def begin(self) -> _HealthSession:
+            return self
+
         async def __aenter__(self) -> _HealthSession:
             return self
 

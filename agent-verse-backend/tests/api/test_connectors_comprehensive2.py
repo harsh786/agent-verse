@@ -108,9 +108,8 @@ def test_get_connector_health_history_empty() -> None:
         f"/connectors/{server_id}/health",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    # Without DB, returns empty list
-    assert isinstance(resp.json(), list)
+    # Without a DB the history is unavailable, not "never checked" (MCPREG-02).
+    assert resp.status_code == 503
 
 
 def test_get_connector_health_history_not_found() -> None:
@@ -119,7 +118,7 @@ def test_get_connector_health_history_not_found() -> None:
         "/connectors/nonexistent/health",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 404)
+    assert resp.status_code in (404, 503)
 
 
 # ---------------------------------------------------------------------------

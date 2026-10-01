@@ -26,7 +26,37 @@ async def test_health_history_requires_auth(app):
 
 
 @pytest.mark.asyncio
-async def test_health_history_returns_empty_without_db(authed_client):
+async def test_health_history_is_503_without_db(authed_client):
+    """MCPREG-02: no DB is not "never checked" — an honest 503, not []."""
     r = await authed_client.get("/connectors/unknown-server/health")
-    assert r.status_code == 200
-    assert r.json() == []
+    assert r.status_code == 503
+
+
+class _BrokenSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def begin(self):
+        return self
+
+    async def execute(self, *a, **k):
+        raise RuntimeError("db down")
+
+
+@pytest.mark.asyncio
+async def test_health_history_db_error_is_503(app, authed_client):
+    app.state.db_session_factory = lambda: _BrokenSession()
+    r = await authed_client.get("/connectors/srv/health")
+    assert r.status_code == 503
+    assert "db down" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_health_history_limit_is_bounded(authed_client):
+    r = await authed_client.get("/connectors/srv/health", params={"limit": 201})
+    assert r.status_code == 422
+    r = await authed_client.get("/connectors/srv/health", params={"limit": 0})
+    assert r.status_code == 422

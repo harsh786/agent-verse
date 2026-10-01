@@ -1231,20 +1231,31 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
 
 @router.get("/{server_id}/health")
 async def get_connector_health_history(
-    request: Request, server_id: str, limit: int = 20
+    request: Request, server_id: str, limit: int = Query(20, ge=1, le=200)
 ) -> list[dict[str, Any]]:
-    """Return health check history for a connector."""
+    """Return health check history for a connector.
+
+    No database or a failed read is a 503 — never ``[]``, which the UI shows as
+    "never checked" (MCPREG-02).
+    """
     tenant = _require_tenant(request)
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
-        return []
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Connector health history is unavailable (no database configured).",
+        )
     try:
         from sqlalchemy import select
 
         from app.db.models.mcp import ConnectorHealthSnapshot
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant.tenant_id),
+        ):
             result = await session.execute(
                 select(ConnectorHealthSnapshot)
                 .where(
@@ -1264,8 +1275,17 @@ async def get_connector_health_history(
             }
             for r in rows
         ]
-    except Exception:
-        return []
+    except Exception as exc:
+        _logger.error(
+            "connector_health_history_read_failed tenant=%s server=%s error=%s",
+            tenant.tenant_id,
+            server_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Connector health history is temporarily unavailable; retry shortly.",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
