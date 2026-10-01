@@ -1,9 +1,9 @@
 """CORE-08: debate / supervisor submission modes run on the tenant's BYOK provider.
 
 They took ``app.state._app_provider`` unconditionally, so a tenant with its own
-LLM key had those calls sent to — and paid by — the platform provider,
-bypassing its chosen vendor and data-handling choice. A tenant BYOK config that
-is broken or unreadable now refuses the submission instead of falling back.
+LLM key had those calls sent to — and paid by — the platform provider. Both
+modes now make no LLM call in the request at all (CORE-07, CORE-30): the goal's
+own graph runs them with the goal's BYOK-resolved, charged planner.
 """
 
 from __future__ import annotations
@@ -16,15 +16,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.goals import router as goals_router
-from app.providers.guarded_completion import GuardedDecisionProvider
-from app.providers.tenant_provider import TenantProviderError
 from app.services.llm_config_store import LLMConfigReadError
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 _CTX = TenantContext(tenant_id="tid-byok", plan=PlanTier.PROFESSIONAL, api_key_id="kid-b")
 _KEY = "ak_test_byok"
-_CFG = {"provider": "anthropic", "encrypted_key": "enc", "model": "m"}
 
 
 class _Store:
@@ -56,16 +53,6 @@ def _app(store: _Store, platform: Any) -> FastAPI:
     return app
 
 
-class _Orchestrator:
-    captured: dict[str, Any] = {}
-
-    def __init__(self, *, provider: Any, rounds: int) -> None:
-        _Orchestrator.captured["provider"] = provider
-
-    async def run(self, goal: str) -> Any:
-        return MagicMock(winning_proposal="A", consensus_level=1.0, winning_agent="agent_1")
-
-
 def _post(app: FastAPI, mode: str) -> Any:
     client = TestClient(app, raise_server_exceptions=False)
     return client.post(
@@ -74,72 +61,22 @@ def _post(app: FastAPI, mode: str) -> Any:
 
 
 @pytest.mark.parametrize(
-    ("mode", "target", "fake"),
+    ("mode", "target"),
     [
-        ("debate", "app.agent.debate.DebateOrchestrator", _Orchestrator),
-        # Supervisor mode makes no LLM call in the request any more (CORE-07):
-        # its parent goal's own planner (BYOK-resolved, charged) decomposes it.
+        ("supervisor", "app.agent.supervisor.SupervisorAgent"),
+        ("debate", "app.agent.debate.DebateOrchestrator"),
     ],
 )
-def test_pattern_mode_uses_the_tenant_byok_provider(mode: str, target: str, fake: Any) -> None:
-    tenant_provider, platform = MagicMock(name="tenant"), MagicMock(name="platform")
-    store = _Store(cfg=_CFG)
-    with (
-        patch(target, fake),
-        patch(
-            "app.providers.tenant_provider.build_tenant_provider", return_value=tenant_provider
-        ) as build,
-    ):
-        resp = _post(_app(store, platform), mode)
-
-    assert resp.status_code == 202, resp.text
-    provider = fake.captured["provider"]
-    assert isinstance(provider, GuardedDecisionProvider)
-    assert provider.inner is tenant_provider
-    assert build.call_args.kwargs["tenant_id"] == _CTX.tenant_id
-    assert store.strict_calls == 1  # strict read: "unknown" is not "no BYOK"
-
-
-def test_tenant_without_byok_keeps_the_platform_provider() -> None:
-    platform = MagicMock(name="platform")
-    with patch("app.agent.debate.DebateOrchestrator", _Orchestrator):
-        resp = _post(_app(_Store(cfg=None), platform), "debate")
-    assert resp.status_code == 202, resp.text
-    assert _Orchestrator.captured["provider"].inner is platform
-
-
-def test_broken_byok_config_refuses_instead_of_using_the_platform() -> None:
-    platform = MagicMock(name="platform")
-    ran = MagicMock()
-    with (
-        patch("app.agent.debate.DebateOrchestrator", ran),
-        patch(
-            "app.providers.tenant_provider.build_tenant_provider",
-            side_effect=TenantProviderError("decrypt failed"),
-        ),
-    ):
-        resp = _post(_app(_Store(cfg=_CFG), platform), "debate")
-    assert resp.status_code == 422, resp.text
-    assert "decrypt failed" in resp.text
-    ran.assert_not_called()
-
-
-def test_unreadable_byok_store_is_a_503() -> None:
-    ran = MagicMock()
-    with patch("app.agent.debate.DebateOrchestrator", ran):
-        resp = _post(_app(_Store(error=LLMConfigReadError("db down")), MagicMock()), "debate")
-    assert resp.status_code == 503, resp.text
-    ran.assert_not_called()
-
-
-def test_supervisor_mode_leaves_provider_resolution_to_the_goal() -> None:
-    """CORE-07: no in-request decomposition, so no BYOK read here; the parent
-    goal's run resolves the tenant provider (and fails the goal honestly when the
-    BYOK config is unusable)."""
+def test_pattern_mode_leaves_provider_resolution_to_the_goal(mode: str, target: str) -> None:
+    """CORE-07 / CORE-30: no in-request decomposition or debate, so no BYOK read
+    here; the goal's own run resolves the tenant provider (and fails the goal
+    honestly when the BYOK config is unusable) — never the platform provider."""
     store = _Store(error=LLMConfigReadError("db down"))
+    platform = AsyncMock()
     ran = MagicMock()
-    with patch("app.agent.supervisor.SupervisorAgent", ran):
-        resp = _post(_app(store, MagicMock()), "supervisor")
+    with patch(target, ran):
+        resp = _post(_app(store, platform), mode)
     assert resp.status_code == 202, resp.text
     assert store.strict_calls == 0
     ran.assert_not_called()
+    platform.complete.assert_not_awaited()

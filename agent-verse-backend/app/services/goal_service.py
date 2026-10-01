@@ -551,6 +551,8 @@ GRAPH_CONTEXT_KEYS: tuple[str, ...] = (
     "supervisor_fallback",
     # POST /goals workflow_mode=supervisor: the in-graph fan-out width.
     "supervisor_max_parallel",
+    # POST /goals workflow_mode=debate: the in-graph debate's round count.
+    "debate_rounds",
 )
 
 
@@ -4337,6 +4339,10 @@ class GoalService:
                 # POST /goals workflow_mode=supervisor (CORE-07): this goal is the
                 # supervisor parent; its own graph runs the fan-out node.
                 _flags["enable_supervisor"] = True
+            elif workflow_mode == "debate":
+                # POST /goals workflow_mode=debate (CORE-30): the debate runs in
+                # this goal's own graph (on the worker), not in the request.
+                _flags["enable_debate"] = True
             if _flags:
                 record.execution_context["agent_pattern_flags"] = _flags
 

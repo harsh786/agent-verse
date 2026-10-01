@@ -76,7 +76,7 @@ def test_goal_submit_debate_mode_calls_service() -> None:
 
 
 def test_goal_submit_debate_mode_with_mock_provider() -> None:
-    """When provider is available debate runs and enriches execution_context."""
+    """CORE-30: the debate runs in the goal (on the worker), never in the request."""
 
     # Mock provider that returns dummy completions
     mock_provider = AsyncMock()
@@ -103,9 +103,9 @@ def test_goal_submit_debate_mode_with_mock_provider() -> None:
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 202
-    # Debate keys should be present in execution_context when provider is available
-    assert "debate_consensus" in captured_exec_ctx
-    assert "debate_confidence" in captured_exec_ctx
+    mock_provider.complete.assert_not_awaited()
+    assert "debate_consensus" not in captured_exec_ctx
+    assert captured_exec_ctx["debate_rounds"] == 2
 
 
 def test_goal_submit_non_debate_mode_unchanged() -> None:

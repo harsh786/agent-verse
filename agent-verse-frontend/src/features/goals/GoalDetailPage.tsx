@@ -59,6 +59,10 @@ function readStr(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
+function readNum(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
 // The result/summary is sometimes a wrapped tool payload — `{"tool": …, "result": "…"}`.
 // Unwrap it so the reader sees the actual answer, not the JSON plumbing.
 function unwrapToolResult(v: unknown): string {
@@ -525,6 +529,17 @@ function TerminalLine({ event, onRetry, isRetrying }: {
           : `Grounding: ${what}${riskNote}`;
       }
       case "claim_grounding_warning": return `Claim check failed${riskNote}`;
+      // Debate mode runs inside the goal (CORE-30); show its progress here.
+      case "debate_started":
+        return `Debate started: ${readNum(event.n_agents) ?? "?"} agents, ${readNum(event.rounds) ?? "?"} rounds`;
+      case "debate_proposals_ready": return `Debate: ${readNum(event.count) ?? 0} proposals ready`;
+      case "debate_complete": {
+        const consensus = readNum(event.consensus);
+        const pct = consensus == null ? "" : ` (${Math.round(consensus * 100)}%)`;
+        return `Debate consensus: ${readStr(event.winner) ?? "no winner"}${pct}`;
+      }
+      case "pattern_failed":
+        return `${readStr(event.pattern) ?? "pattern"} skipped (${readStr(event.error_type) ?? "error"})`;
       default: return step ?? type.replace(/_/g, " ");
     }
   })();

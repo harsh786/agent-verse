@@ -332,8 +332,8 @@ def test_require_tenant_unit_with_none_raises() -> None:
 # ── lines 89-91: debate mode success path ────────────────────────────────────
 
 
-def test_submit_goal_debate_mode_success_injects_context() -> None:
-    """Lines 89-91: successful debate run injects consensus into exec_ctx."""
+def test_submit_goal_debate_mode_runs_no_orchestrator_in_the_request() -> None:
+    """CORE-30: the debate runs in the goal's own graph (on the worker)."""
     svc = AsyncMock()
     svc.submit_goal = AsyncMock(return_value={
         "id": "g-debate", "goal_id": "g-debate", "status": "planning",
@@ -344,15 +344,6 @@ def test_submit_goal_debate_mode_success_injects_context() -> None:
     app.state._app_provider = MagicMock()
 
     with patch("app.agent.debate.DebateOrchestrator") as mock_cls:
-        mock_result = MagicMock()
-        mock_result.winning_proposal = "Use approach A"
-        mock_result.consensus_level = 0.85
-        mock_result.winning_agent = "agent-1"
-
-        mock_orchestrator = AsyncMock()
-        mock_orchestrator.run = AsyncMock(return_value=mock_result)
-        mock_cls.return_value = mock_orchestrator
-
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/goals",
@@ -361,12 +352,10 @@ def test_submit_goal_debate_mode_success_injects_context() -> None:
         )
 
     assert resp.status_code in (200, 202)
-    # verify submit_goal was called with debate context
-    call_kwargs = svc.submit_goal.call_args
-    if call_kwargs:
-        ctx = call_kwargs.kwargs.get("execution_context", {})
-        assert ctx.get("debate_consensus") == "Use approach A"
-        assert ctx.get("debate_confidence") == 0.85
+    mock_cls.assert_not_called()
+    ctx = svc.submit_goal.call_args.kwargs.get("execution_context", {})
+    assert "debate_consensus" not in ctx
+    assert ctx.get("debate_rounds") == 2
 
 
 # ── Mock DB: traces, lineage, attempts with in-memory response ────────────────
@@ -435,26 +424,3 @@ def test_supervisor_mode_is_one_parent_goal_submission() -> None:
     mock_cls.assert_not_called()
     svc.submit_goal.assert_awaited_once()
     assert svc.submit_goal.await_args.kwargs["workflow_mode"] == "supervisor"
-
-
-def test_debate_failure_is_recorded_on_the_goal() -> None:
-    svc = AsyncMock()
-    svc.submit_goal = AsyncMock(
-        return_value={"id": "g1", "goal_id": "g1", "status": "planning", "goal": "g"}
-    )
-    app = _make_app(svc)
-    app.state._app_provider = MagicMock()
-    with patch("app.agent.debate.DebateOrchestrator") as mock_cls:
-        mock_orchestrator = AsyncMock()
-        mock_orchestrator.run = AsyncMock(side_effect=RuntimeError("debate failed"))
-        mock_cls.return_value = mock_orchestrator
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/goals",
-            json={"goal": "g", "workflow_mode": "debate"},
-            headers={"X-API-Key": _KEY},
-        )
-    assert resp.status_code in (200, 202)
-    ctx = svc.submit_goal.await_args.kwargs["execution_context"]
-    assert "debate failed" in ctx["debate_error"]
-    assert "debate_consensus" not in ctx

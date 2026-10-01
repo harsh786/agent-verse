@@ -82,19 +82,14 @@ def test_exhausted_budget_is_refused_before_any_llm_call(mode: str) -> None:
     provider.complete.assert_not_awaited()
 
 
-def test_debate_runs_on_a_guarded_provider() -> None:
-    captured: dict[str, Any] = {}
-    raw = MagicMock()
-
-    class _Orchestrator:
-        def __init__(self, *, provider: Any, rounds: int) -> None:
-            captured["provider"] = provider
-
-        async def run(self, goal: str) -> Any:
-            return MagicMock(winning_proposal="A", consensus_level=0.9, winning_agent="a1")
+def test_debate_makes_no_llm_call_in_the_request() -> None:
+    """CORE-30: debate mode submits a goal whose graph runs the debate (with the
+    goal's own charged planner); the request itself calls no LLM."""
+    raw = AsyncMock()
+    ran = MagicMock()
 
     svc = _svc(budget_ok=True)
-    with patch("app.agent.debate.DebateOrchestrator", _Orchestrator):
+    with patch("app.agent.debate.DebateOrchestrator", ran):
         client = TestClient(_app(svc, raw), raise_server_exceptions=False)
         resp = client.post(
             "/goals",
@@ -104,10 +99,8 @@ def test_debate_runs_on_a_guarded_provider() -> None:
 
     assert resp.status_code == 202, resp.text
     svc._check_budget_preflight.assert_awaited_once()
-    provider = captured["provider"]
-    assert isinstance(provider, GuardedDecisionProvider)
-    assert provider.inner is raw
-    assert provider._tenant_ctx.tenant_id == _CTX.tenant_id
+    ran.assert_not_called()
+    raw.complete.assert_not_awaited()
 
 
 def test_supervisor_makes_no_llm_call_in_the_request() -> None:

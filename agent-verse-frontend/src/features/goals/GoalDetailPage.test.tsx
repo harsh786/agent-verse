@@ -247,6 +247,26 @@ describe('GoalDetailPage', () => {
     expect(screen.getByText('1 unsupported claim(s)')).toBeInTheDocument();
   });
 
+  test('renders debate progress and result events (CORE-30: the debate runs in the goal)', async () => {
+    goalStreamState.current = {
+      ...goalStreamState.current,
+      events: [
+        { type: 'goal_started', status: 'executing' },
+        { type: 'debate_started', n_agents: 3, rounds: 2 },
+        { type: 'debate_proposals_ready', count: 3 },
+        { type: 'debate_complete', winner: 'agent_2', votes: 2, consensus: 0.67 },
+        { type: 'pattern_failed', pattern: 'debate', error_type: 'TimeoutError' },
+      ],
+    };
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    expect(await screen.findByText('Debate started: 3 agents, 2 rounds')).toBeInTheDocument();
+    expect(screen.getByText('Debate: 3 proposals ready')).toBeInTheDocument();
+    expect(screen.getByText('Debate consensus: agent_2 (67%)')).toBeInTheDocument();
+    expect(screen.getByText('debate skipped (TimeoutError)')).toBeInTheDocument();
+  });
+
   test('renders typed execution events with meaningful labels and details', async () => {
     mockGoal('executing');
 

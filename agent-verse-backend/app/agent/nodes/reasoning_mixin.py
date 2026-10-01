@@ -61,10 +61,13 @@ class ReasoningMixin:
         The error used to be only logged, so the goal trace could not tell a
         skipped pattern from one that ran (CORE-05). Never raises.
         """
+        from app.agent.sanitization import redact_sensitive_text
+
+        # Persisted on the goal (checkpoint, execution_context): redacted.
         entry = {
             "pattern": pattern,
             "error_type": type(exc).__name__,
-            "error": str(exc)[:200],
+            "error": redact_sensitive_text(exc)[:200],
         }
         with contextlib.suppress(Exception):
             agent_state.context.setdefault("patterns_failed", []).append(entry)
@@ -80,7 +83,7 @@ class ReasoningMixin:
         with contextlib.suppress(Exception):
             from app.observability.logging import get_logger
 
-            get_logger(__name__).warning(f"node_{pattern}_failed", error=str(exc))
+            get_logger(__name__).warning(f"node_{pattern}_failed", error=entry["error"])
         emit = getattr(self, "_emit", None)
         if emit is not None:
             with contextlib.suppress(Exception):
@@ -548,10 +551,18 @@ class ReasoningMixin:
         if agent_state.context.get(SUBGOAL_MARKER):
             return {"agent_state": agent_state}
         try:
-            from app.agent.debate import DebateOrchestrator
+            from app.agent.debate import MAX_DEBATE_ROUNDS, DebateOrchestrator
 
+            # POST /goals workflow_mode=debate carries the requested round count
+            # (bounded by the API) on the goal's context (CORE-30).
+            _rounds = agent_state.context.get("debate_rounds")
+            _rounds_kw: dict[str, Any] = (
+                {"rounds": max(1, min(MAX_DEBATE_ROUNDS, _rounds))}
+                if isinstance(_rounds, int) and not isinstance(_rounds, bool)
+                else {}
+            )
             orchestrator = DebateOrchestrator(
-                provider=self._charging(self._planner, "debate", agent_state)
+                provider=self._charging(self._planner, "debate", agent_state), **_rounds_kw
             )
             result = await orchestrator.run(
                 goal=agent_state.goal,
@@ -572,5 +583,8 @@ class ReasoningMixin:
                 },
             )
         except Exception as exc:
+            # Sanitized: the exception class only (its text may carry provider
+            # internals or credentials and is persisted on the goal).
+            agent_state.context["debate_error"] = type(exc).__name__
             await self._record_pattern_failure(agent_state, "debate", exc)
         return {"agent_state": agent_state}

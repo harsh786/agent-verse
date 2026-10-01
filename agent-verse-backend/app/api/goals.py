@@ -84,22 +84,6 @@ class GoalRequest(BaseModel):
     pattern_limits: PatternLimits | None = None
 
 
-async def _tenant_decision_provider(request: Request, tenant: TenantContext) -> Any:
-    """The provider debate / supervisor submission modes call: the tenant's own.
-
-    They used ``app.state._app_provider`` unconditionally, so a tenant with its
-    own LLM key had those calls sent to (and paid by) the platform provider,
-    bypassing its vendor and data-handling choice (CORE-08). Same resolution as
-    the goal path: the pinned override, else the tenant's BYOK config read
-    strictly from the durable store, else the app-wide provider. A BYOK config
-    that cannot be built (422) or read (503) refuses the submission — never a
-    silent fallback to platform spend.
-    """
-    from app.api.llm_access import tenant_llm_provider
-
-    return await tenant_llm_provider(request, tenant)
-
-
 def _build_multimodal_goal_text(
     goal: str,
     image_url: str | None,
@@ -382,50 +366,25 @@ async def _submit_goal_unguarded(
     if body.model_override:
         exec_ctx["model_override"] = body.model_override
 
-    # Debate runs LLM calls HERE, inside the request, before any goal exists.
-    # Check the tenant's budget first (429 when exhausted — no LLM call), and give
-    # the orchestrator a provider whose every call is circuit-broken, time-bounded
-    # and charged to the tenant (it used to call the raw platform provider:
-    # unbilled, unbounded, and ahead of the submission budget check). Supervisor
-    # mode makes no LLM call here (see below) but is refused just as early.
-    _decision_provider: Any = None
+    # Debate / supervisor goals make many LLM calls once they run: refuse a
+    # tenant whose budget is already exhausted now (429), before a goal exists.
     if body.workflow_mode in ("debate", "supervisor"):
         preflight = getattr(svc, "_check_budget_preflight", None)
         if preflight is not None:
             pending = preflight(tenant)
             if inspect.isawaitable(pending):
                 await pending
-    if body.workflow_mode == "debate":
-        _decision_provider = await _tenant_decision_provider(request, tenant)
 
-    # ── Debate mode: run multi-agent consensus before goal execution ──────────
+    # ── Debate mode: a goal whose own graph runs the debate ───────────────────
+    # It used to run up to 3 rounds of N-agent proposal/critique/vote LLM calls
+    # HERE, inside the request, before the goal existed — bounded by proxy
+    # timeouts, holding API capacity, and its paid result lost on a disconnect or
+    # restart (CORE-30). Now the goal is submitted like any other
+    # (workflow_mode="debate" compiles the in-graph debate node, which runs on
+    # the worker with the goal's own charged, BYOK-resolved planner and emits
+    # debate_* goal events); its id comes back at once.
     if body.workflow_mode == "debate":
         exec_ctx["debate_rounds"] = body.debate_rounds
-        provider = _decision_provider
-        if provider is not None:
-            try:
-                from app.agent.debate import DebateOrchestrator
-                from app.providers.guarded_completion import GuardedDecisionProvider
-
-                rounds = body.debate_rounds
-                orchestrator = DebateOrchestrator(
-                    provider=GuardedDecisionProvider(provider, role="debate", tenant_ctx=tenant),
-                    rounds=rounds,
-                )
-                debate_result = await orchestrator.run(goal=body.goal)
-                # debate_consensus is fed to the goal's planner (PlannerMixin).
-                exec_ctx["debate_consensus"] = debate_result.winning_proposal
-                exec_ctx["debate_confidence"] = debate_result.consensus_level
-                exec_ctx["debate_winning_agent"] = debate_result.winning_agent
-            except Exception as _debate_exc:
-                # The goal still runs, but the failed debate is recorded on it
-                # (it used to be swallowed, indistinguishable from a debate run).
-                import logging
-
-                logging.getLogger(__name__).warning("debate_mode_failed: %s", _debate_exc)
-                exec_ctx["debate_error"] = f"{type(_debate_exc).__name__}: {_debate_exc}"[:300]
-        else:
-            exec_ctx["debate_error"] = "no LLM provider available for the debate"
 
     # ── Supervisor mode: a parent goal whose own graph runs the fan-out ───────
     # It used to run SupervisorAgent inside this request — awaiting every
@@ -530,8 +489,8 @@ async def _submit_goal_unguarded(
         workflow_mode=body.workflow_mode,
         execution_context=exec_ctx,
     )
-    if body.workflow_mode == "supervisor":
-        result["mode"] = "supervisor"
+    if body.workflow_mode in ("supervisor", "debate"):
+        result["mode"] = body.workflow_mode
     # Gap 5: Dry-run vs simulation — surface execution mode in response
     result["execution_mode"] = "preview" if body.dry_run else "live"
     result["execution_mode_description"] = (
