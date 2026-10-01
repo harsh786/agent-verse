@@ -663,6 +663,7 @@ class KnowledgeStore:
         offset: int = 0,
         search: str | None = None,
         source_type: str | None = None,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
         """Page through a collection's documents, aggregated from its chunk rows.
 
@@ -689,6 +690,7 @@ class KnowledgeStore:
                 offset=offset,
                 search=search_term,
                 source_type=source_filter,
+                document_id=document_id,
             )
 
         from sqlalchemy import text
@@ -717,6 +719,9 @@ class KnowledgeStore:
             if source_filter:
                 filters += " AND metadata->>'source_type' = :stype"
                 params["stype"] = source_filter
+            if document_id:
+                filters += " AND document_id = :did"
+                params["did"] = document_id
             if search_term:
                 filters += " AND (" + " OR ".join(
                     f"COALESCE(metadata->>'{key}', '') ILIKE :q ESCAPE '\\'"
@@ -817,6 +822,7 @@ class KnowledgeStore:
         offset: int,
         search: str,
         source_type: str,
+        document_id: str | None = None,
     ) -> dict[str, Any]:
         cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
         if cstore is None:
@@ -825,6 +831,8 @@ class KnowledgeStore:
         grouped: dict[str, list[Chunk]] = {}
         for c in cstore.chunks:
             meta = c.metadata or {}
+            if document_id and c.document_id != document_id:
+                continue
             if source_type and str(meta.get("source_type") or "") != source_type:
                 continue
             if needle and not any(
@@ -2373,6 +2381,7 @@ class KnowledgeStore:
                     replacement_id, collection_id=collection_id, tenant_ctx=tenant_ctx
                 )
             for chunk in chunks:
+                chunk.metadata = {**dict(chunk.metadata or {}), "document_id": chunk.document_id}
                 self.ingest_chunk(chunk, collection_id=collection_id, tenant_ctx=tenant_ctx)
             if chunks:
                 await self._notify_changed(tenant_ctx.tenant_id)
@@ -2384,7 +2393,9 @@ class KnowledgeStore:
                 "document_id": chunk.document_id,
                 "content": chunk.content,
                 "embedding": chunk.embedding,
-                "metadata": dict(chunk.metadata),
+                # Search results carry only the chunk's metadata, so the
+                # document id rides along (RW-09: hits had document_id=null).
+                "metadata": {**dict(chunk.metadata), "document_id": chunk.document_id},
                 "chunk_index": chunk.chunk_index,
                 "freshness_ttl_hours": None,
                 "parent_chunk_id": chunk.parent_chunk_id,
@@ -2487,7 +2498,9 @@ class KnowledgeStore:
                 "document_id": chunk.document_id,
                 "content": chunk.content,
                 "embedding": chunk.embedding,
-                "metadata": dict(chunk.metadata),
+                # Search results carry only the chunk's metadata, so the
+                # document id rides along (RW-09: hits had document_id=null).
+                "metadata": {**dict(chunk.metadata), "document_id": chunk.document_id},
                 "chunk_index": chunk.chunk_index,
                 "freshness_ttl_hours": None,
                 "parent_chunk_id": chunk.parent_chunk_id,

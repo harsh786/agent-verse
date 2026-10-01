@@ -124,3 +124,54 @@ async def test_uploaded_documents_are_listed_paged_and_tenant_scoped(
     # Another tenant cannot list (or learn about) this collection.
     foreign = await other_client.get(f"/knowledge/collections/{col}/documents")
     assert foreign.status_code == 404, foreign.text
+
+
+async def test_url_document_has_a_stable_reachable_id(
+    kb_client: Any, fake_embedder: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """KB-URL-DOCUMENT-ID (RW-09): ingest/url returns the persisted id; list, detail
+    and search serve it; re-ingesting the URL (and the reingest endpoint) replace
+    that same document."""
+    import app.api.knowledge as knowledge_api
+
+    marker = f"Quokkaberry{uuid.uuid4().hex[:6]}"
+    body = {"text": f"{marker} version one. " * 30}
+
+    async def _fake_fetch(url: str, source_type: str) -> tuple[str, dict[str, Any]]:
+        return body["text"], {"source_url": url, "title": "Zen page"}
+
+    monkeypatch.setattr(knowledge_api, "_fetch_url_content", _fake_fetch)
+    col = await _collection(kb_client)
+    url = "https://peps.example.test/pep-0020/"
+
+    first = await kb_client.post("/knowledge/ingest/url", json={"collection_id": col, "url": url})
+    assert first.status_code == 201, first.text
+    doc_id = first.json()["document_id"]
+    assert doc_id and first.json()["chunks_ingested"] >= 1
+
+    detail = await kb_client.get(f"/knowledge/collections/{col}/documents/{doc_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["source_url"] == url
+
+    hits = (
+        await kb_client.get("/knowledge/search", params={"q": marker, "collection_id": col})
+    ).json()
+    assert hits and {h["document_id"] for h in hits} == {doc_id}, hits
+
+    body["text"] = f"{marker} version two, rewritten. " * 30
+    second = await kb_client.post("/knowledge/ingest/url", json={"collection_id": col, "url": url})
+    assert second.status_code == 201, second.text
+    assert second.json()["document_id"] == doc_id
+    listed = (await kb_client.get(f"/knowledge/collections/{col}/documents")).json()
+    assert [d["id"] for d in listed["documents"]] == [doc_id]
+    assert "version two" in listed["documents"][0]["preview"]
+
+    body["text"] = f"{marker} version three. " * 30
+    reingested = await kb_client.post(
+        f"/knowledge/collections/{col}/documents/{doc_id}/reingest"
+    )
+    assert reingested.status_code == 200, reingested.text
+    assert reingested.json()["document_id"] == doc_id
+    listed = (await kb_client.get(f"/knowledge/collections/{col}/documents")).json()
+    assert [d["id"] for d in listed["documents"]] == [doc_id]
+    assert "version three" in listed["documents"][0]["preview"]

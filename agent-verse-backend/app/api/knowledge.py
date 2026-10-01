@@ -122,6 +122,23 @@ class UrlIngestRequest(BaseModel):
     source_type: str = "web"  # web|github|confluence|jira|slack
 
 
+def stable_url_document_id(tenant_id: str, collection_id: str, url: str) -> str:
+    """The document id of a URL in one collection: stable across re-ingestion.
+
+    uuid5 of (tenant, collection, normalised URL) — scheme and host case-folded,
+    fragment dropped, surrounding whitespace stripped — so re-ingesting the same
+    page targets (and replaces) the same document instead of minting a new
+    random id the caller never sees (RW-09).
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(url.strip())
+    normalised = urlunsplit(
+        (parts.scheme.lower(), parts.netloc.lower(), parts.path or "/", parts.query, "")
+    )
+    return _uuid.uuid5(_uuid.NAMESPACE_URL, f"{tenant_id}:{collection_id}:{normalised}").hex
+
+
 class RpaUrlIngestRequest(BaseModel):
     """Ingest one or more URLs scraped via the RPA executor (browser or httpx)."""
 
@@ -369,8 +386,16 @@ async def _persist_chunks_or_http(
     *,
     collection_id: str,
     tenant_ctx: TenantContext,
+    replace_document: bool = False,
 ) -> list[str]:
     try:
+        if replace_document:
+            return await store.ingest_chunks_async(
+                chunks,
+                collection_id=collection_id,
+                tenant_ctx=tenant_ctx,
+                replace_document=True,
+            )
         return await store.ingest_chunks_async(
             chunks,
             collection_id=collection_id,
@@ -858,7 +883,9 @@ async def search_knowledge(
             "char_offset": citation.metadata.get("char_offset"),
             "line_start": citation.metadata.get("line_start"),
             "page": citation.metadata.get("page"),
-            "document_id": citation.metadata.get("document_id"),
+            "document_id": citation.metadata.get("document_id")
+            or citation.metadata.get("source_doc_id")
+            or None,
             "requested_strategy_id": result.requested_strategy_id,
             "resolved_strategy_id": result.resolved_strategy_id.value,
         }
@@ -1828,6 +1855,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         raise HTTPException(422, "No content extracted from URL")
 
     doc_hash = hashlib.sha256(content.encode()).hexdigest()
+    doc_id = stable_url_document_id(tenant_ctx.tenant_id, body.collection_id, body.url)
     if await _already_indexed_or_http(
         store, doc_hash, tenant_id=tenant_ctx.tenant_id, collection_id=body.collection_id
     ):
@@ -1838,6 +1866,9 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
             "chunks_ingested": 0,
             "total_chars": len(content),
             "deduplicated": True,
+            "document_id": await _existing_document_id(
+                store, doc_id, collection_id=body.collection_id, tenant_ctx=tenant_ctx
+            ),
         }
     content = await _screen_or_http(request, tenant_ctx.tenant_id, content, doc_id=body.url)
 
@@ -1859,11 +1890,8 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         ]
 
     embedder = getattr(request.app.state, "embedder", None)
-    import uuid as _uuid_mod
-
     from app.rag.models import Chunk as RagChunk
 
-    doc_id = _uuid_mod.uuid4().hex
     kept = [(idx, chunk) for idx, chunk in enumerate(chunks) if chunk.content.strip()]
     # One batched embed call instead of one provider round trip per chunk.
     embeddings = (
@@ -1887,11 +1915,13 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         )
         for (idx, chunk), embedding in zip(kept, embeddings, strict=True)
     ]
+    # The stable id replaces this URL's previous version (same transaction).
     stored = await _persist_chunks_or_http(
         store,
         rag_chunks,
         collection_id=body.collection_id,
         tenant_ctx=tenant_ctx,
+        replace_document=True,
     )
 
     return {
@@ -1901,7 +1931,27 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         "chunks_ingested": len(stored),
         "total_chars": len(content),
         "deduplicated": bool(rag_chunks) and not stored,
+        "document_id": (
+            doc_id
+            if stored
+            else await _existing_document_id(
+                store, doc_id, collection_id=body.collection_id, tenant_ctx=tenant_ctx
+            )
+        ),
     }
+
+
+async def _existing_document_id(
+    store: KnowledgeStore, document_id: str, *, collection_id: str, tenant_ctx: TenantContext
+) -> str | None:
+    """``document_id`` when that document is indexed in the collection, else None."""
+    with suppress(Exception):
+        source = await store.get_document_source_async(
+            document_id, collection_id=collection_id, tenant_ctx=tenant_ctx
+        )
+        if source is not None:
+            return document_id
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2912,6 +2962,32 @@ async def get_reingest_webhook(request: Request, collection_id: str) -> dict[str
     }
 
 
+@router.get("/collections/{collection_id}/documents/{document_id}")
+async def get_document(collection_id: str, document_id: str, request: Request) -> dict[str, Any]:
+    """One document of one of the caller's collections (404 if absent)."""
+    tenant = _require_tenant(request)
+    store = await _owned_collection_or_404(request, collection_id, tenant)
+    try:
+        page = await store.list_collection_documents_async(
+            tenant_ctx=tenant, collection_id=collection_id, limit=1, document_id=document_id
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Collection {collection_id} not found"
+        ) from exc
+    except Exception as exc:
+        from app.observability.logging import get_logger as _gl
+
+        _gl(__name__).exception("get_document_failed", collection_id=collection_id)
+        raise HTTPException(
+            status_code=503, detail="Knowledge persistence is unavailable"
+        ) from exc
+    documents = page.get("documents") or []
+    if not documents:
+        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+    return dict(documents[0])
+
+
 @router.delete("/collections/{collection_id}/documents/{document_id}")
 async def delete_document(
     collection_id: str,
@@ -2975,10 +3051,9 @@ async def reingest_document(
     pieces = pieces or [content.strip()]
     embedder = getattr(request.app.state, "embedder", None)
     embeddings = await _embed_texts_or_http(pieces, embedder, request=request)
-    new_id = _uuid.uuid4().hex
     chunks = [
         RagChunk(
-            document_id=new_id,
+            document_id=document_id,
             content=piece,
             embedding=embedding,
             chunk_index=i,
@@ -2990,15 +3065,16 @@ async def reingest_document(
         )
         for i, (piece, embedding) in enumerate(zip(pieces, embeddings, strict=True))
     ]
-    await _persist_chunks_or_http(store, chunks, collection_id=collection_id, tenant_ctx=tenant)
-    await store.delete_document_async(
-        document_id=document_id, collection_id=collection_id, tenant_ctx=tenant
+    # The document keeps its id: the new version replaces the old chunks in one
+    # transaction, so a failed fetch / embed / write leaves the old one intact.
+    stored = await _persist_chunks_or_http(
+        store, chunks, collection_id=collection_id, tenant_ctx=tenant, replace_document=True
     )
     return {
-        "status": "reingested",
-        "document_id": new_id,
+        "status": "reingested" if stored else "unchanged",
+        "document_id": document_id,
         "previous_document_id": document_id,
-        "chunks_ingested": len(chunks),
+        "chunks_ingested": len(stored),
     }
 
 
