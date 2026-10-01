@@ -149,6 +149,30 @@ async def get_active_model(request: Request) -> dict[str, Any]:
     }
 
 
+@router.get("/plan-cap")
+async def model_plan_cap(
+    request: Request, model_id: str = Query(..., min_length=1)
+) -> dict[str, Any]:
+    """Whether *model_id* is above the caller's plan tier and would be clamped (PROV-18)."""
+    tenant = _require_tenant(request)
+    from app.ai_router.model_orchestrator import (
+        _TIER_RANK,
+        model_quality_tier,
+        plan_tier_cap,
+    )
+
+    plan = str(getattr(tenant.plan, "value", tenant.plan) or "")
+    tier = model_quality_tier(model_id)
+    cap = plan_tier_cap(plan)
+    return {
+        "model_id": model_id,
+        "model_tier": tier,
+        "plan": plan,
+        "plan_cap": cap,
+        "clamped": cap is not None and _TIER_RANK[tier] > _TIER_RANK[cap],
+    }
+
+
 @router.get("/health")
 async def get_provider_health(request: Request) -> dict[str, Any]:
     """Get health status for all providers."""

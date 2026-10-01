@@ -5,7 +5,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { agentsApi } from "@/lib/api/client";
+import { agentsApi, modelsApi } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 import { ArrowLeft, Sliders, Save } from "lucide-react";
@@ -128,6 +128,11 @@ export function AgentPersonalityPage() {
   });
 
   const previewConfig = sliderValuesToConfig(values);
+  // PROV-18: the backend clamps a model above the tenant's plan tier — say so here.
+  const { data: planCap } = useQuery({
+    queryKey: ["model-plan-cap", previewConfig.model_override],
+    queryFn: () => modelsApi.planCap(previewConfig.model_override),
+  });
 
   return (
     <JARVISPageShell>
@@ -198,6 +203,12 @@ export function AgentPersonalityPage() {
             <p className="font-mono font-medium text-foreground">{previewConfig.model_override}</p>
           </div>
         </div>
+        {planCap?.clamped && (
+          <p data-testid="model-plan-clamp" role="note" className="mt-3 text-xs text-amber-600">
+            {previewConfig.model_override} is a {planCap.model_tier}-tier model, above your {planCap.plan} plan
+            ({planCap.plan_cap} tier): goals will run on a {planCap.plan_cap}-tier model instead.
+          </p>
+        )}
       </div>
 
       <button

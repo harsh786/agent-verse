@@ -44,6 +44,20 @@ describe('AgentPersonalityPage', () => {
     vi.restoreAllMocks();
   });
 
+  test('warns when the chosen model is above the plan tier and will be clamped', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const json = (b: unknown) =>
+        new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/models/plan-cap')) {
+        return json({ model_id: 'claude-sonnet-4-5', model_tier: 'medium', plan: 'free', plan_cap: 'low', clamped: true });
+      }
+      return json(MOCK_AGENT);
+    });
+    renderPage();
+    expect(await screen.findByTestId('model-plan-clamp')).toHaveTextContent(/above your free plan/i);
+  });
+
   test('renders without crashing', () => {
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     renderPage();

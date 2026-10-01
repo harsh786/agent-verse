@@ -1689,6 +1689,8 @@ class GoalService:
                 _model_router = ModelRouter()
             try:
                 _model_router = _model_router.with_override(_model_override)  # copy-on-write
+                if hasattr(_model_router, "set_plan_tier"):  # PROV-18: plan caps the pin
+                    _model_router.set_plan_tier(tenant_ctx.plan)
             except Exception as _mo_exc:
                 if _goal_model_override:
                     # The caller explicitly asked for this model: never silently

@@ -856,7 +856,18 @@ export interface CapabilityGroup {
 const _adminHeaders = (adminKey?: string): Record<string, string> =>
   adminKey ? { "X-Admin-Key": adminKey } : {};
 
+/** GET /models/plan-cap — would this model be clamped to the caller's plan tier? */
+export interface ModelPlanCap {
+  model_id: string;
+  model_tier: 'low' | 'medium' | 'high';
+  plan: string;
+  plan_cap: 'low' | 'medium' | 'high' | null;
+  clamped: boolean;
+}
+
 export const modelsApi = {
+  planCap: (modelId: string) =>
+    request<ModelPlanCap>(`/models/plan-cap?model_id=${encodeURIComponent(modelId)}`),
   listConfigured: () =>
     request<{ capabilities: CapabilityGroup[]; total: number }>("/models/configured"),
   upsertConfigured: (

@@ -144,6 +144,54 @@ _PLAN_TIER_CAP: dict[str, str] = {
 }
 _TIER_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
+# Price bands (USD per 1M input tokens, from the single pricing source) that
+# place an arbitrary model in a quality tier: lets plan caps and budget
+# downgrades apply to pinned / role-mapped models, not just tier-table slugs.
+_TIER_PRICE_CEILING: dict[str, float] = {"low": 1.0, "medium": 5.0}
+_ROLE_FOR_TASK: dict[str, str] = {
+    "planning": "planner", "reflection": "planner", "think": "planner", "thinking": "planner",
+    "execution": "executor", "verification": "verifier", "classification": "classifier",
+}
+
+
+def model_quality_tier(model: str) -> str:
+    """Quality tier of *model* by its price (``low`` / ``medium`` / ``high``)."""
+    from app.intelligence.cost_tracker import model_pricing
+
+    price_in, _ = model_pricing(model)
+    if price_in <= _TIER_PRICE_CEILING["low"]:
+        return "low"
+    if price_in <= _TIER_PRICE_CEILING["medium"]:
+        return "medium"
+    return "high"
+
+
+def plan_tier_cap(plan: str) -> str | None:
+    """Highest model tier a plan may use (``None`` = no plan cap)."""
+    return _PLAN_TIER_CAP.get((plan or "").strip().lower())
+
+
+def _configured_within_cap(task: str, cap: str) -> str:
+    """Cheapest CONFIGURED text model whose tier is within *cap* (or "").
+
+    Reasoning roles (*task*) all need text generation; a model the deployment
+    actually serves beats a tier-table cloud slug it may not.
+    """
+    try:
+        from app.ai_router.models import ModelCapability
+        from app.ai_router.registry import model_registry
+
+        allowed = [
+            m
+            for m in model_registry.list_configured(ModelCapability.TEXT_GENERATION)
+            if _TIER_RANK[model_quality_tier(m.model_id)] <= _TIER_RANK[cap]
+        ]
+    except Exception:  # pragma: no cover - never block selection
+        return ""
+    if not allowed:
+        return ""
+    return min(allowed, key=lambda m: m.cost_per_1k_input).model_id
+
 
 @dataclass
 class ModelRoleAssignment:
@@ -347,6 +395,46 @@ class ModelOrchestratorAdapter:
         self._last_budget_ratio: float = 0.0
         self._override = ""
         self._role_map: dict[str, str] = {}
+        self._plan_tier = ""
+
+    def set_plan_tier(self, plan: str) -> None:
+        """The tenant's plan: caps every model this adapter returns (PROV-18)."""
+        self._plan_tier = str(getattr(plan, "value", plan) or "").strip().lower()
+
+    def _tier_cap(self) -> str | None:
+        caps: list[str] = []
+        plan = self._plan_tier or (
+            self._cached_assignment.plan_tier if self._cached_assignment else ""
+        )
+        plan_cap = plan_tier_cap(plan)
+        if plan_cap is not None:
+            caps.append(plan_cap)
+        if self._last_budget_ratio >= _BUDGET_90:
+            caps.append("low")
+        elif self._last_budget_ratio >= _BUDGET_75:
+            caps.append("medium")
+        return min(caps, key=lambda t: _TIER_RANK[t]) if caps else None
+
+    def _capped(self, model: str, task_type: str) -> str:
+        """Clamp *model* to the plan / budget tier cap (overrides and role maps
+        used to bypass both). Prefers the cheapest configured model within the
+        cap, else the cap's tier model; the reason is logged."""
+        cap = self._tier_cap()
+        if not model or cap is None:
+            return model
+        tier = model_quality_tier(model)
+        if _TIER_RANK[tier] <= _TIER_RANK[cap]:
+            return model
+        role = _ROLE_FOR_TASK.get(task_type, "planner")
+        clamped = _configured_within_cap(task_type, cap) or _TIER_MODELS[cap][role]
+        import logging
+
+        logging.getLogger(__name__).info(
+            "model_clamped_by_plan_or_budget model=%s tier=%s cap=%s plan=%s "
+            "budget_ratio=%.2f -> %s",
+            model, tier, cap, self._plan_tier, self._last_budget_ratio, clamped,
+        )
+        return clamped
 
     def set_role_map(self, role_map: dict[str, str]) -> None:
         """Pin roles to models the goal's provider serves (deployment_roles)."""
@@ -424,18 +512,18 @@ class ModelOrchestratorAdapter:
             # profile) — "cheapest configured" cannot tell roles apart when
             # every self-hosted model costs 0.
             if self._override:
-                return self._override
+                return self._capped(self._override, task_type)
             from app.ai_router.deployment_roles import ROLE_ALIASES
 
             _role = ROLE_ALIASES.get(task_type, task_type)
             if self._role_map.get(_role):
-                return self._role_map[_role]
+                return self._capped(self._role_map[_role], task_type)
             try:
                 from app.ai_router.selection import select_configured_model_id
 
                 _choice = select_configured_model_id(task_type)
                 if _choice:
-                    return _choice
+                    return self._capped(_choice, task_type)
             except Exception:  # pragma: no cover - never block on the registry
                 pass
 

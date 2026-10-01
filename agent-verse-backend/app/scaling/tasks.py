@@ -2810,6 +2810,8 @@ def run_goal(
 
                         _model_router = ModelRouter()
                     _model_router = _model_router.with_override(_effective_override)
+                    if hasattr(_model_router, "set_plan_tier"):  # PROV-18: plan caps the pin
+                        _model_router.set_plan_tier(tenant_ctx.plan)
                 except Exception as _mo_exc:
                     if _goal_level_override:
                         # Explicitly requested: never silently run on another model.
