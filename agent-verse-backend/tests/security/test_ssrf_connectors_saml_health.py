@@ -167,9 +167,10 @@ def test_mcp_health_check_never_requests_internal_connector(
         sent.append(str(req.url))
         return httpx.Response(200)
 
-    real = httpx.AsyncClient
+    # The probe connects through the pinned client (SSRF-01); swap its transport.
     monkeypatch.setattr(
-        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(_handler), **kw)
+        "app.net.ssrf_guard.public_async_client",
+        lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(_handler), **kw),
     )
     out = tasks.check_mcp_health.run()
     assert sent == []

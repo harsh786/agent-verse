@@ -46,15 +46,8 @@ _UNPINNED_HTTPX = frozenset(
     {"AsyncClient", "Client", "stream", "request", "get", "post", "put", "patch", "delete"}
 )
 
-_CONCURRENT = "owned by concurrent change — migrate later"
-
 # (path relative to app/, function qualname) -> reason. Keep this minimal.
-_ALLOWLIST: dict[tuple[str, str], str] = {
-    # app/scaling/tasks.py is owned by a concurrent change: the MCP health
-    # probe uses request_public (every hop re-checked) on a plain client.
-    ("scaling/tasks.py", "check_mcp_health._run"): _CONCURRENT,
-    ("scaling/tasks.py", "check_mcp_health._fallback"): _CONCURRENT,
-}
+_ALLOWLIST: dict[tuple[str, str], str] = {}
 
 
 def _httpx_name_aliases(tree: ast.Module) -> set[str]:

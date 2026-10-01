@@ -5214,9 +5214,7 @@ def check_mcp_health() -> dict[str, Any]:
                         )
                         continue
                     # Simple health check: GET {base_url}/health
-                    import httpx
-
-                    from app.net.ssrf_guard import request_public
+                    from app.net.ssrf_guard import public_async_client, request_public
 
                     _base = (cfg.base_url or cfg.url or "").rstrip("/")
                     if not _base or _base.startswith("builtin://"):
@@ -5224,11 +5222,12 @@ def check_mcp_health() -> dict[str, Any]:
                     # Was client.get(..., follow_redirects=True) on the tenant's
                     # URL with no SSRF guard: a connector pointed at (or 302-ing
                     # to) an internal host made the worker probe it. Every hop is
-                    # now re-validated.
+                    # now re-validated, and the pinned client dials only the
+                    # address checked at connect time (no DNS-rebinding window).
                     import time as _t
 
                     _t0 = _t.monotonic()
-                    async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+                    async with public_async_client(timeout=5.0) as client:
                         try:
                             resp = await request_public(
                                 client, "GET", f"{_base}/health", context="mcp health check"
@@ -5285,7 +5284,6 @@ def check_mcp_health() -> dict[str, Any]:
 
             import time as _time
 
-            import httpx as _httpx
             import redis.asyncio as aioredis
 
             r = aioredis.from_url(redis_url, decode_responses=True)
@@ -5314,12 +5312,14 @@ def check_mcp_health() -> dict[str, Any]:
                             continue
                         t0 = _time.monotonic()
                         try:
-                            from app.net.ssrf_guard import request_public
+                            from app.net.ssrf_guard import (
+                                public_async_client,
+                                request_public,
+                            )
 
-                            # SSRF: tenant URL was probed unchecked.
-                            async with _httpx.AsyncClient(
-                                timeout=3.0, follow_redirects=False
-                            ) as http:
+                            # SSRF: tenant URL was probed unchecked; the pinned
+                            # client also closes the DNS-rebinding window.
+                            async with public_async_client(timeout=3.0) as http:
                                 resp = await request_public(
                                     http,
                                     "GET",

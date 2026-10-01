@@ -42,9 +42,10 @@ def _install(monkeypatch: pytest.MonkeyPatch, n: int, code_for: Any) -> list[dic
     def _handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(code_for(str(req.url)))
 
-    real = httpx.AsyncClient
+    # The probe connects through the pinned client (SSRF-01); swap its transport.
     monkeypatch.setattr(
-        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(_handler), **kw)
+        "app.net.ssrf_guard.public_async_client",
+        lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(_handler), **kw),
     )
     written: list[dict[str, Any]] = []
 
