@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.enterprise.marketplace_v2 import bundle_report as _bundle_report
+from app.enterprise.marketplace_v2 import install_autonomy
 from app.tenancy.context import TenantContext
 
 warnings.warn(
@@ -241,7 +242,9 @@ class Marketplace:
                 "goal_template",
                 f"Execute tasks: {template['description'][:200]}",
             ),
-            "autonomy_mode": template.get("autonomy_mode", "bounded-autonomous"),
+            # MEM-22: an install never yields a fully-autonomous agent (the
+            # rollout gate is applied on PUT /agents/{id}).
+            "autonomy_mode": install_autonomy(template.get("autonomy_mode"))[0],
             "connector_ids": [],
             "description": template.get("description", ""),
         }

@@ -1318,6 +1318,30 @@ def bundle_report(name: str, items: list[dict[str, Any]]) -> dict[str, Any]:
         "errors": [{"template_id": i["template_id"], "error": i.get("error", "")} for i in failed],
     }
 
+FULLY_AUTONOMOUS = "fully-autonomous"
+INSTALL_DEFAULT_AUTONOMY = "bounded-autonomous"
+
+
+def install_autonomy(requested: str | None) -> tuple[str, str | None]:
+    """The autonomy mode a template install may create, and why it differs.
+
+    MEM-22: an agent becomes ``fully-autonomous`` only through the rollout gate
+    (an eval suite whose latest completed run passes), enforced by POST /agents
+    and PUT /agents/{id}. An install carries no eval suite, so a fully-autonomous
+    template is installed ``bounded-autonomous`` (high-risk steps still go
+    through HITL); the owner upgrades it with PUT /agents/{id}, which applies
+    the gate. Every other mode is installed as requested.
+    """
+    mode = str(requested or INSTALL_DEFAULT_AUTONOMY)
+    if mode != FULLY_AUTONOMOUS:
+        return mode, None
+    return INSTALL_DEFAULT_AUTONOMY, (
+        "Installed as bounded-autonomous: fully-autonomous needs the rollout gate "
+        "(attach an eval suite whose latest run passes, then PUT /agents/{id} with "
+        "autonomy_mode=fully-autonomous)."
+    )
+
+
 class TemplateSlugTakenError(Exception):
     """The slug belongs to another tenant's template."""
 
@@ -1800,6 +1824,8 @@ class MarketplaceV2:
 
         agent_id = str(uuid.uuid4().hex[:32])
         install_id = str(uuid.uuid4().hex[:32])
+        requested_mode = str(config.get("autonomy_mode") or INSTALL_DEFAULT_AUTONOMY)
+        autonomy_mode, autonomy_note = install_autonomy(requested_mode)
 
         if self._db is not None:
             try:
@@ -1883,7 +1909,7 @@ class MarketplaceV2:
                                 config.get("name", template.get("name", "Agent")),
                             ),
                             "goal": config.get("goal_template", ""),
-                            "mode": config.get("autonomy_mode", "bounded-autonomous"),
+                            "mode": autonomy_mode,
                             "connector_ids": json.dumps(connector_ids),
                             "system_prompt": system_prompt,
                         },
@@ -1933,15 +1959,28 @@ class MarketplaceV2:
                     "params": params,
                     "connector_ids": _connector_ids,
                     "system_prompt": _system_prompt,
+                    "autonomy_mode": autonomy_mode,
                 }
             )
             cached["install_count"] = cached.get("install_count", 0) + 1
 
+        if autonomy_note:
+            logger.info(
+                "marketplace_install_autonomy_downgraded",
+                template_id=template_id,
+                tenant_id=tenant_ctx.tenant_id,
+                requested=requested_mode,
+                installed=autonomy_mode,
+            )
         return {
             "success": True,
             "agent_id": agent_id,
             "install_id": install_id,
             "template_id": template_id,
+            "autonomy_mode": autonomy_mode,
+            "requested_autonomy_mode": requested_mode,
+            "autonomy_downgraded": autonomy_note is not None,
+            "autonomy_note": autonomy_note,
         }
 
     # ------------------------------------------------------------------
