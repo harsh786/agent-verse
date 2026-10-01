@@ -1022,9 +1022,7 @@ class MCPClient:
                                 cfg.builtin_type,
                                 cfg.server_id,
                                 server_id,
-                            ) or (
-                                _name and _bcfg.get("name", "").strip().lower() == _name
-                            ):
+                            ) or (_name and _bcfg.get("name", "").strip().lower() == _name):
                                 _restored = _bcfg.get("handler")
                                 break
                     except Exception:
@@ -1521,8 +1519,13 @@ class MCPClient:
         tool_name: str,
         arguments: dict[str, Any],
         tenant_ctx: TenantContext,
+        server_id: str | None = None,
     ) -> ToolCallResult:
         """Dispatch a tool by NAME, resolving which registered server exposes it.
+
+        With ``server_id`` (a workflow step saved on one connector instance) the
+        call goes to THAT connection only: it must exist for the tenant and expose
+        the tool — there is no fallback to another connection with the same tool.
 
         Convenience for callers that only know the tool name (e.g. workflow tool
         steps) rather than the server_id. ``tool_name`` may name the connection:
@@ -1532,6 +1535,37 @@ class MCPClient:
         connection was listed first.
         """
         from app.mcp.tool_naming import connection_slug, strip_connection_prefix
+
+        if server_id:
+            pinned_cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
+            if pinned_cfg is None:
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=f"connector '{server_id}' not found for this tenant",
+                    server_id=server_id,
+                )
+            bare = strip_connection_prefix(tool_name, pinned_cfg.name)
+            if "." in bare:
+                conn, _, dotted_tool = bare.rpartition(".")
+                if connection_slug(conn) == connection_slug(pinned_cfg.name):
+                    bare = dotted_tool
+            try:
+                pinned_tools = await self.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
+            except Exception as exc:
+                return ToolCallResult(
+                    tool_name=tool_name, success=False, error=str(exc), server_id=server_id
+                )
+            if bare not in {getattr(t, "name", None) for t in pinned_tools}:
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=f"connector '{pinned_cfg.name}' does not expose tool '{bare}'",
+                    server_id=server_id,
+                )
+            return await self.call_tool(
+                server_id=server_id, tool_name=bare, arguments=arguments, tenant_ctx=tenant_ctx
+            )
 
         try:
             records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)

@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Trigger DSL
@@ -171,6 +171,11 @@ class StepDefinition(BaseModel):
 
     # Per-step config — all optional, consumed by the relevant StepNode
     tool: str | None = None
+    # Tool step: the connector INSTANCE to call (opaque server id saved by the
+    # builder). Several connections may expose the same tool (two MongoDBs).
+    server_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("server_id", "connector_id")
+    )
     input: dict[str, Any] = Field(default_factory=dict)
     output_schema: dict[str, str] = Field(default_factory=dict)
     timeout: str = "60s"

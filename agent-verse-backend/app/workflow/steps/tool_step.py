@@ -66,10 +66,13 @@ class ToolStepNode:
                 _tctx = TenantContext(
                     tenant_id=_tid, plan=PlanTier.FREE, api_key_id="workflow", roles=()
                 )
+            # The step's saved connector instance when set; a bare tool name
+            # exposed by several connectors is refused as ambiguous.
             result = await self.mcp_client.call_tool_by_name(
                 tool_name=self.step.tool or "",
                 arguments=resolved_input,
                 tenant_ctx=_tctx,
+                server_id=self.step.server_id or None,
             )
             if hasattr(result, "success"):  # ToolCallResult
                 # Raise on failure so the runner's on_failure handling (pause /
