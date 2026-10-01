@@ -30,26 +30,26 @@ FREE = TenantContext(tenant_id="t-free", plan=PlanTier.FREE, api_key_id="k")
 @pytest.mark.asyncio
 async def test_redis_without_lua_still_enforces_the_cap() -> None:
     redis = fakeredis.FakeAsyncRedis()  # no lupa installed → EVAL unsupported
-    await check_and_increment_concurrent_goals(FREE, redis)
-    await check_and_increment_concurrent_goals(FREE, redis)
+    await check_and_increment_concurrent_goals(FREE, redis, goal_id="g1")
+    await check_and_increment_concurrent_goals(FREE, redis, goal_id="g2")
     with pytest.raises(PlanLimitExceededError):
-        await check_and_increment_concurrent_goals(FREE, redis)
-    assert int(await redis.get("concurrent_goals:t-free")) == 2  # over-limit INCR undone
+        await check_and_increment_concurrent_goals(FREE, redis, goal_id="g3")
+    assert await redis.zcard("concurrent_goal_leases:t-free") == 2  # over-limit add undone
 
 
 @pytest.mark.asyncio
 async def test_unreachable_redis_refuses_instead_of_allowing() -> None:
     redis = MagicMock()
-    for op in ("eval", "incr", "expire", "decr"):
+    for op in ("eval", "zremrangebyscore", "zscore", "zadd", "zcard", "zrem", "pexpireat"):
         setattr(redis, op, AsyncMock(side_effect=ConnectionError("down")))
     with pytest.raises(ConcurrencyLimitUnavailableError) as exc:
-        await check_and_increment_concurrent_goals(FREE, redis)
+        await check_and_increment_concurrent_goals(FREE, redis, goal_id="g1")
     assert exc.value.http_status == 503
 
 
 @pytest.mark.asyncio
 async def test_no_redis_wired_is_unchanged() -> None:
-    await check_and_increment_concurrent_goals(FREE, None)
+    await check_and_increment_concurrent_goals(FREE, None, goal_id="g1")
 
 
 class _DownRedis:

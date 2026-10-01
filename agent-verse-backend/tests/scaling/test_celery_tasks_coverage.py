@@ -594,8 +594,8 @@ async def test_decrement_after_completion_calls_decrement_func() -> None:
 
     called: list[tuple] = []
 
-    async def _fake_decrement(tenant_id: str, redis: object) -> None:
-        called.append((tenant_id,))
+    async def _fake_decrement(tenant_id: str, redis: object, goal_id: str) -> None:
+        called.append((tenant_id, goal_id))
 
     mock_redis = AsyncMock()
     mock_redis.aclose = AsyncMock()
@@ -604,10 +604,9 @@ async def test_decrement_after_completion_calls_decrement_func() -> None:
         patch("redis.asyncio.from_url", return_value=mock_redis),
         patch("app.tenancy.limits.decrement_concurrent_goals", _fake_decrement),
     ):
-        await _decrement_after_completion("tenant-1", "redis://localhost/0")
+        await _decrement_after_completion("tenant-1", "redis://localhost/0", "goal-1")
 
-    assert len(called) == 1
-    assert called[0][0] == "tenant-1"
+    assert called == [("tenant-1", "goal-1")]
 
 
 @pytest.mark.asyncio

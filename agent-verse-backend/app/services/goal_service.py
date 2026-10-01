@@ -3039,8 +3039,12 @@ class GoalService:
         if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
             from app.tenancy.limits import decrement_concurrent_goals
 
+            # Idempotent per goal (ZREM of its lease): a worker-run goal that is
+            # cancelled is released here AND by the worker; the second is a no-op.
             if _holds_concurrency_slot(record.execution_context):
-                await decrement_concurrent_goals(tenant_id=record.tenant_id, redis=self._redis)
+                await decrement_concurrent_goals(
+                    tenant_id=record.tenant_id, redis=self._redis, goal_id=goal_id
+                )
             # Release this goal's dedup claim (compare-and-delete by goal_id, so a
             # newer identical goal's claim survives) so identical goals can run.
             from app.services.dedup import _default_deduplicator as _goal_dedup
@@ -4214,12 +4218,14 @@ class GoalService:
             # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.
             from app.tenancy.limits import check_and_increment_concurrent_goals
 
+            # The slot is a lease keyed by the goal id minted above (RATE-04).
             _takes_slot = _holds_concurrency_slot(execution_context)
             if _takes_slot:
                 try:
                     await check_and_increment_concurrent_goals(
                         tenant_ctx=tenant_ctx,
                         redis=getattr(self, "_redis", None),
+                        goal_id=goal_id,
                     )
                 except BaseException:
                     # Refused (429): the claim must not dedup the retry onto a
@@ -4519,6 +4525,7 @@ class GoalService:
                             await decrement_concurrent_goals(
                                 tenant_id=tenant_ctx.tenant_id,
                                 redis=getattr(self, "_redis", None),
+                                goal_id=goal_id,
                             )
                     except Exception as _dec_exc:
                         _svc_logger.warning(
@@ -5382,7 +5389,9 @@ class GoalService:
         from app.tenancy.limits import decrement_concurrent_goals
 
         if _holds_concurrency_slot(record.execution_context):
-            await decrement_concurrent_goals(tenant_id=tenant_ctx.tenant_id, redis=self._redis)
+            await decrement_concurrent_goals(
+                tenant_id=tenant_ctx.tenant_id, redis=self._redis, goal_id=goal_id
+            )
         await self._dispatch_event(
             goal_id,
             {"type": "goal_waiting_human", "reason": "pending approvals (supervised mode)"},
@@ -5410,7 +5419,7 @@ class GoalService:
 
             with suppress(Exception):
                 await decrement_concurrent_goals(
-                    tenant_id=tenant_ctx.tenant_id, redis=self._redis
+                    tenant_id=tenant_ctx.tenant_id, redis=self._redis, goal_id=record.goal_id
                 )
 
     async def _relaunch_suspended_goal(
@@ -5424,7 +5433,9 @@ class GoalService:
         # runs under its parent's slot and never held one.
         _takes_slot = _holds_concurrency_slot(record.execution_context)
         if _takes_slot:
-            await check_and_increment_concurrent_goals(tenant_ctx=tenant_ctx, redis=self._redis)
+            await check_and_increment_concurrent_goals(
+                tenant_ctx=tenant_ctx, redis=self._redis, goal_id=record.goal_id
+            )
         try:
             # WF-18: the durable status leaves waiting_human BEFORE run_goal is
             # enqueued, so the worker's claim can refuse waiting_human rows (a

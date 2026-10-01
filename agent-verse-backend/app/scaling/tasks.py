@@ -271,28 +271,36 @@ def _start_goal_heartbeat(
 _SUBGOAL_RUN: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "agentverse_subgoal_run", default=False
 )
-# The goal this worker thread is running (set by run_goal on every invocation),
-# so its terminal exits release the goal's submission-dedup claim (SVC-01).
+# The goal this worker thread is running (set by run_goal on every invocation):
+# its terminal exits release the goal's submission-dedup claim (SVC-01) and its
+# concurrent-goal slot, a lease keyed by goal id released by ZREM of exactly
+# that id (RATE-04).
 _RUN_GOAL_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
     "agentverse_run_goal_id", default=""
 )
 
 
-async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
-    """Decrement the concurrent-goal counter in Redis after a Celery goal finishes.
+async def _decrement_after_completion(
+    tenant_id: str, redis_url: str, goal_id: str | None = None
+) -> None:
+    """Release the goal's concurrent-goal lease after a Celery goal finishes.
 
     Celery workers never call ``_dispatch_event`` in the API process, so the
-    counter must be decremented explicitly here at every terminal exit of
-    ``run_goal``. A supervisor sub-goal holds no slot of its own (unless
-    SUBGOALS_SHARE_PARENT_SLOT=false): nothing to do.
+    slot must be released explicitly here at every terminal exit of
+    ``run_goal``. The release is ``ZREM goal_id`` (RATE-06): when the API's
+    cancel handler already released it, this is a no-op instead of freeing
+    another goal's slot. A supervisor sub-goal holds no slot of its own
+    (unless SUBGOALS_SHARE_PARENT_SLOT=false): nothing to do.
 
     Also releases the goal's submission-dedup claim: only the API's local event
     dispatch released it, so a worker-run goal kept identical submissions
     deduplicated onto a finished goal for the claim's TTL.
     """
-    goal_id = _RUN_GOAL_ID.get()
-    if goal_id:
-        await _release_goal_dedup_claim(goal_id, redis_url)
+    goal_id = goal_id or _RUN_GOAL_ID.get()
+    if not goal_id:
+        logger.warning("counter_decrement_skipped_no_goal_id tenant_id=%s", tenant_id)
+        return
+    await _release_goal_dedup_claim(goal_id, redis_url)
     if _SUBGOAL_RUN.get():
         from app.services.goal_service import subgoals_share_parent_slot
 
@@ -304,8 +312,10 @@ async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
         from app.tenancy.limits import decrement_concurrent_goals
 
         r = aioredis.from_url(redis_url, decode_responses=True)
-        await decrement_concurrent_goals(tenant_id=tenant_id, redis=r)
-        await r.aclose()
+        try:
+            await decrement_concurrent_goals(tenant_id=tenant_id, redis=r, goal_id=goal_id)
+        finally:
+            await r.aclose()
     except Exception as exc:
         logger.warning("counter_decrement_failed: %s", exc)
 
@@ -323,6 +333,34 @@ async def _release_goal_dedup_claim(goal_id: str, redis_url: str) -> None:
             await r.aclose()
     except Exception as exc:  # the claim still expires with its TTL
         logger.warning("goal_dedup_release_failed: %s", exc)
+
+
+async def _renew_slot_lease(tenant_id: str, goal_id: str, plan: Any, redis_url: str) -> None:
+    """Extend the goal's slot lease to its run window when a worker starts it.
+
+    The lease taken at submit covers the plan timeout + queue headroom; a goal
+    that waited in the queue gets a fresh full run window here (only if it
+    still holds a lease — a finished/redelivered goal is not re-admitted).
+    """
+    if _SUBGOAL_RUN.get():
+        return
+    try:
+        import redis.asyncio as aioredis
+
+        from app.tenancy.limits import concurrent_goal_lease_seconds, renew_concurrent_goal_lease
+
+        r = aioredis.from_url(redis_url, decode_responses=True)
+        try:
+            await renew_concurrent_goal_lease(
+                tenant_id,
+                r,
+                goal_id=goal_id,
+                lease_seconds=concurrent_goal_lease_seconds(plan, running=True),
+            )
+        finally:
+            await r.aclose()
+    except Exception as exc:
+        logger.warning("slot_lease_renew_failed goal_id=%s: %s", goal_id, exc)
 
 
 # Register builtin MCP handlers in the worker process so that the
@@ -2561,6 +2599,7 @@ def run_goal(
                     "goal_id": goal_id,
                     "reason": "already_executing",
                 }
+            _run_async(_renew_slot_lease(tenant_id, goal_id, plan, REDIS_URL))
     except Exception as _lock_exc:
         # Fail closed: running without the lock let a redelivered/duplicated
         # task execute the same goal concurrently. Retry; after the last retry

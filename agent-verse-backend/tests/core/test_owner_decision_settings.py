@@ -150,7 +150,7 @@ async def test_worker_releases_a_subgoal_slot_only_when_not_shared(
 
     released: list[str] = []
 
-    async def _decrement(*, tenant_id: str, redis: Any) -> None:
+    async def _decrement(*, tenant_id: str, redis: Any, goal_id: str) -> None:
         released.append(tenant_id)
 
     class _Redis:
@@ -165,10 +165,10 @@ async def test_worker_releases_a_subgoal_slot_only_when_not_shared(
     monkeypatch.setattr(aioredis, "from_url", lambda *_a, **_k: _Redis())
     token = tasks._SUBGOAL_RUN.set(True)
     try:
-        await tasks._decrement_after_completion("t1", "redis://fake/0")
+        await tasks._decrement_after_completion("t1", "redis://fake/0", "g1")
         assert released == []
         monkeypatch.setattr(get_settings(), "subgoals_share_parent_slot", False)
-        await tasks._decrement_after_completion("t1", "redis://fake/0")
+        await tasks._decrement_after_completion("t1", "redis://fake/0", "g1")
         assert released == ["t1"]
     finally:
         tasks._SUBGOAL_RUN.reset(token)

@@ -339,9 +339,9 @@ async def _reset_signup_rate_limit(app: Any) -> AsyncIterator[None]:
 async def _reset_goal_concurrency_budget(app: Any) -> AsyncIterator[None]:
     """Reset every tenant's concurrent-goal counter before each test.
 
-    The concurrent-goal limit is a Redis counter (``concurrent_goals:{tenant_id}``,
-    3600s TTL) incremented when a goal is submitted and decremented only when the
-    goal reaches a terminal state. The e2e_full env runs NO celery worker, so goals
+    The concurrent-goal limit is a Redis sorted set of per-goal leases
+    (``concurrent_goal_leases:{tenant_id}``) taken when a goal is submitted and
+    released only when the goal reaches a terminal state. The e2e_full env runs NO celery worker, so goals
     a test fires never complete and never decrement the counter — it accumulates
     across the shared session tenant and eventually trips "Concurrent goal limit
     reached", making later tests fail depending on run order (an order-dependent,
@@ -355,7 +355,7 @@ async def _reset_goal_concurrency_budget(app: Any) -> AsyncIterator[None]:
     redis = getattr(app.state, "_redis", None)
     if redis is not None:
         try:
-            keys = await redis.keys("concurrent_goals:*")
+            keys = await redis.keys("concurrent_goal_leases:*")
             if keys:
                 await redis.delete(*keys)
         except Exception:
