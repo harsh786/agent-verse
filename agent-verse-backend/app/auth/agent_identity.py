@@ -145,6 +145,45 @@ def verify_agent_token(token: str, public_key_pem: str, tenant_id: str) -> dict[
 
 
 # ---------------------------------------------------------------------------
+# Client assertions (RFC 7523 private_key_jwt) — proof of possession on exchange
+# ---------------------------------------------------------------------------
+
+CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+# An assertion is a one-shot login proof: anything longer-lived is refused.
+CLIENT_ASSERTION_MAX_LIFETIME_S = 300
+_ASSERTION_LEEWAY_S = 30
+
+
+def build_client_assertion(
+    *,
+    agent_id: str,
+    key_id: str,
+    private_key_pem: str,
+    audience: str,
+    lifetime_s: int = 60,
+) -> str:
+    """A client assertion for POST /agents/{agent_id}/token, signed with the
+    credential's private key (the PEM returned once at issuance).
+
+    ``audience`` is the token endpoint path, ``/agents/{agent_id}/token``.
+    """
+    now = int(datetime.now(UTC).timestamp())
+    return jwt.encode(
+        {
+            "iss": f"agent:{agent_id}",
+            "sub": f"agent:{agent_id}",
+            "aud": audience,
+            "iat": now,
+            "exp": now + lifetime_s,
+            "jti": uuid.uuid4().hex,
+        },
+        private_key_pem,
+        algorithm=JWT_ALGORITHM,
+        headers={"kid": key_id},
+    )
+
+
+# ---------------------------------------------------------------------------
 # JWKS builder (used by /.well-known/jwks.json endpoint)
 # ---------------------------------------------------------------------------
 
@@ -479,6 +518,76 @@ class AgentIdentityService:
         if row is None:
             return None
         return str(row[0]), str(row[1]), list(row[2] or [])
+
+    async def verify_client_assertion(
+        self, assertion: str, agent_id: str, tenant_id: str, audience: str
+    ) -> str | None:
+        """Verify a ``private_key_jwt`` client assertion; return its key_id or ``None``.
+
+        The assertion must be RS256-signed by an active credential of *agent_id*
+        in *tenant_id* (selected by the ``kid`` header, verified against the
+        stored public key), with ``iss == sub == agent:<agent_id>``, ``aud``
+        naming this token endpoint, a short lifetime and a ``jti`` that has not
+        been seen before (Redis ``SET NX`` until it expires, so a captured
+        assertion cannot be replayed on any replica). Raises ``RuntimeError``
+        when no replay store is wired — single-use cannot be guaranteed.
+        """
+        if self._db is None:
+            return None
+        if self._redis is None:
+            raise RuntimeError("client-assertion replay store unavailable (no Redis configured)")
+        try:
+            header = jwt.get_unverified_header(assertion)
+        except Exception:
+            return None
+        if header.get("alg") != JWT_ALGORITHM:
+            return None
+        key_id = header.get("kid")
+        if not isinstance(key_id, str) or not key_id:
+            return None
+        try:
+            found = await self._fetch_verification_key(key_id, tenant_id)
+        except Exception as exc:
+            _log.warning("client_assertion_key_lookup_failed: %s", exc)
+            return None
+        if found is None:
+            return None
+        credential_agent, public_pem, _scopes = found
+        if credential_agent != agent_id:
+            return None
+        try:
+            claims: dict[str, Any] = jwt.decode(
+                assertion,
+                public_pem,
+                algorithms=[JWT_ALGORITHM],
+                audience=audience,
+                options={"require_exp": True, "require_iat": True, "require_jti": True},
+            )
+        except Exception:
+            return None
+        subject = f"agent:{agent_id}"
+        if claims.get("iss") != subject or claims.get("sub") != subject:
+            return None
+        jti = claims.get("jti")
+        exp = claims.get("exp")
+        iat = claims.get("iat")
+        if not isinstance(jti, str) or not jti or len(jti) > 256:
+            return None
+        if not isinstance(exp, int) or not isinstance(iat, int):
+            return None
+        now = int(datetime.now(UTC).timestamp())
+        if max(exp - now, exp - iat) > CLIENT_ASSERTION_MAX_LIFETIME_S:
+            return None
+        if iat > now + _ASSERTION_LEEWAY_S:
+            return None
+        ttl = max(1, exp - now + _ASSERTION_LEEWAY_S)
+        first_use = await self._redis.set(
+            f"agent_assertion_jti:{tenant_id}:{key_id}:{jti}", "1", nx=True, ex=ttl
+        )
+        if not first_use:
+            _log.warning("client_assertion_replayed kid=%s", key_id)
+            return None
+        return key_id
 
     async def authenticate_agent_jwt(self, token: str) -> AgentPrincipal | None:
         """Verify an agent JWT against the tenant's registered (non-revoked) key.

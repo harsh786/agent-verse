@@ -1670,29 +1670,57 @@ async def revoke_agent_credential(
 async def exchange_agent_token(
     agent_id: str, request: Request, _owned: dict[str, Any] = Depends(require_owned_agent)
 ) -> dict[str, Any]:
-    """Exchange a service-account key for a short-lived RS256 JWT (15 minutes).
+    """Exchange a service-account credential for a short-lived RS256 JWT (15 minutes).
 
-    Provide the key_id in the X-Agent-Key-Id header, query param, or request body.
+    Requires proof of possession of the credential's private key: the JSON body
+    carries an RFC 7523 client assertion,
+    ``{"client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+    "client_assertion": "<JWT>"}``, RS256-signed with the private key returned at
+    issuance: ``kid`` = the key_id, ``iss`` = ``sub`` = ``agent:<agent_id>``,
+    ``aud`` = ``/agents/<agent_id>/token``, ``exp`` at most 5 minutes out and a
+    single-use ``jti`` (see ``app.auth.agent_identity.build_client_assertion``).
+    The key_id alone is public (it is the JWT ``kid``) and no longer suffices.
+
     The returned token authenticates as ``Authorization: Bearer <jwt>``: the
     TenantMiddleware verifies it against this tenant's registered, non-revoked
     key and grants roles=("agent",) limited to the credential's scopes.
     """
-    tenant = _require_tenant(request)
+    from app.auth.agent_identity import CLIENT_ASSERTION_TYPE
 
-    # Read key_id from header, query param, or request body
-    key_id = request.headers.get("X-Agent-Key-Id") or request.query_params.get("key_id")
-    if not key_id:
-        try:
-            body = await request.json()
-            key_id = body.get("key_id")
-        except Exception:
-            pass
-    if not key_id:
-        raise HTTPException(422, "key_id required in X-Agent-Key-Id header or request body")
+    tenant = _require_tenant(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        body = {}
+    assertion = body.get("client_assertion")
+    if (
+        body.get("client_assertion_type") != CLIENT_ASSERTION_TYPE
+        or not isinstance(assertion, str)
+        or not assertion
+    ):
+        raise HTTPException(
+            401,
+            "client_assertion required: a private_key_jwt signed with the credential's "
+            f"private key (client_assertion_type={CLIENT_ASSERTION_TYPE})",
+        )
 
     svc = getattr(request.app.state, "agent_identity_service", None)
     if svc is None:
         raise HTTPException(503, "Agent identity service not available")
+
+    try:
+        key_id = await svc.verify_client_assertion(
+            assertion, agent_id, tenant.tenant_id, f"/agents/{agent_id}/token"
+        )
+    except RuntimeError as exc:
+        raise HTTPException(503, f"Agent identity unavailable: {exc}") from exc
+    if key_id is None:
+        raise HTTPException(401, "Invalid, expired or replayed client assertion")
+    claimed = request.headers.get("X-Agent-Key-Id") or body.get("key_id")
+    if claimed is not None and claimed != key_id:
+        raise HTTPException(401, "key_id does not match the client assertion")
 
     token = await svc.issue_agent_jwt(agent_id=agent_id, key_id=key_id, tenant_id=tenant.tenant_id)
     if token is None:

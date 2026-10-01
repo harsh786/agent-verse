@@ -980,66 +980,47 @@ def test_revoke_credential_not_found() -> None:
 # Endpoint: token exchange (lines 1160-1199)
 # ---------------------------------------------------------------------------
 
-def test_exchange_token_missing_key_id() -> None:
-    """Lines 1170-1177: No key_id provided → 422."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    agent = _create_agent(client)
-    resp = client.post(f"/agents/{agent['agent_id']}/token", headers=H)
-    assert resp.status_code == 422
+_ASSERTION = {
+    "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+    "client_assertion": "header.claims.sig",
+}
 
 
-def test_exchange_token_key_id_from_header() -> None:
-    """Lines 1169: key_id read from X-Agent-Key-Id header."""
+def _pop_svc(token: str | None) -> AsyncMock:
     svc = AsyncMock()
-    svc.issue_agent_jwt = AsyncMock(return_value=None)  # credential not found
+    svc.verify_client_assertion = AsyncMock(return_value="k1")
+    svc.issue_agent_jwt = AsyncMock(return_value=token)
+    return svc
+
+
+def test_exchange_token_without_client_assertion_is_401() -> None:
+    """The public key_id alone no longer mints a token (AGID-03)."""
+    svc = _pop_svc("t")
     client = TestClient(_make_app(agent_identity_service=svc), raise_server_exceptions=False)
     agent = _create_agent(client)
+    for kwargs in (
+        {},
+        {"json": {"key_id": "k1"}},
+        {"headers": {**H, "X-Agent-Key-Id": "k1"}},
+    ):
+        kwargs.setdefault("headers", H)
+        resp = client.post(f"/agents/{agent['agent_id']}/token", **kwargs)
+        assert resp.status_code == 401
+    svc.issue_agent_jwt.assert_not_called()
 
-    resp = client.post(
-        f"/agents/{agent['agent_id']}/token",
-        headers={**H, "X-Agent-Key-Id": "key-123"},
-    )
-    assert resp.status_code == 404
 
-
-def test_exchange_token_key_id_from_query_param() -> None:
-    """Lines 1169: key_id read from query param."""
-    svc = AsyncMock()
-    svc.issue_agent_jwt = AsyncMock(return_value=None)
-    client = TestClient(_make_app(agent_identity_service=svc), raise_server_exceptions=False)
+def test_exchange_token_credential_not_found() -> None:
+    client = TestClient(_make_app(agent_identity_service=_pop_svc(None)), raise_server_exceptions=False)
     agent = _create_agent(client)
-
-    resp = client.post(
-        f"/agents/{agent['agent_id']}/token?key_id=key-from-query",
-        headers=H,
-    )
-    assert resp.status_code == 404
-
-
-def test_exchange_token_key_id_from_body() -> None:
-    """Lines 1171-1175: key_id read from request body."""
-    svc = AsyncMock()
-    svc.issue_agent_jwt = AsyncMock(return_value=None)
-    client = TestClient(_make_app(agent_identity_service=svc), raise_server_exceptions=False)
-    agent = _create_agent(client)
-
-    resp = client.post(
-        f"/agents/{agent['agent_id']}/token",
-        json={"key_id": "key-from-body"},
-        headers=H,
-    )
+    resp = client.post(f"/agents/{agent['agent_id']}/token", json=_ASSERTION, headers=H)
     assert resp.status_code == 404
 
 
 def test_exchange_token_no_service() -> None:
-    """Line 1181: No service → 503."""
+    """No service -> 503."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     agent = _create_agent(client)
-
-    resp = client.post(
-        f"/agents/{agent['agent_id']}/token",
-        headers={**H, "X-Agent-Key-Id": "k1"},
-    )
+    resp = client.post(f"/agents/{agent['agent_id']}/token", json=_ASSERTION, headers=H)
     assert resp.status_code == 503
 
 
@@ -1054,15 +1035,11 @@ def test_exchange_token_success_with_jwt() -> None:
     payload = {"sub": "agent-1", "exp": int(time.time()) + 900}
     token = jwt.encode(payload, secret, algorithm="HS256")
 
-    svc = AsyncMock()
-    svc.issue_agent_jwt = AsyncMock(return_value=token)
+    svc = _pop_svc(token)
     client = TestClient(_make_app(agent_identity_service=svc), raise_server_exceptions=False)
     agent = _create_agent(client)
 
-    resp = client.post(
-        f"/agents/{agent['agent_id']}/token",
-        headers={**H, "X-Agent-Key-Id": "k1"},
-    )
+    resp = client.post(f"/agents/{agent['agent_id']}/token", json=_ASSERTION, headers=H)
     assert resp.status_code == 200
     body = resp.json()
     assert body["token"] == token
@@ -1071,16 +1048,12 @@ def test_exchange_token_success_with_jwt() -> None:
 
 def test_exchange_token_invalid_jwt_no_exp() -> None:
     """Lines 1196-1197: JWT without exp claim → expires_at is None."""
-    svc = AsyncMock()
     # Return a non-decodable "token" so get_unverified_claims fails
-    svc.issue_agent_jwt = AsyncMock(return_value="not.a.jwt")
+    svc = _pop_svc("not.a.jwt")
     client = TestClient(_make_app(agent_identity_service=svc), raise_server_exceptions=False)
     agent = _create_agent(client)
 
-    resp = client.post(
-        f"/agents/{agent['agent_id']}/token",
-        headers={**H, "X-Agent-Key-Id": "k1"},
-    )
+    resp = client.post(f"/agents/{agent['agent_id']}/token", json=_ASSERTION, headers=H)
     assert resp.status_code == 200
     body = resp.json()
     assert body["expires_at"] is None

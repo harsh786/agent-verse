@@ -70,13 +70,16 @@ def test_issue_token_no_credential_service() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     agent = _create_agent(client)
     agent_id = agent["agent_id"]
-    # Need to provide key_id or get 422; service not available → 503
     resp = client.post(
         f"/agents/{agent_id}/token",
-        headers={"X-API-Key": _VALID_KEY, "X-Agent-Key-Id": "my-key-1"},
+        json={
+            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            "client_assertion": "a.b.c",
+        },
+        headers={"X-API-Key": _VALID_KEY},
     )
     # Without agent_identity_service: 503
-    assert resp.status_code in (503, 404, 200)
+    assert resp.status_code == 503
 
 
 def test_issue_token_agent_not_found() -> None:
@@ -85,7 +88,7 @@ def test_issue_token_agent_not_found() -> None:
         "/agents/nonexistent/token",
         headers={"X-API-Key": _VALID_KEY, "X-Agent-Key-Id": "my-key-1"},
     )
-    assert resp.status_code in (404, 503, 200)
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
