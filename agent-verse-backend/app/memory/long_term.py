@@ -516,7 +516,6 @@ class LongTermMemoryStore:
                 ) from _g2_mem_exc
 
         mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
-        await self._publish_created(memory, tenant_ctx)
         if db is not None:
             try:
                 import json as _json
@@ -614,6 +613,9 @@ class LongTermMemoryStore:
                 raise LongTermMemoryUnavailableError(
                     "long-term memory write failed; nothing was stored"
                 ) from exc
+        # MEM-05: announce the memory only once it exists — after the INSERT's
+        # transaction committed (or the cache write when no DB is wired).
+        await self._publish_created(memory, tenant_ctx)
         return mid
 
     async def store_rpa_extraction(
