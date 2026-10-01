@@ -11,7 +11,7 @@ change the type of a column a policy uses, so they are read from ``pg_policies``
 dropped, and recreated verbatim around the ALTER.
 
 Revision ID: e1b5c7d9f3a2
-Revises: d7e3a1f9b2c4
+Revises: c3d9e1f7a2b8
 Create Date: 2026-10-01
 """
 
@@ -24,7 +24,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "e1b5c7d9f3a2"
-down_revision: str | None = "d7e3a1f9b2c4"
+down_revision: str | None = "c3d9e1f7a2b8"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
