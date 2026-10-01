@@ -86,7 +86,11 @@ async def test_approve_persists_and_phantoms_are_expired_on_restore(pg_url: str)
         # it: approve_async resolves it in the DB (tenant-scoped) first.
         ok = await gw.approve_async(req_live, approver="tester", tenant_ctx=ctx)
         assert bool(ok) is True
-        assert gw._requests[(tenant_id, req_live)].status == ApprovalStatus.APPROVED
+        # CORE-28: a request nobody waits on here is not cached in this process.
+        assert (tenant_id, req_live) not in gw._requests
+        assert (await gw.aget_request(req_live, tenant_ctx=ctx)).status == (
+            ApprovalStatus.APPROVED
+        )
         for _ in range(20):
             if await _status(req_live) == "approved":
                 break

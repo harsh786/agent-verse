@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
-from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
+from app.governance.hitl import ApprovalRequest, HITLGateway
 from app.tenancy.context import PlanTier, TenantContext
 
 CTX_A = TenantContext(tenant_id="tenant-a", plan=PlanTier.PROFESSIONAL, api_key_id="k-a")
@@ -46,8 +46,8 @@ async def test_reject_resolves_an_uncached_pending_approval_from_the_db() -> Non
     assert gw._requests == {}  # fresh process: nothing warmed
 
     assert await gw.reject("req-1", approver="op", note="no", tenant_ctx=CTX_A) is True
-    req = gw.get_request("req-1", tenant_ctx=CTX_A)
-    assert req is not None and req.status == ApprovalStatus.REJECTED
+    # CORE-28: a row read only to resolve it is not cached (no waiter here).
+    assert gw.get_request("req-1", tenant_ctx=CTX_A) is None
     gw._db_update_resolution.assert_awaited_once_with(  # type: ignore[attr-defined]
         "req-1", "tenant-a", "rejected", "op", "no"
     )
@@ -79,7 +79,8 @@ async def test_approve_async_resolves_an_uncached_pending_approval() -> None:
     gw._schedule_db_resolution = lambda *a, **k: None  # type: ignore[method-assign]
 
     assert await gw.approve_async("req-2", approver="op", tenant_ctx=CTX_A) is True
-    assert gw.get_request("req-2", tenant_ctx=CTX_A).status == ApprovalStatus.APPROVED  # type: ignore[union-attr]
+    gw._db_update_resolution.assert_awaited_once()  # type: ignore[attr-defined]
+    assert gw.get_request("req-2", tenant_ctx=CTX_A) is None  # CORE-28: not cached
     assert await gw.approve_async("req-2", approver="op", tenant_ctx=CTX_B) is False
 
 

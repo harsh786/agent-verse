@@ -17,6 +17,7 @@ import enum
 import json
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Generator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -194,16 +195,69 @@ class HITLDeliveryError(Exception):
     """
 
 
+_RequestKey = tuple[str, str]
+
+
+class _RequestCache(OrderedDict[_RequestKey, ApprovalRequest]):
+    """LRU-bounded process-local approval cache (CORE-28).
+
+    It used to be a plain dict every created or DB-read request was added to and
+    never removed, so a long-running replica leaked memory proportional to total
+    approval volume. Entries with a live in-process waiter are pinned. Without a
+    DB the cache IS the store, so pending requests are never evicted there
+    (``keep_pending``); with a DB, Postgres is the source of truth and anything
+    unpinned may go.
+    """
+
+    def __init__(self, max_entries: int) -> None:
+        super().__init__()
+        self.max_entries = max(1, int(max_entries))
+        self.keep_pending = True
+        self._pins: dict[_RequestKey, int] = {}
+
+    def __setitem__(self, key: _RequestKey, value: ApprovalRequest) -> None:
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        self._shrink()
+
+    def pin(self, key: _RequestKey) -> None:
+        self._pins[key] = self._pins.get(key, 0) + 1
+
+    def unpin(self, key: _RequestKey) -> int:
+        """Drop one waiter's pin; returns the number of pins left."""
+        left = self._pins.get(key, 0) - 1
+        if left > 0:
+            self._pins[key] = left
+            return left
+        self._pins.pop(key, None)
+        return 0
+
+    def _shrink(self) -> None:
+        if len(self) <= self.max_entries:
+            return
+        for key in list(self.keys()):  # oldest first
+            if len(self) <= self.max_entries:
+                return
+            if self._pins.get(key):
+                continue
+            if self.keep_pending and self[key].status == ApprovalStatus.PENDING:
+                continue
+            del self[key]
+
+
 class HITLGateway:
     """Async-capable HITL gateway with blocking wait and timeout escalation."""
 
     DEFAULT_TIMEOUT = 300.0  # 5 minutes default
+    # Upper bound on the process-local request cache (CORE-28).
+    CACHE_MAX_ENTRIES = 5_000
 
     def __init__(
         self,
         timeout_seconds: float = DEFAULT_TIMEOUT,
         *,
         db_session_factory: Any = None,
+        cache_max_entries: int = CACHE_MAX_ENTRIES,
     ) -> None:
         # Process-local cache only — NOT the source of truth. ``approval_requests``
         # in Postgres is, and the ``a*`` read methods (and ``reject``) consult it,
@@ -212,14 +266,25 @@ class HITLGateway:
         # and one resolved on B still read as pending on A until A restarted.
         # It is filled lazily, per tenant, by those DB reads; there is no
         # cross-tenant warm scan at startup (under the API's NOBYPASSRLS role it
-        # could not see any rows anyway).
-        self._requests: dict[tuple[str, str], ApprovalRequest] = {}
+        # could not see any rows anyway). Bounded (CORE-28): see _RequestCache.
+        self._requests: _RequestCache = _RequestCache(cache_max_entries)
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._timeout = timeout_seconds
         self._notification_service: Any = None
-        self._db_session_factory: Any = db_session_factory
+        self._db_session_factory = db_session_factory
         # Redis client for publishing rejection notes (set by create_app lifespan)
         self._redis: Any = None
+
+    @property
+    def _db_session_factory(self) -> Any:
+        return self._db_factory
+
+    @_db_session_factory.setter
+    def _db_session_factory(self, value: Any) -> None:
+        # The lifespan binds the DB after construction. Once Postgres is the
+        # source of truth, unwaited pending requests may leave the cache too.
+        self._db_factory = value
+        self._requests.keep_pending = value is None
 
     def request_approval(
         self,
@@ -549,7 +614,8 @@ class HITLGateway:
         DB-authoritative status until the deadline; it returns APPROVED only
         when an approval was actually observed.
         """
-        req = self._requests.get((tenant_ctx.tenant_id, request_id))
+        key = (tenant_ctx.tenant_id, request_id)
+        req = self._requests.get(key)
         if req is None and self._db_session_factory is not None:
             # Raised on another replica (or this process restarted): Postgres is
             # the source of truth, so an id missing locally is not a rejection.
@@ -559,6 +625,27 @@ class HITLGateway:
         if req.status != ApprovalStatus.PENDING:
             return req.status
 
+        # CORE-28: the cache holds what a live waiter needs. Pin this request
+        # (so LRU churn cannot evict it while we wait — a local approve/reject
+        # must still find this very object) and drop it once resolved.
+        self._requests.pin(key)
+        self._requests[key] = req
+        try:
+            return await self._wait_pinned(req, request_id, tenant_ctx, timeout)
+        finally:
+            if self._requests.unpin(key) == 0 and self._db_session_factory is not None:
+                cached = self._requests.get(key)
+                if cached is not None and cached.status != ApprovalStatus.PENDING:
+                    self._requests.pop(key, None)
+
+    async def _wait_pinned(
+        self,
+        req: ApprovalRequest,
+        request_id: str,
+        tenant_ctx: TenantContext,
+        timeout: float | None,
+    ) -> ApprovalStatus:
+        """The body of :meth:`wait_for_approval` once *req* is pinned in the cache."""
         timeout_s = timeout if timeout is not None else self._timeout
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
@@ -994,7 +1081,10 @@ class HITLGateway:
                 cached.status = status
                 cached._event.set()
             return cached
-        req = ApprovalRequest(
+        # Not cached (CORE-28): a row that only passes through a read has no
+        # in-process waiter, and Postgres stays the source of truth. A waiter
+        # adds its request itself (wait_for_approval).
+        return ApprovalRequest(
             goal_id=row["goal_id"],
             action=row["action"] or "unknown",
             risk_level=row["risk_level"] or "unknown",
@@ -1002,8 +1092,6 @@ class HITLGateway:
             status=status,
             required_approvers=required,
         )
-        self._requests[(tenant_id, row["id"])] = req
-        return req
 
     def approve(
         self,
