@@ -148,10 +148,10 @@ describe('ConnectorsCatalogPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       const body = url.includes('/connectors/catalog')
-        ? [{ ...RICH_CATALOG_ENTRIES[1], name: 'mongodb', display_name: 'MongoDB', connector_type: 'mongodb', auth_type: 'api_key' }]
+        ? [{ ...RICH_CATALOG_ENTRIES[1], name: 'mongodb', display_name: 'MongoDB', connector_type: 'mongodb', has_builtin: true, builtin_server_id: 'builtin-mongodb', auth_type: 'api_key' }]
         : [
-            { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb', url: 'builtin://' },
-            { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb', url: 'builtin://' },
+            { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', builtin_type: 'builtin-mongodb', url: 'builtin://' },
+            { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', builtin_type: 'builtin-mongodb', url: 'builtin://' },
           ];
       return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
@@ -161,7 +161,7 @@ describe('ConnectorsCatalogPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /add another/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/connectors', expect.objectContaining({
       state: expect.objectContaining({
-        prefill: expect.objectContaining({ connector_type: 'mongodb', name: '' }),
+        prefill: expect.objectContaining({ type: 'builtin-mongodb', type_name: 'MongoDB', name: '' }),
       }),
     }));
   });

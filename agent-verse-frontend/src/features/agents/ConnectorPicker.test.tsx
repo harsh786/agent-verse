@@ -9,9 +9,9 @@ import { ConnectorPicker } from './ConnectorPicker';
 
 // Two instances of the SAME connector type with different names — each is its
 // own registered connector with its own (opaque) server id.
-const ORDERS = { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb', url: 'builtin://', status: 'active' };
-const ANALYTICS = { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb', url: 'builtin://', status: 'active' };
-const GITHUB = { server_id: 'c0ffee12', name: 'GitHub (work)', connector_type: 'github', url: 'https://api.github.com', status: 'active' };
+const ORDERS = { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', display_name: 'orders-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB', url: 'builtin://', status: 'active' };
+const ANALYTICS = { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', display_name: 'analytics-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB', url: 'builtin://', status: 'active' };
+const GITHUB = { server_id: 'c0ffee12', name: 'GitHub (work)', builtin_type: 'builtin-github', builtin_type_name: 'GitHub', url: 'https://api.github.com', status: 'active' };
 
 function mockConnectors(list: unknown, status = 200) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
@@ -66,8 +66,8 @@ describe('ConnectorPicker (UI-AGENT-CONNECTOR-PICKER)', () => {
     expect(analytics).not.toBeChecked();
     expect(screen.getByText('builtin-mongodb:orders-db')).toBeInTheDocument();
     expect(screen.getByText('builtin-mongodb:analytics-db')).toBeInTheDocument();
-    expect(screen.getAllByText('mongodb')).toHaveLength(2);
-    expect(screen.getByText('github')).toBeInTheDocument();
+    expect(screen.getAllByText('MongoDB')).toHaveLength(2);
+    expect(screen.getByText('GitHub')).toBeInTheDocument();
   });
 
   test('two instances of the same type are selected independently by their own id', async () => {
@@ -99,7 +99,7 @@ describe('ConnectorPicker (UI-AGENT-CONNECTOR-PICKER)', () => {
 
   test('filters a long list by name, type or server id', async () => {
     const many = Array.from({ length: 8 }, (_, i) => ({
-      server_id: `srv-${i}`, name: `Connector ${i}`, connector_type: i === 5 ? 'slack' : 'http', url: 'x',
+      server_id: `srv-${i}`, name: `Connector ${i}`, builtin_type: i === 5 ? 'builtin-slack' : null, builtin_type_name: i === 5 ? 'Slack' : '', url: 'x',
     }));
     mockConnectors(many);
     renderPicker();

@@ -452,7 +452,7 @@ describe('AgentDetailPage — navigation buttons', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       if (url.includes('/connectors'))
-        return json([{ server_id: 'github', name: 'GitHub (work)', connector_type: 'github' }]);
+        return json([{ server_id: 'github', name: 'GitHub (work)', display_name: 'GitHub (work)', builtin_type: 'builtin-github', builtin_type_name: 'GitHub' }]);
       if (url.includes('/versions')) return json([]);
       if (url.includes('/goals')) return json({ goals: [] });
       return json(AGENT); // connector_ids: ['github', 'jira']
@@ -470,8 +470,8 @@ describe('AgentDetailPage — navigation buttons', () => {
       const url = String(input);
       if (url.includes('/connectors'))
         return json([
-          { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb' },
-          { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb' },
+          { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB' },
+          { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB' },
         ]);
       if (url.includes('/versions')) return json([]);
       if (url.includes('/goals')) return json({ goals: [] });

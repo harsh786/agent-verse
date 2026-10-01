@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
 import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { connectorLabel, connectorTypeLabel } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -567,9 +568,13 @@ function AuthTypeSelector({
 
 interface FormState {
   name: string;
-  /** Catalog type of this connection ('' when registering a custom server). A
-   *  tenant may hold several connections of one type, each with its own name. */
+  /** Catalog key of this connection's type (drives URL/auth hints), '' if unknown. */
   connector_type: string;
+  /** Human type label shown in the form ("MongoDB"). */
+  type_label: string;
+  /** Built-in type sent as `type` when CREATING a connection ('' = remote MCP
+   *  server). A tenant may hold several connections of one type, each named. */
+  builtin_type: string;
   url: string;
   auth_type: string;
   auth_values: Record<string, string>;
@@ -579,6 +584,8 @@ interface FormState {
 const EMPTY_FORM: FormState = {
   name: '',
   connector_type: '',
+  type_label: '',
+  builtin_type: '',
   url: '',
   auth_type: 'bearer',
   auth_values: {},
@@ -617,6 +624,8 @@ export function ConnectorsRegisteredPage() {
       return {
         name: prefill.name ?? '',
         connector_type: prefill.connector_type ?? '',
+        type_label: prefill.type_name ?? prefill.connector_type ?? '',
+        builtin_type: prefill.type ?? '',
         url: prefill.url ?? prefill.default_url ?? '',
         auth_type: prefill.auth_type ?? 'bearer',
         auth_values: {},
@@ -648,9 +657,9 @@ export function ConnectorsRegisteredPage() {
         auth_type: form.auth_type,
         auth_config,
         auto_approve: form.auto_approve,
-        // Lets the backend bind the right built-in handler to an instance whose
-        // name is not the type name (e.g. "orders-db" of type "mongodb").
-        ...(form.connector_type ? { connector_type: form.connector_type } : {}),
+        // The built-in type of a NEW connection (POST /connectors `type`), so
+        // "orders-db" is bound to the MongoDB built-in. It can't change on update.
+        ...(!editingId && form.builtin_type ? { type: form.builtin_type } : {}),
       };
       if (editingId) {
         return connectorsApi.update(editingId, payload);
@@ -688,8 +697,10 @@ export function ConnectorsRegisteredPage() {
   const openEdit = useCallback((c: ConnectorResponse) => {
     setEditingId(c.server_id);
     setForm({
-      name: c.name,
-      connector_type: c.connector_type ?? '',
+      name: connectorLabel(c),
+      connector_type: (c.builtin_type ?? '').replace(/^builtin-/, '').split(':')[0],
+      type_label: connectorTypeLabel(c),
+      builtin_type: c.builtin_type ?? '',
       url: c.url,
       auth_type: c.auth_type ?? 'bearer',
       auth_values: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
@@ -730,7 +741,7 @@ export function ConnectorsRegisteredPage() {
   const nameTaken =
     !!trimmedName &&
     connectors.some(
-      (c) => c.server_id !== editingId && (c.name ?? '').trim().toLowerCase() === trimmedName,
+      (c) => c.server_id !== editingId && connectorLabel(c).trim().toLowerCase() === trimmedName,
     );
 
   // Validation
@@ -814,11 +825,12 @@ export function ConnectorsRegisteredPage() {
                             to={`/connectors/${encodeURIComponent(c.server_id)}`}
                             className="font-medium text-primary hover:underline"
                           >
-                            {c.name || c.server_id}
+                            {connectorLabel(c)}
                           </Link>
-                          {c.connector_type && c.connector_type.toLowerCase() !== (c.name ?? '').toLowerCase() && (
+                          {connectorTypeLabel(c) &&
+                            connectorTypeLabel(c).toLowerCase() !== connectorLabel(c).toLowerCase() && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
-                              {c.connector_type}
+                              {connectorTypeLabel(c)}
                             </span>
                           )}
                           {c.has_builtin && (
@@ -935,9 +947,9 @@ export function ConnectorsRegisteredPage() {
             </div>
 
             <div className="px-6 py-5 space-y-5">
-              {form.connector_type && (
+              {form.type_label && (
                 <p className="text-xs text-muted-foreground">
-                  Type: <span className="font-medium text-foreground">{form.connector_type}</span>
+                  Type: <span className="font-medium text-foreground">{form.type_label}</span>
                 </p>
               )}
               {/* Name */}

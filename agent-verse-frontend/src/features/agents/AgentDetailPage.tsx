@@ -22,7 +22,8 @@ import {
   emptyPatternFlags,
   type PatternFlags,
 } from './ReasoningPatterns';
-import { ConnectorPicker, connectorLabel, useRegisteredConnectors } from './ConnectorPicker';
+import { ConnectorPicker, useRegisteredConnectors } from './ConnectorPicker';
+import { connectorLabel, connectorTypeLabel } from '@/lib/connectors';
 
 interface AgentVersion {
   snapshot_id: string;
@@ -628,8 +629,8 @@ export function AgentDetailPage() {
                       }`}
                     >
                       {conn ? connectorLabel(conn) : <span className="font-mono">{cid}</span>}
-                      {conn?.connector_type && (
-                        <span className="text-[10px] opacity-70">{conn.connector_type}</span>
+                      {conn && connectorTypeLabel(conn) && (
+                        <span className="text-[10px] opacity-70">{connectorTypeLabel(conn)}</span>
                       )}
                       {isMissing && <span className="text-[10px] font-semibold uppercase">missing</span>}
                     </span>

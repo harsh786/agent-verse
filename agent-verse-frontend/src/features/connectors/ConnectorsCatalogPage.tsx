@@ -5,6 +5,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { CheckCircle2, Zap, Search, SlidersHorizontal } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { connectorsApi, type CatalogEntry } from '@/lib/api/client';
+import { connectorTypeKey } from '@/lib/connectors';
 import { OAuthPopupButton } from './OAuthPopupButton';
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -263,23 +264,30 @@ export function ConnectorsCatalogPage() {
 
   const configuredCount = catalog.filter((e) => e.is_configured).length;
 
-  // Registered instances per catalog type (connector_type when the backend
-  // reports it; older payloads only carry the name).
+  // Registered connections per type, keyed by the normalised built-in type
+  // (builtin_type "builtin-mongodb" → "mongodb"); a remote MCP connection has
+  // no type and is counted under its name.
   const instanceCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const c of Array.isArray(installed) ? installed : []) {
-      const key = (c?.connector_type || c?.name || '').toLowerCase();
+      const key = connectorTypeKey(c?.builtin_type || c?.name);
       if (key) m.set(key, (m.get(key) ?? 0) + 1);
     }
     return m;
   }, [installed]);
+  const countFor = (entry: CatalogEntry) =>
+    instanceCounts.get(connectorTypeKey(entry.builtin_server_id || entry.connector_type || entry.name)) ?? 0;
 
   const handleConfigure = (entry: CatalogEntry, opts: { addAnother?: boolean } = {}) => {
     navigate('/connectors', {
       state: {
         prefill: {
           connector_type: entry.connector_type ?? entry.name,
-          // A further instance needs its own name — the user picks it.
+          // Built-in type for POST /connectors `type` (only built-ins have one —
+          // the backend answers 422 for an unknown type).
+          type: entry.has_builtin ? entry.builtin_server_id || entry.name : undefined,
+          type_name: entry.display_name || entry.name,
+          // A further connection needs its own name — the user picks it.
           name: opts.addAnother ? '' : entry.name,
           url: entry.default_url,
           auth_type: entry.auth_type,
@@ -442,7 +450,7 @@ export function ConnectorsCatalogPage() {
               entry={entry}
               onConfigure={handleConfigure}
               oauthServerId={oauthServerIds.get(entry.name.toLowerCase())}
-              instanceCount={instanceCounts.get((entry.connector_type || entry.name).toLowerCase()) ?? 0}
+              instanceCount={countFor(entry)}
               onOAuthSuccess={() => {
                 qc.invalidateQueries({ queryKey: ['connectors-catalog'] });
                 qc.invalidateQueries({ queryKey: ['connectors'] });

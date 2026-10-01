@@ -671,11 +671,11 @@ describe('Accessibility', () => {
 
 describe('Multiple instances of one connector type', () => {
   const ORDERS = {
-    server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb',
+    server_id: 'builtin-mongodb:orders-db', name: 'orders-db', display_name: 'orders-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB',
     url: 'builtin://', auth_type: 'api_key', auth_config: { uri: '***' }, status: 'active', has_builtin: true,
   };
   const ANALYTICS = {
-    ...ORDERS, server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db',
+    ...ORDERS, server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', display_name: 'analytics-db',
   };
   const both = { match: (u: string) => u.endsWith('/connectors'), response: [ORDERS, ANALYTICS] };
   const rowOf = (name: string) => screen.getByRole('link', { name }).closest('tr') as HTMLElement;
@@ -686,7 +686,7 @@ describe('Multiple instances of one connector type', () => {
     renderPage();
     expect(await screen.findByRole('link', { name: 'orders-db' })).toHaveAttribute('href', `/connectors/${enc(ORDERS.server_id)}`);
     expect(screen.getByRole('link', { name: 'analytics-db' })).toHaveAttribute('href', `/connectors/${enc(ANALYTICS.server_id)}`);
-    expect(within(rowOf('orders-db')).getByText('mongodb')).toBeInTheDocument();
+    expect(within(rowOf('orders-db')).getByText('MongoDB')).toBeInTheDocument();
     expect(within(rowOf('analytics-db')).getByText('builtin-mongodb:analytics-db')).toBeInTheDocument();
   });
 
@@ -728,9 +728,9 @@ describe('Multiple instances of one connector type', () => {
       both,
       { match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { server_id: 'builtin-mongodb:reports-db', name: 'reports-db' } },
     ]);
-    renderPage({ prefill: { connector_type: 'mongodb', name: '', url: 'builtin://', auth_type: 'none' } });
+    renderPage({ prefill: { connector_type: 'mongodb', type: 'builtin-mongodb', type_name: 'MongoDB', name: '', url: 'builtin://', auth_type: 'none' } });
     await screen.findByTestId('register-modal');
-    expect(screen.getByText((_, el) => el?.tagName === 'P' && el.textContent === 'Type: mongodb')).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.tagName === 'P' && el.textContent === 'Type: MongoDB')).toBeInTheDocument();
     const name = screen.getByLabelText(/^name/i);
     await userEvent.type(name, 'Orders-DB');
     expect(screen.getByRole('alert')).toHaveTextContent(/already exists/i);
@@ -743,8 +743,9 @@ describe('Multiple instances of one connector type', () => {
       const post = spy.mock.calls.find(([u, i]) => String(u).endsWith('/connectors') && (i as RequestInit)?.method === 'POST');
       expect(post).toBeTruthy();
       expect(JSON.parse(String((post![1] as RequestInit).body))).toMatchObject({
-        name: 'reports-db', connector_type: 'mongodb',
+        name: 'reports-db', type: 'builtin-mongodb',
       });
+      expect(JSON.parse(String((post![1] as RequestInit).body))).not.toHaveProperty('connector_type');
     });
   });
 
@@ -763,8 +764,10 @@ describe('Multiple instances of one connector type', () => {
       expect(put).toBeTruthy();
       expect(String(put![0])).toContain(`/connectors/${enc(ANALYTICS.server_id)}`);
       expect(JSON.parse(String((put![1] as RequestInit).body))).toMatchObject({
-        name: 'analytics-db', connector_type: 'mongodb',
+        name: 'analytics-db',
       });
+      // The built-in type can't change on update, so it isn't sent.
+      expect(JSON.parse(String((put![1] as RequestInit).body))).not.toHaveProperty('type');
     });
   });
 });

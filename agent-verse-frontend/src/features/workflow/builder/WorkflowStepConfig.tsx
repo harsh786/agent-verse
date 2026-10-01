@@ -19,6 +19,7 @@ import { CollapsibleSection } from './config-fields/AdvancedSection';
 import { NLTriggerAssist } from './NLTriggerAssist';
 import { useQuery } from '@tanstack/react-query';
 import { connectorsApi } from '@/lib/api/client';
+import { connectorLabel, connectorTypeLabel, qualifiedToolName } from '@/lib/connectors';
 
 interface StepConfigProps {
   node: Node;
@@ -322,9 +323,11 @@ function LLMConfig({ data, onUpdate }: PanelProps) {
 }
 
 function ToolConfig({ data, onUpdate, nodeId }: PanelProps) {
-  // A tenant may register several instances of one connector type (e.g. two
-  // MongoDBs), so the step names the specific INSTANCE (its opaque server_id)
-  // and a tool that instance exposes — not just a tool name.
+  // A tenant may register several connections of one type (e.g. two MongoDBs),
+  // so the step names the specific CONNECTION (its opaque server_id) and the
+  // tool qualified for it — `<connection_slug>__<tool>`, which the backend's
+  // call_tool_by_name routes to that connection (a bare name exposed by two
+  // connections is refused as ambiguous).
   const serverId = String(data.server_id ?? '');
   const tool = String(data.tool ?? '');
   const { data: rawConnectors, isSuccess: connectorsLoaded, isError: connectorsFailed } = useQuery({
@@ -332,7 +335,7 @@ function ToolConfig({ data, onUpdate, nodeId }: PanelProps) {
     queryFn: () => connectorsApi.list(),
   });
   const connectors = [...(Array.isArray(rawConnectors) ? rawConnectors : [])].sort((a, b) =>
-    (a.name || a.server_id).localeCompare(b.name || b.server_id),
+    connectorLabel(a).localeCompare(connectorLabel(b)),
   );
   const selected = connectors.find((c) => c.server_id === serverId);
   const { data: rawTools, isSuccess: toolsLoaded } = useQuery({
@@ -346,18 +349,30 @@ function ToolConfig({ data, onUpdate, nodeId }: PanelProps) {
 
   const connectorOptions = [
     { label: 'Any connector (match by tool name)', value: '' },
-    ...connectors.map((c) => ({
-      label: c.connector_type ? `${c.name || c.server_id} · ${c.connector_type}` : c.name || c.server_id,
-      value: c.server_id,
-    })),
+    ...connectors.map((c) => {
+      const typeLabel = connectorTypeLabel(c);
+      return {
+        label: typeLabel ? `${connectorLabel(c)} · ${typeLabel}` : connectorLabel(c),
+        value: c.server_id,
+      };
+    }),
     ...(serverId && connectorsLoaded && !selected
       ? [{ label: `${serverId} (missing)`, value: serverId }]
       : []),
   ];
+  const qualify = (name: string) => (selected ? qualifiedToolName(connectorLabel(selected), name) : name);
+  const qualifiedTools = tools.map((t) => qualify(t.name));
   const toolOptions = [
     { label: 'Select a tool…', value: '' },
-    ...tools.map((t) => ({ label: t.name, value: t.name })),
-    ...(tool && !tools.some((t) => t.name === tool) ? [{ label: `${tool} (not exposed)`, value: tool }] : []),
+    ...qualifiedTools.map((q) => ({ label: q, value: q })),
+    ...(tool && !qualifiedTools.includes(tool)
+      ? [{
+          label: tools.some((t) => t.name === tool)
+            ? `${tool} (not qualified for this connector)`
+            : `${tool} (not exposed)`,
+          value: tool,
+        }]
+      : []),
   ];
   const pickTool = !!selected && toolsLoaded && tools.length > 0;
 
@@ -397,8 +412,8 @@ function ToolConfig({ data, onUpdate, nodeId }: PanelProps) {
           placeholder="e.g. github.create_issue"
           description={
             serverId
-              ? 'Tool exposed by the selected connector'
-              : 'MCP tool identifier (namespace.action); the first connector exposing it is used'
+              ? 'Tool of the selected connector, e.g. orders_db__mongodb_find'
+              : 'MCP tool name; one exposed by several connectors must name it (connector.tool or slug__tool)'
           }
         />
       )}

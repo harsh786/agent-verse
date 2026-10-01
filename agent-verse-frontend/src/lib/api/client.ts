@@ -671,10 +671,13 @@ export const agentsApi = {
 // ── Connectors ────────────────────────────────────────────────────────────────
 
 export interface ConnectorRequest {
-  /** This connection's own name (unique per tenant). */
+  /** This connection's own name (unique per tenant; the backend answers 409 on a duplicate). */
   name: string;
-  /** Catalog type (e.g. "mongodb") — several named instances of one type may exist. */
-  connector_type?: string;
+  /**
+   * Built-in type of a NEW connection ("mongodb" / "builtin-mongodb"); several
+   * named connections may share one type. 422 when unknown. Not changeable on update.
+   */
+  type?: string;
   url: string;
   auth_type: string;
   auth_config: Record<string, string>;
@@ -687,10 +690,14 @@ export interface ConnectorRequest {
 export interface ConnectorResponse {
   /** Opaque, unique per registered connector (instance) — never parse it. */
   server_id: string;
-  /** The instance's own name (a tenant may have several of one type, e.g. two MongoDBs). */
+  /** The connection's own name (a tenant may have several of one type, e.g. two MongoDBs). */
   name: string;
-  /** Catalog type of this instance (e.g. "mongodb"), when the backend reports it. */
-  connector_type?: string;
+  /** Unique-per-tenant display name of this connection (same as `name` on current backends). */
+  display_name?: string;
+  /** Canonical built-in type id this connection dispatches to ("builtin-mongodb"), null for remote MCP. */
+  builtin_type?: string | null;
+  /** Human name of the built-in type ("MongoDB"). */
+  builtin_type_name?: string;
   url: string;
   // Real upstream API endpoint for a built-in connector (whose `url` is the
   // internal "builtin://" dispatch marker). Empty for local/unknown built-ins.

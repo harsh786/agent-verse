@@ -11,8 +11,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { WorkflowStepConfig } from './WorkflowStepConfig';
 
-const ORDERS = { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb', url: 'builtin://' };
-const ANALYTICS = { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb', url: 'builtin://' };
+const ORDERS = { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB', url: 'builtin://' };
+const ANALYTICS = { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB', url: 'builtin://' };
 
 function mockBackend() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
@@ -67,17 +67,30 @@ describe('WorkflowStepConfig — tool step connector picker (MULTI-INSTANCE-UI)'
     const labels = within(select).getAllByRole('option').map((o) => o.textContent);
     expect(labels).toEqual([
       'Any connector (match by tool name)',
-      'analytics-db · mongodb',
-      'orders-db · mongodb',
+      'analytics-db · MongoDB',
+      'orders-db · MongoDB',
     ]);
     fireEvent.change(select, { target: { value: ANALYTICS.server_id } });
     expect(onUpdate).toHaveBeenLastCalledWith({ server_id: ANALYTICS.server_id, tool: undefined });
     expect(screen.getByText(`Server ID: ${ANALYTICS.server_id}`)).toBeInTheDocument();
 
     const tool = await screen.findByLabelText('Tool');
-    await waitFor(() => expect(within(tool).getAllByRole('option').map((o) => o.textContent)).toContain('mongodb_aggregate'));
-    fireEvent.change(tool, { target: { value: 'mongodb_aggregate' } });
-    expect(onUpdate).toHaveBeenLastCalledWith({ tool: 'mongodb_aggregate' });
+    await waitFor(() => expect(within(tool).getAllByRole('option').map((o) => o.textContent)).toContain('analytics_db__mongodb_aggregate'));
+    // Saved qualified for THIS connection — the backend routes <slug>__<tool> to it.
+    fireEvent.change(tool, { target: { value: 'analytics_db__mongodb_aggregate' } });
+    expect(onUpdate).toHaveBeenLastCalledWith({ tool: 'analytics_db__mongodb_aggregate' });
+  });
+
+  test('a legacy bare tool name on a chosen connection is flagged, not silently kept as valid', async () => {
+    mockBackend();
+    renderTool({ server_id: ANALYTICS.server_id, tool: 'mongodb_find' });
+    const tool = await screen.findByLabelText('Tool');
+    await waitFor(() =>
+      expect(within(tool).getAllByRole('option').map((o) => o.textContent)).toContain(
+        'mongodb_find (not qualified for this connector)',
+      ),
+    );
+    expect(within(tool).getAllByRole('option').map((o) => o.textContent)).toContain('analytics_db__mongodb_find');
   });
 
   test('an instance id that is no longer registered is shown as missing', async () => {

@@ -12,7 +12,8 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { connectorsApi, type ConnectorResponse } from '@/lib/api/client';
+import { connectorsApi } from '@/lib/api/client';
+import { connectorLabel, connectorTypeLabel } from '@/lib/connectors';
 
 const SEARCH_THRESHOLD = 6;
 
@@ -22,11 +23,6 @@ export function useRegisteredConnectors(enabled = true) {
     queryFn: () => connectorsApi.list(),
     enabled,
   });
-}
-
-/** Display label for a registered connector instance. */
-export function connectorLabel(c: Pick<ConnectorResponse, 'name' | 'server_id'>): string {
-  return c.name?.trim() || c.server_id;
 }
 
 export function ConnectorPicker({
@@ -56,7 +52,7 @@ export function ConnectorPicker({
   const q = query.trim().toLowerCase();
   const visible = q
     ? registered.filter((c) =>
-        [c.name, c.server_id, c.connector_type ?? ''].some((s) => (s ?? '').toLowerCase().includes(q)),
+        [connectorLabel(c), c.server_id, connectorTypeLabel(c)].some((s) => s.toLowerCase().includes(q)),
       )
     : registered;
 
@@ -114,6 +110,7 @@ export function ConnectorPicker({
       <div className="max-h-56 overflow-y-auto rounded-lg border border-input bg-background divide-y divide-border">
         {visible.map((c) => {
           const label = connectorLabel(c);
+          const typeLabel = connectorTypeLabel(c);
           return (
             <label
               key={c.server_id}
@@ -129,9 +126,9 @@ export function ConnectorPicker({
               <span className="flex-1 min-w-0">
                 <span className="flex items-center gap-2">
                   <span className="truncate font-medium">{label}</span>
-                  {c.connector_type && (
+                  {typeLabel && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground shrink-0">
-                      {c.connector_type}
+                      {typeLabel}
                     </span>
                   )}
                 </span>

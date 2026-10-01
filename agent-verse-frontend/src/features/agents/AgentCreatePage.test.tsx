@@ -355,8 +355,8 @@ describe('AgentCreatePage', () => {
     test('picks registered connectors (same-type instances separately) and submits their server ids', async () => {
       const user = userEvent.setup();
       const connectors = [
-        { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', connector_type: 'mongodb', url: 'builtin://' },
-        { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', connector_type: 'mongodb', url: 'builtin://' },
+        { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB', url: 'builtin://' },
+        { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB', url: 'builtin://' },
       ];
       const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
         const url = String(input);
