@@ -450,7 +450,11 @@ class PostgresMemoryRepository:
             memory = (
                 await db.execute(
                     select(CanonicalMemoryRecord)
-                    .where(CanonicalMemoryRecord.id == feedback.memory_id)
+                    .where(
+                        CanonicalMemoryRecord.id == feedback.memory_id,
+                        # Explicit tenant predicate as well as RLS (BYPASSRLS roles).
+                        CanonicalMemoryRecord.tenant_id == feedback.tenant_id,
+                    )
                     .with_for_update()
                 )
             ).scalar_one_or_none()
@@ -461,7 +465,7 @@ class PostgresMemoryRepository:
                 f"{feedback.tenant_id}:{feedback.memory_id}:{feedback.execution_id}",
             ).hex
             prior = await db.get(MemoryFeedbackRow, feedback_id)
-            if prior is not None:
+            if prior is not None:  # feedback_id is derived from the tenant id
                 return _record(memory)
             await db.execute(
                 insert(MemoryFeedbackRow).values(
@@ -474,7 +478,10 @@ class PostgresMemoryRepository:
             harmful = memory.harmful_count + int(feedback.was_harmful)
             await db.execute(
                 update(CanonicalMemoryRecord)
-                .where(CanonicalMemoryRecord.id == memory.id)
+                .where(
+                    CanonicalMemoryRecord.id == memory.id,
+                    CanonicalMemoryRecord.tenant_id == feedback.tenant_id,
+                )
                 .values(
                     recall_count=memory.recall_count + int(feedback.was_used),
                     helpful_count=helpful,
@@ -510,7 +517,10 @@ class PostgresMemoryRepository:
             row = (
                 await db.execute(
                     select(CanonicalMemoryRecord)
-                    .where(CanonicalMemoryRecord.id == memory_id)
+                    .where(
+                        CanonicalMemoryRecord.id == memory_id,
+                        CanonicalMemoryRecord.tenant_id == tenant_id,
+                    )
                     .with_for_update()
                 )
             ).scalar_one_or_none()

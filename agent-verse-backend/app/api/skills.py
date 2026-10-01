@@ -112,11 +112,15 @@ async def list_skills(request: Request) -> dict[str, Any]:
 
             async with db_factory() as session, session.begin():  # noqa: SIM117
                 async with sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
+                    # Explicit tenant predicate as well as RLS: on a
+                    # BYPASSRLS/superuser connection RLS filters nothing.
                     result = await session.execute(
                         text(
                             f"SELECT {_SKILL_COLUMNS}"
-                            " FROM skills WHERE is_active = true ORDER BY created_at DESC"
+                            " FROM skills WHERE is_active = true AND tenant_id = :tid"
+                            " ORDER BY created_at DESC"
                         ),
+                        {"tid": tenant_ctx.tenant_id},
                     )
                     skills.extend(_row_to_skill(row) for row in result.fetchall())
         except Exception as exc:

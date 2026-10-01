@@ -730,18 +730,20 @@ async def _drop_terminal_owner_approvals(
                 await sess.execute(
                     text(
                         "SELECT id::text FROM org_missions WHERE id::text = ANY(:ids) "
+                        # Explicit tenant predicate as well as RLS (BYPASSRLS roles).
+                        "AND tenant_id::text = :t "
                         "AND status IN ('completed','failed','cancelled','archived')"
                     ),
-                    {"ids": goal_ids},
+                    {"ids": goal_ids, "t": str(tenant_ctx.tenant_id)},
                 )
             ).scalars().all()
             g = (
                 await sess.execute(
                     text(
-                        "SELECT id FROM goals WHERE id = ANY(:ids) "
+                        "SELECT id FROM goals WHERE id = ANY(:ids) AND tenant_id = :t "
                         "AND status IN ('complete','failed','cancelled')"
                     ),
-                    {"ids": goal_ids},
+                    {"ids": goal_ids, "t": str(tenant_ctx.tenant_id)},
                 )
             ).scalars().all()
             terminal = {str(x) for x in [*m, *g]}

@@ -527,9 +527,12 @@ class PolicyVersionManager:
 
         from app.db.models.governance import PolicyVersion
 
+        # Explicit tenant predicate on every query here as well as RLS: on a
+        # BYPASSRLS / superuser connection another tenant's policy would match.
         result = await db.execute(
             select(PolicyVersion).where(
                 PolicyVersion.policy_id == policy_id,
+                PolicyVersion.tenant_id == tenant_id,
                 PolicyVersion.is_active.is_(True),
             )
         )
@@ -576,6 +579,7 @@ class PolicyVersionManager:
         target_result = await db.execute(
             select(PolicyVersion).where(
                 PolicyVersion.policy_id == policy_id,
+                PolicyVersion.tenant_id == tenant_id,
                 PolicyVersion.version_number == target_version,
             )
         )
@@ -588,6 +592,7 @@ class PolicyVersionManager:
             sa_update(PolicyVersion)
             .where(
                 PolicyVersion.policy_id == policy_id,
+                PolicyVersion.tenant_id == tenant_id,
                 PolicyVersion.is_active.is_(True),
             )
             .values(is_active=False)
@@ -596,7 +601,8 @@ class PolicyVersionManager:
         # Determine next version number
         max_result = await db.execute(
             select(func.max(PolicyVersion.version_number)).where(
-                PolicyVersion.policy_id == policy_id
+                PolicyVersion.policy_id == policy_id,
+                PolicyVersion.tenant_id == tenant_id,
             )
         )
         max_ver = max_result.scalar() or 0
@@ -633,7 +639,7 @@ class PolicyVersionManager:
 
         result = await db.execute(
             select(PolicyVersion)
-            .where(PolicyVersion.policy_id == policy_id)
+            .where(PolicyVersion.policy_id == policy_id, PolicyVersion.tenant_id == tenant_id)
             .order_by(PolicyVersion.version_number)
         )
         return list(result.scalars().all())

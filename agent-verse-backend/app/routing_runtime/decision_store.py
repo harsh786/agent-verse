@@ -55,6 +55,11 @@ class PostgresDecisionStore:
         ):
             prior = await db.get(RoutingDecisionRow, decision.decision_id)
             if prior is not None:
+                # Explicit tenant check as well as RLS: on a BYPASSRLS role the
+                # PK lookup finds any tenant's row, and returning it would hand
+                # the caller another tenant's decision.
+                if prior.tenant_id != decision.tenant_id:
+                    raise ValueError("routing decision key collision")
                 return _decision(prior.payload)
             await db.execute(
                 insert(RoutingDecisionRow).values(
@@ -88,7 +93,10 @@ class PostgresDecisionStore:
         ):
             row = (
                 await db.execute(
-                    select(RoutingDecisionRow).where(RoutingDecisionRow.id == decision_id)
+                    select(RoutingDecisionRow).where(
+                        RoutingDecisionRow.id == decision_id,
+                        RoutingDecisionRow.tenant_id == tenant_id,
+                    )
                 )
             ).scalar_one_or_none()
             return _decision(row.payload) if row is not None else None
@@ -101,6 +109,8 @@ class PostgresDecisionStore:
         ):
             prior = await db.get(RoutingOutcomeRow, outcome.outcome_id)
             if prior is not None:
+                if prior.tenant_id != outcome.tenant_id:
+                    raise ValueError("routing outcome key collision")
                 return OptimizationOutcome.model_validate(prior.payload)
             await db.execute(
                 insert(RoutingOutcomeRow).values(

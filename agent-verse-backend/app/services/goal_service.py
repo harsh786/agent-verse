@@ -5825,10 +5825,17 @@ class GoalService:
             ):
                 # A supervisor's sub-goal is linked to its parent goal row (same
                 # tenant, via RLS) when that row exists; the marker may be a bare
-                # "supervisor" placeholder with no parent goal.
+                # "supervisor" placeholder with no parent goal. The tenant is
+                # checked explicitly too: a BYPASSRLS role's PK lookup sees
+                # every tenant's goals.
+                _parent_row = (
+                    await session.get(Goal, _parent)
+                    if _parent and _parent != goal_id
+                    else None
+                )
                 parent_goal_id = (
                     _parent
-                    if _parent and _parent != goal_id and await session.get(Goal, _parent)
+                    if _parent_row is not None and _parent_row.tenant_id == tenant_id
                     else None
                 )
                 g = Goal(
