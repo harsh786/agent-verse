@@ -89,7 +89,9 @@ async def test_get_delta_table_mode_builds_query_and_transforms_rows() -> None:
     with patch.dict("sys.modules", {"clickhouse_connect": fake_mod}):
         docs = [d async for d in ClickHouseConnector().get_delta(cfg, None)]
 
-    client.query.assert_called_once_with("SELECT * FROM events ORDER BY ts LIMIT 10")
+    client.query.assert_called_once_with(
+        "SELECT * FROM `events` ORDER BY `ts` LIMIT 10", parameters=None
+    )
     assert len(docs) == 2
     doc0, cursor0 = docs[0]
     assert b"ts: 2026-01-01" in doc0.content
@@ -112,7 +114,8 @@ async def test_get_delta_table_mode_with_cursor_filters() -> None:
         docs = [d async for d in ClickHouseConnector().get_delta(cfg, "2026-01-15")]
 
     client.query.assert_called_once_with(
-        "SELECT * FROM events WHERE ts > '2026-01-15' ORDER BY ts LIMIT 5"
+        "SELECT * FROM `events` WHERE `ts` > {cursor:String} ORDER BY `ts` LIMIT 5",
+        parameters={"cursor": "2026-01-15"},
     )
     assert len(docs) == 1
 
@@ -130,5 +133,7 @@ async def test_get_delta_custom_query_replaces_cursor_placeholder() -> None:
     with patch.dict("sys.modules", {"clickhouse_connect": fake_mod}):
         docs = [d async for d in ClickHouseConnector().get_delta(cfg, "42")]
 
-    client.query.assert_called_once_with("SELECT * FROM t WHERE x > 42")
+    client.query.assert_called_once_with(
+        "SELECT * FROM t WHERE x > {cursor:String}", parameters={"cursor": "42"}
+    )
     assert len(docs) == 1

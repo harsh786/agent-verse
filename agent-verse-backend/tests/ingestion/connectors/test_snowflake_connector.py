@@ -41,8 +41,10 @@ class _FakeCursor:
         self.rows = rows or []
         self._fetchone_val = fetchone_val
         self.executed_sql: list[str] = []
+        self.params: list = []
 
-    def execute(self, sql):
+    def execute(self, sql, params=None):
+        self.params.append(params)
         self.executed_sql.append(sql)
 
     def fetchone(self):
@@ -145,7 +147,8 @@ class TestGetDelta:
         )
         with _install_fake_snowflake(connect_return=conn):
             await _collect(SnowflakeConnector().get_delta(config, "2026-01-01"))
-        assert cursor.executed_sql == ["SELECT * FROM T WHERE ts > '2026-01-01'"]
+        assert cursor.executed_sql == ["SELECT * FROM T WHERE ts > %(cursor)s"]
+        assert cursor.params == [{"cursor": "2026-01-01"}]
 
     async def test_query_mode_appends_where_when_no_placeholder(self):
         cursor = _FakeCursor(rows=[])
@@ -155,7 +158,8 @@ class TestGetDelta:
         )
         with _install_fake_snowflake(connect_return=conn):
             await _collect(SnowflakeConnector().get_delta(config, "2026-01-01"))
-        assert cursor.executed_sql == ["SELECT * FROM T WHERE TS > '2026-01-01' LIMIT 50"]
+        assert cursor.executed_sql == ["SELECT * FROM T WHERE TS > %(cursor)s LIMIT 50"]
+        assert cursor.params == [{"cursor": "2026-01-01"}]
 
     async def test_stream_mode_builds_stream_query(self):
         cursor = _FakeCursor(rows=[])
@@ -179,7 +183,7 @@ class TestGetDelta:
         with _install_fake_snowflake(connect_return=conn):
             await _collect(SnowflakeConnector().get_delta(config, "2026-01-01"))
         assert cursor.executed_sql == [
-            "SELECT * FROM MY_STREAM WHERE TS > '2026-01-01' LIMIT 5"
+            "SELECT * FROM MY_STREAM WHERE TS > %(cursor)s LIMIT 5"
         ]
 
     async def test_doc_metadata_matches_row(self):

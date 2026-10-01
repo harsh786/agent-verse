@@ -25,6 +25,7 @@ from app.ingestion.base_connector import (
 )
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
+from app.ingestion.sql_safety import CURSOR_PARAM, bind_cursor_placeholder, checked_identifier
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -99,18 +100,33 @@ class SnowflakeConnector(BaseConnector):
         cursor_col = cc.get("cursor_column", "UPDATED_AT")
         batch_size = int(cc.get("batch_size", 1000))
 
+        # The cursor (a value read back from the source's rows) is bound with the
+        # connector's pyformat parameters, never pasted into the SQL. Identifiers
+        # must be plain names; they stay unquoted so Snowflake's case folding of
+        # unquoted names keeps working.
+        params: dict[str, Any] | None = None
+        placeholder = f"%({CURSOR_PARAM})s"
+
+        def _column() -> str:
+            return ".".join(checked_identifier(cursor_col, what="cursor_column", max_parts=1))
+
         if mode == "stream":
-            stream_name = cc.get("stream_name", "")
-            sql = f"SELECT * FROM {stream_name}"
+            stream = ".".join(checked_identifier(cc.get("stream_name", ""), what="stream_name"))
+            sql = f"SELECT * FROM {stream}"
             if cursor:
-                sql += f" WHERE {cursor_col} > '{cursor}'"
+                sql += f" WHERE {_column()} > {placeholder}"
+                params = {CURSOR_PARAM: cursor}
             sql += f" LIMIT {batch_size}"
         else:
             sql = query
-            if cursor and "{cursor}" in sql:
-                sql = sql.replace("{cursor}", cursor)
-            elif cursor:
-                sql += f" WHERE {cursor_col} > '{cursor}' LIMIT {batch_size}"
+            if cursor:
+                # With parameters, a literal % in the tenant's query must be %%.
+                escaped, bound = bind_cursor_placeholder(sql.replace("%", "%%"), placeholder)
+                if bound:
+                    sql = escaped
+                else:
+                    sql = f"{escaped} WHERE {_column()} > {placeholder} LIMIT {batch_size}"
+                params = {CURSOR_PARAM: cursor}
 
         conn = await run_blocking(
             snowflake.connector.connect,
@@ -123,7 +139,10 @@ class SnowflakeConnector(BaseConnector):
         )
         try:
             cur = conn.cursor(snowflake.connector.DictCursor)
-            await run_blocking(cur.execute, sql)
+            if params is None:
+                await run_blocking(cur.execute, sql)
+            else:
+                await run_blocking(cur.execute, sql, params)
             new_cursor = cursor or ""
             # The cursor fetches result chunks lazily over the network: page it in
             # on the pool so the result still streams.

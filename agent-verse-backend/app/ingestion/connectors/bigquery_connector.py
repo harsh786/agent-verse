@@ -26,11 +26,16 @@ from app.ingestion.base_connector import (
 )
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
+from app.ingestion.sql_safety import CURSOR_PARAM, bind_cursor_placeholder, checked_identifier
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _quoted(parts: list[str]) -> str:
+    return ".".join(f"`{part}`" for part in parts)
 
 
 def _make_client(bigquery: Any, creds_json: Any, project: str) -> Any:
@@ -97,19 +102,35 @@ class BigQueryConnector(BaseConnector):
         cursor_col = cc.get("cursor_column", "updated_at")
         batch_size = int(cc.get("batch_size", 1000))
 
+        # The cursor (a value read back from the source's rows) is a STRING query
+        # parameter — BigQuery coerces STRING parameters to DATE/DATETIME/TIMESTAMP
+        # exactly as it did the old literal — never pasted into the SQL. Identifiers
+        # must be plain names (a hyphenated project id is allowed) and are
+        # backtick-quoted part by part.
+        bind_cursor = False
         if mode == "table":
-            table_ref = cc.get("table", "")
-            sql = f"SELECT * FROM `{table_ref}`"
+            table = _quoted(
+                checked_identifier(cc.get("table", ""), what="table", bigquery_project=True)
+            )
+            column = _quoted(checked_identifier(cursor_col, what="cursor_column", max_parts=1))
+            sql = f"SELECT * FROM {table}"
             if cursor:
-                sql += f" WHERE {cursor_col} > '{cursor}'"
-            sql += f" ORDER BY {cursor_col} LIMIT {batch_size}"
+                sql += f" WHERE {column} > @{CURSOR_PARAM}"
+                bind_cursor = True
+            sql += f" ORDER BY {column} LIMIT {batch_size}"
         else:
             sql = cc.get("query", "SELECT 1")
-            if cursor and "{cursor}" in sql:
-                sql = sql.replace("{cursor}", cursor)
+            if cursor:
+                sql, bind_cursor = bind_cursor_placeholder(sql, f"@{CURSOR_PARAM}")
 
         def _run_query() -> Any:
-            return _make_client(bigquery, creds_json, project).query(sql).result()
+            client = _make_client(bigquery, creds_json, project)
+            if not bind_cursor:
+                return client.query(sql).result()
+            job_config = bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter(CURSOR_PARAM, "STRING", cursor)]
+            )
+            return client.query(sql, job_config=job_config).result()
 
         rows = await run_blocking(_run_query)
         new_cursor = cursor or ""

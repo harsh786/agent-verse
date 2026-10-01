@@ -19,6 +19,7 @@ from app.ingestion.base_connector import (
 )
 from app.ingestion.connector_egress import pin_source_hosts, run_driver_call
 from app.ingestion.connector_registry import register
+from app.ingestion.sql_safety import CURSOR_PARAM, bind_cursor_placeholder, checked_identifier
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -29,6 +30,37 @@ _log = logging.getLogger(__name__)
 # runs on a worker thread that cannot be interrupted, so these bound the call.
 _CONNECT_TIMEOUT_S = 10
 _SEND_RECEIVE_TIMEOUT_S = 300
+
+
+def _quoted(parts: list[str]) -> str:
+    return ".".join(f"`{part}`" for part in parts)
+
+
+def _build_query(cc: Mapping[str, Any], cursor: str | None) -> tuple[str, dict[str, Any]]:
+    """The sync query and its bound parameters.
+
+    The cursor is a value read back from the source's rows: it is bound as a
+    server-side query parameter, never pasted into the SQL. Identifiers must be
+    plain names and are backtick-quoted.
+    """
+    query = str(cc.get("query", "") or "")
+    cursor_col = cc.get("cursor_column", "updated_at")
+    batch_size = int(cc.get("batch_size", 1000))
+    parameters: dict[str, Any] = {}
+    placeholder = "{%s:String}" % CURSOR_PARAM  # noqa: UP031 - literal braces
+    if not query:
+        table = _quoted(checked_identifier(cc.get("table", ""), what="table", max_parts=2))
+        column = _quoted(checked_identifier(cursor_col, what="cursor_column", max_parts=1))
+        query = f"SELECT * FROM {table}"
+        if cursor:
+            query += f" WHERE {column} > {placeholder}"
+            parameters[CURSOR_PARAM] = cursor
+        query += f" ORDER BY {column} LIMIT {batch_size}"
+    elif cursor:
+        query, bound = bind_cursor_placeholder(query, placeholder)
+        if bound:
+            parameters[CURSOR_PARAM] = cursor
+    return query, parameters
 
 
 def _client_kwargs(cc: Mapping[str, Any]) -> dict[str, Any]:
@@ -81,18 +113,7 @@ class ClickHouseConnector(BaseConnector):
         from app.ingestion.source_config import RawDocument
 
         cc = config.connection_config
-        query = cc.get("query", "")
         cursor_col = cc.get("cursor_column", "updated_at")
-        batch_size = int(cc.get("batch_size", 1000))
-
-        if not query:
-            table = cc.get("table", "")
-            query = f"SELECT * FROM {table}"
-            if cursor:
-                query += f" WHERE {cursor_col} > '{cursor}'"
-            query += f" ORDER BY {cursor_col} LIMIT {batch_size}"
-        elif cursor and "{cursor}" in query:
-            query = query.replace("{cursor}", cursor)
 
         async with pin_source_hosts(
             [(cc.get("host", ""), cc.get("port", 8123))], context="clickhouse"
@@ -104,9 +125,11 @@ class ClickHouseConnector(BaseConnector):
                 raise ConnectorUnavailableError(
                     "clickhouse-connect is not installed on this server; the connector cannot run"
                 ) from exc
+            query, parameters = _build_query(cc, cursor)
 
             def _query() -> Any:
-                return clickhouse_connect.get_client(**_client_kwargs(cc)).query(query)
+                client = clickhouse_connect.get_client(**_client_kwargs(cc))
+                return client.query(query, parameters=parameters or None)
 
             result = await run_driver_call(_query, context="clickhouse")
         col_names = result.column_names

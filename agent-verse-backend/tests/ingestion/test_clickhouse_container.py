@@ -30,6 +30,10 @@ def clickhouse_port() -> Iterator[int]:
         )
         client.command("CREATE TABLE test.events (id UInt32, updated_at String) ENGINE = Memory")
         client.command("INSERT INTO test.events VALUES (1, '2026-01-01'), (2, '2026-01-02')")
+        client.command("CREATE TABLE test.events_dt (id UInt32, ts DateTime) ENGINE = Memory")
+        client.command(
+            "INSERT INTO test.events_dt VALUES (1, '2026-01-01 00:00:00'), (2, '2026-01-02 00:00:00')"
+        )
         yield port
 
 
@@ -78,3 +82,33 @@ async def test_get_delta_with_the_real_client(clickhouse_port: int) -> None:
     docs = [item async for item in ClickHouseConnector().get_delta(cfg, None)]
     assert len(docs) == 2
     assert docs[-1][1] == "2026-01-02"
+
+
+# ── SQL-INJECTION: the cursor is a bound parameter against the real server ────
+
+
+async def _sync(port: int, cursor: str, **cc: Any) -> list[str]:
+    from app.ingestion.connectors.clickhouse_connector import ClickHouseConnector
+
+    docs = [d async for d, _c in ClickHouseConnector().get_delta(_config(port, **cc), cursor)]
+    return [d.content.decode() for d in docs]
+
+
+async def test_a_quote_in_the_cursor_cannot_rewrite_the_query(clickhouse_port: int) -> None:
+    # Pasted into SQL this read: WHERE updated_at > '2026-01-01' OR '1'='1' -> both rows.
+    rows = await _sync(clickhouse_port, "2026-01-01' OR '1'='1", table="events")
+    assert len(rows) == 1
+    assert "id: 2" in rows[0]
+
+
+async def test_bound_cursor_compares_with_datetime_and_integer_columns(
+    clickhouse_port: int,
+) -> None:
+    by_time = await _sync(
+        clickhouse_port, "2026-01-01 00:00:00", table="events_dt", cursor_column="ts"
+    )
+    assert len(by_time) == 1
+    assert "id: 2" in by_time[0]
+    by_id = await _sync(clickhouse_port, "1", table="events_dt", cursor_column="id")
+    assert len(by_id) == 1
+    assert "id: 2" in by_id[0]

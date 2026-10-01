@@ -977,6 +977,8 @@ class TestBigQueryConnector:
         client_instance = MagicMock()
         client_instance.query.return_value = query_result
         fake_bq.Client.return_value = client_instance
+        fake_bq.QueryJobConfig = MagicMock(name="QueryJobConfig")
+        fake_bq.ScalarQueryParameter = MagicMock(name="ScalarQueryParameter")
 
         config = _make_config(
             "bigquery",
@@ -992,5 +994,8 @@ class TestBigQueryConnector:
 
         assert len(docs) == 1
         sql_used = client_instance.query.call_args[0][0]
-        assert "WHERE updated_at > '2026-01-01'" in sql_used
-        assert "ORDER BY updated_at LIMIT" in sql_used
+        # The cursor is a bound STRING parameter, not part of the SQL (SQL-INJECTION).
+        assert "WHERE `updated_at` > @cursor" in sql_used
+        assert "2026-01-01" not in sql_used
+        assert "ORDER BY `updated_at` LIMIT" in sql_used
+        fake_bq.ScalarQueryParameter.assert_called_once_with("cursor", "STRING", "2026-01-01")
