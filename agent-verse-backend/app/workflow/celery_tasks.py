@@ -110,6 +110,7 @@ def _build_worker_runner() -> Any:
         import redis.asyncio as _aioredis_wf
 
         from app.mcp.client import MCPClient
+        from app.mcp.connector_wiring import build_connector_registry
         from app.mcp.registry import MCPRegistry
         from app.mcp.servers.registry_wiring import get_builtin_server_configs
         from app.providers.vault import (
@@ -134,7 +135,7 @@ def _build_worker_runner() -> Any:
             )
 
         _wf_mcp_client = MCPClient(
-            MCPRegistry(_wf_redis, auto_provision_builtins=True),
+            build_connector_registry(_wf_redis),
             secret_resolver=_wf_resolve_secret,
             redis=_wf_redis,
         )

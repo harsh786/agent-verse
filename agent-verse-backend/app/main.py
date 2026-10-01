@@ -596,6 +596,34 @@ def _register_error_handlers(app: FastAPI) -> None:
             content={"detail": f"LLM budget exhausted: {exc}", "code": "llm_budget_exhausted"},
         )
 
+    from app.mcp.connector_store import ConnectorConflictError, ConnectorStoreUnavailableError
+
+    @app.exception_handler(ConnectorConflictError)
+    async def _connector_conflict_handler(_: Request, exc: ConnectorConflictError) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": f"{exc}. Connector names must be unique; choose a different name.",
+                "code": f"connector_{exc.kind}_conflict",
+            },
+        )
+
+    @app.exception_handler(ConnectorStoreUnavailableError)
+    async def _connector_store_handler(
+        _: Request, exc: ConnectorStoreUnavailableError
+    ) -> JSONResponse:
+        # The durable connector store is down: an honest, retryable 503 (never
+        # an empty list that looks like "no connectors").
+        logger.error("connector_store_unavailable", error=str(exc))
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Connector store temporarily unavailable; retry shortly.",
+                "code": "connector_store_unavailable",
+            },
+            headers={"Retry-After": "5"},
+        )
+
     @app.exception_handler(PlatformError)
     async def _platform_error_handler(_: Request, exc: PlatformError) -> JSONResponse:
         if exc.severity.value in {"high", "critical"}:
@@ -1291,6 +1319,22 @@ def create_app(
 
             app.state.system_db_session_factory = get_system_session_factory()
             event_store = EventStore(db_factory)
+
+            # MCPREG-01: Postgres is the connector registry's source of truth;
+            # the shared Redis (when present) is only its read cache — never the
+            # in-process fake, which would be a per-replica cache.
+            _conn_reg = getattr(app.state, "mcp_registry", None)
+            if isinstance(_conn_reg, MCPRegistry):
+                _conn_reg.set_db(db_factory, cache=real_redis)
+            if real_redis is not None:
+                from app.mcp.connector_backfill import ensure_connector_backfill
+
+                # One-time copy of the legacy Redis-only connector store; the
+                # registry's read-repair serves legacy entries until it is done.
+                _startup.spawn(
+                    "connector_store_backfill",
+                    lambda: ensure_connector_backfill(real_redis, db_factory),
+                )
 
             # Two-phase wiring: per-goal cost breakdowns and simulation runs were
             # process-local (another replica / the worker never saw them; a restart

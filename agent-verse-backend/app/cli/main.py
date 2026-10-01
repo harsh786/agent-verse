@@ -611,5 +611,43 @@ def mfa_rotate(
         raise typer.Exit(1)
 
 
+@app.command(name="connectors-backfill")
+def connectors_backfill(
+    dry_run: bool = typer.Option(
+        False, "--verify-only", help="Copy and verify but do not record completion."
+    ),
+) -> None:
+    """Copy the legacy Redis connector store (configs, built-in markers) into Postgres.
+
+    Idempotent: nothing already in Postgres is overwritten and no Redis key is
+    deleted. Completion is recorded only when every legacy entry verifies as
+    present in Postgres. The API also runs this automatically on startup while
+    it is not recorded. Exits 1 unless the copy completed.
+    """
+    import asyncio
+
+    async def _run() -> dict:  # type: ignore[type-arg]
+        import redis.asyncio as aioredis
+
+        from app.db.session import get_session_factory
+        from app.mcp.connector_backfill import backfill_connectors_from_redis
+
+        redis_url = os.environ.get("REDIS_URL", "")
+        if not redis_url:
+            return {"status": "failed", "errors": ["REDIS_URL is not set"]}
+        redis_client = aioredis.from_url(redis_url, decode_responses=True)
+        try:
+            return await backfill_connectors_from_redis(
+                redis_client, get_session_factory(), record=not dry_run
+            )
+        finally:
+            await redis_client.aclose()
+
+    result = asyncio.run(_run())
+    typer.echo(json.dumps(result, indent=2))
+    if result.get("status") != "complete":
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

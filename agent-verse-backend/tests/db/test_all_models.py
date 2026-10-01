@@ -308,11 +308,12 @@ def test_mcp_credential_instantiation():
     cred = MCPCredential(
         server_id="s-001",
         tenant_id="t-001",
-        encrypted_config="enc:AES256GCM:abc123def456",
+        secret_key="token",
+        encrypted_value="enc:AES256GCM:abc123def456",
     )
     assert cred.server_id == "s-001"
     assert cred.tenant_id == "t-001"
-    assert cred.encrypted_config == "enc:AES256GCM:abc123def456"
+    assert cred.encrypted_value == "enc:AES256GCM:abc123def456"
 
 
 def test_oauth_token_instantiation():
