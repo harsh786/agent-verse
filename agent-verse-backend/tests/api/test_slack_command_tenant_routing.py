@@ -32,9 +32,12 @@ def _slack_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _signed(body: bytes) -> dict[str, str]:
     ts = str(int(time.time()))
-    sig = "v0=" + hmac.new(
-        _SECRET.encode(), f"v0:{ts}:{body.decode()}".encode(), hashlib.sha256
-    ).hexdigest()
+    sig = (
+        "v0="
+        + hmac.new(
+            _SECRET.encode(), f"v0:{ts}:{body.decode()}".encode(), hashlib.sha256
+        ).hexdigest()
+    )
     return {
         "Content-Type": "application/x-www-form-urlencoded",
         "X-Slack-Request-Timestamp": ts,

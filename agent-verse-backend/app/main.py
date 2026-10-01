@@ -3142,6 +3142,11 @@ def create_app(
         key_resolver=_dynamic_resolver,
         rate_limiter=_fake_redis,
     )
+    # TRG-57: public (pre-auth) webhook/channel ingress reads the body before it
+    # can authenticate the sender — bound it (413) before any route buffers it.
+    from app.integrations.body_limit import PublicIngressBodyLimitMiddleware
+
+    app.add_middleware(PublicIngressBodyLimitMiddleware)
     # CORSMiddleware is outermost — added last so its CORS headers wrap ALL
     # responses including error 403s from ScopeEnforcementMiddleware.
     app.add_middleware(
