@@ -157,6 +157,20 @@ class PostgresMemoryRepository:
 
     async def write(self, request: MemoryWriteRequest) -> MemoryRecord:
         sensitive = request.classification in _SENSITIVE
+        # MEM-68: the shared memory-write gate, before any DB work — no caller
+        # can store unvetted text through this repository.
+        from app.memory.screening import vet_canonical_write
+
+        request = request.model_copy(
+            update={
+                "content": await vet_canonical_write(
+                    request.content,
+                    tenant_id=request.tenant_id,
+                    goal_id=request.source_goal_id or None,
+                    sensitive=sensitive,
+                )
+            }
+        )
         identifier = uuid.uuid5(
             uuid.NAMESPACE_URL,
             f"{request.tenant_id}:{request.memory_kind}:{request.idempotency_key}",

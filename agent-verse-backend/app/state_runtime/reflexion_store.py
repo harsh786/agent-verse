@@ -108,9 +108,27 @@ class ReflexionStore:
         source_goal_id: str,
         failure_class: str,
         db_factory: Any = None,
-    ) -> None:
-        """Record lesson in-memory AND persist to Postgres reflexion_lessons table."""
-        # Always write to memory first
+    ) -> bool:
+        """Record lesson in-memory AND persist to Postgres reflexion_lessons table.
+
+        The lesson passes the shared memory-write gate first (MEM-68): a
+        blocked lesson, or one the gate could not vet, is stored nowhere and
+        returns False (it is recalled into later planner prompts).
+        """
+        from app.memory.screening import MemoryScreeningError, screen_memory_content
+
+        try:
+            vetted = await screen_memory_content(
+                lesson, tenant_id=tenant_id, goal_id=source_goal_id or None, store="reflexion"
+            )
+        except MemoryScreeningError as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("reflexion_lesson_screening_failed", error=str(exc))
+            return False
+        if vetted is None:
+            return False
+        lesson = vetted
         self.record(
             tenant_id=tenant_id,
             lesson=lesson,
@@ -118,7 +136,7 @@ class ReflexionStore:
             failure_class=failure_class,
         )
         if db_factory is None:
-            return
+            return True
         try:
             from sqlalchemy import text
 
@@ -151,6 +169,8 @@ class ReflexionStore:
                 get_logger(__name__).warning("reflexion_lesson_db_persist_failed", error=str(exc))
             except Exception:
                 pass
+            return False
+        return True
 
     async def load_from_db(
         self,

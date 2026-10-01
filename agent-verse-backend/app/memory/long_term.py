@@ -59,6 +59,10 @@ def _fit_ltm_vector(vec: list[float]) -> list[float] | None:
     return None
 
 
+#: Characters of an auto-extracted memory that are vetted — and the only ones kept.
+_LTM_SCREEN_WINDOW = 4_000
+
+
 class LongTermMemoryUnavailableError(RuntimeError):
     """The durable long-term memory store could not be read or written."""
 
@@ -78,16 +82,21 @@ async def screen_user_memory_content(content: str, *, tenant_id: str) -> str:
     if not _GUARDRAILS_AVAILABLE or guardrails_engine is None:
         raise LongTermMemoryUnavailableError("memory-write guardrail is not available")
     try:
-        guardrails_engine.ensure_default_rules(tenant_id)
-        result = await guardrails_engine.evaluate(
-            content=content, layer=GuardrailLayer.MEMORY_WRITE, tenant_id=tenant_id
-        )
+        from app.memory.screening import contains_prompt_injection
+
+        injected = contains_prompt_injection(content)
+        result: dict[str, Any] = {}
+        if not injected:
+            guardrails_engine.ensure_default_rules(tenant_id)
+            result = await guardrails_engine.evaluate(
+                content=content, layer=GuardrailLayer.MEMORY_WRITE, tenant_id=tenant_id
+            )
     except Exception as exc:
         get_logger(__name__).warning("ltm_memory_write_guardrail_failed", error=str(exc)[:200])
         raise LongTermMemoryUnavailableError(
             "memory-write guardrail could not vet the content; nothing was stored"
         ) from exc
-    if result.get("blocked"):
+    if injected or result.get("blocked"):
         raise LongTermMemoryBlockedError("memory content rejected by the memory-write guardrail")
     redacted = result.get("redacted_content")
     return redacted if isinstance(redacted, str) and redacted else content
@@ -490,30 +499,43 @@ class LongTermMemoryStore:
         # verifier_mixin.py — applied before the in-memory cache write (not
         # just the DB write) so a blocked/redacted memory never becomes
         # visible even for same-session recall.
-        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx is not None:
-            try:
+        # MEM-68: no vetting possible -> nothing stored (it used to be stored
+        # unvetted with no tenant or no guardrail engine). Only the vetted
+        # window is ever kept (the tail past it used to be stored unvetted),
+        # and a prompt-injection payload is refused like a blocked rule.
+        if tenant_ctx is None or not _GUARDRAILS_AVAILABLE or guardrails_engine is None:
+            raise LongTermMemoryUnavailableError(
+                "memory-write guardrail cannot vet this content; nothing was stored"
+            )
+        memory.content = memory.content[:_LTM_SCREEN_WINDOW]
+        try:
+            from app.memory.screening import contains_prompt_injection
+
+            if contains_prompt_injection(memory.content):
+                _g2_mem_result: dict[str, Any] = {"blocked": True}
+            else:
                 guardrails_engine.ensure_default_rules(tenant_ctx.tenant_id)
                 _g2_mem_result = await guardrails_engine.evaluate(
-                    content=memory.content[:2000],
+                    content=memory.content,
                     layer=GuardrailLayer.MEMORY_WRITE,
                     tenant_id=tenant_ctx.tenant_id,
                     goal_id=getattr(memory, "source_goal_id", None) or None,
                 )
-                if _g2_mem_result.get("blocked"):
-                    memory.content = "[Content redacted by guardrail policy]"
-                else:
-                    _g2_mem_redacted = _g2_mem_result.get("redacted_content")
-                    if _g2_mem_redacted and _g2_mem_redacted != memory.content[:2000]:
-                        memory.content = _g2_mem_redacted + memory.content[2000:]
-            except Exception as _g2_mem_exc:
-                # Fail closed: content the MEMORY_WRITE guardrail could not vet is
-                # never stored (it used to be written unvetted).
-                get_logger(__name__).warning(
-                    "ltm_memory_write_guardrail_failed", error=str(_g2_mem_exc)
-                )
-                raise LongTermMemoryUnavailableError(
-                    "memory-write guardrail could not vet the content; nothing was stored"
-                ) from _g2_mem_exc
+            if _g2_mem_result.get("blocked"):
+                memory.content = "[Content redacted by guardrail policy]"
+            else:
+                _g2_mem_redacted = _g2_mem_result.get("redacted_content")
+                if isinstance(_g2_mem_redacted, str) and _g2_mem_redacted:
+                    memory.content = _g2_mem_redacted
+        except Exception as _g2_mem_exc:
+            # Fail closed: content the MEMORY_WRITE guardrail could not vet is
+            # never stored (it used to be written unvetted).
+            get_logger(__name__).warning(
+                "ltm_memory_write_guardrail_failed", error=str(_g2_mem_exc)
+            )
+            raise LongTermMemoryUnavailableError(
+                "memory-write guardrail could not vet the content; nothing was stored"
+            ) from _g2_mem_exc
 
         mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
         if db is not None:

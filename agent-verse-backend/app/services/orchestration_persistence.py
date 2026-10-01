@@ -137,55 +137,23 @@ class OrchestrationPersistence:
         state: AgentState,
         *,
         db: Any = None,
-    ) -> None:
-        """Store reflexion lesson in memory + Postgres."""
+    ) -> bool:
+        """Store a failed goal's reflexion lesson in memory + Postgres.
+
+        Goes through ``ReflexionStore.record_async`` so the lesson passes the
+        shared memory-write gate before it is stored anywhere (MEM-68); it used
+        to cache the raw lesson and INSERT it unvetted here.
+        """
         from app.agent.reflexion_wirer import ReflexionWirer
 
-        wirer = ReflexionWirer(store=self._reflexion_store)
-        stored = wirer.maybe_store(state)
-        if not stored:
-            return
-        effective_db = db or self._db
-        if effective_db is None:
-            return
+        wirer = ReflexionWirer(store=self._reflexion_store, db_factory=db or self._db)
         try:
-            from sqlalchemy import text
-
-            from app.db.rls import sqlalchemy_rls_context
-
-            tenant_id = state.tenant_ctx.tenant_id
-            lessons = self._reflexion_store.recall(tenant_id=tenant_id, limit=1)
-            if lessons:
-                latest = lessons[-1]
-                # reflexion_lessons is FORCE RLS; this runs inside the goal, so the
-                # tenant is known — tenant GUC, never the maintenance role.
-                async with (
-                    effective_db() as session,
-                    session.begin(),
-                    sqlalchemy_rls_context(session, tenant_id),
-                ):
-                    await session.execute(
-                        text("""
-                            INSERT INTO reflexion_lessons
-                                (id, tenant_id, lesson, source_goal_id,
-                                 failure_class, created_at)
-                            VALUES
-                                (:id, :tenant_id, :lesson, :source_goal_id,
-                                 :failure_class, NOW())
-                            ON CONFLICT DO NOTHING
-                        """),
-                        {
-                            "id": uuid.uuid4().hex,
-                            "tenant_id": tenant_id,
-                            "lesson": latest["lesson"],
-                            "source_goal_id": state.goal_id,
-                            "failure_class": latest.get("failure_class", "unknown"),
-                        },
-                    )
+            return await wirer.maybe_store_async(state)
         except Exception as exc:
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("reflexion_lesson_persist_failed", error=str(exc))
+            return False
 
     async def persist_regression_case(
         self,

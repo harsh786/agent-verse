@@ -82,6 +82,19 @@ class InMemoryMemoryRepository:
         with _tracer.start_as_current_span("memory.write") as span:
             span.set_attribute("tenant_id", request.tenant_id)
             span.set_attribute("memory_kind", request.memory_kind)
+        # MEM-68: the shared memory-write gate (same as the Postgres adapter).
+        from app.memory.screening import vet_canonical_write
+
+        request = request.model_copy(
+            update={
+                "content": await vet_canonical_write(
+                    request.content,
+                    tenant_id=request.tenant_id,
+                    goal_id=request.source_goal_id or None,
+                    sensitive=request.classification in {"confidential", "restricted"},
+                )
+            }
+        )
         command = (request.tenant_id, request.idempotency_key)
         async with self._lock:
             prior = self._commands.get(command)

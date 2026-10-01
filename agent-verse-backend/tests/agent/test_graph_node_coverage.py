@@ -478,7 +478,8 @@ async def test_node_verify_with_exec_memory_on_success() -> None:
     agent_state = AgentState(goal="Deploy", tenant_ctx=T)
     state = _make_state(agent_state=agent_state)
     await graph._node_verify(state)
-    exec_mem.record.assert_called_once()
+    exec_mem.record_async.assert_awaited_once()  # MEM-68: the gated write
+    exec_mem.record.assert_not_called()
 
 
 @pytest.mark.asyncio

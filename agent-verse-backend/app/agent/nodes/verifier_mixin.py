@@ -469,61 +469,46 @@ class VerifierMixin:
             # Record winning plan in execution memory (sync in-memory + async DB, BUG 2b fix)
             if self._exec_memory is not None:
                 # One record per goal (MEM-08): record_async updates the cache
-                # itself, so the sync record() runs only in the DB-less build.
-                if self._db_session_factory is None:
-                    self._exec_memory.record(
-                        goal=agent_state.goal,
-                        plan=agent_state.plan,
-                        tenant_ctx=tenant_ctx,
+                # itself (DB-less build included) after the memory-write gate
+                # vets it (MEM-68) — the sync record() stored unvetted text.
+                # Awaited (one INSERT) so a lost write is visible on this
+                # goal instead of vanishing in a background task (MEM-07).
+                _em_persisted = await self._exec_memory.record_async(
+                    goal=agent_state.goal,
+                    plan=agent_state.plan,
+                    success=True,
+                    tenant_id=tenant_ctx.tenant_id,
+                    db=self._db_session_factory,
+                    goal_id=str(agent_state.goal_id or ""),
+                )
+                if _em_persisted is False:
+                    _degraded = agent_state.context.setdefault("memory_degraded", [])
+                    if "execution_memory_write" not in _degraded:
+                        _degraded.append("execution_memory_write")
+                    await self._emit(
+                        {"type": "memory_degraded", "source": "execution_memory_write"}
                     )
-                else:
-                    # Awaited (one INSERT) so a lost write is visible on this
-                    # goal instead of vanishing in a background task (MEM-07).
-                    _em_persisted = await self._exec_memory.record_async(
-                        goal=agent_state.goal,
-                        plan=agent_state.plan,
-                        success=True,
-                        tenant_id=tenant_ctx.tenant_id,
-                        db=self._db_session_factory,
-                        goal_id=str(agent_state.goal_id or ""),
-                    )
-                    if _em_persisted is False:
-                        _degraded = agent_state.context.setdefault("memory_degraded", [])
-                        if "execution_memory_write" not in _degraded:
-                            _degraded.append("execution_memory_write")
-                        await self._emit(
-                            {"type": "memory_degraded", "source": "execution_memory_write"}
-                        )
 
-            # Auto-extract long-term learnings (sync in-memory + async DB, BUG 1 fix)
+            # Auto-extract long-term learnings. One awaited write through
+            # store_async, which vets the content with the shared memory-write
+            # gate BEFORE it reaches the cache or the DB (MEM-68). The old sync
+            # extract cached unvetted text and the background persist could be
+            # cancelled at loop teardown, losing it silently.
             if self._long_term_memory is not None:
                 step_outputs = " ".join(s.output[:100] for s in agent_state.steps if s.output)
-                # Sync extract: immediate in-memory update (same-session recall)
-                self._long_term_memory.extract_from_goal(
-                    goal=agent_state.goal,
-                    result=step_outputs,
-                    goal_id=agent_state.goal_id,
-                    tenant_ctx=tenant_ctx,
-                )
-                # Async DB persistence via extract_from_goal_async (BUG 1 fix)
-                if self._db_session_factory is not None:
-                    _ltm_task = asyncio.create_task(
+                try:
+                    await asyncio.wait_for(
                         self._long_term_memory.extract_from_goal_async(
                             goal=agent_state.goal,
                             result=step_outputs[:500],
                             tenant_ctx=tenant_ctx,
                             db=self._db_session_factory,
                             embedder=self._embedder,
-                        )
+                        ),
+                        timeout=10.0,
                     )
-                    self._background_tasks.add(_ltm_task)
-                    _ltm_task.add_done_callback(
-                        lambda t: (
-                            t.exception()
-                            and self._logger.warning("ltm_persist_failed", error=str(t.exception()))
-                        )
-                    )
-                    _ltm_task.add_done_callback(self._background_tasks.discard)
+                except Exception as _ltm_exc:
+                    await self._memory_degraded(agent_state, "long_term_memory_write", _ltm_exc)
 
             # Score the completed goal — persists eval to DB (BUG 3 fix)
             scorecard = None

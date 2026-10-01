@@ -64,7 +64,9 @@ class ReflexionPattern(AgentPattern):
             return False
         store = self._get_store()
         lesson = f"For goal '{goal[:60]}': {feedback[:200]}"
-        if db_factory is not None and hasattr(store, "record_async"):
+        # Always the async path: it runs the memory-write gate (MEM-68) before
+        # the lesson reaches the cache or the DB (db_factory=None: cache only).
+        return bool(
             await store.record_async(
                 tenant_id=tenant_id,
                 lesson=lesson,
@@ -72,14 +74,7 @@ class ReflexionPattern(AgentPattern):
                 failure_class=failure_class,
                 db_factory=db_factory,
             )
-        else:
-            store.record(
-                tenant_id=tenant_id,
-                lesson=lesson,
-                source_goal_id=source_goal_id,
-                failure_class=failure_class,
-            )
-        return True
+        )
 
     def recall_lessons(self, *, tenant_id: str, limit: int = 5) -> list[dict[str, Any]]:
         """Recall recent failure lessons for a tenant."""

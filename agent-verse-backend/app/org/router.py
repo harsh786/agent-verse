@@ -3119,18 +3119,29 @@ async def org_dept_memory_add(
         tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
         span.set_attribute("dept_id", dept_id)
 
-        from app.memory.dept_memory import get_dept_memory
+        from app.memory.dept_memory import (
+            DepartmentMemoryBlockedError,
+            DepartmentMemoryUnavailableError,
+            get_dept_memory,
+        )
 
         dm = get_dept_memory()
-        entry = await dm.add(
-            dept_id=dept_id,
-            org_id=org_id,
-            tenant_id=tenant_id,
-            content=body.content,
-            source=body.source,
-            confidence=body.confidence,
-            tags=body.tags,
-        )
+        try:
+            entry = await dm.add(
+                dept_id=dept_id,
+                org_id=org_id,
+                tenant_id=tenant_id,
+                content=body.content,
+                source=body.source,
+                confidence=body.confidence,
+                tags=body.tags,
+            )
+        except DepartmentMemoryBlockedError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except DepartmentMemoryUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:  # below the promotion confidence threshold
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {
             "entry_id": entry.entry_id,
             "dept_id": dept_id,

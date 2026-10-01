@@ -114,7 +114,24 @@ class ProceduralMemoryStore:
         if not tools:
             return  # Nothing to learn from goals without tools
 
-        goal_pattern = _extract_goal_pattern(state.goal)
+        # MEM-68: the pattern is derived from goal text and recalled into later
+        # planner prompts — it passes the shared memory-write gate first. A
+        # block learns nothing; an outage raises (never stores unvetted text).
+        from app.memory.screening import MemoryScreeningError, screen_memory_content
+
+        try:
+            goal_pattern_or_none = await screen_memory_content(
+                _extract_goal_pattern(state.goal),
+                tenant_id=tenant_ctx.tenant_id,
+                goal_id=state.goal_id,
+                store="procedural",
+            )
+        except MemoryScreeningError as exc:
+            _log_degraded("learn", tenant_ctx.tenant_id, exc)
+            raise ProceduralMemoryUnavailableError(str(exc)) from exc
+        if goal_pattern_or_none is None:
+            return
+        goal_pattern = goal_pattern_or_none
         domain = _extract_domain(tools)
         outcome = 1.0 if success else 0.0
 

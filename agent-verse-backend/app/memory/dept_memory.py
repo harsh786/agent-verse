@@ -37,6 +37,36 @@ MIN_CONFIDENCE_FOR_PROMOTION = 0.70
 _MAX_QUERY_KEYWORDS = 32
 
 
+class DepartmentMemoryBlockedError(ValueError):
+    """The memory-write gate refused the content (guardrail block or injection)."""
+
+
+class DepartmentMemoryUnavailableError(RuntimeError):
+    """The memory-write gate could not vet the content; nothing was stored."""
+
+
+async def _screen_dept_text(text: str, *, tenant_id: str) -> str:
+    """MEM-68: the shared memory-write gate for department memory.
+
+    Entries are injected into the planner prompt of every goal the department
+    dispatches, so PII/secrets and prompt-injection payloads are refused here.
+    Returns the (possibly redacted) text to store.
+    """
+    from app.memory.screening import MemoryScreeningError, screen_memory_content
+
+    try:
+        screened = await screen_memory_content(text, tenant_id=tenant_id, store="department")
+    except MemoryScreeningError as exc:
+        raise DepartmentMemoryUnavailableError(
+            "memory-write guardrail could not vet the content; nothing was stored"
+        ) from exc
+    if screened is None:
+        raise DepartmentMemoryBlockedError(
+            "department memory content rejected by the memory-write guardrail"
+        )
+    return screened
+
+
 @dataclass
 class MemoryEntry:
     """A single department memory entry."""
@@ -245,12 +275,15 @@ class DepartmentMemory:
         Raises:
             ValueError: if confidence is below MIN_CONFIDENCE_FOR_PROMOTION — low
                 confidence facts must not be promoted into durable department memory.
+            DepartmentMemoryBlockedError: the memory-write gate refused the content.
+            DepartmentMemoryUnavailableError: the gate could not vet it (fail closed).
         """
         if confidence < MIN_CONFIDENCE_FOR_PROMOTION:
             raise ValueError(
                 f"confidence {confidence:.2f} is below the promotion threshold "
                 f"of {MIN_CONFIDENCE_FOR_PROMOTION:.2f}"
             )
+        content = await _screen_dept_text(content, tenant_id=tenant_id)
         with _tracer.start_as_current_span("dept_memory.add") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("source", source)
@@ -310,8 +343,10 @@ class DepartmentMemory:
         """Append a correction to an existing entry (non-destructive).
 
         The original content is preserved; the correction is logged
-        and the confidence is adjusted.
+        and the confidence is adjusted. The correction passes the memory-write
+        gate first (see :meth:`add` for the errors it raises).
         """
+        correction = await _screen_dept_text(correction, tenant_id=tenant_id)
         with _tracer.start_as_current_span("dept_memory.correct") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("entry_id", entry_id)

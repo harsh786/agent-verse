@@ -24,6 +24,7 @@ async def test_maybe_store_async_writes_to_db(tenant_ctx):
 
     async def mock_record_async(**kwargs):
         record_async_calls.append(kwargs)
+        return True
 
     store.record_async = mock_record_async
     wirer = ReflexionWirer(store=store, db_factory=MagicMock())

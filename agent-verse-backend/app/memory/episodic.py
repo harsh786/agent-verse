@@ -137,9 +137,17 @@ class EpisodicMemoryStore:
         state: AgentState,
         tenant_ctx: TenantContext,
         quality_score: float = 0.5,
-    ) -> None:
-        """Record a goal execution as an episode. Called on goal completion."""
+    ) -> bool:
+        """Record a goal execution as an episode. Called on goal completion.
+
+        Every text field passes the shared memory-write gate first (MEM-68): a
+        PII/secret/prompt-injection payload is never stored, here or in the
+        process cache. Returns False when the episode was LOST (gate outage or
+        DB failure) so the caller can flag the goal memory-degraded; a guardrail
+        block is a decision, not a loss, and returns True.
+        """
         from app.agent.state import GoalStatus
+        from app.memory.screening import MemoryScreeningError, screen_memory_fields
 
         outcome = (
             "success"
@@ -168,11 +176,30 @@ class EpisodicMemoryStore:
         # Extract lesson from reflexion feedback
         lessons = (state.verification_feedback or "")[:300]
 
+        try:
+            screened = await screen_memory_fields(
+                {
+                    "goal_text": state.goal[:200],
+                    "action_summary": action_summary,
+                    "lessons": lessons,
+                },
+                tenant_id=tenant_ctx.tenant_id,
+                goal_id=state.goal_id,
+                store="episodic",
+            )
+        except MemoryScreeningError as exc:
+            _log_degraded("record", tenant_ctx.tenant_id, exc)
+            return False
+        if screened is None:
+            return True
+        action_summary = screened["action_summary"]
+        lessons = screened["lessons"]
+
         episode = Episode(
             episode_id=uuid.uuid4().hex,
             tenant_id=tenant_ctx.tenant_id,
             goal_id=state.goal_id,
-            goal_text=state.goal[:200],
+            goal_text=screened["goal_text"],
             action_summary=action_summary,
             outcome=outcome,
             lessons=lessons,
@@ -186,7 +213,7 @@ class EpisodicMemoryStore:
             try:
                 from app.providers.base import EmbedRequest
 
-                resp = await self._embedder.embed(EmbedRequest(texts=[state.goal[:200]]))
+                resp = await self._embedder.embed(EmbedRequest(texts=[episode.goal_text]))
                 if resp.embeddings:
                     episode.embedding = resp.embeddings[0]
             except Exception as exc:
@@ -243,6 +270,8 @@ class EpisodicMemoryStore:
                     )
             except Exception as exc:
                 _log_degraded("record", tenant_ctx.tenant_id, exc)
+                return False
+        return True
 
     async def _embed_query(
         self, goal: str, tenant_id: str, degraded: list[str] | None

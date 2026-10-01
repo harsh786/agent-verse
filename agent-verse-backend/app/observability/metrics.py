@@ -297,6 +297,12 @@ KNOWLEDGE_FAILURE_TOTAL = Counter(
     labelnames=("component", "op"),
     registry=REGISTRY,
 )
+MEMORY_WRITE_BLOCKED_TOTAL = Counter(
+    "agentverse_memory_write_blocked_total",
+    "Memory writes the shared memory-write gate refused to store.",
+    labelnames=("store", "reason"),
+    registry=REGISTRY,
+)
 COORDINATION_HANDOFF_DURATION = Histogram(
     "agentverse_coordination_handoff_duration_seconds",
     "Accepted handoff latency.",
@@ -417,9 +423,20 @@ def record_checkpointer_fallback(reason: str) -> None:
 
 
 _MEMORY_STORES = frozenset(
-    {"procedural", "episodic", "execution", "long_term", "tool_reliability", "context"}
+    {
+        "procedural",
+        "episodic",
+        "execution",
+        "long_term",
+        "tool_reliability",
+        "context",
+        "department",
+        "canonical",
+        "reflexion",
+    }
 )
-_MEMORY_OPS = frozenset({"learn", "recall", "record", "embed", "list", "pipeline"})
+_MEMORY_OPS = frozenset({"learn", "recall", "record", "embed", "list", "pipeline", "screen"})
+_MEMORY_BLOCK_REASONS = frozenset({"guardrail", "injection"})
 
 
 def record_memory_degraded(store: str, op: str) -> None:
@@ -427,6 +444,14 @@ def record_memory_degraded(store: str, op: str) -> None:
     MEMORY_DEGRADED_TOTAL.labels(
         store=store if store in _MEMORY_STORES else "other",
         op=op if op in _MEMORY_OPS else "other",
+    ).inc()
+
+
+def record_memory_write_blocked(store: str, reason: str) -> None:
+    """The shared memory-write gate refused content (guardrail block or injection)."""
+    MEMORY_WRITE_BLOCKED_TOTAL.labels(
+        store=store if store in _MEMORY_STORES else "other",
+        reason=reason if reason in _MEMORY_BLOCK_REASONS else "other",
     ).inc()
 
 

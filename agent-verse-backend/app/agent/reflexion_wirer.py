@@ -53,14 +53,14 @@ class ReflexionWirer:
 
         failure_class = _classify_failure(state.verification_feedback or "")
 
-        await self._store.record_async(
+        # False when the memory-write gate withheld the lesson or it was lost.
+        return await self._store.record_async(
             tenant_id=state.tenant_ctx.tenant_id,
             lesson=lesson,
             source_goal_id=state.goal_id,
             failure_class=failure_class,
             db_factory=self._db_factory,
         )
-        return True
 
     def maybe_store(self, state: AgentState) -> bool:
         """Sync version: stores lesson in-memory only (backward compat).

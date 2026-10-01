@@ -18,7 +18,7 @@ async def test_store_async_publishes_memory_created_and_drives_the_consumer() ->
     redis = AsyncMock()
     ltm.set_event_redis(redis)
     mem = LongTermMemory(content="prefers jira", source_goal_id="g1", memory_type="tool_preference")
-    with patch("app.memory.long_term._GUARDRAILS_AVAILABLE", False):
+    with patch("app.memory.long_term._GUARDRAILS_AVAILABLE", True):
         await ltm.store_async(memory=mem, tenant_ctx=CTX)
 
     (call,) = [c for c in redis.publish.await_args_list if c.args[0] == "memory.created"]
@@ -33,7 +33,7 @@ async def test_store_async_publishes_memory_created_and_drives_the_consumer() ->
 async def test_no_redis_publishes_nothing() -> None:
     ltm = LongTermMemoryStore()
     mem = LongTermMemory(content="x", source_goal_id="g", memory_type="domain_fact")
-    with patch("app.memory.long_term._GUARDRAILS_AVAILABLE", False):
+    with patch("app.memory.long_term._GUARDRAILS_AVAILABLE", True):
         await ltm.store_async(memory=mem, tenant_ctx=CTX)  # must not raise
 
 
@@ -53,7 +53,7 @@ async def test_failed_insert_publishes_no_memory_created() -> None:
     ltm.set_event_redis(redis)
     mem = LongTermMemory(content="x", source_goal_id="g", memory_type="domain_fact")
     with (
-        patch("app.memory.long_term._GUARDRAILS_AVAILABLE", False),
+        patch("app.memory.long_term._GUARDRAILS_AVAILABLE", True),
         pytest.raises(LongTermMemoryUnavailableError),
     ):
         await ltm.store_async(memory=mem, tenant_ctx=CTX, db=_BrokenDb())

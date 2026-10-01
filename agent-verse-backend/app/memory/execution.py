@@ -70,6 +70,29 @@ def _write_failed(op: str, tenant_id: str, goal_id: str, exc: BaseException) -> 
     )
 
 
+#: Plan steps vetted (and stored) per record.
+_MAX_PLAN_STEPS = 30
+
+
+async def _screen_record(
+    *, goal: str, texts: list[str], tenant_id: str, goal_id: str
+) -> tuple[str, list[str]] | None:
+    """MEM-68: vet a record's goal + texts through the shared memory-write gate.
+
+    ``(goal, texts)`` to store (redacted where a rule redacted), or ``None``
+    when blocked. Raises ``MemoryScreeningError`` when the gate cannot vet it.
+    """
+    from app.memory.screening import screen_memory_fields
+
+    fields = {"goal": goal[:500], **{f"t{i}": t for i, t in enumerate(texts)}}
+    screened = await screen_memory_fields(
+        fields, tenant_id=tenant_id, goal_id=goal_id or None, store="execution"
+    )
+    if screened is None:
+        return None
+    return screened["goal"], [screened[f"t{i}"] for i in range(len(texts))]
+
+
 class ExecutionMemory:
     """Per-tenant store of past executions (successful plans and failures)."""
 
@@ -145,11 +168,31 @@ class ExecutionMemory:
         A DB failure is counted and logged and returns False — callers flag the
         goal as memory-degraded rather than claim the plan was remembered.
 
+        The goal and every plan step pass the shared memory-write gate first
+        (MEM-68): a blocked record is stored nowhere (returns True — a policy
+        decision, not a loss); a gate outage stores nothing and returns False.
+
         Uses ``tenant_id`` (str) directly so callers don't need a TenantContext
         object.  Also updates ``_plans`` so that the synchronous ``recall()``
         method can still find newly-persisted entries in the same session.
         """
         from datetime import UTC, datetime
+
+        from app.memory.screening import MemoryScreeningError
+
+        try:
+            vetted = await _screen_record(
+                goal=goal,
+                texts=[str(p) for p in plan[:_MAX_PLAN_STEPS]],
+                tenant_id=tenant_id,
+                goal_id=goal_id,
+            )
+        except MemoryScreeningError as exc:
+            _write_failed("screen", tenant_id, goal_id, exc)
+            return False
+        if vetted is None:
+            return True  # withheld by the memory-write guardrail: nothing to store
+        goal, plan = vetted
 
         tid = tenant_id
         entry: dict[str, object] = {
@@ -206,6 +249,18 @@ class ExecutionMemory:
         """Persist failed attempt to DB for cross-session pattern learning.
 
         Returns whether the durable write happened (see :meth:`record_async`)."""
+        from app.memory.screening import MemoryScreeningError
+
+        try:
+            vetted = await _screen_record(
+                goal=goal, texts=[error[:500]], tenant_id=tenant_id, goal_id=goal_id
+            )
+        except MemoryScreeningError as exc:
+            _write_failed("screen", tenant_id, goal_id, exc)
+            return False
+        if vetted is None:
+            return True  # withheld by the memory-write guardrail: nothing to store
+        goal, (error,) = vetted
         # In-memory record
         self._failures.add(tenant_id, {"goal": goal, "error": error})
 

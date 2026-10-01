@@ -152,7 +152,9 @@ async def test_node_verify_success_calls_exec_memory_record() -> None:
     state = {"agent_state": agent_state, "tenant_ctx": T}
     await graph._node_verify(state)
 
-    mock_exec_mem.record.assert_called_once()
+    # MEM-68: always the gated async write (the sync record stored unvetted text)
+    mock_exec_mem.record_async.assert_awaited_once()
+    mock_exec_mem.record.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -172,7 +174,9 @@ async def test_node_verify_success_calls_long_term_memory_extraction() -> None:
     state = {"agent_state": agent_state, "tenant_ctx": T}
     await graph._node_verify(state)
 
-    mock_ltm.extract_from_goal.assert_called_once()
+    # MEM-68: one awaited, gated write (the sync extract cached unvetted text)
+    mock_ltm.extract_from_goal_async.assert_awaited_once()
+    mock_ltm.extract_from_goal.assert_not_called()
 
 
 @pytest.mark.asyncio

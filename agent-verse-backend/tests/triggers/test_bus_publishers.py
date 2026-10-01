@@ -83,7 +83,7 @@ async def test_memory_created_goes_to_the_memory_stream(aredis: Any) -> None:
     ltm = LongTermMemoryStore()
     ltm.set_event_redis(aredis)
     mem = LongTermMemory(content="x", source_goal_id="g", memory_type="domain_fact")
-    with patch("app.memory.long_term._GUARDRAILS_AVAILABLE", False):
+    with patch("app.memory.long_term._GUARDRAILS_AVAILABLE", True):
         await ltm.store_async(memory=mem, tenant_ctx=CTX)
 
     [(channel, data)] = await _aentries(aredis, S.trigger_bus_stream_memory)
