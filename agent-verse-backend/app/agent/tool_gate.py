@@ -190,9 +190,12 @@ class GovernedToolGate:
                 tenant_ctx=tenant_ctx,
             )
         )
-        status = await self._hitl.wait_for_approval(
-            req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
-        )
+        from app.agent.step_watchdog import approval_wait
+
+        with approval_wait():  # a human decision is not step time
+            status = await self._hitl.wait_for_approval(
+                req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+            )
         if status != ApprovalStatus.APPROVED:
             return GateDecision(False, f"'{tool_name}' approval {status}")
         return GateDecision(True)

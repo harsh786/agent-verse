@@ -202,6 +202,11 @@ return 0
         self._redis = redis_client
         self._value = lock_value
 
+    @property
+    def token(self) -> str:
+        """This run's lock value (also recorded as goals.runner_token)."""
+        return self._value
+
     def acquire(self, goal_id: str, ttl_ms: int = 1_800_000) -> bool:
         """Return True if the lock was acquired; False if another worker holds it."""
         key = f"{self.KEY_PREFIX}{goal_id}"
@@ -220,6 +225,32 @@ def _goal_lock_client(redis_url: str) -> Any:
     import redis
 
     return redis.from_url(redis_url, decode_responses=True)
+
+
+def _start_goal_heartbeat(
+    goal_id: str, tenant_id: str, lock: _SyncGoalLock | None, *, enabled: bool
+) -> Any:
+    """Start the durable runner heartbeat for this run (None when it cannot run).
+
+    GOAL-STALL: without it a goal whose worker died stayed ``executing`` for the
+    plan's whole goal timeout. Starting it never blocks the goal: a heartbeat
+    that cannot be written only means the reaper cannot protect this run.
+    """
+    if not enabled:
+        return None
+    import uuid as _uuid
+
+    from app.scaling.goal_watchdog import GoalHeartbeat
+
+    try:
+        return GoalHeartbeat(
+            goal_id=goal_id,
+            tenant_id=tenant_id,
+            runner_token=lock.token if lock is not None else _uuid.uuid4().hex,
+        ).start()
+    except Exception as exc:
+        logger.warning("goal_heartbeat_start_failed goal_id=%s: %s", goal_id, exc)
+        return None
 
 
 # True while this worker thread runs a supervisor sub-goal (set by run_goal from
@@ -2514,6 +2545,12 @@ def run_goal(
     except Exception as db_exc:
         logger.warning("DB operation failed (non-fatal): %s", db_exc)
 
+    # GOAL-STALL: keep goals.heartbeat_at fresh while this run owns the goal, so
+    # the beat reaper can tell a dead / wedged runner from a live one. The thread
+    # stops by itself once the goal is no longer active (every early return below
+    # marks it terminal) and is stopped in the main try's finally.
+    _heartbeat = _start_goal_heartbeat(goal_id, tenant_id, _lock, enabled=goal_bridge is not None)
+
     if dry_run:
         _run_async(mark_worker_complete("complete", 0))
         _record_goal_duration_metric(
@@ -3611,18 +3648,20 @@ def run_goal(
                     retrieval_gateway=_retrieval_gateway_worker,
                 )
 
+            _goal_run = _asyncio.wait_for(
+                _run_with_signals(
+                    _agent_runner,
+                    effective_goal,
+                    tenant_ctx,
+                    worker_event_callback,
+                    goal_id,
+                    initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
+                ),
+                timeout=float(goal_timeout_s),
+            )
             state = _run_async(
-                _asyncio.wait_for(
-                    _run_with_signals(
-                        _agent_runner,
-                        effective_goal,
-                        tenant_ctx,
-                        worker_event_callback,
-                        goal_id,
-                        initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
-                    ),
-                    timeout=float(goal_timeout_s),
-                )
+                # The heartbeat is withheld when this loop stops making progress.
+                _heartbeat.run_with_progress(_goal_run) if _heartbeat is not None else _goal_run
             )
         except TimeoutError:
             _run_async(mark_worker_failed(TimeoutError(f"Goal timed out after {goal_timeout_s}s")))
@@ -3809,6 +3848,9 @@ def run_goal(
         )
         raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
     finally:
+        if _heartbeat is not None:
+            with contextlib.suppress(Exception):
+                _heartbeat.stop()
         # Release distributed lock
         if _lock:
             with contextlib.suppress(Exception):
@@ -5992,6 +6034,81 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
     except Exception as exc:
         logger.error("fire_due_schedules failed: %s", exc)
         raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
+
+
+@celery_app.task(name="app.scaling.tasks.reap_stale_goal_runners", bind=True, max_retries=0)
+def reap_stale_goal_runners(self: Any) -> dict[str, Any]:
+    """GOAL-STALL: requeue / fail goals whose runner heartbeat went stale.
+
+    Unlike ``detect_stuck_goals`` (plan goal timeout, 1-24 h) this catches a
+    dead or wedged worker within ``goal_heartbeat_stale_seconds``. Errors are
+    raised, so a reaper that cannot run is a FAILED task, never a quiet success.
+    """
+    result: dict[str, Any] = _run_async(_reap_stale_goal_runners())
+    return result
+
+
+async def _reap_stale_goal_runners() -> dict[str, Any]:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from app.core.config import get_settings
+    from app.scaling.goal_watchdog import reap_stale_goal_runners as _reap
+    from app.services.goal_queue import CeleryGoalTaskQueue
+    from app.services.goal_service import _subgoal_queue_kwargs
+
+    settings = get_settings()
+    # A dedicated engine, created and disposed on this loop: the module-level
+    # engines handed connections across task loops ("attached to a different
+    # loop"), which is how detect_stuck_goals intermittently did nothing.
+    url = (settings.maintenance_database_url or "").strip() or str(settings.database_url)
+    engine = create_async_engine(url, pool_size=1, max_overflow=1)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    redis_client = _get_sync_redis()
+    queue = CeleryGoalTaskQueue()
+
+    def _enqueue(goal: dict[str, Any]) -> None:
+        queue.enqueue_goal(
+            goal_id=goal["goal_id"],
+            tenant_id=goal["tenant_id"],
+            goal_text=goal["goal_text"],
+            priority=goal["priority"],
+            dry_run=goal["dry_run"],
+            agent_id=goal["agent_id"] or None,
+            connector_ids=[],
+            workflow_mode=goal["workflow_mode"],
+            goal_template="",
+            plan=goal["plan"],
+            **_subgoal_queue_kwargs(goal["execution_context"]),
+        )
+
+    async def _release_slot(tenant_id: str, execution_context: dict[str, Any]) -> None:
+        from app.services.goal_service import _holds_concurrency_slot
+
+        if _holds_concurrency_slot(execution_context):
+            await _decrement_after_completion(tenant_id, REDIS_URL)
+
+    def _publish(tenant_id: str, goal_id: str, event: dict[str, Any]) -> None:
+        import json as _json
+
+        if redis_client is not None:
+            redis_client.publish(
+                f"goal_events:{tenant_id}:{goal_id}",
+                _json.dumps(
+                    {"goal_id": goal_id, "tenant_id": tenant_id, "type": event.get("type", ""),
+                     "payload": event}
+                ),
+            )
+
+    try:
+        return await _reap(
+            factory,
+            redis_client=redis_client,
+            enqueue=_enqueue,
+            release_slot=_release_slot,
+            publish=_publish,
+        )
+    finally:
+        await engine.dispose()
 
 
 @celery_app.task(name="app.scaling.tasks.detect_stuck_goals", bind=True, max_retries=0)

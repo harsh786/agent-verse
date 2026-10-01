@@ -21,6 +21,7 @@ from app.agent.sanitization import (
     _EXECUTOR_CONTEXT_MAX_LENGTH,
 )
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubGoal
+from app.agent.step_watchdog import approval_wait, run_step_with_deadline
 from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
 from app.agent.tool_risk import classify_tool_risk
 from app.governance.audit import AuditEvent
@@ -74,6 +75,8 @@ from app.agent.nodes._helpers import (
 # re-searches on every replan and never converges (observed: 34 web searches
 # across 11 replans before a goal failed). Overridable via ``_tool_call_budget``.
 _DEFAULT_TOOL_CALL_BUDGET = 12
+# "No timeout argument" for _await_approval_decision (None is a real value).
+_NO_TIMEOUT_ARG: Any = object()
 
 # Prefixes that mark plain LLM reasoning ("I'll call the tool…") rather than an
 # actual tool result. Such text must never be cached or served as a step result.
@@ -503,7 +506,7 @@ class ExecutorMixin:
         except PermissionError as exc:
             return str(exc)  # not durable, so nobody could approve it: deny
         await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
-        final_status = await self._hitl_gateway.wait_for_approval(
+        final_status = await self._await_approval_decision(
             req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
         )
         if final_status != ApprovalStatus.APPROVED:
@@ -666,7 +669,7 @@ class ExecutorMixin:
              "tool": tool_name}
         )
         started = time.monotonic()
-        final_status = await self._hitl_gateway.wait_for_approval(
+        final_status = await self._await_approval_decision(
             req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
         )
         record_approval_wait(time.monotonic() - started)
@@ -1335,10 +1338,36 @@ class ExecutorMixin:
         )
 
     async def _execute_step(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str:
-        """Run the governed per-step pipeline and record its real output for dedup."""
-        output = await self._execute_step_pipeline(step, state, tenant_ctx)
+        """Run the governed per-step pipeline and record its real output for dedup.
+
+        GOAL-STALL: the pipeline runs under the step watchdog — ``step_heartbeat``
+        events while it runs, and a deadline on its active time (approval waits
+        excluded) after which it is cancelled and raises
+        ``StepDeadlineExceededError`` (recorded as a FAILED step, then replanned).
+        """
+        output = await run_step_with_deadline(
+            step,
+            lambda: self._execute_step_pipeline(step, state, tenant_ctx),
+            emit=self._emit,
+            timeout_s=getattr(self, "_step_timeout_s", None),
+            heartbeat_s=getattr(self, "_step_heartbeat_s", None),
+        )
         self._dedup_store(step, state, tenant_ctx, output)
         return output
+
+    async def _await_approval_decision(
+        self, request_id: str, *, tenant_ctx: TenantContext, timeout: Any = _NO_TIMEOUT_ARG
+    ) -> Any:
+        """Block on a human decision; the wait does not count against the step deadline."""
+        gateway = self._hitl_gateway
+        if gateway is None:  # callers check first; never wait on nothing
+            raise PermissionError("No approval gateway is configured; the step was not executed.")
+        with approval_wait():
+            if timeout is _NO_TIMEOUT_ARG:
+                return await gateway.wait_for_approval(request_id, tenant_ctx=tenant_ctx)
+            return await gateway.wait_for_approval(
+                request_id, tenant_ctx=tenant_ctx, timeout=timeout
+            )
 
     async def _execute_step_pipeline(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
@@ -1428,7 +1457,7 @@ class ExecutorMixin:
             )
             await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
             approval_started = time.monotonic()
-            final_status = await self._hitl_gateway.wait_for_approval(
+            final_status = await self._await_approval_decision(
                 req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
             )
             record_approval_wait(time.monotonic() - approval_started)
@@ -1604,7 +1633,7 @@ class ExecutorMixin:
                 )
                 await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
                 approval_started = time.monotonic()
-                final_status = await self._hitl_gateway.wait_for_approval(
+                final_status = await self._await_approval_decision(
                     req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
                 )
                 record_approval_wait(time.monotonic() - approval_started)
@@ -1654,7 +1683,7 @@ class ExecutorMixin:
                 }
             )
             approval_started = time.monotonic()
-            final_status = await self._hitl_gateway.wait_for_approval(
+            final_status = await self._await_approval_decision(
                 req_id, tenant_ctx=tenant_ctx
             )
             record_approval_wait(time.monotonic() - approval_started)
@@ -2769,7 +2798,7 @@ class ExecutorMixin:
                                 }
                             )
                             _hitl_start = time.monotonic()
-                            final_status = await self._hitl_gateway.wait_for_approval(
+                            final_status = await self._await_approval_decision(
                                 req_id, tenant_ctx=tenant_ctx
                             )
                             record_approval_wait(time.monotonic() - _hitl_start)

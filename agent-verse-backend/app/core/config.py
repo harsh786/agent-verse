@@ -36,6 +36,24 @@ class Settings(BaseSettings):
     llm_client_timeout_seconds: float = 300.0
     llm_client_max_retries: int = 2
 
+    # --- goal / step watchdog (GOAL-STALL) ---
+    # A step that has not finished after this much ACTIVE time (time spent waiting
+    # for a human approval does not count) is cancelled and recorded as failed, so
+    # the verify/replan path runs instead of the goal sitting silent. A provider
+    # call alone may take llm_client_timeout_seconds x (1 + retries).
+    agent_step_timeout_seconds: float = Field(default=900.0, ge=1.0)
+    # While a step runs, a ``step_heartbeat`` event is emitted at this interval.
+    agent_step_heartbeat_seconds: float = Field(default=30.0, ge=0.1)
+    # A worker running a goal writes goals.heartbeat_at at this interval ...
+    goal_heartbeat_interval_seconds: float = Field(default=15.0, ge=0.1)
+    # ... and the beat reaper treats a goal whose heartbeat is older than this as
+    # orphaned (its runner died): requeued once if it never ran a tool, else failed.
+    goal_heartbeat_stale_seconds: float = Field(default=120.0, ge=1.0)
+    # The heartbeat stops when the goal's event loop has not made progress for
+    # this long (a wedged worker), so the reaper takes the goal over.
+    goal_loop_stall_seconds: float = Field(default=600.0, ge=1.0)
+    goal_watchdog_max_requeues: int = Field(default=1, ge=0, le=5)
+
     # --- networking / security ---
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173"]

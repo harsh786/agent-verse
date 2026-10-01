@@ -126,6 +126,7 @@ celery_app.conf.update(
         "app.scaling.tasks.health_check_mcp": {"queue": "maintenance"},
         "app.scaling.tasks.record_queue_depths": {"queue": "maintenance"},
         "app.scaling.tasks.detect_stuck_goals": {"queue": "maintenance"},
+        "app.scaling.tasks.reap_stale_goal_runners": {"queue": "maintenance"},
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
         "app.scaling.tasks.expire_hitl_approvals": {"queue": "maintenance"},
         "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
@@ -195,6 +196,13 @@ celery_app.conf.update(
         "detect-stuck-goals": {
             "task": "app.scaling.tasks.detect_stuck_goals",
             "schedule": 300.0,  # every 5 minutes
+            "options": {"queue": "maintenance"},
+        },
+        # GOAL-STALL: a goal whose runner stopped heart-beating (dead / wedged
+        # worker) is requeued or failed within ~goal_heartbeat_stale_seconds.
+        "reap-stale-goal-runners": {
+            "task": "app.scaling.tasks.reap_stale_goal_runners",
+            "schedule": 60.0,
             "options": {"queue": "maintenance"},
         },
         "resweep-stuck-missions": {

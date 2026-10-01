@@ -61,6 +61,10 @@ class Goal(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # GOAL-STALL: liveness of the worker running the goal, and that run's lock
+    # token (the beat reaper fails / requeues goals whose heartbeat went stale).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    runner_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Last allocated goal_events.sequence (see EventStore.append_event).
     event_seq: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
