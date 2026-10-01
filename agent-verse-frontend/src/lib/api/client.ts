@@ -2783,6 +2783,9 @@ export const marketplaceApi = {
     );
   },
   get: (id: string) => request<MarketplaceV2Template>(`/marketplace/templates/${id}`),
+  /** The caller tenant's installs (DB-backed, RLS-scoped) — the source for "installed" markers. */
+  listInstalls: () =>
+    request<{ installed_ids: string[]; installs: Array<Record<string, unknown>> }>("/marketplace/installs"),
   deploy: (id: string, params: Record<string, string> = {}, agentName?: string) =>
     request<MarketplaceDeployResult>(`/marketplace/templates/${id}/deploy`, {
       method: "POST",

@@ -13,6 +13,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { MarketplacePage } from './MarketplacePage';
 
+/** Each fetch gets a fresh copy: the page issues several GETs (templates + installs). */
+const cloning = (r: Response) => async () => r.clone();
+
+
 // ── V2 template factory ──────────────────────────────────────────────────────
 
 function v2Template(overrides: Partial<{
@@ -98,7 +102,7 @@ describe('MarketplacePage', () => {
   });
 
   test('loads and displays V2 templates', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       new Response(
         v2ListResponse([
           v2Template({ template_id: 'tpl-1', name: 'PR Review Agent', domain: 'software' }),
@@ -107,7 +111,7 @@ describe('MarketplacePage', () => {
         ]),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       )
-    );
+    ));
 
     renderMarketplacePage();
     await waitFor(() => expect(screen.getByText('PR Review Agent')).toBeInTheDocument());
@@ -117,14 +121,14 @@ describe('MarketplacePage', () => {
   });
 
   test('shows install count and rating from V2 data', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       new Response(
         v2ListResponse([
           v2Template({ install_count: 123, rating_avg: 4.5, rating_count: 10 }),
         ]),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       )
-    );
+    ));
 
     renderMarketplacePage();
     await waitFor(() => expect(screen.getByText('PR Review Agent')).toBeInTheDocument());
@@ -219,9 +223,9 @@ describe('MarketplacePage', () => {
   });
 
   test('shows error state when API fails', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       new Response(null, { status: 500, statusText: 'Internal Server Error' })
-    );
+    ));
 
     renderMarketplacePage();
     await waitFor(() =>
@@ -231,12 +235,12 @@ describe('MarketplacePage', () => {
   });
 
   test('shows empty state when API returns no templates', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       new Response(
         v2ListResponse([]),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       )
-    );
+    ));
 
     renderMarketplacePage();
     await waitFor(() =>

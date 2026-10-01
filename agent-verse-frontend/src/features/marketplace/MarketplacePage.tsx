@@ -40,7 +40,6 @@ function deployErrorMessage(e: unknown): string {
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
-import { useAuthStore } from "@/stores/auth";
 import { JARVISStagger, JARVISStaggerItem } from "@/components/ui/JARVISPageShell";
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -726,24 +725,17 @@ export function MarketplacePage() {
 
   const domainFilter = domain !== "all" ? domain : null;
 
-  // Fix 3: localStorage-backed install persistence, scoped per tenant
-  const INSTALLS_KEY = `av_marketplace_installs_${useAuthStore.getState().tenantId}`;
-  const [installedIds, setInstalledIds] = useState<Set<string>>(() => {
-    try {
-      const stored = localStorage.getItem(INSTALLS_KEY);
-      return new Set(stored ? (JSON.parse(stored) as string[]) : []);
-    } catch {
-      return new Set<string>();
-    }
+  // Installed markers come from the server (GET /marketplace/installs, tenant-
+  // scoped), so another browser/operator or an uninstall shows the true state.
+  const queryClient = useQueryClient();
+  const installsQuery = useQuery({
+    queryKey: ["marketplace", "installs"],
+    queryFn: () => marketplaceApi.listInstalls(),
+    staleTime: 30_000,
   });
-
-  const markInstalled = (id: string) => {
-    setInstalledIds((prev) => {
-      const next = new Set(prev);
-      next.add(id);
-      try { localStorage.setItem(INSTALLS_KEY, JSON.stringify([...next])); } catch { /* ignore */ }
-      return next;
-    });
+  const installedIds = new Set(installsQuery.data?.installed_ids ?? []);
+  const markInstalled = () => {
+    void queryClient.invalidateQueries({ queryKey: ["marketplace", "installs"] });
   };
 
   // Debounce search input (400 ms)
@@ -811,7 +803,7 @@ export function MarketplacePage() {
     try {
       const result = await marketplaceApi.deploy(template.template_id, {});
       if (result.agent_id) {
-        markInstalled(template.template_id);
+        markInstalled();
         setLastDeployedId(result.agent_id);
         toast({ kind: "success", message: `Agent "${result.agent_name ?? result.agent_id}" deployed!` });
       } else {
@@ -917,6 +909,12 @@ export function MarketplacePage() {
           </button>
         ))}
       </div>
+
+      {installsQuery.isError && (
+        <p role="status" className="text-xs text-amber-600">
+          Install status is unavailable right now — installed templates are not marked.
+        </p>
+      )}
 
       {/* Results */}
       {isLoading ? (

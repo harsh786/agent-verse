@@ -10,13 +10,17 @@
  * marketplaceApi.list returns `{ templates, ... }`; search returns `{ items, ... }`.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { MarketplacePage } from './MarketplacePage';
+
+/** Each fetch gets a fresh copy: the page issues several GETs (templates + installs). */
+const cloning = (r: Response) => async () => r.clone();
+
 
 // A minimal IntersectionObserver stub that fires "isIntersecting: true"
 // synchronously on observe(), so the infinite-scroll sentinel effect in
@@ -115,25 +119,25 @@ describe('MarketplacePage — branches', () => {
   afterEach(() => vi.restoreAllMocks());
 
   test('shows the total template count line', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       jsonResponse(listResponse([v2Template(), v2Template({ template_id: 'tpl-2', name: 'Deploy Bot' })]))
-    );
+    ));
     renderPage();
     await screen.findByText('PR Review Agent');
     expect(screen.getByText(/^2 templates/)).toBeInTheDocument();
   });
 
   test('renders the verified badge for verified templates', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       jsonResponse(listResponse([v2Template({ is_verified: true })]))
-    );
+    ));
     renderPage();
     await screen.findByText('PR Review Agent');
     expect(screen.getByLabelText('Verified')).toBeInTheDocument();
   });
 
   test('parameterised templates show "Configure & Deploy" instead of a quick deploy', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       jsonResponse(
         listResponse([
           v2Template({
@@ -141,7 +145,7 @@ describe('MarketplacePage — branches', () => {
           }),
         ])
       )
-    );
+    ));
     renderPage();
     await screen.findByText('PR Review Agent');
     expect(screen.getByRole('button', { name: /Configure & Deploy/i })).toBeInTheDocument();
@@ -289,7 +293,7 @@ describe('MarketplacePage — branches', () => {
   });
 
   test('sort control switches the list query to sort_by=rating', async () => {
-    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(listResponse([v2Template()])));
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(jsonResponse(listResponse([v2Template()]))));
     renderPage();
     await screen.findByText('PR Review Agent');
     await userEvent.click(screen.getByRole('button', { name: /Top Rated/i }));
@@ -316,7 +320,7 @@ describe('MarketplacePage — branches', () => {
   });
 
   test('clear-search button empties the input', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(listResponse([v2Template()])));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(jsonResponse(listResponse([v2Template()]))));
     renderPage();
     await screen.findByText('PR Review Agent');
     const input = screen.getByRole('textbox', { name: /search marketplace/i }) as HTMLInputElement;
@@ -516,7 +520,7 @@ describe('MarketplacePage — branches', () => {
   });
 
   test('card shows the author byline, overflow connector count, and opens via Enter key', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(
       jsonResponse(
         listResponse([
           v2Template({
@@ -526,7 +530,7 @@ describe('MarketplacePage — branches', () => {
           }),
         ])
       )
-    );
+    ));
     renderPage();
     await screen.findByText('PR Review Agent');
 
@@ -763,7 +767,7 @@ describe('MarketplacePage — branches', () => {
   });
 
   test('publish modal Cancel button closes it without publishing', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(listResponse([v2Template()])));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(cloning(jsonResponse(listResponse([v2Template()]))));
     renderPage();
     await screen.findByText('PR Review Agent');
     await userEvent.click(screen.getByRole('button', { name: /^publish$/i }));
@@ -791,24 +795,52 @@ describe('MarketplacePage — branches', () => {
     expect(screen.queryByText('agent-banner-1')).not.toBeInTheDocument();
   });
 
-  test('a template already installed (persisted in localStorage from a prior session) shows as deployed', async () => {
+  test('installed markers come from GET /marketplace/installs, not browser storage', async () => {
     useAuthStore.setState({ apiKey: 'k', tenantId: 't', plan: 'free', isAuthenticated: true });
+    // A stale browser-local marker must not count: the server says nothing is installed.
     localStorage.setItem('av_marketplace_installs_t', JSON.stringify(['tpl-1']));
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(listResponse([v2Template()])));
+    let serverInstalled: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/marketplace/installs'))
+        return jsonResponse({ installed_ids: serverInstalled, installs: [] });
+      return jsonResponse(listResponse([v2Template()]));
+    });
     renderPage();
     await screen.findByText('PR Review Agent');
-    expect(screen.getByText('Deployed ✓')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^deploy$/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: /^deploy$/i })).toBeInTheDocument());
+    expect(screen.queryByText('Deployed ✓')).not.toBeInTheDocument();
+    cleanup();
+
+    // Installed on the server (e.g. by another operator) → marked, with no local state.
+    localStorage.clear();
+    serverInstalled = ['tpl-1'];
+    renderPage();
+    await screen.findByText('PR Review Agent');
+    expect(await screen.findByText('Deployed ✓')).toBeInTheDocument();
   });
 
-  test('corrupted localStorage install data is tolerated and the page still renders', async () => {
+  test('a successful deploy refetches installs, so the marker reflects the server', async () => {
     useAuthStore.setState({ apiKey: 'k', tenantId: 't', plan: 'free', isAuthenticated: true });
-    localStorage.setItem('av_marketplace_installs_t', 'not-valid-json{{{');
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(listResponse([v2Template()])));
+    let installed: string[] = [];
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/deploy') && method === 'POST') {
+        installed = ['tpl-1'];
+        return jsonResponse({ success: true, agent_id: 'agent-1', agent_name: 'A' });
+      }
+      if (url.includes('/marketplace/installs'))
+        return jsonResponse({ installed_ids: installed, installs: [] });
+      return jsonResponse(listResponse([v2Template()]));
+    });
     renderPage();
     await screen.findByText('PR Review Agent');
-    // Falls back to "not installed" rather than crashing.
-    expect(screen.getByRole('button', { name: /^deploy$/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^deploy$/i }));
+    expect(await screen.findByText('Deployed ✓')).toBeInTheDocument();
+    const installCalls = spy.mock.calls.filter(([u]) => String(u).includes('/marketplace/installs'));
+    expect(installCalls.length).toBeGreaterThanOrEqual(2);
+    expect(localStorage.getItem('av_marketplace_installs_t')).toBeNull();
   });
 
   test('drawer deploy shows "Deploying…" while pending, then falls back to "Deploy failed" when no agent_id or error is returned', async () => {
