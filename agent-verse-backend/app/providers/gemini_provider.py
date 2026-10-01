@@ -109,7 +109,7 @@ class GeminiProvider:
             )
         return contents
 
-    def _config(self, request: CompletionRequest) -> object:
+    def _config(self, request: CompletionRequest) -> Any:  # GenerateContentConfig
         kwargs: dict[str, object] = {
             "max_output_tokens": request.max_tokens,
             "temperature": request.temperature,
