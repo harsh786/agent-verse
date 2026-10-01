@@ -874,19 +874,38 @@ export function GoalDetailPage() {
     onError: () => toast({ kind: "error", message: "Failed to retry" }),
   });
 
+  // Lifecycle actions: the backend answers 503 when the change could not be
+  // persisted (nothing changed, safe to retry) and reports the goal's real status
+  // when it finished meanwhile — never assume the action took effect.
+  const lifecycleError = (action: string) => (e: unknown) => {
+    qc.invalidateQueries({ queryKey: ["goal", goalId] });
+    toast({ kind: "error", message: `${action} failed — nothing changed, please retry. (${String(e)})` });
+  };
+
   const cancelMutation = useMutation({
     mutationFn: () => goalsApi.cancel(goalId!),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["goal", goalId] }),
+    onError: lifecycleError("Cancel"),
   });
 
   const pauseMutation = useMutation({
     mutationFn: () => goalsApi.pause(goalId!),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal", goalId] }); toast({ kind: "success", message: "Paused." }); },
+    onError: lifecycleError("Pause"),
   });
 
   const resumeMutation = useMutation({
     mutationFn: () => goalsApi.resume(goalId!),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["goal", goalId] }); toast({ kind: "success", message: "Resumed." }); },
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["goal", goalId] });
+      const st = (res as { status?: string } | undefined)?.status;
+      if (st && st !== "resumed") {
+        toast({ kind: "info", message: `Not resumed: the goal is already ${st}.` });
+      } else {
+        toast({ kind: "success", message: "Resumed." });
+      }
+    },
+    onError: lifecycleError("Resume"),
   });
 
   // Event log (dev tab) — reuse the eagerly-fetched persistedEvents when possible

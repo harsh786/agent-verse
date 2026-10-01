@@ -684,6 +684,30 @@ describe('GoalDetailPage — additional coverage', () => {
     );
   });
 
+  test('a 503 from resume is shown as a retryable error, not a success (SVC-03)', async () => {
+    useToastStore.setState({ toasts: [] });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/goals/goal-1/resume') && init?.method === 'POST') {
+        return new Response(
+          JSON.stringify({ detail: 'Goal goal-1 status could not be persisted' }),
+          { status: 503, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'paused', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('button', { name: /resume/i }));
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === 'error' && /resume failed.*retry/i.test(t.message))).toBe(true);
+      expect(toasts.some((t) => t.kind === 'success')).toBe(false);
+    });
+  });
+
   test('refresh button triggers refetch and bumps stream key', async () => {
     mockGoal('executing');
     renderGoalDetailPage();

@@ -125,7 +125,6 @@ from app.reliability.goal_lifecycle import GoalCancelledError
 
 # Sub-module imports — part of ongoing decomposition to reduce God-class size
 # See: app/services/goal_events.py, goal_metrics.py, goal_lifecycle.py
-from app.services.goal_lifecycle import GoalTransition, is_valid_transition  # noqa: F401
 from app.services.goal_queue import GoalTaskQueue
 from app.services.result_artifacts import build_result_artifact
 from app.tenancy.context import PlanTier, TenantContext
@@ -5213,12 +5212,8 @@ class GoalService:
         # The write is CONDITIONAL: this replica's copy may be stale, and a goal
         # the worker finished meanwhile must keep its real terminal status. A
         # failed write is a 503, never a reported-but-lost cancel.
-        changed = await self._db_update_goal_status(
-            goal_id,
-            tenant_ctx.tenant_id,
-            GoalStatus.CANCELLED.value,
-            only_if_active=True,
-            raise_on_error=True,
+        changed = await self._persist_cancelling_status(
+            record, tenant_ctx, GoalStatus.CANCELLED
         )
         if changed is False:
             fresh = await self._db_get_goal_record(goal_id, tenant_ctx)
@@ -5519,6 +5514,39 @@ class GoalService:
 
         return _gate
 
+    async def _persist_cancelling_status(
+        self, record: GoalRecord, tenant_ctx: TenantContext, status: GoalStatus
+    ) -> bool:
+        """Persist a cancel / reject AFTER the runner was signalled to stop.
+
+        Conditional (a goal that finished meanwhile keeps its real status) and
+        fail-closed: when the write fails the cancel signal is withdrawn and the
+        503 propagates, so the goal is not stopped behind an error response.
+        """
+        try:
+            return await self._db_update_goal_status(
+                record.goal_id,
+                tenant_ctx.tenant_id,
+                status.value,
+                only_if_active=True,
+                raise_on_error=True,
+            )
+        except ServiceUnavailableError:
+            redis = getattr(self, "_redis", None)
+            if redis is not None:
+                from app.reliability.goal_lifecycle import withdraw_cancel
+
+                await withdraw_cancel(record.goal_id, redis)
+            raise
+
+    async def _real_status_after_lost_write(
+        self, record: GoalRecord, tenant_ctx: TenantContext
+    ) -> dict[str, Any]:
+        """A conditional status write changed no row: report what the goal is."""
+        fresh = await self._db_get_goal_record(record.goal_id, tenant_ctx)
+        status = (fresh or record).status
+        return {"goal_id": record.goal_id, "status": status.value}
+
     async def resume_goal(
         self,
         goal_id: str,
@@ -5555,15 +5583,32 @@ class GoalService:
             )
 
         if not approved:
-            if not record.execution_context.get(_SUSPENDED_KEY):
+            suspended = bool(record.execution_context.get(_SUSPENDED_KEY))
+            if not suspended:
                 # A runner is blocked in its pause gate (here, on another replica,
                 # or on a worker): stop it rather than leave it paused forever.
                 from app.reliability.goal_lifecycle import signal_cancel
 
                 await self._signal_runner(record, signal_cancel, "reject")
-                if self._runs_locally(record):
-                    assert record.task is not None
-                    record.task.cancel()
+                # Conditional + fail-closed (it was neither: a DB error was
+                # swallowed while the API reported the rejection, and a goal
+                # that finished meanwhile was overwritten with "failed").
+                changed = await self._persist_cancelling_status(
+                    record, tenant_ctx, GoalStatus.FAILED
+                )
+            else:
+                changed = await self._db_update_goal_status(
+                    goal_id,
+                    tenant_ctx.tenant_id,
+                    GoalStatus.FAILED.value,
+                    only_if_active=True,
+                    raise_on_error=True,
+                )
+            if changed is False:
+                return await self._real_status_after_lost_write(record, tenant_ctx)
+            if not suspended and self._runs_locally(record):
+                assert record.task is not None
+                record.task.cancel()
             record.status = GoalStatus.FAILED
             record.execution_context["hitl_rejected"] = True
             record.execution_context["hitl_feedback"] = feedback
@@ -5572,9 +5617,6 @@ class GoalService:
             # and inject it into the reflection prompt.
             record.hitl_rejection_note = feedback
             record.execution_context["hitl_rejection_note"] = feedback
-            await self._db_update_goal_status(
-                goal_id, tenant_ctx.tenant_id, GoalStatus.FAILED.value
-            )
             await self._dispatch_event(
                 goal_id,
                 {"type": "goal_failed", "reason": f"HITL rejected: {feedback}"},
@@ -5608,10 +5650,20 @@ class GoalService:
             from app.reliability.goal_lifecycle import signal_resume
 
             await self._signal_runner(record, signal_resume, "resume")
-            record.status = GoalStatus.EXECUTING
-            await self._db_update_goal_status(
-                goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value
+            # Conditional + fail-closed: a swallowed DB error left the goal
+            # "waiting_human" forever while the API reported it resumed, and a
+            # goal that finished meanwhile was flipped back to "executing". A
+            # 503 here is safe to retry (releasing the pause flag is idempotent).
+            changed = await self._db_update_goal_status(
+                goal_id,
+                tenant_ctx.tenant_id,
+                GoalStatus.EXECUTING.value,
+                only_if_active=True,
+                raise_on_error=True,
             )
+            if changed is False:
+                return await self._real_status_after_lost_write(record, tenant_ctx)
+            record.status = GoalStatus.EXECUTING
         record.events.append(
             {"type": "hitl_approved", "feedback": feedback, "ts": datetime.now(UTC).isoformat()}
         )
@@ -6049,11 +6101,14 @@ class GoalService:
         tenant_id: str,
         status: str,
         error_message: str = "",
-        iterations: int = 0,
+        iterations: int | None = None,
         only_if_active: bool = False,
         raise_on_error: bool = False,
     ) -> bool:
         """Update goal status in PostgreSQL; return whether a row was changed.
+
+        *iterations* is written only when given (``None`` leaves the column
+        alone: every cancel / pause / resume used to reset it to 0).
 
         *only_if_active* leaves a row that is already terminal untouched (e.g. a
         worker reporting "cancelled" after a HITL rejection recorded "failed", or
@@ -6073,7 +6128,9 @@ class GoalService:
             from app.db.models.goal import Goal
             from app.db.rls import sqlalchemy_rls_context
 
-            values: dict[str, Any] = {"status": status, "iterations": iterations}
+            values: dict[str, Any] = {"status": status}
+            if iterations is not None:
+                values["iterations"] = iterations
             if error_message:
                 values["error_message"] = error_message
             if status == "complete":
