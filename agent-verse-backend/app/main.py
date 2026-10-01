@@ -2937,6 +2937,8 @@ def create_app(
         _agent_router = AgentRouter(
             agent_store=_agent_store,
             llm_provider=_app_provider,
+            # CORE-32: LLM scoring resolves the tenant's BYOK provider per call.
+            app_state=app.state,
         )
         app.state.agent_router = _agent_router
         logger.info("agent_router_registered")

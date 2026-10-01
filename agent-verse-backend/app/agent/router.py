@@ -73,11 +73,41 @@ class AgentRouter:
         eval_store: Any = None,
         llm_provider: Any = None,
         db_session_factory: Any = None,
+        app_state: Any = None,
     ) -> None:
         self._agent_store = agent_store
         self._eval_store = eval_store
+        # The platform provider: used only for tenants with no BYOK config when
+        # ``app_state`` is wired (see _llm_provider_for).
         self._llm_provider = llm_provider
         self._db = db_session_factory
+        self._app_state = app_state
+
+    async def _llm_provider_for(self, tenant_ctx: TenantContext) -> tuple[Any, str]:
+        """``(provider, skip_reason)`` for LLM scoring of *tenant_ctx*'s goal.
+
+        CORE-32: the tenant's own provider (BYOK) when it has one, else the
+        platform provider. A BYOK config that cannot be read or built yields no
+        provider and a reason — routing falls back to keyword scoring rather
+        than sending the tenant's goal text to (and billing it on) the platform
+        vendor. Without ``app_state`` (tests, ad-hoc routers) the constructor's
+        provider is used as-is.
+        """
+        if self._app_state is None:
+            return self._llm_provider, ""
+        from app.providers.tenant_provider import (
+            TenantProviderError,
+            resolve_tenant_byok_provider,
+        )
+        from app.services.llm_config_store import LLMConfigReadError
+
+        try:
+            byok = await resolve_tenant_byok_provider(self._app_state, tenant_ctx.tenant_id)
+        except (LLMConfigReadError, TenantProviderError) as exc:
+            return None, f"byok_unusable: {type(exc).__name__}"
+        if byok is not None:
+            return byok, ""
+        return self._llm_provider, ""
 
     # ── scoring helpers ───────────────────────────────────────────────────────
 
@@ -491,10 +521,13 @@ class AgentRouter:
 
         # LLM scoring (optional, when provider available)
         llm_scoring = ""
-        if self._llm_provider and len(agents) > 1:
+        provider: Any = None
+        if len(agents) > 1:
+            provider, llm_scoring = await self._llm_provider_for(tenant_ctx)
+        if provider is not None:
             try:
                 llm_scores = await self._score_by_llm_checked(
-                    goal, agents, self._llm_provider, tenant_ctx=tenant_ctx
+                    goal, agents, provider, tenant_ctx=tenant_ctx
                 )
                 if llm_scores:
                     # Blend: 60% LLM + 40% keyword
