@@ -142,14 +142,14 @@ def test_execute_workflow_run_legacy_same_process_resume(monkeypatch: pytest.Mon
     compiled.ainvoke = AsyncMock(return_value=None)
 
     runner = MagicMock()
-    runner._load_definition = AsyncMock(return_value=SimpleNamespace(name="wf"))
+    runner._load_run_definition = AsyncMock(return_value=SimpleNamespace(name="wf"))
     runner._compiler = MagicMock()
     runner._compiler.compile = MagicMock(return_value=compiled)
     monkeypatch.setattr(ct, "_get_runner", lambda: runner)
 
     ct.execute_workflow_run.run(run_id="r1", workflow_id="wf1", tenant_id="t1", resume=True)
 
-    runner._load_definition.assert_awaited_once_with("wf1", "t1")
+    runner._load_run_definition.assert_awaited_once_with("r1", "wf1", "t1")
     runner._compiler.compile.assert_called_once()
     compiled.aget_state.assert_awaited_once_with({"configurable": {"thread_id": "r1"}})
     compiled.ainvoke.assert_awaited_once_with(
@@ -165,7 +165,7 @@ def test_execute_workflow_run_legacy_resume_no_state_values_skips_ainvoke(
     compiled.ainvoke = AsyncMock()
 
     runner = MagicMock()
-    runner._load_definition = AsyncMock(return_value=SimpleNamespace(name="wf"))
+    runner._load_run_definition = AsyncMock(return_value=SimpleNamespace(name="wf"))
     runner._compiler = MagicMock()
     runner._compiler.compile = MagicMock(return_value=compiled)
     monkeypatch.setattr(ct, "_get_runner", lambda: runner)

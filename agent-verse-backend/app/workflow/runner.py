@@ -158,8 +158,11 @@ class WorkflowRunner:
                 f"Trigger payload too large: {payload_bytes} bytes > 1MB limit"
             )
 
-        # 2. Load definition (from store or in-memory for tests)
-        definition = await self._load_definition(workflow_id, tenant_id)
+        # 2. Load definition (from store or in-memory for tests). A published
+        # workflow runs its recorded version snapshot and the run pins it (WF-30).
+        definition, pinned_version = await self._load_live_definition(workflow_id, tenant_id)
+        if pinned_version is not None:
+            run_metadata = {**(run_metadata or {}), "definition_version": pinned_version}
 
         # 3. Apply trigger_transform
         if definition.trigger_transform and trigger_payload:
@@ -397,7 +400,7 @@ class WorkflowRunner:
         worker genuinely execute the run and persist real step results, instead
         of invoking an empty state.
         """
-        definition = await self._load_definition(workflow_id, tenant_id)
+        definition = await self._load_run_definition(run_id, workflow_id, tenant_id)
         inputs: dict[str, Any] = {}
         labels: dict[str, str] | None = None
         run_metadata: dict[str, Any] | None = None
@@ -537,7 +540,7 @@ class WorkflowRunner:
         stale END checkpoint from the fresh run (if this happens to be the same
         worker process) cannot interfere with the reconstructed invocation.
         """
-        definition = await self._load_definition(workflow_id, tenant_id)
+        definition = await self._load_run_definition(run_id, workflow_id, tenant_id)
         inputs: dict[str, Any] = {}
         labels: dict[str, str] | None = None
         run_metadata: dict[str, Any] | None = None
@@ -816,7 +819,7 @@ class WorkflowRunner:
             return
 
         # In-process resume: the checkpoint is local to this process.
-        definition = await self._load_definition(workflow_id, tenant_id)
+        definition = await self._load_run_definition(run_id, workflow_id, tenant_id)
         compiled = self._compiler.compile(definition)
         config = {"configurable": {"thread_id": run_id}}
         state_update: dict[str, Any] = {
@@ -844,6 +847,35 @@ class WorkflowRunner:
             await self._finalize_status(
                 run_id, tenant_id, final_state, definition=definition
             )
+
+    async def _load_live_definition(
+        self, workflow_id: str, tenant_id: str
+    ) -> tuple[WorkflowDefinition, str | None]:
+        """Definition a NEW run executes, plus the published version it pins."""
+        getter = getattr(self._run_store, "get_live_definition", None)
+        if getter is None:
+            return await self._load_definition(workflow_id, tenant_id), None
+        data, version = await getter(workflow_id, tenant_id)
+        return self._parse_definition(data, workflow_id), version
+
+    async def _load_run_definition(
+        self, run_id: str, workflow_id: str, tenant_id: str
+    ) -> WorkflowDefinition:
+        """Definition an EXISTING run executes: the version it pinned at start
+        (WF-30), never whatever is live now."""
+        getter = getattr(self._run_store, "get_run_definition", None)
+        if getter is None:
+            return await self._load_definition(workflow_id, tenant_id)
+        return self._parse_definition(
+            await getter(tenant_id, run_id, workflow_id), workflow_id
+        )
+
+    @staticmethod
+    def _parse_definition(data: dict[str, Any], workflow_id: str) -> WorkflowDefinition:
+        definition = WorkflowDefinition.from_json(data)
+        if not definition.id:
+            definition.id = workflow_id
+        return definition
 
     async def _load_definition(self, workflow_id: str, tenant_id: str) -> WorkflowDefinition:
         if self._run_store is not None:

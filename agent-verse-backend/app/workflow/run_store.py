@@ -618,6 +618,81 @@ class PostgresWorkflowRunStore:
                 raise KeyError(f"workflow definition {workflow_id!r} not found")
             return _as_obj(row[0])
 
+    async def get_live_definition(
+        self, workflow_id: str, tenant_id: str
+    ) -> tuple[dict[str, Any], str | None]:
+        """``(definition, pinned_version)`` a NEW run of this workflow executes.
+
+        WF-30: a published workflow runs its latest recorded version snapshot
+        (``workflow_definition_versions``) and the run pins that version, so an
+        unpublish -> edit -> republish never changes a run already in flight. A
+        draft runs its current definition (``pinned_version`` None).
+        """
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT d.definition_json, v.version, v.definition_json AS snapshot "
+                        "FROM workflow_definitions d "
+                        "LEFT JOIN LATERAL ("
+                        "  SELECT version, definition_json FROM workflow_definition_versions "
+                        "  WHERE workflow_id = d.id AND tenant_id = d.tenant_id "
+                        "  ORDER BY published_at DESC LIMIT 1"
+                        ") v ON d.status = 'published' "
+                        "WHERE d.id = CAST(:wid AS uuid) AND d.tenant_id = CAST(:tid AS uuid)"
+                    ),
+                    {"wid": workflow_id, "tid": tenant_id},
+                )
+            ).mappings().first()
+        if row is None or row["definition_json"] is None:
+            raise KeyError(f"workflow definition {workflow_id!r} not found")
+        if row["version"] is not None and row["snapshot"] is not None:
+            return _as_obj(row["snapshot"]), str(row["version"])
+        return _as_obj(row["definition_json"]), None
+
+    async def get_run_definition(
+        self, tenant_id: str, run_id: str, workflow_id: str
+    ) -> dict[str, Any]:
+        """The definition a run executes: its pinned version, else the current one.
+
+        Fails closed (KeyError) when the run pins a version whose snapshot is
+        gone, instead of silently running a different graph.
+        """
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT d.definition_json, "
+                        "       r.run_metadata->>'definition_version' AS pinned, "
+                        "       v.definition_json AS snapshot "
+                        "FROM workflow_definitions d "
+                        "LEFT JOIN workflow_runs r ON r.id = CAST(:rid AS uuid) "
+                        "  AND r.tenant_id = d.tenant_id "
+                        "LEFT JOIN workflow_definition_versions v ON v.workflow_id = d.id "
+                        "  AND v.tenant_id = d.tenant_id "
+                        "  AND v.version = r.run_metadata->>'definition_version' "
+                        "WHERE d.id = CAST(:wid AS uuid) AND d.tenant_id = CAST(:tid AS uuid)"
+                    ),
+                    {"rid": run_id, "wid": workflow_id, "tid": tenant_id},
+                )
+            ).mappings().first()
+        if row is None or row["definition_json"] is None:
+            raise KeyError(f"workflow definition {workflow_id!r} not found")
+        if row["pinned"]:
+            if row["snapshot"] is None:
+                raise KeyError(
+                    f"run {run_id!r} pins workflow version {row['pinned']!r}, "
+                    "whose snapshot no longer exists"
+                )
+            return _as_obj(row["snapshot"])
+        return _as_obj(row["definition_json"])
+
     # ── Step results ──────────────────────────────────────────────────────────
     async def record_step_start(
         self,

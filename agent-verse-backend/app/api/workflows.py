@@ -629,6 +629,12 @@ async def update_workflow(
                 "before editing"
             ),
         )
+    if current.get("status") == "published":
+        # Same rule as PATCH /api/v1/workflows: a live definition is immutable;
+        # unpublish, edit, publish (and pass publish approval) for a new version.
+        from app.workflow.service import PUBLISHED_EDIT_REFUSED
+
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PUBLISHED_EDIT_REFUSED)
     result = await store.update(
         tenant_id=tenant.tenant_id,
         workflow_id=workflow_id,

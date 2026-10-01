@@ -74,6 +74,9 @@ async def test_workflow_runner_dispatches_to_plan_tier_queue(
     )
     # Skip DB definition load / plan lookup with deterministic doubles.
     runner._load_definition = AsyncMock(return_value=WorkflowDefinition(name="wf", inputs={}))  # type: ignore[method-assign]
+    runner._load_live_definition = AsyncMock(  # type: ignore[method-assign]
+        return_value=(WorkflowDefinition(name="wf", inputs={}), None)
+    )
     runner._get_plan_tier = AsyncMock(return_value=tier)  # type: ignore[method-assign]
 
     mock_task = MagicMock()

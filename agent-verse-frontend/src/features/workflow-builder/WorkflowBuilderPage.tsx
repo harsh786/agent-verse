@@ -878,8 +878,12 @@ function WorkflowBuilderInner() {
       }
       qc.invalidateQueries({ queryKey: ['workflows'] });
       toast({ kind: 'success', message: 'Workflow saved' });
-    } catch {
-      toast({ kind: 'error', message: 'Failed to save workflow' });
+    } catch (err) {
+      // 409: the server refused the edit (published / pending publish approval)
+      // and says why — show that instead of a generic failure.
+      const status = (err as { status?: number } | null)?.status;
+      const reason = status === 409 && err instanceof Error ? err.message : '';
+      toast({ kind: 'error', message: reason ? `Not saved: ${reason}` : 'Failed to save workflow' });
     }
   };
 

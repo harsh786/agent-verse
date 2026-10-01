@@ -101,12 +101,16 @@ async def get_version(workflow_id: str, version: int, request: Request) -> dict[
 )
 async def restore_version(workflow_id: str, version: int, request: Request) -> dict[str, Any]:
     """Restore a workflow to a specific historical version (creates new draft)."""
+    from app.workflow.service import WorkflowPublishedError
+
     svc = _svc(request)
     tenant_id = _tenant_id(request)
     try:
         result = await svc.restore_version(
             tenant_id=tenant_id, workflow_id=workflow_id, version=version
         )
+    except WorkflowPublishedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     from app.workflow.audit_middleware import record_workflow_action

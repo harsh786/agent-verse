@@ -112,9 +112,10 @@ async def test_list_versions_honest_empty_without_run_store() -> None:
 async def test_restore_version_reads_version_and_updates_definition() -> None:
     store = _FakeStore()
     svc = WorkflowService(store, _FakeRunStore())
-    result = await svc.restore_version(tenant_id="t1", workflow_id="wf-1", version=1)
+    # WF-30: restoring onto a published workflow is refused; restore into a draft.
+    result = await svc.restore_version(tenant_id="t1", workflow_id="wf-2", version=1)
     assert result is not None
-    assert store.updated["workflow_id"] == "wf-1"
+    assert store.updated["workflow_id"] == "wf-2"
     assert store.updated["definition"] == {"name": "restored", "steps": []}
 
 

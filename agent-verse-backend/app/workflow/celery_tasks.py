@@ -287,7 +287,7 @@ def execute_workflow_run(
         elif resume:
             # Legacy same-process resume: state was updated via aupdate_state on
             # this process's checkpointer; just re-invoke.
-            definition = await runner._load_definition(workflow_id, tenant_id)
+            definition = await runner._load_run_definition(run_id, workflow_id, tenant_id)
             compiled = runner._compiler.compile(definition)
             config = {"configurable": {"thread_id": run_id}}
             current = await compiled.aget_state(config)

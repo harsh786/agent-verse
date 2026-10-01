@@ -156,6 +156,22 @@ class PublishApprovalRequiredError(ValueError):
 
 PENDING_APPROVAL = "pending_approval"
 
+# Fields that change what a run executes (or how the workflow is identified):
+# frozen while the workflow is published.
+_FROZEN_WHEN_PUBLISHED = frozenset({"definition", "name"})
+
+PUBLISHED_EDIT_REFUSED = (
+    "workflow is published; unpublish it (or create a new draft) before editing its "
+    "definition, then publish again to record a new version"
+)
+
+
+class WorkflowPublishedError(ValueError):
+    """A published workflow's definition/name cannot be edited in place (HTTP 409).
+
+    Editing live would change every new AND resumed run at once with no version
+    snapshot and without the publish (four-eyes) approval."""
+
 
 def _steps_by_id(definition: dict[str, Any]) -> dict[str, Any]:
     steps = definition.get("steps") if isinstance(definition, dict) else None
@@ -307,6 +323,12 @@ class WorkflowService:
                     "workflow is pending publish approval; reject it (or unpublish) "
                     "before editing"
                 )
+            if (
+                current is not None
+                and current.get("status") == "published"
+                and _FROZEN_WHEN_PUBLISHED & set(fields)
+            ):
+                raise WorkflowPublishedError(PUBLISHED_EDIT_REFUSED)
         return await self._store.update(tenant_id=tenant_id, workflow_id=workflow_id, **fields)
 
     async def archive(self, tenant_id: str, workflow_id: str) -> bool:
@@ -495,6 +517,9 @@ class WorkflowService:
         unknown."""
         if self._run_store is None:
             raise ValueError(f"version {version} not found")
+        current = await self._store.get(tenant_id=tenant_id, workflow_id=workflow_id)
+        if current is not None and current.get("status") in ("published", PENDING_APPROVAL):
+            raise WorkflowPublishedError(PUBLISHED_EDIT_REFUSED)
         snapshot = await self._run_store.get_definition_version(
             tenant_id, workflow_id, str(version)
         )

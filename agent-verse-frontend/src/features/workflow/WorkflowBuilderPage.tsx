@@ -380,7 +380,13 @@ function BuilderCanvas({
               handleSave().catch(() => undefined);
             }}
             disabled={isSaving || !canEdit}
-            title={canEdit ? undefined : 'Needs editor access to this workflow'}
+            title={
+              canEdit
+                ? undefined
+                : wf.status === 'published'
+                  ? 'Published workflows are read-only — unpublish to edit'
+                  : 'Needs editor access to this workflow'
+            }
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600
                        hover:bg-sky-500 text-[#F1F5F9] text-xs font-medium transition-colors
                        disabled:opacity-60"
@@ -653,6 +659,17 @@ export default function WorkflowBuilderPage() {
     onError: (err: unknown) => setActionError(workflowErrorMessage(err, 'publish')),
   });
 
+  // WF-30: a published definition is immutable — unpublish, edit, publish again.
+  const unpublishMutation = useMutation({
+    mutationFn: () => workflowEngineApi.unpublish(id!),
+    onMutate: () => setActionError(null),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', id] });
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'list'] });
+    },
+    onError: (err: unknown) => setActionError(workflowErrorMessage(err, 'unpublish')),
+  });
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-[#060810] flex items-center justify-center">
@@ -696,7 +713,10 @@ export default function WorkflowBuilderPage() {
     );
   }
 
-  const canEdit = hasWorkflowAccess(wf.access, 'editor');
+  const hasEditorAccess = hasWorkflowAccess(wf.access, 'editor');
+  const isPublished = wf.status === 'published';
+  // A published workflow opens read-only: its definition and name are frozen.
+  const canEdit = hasEditorAccess && !isPublished;
   const canRun = hasWorkflowAccess(wf.access, 'runner');
 
   return (
@@ -762,7 +782,15 @@ export default function WorkflowBuilderPage() {
             <CheckCircle2 className="h-3.5 w-3.5" /> Saved
           </span>
         )}
-        {!canEdit && (
+        {isPublished && (
+          <span
+            className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-xs"
+            title="Published definitions cannot be edited in place. Unpublish to edit, then publish a new version."
+          >
+            Published · read-only
+          </span>
+        )}
+        {!hasEditorAccess && (
           <span
             className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 text-xs"
             title={`Your access: ${wf.access ?? 'none'}`}
@@ -779,6 +807,19 @@ export default function WorkflowBuilderPage() {
           >
             <Settings className="h-4 w-4" />
           </Link>
+          {isPublished && hasEditorAccess && (
+            <button
+              onClick={() => unpublishMutation.mutate()}
+              disabled={unpublishMutation.isPending}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-xl bg-amber-500/15
+                         hover:bg-amber-500/25 text-amber-400 text-xs font-medium transition-colors
+                         disabled:opacity-60"
+              aria-label="Unpublish to edit"
+              title="Takes the workflow offline so its definition can be edited; publish again for a new version"
+            >
+              <Pencil className="h-3.5 w-3.5" /> Unpublish to edit
+            </button>
+          )}
           {wf.status === 'draft' && canEdit && (
             <button
               onClick={() => publishMutation.mutate()}
