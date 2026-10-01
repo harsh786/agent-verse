@@ -89,7 +89,12 @@ async function json<T = Record<string, unknown>>(
   req: APIRequestContext, method: 'get' | 'post' | 'delete', path: string,
   opts: Record<string, unknown> = {},
 ): Promise<T> {
-  const resp = await req[method](`${API}${path}`, { headers: H, ...opts });
+  // The free test tenant has a per-minute request budget; wait out a 429.
+  let resp = await req[method](`${API}${path}`, { headers: H, ...opts });
+  for (let attempt = 1; resp.status() === 429 && attempt <= 8; attempt++) {
+    await new Promise((r) => setTimeout(r, Math.min(5_000 * attempt, 30_000)));
+    resp = await req[method](`${API}${path}`, { headers: H, ...opts });
+  }
   expect(resp.status(), `${method.toUpperCase()} ${path}`).toBeLessThan(300);
   const text = await resp.text();
   return (text ? JSON.parse(text) : {}) as T;
@@ -192,11 +197,10 @@ test.describe('real-world UI', () => {
     ];
     try {
       for (const f of files) {
-        const r = await request.post(`${API}/knowledge/ingest/file`, {
-          headers: H, multipart: { collection_id: col.collection_id, file: f },
+        const up = await json<{ chunks_created: number }>(request, 'post', '/knowledge/ingest/file', {
+          multipart: { collection_id: col.collection_id, file: f },
         });
-        expect(r.status(), `upload ${f.name}`).toBeLessThan(300);
-        expect((await r.json()).chunks_created, `${f.name} chunks`).toBeGreaterThan(0);
+        expect(up.chunks_created, `${f.name} chunks`).toBeGreaterThan(0);
       }
       await login(page, tenantId);
       await page.goto('/knowledge', { waitUntil: 'domcontentloaded' });
