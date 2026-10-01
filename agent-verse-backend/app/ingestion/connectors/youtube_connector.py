@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import (
     BaseConnector,
@@ -18,12 +18,35 @@ from app.ingestion.base_connector import (
     stable_doc_id,
 )
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import run_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
 _YT_API = "https://www.googleapis.com/youtube/v3"
+# Per-request timeout for transcript fetches: they run on a worker thread that
+# cannot be interrupted, and requests has no default timeout.
+_TRANSCRIPT_TIMEOUT_S = 30.0
+
+
+def _fetch_transcript(api_cls: Any, video_id: str, languages: list[str]) -> list[dict[str, Any]]:
+    """One video's transcript segments, via the youtube-transcript-api >= 1.0 API.
+
+    The 0.x static ``YouTubeTranscriptApi.get_transcript`` was removed in 1.x;
+    ``YouTubeTranscriptApi().fetch()`` returns a ``FetchedTranscript``. An
+    instance holds a ``requests.Session`` and is not thread-safe, so each call
+    (on the SDK pool) builds its own, with a session that bounds every request.
+    """
+    import requests
+
+    class _BoundedSession(requests.Session):
+        def request(self, method: Any, url: Any, *args: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("timeout", _TRANSCRIPT_TIMEOUT_S)
+            return super().request(method, url, *args, **kwargs)
+
+    fetched = api_cls(http_client=_BoundedSession()).fetch(video_id, languages=languages)
+    return list(fetched.to_raw_data())
 
 
 @register("youtube", feature_flag="ingestion_connector_youtube_enabled")
@@ -43,7 +66,9 @@ class YouTubeConnector(BaseConnector):
 
             # Test with a well-known public video
             test_id = config.connection_config.get("test_video_id", "dQw4w9WgXcQ")
-            transcript = YouTubeTranscriptApi.get_transcript(test_id)
+            transcript = await run_blocking(
+                _fetch_transcript, YouTubeTranscriptApi, test_id, ["en"]
+            )
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
                 ok=True,
@@ -103,7 +128,9 @@ class YouTubeConnector(BaseConnector):
 
         for video_id in video_ids[:max_videos]:
             try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=languages)
+                transcript_list = await run_blocking(
+                    _fetch_transcript, YouTubeTranscriptApi, video_id, list(languages)
+                )
                 text = " ".join(seg["text"] for seg in transcript_list)
                 title = video_id  # fallback; enrich via API if api_key provided
                 if api_key:

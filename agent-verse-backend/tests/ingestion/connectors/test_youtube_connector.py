@@ -35,19 +35,41 @@ class _FakeTranscriptsDisabledError(Exception):
     pass
 
 
+FETCH_CALLS: list[tuple] = []
+
+
 def _install_fake_ytapi(transcript_result=None, get_transcript_side_effect=None):
+    """A fake of the youtube-transcript-api >= 1.0 instance API
+    (``YouTubeTranscriptApi(http_client=...).fetch(video_id, languages=...)``
+    returning a FetchedTranscript with ``to_raw_data()``). The static 0.x
+    ``get_transcript`` no longer exists, so the fake fails if it is used."""
     fake_mod = types.ModuleType("youtube_transcript_api")
+    FETCH_CALLS.clear()
+
+    class _Fetched:
+        def __init__(self, raw):
+            self._raw = raw
+
+        def to_raw_data(self):
+            return self._raw
 
     class FakeYouTubeTranscriptApi:
-        @staticmethod
-        def get_transcript(video_id, languages=None):
+        def __init__(self, proxy_config=None, http_client=None):
+            self.http_client = http_client
+
+        def fetch(self, video_id, languages=("en",)):
+            FETCH_CALLS.append((video_id, tuple(languages), self.http_client))
             if get_transcript_side_effect is not None:
                 exc = get_transcript_side_effect
                 if isinstance(exc, dict):
                     exc = exc.get(video_id)
                 if exc is not None:
                     raise exc
-            return transcript_result or [{"text": "hello"}, {"text": "world"}]
+            return _Fetched(transcript_result or [{"text": "hello"}, {"text": "world"}])
+
+        @staticmethod
+        def get_transcript(*_a, **_k):
+            raise AssertionError("get_transcript was removed in youtube-transcript-api 1.x")
 
     fake_mod.YouTubeTranscriptApi = FakeYouTubeTranscriptApi
     fake_mod.TranscriptsDisabled = _FakeTranscriptsDisabledError
@@ -114,6 +136,55 @@ class TestGetDelta:
         assert "hello world" in doc0.content.decode()
         assert doc0.metadata["video_id"] == "vid1"
         assert cursor0 == "vid1"  # title fallback == video_id since no api_key
+
+    async def test_uses_the_1x_instance_api_with_a_bounded_session(self):
+        """UNPIN-SDKS: one API instance per fetch (it is not thread-safe), the
+        configured languages, and an HTTP session whose requests carry a timeout
+        (the fetch runs on a worker thread that cannot be interrupted)."""
+        _install_fake_ytapi(transcript_result=[{"text": "hola"}])
+        config = _make_config({"video_ids": ["v1", "v2"], "languages": ["es", "en"]})
+        [d async for d in YouTubeConnector().get_delta(config, None)]
+        assert [(vid, langs) for vid, langs, _s in FETCH_CALLS] == [
+            ("v1", ("es", "en")),
+            ("v2", ("es", "en")),
+        ]
+        sessions = [s for _v, _l, s in FETCH_CALLS]
+        assert sessions[0] is not sessions[1]
+        with patch("requests.Session.request", return_value="ok") as request:
+            sessions[0].request("GET", "https://www.youtube.com/watch")
+        assert request.call_args.kwargs["timeout"] > 0
+
+    async def test_transcript_fetch_does_not_block_the_event_loop(self):
+        import asyncio
+        import time
+
+        def _slow(*_a, **_k):
+            time.sleep(0.5)
+            return [{"text": "x"}]
+
+        _install_fake_ytapi()
+        sys.modules["youtube_transcript_api"].YouTubeTranscriptApi.fetch = (
+            lambda self, video_id, languages=("en",): type(
+                "F", (), {"to_raw_data": staticmethod(_slow)}
+            )()
+        )
+        lags: list[float] = []
+        done = asyncio.Event()
+
+        async def _probe():
+            loop = asyncio.get_running_loop()
+            while not done.is_set():
+                start = loop.time()
+                await asyncio.sleep(0.01)
+                lags.append(loop.time() - start - 0.01)
+
+        probe = asyncio.create_task(_probe())
+        await asyncio.sleep(0)
+        docs = [d async for d in YouTubeConnector().get_delta(_make_config(), None)]
+        done.set()
+        await probe
+        assert len(docs) == 1
+        assert max(lags) < 0.3, f"event loop blocked for {max(lags):.3f}s"
 
     async def test_channel_discovery_with_api_key(self):
         _install_fake_ytapi(transcript_result=[{"text": "seg"}])

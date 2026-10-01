@@ -33,6 +33,7 @@ _CORE_OR_OPTIONAL = {
     "bson",  # ships with pymongo (core)
     "trafilatura",  # optional extraction quality; web_crawl falls back to a regex strip
     "MySQLdb",  # optional alternative driver; the mysql connector prefers PyMySQL
+    "requests",  # ships with youtube-transcript-api (the youtube connector bounds its session)
 }
 
 

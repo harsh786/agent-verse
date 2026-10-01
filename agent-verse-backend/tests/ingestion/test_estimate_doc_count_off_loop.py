@@ -37,7 +37,7 @@ async def test_estimate_doc_count_async_does_not_block_the_loop() -> None:
     s3 = MagicMock()
 
     def _slow_list(**_k: Any) -> dict[str, int]:
-        time.sleep(0.25)
+        time.sleep(0.5)
         return {"KeyCount": 7}
 
     s3.list_objects_v2.side_effect = _slow_list
@@ -58,7 +58,7 @@ async def test_estimate_doc_count_async_does_not_block_the_loop() -> None:
         done.set()
         await probe
     assert count == 7
-    assert max(lags) < 0.1, f"event loop blocked for {max(lags):.3f}s"
+    assert max(lags) < 0.3, f"event loop blocked for {max(lags):.3f}s"
 
 
 async def test_the_base_default_is_none() -> None:

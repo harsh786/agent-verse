@@ -34,6 +34,15 @@ def _payload_digest(payload: object) -> str:
     return hashlib.sha256(str(payload).encode()).hexdigest()
 
 
+def _new_client(mqtt: Any) -> Any:
+    """A paho-mqtt 2.x client on the VERSION2 callback API.
+
+    paho 2.x refuses ``Client()`` without a callback API version; VERSION2 is the
+    current one (``on_connect(client, userdata, flags, reason_code, properties)``).
+    """
+    return mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
+
+
 def _shutdown(client: Any) -> None:
     """Stop paho's network thread and disconnect.
 
@@ -79,16 +88,19 @@ class MQTTConnector(BaseConnector):
 
             connected = False
 
-            def on_connect(client, userdata, flags, rc):
+            def on_connect(
+                client: Any, userdata: Any, flags: Any, reason_code: Any, properties: Any = None
+            ) -> None:
+                # paho-mqtt 2.x (VERSION2 callbacks): reason_code is a ReasonCode.
                 nonlocal connected
-                connected = rc == 0
+                connected = not reason_code.is_failure
 
             import asyncio
 
             # paho resolves the host on its network thread; inside the block that
             # lookup answers with the egress-checked addresses only.
             async with pin_source_hosts([(host, port)], context="mqtt_connector"):
-                client = mqtt.Client()
+                client = _new_client(mqtt)
                 if cc.get("username"):
                     client.username_pw_set(cc["username"], cc.get("password", ""))
                 client.on_connect = on_connect
@@ -153,7 +165,7 @@ class MQTTConnector(BaseConnector):
             )
 
         async with pin_source_hosts([(host, port)], context="mqtt_connector"):
-            client = mqtt.Client()
+            client = _new_client(mqtt)
             if cc.get("username"):
                 client.username_pw_set(cc["username"], cc.get("password", ""))
             client.on_message = on_message

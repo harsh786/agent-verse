@@ -138,10 +138,10 @@ connectors = [
     "confluent-kafka>=2.5",
     "PyMySQL>=1.1",
     "duckdb>=1.1",
-    # The connector uses the 1.x callback API (mqtt.Client() / on_connect(rc)).
-    "paho-mqtt>=1.6.1,<2",
-    # The connector calls the static YouTubeTranscriptApi.get_transcript (removed in 1.x).
-    "youtube-transcript-api>=0.6.2,<1.0",
+    # 2.x callback API (CallbackAPIVersion.VERSION2) — see mqtt_connector.
+    "paho-mqtt>=2.1",
+    # 1.x instance API (YouTubeTranscriptApi().fetch) — see youtube_connector.
+    "youtube-transcript-api>=1.2",
 ]
 
 # Install all optional: pip install "agent-verse-backend[voyage,gemini,browser]"

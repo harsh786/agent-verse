@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -582,6 +582,8 @@ def _install_fake_paho():
     fake_mqtt = ModuleType("paho.mqtt")
     fake_client_mod = ModuleType("paho.mqtt.client")
     fake_client_mod.Client = MagicMock()
+    # paho-mqtt 2.x: Client() needs an explicit callback API version.
+    fake_client_mod.CallbackAPIVersion = SimpleNamespace(VERSION2="VERSION2")
     fake_mqtt.client = fake_client_mod
     fake_paho.mqtt = fake_mqtt
     return fake_paho, fake_mqtt, fake_client_mod
@@ -622,7 +624,9 @@ class TestMQTTConnector:
 
         def fake_connect_async(host, port, keepalive):
             # Immediately mark connected via the on_connect callback.
-            client_instance.on_connect(client_instance, None, None, 0)
+            client_instance.on_connect(
+                client_instance, None, None, SimpleNamespace(is_failure=False), None
+            )
 
         client_instance.connect_async.side_effect = fake_connect_async
         fake_client_mod.Client.return_value = client_instance
@@ -639,6 +643,7 @@ class TestMQTTConnector:
         assert health.ok is True
         assert health.metadata["host"] == "mqtt.test"
         client_instance.username_pw_set.assert_called_once()
+        fake_client_mod.Client.assert_called_once_with(callback_api_version="VERSION2")
 
     def test_validate_connection_timeout(self):
         from app.ingestion.connectors.mqtt_connector import MQTTConnector

@@ -301,8 +301,9 @@ async def test_youtube() -> None:
     class _DisabledError(Exception):
         pass
 
+    # youtube-transcript-api >= 1.0: YouTubeTranscriptApi(...).fetch(...).to_raw_data()
     api = MagicMock()
-    api.get_transcript = MagicMock(return_value=[{"text": "hello there"}])
+    api.return_value.fetch.return_value.to_raw_data.return_value = [{"text": "hello there"}]
     fake.YouTubeTranscriptApi = api  # type: ignore[attr-defined]
     fake.TranscriptsDisabled = _DisabledError  # type: ignore[attr-defined]
 

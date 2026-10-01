@@ -56,6 +56,7 @@ def _fake_paho() -> tuple[dict[str, ModuleType], MagicMock]:
     client_mod = ModuleType("paho.mqtt.client")
     client_cls = MagicMock()
     client_mod.Client = client_cls  # type: ignore[attr-defined]
+    client_mod.CallbackAPIVersion = MagicMock()  # type: ignore[attr-defined]
     mqtt.client = client_mod  # type: ignore[attr-defined]
     paho.mqtt = mqtt  # type: ignore[attr-defined]
     return {"paho": paho, "paho.mqtt": mqtt, "paho.mqtt.client": client_mod}, client_cls

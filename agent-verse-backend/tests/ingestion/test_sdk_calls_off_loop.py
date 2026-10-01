@@ -16,7 +16,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
-from types import FunctionType, ModuleType
+from types import FunctionType, ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -24,8 +24,10 @@ import pytest
 
 from app.ingestion.source_config import SourceConfig, SourceFamily
 
-SLOW = 0.25
-MAX_LAG = 0.1
+# A blocking call stalls the loop for >= SLOW; the margin keeps the probe stable on a
+# heavily loaded CI box (scheduler hiccups of ~0.1-0.15 s were seen at load ~27).
+SLOW = 0.5
+MAX_LAG = 0.3
 
 
 def _slow(result: Any = None) -> Callable[..., Any]:
@@ -512,7 +514,7 @@ class _SlowMqttClient:
 
     def loop_start(self) -> None:
         if self.on_connect is not None:
-            self.on_connect(self, None, {}, 0)
+            self.on_connect(self, None, {}, SimpleNamespace(is_failure=False), None)
         if self.on_message is not None:
             self.on_message(self, None, MagicMock(payload=b'{"t": 1}', topic="a/b", qos=0))
 
@@ -528,6 +530,7 @@ def _fake_paho() -> dict[str, ModuleType]:
     mqtt = ModuleType("paho.mqtt")
     client_mod = ModuleType("paho.mqtt.client")
     client_mod.Client = _SlowMqttClient  # type: ignore[attr-defined]
+    client_mod.CallbackAPIVersion = SimpleNamespace(VERSION2="VERSION2")  # type: ignore[attr-defined]
     mqtt.client = client_mod  # type: ignore[attr-defined]
     paho.mqtt = mqtt  # type: ignore[attr-defined]
     return {"paho": paho, "paho.mqtt": mqtt, "paho.mqtt.client": client_mod}
