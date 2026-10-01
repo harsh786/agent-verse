@@ -97,6 +97,13 @@ _REASON_START = re.compile(
 _ANSWER_DELIM = re.compile(r"\n\s*\n|final answer\s*:|(?:^|\n)\s*answer\s*:", re.IGNORECASE)
 
 
+async def _count_chars(source: Any, counter: list[int]) -> Any:
+    """Pass *source* through, adding each chunk's length to ``counter[0]``."""
+    async for chunk in source:
+        counter[0] += len(chunk)
+        yield chunk
+
+
 async def _split_reasoning_stream(source: Any) -> Any:
     """Split a model stream into ('reasoning', chunk) and ('answer', chunk) parts.
 
@@ -1424,6 +1431,10 @@ class ChatService:
         stalled = False
         provider_failed = False
         streamed = False
+        # Every character the provider streamed — reasoning AND answer (PROV-29:
+        # charging only answer chunks made reasoning-model chat under-counted, and
+        # free when the stream stalled before the answer began).
+        generated = [0]
         streamer = getattr(generator, "stream_complete", None)
         try:
             if callable(streamer):
@@ -1434,7 +1445,9 @@ class ChatService:
                 # forever — there is no timeout at the provider-call layer for
                 # this path (unlike the agent loop's circuit breaker).
                 streamed = True
-                source = _iter_with_stall_timeout(streamer(request), stall_timeout)
+                source = _count_chars(
+                    _iter_with_stall_timeout(streamer(request), stall_timeout), generated
+                )
                 async for kind, chunk in _split_reasoning_stream(source):
                     if kind == "reasoning":
                         yield sse_event(
@@ -1487,15 +1500,16 @@ class ChatService:
                 message="The language model request failed. Please try again.",
             )
         answer = _strip_reasoning("".join(parts))
-        if streamed and parts:
+        if streamed and generated[0] > 0:
             # Streams carry no usage object: charge an estimate (≈4 chars/token) of
-            # the prompt and of everything generated, so the turn reaches the
-            # tenant budget and the ledger. A refusal here only stops later turns.
+            # the prompt and of everything generated (reasoning included, also for
+            # a stalled or failed stream), so the turn reaches the tenant budget
+            # and the ledger. A refusal here only stops later turns.
             prompt_chars = sum(len(str(m.content)) for m in chat_msgs)
             usage = SimpleNamespace(
                 model=str(getattr(generator, "_default_model", "") or ""),
                 input_tokens=max(1, prompt_chars // 4),
-                output_tokens=max(1, len("".join(parts)) // 4),
+                output_tokens=max(1, generated[0] // 4),
             )
             try:
                 await charge_streamed(usage, role="chat_qa", tenant_id=tenant_id)

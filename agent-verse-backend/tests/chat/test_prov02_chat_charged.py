@@ -142,3 +142,46 @@ async def test_history_summary_is_charged_to_the_tenant(services: Any) -> None:
     )
     assert out == "a summary"
     assert [t for t, _c in ctrl.recorded] == ["t-chat"]
+
+
+# ── PROV-29: reasoning tokens are charged too ─────────────────────────────────
+
+
+class _Chunks(FakeProvider):
+    def __init__(self, chunks: list[str], *, stall_after: bool = False) -> None:
+        super().__init__(responses=["unused"])
+        self.chunks = chunks
+        self.stall_after = stall_after
+
+    async def stream_complete(self, request: Any):  # type: ignore[no-untyped-def, override]
+        import asyncio
+
+        for c in self.chunks:
+            yield c
+        if self.stall_after:
+            await asyncio.sleep(30)
+
+
+async def test_reasoning_only_stream_that_stalls_is_charged(
+    services: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.chat.service as chat_mod
+
+    monkeypatch.setattr(chat_mod, "_llm_stall_timeout_seconds", lambda: 0.2)
+    _ctrl, tracker = services
+    reasoning = "<think>" + "x" * 400
+    svc, sid = _svc(_Chunks([reasoning], stall_after=True))
+    events = await _ask(svc, sid)
+    assert any(e["type"] == "error" for e in events)
+    assert tracker.rows, "a stream that produced reasoning tokens must be charged"
+    assert tracker.rows[0][2] >= 400 // 4
+
+
+async def test_reasoning_and_answer_charged_on_total(services: Any) -> None:
+    _ctrl, tracker = services
+    think = "<think>" + "r" * 800 + "</think>"
+    answer = "a" * 80
+    svc, sid = _svc(_Chunks([think, answer]))
+    events = await _ask(svc, sid)
+    assert "a" * 80 in "".join(e["token"] for e in events if e["type"] == "token")
+    assert tracker.rows[0][2] >= (800 + 80) // 4
