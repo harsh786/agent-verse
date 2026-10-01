@@ -53,7 +53,8 @@ class ProviderConfig:
     api_key: str = ""
     models: list[str] | None = None
     display_name: str = ""
-    healthy: bool = False
+    # (A ``healthy`` flag used to live here but was never checked: "first healthy"
+    # really meant "first that instantiates". Resolution says so now.)
 
 
 def _detect_providers() -> list[ProviderConfig]:
@@ -70,6 +71,7 @@ def _detect_providers() -> list[ProviderConfig]:
             for cfg in configs:
                 if not isinstance(cfg, dict):
                     raise TypeError("every entry must be a JSON object")
+                cfg = {k: v for k, v in cfg.items() if k != "healthy"}  # legacy, unused
                 providers.append(ProviderConfig(**cfg))
             return providers
         except Exception as e:
@@ -89,7 +91,14 @@ def _detect_providers() -> list[ProviderConfig]:
     # serves reasoning/tooling/OCR (and embeddings via NVIDIA_EMBED_MODEL) instead
     # of falling back to a possibly-unreachable self-hosted default. Model names
     # are never hardcoded — they come from NVIDIA_MODEL / NVIDIA_EMBED_MODEL.
-    if os.getenv("NVIDIA_API_KEY"):
+    if os.getenv("NVIDIA_API_KEY") and not (os.getenv("NVIDIA_MODEL") or "").strip():
+        # No hardcoded fallback model (the old default 404s on the NVIDIA API).
+        if os.getenv("ENVIRONMENT", "development").strip().lower() == "production":
+            raise ProviderConfigurationError(
+                "nvidia", "NVIDIA_API_KEY is set but NVIDIA_MODEL is not"
+            )
+        logger.error("nvidia_provider_skipped_missing_model", hint="set NVIDIA_MODEL")
+    elif os.getenv("NVIDIA_API_KEY"):
         _nvidia_model = (os.getenv("NVIDIA_MODEL") or "").strip()
         providers.append(
             ProviderConfig(
@@ -158,7 +167,9 @@ def _detect_providers() -> list[ProviderConfig]:
                 provider_type="ollama",
                 base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
                 display_name="Ollama (local)",
-                models=["qwen3.8:latest", "qwen3-embedding:latest", "glm-ocr:latest"],
+                # OLLAMA_MODEL (or the provider's OLLAMA_DEFAULT_MODEL); the embed /
+                # OCR models come from OLLAMA_EMBED_MODEL / OLLAMA_OCR_MODEL.
+                models=[m] if (m := (os.getenv("OLLAMA_MODEL") or "").strip()) else None,
             )
         )
 
@@ -232,8 +243,10 @@ def resolve_provider(
     provider_configs: list[ProviderConfig] | None = None,
 ) -> Any:
     """
-    Resolve the first healthy LLM provider.
+    Resolve the first configured LLM provider that instantiates (in order).
     Returns a configured LLMProvider instance, or FakeProvider if none available.
+    A provider that fails to initialise is logged at warning (error for an
+    invalid configuration) with its type — never silently skipped.
     """
     configs = provider_configs if provider_configs is not None else _detect_providers()
 
@@ -252,8 +265,10 @@ def resolve_provider(
                     name=cfg.display_name,
                 )
                 return provider
+        except ProviderConfigurationError as e:
+            logger.error("provider_init_failed", type=cfg.provider_type, error=str(e)[:200])
         except Exception as e:
-            logger.debug("provider_init_failed", type=cfg.provider_type, error=str(e)[:60])
+            logger.warning("provider_init_failed", type=cfg.provider_type, error=str(e)[:200])
 
     # Fallback: FakeProvider for dev/test — uses realistic cycling responses so
     # the AgentGraph fully executes (plan → execute → verify → complete) even
@@ -283,6 +298,12 @@ def resolve_provider(
     ]
 
     return FakeProvider(responses=_fake_responses)
+
+
+def _require_model(ptype: str, model: str, env_name: str) -> str:
+    if not model:
+        raise ProviderConfigurationError(ptype, f"no model configured (set {env_name})")
+    return model
 
 
 def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
@@ -322,7 +343,9 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
         return OpenAICompatibleProvider(
             api_key=cfg.api_key,
             base_url=cfg.base_url or "https://integrate.api.nvidia.com/v1",
-            default_model=configured_model or os.getenv("NVIDIA_MODEL") or "moonshotai/kimi-k3",
+            default_model=_require_model(
+                ptype, configured_model or (os.getenv("NVIDIA_MODEL") or "").strip(), "NVIDIA_MODEL"
+            ),
             embed_model=os.getenv("NVIDIA_EMBED_MODEL") or "nvidia/nemotron-3-embed-1b",
         )
 
@@ -336,7 +359,8 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
                 api_key=cfg.api_key,
                 default_model=configured_model or "gemini-2.5-pro",
             )
-        except ImportError:
+        except ImportError as exc:
+            logger.warning("provider_sdk_missing", type=ptype, error=str(exc)[:200])
             return None
 
     elif ptype == "ollama":
@@ -345,9 +369,10 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
 
         return OllamaProvider(
             base_url=cfg.base_url or "http://localhost:11434",
-            default_model=configured_model or "qwen3.8:latest",
-            default_embed_model="qwen3-embedding:latest",
-            default_ocr_model="glm-ocr:latest",
+            default_model=configured_model or None,
+            # None → the provider reads OLLAMA_EMBED_MODEL / OLLAMA_OCR_MODEL.
+            default_embed_model=None,
+            default_ocr_model=None,
         )
 
     elif ptype == "groq":

@@ -540,15 +540,13 @@ class TestRegistryDetection:
     def test_detects_ollama_with_models(self) -> None:
         from app.providers.registry import _detect_providers
 
-        with patch.dict("os.environ", {"OLLAMA_BASE_URL": "http://localhost:11434"}, clear=False):
+        env = {"OLLAMA_BASE_URL": "http://localhost:11434", "OLLAMA_MODEL": "llama3:8b"}
+        with patch.dict("os.environ", env, clear=False):
             providers = _detect_providers()
         ollama = next((p for p in providers if p.provider_type == "ollama"), None)
         assert ollama is not None
-        # The default model list is a deployment/config detail (it tracks whatever
-        # is pulled locally); assert detection carries a non-empty list rather than
-        # pinning a specific model tag that drifts per machine.
-        assert ollama.models
-        assert all(isinstance(m, str) and m for m in ollama.models)
+        # PROV-09: the model comes from OLLAMA_MODEL, never a hardcoded tag list.
+        assert ollama.models == ["llama3:8b"]
 
     def test_instantiate_openrouter(self) -> None:
         from app.providers.openrouter_provider import OpenRouterProvider
