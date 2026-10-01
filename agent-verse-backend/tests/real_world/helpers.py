@@ -87,7 +87,14 @@ class LiveAPI:
         has a per-minute request budget that polling scenarios can exhaust)."""
         for attempt in range(8):
             started = time.monotonic()
-            resp = self.client.request(method, path, **kw)
+            try:
+                resp = self.client.request(method, path, **kw)
+            except httpx.TransportError:
+                # A dropped keep-alive connection: retry idempotent reads once more.
+                if method != "GET" or attempt >= 2:
+                    raise
+                time.sleep(2)
+                continue
             self.trail.append(f"{method} {path} -> {resp.status_code} "
                               f"({int((time.monotonic() - started) * 1000)}ms)")
             del self.trail[:-60]

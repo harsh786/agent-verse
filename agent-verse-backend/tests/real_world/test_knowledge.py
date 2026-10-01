@@ -195,22 +195,33 @@ def test_kb_reembed_keeps_search_correct(api: LiveAPI, kb: dict[str, Any],
                                                             "needs_reembed", "drift_severity")}
 
     # 1) URL-sourced document: ingest, then re-embed it through the reingest endpoint.
+    soft: list[str] = []
     ing = api.post("/knowledge/ingest/url", json={"collection_id": cid, "url": URL_DOC})
     evidence["url_ingest_http"] = ing.status_code
     assert ing.status_code in (200, 201), f"ingest/url -> {ing.status_code}: {mask(ing.text[:300])}"
+    evidence["url_ingest"] = {k: ing.json().get(k) for k in ("chunks_ingested", "document_id",
+                                                              "deduplicated")}
     doc_id = str(ing.json().get("document_id") or "")
-    if not doc_id:  # ingest/url returns no id: find it through search
-        hits = wait_until(lambda: search(api, cid, "Beautiful is better than ugly", 5),
-                          timeout=60, interval=3, desc="URL document searchable")
-        doc_id = str(next((h.get("document_id") for h in hits if h.get("document_id")
-                           and "ugly" in str(h.get("content", "")).lower()), "") or "")
-    assert doc_id, "could not resolve the URL document's id"
-    evidence["url_document_id"] = doc_id
-    rr = api.post(f"/knowledge/collections/{cid}/documents/{doc_id}/reingest")
-    evidence["reingest_http"] = rr.status_code
-    evidence["reingest"] = rr.json() if rr.status_code == 200 else mask(rr.text[:300])
-    assert rr.status_code == 200, f"reingest -> {rr.status_code}: {mask(rr.text[:300])}"
-    assert rr.json().get("chunks_ingested", 0) > 0
+    if not doc_id:  # ingest/url returns no id: try the listing, then search hits
+        listed = _documents(api, cid)
+        if not isinstance(listed, str):
+            doc_id = str(next((d.get("id") for d in listed if "pep" in str(
+                d.get("source") or d.get("source_url") or d.get("title") or "").lower()), ""))
+    if not doc_id:
+        hits = search(api, cid, "Beautiful is better than ugly", 5)
+        doc_id = str(next((h.get("document_id") for h in hits if h.get("document_id")), "") or "")
+        evidence["search_hit_document_ids"] = [h.get("document_id") for h in hits]
+    evidence["url_document_id"] = doc_id or None
+    if not doc_id:
+        soft.append("no API exposes the URL document's id (ingest/url returns none, the "
+                    "document listing 503s, search hits carry document_id=null) - the "
+                    "reingest endpoint cannot be reached")
+    else:
+        rr = api.post(f"/knowledge/collections/{cid}/documents/{doc_id}/reingest")
+        evidence["reingest_http"] = rr.status_code
+        evidence["reingest"] = rr.json() if rr.status_code == 200 else mask(rr.text[:300])
+        if rr.status_code != 200 or not rr.json().get("chunks_ingested"):
+            soft.append(f"reingest -> {rr.status_code}: {mask(rr.text[:200])}")
 
     # 2) Uploaded file: the documented re-embed path is delete + upload again.
     target = next(d for d in kb["docs"] if d.filename.endswith(".docx"))
@@ -241,3 +252,4 @@ def test_kb_reembed_keeps_search_correct(api: LiveAPI, kb: dict[str, Any],
     evidence["search_rank_after"] = ranks
     misses = [f for f, r in ranks.items() if r is None]
     assert not misses, f"search lost documents after re-embedding: {misses}"
+    assert not soft, "; ".join(soft)

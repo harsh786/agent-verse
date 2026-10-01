@@ -148,10 +148,16 @@ test.describe('real-world UI', () => {
       await expect(card, 'workflow approval inbox lists the run').toBeVisible({ timeout: 45_000 });
       await card.getByRole('button', { name: /^(Publish|Approve) request$/ }).click();
 
-      // The run view must show the run finishing.
+      // Open the run view while the approved run is still finishing.
       await page.goto(`/workflows/${wf.id}/runs/${runId}`, { waitUntil: 'domcontentloaded' });
-      await expect(page.getByText(/^complete$/).first(), 'run view shows complete')
-        .toBeVisible({ timeout: 120_000 });
+      const finished = await waitFor(async () => {
+        const run = await json<{ status: string }>(request, 'get', `/api/v1/runs/${runId}`);
+        return ['complete', 'failed', 'cancelled'].includes(run.status) ? run : null;
+      }, 180_000, 'run to finish after the UI approval');
+      expect(finished.status, 'approved run completes').toBe('complete');
+      // The run header (first status badge) must show the run finishing.
+      await expect(page.getByText('Run Detail').locator('xpath=..').getByText(/^complete$/),
+        'run view header shows complete').toBeVisible({ timeout: 30_000 });
       // The step timeline must catch up without a manual reload...
       await expect.soft(
         page.getByLabel(/Step publish_summary — complete/),
