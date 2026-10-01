@@ -704,10 +704,16 @@ async def _ltm_call(awaitable: Any) -> Any:
     The store used to swallow DB errors into ``[]`` / ``False`` / ``0`` so a
     failed GDPR erasure answered ``{"deleted": 0}`` with a 200.
     """
-    from app.memory.long_term import LongTermMemoryUnavailableError
+    from app.memory.long_term import LongTermMemoryBlockedError, LongTermMemoryUnavailableError
 
     try:
         return await awaitable
+    except LongTermMemoryBlockedError as exc:
+        # MEM-03: a guardrail block is the caller's content, not an outage.
+        raise HTTPException(
+            status_code=422,
+            detail="Memory content rejected by the memory-write guardrail",
+        ) from exc
     except LongTermMemoryUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -758,7 +764,12 @@ async def update_memory(
     ltm = _ltm(request)
     if ltm is not None:
         m = await _ltm_call(
-            ltm.update_content_async(memory_id=memory_id, content=body.content, tenant_ctx=tenant)
+            ltm.update_content_async(
+                memory_id=memory_id,
+                content=body.content,
+                tenant_ctx=tenant,
+                embedder=getattr(request.app.state, "embedder", None),
+            )
         )
         if not m:
             raise HTTPException(status_code=404, detail="Memory not found")

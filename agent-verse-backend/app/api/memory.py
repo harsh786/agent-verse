@@ -75,28 +75,23 @@ async def _screen_memory_or_http(tenant_id: str, content: str) -> str:
     full text. A block is a 422, a redacting rule's output is what gets stored,
     and content the guardrail could not vet is never stored (503, fail closed).
     """
+    from app.memory.long_term import (
+        LongTermMemoryBlockedError,
+        LongTermMemoryUnavailableError,
+        screen_user_memory_content,
+    )
+
     try:
-        from app.guardrails_v2.engine import guardrails_engine
-        from app.guardrails_v2.models import GuardrailLayer
-
-        guardrails_engine.ensure_default_rules(tenant_id)
-        result = await guardrails_engine.evaluate(
-            content=content, layer=GuardrailLayer.MEMORY_WRITE, tenant_id=tenant_id
-        )
-    except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("memory_write_guardrail_failed: %s", exc)
+        return await screen_user_memory_content(content, tenant_id=tenant_id)
+    except LongTermMemoryBlockedError as exc:
+        raise HTTPException(
+            status_code=422, detail="Memory content rejected by the memory-write guardrail"
+        ) from exc
+    except LongTermMemoryUnavailableError as exc:
         raise HTTPException(
             status_code=503,
             detail="Memory-write guardrail is unavailable; memory was not saved",
         ) from exc
-    if result.get("blocked"):
-        raise HTTPException(
-            status_code=422, detail="Memory content rejected by the memory-write guardrail"
-        )
-    redacted = result.get("redacted_content")
-    return redacted if isinstance(redacted, str) and redacted else content
 
 
 async def _embed_memory(request: Request, content: str) -> tuple[str, str, int] | None:
@@ -105,25 +100,9 @@ async def _embed_memory(request: Request, content: str) -> tuple[str, str, int] 
     Non-fatal like ``LongTermMemoryStore.store_async``: without a vector the
     row is still found by keyword recall. Never silent.
     """
-    embedder = getattr(request.app.state, "embedder", None)
-    if embedder is None:
-        return None
-    try:
-        from app.memory.long_term import _fit_ltm_vector
-        from app.providers.base import EmbedRequest
+    from app.memory.long_term import embed_ltm_content
 
-        resp = await embedder.embed(EmbedRequest(texts=[content]))
-        raw_vec = resp.embeddings[0] if resp.embeddings else None
-        fitted = _fit_ltm_vector(raw_vec) if raw_vec else None
-        if raw_vec is None or fitted is None:
-            return None
-        literal = "[" + ",".join(str(v) for v in fitted) + "]"
-        return literal, str(getattr(resp, "model", "") or ""), len(raw_vec)
-    except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("memory_embedding_failed: %s", str(exc)[:200])
-        return None
+    return await embed_ltm_content(getattr(request.app.state, "embedder", None), content)
 
 
 class CreateMemoryRequest(BaseModel):

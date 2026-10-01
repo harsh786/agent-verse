@@ -96,4 +96,28 @@ describe('AgentMemoryPage', () => {
       /\/chat\/memories\/m1$/.test(String(u)) && (i as RequestInit)?.method === 'PATCH',
     )).toBe(true);
   });
+
+  test.each([
+    [422, { detail: 'Memory content rejected by the memory-write guardrail' }, /rejected by the memory-write guardrail/i],
+    [503, { detail: 'Memory store unavailable' }, /temporarily unavailable.*retry/i],
+  ])('a %i edit keeps the editor open and explains why (MEM-03)', async (status, body, message) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'PATCH')
+        return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ memories: MEMORIES }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    render(<AgentMemoryPage />);
+    const row = (await screen.findByText('User prefers dark mode')).closest('[role="listitem"]') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /edit memory/i }));
+    const input = within(row).getByDisplayValue('User prefers dark mode');
+    await userEvent.clear(input);
+    await userEvent.type(input, 'my secret token');
+    await userEvent.click(within(row).getByRole('button', { name: /save edit/i }));
+
+    expect(await within(row).findByRole('alert')).toHaveTextContent(message);
+    expect(within(row).getByDisplayValue('my secret token')).toBeInTheDocument();
+  });
 });

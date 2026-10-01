@@ -7,7 +7,7 @@ import { Brain, Trash2, Edit2, Plus, Check, X } from 'lucide-react';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { getAuthHeader } from '@/stores/auth';
-import { API_BASE } from '@/lib/api/client';
+import { API_BASE, errorMessageFromBody } from '@/lib/api/client';
 
 interface Memory {
   id: string;
@@ -21,6 +21,7 @@ export default function AgentMemoryPage(): JSX.Element {
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editContent, setEditContent] = useState('');
+  const [editError, setEditError] = useState<string | null>(null);
   const [newContent, setNewContent] = useState('');
   const [adding, setAdding] = useState(false);
 
@@ -61,6 +62,17 @@ export default function AgentMemoryPage(): JSX.Element {
       const data = await r.json();
       setMemories((prev) => prev.map((m) => (m.id === id ? data : m)));
       setEditingId(null);
+      setEditError(null);
+      return;
+    }
+    // Keep the editor open and say why the edit was not saved (MEM-03).
+    const body: unknown = await r.json().catch(() => null);
+    if (r.status === 422) {
+      setEditError(errorMessageFromBody(body) ?? 'This content was rejected by the memory-write guardrail.');
+    } else if (r.status === 503) {
+      setEditError('The memory store is temporarily unavailable — nothing was changed. Please retry.');
+    } else {
+      setEditError(errorMessageFromBody(body) ?? `Could not save the edit (HTTP ${r.status}).`);
     }
   };
 
@@ -135,7 +147,7 @@ export default function AgentMemoryPage(): JSX.Element {
           >
             <Brain className="w-4 h-4 text-indigo-400 mt-0.5 shrink-0" />
             {editingId === m.id ? (
-              <div className="flex-1 flex gap-2">
+              <div className="flex-1 flex flex-wrap gap-2">
                 <input
                   className="flex-1 text-sm border border-indigo-300 rounded-lg px-2 py-1 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   value={editContent}
@@ -143,7 +155,10 @@ export default function AgentMemoryPage(): JSX.Element {
                   autoFocus
                 />
                 <button onClick={() => handleEdit(m.id)} aria-label="Save edit"><Check className="w-4 h-4 text-green-500" /></button>
-                <button onClick={() => setEditingId(null)} aria-label="Cancel edit"><X className="w-4 h-4 text-muted-foreground" /></button>
+                <button onClick={() => { setEditingId(null); setEditError(null); }} aria-label="Cancel edit"><X className="w-4 h-4 text-muted-foreground" /></button>
+                {editError && (
+                  <p role="alert" className="basis-full text-xs text-red-500">{editError}</p>
+                )}
               </div>
             ) : (
               <div className="flex-1">
@@ -156,7 +171,7 @@ export default function AgentMemoryPage(): JSX.Element {
             <div className="hidden group-hover:flex items-center gap-1">
               <button
                 className="p-1 hover:bg-muted rounded"
-                onClick={() => { setEditingId(m.id); setEditContent(m.content); }}
+                onClick={() => { setEditingId(m.id); setEditContent(m.content); setEditError(null); }}
                 aria-label="Edit memory"
               >
                 <Edit2 className="w-3 h-3 text-muted-foreground" />

@@ -63,6 +63,58 @@ class LongTermMemoryUnavailableError(RuntimeError):
     """The durable long-term memory store could not be read or written."""
 
 
+class LongTermMemoryBlockedError(ValueError):
+    """The MEMORY_WRITE guardrail rejected the content; nothing was stored."""
+
+
+async def screen_user_memory_content(content: str, *, tenant_id: str) -> str:
+    """MEMORY_WRITE gate for a user-authored memory create/edit (full text).
+
+    Returns the content to store (a redacting rule's output when one fired).
+    Raises :class:`LongTermMemoryBlockedError` on a block and
+    :class:`LongTermMemoryUnavailableError` when the guardrail cannot vet the
+    content (fail closed). Shared by every edit route (MEM-03).
+    """
+    if not _GUARDRAILS_AVAILABLE or guardrails_engine is None:
+        raise LongTermMemoryUnavailableError("memory-write guardrail is not available")
+    try:
+        guardrails_engine.ensure_default_rules(tenant_id)
+        result = await guardrails_engine.evaluate(
+            content=content, layer=GuardrailLayer.MEMORY_WRITE, tenant_id=tenant_id
+        )
+    except Exception as exc:
+        get_logger(__name__).warning("ltm_memory_write_guardrail_failed", error=str(exc)[:200])
+        raise LongTermMemoryUnavailableError(
+            "memory-write guardrail could not vet the content; nothing was stored"
+        ) from exc
+    if result.get("blocked"):
+        raise LongTermMemoryBlockedError("memory content rejected by the memory-write guardrail")
+    redacted = result.get("redacted_content")
+    return redacted if isinstance(redacted, str) and redacted else content
+
+
+async def embed_ltm_content(embedder: Any, content: str) -> tuple[str, str, int] | None:
+    """``(pgvector literal, model, raw dim)`` for *content*, or None.
+
+    Non-fatal (the row is still found by keyword recall) but never silent.
+    """
+    if embedder is None:
+        return None
+    try:
+        from app.providers.base import EmbedRequest
+
+        resp = await embedder.embed(EmbedRequest(texts=[content]))
+        raw_vec = resp.embeddings[0] if resp.embeddings else None
+        fitted = _fit_ltm_vector(raw_vec) if raw_vec else None
+        if raw_vec is None or fitted is None:
+            return None
+        literal = "[" + ",".join(str(v) for v in fitted) + "]"
+        return literal, str(getattr(resp, "model", "") or ""), len(raw_vec)
+    except Exception as exc:
+        get_logger(__name__).warning("ltm_embedding_failed", error=str(exc)[:200])
+        return None
+
+
 @dataclass
 class LongTermMemory:
     """A single cross-session learning entry."""
@@ -260,8 +312,22 @@ class LongTermMemoryStore:
         return (res.rowcount or 0) > 0
 
     async def update_content_async(
-        self, *, memory_id: str, content: str, tenant_ctx: TenantContext
+        self,
+        *,
+        memory_id: str,
+        content: str,
+        tenant_ctx: TenantContext,
+        embedder: Any = None,
     ) -> LongTermMemory | None:
+        """Edit a memory's content: screened (MEMORY_WRITE) and re-embedded.
+
+        Raises :class:`LongTermMemoryBlockedError` when the guardrail blocks the
+        new content and :class:`LongTermMemoryUnavailableError` when it cannot
+        vet it or the DB write fails; nothing is changed in either case. The
+        row's vector is replaced (or cleared without an embedder) so semantic
+        recall never matches the old text.
+        """
+        content = await screen_user_memory_content(content, tenant_id=tenant_ctx.tenant_id)
         db = self._db_factory
         found: LongTermMemory | None = None
         for m in self._memories.get(tenant_ctx.tenant_id, []):
@@ -272,6 +338,16 @@ class LongTermMemoryStore:
             if found is not None:
                 found.content = content
             return found
+        embedded = await embed_ltm_content(embedder, content)
+        params: dict[str, Any] = {"c": content, "id": memory_id, "tid": tenant_ctx.tenant_id}
+        if embedded is not None:
+            vec_sql = (
+                "embedding = CAST(:emb AS vector), embedding_model = :emodel, "
+                "embedding_dim = :edim"
+            )
+            params["emb"], params["emodel"], params["edim"] = embedded
+        else:
+            vec_sql = "embedding = NULL, embedding_model = NULL, embedding_dim = NULL"
         try:
             from sqlalchemy import text
 
@@ -284,10 +360,10 @@ class LongTermMemoryStore:
             ):
                 res = await session.execute(
                     text(
-                        "UPDATE long_term_memory SET content = :c "
+                        f"UPDATE long_term_memory SET content = :c, {vec_sql} "
                         "WHERE id = :id AND tenant_id = :tid"
                     ),
-                    {"c": content, "id": memory_id, "tid": tenant_ctx.tenant_id},
+                    params,
                 )
         except Exception as exc:
             get_logger(__name__).warning("ltm_update_db_failed", error=str(exc))
