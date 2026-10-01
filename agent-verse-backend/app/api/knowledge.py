@@ -661,6 +661,14 @@ async def _refuse_if_under_legal_hold(
     """
     legal_hold_mgr = getattr(request.app.state, "legal_hold_manager", None)
     if legal_hold_mgr is None:
+        # KB-35: a persistent (pool-managing) app whose hold manager failed to
+        # wire cannot know what is held — refuse, never allow every delete.
+        # Only the in-memory app (no durable data, no durable holds) skips it.
+        if getattr(request.app.state, "manage_pools", False):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Legal hold state could not be verified; deletion refused",
+            )
         return
     try:
         for resource_id in resource_ids:

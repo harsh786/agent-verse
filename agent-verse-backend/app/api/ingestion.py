@@ -77,8 +77,15 @@ async def _refuse_reindex_of_held_collection(
     them may go. Held documents inside an unheld collection are skipped by the
     worker. Fail closed: an unverifiable hold state refuses the reindex (503).
     """
+    if not collection_id:
+        return
     holds = getattr(request.app.state, "legal_hold_manager", None)
-    if holds is None or not collection_id:
+    if holds is None:
+        # A persistent app without its hold manager cannot know what is held.
+        if getattr(request.app.state, "manage_pools", False):
+            raise HTTPException(
+                status_code=503, detail="Legal hold state could not be verified; reindex refused"
+            )
         return
     try:
         held = await holds.is_under_hold(tenant_id=tenant_id, resource_id=collection_id)
