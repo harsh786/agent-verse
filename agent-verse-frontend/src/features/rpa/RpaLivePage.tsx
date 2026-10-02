@@ -13,7 +13,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { rpaApi, type RpaSession, type RpaTool, type RpaExecuteResult } from "@/lib/api/client";
+import { ApiError, rpaApi, type RpaSession, type RpaTool, type RpaExecuteResult } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
@@ -21,6 +21,18 @@ import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { AlertCircle, ChevronDown, ChevronUp, Clock, Copy, Crosshair, Keyboard, Loader2, Mouse, Plus, RefreshCw, Terminal, Trash2, Users, X, Zap } from 'lucide-react';
+
+/** A 429 browser_session_limit names the live sessions to close; anything else as-is. */
+function rpaErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 429) {
+    const d = (e.body as { detail?: { code?: string; active_sessions?: unknown } } | undefined)?.detail;
+    if (d?.code === 'browser_session_limit') {
+      const active = Array.isArray(d.active_sessions) ? d.active_sessions.join(', ') : '';
+      return `Browser session limit reached — close one of the active sessions${active ? `: ${active}` : ''}`;
+    }
+  }
+  return String(e);
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,7 +116,7 @@ function ToolExecutor({
         timestamp: new Date(),
       });
     },
-    onError: (e) => toast({ kind: "error", message: String(e) }),
+    onError: (e) => toast({ kind: "error", message: rpaErrorMessage(e) }),
   });
 
   const filtered = tools.filter((t) =>
@@ -307,7 +319,7 @@ export function RpaLivePage() {
   const executeMutation = useMutation({
     mutationFn: ({ session_id, tool_name, args }: { session_id: string; tool_name: string; args: Record<string, unknown> }) =>
       rpaApi.execute(tool_name, args, session_id),
-    onError: (e) => toast({ kind: 'error', message: String(e) }),
+    onError: (e) => toast({ kind: 'error', message: rpaErrorMessage(e) }),
   });
 
   // Interactive click on screenshot
@@ -355,7 +367,9 @@ export function RpaLivePage() {
         output: result.output || `Clicked at (${x}, ${y})`,
         success: result.success, risk: "high", timestamp: new Date(),
       }, ...prev].slice(0, 50));
-    } catch { /* ignore */ }
+    } catch (err) {
+      toast({ kind: "error", message: rpaErrorMessage(err) });
+    }
   }, [activeSession, sessions, elementPickerMode, executeMutation]);
 
   const addAction = useCallback((entry: ActionEntry) => {

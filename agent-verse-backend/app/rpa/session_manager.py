@@ -78,6 +78,28 @@ class SessionOnAnotherReplicaError(RuntimeError):
         )
 
 
+class BrowserSessionCapError(RuntimeError):
+    """The tenant's (global) or this host's browser-session cap is full (API: 429).
+
+    Raised instead of closing another goal's live browser to make room.
+    """
+
+    def __init__(self, scope: str, limit: int, active_sessions: list[str]) -> None:
+        self.scope = scope
+        self.limit = limit
+        self.active_sessions = active_sessions
+        super().__init__(
+            f"browser session limit reached ({scope} limit {limit}); close one of the "
+            f"active sessions first: {', '.join(active_sessions) or 'none listed'}"
+        )
+
+
+# Lease on a tenant's browser slot (Redis lease set); refreshed on every use and by
+# cleanup_expired's heartbeat, so a crashed holder's slot frees itself.
+_SLOT_LEASE_S = 120.0
+_HOST_SLOT_KEY = "__host__"
+
+
 class BrowserSessionManager:
     """Manages live Playwright browser sessions across RPA tool calls.
 
@@ -91,16 +113,31 @@ class BrowserSessionManager:
         self,
         headless: bool = True,
         max_idle_seconds: int = 300,
-        max_sessions_per_tenant: int = 5,
+        max_sessions_per_tenant: int | None = None,
         redis: Any = None,
         allowed_domains: list[str] | None = None,
+        max_browsers_per_host: int | None = None,
     ) -> None:
+        from app.core.config import get_settings
+        from app.reliability.bulkhead import LocalSlotCounter
+
+        settings = get_settings()
         # Default SSRF egress allowlist for new sessions (None → public only).
         self._allowed_domains = allowed_domains
         self._sessions: dict[tuple[str, str], BrowserSession] = {}
         self._headless = headless
         self._max_idle = max_idle_seconds
-        self._max_per_tenant = max_sessions_per_tenant
+        # Per tenant across EVERY replica and worker (Redis lease set).
+        self._max_per_tenant = int(
+            max_sessions_per_tenant or settings.rpa_max_sessions_per_tenant
+        )
+        # Chromium processes this process may run, all tenants together.
+        self._max_per_host = int(max_browsers_per_host or settings.rpa_max_browsers_per_host)
+        # Process-local counts: the host cap, and the per-tenant fallback while
+        # Redis is unreachable (still bounded per replica).
+        self._local_slots = LocalSlotCounter()
+        # Which slot backs each session: "lease" (Redis) or "local".
+        self._slot_kind: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
         self._redis = redis
         self._SESSION_TTL = 3600  # 1 hour
@@ -124,45 +161,20 @@ class BrowserSessionManager:
             existing = self._sessions.get(key)
             if existing and existing.is_alive:
                 existing.touch()
+                await self._refresh_slot(session_id, tenant_id)
                 return existing
             owner = await self.live_elsewhere(session_id, tenant_id)
             if owner is not None:
                 raise SessionOnAnotherReplicaError(session_id, owner)
 
-            # Enforce per-tenant session cap
-            tenant_active = sum(
-                1
-                for (sid, tid) in self._sessions
-                if tid == tenant_id and self._sessions[(sid, tid)].is_alive
-            )
-            if tenant_active >= self._max_per_tenant:
-                # Close the oldest idle session to make room
-                oldest_key = min(
-                    ((sid, tid) for (sid, tid) in self._sessions if tid == tenant_id),
-                    key=lambda k: self._sessions[k].last_used_at,
-                    default=None,
+            await self._acquire_slots(session_id, tenant_id)
+            try:
+                session = await self._create_session(
+                    session_id, tenant_id, allowed_domains=allowed_domains
                 )
-                if oldest_key:
-                    old_session = self._sessions.pop(oldest_key)
-                    asyncio.create_task(old_session.close())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                    logger.info(
-                        "browser_session_evicted",
-                        session_id=oldest_key[0],
-                        tenant_id=tenant_id,
-                        reason="cap_exceeded",
-                    )
-                else:
-                    # All slots taken — return a simulation-only session
-                    logger.warning(
-                        "browser_session_cap_reached",
-                        tenant_id=tenant_id,
-                        limit=self._max_per_tenant,
-                    )
-                    return BrowserSession(session_id=session_id, tenant_id=tenant_id)
-
-            session = await self._create_session(
-                session_id, tenant_id, allowed_domains=allowed_domains
-            )
+            except BaseException:
+                await self._release_slots(session_id, tenant_id)
+                raise
             self._sessions[key] = session
             logger.info(
                 "browser_session_created",
@@ -171,6 +183,86 @@ class BrowserSessionManager:
             )
             await self._register_in_redis(session)
             return session
+
+    # ── Caps: per tenant (global, Redis lease set) and per host ─────────────────
+
+    @staticmethod
+    def _lease_key(tenant_id: str) -> str:
+        return f"rpa:leases:{tenant_id}"
+
+    async def _acquire_slots(self, session_id: str, tenant_id: str) -> None:
+        """Take a host slot and one of the tenant's slots, or raise the cap error.
+
+        Never closes another session to make room.
+        """
+        from app.reliability.bulkhead import RedisLeaseLimiter
+
+        if not self._local_slots.try_acquire(_HOST_SLOT_KEY, self._max_per_host):
+            mine = [sid for (sid, tid) in self._sessions if tid == tenant_id]
+            raise BrowserSessionCapError("host", self._max_per_host, mine)
+        key = (session_id, tenant_id)
+        try:
+            if self._redis is not None:
+                limiter = RedisLeaseLimiter(self._redis)
+                try:
+                    ok = await limiter.try_acquire(
+                        self._lease_key(tenant_id),
+                        session_id,
+                        limit=self._max_per_tenant,
+                        lease_s=_SLOT_LEASE_S,
+                    )
+                except Exception as exc:
+                    logger.warning("rpa_slot_lease_unavailable", error=str(exc)[:200])
+                else:
+                    if not ok:
+                        active = await self._active_lease_ids(tenant_id)
+                        raise BrowserSessionCapError("tenant", self._max_per_tenant, active)
+                    self._slot_kind[key] = "lease"
+                    return
+            if not self._local_slots.try_acquire(f"tenant:{tenant_id}", self._max_per_tenant):
+                raise BrowserSessionCapError(
+                    "tenant",
+                    self._max_per_tenant,
+                    [sid for (sid, tid) in self._sessions if tid == tenant_id],
+                )
+            self._slot_kind[key] = "local"
+        except BaseException:
+            self._local_slots.release(_HOST_SLOT_KEY)
+            raise
+
+    async def _release_slots(self, session_id: str, tenant_id: str) -> None:
+        from app.reliability.bulkhead import RedisLeaseLimiter
+
+        kind = self._slot_kind.pop((session_id, tenant_id), None)
+        if kind is None:
+            return
+        self._local_slots.release(_HOST_SLOT_KEY)
+        if kind == "local":
+            self._local_slots.release(f"tenant:{tenant_id}")
+        elif self._redis is not None:
+            with contextlib.suppress(Exception):
+                await RedisLeaseLimiter(self._redis).release(
+                    self._lease_key(tenant_id), session_id
+                )
+
+    async def _refresh_slot(self, session_id: str, tenant_id: str) -> None:
+        """Keep a live session's tenant lease from expiring while it is used."""
+        from app.reliability.bulkhead import RedisLeaseLimiter
+
+        if self._slot_kind.get((session_id, tenant_id)) != "lease" or self._redis is None:
+            return
+        with contextlib.suppress(Exception):
+            await RedisLeaseLimiter(self._redis).refresh(
+                self._lease_key(tenant_id), session_id, lease_s=_SLOT_LEASE_S
+            )
+
+    async def _active_lease_ids(self, tenant_id: str) -> list[str]:
+        from app.reliability.bulkhead import RedisLeaseLimiter
+
+        try:
+            return sorted(await RedisLeaseLimiter(self._redis).members(self._lease_key(tenant_id)))
+        except Exception:
+            return sorted(sid for (sid, tid) in self._sessions if tid == tenant_id)
 
     async def _create_session(
         self,
@@ -232,6 +324,7 @@ class BrowserSessionManager:
         if session:
             await session.close()
             await self._deregister_from_redis(session_id, tenant_id)
+            await self._release_slots(session_id, tenant_id)
             return True
         return False
 
@@ -244,6 +337,7 @@ class BrowserSessionManager:
             with contextlib.suppress(Exception):
                 await session.close()
             await self._deregister_from_redis(sid, tid)
+            await self._release_slots(sid, tid)
         return len(sessions)
 
     async def cleanup_expired(self) -> int:
@@ -261,6 +355,7 @@ class BrowserSessionManager:
             if closed_session:
                 await closed_session.close()
                 await self._deregister_from_redis(key[0], key[1])
+                await self._release_slots(key[0], key[1])
 
         return len(to_close)
 

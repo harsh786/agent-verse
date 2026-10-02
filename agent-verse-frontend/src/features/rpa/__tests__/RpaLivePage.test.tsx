@@ -32,6 +32,7 @@ function mockFetch(opts: {
   executeResult?: unknown;
   getSelectorResult?: unknown | 'reject';
   screenshot?: 'ok' | 'none';
+  executeError?: { status: number; body: unknown };
 } = {}) {
   const sessions = opts.sessions ?? [SESSION()];
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -52,6 +53,10 @@ function mockFetch(opts: {
     if (url.includes('/rpa/tools'))
       return new Response(JSON.stringify({ tools: [RPA_TOOL_WITH_SCHEMA, RPA_TOOL_NO_SCHEMA] }), { status: 200 });
     if (url.includes('/rpa/execute')) {
+      if (opts.executeError)
+        return new Response(JSON.stringify(opts.executeError.body), {
+          status: opts.executeError.status, headers: { 'Content-Type': 'application/json' },
+        });
       const body = JSON.parse(String(init?.body ?? '{}'));
       if (body.tool_name === 'rpa_get_selector') {
         if (opts.getSelectorResult === 'reject') return new Response('error', { status: 500 });
@@ -172,6 +177,26 @@ describe('RpaLivePage — viewport interactions', () => {
       expect(call).toBeTruthy();
     });
     expect(await screen.findByText(/rpa_click/i)).toBeInTheDocument();
+  });
+
+  test('a 429 session limit names the active sessions to close', async () => {
+    const { useToastStore } = await import('@/stores/toast');
+    useToastStore.setState({ toasts: [] });
+    await renderWithActiveSession({
+      executeError: {
+        status: 429,
+        body: { detail: {
+          code: 'browser_session_limit', message: 'Browser session limit reached; close an active session first.',
+          scope: 'tenant', limit: 2, active_sessions: ['sess-a', 'sess-b'],
+        } },
+      },
+    });
+    fireEvent.click(screen.getByTestId('viewport-screenshot'), { clientX: 100, clientY: 50 });
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some(
+        (t) => /browser session limit reached/i.test(t.message) && t.message.includes('sess-a, sess-b'),
+      )).toBe(true);
+    });
   });
 
   test('refresh screenshot button re-fetches the screenshot', async () => {

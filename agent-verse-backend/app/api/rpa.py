@@ -98,6 +98,17 @@ async def execute_rpa_tool(request: Request, body: RPAExecuteRequest) -> dict[st
         tenant_id=tenant.tenant_id,
     )
 
+    if getattr(result, "error_code", None) == "browser_session_limit":
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "browser_session_limit",
+                "message": "Browser session limit reached; close an active session first.",
+                **(result.error_detail or {}),
+            },
+            headers={"Retry-After": "10"},
+        )
+
     return {
         "success": result.success,
         "output": result.output,

@@ -59,29 +59,25 @@ def test_rpa_executor_attribute_on_agent_graph():
 # ── Gap 2: Session cap enforcement ────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_session_cap_evicts_oldest_on_overflow():
-    """When tenant hits max_sessions_per_tenant, oldest is evicted."""
+async def test_session_cap_refuses_instead_of_evicting_live_sessions():
+    """At the tenant cap a new session is refused; live sessions are never closed."""
+    from app.rpa.session_manager import BrowserSessionCapError
+
     mgr = BrowserSessionManager(max_sessions_per_tenant=2)
 
-    # Inject 2 fake alive sessions for tenant t1
-    for i in range(2):
-        fake_session = BrowserSession(session_id=f"old-{i}", tenant_id="t1")
-        fake_session._browser = MagicMock()  # Mark as alive
-        # Stagger last_used_at so old-0 is the oldest
-        fake_session.last_used_at = 1000.0 + i
-        mgr._sessions[(f"old-{i}", "t1")] = fake_session
+    async def _create(sid: str, tenant: str, **_k: object) -> BrowserSession:
+        s = BrowserSession(session_id=sid, tenant_id=tenant)
+        s._browser = MagicMock()
+        return s
 
-    # Request a 3rd session — should evict oldest (old-0)
-    with patch.object(mgr, "_create_session", AsyncMock(
-        return_value=BrowserSession(session_id="new-1", tenant_id="t1")
-    )):
-        session = await mgr.get_or_create("new-1", "t1")
+    with patch.object(mgr, "_create_session", _create):
+        await mgr.get_or_create("old-0", "t1")
+        await mgr.get_or_create("old-1", "t1")
+        with pytest.raises(BrowserSessionCapError):
+            await mgr.get_or_create("new-1", "t1")
 
-    assert session.session_id == "new-1"
-    # old-0 should be gone from _sessions (it was popped during eviction)
-    assert ("old-0", "t1") not in mgr._sessions or not mgr._sessions.get(
-        ("old-0", "t1"), BrowserSession("x", "x")
-    ).is_alive
+    assert mgr._sessions[("old-0", "t1")].is_alive
+    assert mgr._sessions[("old-1", "t1")].is_alive
 
 
 def test_session_manager_stores_max_sessions_per_tenant():

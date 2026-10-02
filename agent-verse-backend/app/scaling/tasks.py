@@ -1142,6 +1142,11 @@ class _WorkerMCPAgentRunner:
                     redis=redis_client, vault=get_vault(), db_factory=_tv_session_factory()
                 )
                 self._rpa_executor._secret_store_resolver = lambda: _rpa_secret_store
+                # The worker's browsers count toward the tenant's global session cap
+                # and appear in the shared session registry (RPA-02).
+                _rpa_sm = getattr(self._rpa_executor, "_session_manager", None)
+                if _rpa_sm is not None:
+                    _rpa_sm._redis = redis_client
             if tool_context is not None:
                 context.update(
                     {

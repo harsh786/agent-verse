@@ -105,6 +105,9 @@ class RPAResult:
     artifact_name: str | None = None
     duration_ms: float = 0.0
     error: str | None = None
+    # Machine-readable refusal reason (e.g. "browser_session_limit") and its data.
+    error_code: str | None = None
+    error_detail: dict[str, Any] | None = None
 
 
 def rpa_allowed_domains_from_env() -> list[str] | None:
@@ -305,9 +308,23 @@ class RPAExecutor:
         goal_id: str,
     ) -> RPAResult:
         """Execute using a stateful Playwright session from session_manager."""
+        from app.rpa.session_manager import BrowserSessionCapError
+
         try:
             session = await self._session_manager.get_or_create(
                 session_id, tenant_id, allowed_domains=self._allowed_domains
+            )
+        except BrowserSessionCapError as exc:
+            # Cap full: refuse (never close another goal's live browser).
+            return RPAResult(
+                success=False,
+                error=str(exc),
+                error_code="browser_session_limit",
+                error_detail={
+                    "scope": exc.scope,
+                    "limit": exc.limit,
+                    "active_sessions": exc.active_sessions,
+                },
             )
         except Exception as exc:
             # e.g. the browser SSRF guard could not be installed — fail closed.

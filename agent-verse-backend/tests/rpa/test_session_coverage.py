@@ -213,23 +213,24 @@ async def test_session_store_close_redis_exception_fallback() -> None:
 
 @pytest.mark.asyncio
 async def test_browser_session_manager_cap_reached_no_evict() -> None:
-    """Lines 119-124: all tenant slots full AND no idle session → return simulation-only."""
-    from app.rpa.session_manager import BrowserSession, BrowserSessionManager
+    """All tenant slots full: refuse with BrowserSessionCapError; the busy session
+    is neither closed nor replaced by a page-less one (RPA-02/03)."""
+    from app.rpa.session_manager import BrowserSession, BrowserSessionCapError, BrowserSessionManager
 
     manager = BrowserSessionManager(max_sessions_per_tenant=1)
-    manager._playwright_available = False  # skip playwright
 
-    # Fill tenant t1's slot with a busy session (is_alive=True means it has a browser)
-    busy = BrowserSession(session_id="busy1", tenant_id="t1")
-    busy._browser = MagicMock()  # marks as alive — cannot be evicted
-    manager._sessions[("busy1", "t1")] = busy
+    async def _create(sid: str, tenant: str, **_k: object) -> BrowserSession:
+        s = BrowserSession(session_id=sid, tenant_id=tenant)
+        s._browser = MagicMock()
+        return s
 
-    # Request another session for t1 — slot full, no idle sessions to evict
-    result = await manager.get_or_create("new-sid", "t1")
+    manager._create_session = _create  # type: ignore[method-assign]
+    await manager.get_or_create("busy1", "t1")
 
-    # Should return a bare BrowserSession (simulation-only), line 124
-    assert result is not None
-    assert result.session_id == "new-sid"
+    with pytest.raises(BrowserSessionCapError) as exc:
+        await manager.get_or_create("new-sid", "t1")
+    assert exc.value.active_sessions == ["busy1"]
+    assert manager._sessions[("busy1", "t1")].is_alive
 
 
 @pytest.mark.asyncio

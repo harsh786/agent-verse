@@ -390,6 +390,12 @@ class Settings(BaseSettings):
     code_exec_max_concurrent_per_tenant: int = 4
     code_exec_max_concurrent_per_host: int = 8
 
+    # --- RPA browser sessions (app/rpa/session_manager.py) ---
+    # Live browsers one tenant may hold across ALL replicas/workers (Redis lease set).
+    rpa_max_sessions_per_tenant: int = 5
+    # Chromium processes one API/worker process may run, all tenants together.
+    rpa_max_browsers_per_host: int = 10
+
     # --- platform email relay (POST /tools/email/send) ---
     email_max_recipients: int = 50
     # Recipients per tenant per UTC day; 0 = the plan default (app/tools/email_quota.py).
