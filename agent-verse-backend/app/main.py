@@ -2464,11 +2464,10 @@ def create_app(
                 except Exception as _cw_exc:
                     logger.warning("permission_cache_warm_failed", error=str(_cw_exc))
 
-            # ── H-4: Wire SIEM adapter + forwarder if configured ──────────────────
-            # Build the adapter, then attach a SIEMForwarder to the primary audit
-            # trail so recorded events are batched and shipped to the SIEM. The
-            # forwarder enqueues on write (non-blocking) and a background task
-            # drains it via ``adapter.send(batch, config)``.
+            # ── H-4: Wire the SIEM adapter if configured ──────────────────────────
+            # Audit events reach the SIEM through the durable audit_siem_outbox
+            # (written with each audit_log row, drained by a beat task); the
+            # adapter on app.state serves on-demand sends.
             try:
                 import os as _os_siem
 
@@ -2478,7 +2477,6 @@ def create_app(
                 if _os_siem.getenv("SIEM_TYPE") or settings.siem_type:
                     from app.governance.siem_adapters import (
                         SIEMConfig,
-                        SIEMForwarder,
                         SIEMType,
                         build_siem_adapter,
                     )
@@ -2500,13 +2498,10 @@ def create_app(
                             },
                         )
                         _siem_adapter = build_siem_adapter(_siem_cfg.siem_type)
-                        _siem_forwarder = SIEMForwarder(_siem_adapter, _siem_cfg)
-                        _siem_forwarder.start()
-                        _audit_log_for_siem = getattr(app.state, "audit_log", None)
-                        if _audit_log_for_siem is not None and hasattr(
-                            _audit_log_for_siem, "set_siem_forwarder"
-                        ):
-                            _audit_log_for_siem.set_siem_forwarder(_siem_forwarder)
+                        # Forwarding is the durable audit_siem_outbox drained by the
+                        # forward_siem_outbox beat task (API + worker events, retries,
+                        # DLQ) — no per-process buffer that drops batches (AUDIT-06).
+                        _siem_forwarder = None
                     except Exception as _siem_init_exc:
                         logger.warning("siem_adapter_init_failed", error=str(_siem_init_exc))
                 app.state.siem_adapter = _siem_adapter
@@ -2516,7 +2511,7 @@ def create_app(
                     logger.info(
                         "siem_adapter_registered",
                         siem_type=_siem_type_str,
-                        forwarding=_siem_forwarder is not None,
+                        forwarding="audit_siem_outbox",
                     )
             except Exception as _siem_exc:
                 logger.warning("siem_adapter_setup_failed", error=str(_siem_exc))

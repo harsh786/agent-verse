@@ -338,6 +338,12 @@ celery_app.conf.update(
             "schedule": 10.0,
             "options": {"queue": "maintenance"},
         },
+        # Durable audit → SIEM forwarding (AUDIT-06); a no-op without SIEM_TYPE.
+        "forward-siem-outbox": {
+            "task": "app.scaling.tasks.forward_siem_outbox",
+            "schedule": 10.0,
+            "options": {"queue": "maintenance"},
+        },
         "scan-cost-anomalies": {
             "task": "app.scaling.tasks.scan_cost_anomalies",
             "schedule": crontab(minute="0"),

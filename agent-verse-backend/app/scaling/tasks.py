@@ -7791,6 +7791,32 @@ def flush_audit_wal() -> dict:
     return _run_async(_run())
 
 
+@celery_app.task(name="app.scaling.tasks.forward_siem_outbox", queue="maintenance")
+@beat_task_guard(lock_ttl_seconds=120)
+def forward_siem_outbox() -> dict[str, Any]:
+    """Ship due ``audit_siem_outbox`` rows to the configured SIEM (AUDIT-06).
+
+    Covers API and worker audit events alike; failures retry with backoff and
+    rows that keep failing are parked as ``dead`` (never dropped).
+    """
+    from app.governance.siem_outbox import siem_config_from_settings
+
+    config = siem_config_from_settings()
+    if config is None:
+        return {"status": "skipped", "reason": "no SIEM configured"}
+
+    async def _run() -> dict[str, Any]:
+        from app.db.session import get_system_session_factory
+        from app.governance.siem_adapters import build_siem_adapter
+        from app.governance.siem_outbox import drain_siem_outbox
+
+        adapter = build_siem_adapter(config.siem_type)
+        return dict(await drain_siem_outbox(get_system_session_factory(), adapter, config))
+
+    result: dict[str, Any] = _run_async(_run())
+    return result
+
+
 @celery_app.task(
     name="app.scaling.tasks.cancel_goals_for_emergency_stop",
     queue="maintenance",

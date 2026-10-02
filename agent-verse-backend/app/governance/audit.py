@@ -107,7 +107,16 @@ class AuditLog:
         retry_base_delay: float = 0.2,
         cache_per_tenant: int = 1000,
         max_cached_tenants: int = 1000,
+        siem_outbox: bool | None = None,
     ) -> None:
+        # Durable SIEM forwarding (AUDIT-06): each DB write also enqueues an
+        # ``audit_siem_outbox`` row in the same transaction. ``None`` = enabled
+        # iff a SIEM is configured (SIEM_TYPE).
+        if siem_outbox is None:
+            from app.governance.siem_outbox import siem_outbox_enabled
+
+            siem_outbox = siem_outbox_enabled()
+        self._siem_outbox = bool(siem_outbox)
         # Bounded warm cache (AUDIT-04): Postgres is the trail; this holds at most
         # ``cache_per_tenant`` recent events for the ``max_cached_tenants`` most
         # recently written tenants.
@@ -291,7 +300,27 @@ class AuditLog:
             span.set_attribute("outcome", event.outcome)
             async with self._db() as session, session.begin():  # noqa: SIM117
                 async with sqlalchemy_rls_context(session, tenant_id):
-                    await session.execute(text(_AUDIT_INSERT_SQL), _audit_row(event, tenant_id))
+                    inserted = await session.execute(
+                        text(_AUDIT_INSERT_SQL), _audit_row(event, tenant_id)
+                    )
+                    # Same transaction: the SIEM copy exists iff the audit row does.
+                    # A retried INSERT that hit ON CONFLICT enqueues nothing twice.
+                    if self._siem_outbox and getattr(inserted, "rowcount", 1) != 0:
+                        import json
+
+                        await session.execute(
+                            text(
+                                "INSERT INTO audit_siem_outbox (tenant_id, audit_id, payload) "
+                                "VALUES (:tid, :aid, CAST(:payload AS jsonb))"
+                            ),
+                            {
+                                "tid": tenant_id,
+                                "aid": event.event_id,
+                                "payload": json.dumps(
+                                    self._to_siem_event(event, tenant_id), default=str
+                                ),
+                            },
+                        )
 
     def query(
         self,
