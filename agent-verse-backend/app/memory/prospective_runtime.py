@@ -129,7 +129,10 @@ async def fire_due_intentions(
     A lost fencing race (another worker re-leased it) is skipped.
     """
     when = now or datetime.now(UTC)
-    claimed = await service.lease_due(tenant_id, now=when, lease_duration=lease_duration)
+    # MEM-44: lease only what this run processes (the rest stay pending).
+    claimed = await service.lease_due(
+        tenant_id, now=when, lease_duration=lease_duration, limit=maximum_items
+    )
     fired: list[ProspectiveMemory] = []
     find_goal = getattr(service, "find_submitted_goal", None)
     for item in claimed[:maximum_items]:

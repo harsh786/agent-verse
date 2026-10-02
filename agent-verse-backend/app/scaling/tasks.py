@@ -7129,7 +7129,19 @@ def purge_expired_canonical_memories() -> dict:
         purged = 0
         for tenant_id in tenants:
             purged += await purge_expired_memories(repo, tenant_id=tenant_id)
-        return {"tenants": len(tenants), "purged": purged}
+        # MEM-44: terminal prospective intentions past retention, batched.
+        from datetime import UTC, datetime
+
+        from app.memory.prospective_postgres import purge_terminal_prospective
+
+        prospective_purged = await purge_terminal_prospective(
+            system_db, now=datetime.now(UTC)
+        )
+        return {
+            "tenants": len(tenants),
+            "purged": purged,
+            "prospective_purged": prospective_purged,
+        }
 
     return cast(dict, _run_async(_run()))
 

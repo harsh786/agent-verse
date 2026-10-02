@@ -40,6 +40,10 @@ class ProspectiveMemory(BaseModel):
     result: dict[str, Any] | None = None
 
 
+#: Due intentions one lease call claims at most (MEM-44).
+DEFAULT_LEASE_LIMIT = 50
+
+
 class ProspectiveMemoryService:
     def __init__(self) -> None:
         self._items: dict[tuple[str, str], ProspectiveMemory] = {}
@@ -57,11 +61,18 @@ class ProspectiveMemoryService:
             return item
 
     async def lease_due(
-        self, tenant_id: str, *, now: datetime, lease_duration: timedelta
+        self,
+        tenant_id: str,
+        *,
+        now: datetime,
+        lease_duration: timedelta,
+        limit: int = DEFAULT_LEASE_LIMIT,
     ) -> tuple[ProspectiveMemory, ...]:
         leased: list[ProspectiveMemory] = []
         async with self._lock:
-            for key, item in sorted(self._items.items()):
+            for key, item in sorted(self._items.items(), key=lambda kv: kv[1].due_at):
+                if len(leased) >= limit:
+                    break
                 if item.tenant_id != tenant_id or item.state not in {"pending", "leased"}:
                     continue
                 if item.expires_at <= now:

@@ -34,7 +34,7 @@ def urls() -> Iterator[tuple[str, str]]:
         admin = pg.get_connection_url()
         alembic_upgrade(admin)
         loop = asyncio.new_event_loop()
-        engine = loop.run_until_complete(app_role_engine(admin, ["prospective_memory"]))
+        engine = loop.run_until_complete(app_role_engine(admin, ["prospective_memory", "goals"]))
         app_url = engine.url.render_as_string(hide_password=False)
         loop.run_until_complete(engine.dispose())
 

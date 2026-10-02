@@ -14,13 +14,14 @@ from typing import Any
 from sqlalchemy import text
 
 from app.db.rls import sqlalchemy_rls_context
-from app.memory.prospective import ProspectiveMemory
+from app.memory.prospective import DEFAULT_LEASE_LIMIT, ProspectiveMemory
 
 _COLS = (
     "memory_id, tenant_id, intention, due_at, expires_at, state, source_goal_id, "
     "source_execution_id, policy_snapshot, classification, idempotency_key, attempts, "
     "fencing_token, lease_expires_at, result"
 )
+_P_COLS = ", ".join(f"p.{c.strip()}" for c in _COLS.split(","))
 _TERMINAL = ("completed", "failed", "cancelled", "expired")
 #: Rows a tenant's intention list returns at most (due-first).
 _LIST_LIMIT = 200
@@ -174,7 +175,12 @@ class PostgresProspectiveMemoryService:
         return str(gid) if gid else None
 
     async def lease_due(
-        self, tenant_id: str, *, now: datetime, lease_duration: timedelta
+        self,
+        tenant_id: str,
+        *,
+        now: datetime,
+        lease_duration: timedelta,
+        limit: int = DEFAULT_LEASE_LIMIT,
     ) -> tuple[ProspectiveMemory, ...]:
         lease_until = now + lease_duration
         async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
@@ -189,17 +195,21 @@ class PostgresProspectiveMemoryService:
             rows = (
                 await s.execute(
                     text(
-                        "UPDATE prospective_memory SET state='leased', "
-                        "attempts=attempts+1, fencing_token=fencing_token+1, "
-                        "lease_expires_at=:lease_until "
-                        "WHERE tenant_id=:t AND memory_id IN ("
+                        # A MATERIALIZED CTE picks the batch exactly once: an
+                        # ``IN (SELECT ... LIMIT ... SKIP LOCKED)`` subquery may
+                        # be re-run by the planner and lease more than :lim rows.
+                        "WITH picked AS MATERIALIZED ("
                         "  SELECT memory_id FROM prospective_memory "
                         "  WHERE tenant_id=:t AND ((state='pending' AND due_at<=:now) "
                         "     OR (state='leased' AND lease_expires_at<=:now)) "
-                        "  ORDER BY due_at ASC FOR UPDATE SKIP LOCKED"
-                        f") RETURNING {_COLS}"
+                        "  ORDER BY due_at ASC LIMIT :lim FOR UPDATE SKIP LOCKED) "
+                        "UPDATE prospective_memory AS p SET state='leased', "
+                        "attempts=p.attempts+1, fencing_token=p.fencing_token+1, "
+                        "lease_expires_at=:lease_until "
+                        "FROM picked WHERE p.tenant_id=:t AND p.memory_id = picked.memory_id "
+                        f"RETURNING {_P_COLS}"
                     ),
-                    {"t": tenant_id, "now": now, "lease_until": lease_until},
+                    {"t": tenant_id, "now": now, "lease_until": lease_until, "lim": limit},
                 )
             ).mappings().all()
         return tuple(_row(r) for r in rows)
@@ -255,4 +265,56 @@ class PostgresProspectiveMemoryService:
         return _row(row)
 
 
-__all__ = ["PostgresProspectiveMemoryService"]
+#: Terminal intentions are kept this long after they were due, then purged.
+TERMINAL_RETENTION = timedelta(days=90)
+
+
+async def purge_terminal_prospective(
+    maintenance_session_factory: Any,
+    *,
+    now: datetime,
+    retention: timedelta = TERMINAL_RETENTION,
+    batch_size: int = 1_000,
+    max_batches: int = 200,
+) -> int:
+    """MEM-44: delete terminal intentions past the retention window, in batches.
+
+    Cross-tenant retention job (maintenance role). Each batch is its own short
+    transaction over at most ``batch_size`` rows (``ix_prospective_terminal_due``),
+    so a large backlog never holds one long lock. Pending/leased rows and recent
+    terminal rows are never touched. Returns the number of rows deleted.
+    """
+    from app.db.rls import system_session
+
+    cutoff = now - retention
+    total = 0
+    for _ in range(max_batches):
+        async with (
+            maintenance_session_factory() as s,
+            s.begin(),
+            system_session(s),
+        ):
+            res = await s.execute(
+                text(
+                    "WITH doomed AS MATERIALIZED ("
+                    "  SELECT memory_id FROM prospective_memory "
+                    "  WHERE state IN ('completed','failed','cancelled','expired') "
+                    "  AND due_at < :cutoff "
+                    "  ORDER BY due_at LIMIT :n FOR UPDATE SKIP LOCKED) "
+                    "DELETE FROM prospective_memory AS p USING doomed "
+                    "WHERE p.memory_id = doomed.memory_id"
+                ),
+                {"cutoff": cutoff, "n": batch_size},
+            )
+        deleted = int(res.rowcount or 0)
+        total += deleted
+        if deleted < batch_size:
+            break
+    return total
+
+
+__all__ = [
+    "TERMINAL_RETENTION",
+    "PostgresProspectiveMemoryService",
+    "purge_terminal_prospective",
+]
