@@ -6,7 +6,7 @@ import datetime
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.guardrails_v2.models import (
@@ -16,6 +16,7 @@ from app.guardrails_v2.models import (
     GuardrailLayer,
     GuardrailRule,
 )
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/guardrails-v2", tags=["guardrails-v2"])
 
@@ -60,7 +61,11 @@ class EvaluateCorpusRequest(BaseModel):
 
 
 @router.post("/rules")
-async def create_rule(request: Request, body: CreateRuleRequest) -> dict[str, Any]:
+async def create_rule(
+    request: Request,
+    body: CreateRuleRequest,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Create a new guardrail rule."""
     tenant = _require_tenant(request)
     from app.guardrails_v2.engine import guardrails_engine
@@ -214,7 +219,11 @@ async def list_violations(
 
 
 @router.post("/bundles/{bundle_name}")
-async def enable_compliance_bundle(request: Request, bundle_name: str) -> dict[str, Any]:
+async def enable_compliance_bundle(
+    request: Request,
+    bundle_name: str,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Enable a compliance bundle (creates preset rules)."""
     tenant = _require_tenant(request)
     from app.guardrails_v2.engine import guardrails_engine
