@@ -24,8 +24,12 @@ from app.guardrails_v2.models import (
     GuardrailAction,
     GuardrailLayer,
     GuardrailRule,
+    GuardrailViolation,
     ViolationCategory,
 )
+
+# guardrail_violations.severity CHECK constraint (migration 0055).
+_SEVERITIES = frozenset({"critical", "high", "medium", "low", "info"})
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -106,6 +110,83 @@ class PostgresGuardrailRuleRepository:
                 .on_conflict_do_nothing(index_elements=[GuardrailRuleRow.rule_id])
             )
             await db.execute(stmt)
+
+    async def record_violations(self, tenant_id: str, violations: list[GuardrailViolation]) -> None:
+        """Persist one evaluation's violations (GRD-04: they lived only in the
+        evaluating process's memory, so GET /violations showed one replica's)."""
+        if not violations:
+            return
+        from sqlalchemy import text
+
+        rows = [
+            {
+                "id": v.violation_id,
+                "tid": tenant_id,
+                "goal": v.goal_id,
+                "rule": v.rule_id,
+                "layer": v.layer,
+                "vtype": v.category or "unknown",
+                "sev": v.severity if v.severity in _SEVERITIES else "high",
+                "pattern": v.rule_name,
+                "loc": (v.step_description or "")[:500] or None,
+                "action": v.action_taken,
+                "preview": v.content_preview,
+            }
+            for v in violations
+        ]
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            await db.execute(
+                text(
+                    "INSERT INTO guardrail_violations (id, tenant_id, goal_id, rule_id, layer, "
+                    "violation_type, severity, pattern_matched, location, action_taken, "
+                    "content_preview) VALUES (:id, :tid, :goal, :rule, :layer, :vtype, :sev, "
+                    ":pattern, :loc, :action, :preview)"
+                ),
+                rows,
+            )
+
+    async def list_violations(
+        self, tenant_id: str, *, limit: int = 100, severity: str | None = None
+    ) -> list[GuardrailViolation]:
+        from sqlalchemy import text
+
+        sql = (
+            "SELECT id, rule_id, pattern_matched, layer, action_taken, violation_type, "
+            "severity, goal_id, location, content_preview, created_at "
+            "FROM guardrail_violations WHERE tenant_id = :tid"
+        )
+        params: dict[str, object] = {"tid": tenant_id, "lim": limit}
+        if severity:
+            sql += " AND severity = :sev"
+            params["sev"] = severity
+        sql += " ORDER BY created_at DESC LIMIT :lim"
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            result = await db.execute(text(sql), params)
+            return [
+                GuardrailViolation(
+                    violation_id=str(r[0]),
+                    tenant_id=tenant_id,
+                    rule_id=r[1] or "",
+                    rule_name=r[2] or "",
+                    layer=r[3],
+                    action_taken=r[4],
+                    category=r[5],
+                    severity=r[6],
+                    goal_id=r[7],
+                    step_description=r[8],
+                    content_preview=r[9] or "",
+                    created_at=r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
+                )
+                for r in result.fetchall()
+            ]
 
     async def delete(self, tenant_id: str, rule_id: str) -> None:
         from sqlalchemy import delete

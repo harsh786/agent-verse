@@ -278,9 +278,13 @@ async def list_violations(
     tenant = _require_tenant(request)
     from app.guardrails_v2.engine import guardrails_engine
 
-    violations = guardrails_engine.get_violations(tenant.tenant_id, limit)
-    if severity:
-        violations = [v for v in violations if v.severity == severity]
+    # Every replica's violations from Postgres (GRD-04), never this process's alone.
+    try:
+        violations = await guardrails_engine.aget_violations(
+            tenant.tenant_id, limit, severity=severity
+        )
+    except Exception as exc:
+        raise HTTPException(503, "Guardrail violations are temporarily unavailable") from exc
 
     return {
         "violations": [

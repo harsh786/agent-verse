@@ -33,6 +33,8 @@ _DEFAULT_RULE_REFRESH_S = 60.0
 # After a FIRST load fails, further evaluations for that tenant fail fast for this
 # long instead of each waiting on a struggling database.
 _LOAD_RETRY_BACKOFF_S = 5.0
+# Per-tenant cap of the in-process violation cache (Postgres is the record).
+_VIOLATION_CACHE_PER_TENANT = 1000
 
 
 class GuardrailRulesUnavailableError(RuntimeError):
@@ -529,8 +531,48 @@ class GuardrailsEngine:
         return self.get_rules(tenant_id, layer)
 
     def get_violations(self, tenant_id: str, limit: int = 100) -> list[GuardrailViolation]:
+        """This process's recent violations only (bounded cache)."""
         violations = list(reversed(self._violations.get(tenant_id, [])))
         return violations[:limit]
+
+    async def aget_violations(
+        self, tenant_id: str, limit: int = 100, severity: str | None = None
+    ) -> list[GuardrailViolation]:
+        """The tenant's violations from Postgres (every replica's) when a repository
+        is bound; raises if it cannot be read — never a one-replica partial view."""
+        lister = getattr(self._repo, "list_violations", None)
+        if lister is None:
+            found = self.get_violations(tenant_id, limit if not severity else 10_000)
+            if severity:
+                found = [v for v in found if v.severity == severity][:limit]
+            return found
+        result: list[GuardrailViolation] = await lister(
+            tenant_id, limit=limit, severity=severity
+        )
+        return result
+
+    def _remember_violation(self, tenant_id: str, violation: GuardrailViolation) -> None:
+        cache = self._violations.setdefault(tenant_id, [])
+        cache.append(violation)
+        if len(cache) > _VIOLATION_CACHE_PER_TENANT:
+            del cache[: len(cache) - _VIOLATION_CACHE_PER_TENANT]
+
+    async def _persist_violations(
+        self, tenant_id: str, violations: list[GuardrailViolation]
+    ) -> None:
+        recorder = getattr(self._repo, "record_violations", None)
+        if recorder is None or not violations:
+            return
+        try:
+            await recorder(tenant_id, violations)
+        except Exception as exc:
+            # The evaluation verdict stands; the lost record is loud, not silent.
+            _log.error(
+                "guardrail_violations_persist_failed tenant=%s count=%s: %s",
+                tenant_id,
+                len(violations),
+                exc,
+            )
 
     async def evaluate(
         self,
@@ -565,7 +607,7 @@ class GuardrailsEngine:
                     created_at=datetime.datetime.now(datetime.UTC).isoformat(),
                 )
                 violations.append(violation)
-                self._violations.setdefault(tenant_id, []).append(violation)
+                self._remember_violation(tenant_id, violation)
 
                 if rule.action == GuardrailAction.BLOCK:
                     blocked = True
@@ -574,6 +616,7 @@ class GuardrailsEngine:
                 elif rule.action == GuardrailAction.REDACT:
                     redacted_content = self._redact(redacted_content, result.get("matches", []))
 
+        await self._persist_violations(tenant_id, violations)
         return {
             "blocked": blocked,
             "hitl_required": hitl_required,
