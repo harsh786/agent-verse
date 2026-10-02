@@ -12,6 +12,7 @@ import structlog
 from fastapi import FastAPI
 
 from app.api.a2a import router as a2a_router
+from app.api.a2a_remote_agents import router as a2a_remote_agents_router
 from app.api.admin import router as admin_router
 from app.api.agent_credentials_api import router as agent_credentials_router
 from app.api.agent_directory import router as agent_directory_router
@@ -341,6 +342,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     app.include_router(artifacts_router)
     # A2A + collaboration
     app.include_router(a2a_router)
+    app.include_router(a2a_remote_agents_router)
     app.include_router(collab_router)
     # A2A Agent Directory (.well-known/agents — Phase 8)
     app.include_router(agent_directory_router)

@@ -1943,8 +1943,27 @@ export interface A2ATaskSubmit {
   priority?: string;
 }
 
+/** A tenant's registered remote A2A agent (server-side registry, RLS-scoped). */
+export interface RemoteA2AAgent {
+  id: string;
+  name: string;
+  url: string;
+  card: AgentCard | null;
+  last_error: string | null;
+  last_checked_at?: string | null;
+  created_at?: string | null;
+}
+
 export const a2aApi = {
   agentCard: () => request<AgentCard>("/.well-known/agent.json"),
+  /** Remote agents: the server fetches + validates the agent card (SSRF-guarded). */
+  listRemoteAgents: () => request<{ agents: RemoteA2AAgent[] }>("/a2a/remote-agents"),
+  registerRemoteAgent: (data: { url: string; name?: string }) =>
+    request<RemoteA2AAgent>("/a2a/remote-agents", { method: "POST", body: JSON.stringify(data) }),
+  pingRemoteAgent: (id: string) =>
+    request<RemoteA2AAgent>(`/a2a/remote-agents/${id}/ping`, { method: "POST" }),
+  deleteRemoteAgent: (id: string) =>
+    request<void>(`/a2a/remote-agents/${id}`, { method: "DELETE" }),
   getTask: (taskId: string) => request<A2ATask>(`/a2a/tasks/${taskId}`),
   listTasks: (limit = 50) => request<A2ATask[]>(`/a2a/tasks?limit=${limit}`),
   submitTask: (data: A2ATaskSubmit) =>

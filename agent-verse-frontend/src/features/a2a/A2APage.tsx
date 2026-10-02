@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-import { a2aApi, type AgentCard, type A2ATask } from "@/lib/api/client";
+import { a2aApi, type AgentCard, type A2ATask, type RemoteA2AAgent } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
@@ -343,50 +343,47 @@ function AgentCardTab() {
 
 // ── Remote agents tab ─────────────────────────────────────────────────────────
 
-interface RemoteAgent { name: string; url: string; card?: AgentCard; error?: string }
+const REMOTE_KEY = ["a2a", "remote-agents"] as const;
+
+const errText = (e: unknown) => (e instanceof Error && e.message ? e.message : "Request failed");
 
 function RemoteAgentsTab({ onDispatch }: { onDispatch: (endpoint: string) => void }) {
-  const STORAGE_KEY = "a2a_remote_agents";
-  const [agents, setAgents] = useState<RemoteAgent[]>(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]"); } catch { return []; }
+  // Server-side, tenant-scoped registry: every operator sees the same agents,
+  // and the server (not this browser) fetches and validates each agent card.
+  const qc = useQueryClient();
+  const listQuery = useQuery({
+    queryKey: REMOTE_KEY,
+    queryFn: () => a2aApi.listRemoteAgents().then((r) => r.agents ?? []),
   });
+  const agents: RemoteA2AAgent[] = listQuery.data ?? [];
   const [registerOpen, setRegisterOpen] = useState(false);
   const [regUrl, setRegUrl] = useState("");
   const [regName, setRegName] = useState("");
-  const [regLoading, setRegLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const save = (updated: RemoteAgent[]) => {
-    setAgents(updated);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  };
-
-  const register = async () => {
-    setRegLoading(true);
-    try {
-      const res = await fetch(regUrl.trim());
-      const card: AgentCard = await res.json();
-      save([...agents, { name: regName || card.name, url: regUrl.trim(), card }]);
+  const registerMut = useMutation({
+    mutationFn: () => a2aApi.registerRemoteAgent({ url: regUrl.trim(), name: regName.trim() }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: REMOTE_KEY });
       setRegisterOpen(false);
       setRegUrl(""); setRegName("");
-    } catch { save([...agents, { name: regName || regUrl, url: regUrl.trim(), error: "Failed to fetch card" }]); }
-    finally { setRegLoading(false); }
-  };
+    },
+  });
+  const regLoading = registerMut.isPending;
+  const register = () => registerMut.mutate();
 
-  const ping = async (idx: number) => {
-    try {
-      const res = await fetch(agents[idx].url);
-      const card: AgentCard = await res.json();
-      const updated = [...agents];
-      updated[idx] = { ...updated[idx], card, error: undefined };
-      save(updated);
-    } catch {
-      const updated = [...agents];
-      updated[idx] = { ...updated[idx], error: "Ping failed" };
-      save(updated);
-    }
-  };
-
-  const remove = (idx: number) => save(agents.filter((_, i) => i !== idx));
+  const pingMut = useMutation({
+    mutationFn: (id: string) => a2aApi.pingRemoteAgent(id),
+    onSuccess: () => { setActionError(null); void qc.invalidateQueries({ queryKey: REMOTE_KEY }); },
+    onError: (e) => setActionError(`Ping failed: ${errText(e)}`),
+  });
+  const removeMut = useMutation({
+    mutationFn: (id: string) => a2aApi.deleteRemoteAgent(id),
+    onSuccess: () => { setActionError(null); void qc.invalidateQueries({ queryKey: REMOTE_KEY }); },
+    onError: (e) => setActionError(`Remove failed: ${errText(e)}`),
+  });
+  const ping = (idx: number) => pingMut.mutate(agents[idx].id);
+  const remove = (idx: number) => removeMut.mutate(agents[idx].id);
 
   return (
     <div className="space-y-4 max-w-3xl">
@@ -400,7 +397,16 @@ function RemoteAgentsTab({ onDispatch }: { onDispatch: (endpoint: string) => voi
         </button>
       </div>
 
-      {agents.length === 0 ? (
+      {actionError && <p role="alert" className="text-xs text-red-500">{actionError}</p>}
+
+      {listQuery.isLoading ? (
+        <Skeleton className="h-24 rounded-xl" />
+      ) : listQuery.isError ? (
+        <div role="alert" className="text-sm text-red-500 space-y-1">
+          <p>Could not load remote agents: {errText(listQuery.error)}</p>
+          <button onClick={() => void listQuery.refetch()} className="underline text-xs">Retry</button>
+        </div>
+      ) : agents.length === 0 ? (
         <EmptyState
           icon={<Network size={40} />}
           title="No remote agents registered"
@@ -410,12 +416,12 @@ function RemoteAgentsTab({ onDispatch }: { onDispatch: (endpoint: string) => voi
       ) : (
         <div className="space-y-3">
           {agents.map((a, i) => (
-            <div key={i} className="bg-card border border-border rounded-xl p-4 space-y-3">
+            <div key={a.id} className="bg-card border border-border rounded-xl p-4 space-y-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold">{a.name}</p>
                   {a.card && <p className="text-[10px] text-muted-foreground">v{a.card.version}</p>}
-                  {a.error && <p className="text-[10px] text-red-500">{a.error}</p>}
+                  {a.last_error && <p className="text-[10px] text-red-500">{a.last_error}</p>}
                 </div>
                 <div className="flex gap-1.5">
                   <button onClick={() => ping(i)} className="p-1.5 rounded text-muted-foreground hover:text-foreground" title="Ping"><RefreshCw className="h-3.5 w-3.5" /></button>
@@ -457,6 +463,11 @@ function RemoteAgentsTab({ onDispatch }: { onDispatch: (endpoint: string) => voi
                   className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary" />
               </div>
             </div>
+            {registerMut.isError && (
+              <p role="alert" className="text-xs text-red-500">
+                Registration failed: {errText(registerMut.error)}
+              </p>
+            )}
             <div className="flex gap-3">
               <button onClick={register} disabled={!regUrl.trim() || regLoading}
                 className="flex-1 py-2.5 bg-primary text-primary-foreground text-sm font-medium rounded-lg hover:opacity-90 disabled:opacity-50">

@@ -349,10 +349,50 @@ describe('A2APage', () => {
     });
   });
 
-  // ── Remote Agents tab: register modal, list, ping, remove, dispatch ────────
+  // ── Remote Agents tab: server-side registry (/a2a/remote-agents) ─────────
+
+  type Row = { id: string; name: string; url: string; card: typeof AGENT_CARD | null; last_error: string | null };
+
+  /** A fake tenant registry: the page must never fetch agent cards itself. */
+  function remoteBackend(initial: Row[] = [], opts: { registerStatus?: number; registerDetail?: string; pingError?: string; listStatus?: number } = {}) {
+    const rows = [...initial];
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase();
+      const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { 'Content-Type': 'application/json' } });
+      const ping = url.match(/\/a2a\/remote-agents\/([^/]+)\/ping$/);
+      if (ping && method === 'POST') {
+        const r = rows.find((x) => x.id === ping[1])!;
+        if (opts.pingError) r.last_error = opts.pingError;
+        else { r.card = AGENT_CARD; r.last_error = null; }
+        return json(r);
+      }
+      const one = url.match(/\/a2a\/remote-agents\/([^/]+)$/);
+      if (one && method === 'DELETE') {
+        rows.splice(rows.findIndex((x) => x.id === one[1]), 1);
+        return new Response(null, { status: 204 });
+      }
+      if (url.endsWith('/a2a/remote-agents') && method === 'POST') {
+        if (opts.registerStatus) return json({ detail: opts.registerDetail }, opts.registerStatus);
+        const body = JSON.parse(String((init as RequestInit).body));
+        const row = { id: `ra-${rows.length + 1}`, name: body.name || AGENT_CARD.name, url: body.url, card: AGENT_CARD, last_error: null };
+        rows.unshift(row);
+        return json(row, 201);
+      }
+      if (url.endsWith('/a2a/remote-agents')) {
+        if (opts.listStatus) return json({ detail: 'Registry unavailable' }, opts.listStatus);
+        return json({ agents: rows });
+      }
+      if (url.includes('/.well-known/agent.json') && !url.startsWith('https://')) return json(AGENT_CARD);
+      if (url.includes('/a2a/tasks')) return json([]);
+      if (url.startsWith('https://')) throw new Error('the browser must not fetch remote agent cards');
+      return json([]);
+    });
+    return { rows, spy };
+  }
 
   test('opens and cancels the register-agent modal', async () => {
-    mockFetch([]);
+    remoteBackend();
     renderPage();
     await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
     await userEvent.click(screen.getByRole('button', { name: /register agent/i }));
@@ -362,8 +402,8 @@ describe('A2APage', () => {
     expect(screen.queryByText(/register remote agent/i)).not.toBeInTheDocument();
   });
 
-  test('registers a remote agent successfully and lists it', async () => {
-    mockFetch([]);
+  test('registers via POST /a2a/remote-agents (server validates the card) and lists it', async () => {
+    const { spy } = remoteBackend();
     renderPage();
     await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
     await userEvent.click(screen.getByRole('button', { name: /register agent/i }));
@@ -375,84 +415,64 @@ describe('A2APage', () => {
     await waitFor(() => expect(screen.getByText('Remote One')).toBeInTheDocument());
     expect(screen.getByText(/v2\.0/)).toBeInTheDocument();
     expect(screen.getByText(/2 task types/i)).toBeInTheDocument();
+    const post = spy.mock.calls.find(([u, i]) => String(u).endsWith('/a2a/remote-agents') && (i as RequestInit)?.method === 'POST');
+    expect(JSON.parse(String((post![1] as RequestInit).body))).toEqual({
+      url: 'https://remote.example.com/.well-known/agent.json', name: 'Remote One',
+    });
+    // Nothing is kept in browser storage any more.
+    expect(localStorage.getItem('a2a_remote_agents')).toBeNull();
   });
 
-  test('registration failure records an error on the agent entry', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes('bad-agent')) throw new Error('boom');
-      return new Response('[]', { status: 200 });
-    });
+  test('a refused registration (422) shows the reason and stores nothing', async () => {
+    remoteBackend([], { registerStatus: 422, registerDetail: 'Agent card must be a JSON object with a non-empty name' });
     renderPage();
     await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
     await userEvent.click(screen.getByRole('button', { name: /register agent/i }));
-
     await userEvent.type(screen.getByPlaceholderText(/agent.example.com\/.well-known/i), 'https://bad-agent.example.com/card.json');
     await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
 
-    await waitFor(() => expect(screen.getByText(/failed to fetch card/i)).toBeInTheDocument());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/non-empty name/);
+    expect(screen.getByText(/register remote agent/i)).toBeInTheDocument();
   });
 
-  test('pings a registered agent and refreshes its card, then can remove it', async () => {
-    localStorage.setItem('a2a_remote_agents', JSON.stringify([
-      { name: 'Existing Agent', url: 'https://existing.example.com/card.json' },
-    ]));
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes('existing.example.com')) return new Response(JSON.stringify(AGENT_CARD), { status: 200 });
-      return new Response('[]', { status: 200 });
-    });
+  test('a failing registry list renders an error, not the empty state', async () => {
+    remoteBackend([], { listStatus: 503 });
     renderPage();
     await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
-    expect(screen.getByText('Existing Agent')).toBeInTheDocument();
+    expect(await screen.findByText(/could not load remote agents/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no remote agents registered/i)).not.toBeInTheDocument();
+  });
+
+  test('pings a registered agent through the server and removes it', async () => {
+    const { rows } = remoteBackend([{ id: 'ra-1', name: 'Existing Agent', url: 'https://existing.example.com/card.json', card: null, last_error: null }]);
+    renderPage();
+    await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
+    expect(await screen.findByText('Existing Agent')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /ping/i }));
     await waitFor(() => expect(screen.getByText(/v2\.0/)).toBeInTheDocument());
 
     await userEvent.click(screen.getByRole('button', { name: /remove/i }));
-    expect(screen.queryByText('Existing Agent')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText('Existing Agent')).not.toBeInTheDocument());
+    expect(rows).toHaveLength(0);
   });
 
-  test('ping failure records an error on the agent entry', async () => {
-    localStorage.setItem('a2a_remote_agents', JSON.stringify([
-      { name: 'Flaky Agent', url: 'https://flaky.example.com/card.json' },
-    ]));
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes('flaky.example.com')) throw new Error('down');
-      return new Response('[]', { status: 200 });
-    });
+  test('a failed ping shows the recorded server error', async () => {
+    remoteBackend([{ id: 'ra-1', name: 'Flaky Agent', url: 'https://flaky.example.com/card.json', card: null, last_error: null }], { pingError: 'Agent card could not be fetched from that URL' });
     renderPage();
     await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
+    await screen.findByText('Flaky Agent');
     await userEvent.click(screen.getByRole('button', { name: /ping/i }));
-    await waitFor(() => expect(screen.getByText(/ping failed/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/could not be fetched/i)).toBeInTheDocument());
   });
 
   test('dispatching from a remote agent card switches to the Tasks tab', async () => {
-    localStorage.setItem('a2a_remote_agents', JSON.stringify([
-      { name: 'Dispatch Target', url: 'https://dispatch.example.com/card.json', card: AGENT_CARD },
-    ]));
-    mockFetch([]);
+    remoteBackend([{ id: 'ra-1', name: 'Dispatch Target', url: 'https://dispatch.example.com/card.json', card: AGENT_CARD, last_error: null }]);
     renderPage();
     await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
-    expect(screen.getByText('Dispatch Target')).toBeInTheDocument();
+    expect(await screen.findByText('Dispatch Target')).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /dispatch/i }));
     expect(screen.getByRole('tab', { name: /tasks/i })).toHaveAttribute('aria-selected', 'true');
-  });
-
-  test('remote agent list renders a stored error and truncated capabilities', async () => {
-    localStorage.setItem('a2a_remote_agents', JSON.stringify([
-      {
-        name: 'Errored Agent',
-        url: 'https://errored.example.com/card.json',
-        error: 'Failed to fetch card',
-        card: { ...AGENT_CARD, capabilities: ['a', 'b', 'c', 'd', 'e', 'f'] },
-      },
-    ]));
-    mockFetch([]);
-    renderPage();
-    await userEvent.click(screen.getByRole('tab', { name: /remote agents/i }));
-    expect(screen.getByText(/failed to fetch card/i)).toBeInTheDocument();
   });
 });
