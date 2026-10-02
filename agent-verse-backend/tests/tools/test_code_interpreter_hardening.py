@@ -75,7 +75,9 @@ async def test_output_is_read_live_and_capped_then_the_program_is_stopped() -> N
     mod, client = _fake_docker()
     container = client.containers.create.return_value
     container.attach_socket.return_value.test_frames = _gen()
-    with patch.dict(sys.modules, {"docker": mod}), patch.object(ci, "_DOCKER_AVAILABLE", True):
+    with patch.dict(sys.modules, {"docker": mod}), patch.object(
+        ci, "_docker_available", lambda: True
+    ):
         res = await ci.CodeInterpreter().execute("print(1)", "python", 5)
 
     assert len(res.stdout) <= ci._MAX_OUTPUT_CHARS + 200
