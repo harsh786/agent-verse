@@ -138,6 +138,8 @@ class BrowserSessionManager:
         self._local_slots = LocalSlotCounter()
         # Which slot backs each session: "lease" (Redis) or "local".
         self._slot_kind: dict[tuple[str, str], str] = {}
+        # At the cap, only a session idle at least this long may be evicted.
+        self._evict_idle_s = float(settings.rpa_session_evict_idle_s)
         self._lock = asyncio.Lock()
         self._redis = redis
         self._SESSION_TTL = 3600  # 1 hour
@@ -167,7 +169,16 @@ class BrowserSessionManager:
             if owner is not None:
                 raise SessionOnAnotherReplicaError(session_id, owner)
 
-            await self._acquire_slots(session_id, tenant_id)
+            try:
+                await self._acquire_slots(session_id, tenant_id)
+            except BrowserSessionCapError as cap:
+                # Only a session idle past the grace period may make room; a
+                # recently used one may be mid-workflow for another goal.
+                if not await self._evict_one_idle_locked(
+                    tenant_id if cap.scope == "tenant" else None
+                ):
+                    raise
+                await self._acquire_slots(session_id, tenant_id)
             try:
                 session = await self._create_session(
                     session_id, tenant_id, allowed_domains=allowed_domains
@@ -229,6 +240,37 @@ class BrowserSessionManager:
         except BaseException:
             self._local_slots.release(_HOST_SLOT_KEY)
             raise
+
+    async def _evict_one_idle_locked(self, tenant_id: str | None) -> bool:
+        """Close the least-recently-used session idle past the grace period.
+
+        ``tenant_id`` limits candidates to that tenant (tenant cap); ``None`` means
+        any tenant (host cap). Caller holds ``self._lock``. The eviction is
+        awaited and fully undone: browser closed, registry record deleted, slot
+        released — it used to be a fire-and-forget close that left the Redis
+        record claiming the session was live.
+        """
+        cutoff = time.monotonic() - self._evict_idle_s
+        candidates = [
+            (k, s)
+            for k, s in self._sessions.items()
+            if (tenant_id is None or k[1] == tenant_id) and s.last_used_at < cutoff
+        ]
+        if not candidates:
+            return False
+        key, victim = min(candidates, key=lambda kv: kv[1].last_used_at)
+        self._sessions.pop(key, None)
+        with contextlib.suppress(Exception):
+            await victim.close()
+        await self._deregister_from_redis(key[0], key[1])
+        await self._release_slots(key[0], key[1])
+        logger.info(
+            "browser_session_evicted",
+            session_id=key[0],
+            tenant_id=key[1],
+            reason="idle_past_grace_at_cap",
+        )
+        return True
 
     async def _release_slots(self, session_id: str, tenant_id: str) -> None:
         from app.reliability.bulkhead import RedisLeaseLimiter

@@ -395,6 +395,9 @@ class Settings(BaseSettings):
     rpa_max_sessions_per_tenant: int = 5
     # Chromium processes one API/worker process may run, all tenants together.
     rpa_max_browsers_per_host: int = 10
+    # At a full cap, a session idle this long may be closed to make room (never a
+    # recently used one, which may be mid-workflow for another goal).
+    rpa_session_evict_idle_s: int = 120
 
     # --- platform email relay (POST /tools/email/send) ---
     email_max_recipients: int = 50
