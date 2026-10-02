@@ -2248,6 +2248,36 @@ export interface EvalSuite {
   description?: string;
   task_count: number;
   created_at: string;
+  /** Bumped by every golden-task add / edit / delete / import (MEM-54). */
+  dataset_version?: number;
+}
+
+export interface GoldenTask {
+  task_id: string;
+  goal: string;
+  expected_tools: string[];
+  forbidden_tools: string[];
+  expected_output_contains: string[];
+  expected_output: string;
+  min_score: number;
+  max_iterations: number;
+  tags: string[];
+  /** The dataset version this revision of the task was written in. */
+  revision?: number;
+}
+
+export interface EvalSuiteDetail extends EvalSuite {
+  tasks: GoldenTask[];
+  tasks_truncated?: boolean;
+}
+
+export interface GoldenDatasetExport {
+  format: string;
+  suite_id: string;
+  name: string;
+  dataset_version: number;
+  task_count: number;
+  tasks: GoldenTask[];
 }
 
 export interface EvalSuiteResult {
@@ -2257,6 +2287,9 @@ export interface EvalSuiteResult {
   passed: number;
   failed: number;
   completed_at: string;
+  status?: string;
+  /** The golden dataset version the run executed. */
+  dataset_version?: number | null;
   task_results?: Array<EvalSuiteTaskResult>;
 }
 
@@ -2278,6 +2311,7 @@ export interface EvalSuiteTaskResult {
 }
 
 export interface GoldenTaskInput {
+  task_id?: string;
   goal: string;
   expected_tools?: string[];
   forbidden_tools?: string[];
@@ -2305,7 +2339,7 @@ export const evalSuitesApi = {
       method: "POST",
       body: JSON.stringify({ name, description }),
     }),
-  getSuite: (id: string) => request<EvalSuite>(`/intelligence/eval-suites/${id}`),
+  getSuite: (id: string) => request<EvalSuiteDetail>(`/intelligence/eval-suites/${id}`),
   addTask: (suiteId: string, task: GoldenTaskInput) =>
     request<void>(`/intelligence/eval-suites/${suiteId}/tasks`, {
       method: "POST",
@@ -2317,6 +2351,25 @@ export const evalSuitesApi = {
     request<EvalSuiteResult[]>(`/intelligence/eval-suites/${id}/results`),
   deleteSuite: (suiteId: string) =>
     request<void>(`/intelligence/eval-suites/${suiteId}`, { method: 'DELETE' }),
+  updateTask: (suiteId: string, taskId: string, changes: Partial<GoldenTaskInput>) =>
+    request<{ dataset_version: number; task: GoldenTask }>(
+      `/intelligence/eval-suites/${suiteId}/tasks/${encodeURIComponent(taskId)}`,
+      { method: "PATCH", body: JSON.stringify(changes) },
+    ),
+  deleteTask: (suiteId: string, taskId: string) =>
+    request<{ dataset_version: number }>(
+      `/intelligence/eval-suites/${suiteId}/tasks/${encodeURIComponent(taskId)}`,
+      { method: "DELETE" },
+    ),
+  exportDataset: (suiteId: string, version?: number) =>
+    request<GoldenDatasetExport>(
+      `/intelligence/eval-suites/${suiteId}/export${version != null ? `?version=${version}` : ""}`,
+    ),
+  importDataset: (suiteId: string, tasks: GoldenTaskInput[], replace = false) =>
+    request<{ dataset_version: number; imported: number }>(
+      `/intelligence/eval-suites/${suiteId}/import`,
+      { method: "POST", body: JSON.stringify({ tasks, replace }) },
+    ),
 };
 
 // ── Workflows (Phase-6) ────────────────────────────────────────────────────────
