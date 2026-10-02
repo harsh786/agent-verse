@@ -14,7 +14,9 @@ read the caller gets :class:`TenantVaultError` (fail closed — never a fallback
 another key). Replacing a tenant key keeps the previous keys (wrapped, in the
 same row) for decryption only, so no ``tv1:`` value anywhere is orphaned; new
 writes and lazy re-wraps use the new key. The tenant's ``tv1:`` LLM key is also
-re-encrypted in the replacing transaction.
+re-encrypted in the replacing transaction. ``agentverse tenant-key-compact``
+re-seals whatever is still under a previous key and then drops it
+(app/providers/tenant_key_compaction.py).
 """
 
 from __future__ import annotations

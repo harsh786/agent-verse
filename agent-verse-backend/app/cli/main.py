@@ -516,6 +516,64 @@ def vault_rotate(
         raise typer.Exit(1)
 
 
+@app.command(name="tenant-key-compact")
+def tenant_key_compact(
+    tenant: list[str] = typer.Option(
+        None, "--tenant", help="Tenant id to compact (repeatable); default: every tenant key."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Count what would change; write nothing."
+    ),
+    batch_size: int = typer.Option(200, min=1, max=10_000, help="Rows per transaction."),
+    min_age_seconds: float = typer.Option(
+        120.0,
+        min=0,
+        help="Skip tenants whose key was replaced more recently than this (replica caches).",
+    ),
+) -> None:
+    """Drop replaced tenant vault keys once nothing is sealed with them.
+
+    For each tenant that still keeps previous envelope keys (``POST
+    /tenants/me/vault-key`` replacements), re-seals every value still under a
+    previous key with the current one (Postgres under the tenant's RLS context,
+    and Redis when REDIS_URL is set), then rewrites the keyring to the current key
+    alone — only if nothing is left under an old key and nothing is unreadable.
+    Idempotent; progress as JSON lines on stderr. Exits 1 unless every tenant is
+    compacted or had nothing to compact (or a clean dry run).
+    """
+    import asyncio
+
+    from app.providers.tenant_key_compaction import compact_tenant_keys
+
+    def _progress(event: dict) -> None:  # type: ignore[type-arg]
+        typer.echo(json.dumps(event), err=True)
+
+    async def _run() -> dict:  # type: ignore[type-arg]
+        from app.db.session import get_session_factory, get_system_session_factory
+
+        redis_client = None
+        redis_url = os.environ.get("REDIS_URL", "")
+        if redis_url:
+            import redis.asyncio as aioredis
+
+            redis_client = aioredis.from_url(redis_url, decode_responses=True)
+        return await compact_tenant_keys(
+            tenant_db=get_session_factory(),
+            system_db=get_system_session_factory(),
+            redis=redis_client,
+            tenant_ids=list(tenant) if tenant else None,
+            dry_run=dry_run,
+            batch_size=batch_size,
+            min_age_seconds=min_age_seconds,
+            progress=_progress,
+        )
+
+    result = asyncio.run(_run())
+    typer.echo(json.dumps(result, indent=2))
+    if result.get("status") not in ("complete", "dry_run"):
+        raise typer.Exit(1)
+
+
 @app.command(name="mfa-rotate")
 def mfa_rotate(
     dry_run: bool = typer.Option(
