@@ -104,6 +104,38 @@ _SELECT_COLS = (
 )
 
 
+# MEM-46: the verdict, expressed in SQL so ranking/filtering happens BEFORE the
+# LIMIT. The decayed success rate needs no decay factor (it cancels out); the
+# decayed call volume does.
+_SQL_BLACKLISTED = (
+    "(blacklisted_at IS NOT NULL AND "
+    "COALESCE(blacklist_expires_at, blacklisted_at + CAST(:bl_ttl AS interval)) "
+    "> CAST(:now AS timestamptz))"
+)
+_SQL_RECENT_RATE = (
+    "COALESCE(recent_success / NULLIF(recent_success + recent_failure, 0), 1.0)"
+)
+_SQL_RECENT_CALLS = (
+    "(recent_success + recent_failure) * power(0.5, GREATEST(0, EXTRACT(EPOCH FROM "
+    "(CAST(:now AS timestamptz) - COALESCE(decayed_at, CAST(:now AS timestamptz))))) "
+    "/ :half_life)"
+)
+_SQL_UNRELIABLE = (
+    f"({_SQL_BLACKLISTED} OR ({_SQL_RECENT_CALLS} + 1e-6 >= :min_calls "
+    f"AND {_SQL_RECENT_RATE} < :max_rate))"
+)
+
+
+def _verdict_params(now: datetime, min_calls: int, max_success_rate: float) -> dict[str, Any]:
+    return {
+        "now": now,
+        "bl_ttl": BLACKLIST_TTL,
+        "half_life": DECAY_HALF_LIFE.total_seconds(),
+        "min_calls": float(min_calls),
+        "max_rate": float(max_success_rate),
+    }
+
+
 def _row_stats(r: Any, *, now: datetime, **thresholds: Any) -> dict[str, Any]:
     return _stats(
         r[0],
@@ -397,8 +429,31 @@ class ToolReliabilityStore:
     ) -> list[dict[str, Any]]:
         """Every tool with recorded calls or a blacklist flag, least reliable first.
 
+        Ranked in SQL (unreliable first, then by decayed success rate) BEFORE the
+        LIMIT (MEM-46) — it used to LIMIT an unordered set and rank afterwards,
+        so a large tenant's unreliable tools could be cut off.
+
         Raises :class:`ToolReliabilityUnavailableError` on a DB failure.
         """
+        return await self._query_tools(
+            tenant_id=tenant_id,
+            min_calls=min_calls,
+            max_success_rate=max_success_rate,
+            limit=limit,
+            now=now,
+            unreliable_only=False,
+        )
+
+    async def _query_tools(
+        self,
+        *,
+        tenant_id: str,
+        min_calls: int,
+        max_success_rate: float,
+        limit: int,
+        now: datetime | None,
+        unreliable_only: bool,
+    ) -> list[dict[str, Any]]:
         when = now or datetime.now(UTC)
         thresholds = {"min_calls": min_calls, "max_success_rate": max_success_rate}
         rows: list[dict[str, Any]]
@@ -426,9 +481,15 @@ class ToolReliabilityStore:
                         WHERE tenant_id = :tid
                           AND (success_count + failure_count > 0
                                OR blacklisted_at IS NOT NULL)
+                          {"AND " + _SQL_UNRELIABLE if unreliable_only else ""}
+                        ORDER BY {_SQL_UNRELIABLE} DESC, {_SQL_RECENT_RATE} ASC, tool_name
                         LIMIT :lim
                     """),
-                            {"tid": tenant_id, "lim": limit},
+                            {
+                                "tid": tenant_id,
+                                "lim": limit,
+                                **_verdict_params(when, min_calls, max_success_rate),
+                            },
                         )
                     ).fetchall()
             except Exception as exc:
@@ -437,6 +498,8 @@ class ToolReliabilityStore:
                 )
                 raise ToolReliabilityUnavailableError(str(exc)) from exc
             rows = [_row_stats(r, now=when, **thresholds) for r in db_rows]
+        if unreliable_only:
+            rows = [r for r in rows if r["unreliable"]]
         rows.sort(key=lambda s: (not s["unreliable"], s["recent_success_rate"], s["tool_name"]))
         return rows[:limit]
 
@@ -449,9 +512,16 @@ class ToolReliabilityStore:
     ) -> list[dict[str, Any]]:
         """Tools with poor reliability (or blacklisted) for agent planning awareness.
 
+        The threshold is applied in SQL (MEM-46), so the answer never depends on
+        which rows a LIMIT window happened to contain.
+
         Raises :class:`ToolReliabilityUnavailableError` on a DB failure.
         """
-        tools = await self.list_tools(
-            tenant_id=tenant_id, min_calls=min_calls, max_success_rate=max_success_rate
+        return await self._query_tools(
+            tenant_id=tenant_id,
+            min_calls=min_calls,
+            max_success_rate=max_success_rate,
+            limit=200,
+            now=None,
+            unreliable_only=True,
         )
-        return [t for t in tools if t["unreliable"]]
