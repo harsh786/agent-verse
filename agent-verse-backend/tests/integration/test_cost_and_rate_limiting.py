@@ -1,6 +1,6 @@
 """Integration tests: cost control, rate limiting, bulkhead, deduplication, idempotency.
 
-20+ scenarios covering CostController, RateLimiter, BulkheadRegistry,
+20+ scenarios covering CostController, BulkheadRegistry,
 DeduplicationCache, IdempotencyStore, and CircuitBreaker governance.
 """
 from __future__ import annotations
@@ -16,7 +16,6 @@ from app.reliability.circuit_breaker import CircuitBreaker, CircuitState
 from app.reliability.dedup import DeduplicationCache
 from app.reliability.idempotency import IdempotencyStore
 from app.tenancy.context import PlanTier, TenantContext
-from app.tenancy.rate_limiter import RateLimiter
 
 pytestmark = pytest.mark.integration
 
@@ -164,62 +163,6 @@ async def test_cost_controller_concurrent_checks_atomic() -> None:
     assert allowed <= 7
     total = cost.goal_total(goal_id, tenant_ctx=tenant)
     assert total <= 1.0 + 1e-9
-
-
-# ---------------------------------------------------------------------------
-# RateLimiter — in-memory fallback
-# ---------------------------------------------------------------------------
-
-
-async def test_rate_limiter_allows_requests_within_limit() -> None:
-    """RateLimiter(limit=5) allows 5 requests per window."""
-    limiter = RateLimiter(redis=None, limit=5, window_seconds=60)
-    tenant = _tenant("rl")
-    for _ in range(5):
-        ok = await limiter.check(tenant_ctx=tenant)
-        assert ok is True
-
-
-async def test_rate_limiter_blocks_over_limit() -> None:
-    """RateLimiter(limit=3) blocks the 4th request within the window."""
-    limiter = RateLimiter(redis=None, limit=3, window_seconds=60)
-    tenant = _tenant("rl-block")
-    for _ in range(3):
-        await limiter.check(tenant_ctx=tenant)
-    blocked = await limiter.check(tenant_ctx=tenant)
-    assert blocked is False
-
-
-async def test_rate_limiter_different_tenants_independent() -> None:
-    """Rate limit for tenant A does not affect tenant B."""
-    limiter = RateLimiter(redis=None, limit=2, window_seconds=60)
-    tenant_a = _tenant("rl-a")
-    tenant_b = _tenant("rl-b")
-
-    await limiter.check(tenant_ctx=tenant_a)
-    await limiter.check(tenant_ctx=tenant_a)
-    blocked_a = await limiter.check(tenant_ctx=tenant_a)
-
-    ok_b = await limiter.check(tenant_ctx=tenant_b)
-
-    assert blocked_a is False  # A exhausted
-    assert ok_b is True        # B not affected
-
-
-async def test_rate_limiter_window_expires() -> None:
-    """Requests past the window start are counted, old ones expire."""
-    limiter = RateLimiter(redis=None, limit=2, window_seconds=1)
-    tenant = _tenant("rl-exp")
-
-    await limiter.check(tenant_ctx=tenant)
-    await limiter.check(tenant_ctx=tenant)
-    blocked = await limiter.check(tenant_ctx=tenant)
-    assert blocked is False
-
-    # Wait for window to expire
-    await asyncio.sleep(1.1)
-    ok = await limiter.check(tenant_ctx=tenant)
-    assert ok is True  # Window reset
 
 
 # ---------------------------------------------------------------------------

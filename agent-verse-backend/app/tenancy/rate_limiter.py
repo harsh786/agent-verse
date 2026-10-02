@@ -1,14 +1,11 @@
-"""Sliding-window rate limiters backed by Redis sorted sets.
+"""Sliding-window rate limiter backed by Redis sorted sets.
 
-Two classes are provided:
-
-* ``SlidingWindowRateLimiter`` — wraps ``TenantScopedStore`` (used by the
-  FastAPI middleware).  Uses an atomic Lua script (TOCTOU-safe) with a
-  per-endpoint ``asyncio.Lock`` fallback when ``eval`` is unavailable.
-
-* ``RateLimiter`` — accepts a raw ``redis.asyncio`` client *or* ``None``.
-  When ``None``, uses an in-process asyncio.Lock-guarded sliding window
-  (suitable for tests and single-replica deployments without Redis).
+``SlidingWindowRateLimiter`` wraps ``TenantScopedStore`` (used by the FastAPI
+middleware): an atomic Lua script (TOCTOU-safe) with a per-endpoint
+``asyncio.Lock`` fallback when ``eval`` is unavailable. It is the single
+implementation — the unused ``RateLimiter`` class with a per-process
+in-memory window was removed (RATE-02): a per-process counter enforces N x the
+limit across N replicas.
 """
 
 from __future__ import annotations
@@ -16,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any
 
 from app.observability.logging import get_logger
 from app.tenancy.store import TenantScopedStore
@@ -124,79 +120,3 @@ class SlidingWindowRateLimiter:
             await self._store.zadd(key, {member: ts})
             await self._store.expire(key, self._window * 2)
             return True, limit - count - 1, reset_at
-
-
-class RateLimiter:
-    """Atomic sliding-window rate limiter with a graceful in-memory fallback.
-
-    * When *redis* is provided: uses the same ``_LUA_RATE_LIMIT`` Lua script
-      via a direct ``redis.asyncio`` client (one round-trip, TOCTOU-safe).
-    * When *redis* is ``None``: uses an asyncio.Lock-guarded in-memory
-      sliding window — correct within a single process, no external deps.
-
-    Args:
-        redis: An ``redis.asyncio``-compatible async client, or ``None`` for
-               the in-memory fallback.
-        limit: Maximum requests allowed within *window_seconds*.
-        window_seconds: Sliding-window length in seconds (default 60).
-    """
-
-    def __init__(
-        self,
-        redis: Any,
-        limit: int,
-        window_seconds: int = 60,
-    ) -> None:
-        self._redis = redis
-        self._limit = limit
-        self._window = window_seconds
-        # In-memory fallback: per-tenant list of allowed-request timestamps
-        self._mem: dict[str, list[float]] = {}
-        # Per-tenant asyncio.Lock for the in-memory path
-        self._locks: dict[str, asyncio.Lock] = {}
-
-    def _get_lock(self, tenant_id: str) -> asyncio.Lock:
-        if tenant_id not in self._locks:
-            self._locks[tenant_id] = asyncio.Lock()
-        return self._locks[tenant_id]
-
-    async def check(self, *, tenant_ctx: Any) -> bool:
-        """Return ``True`` if the request is within the rate limit, else ``False``."""
-        tenant_id = tenant_ctx.tenant_id
-
-        # ── Redis Lua path ────────────────────────────────────────────────────
-        if self._redis is not None:
-            try:
-                now_ms = int(time.time() * 1000)
-                window_ms = self._window * 1000
-                key = f"rl:{tenant_id}"
-                member = f"{now_ms}:{uuid.uuid4().hex}"
-                result = await self._redis.eval(
-                    _LUA_RATE_LIMIT,
-                    1,
-                    key,
-                    str(now_ms),
-                    str(window_ms),
-                    str(self._limit),
-                    member,
-                )
-                return bool(result[0])
-            except Exception as exc:
-                # Degraded to the per-pod window (up to Nx the global limit across
-                # pods) — surface it rather than failing silently.
-                _log.warning("rate_limiter_redis_degraded_to_per_pod", error=str(exc)[:200])
-
-        # ── In-memory fallback with asyncio.Lock ─────────────────────────────
-        lock = self._get_lock(tenant_id)
-        async with lock:
-            now = time.time()
-            window_start = now - self._window
-            timestamps = self._mem.get(tenant_id, [])
-            # Prune expired entries
-            timestamps = [t for t in timestamps if t > window_start]
-            if len(timestamps) >= self._limit:
-                self._mem[tenant_id] = timestamps
-                return False
-            timestamps.append(now)
-            self._mem[tenant_id] = timestamps
-            return True

@@ -1,10 +1,8 @@
-"""Tests for SlidingWindowRateLimiter and RateLimiter."""
+"""Tests for SlidingWindowRateLimiter (the single rate-limiter implementation)."""
 
-import asyncio
 
-import pytest
 
-from app.tenancy.rate_limiter import RateLimiter, SlidingWindowRateLimiter
+from app.tenancy.rate_limiter import SlidingWindowRateLimiter
 from app.tenancy.store import TenantScopedStore
 from tests.tenancy.test_store import FakeRedis
 
@@ -76,23 +74,18 @@ async def test_different_endpoints_have_separate_counters() -> None:
 
 
 # ---------------------------------------------------------------------------
-# RateLimiter tests (atomic in-memory fallback)
+# RATE-02: the per-process RateLimiter is gone; SlidingWindowRateLimiter is the
+# single (Redis-shared) implementation.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_rate_limit_atomic_under_concurrent_requests() -> None:
-    """Concurrent requests must not exceed the rate limit (in-memory path)."""
-    from app.tenancy.context import PlanTier, TenantContext
 
-    # Use in-memory fallback (redis=None) — exercises asyncio.Lock path
-    limiter = RateLimiter(redis=None, limit=5, window_seconds=60)
-    ctx = TenantContext(tenant_id="test-rl", plan=PlanTier.FREE, api_key_id="k1")
+def test_no_per_process_rate_limiter_is_exported() -> None:
+    import app.tenancy as tenancy
+    import app.tenancy.rate_limiter as rl
 
-    results = await asyncio.gather(*[limiter.check(tenant_ctx=ctx) for _ in range(10)])
-
-    allowed = sum(1 for r in results if r is True or r == "allowed")
-    # With a 5-request limit, at most 5 should be allowed
-    assert allowed <= 5
+    assert not hasattr(rl, "RateLimiter")
+    assert "RateLimiter" not in tenancy.__all__
+    assert tenancy.SlidingWindowRateLimiter is rl.SlidingWindowRateLimiter
 
 
 def test_worker_checkpointer_module_exists() -> None:
