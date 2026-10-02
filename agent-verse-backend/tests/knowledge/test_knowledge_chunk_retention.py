@@ -56,9 +56,12 @@ class _Session:
         if sql.startswith("SELECT id FROM knowledge_nodes"):
             return _Res([(f"node-{p['tid']}",)])
         if sql.startswith("DELETE FROM knowledge_edges"):
+            # One edge extracted FROM the removed chunks (provenance) and one
+            # edge touching the orphaned node: two statements, one row each.
             return _Res(rowcount=1)
         if sql.startswith("DELETE FROM knowledge_nodes"):
-            return _Res(rowcount=1)
+            # KB-53: only nodes left with no mention are deleted (RETURNING id).
+            return _Res([(f"node-{p['tid']}",)])
         if sql.startswith("DELETE FROM documents"):
             return _Res([])
         return _Res()
@@ -87,7 +90,7 @@ async def test_expired_chunks_are_deleted_per_tenant_under_rls() -> None:
         "knowledge_chunks_expired": 4,
         "knowledge_documents_expired": 2,
         "graph_nodes_deleted": 2,
-        "graph_edges_deleted": 2,
+        "graph_edges_deleted": 4,  # per tenant: 1 by provenance + 1 touching the orphan
     }
     # The cross-tenant scan ran on the maintenance session, bounded, index-shaped.
     scan_sql = [s for _t, s, _p in system_log if s.startswith("SELECT DISTINCT")]
