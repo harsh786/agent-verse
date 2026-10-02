@@ -978,6 +978,23 @@ async def _listen_for_emergency_stop(tenant_id: str, wake: asyncio.Event) -> Non
             await redis.aclose()
 
 
+# Granularity at which a stop announcement (or the run finishing) cuts the
+# signal-poll sleep short.
+_WAKE_SLICE_SECONDS = 0.25
+
+
+async def _sleep_until_wake(run_task: Any, wake: asyncio.Event) -> None:
+    """Sleep up to one poll interval, returning early once *wake* is set (a stop
+    was announced) or the run finished. Plain ``asyncio.sleep`` slices: always
+    yields to the loop, nothing swallowed."""
+    remaining = _WORKER_SIGNAL_POLL_SECONDS
+    while remaining > 0 and not wake.is_set() and not run_task.done():
+        step = min(_WAKE_SLICE_SECONDS, remaining)
+        await asyncio.sleep(step)
+        remaining -= step
+    wake.clear()
+
+
 async def _signal_poll_loop(
     run_task: Any,
     wake: asyncio.Event,
@@ -1000,15 +1017,7 @@ async def _signal_poll_loop(
     _tenant_id, _org_id = tenant_id, org_id
     while not run_task.done():
         # Sleep one poll interval — or less, when a stop is announced or the run ends.
-        waiter = asyncio.ensure_future(wake.wait())
-        with contextlib.suppress(Exception):
-            await asyncio.wait(
-                {run_task, waiter},
-                timeout=_WORKER_SIGNAL_POLL_SECONDS,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        waiter.cancel()
-        wake.clear()
+        await _sleep_until_wake(run_task, wake)
         # Re-check: task may have completed during the sleep
         if run_task.done():
             break
