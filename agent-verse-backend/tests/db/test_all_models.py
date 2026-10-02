@@ -31,16 +31,26 @@ def test_base_and_all_model_imports():
 # ── eval models ───────────────────────────────────────────────────────────────
 
 def test_eval_suite_instantiation():
-    from app.db.models.eval import EvalSuite
+    from app.db.models.eval import EvalSuite, GoldenTaskRevision
 
-    suite = EvalSuite(
-        tenant_id="t-001",
-        name="My Eval Suite",
-        tasks=[{"goal": "Search the web", "expected": "Results found"}],
-    )
+    # MEM-54: a suite carries a dataset version; its tasks are revision rows.
+    suite = EvalSuite(tenant_id="t-001", name="My Eval Suite", dataset_version=1)
     assert suite.name == "My Eval Suite"
     assert suite.tenant_id == "t-001"
-    assert len(suite.tasks) == 1
+    assert suite.dataset_version == 1
+    assert not hasattr(suite, "tasks")
+
+    task = GoldenTaskRevision(
+        id="rev-1",
+        tenant_id="t-001",
+        eval_suite_id="suite-1",
+        task_id="task-1",
+        goal="Search the web",
+        expected_output="Results found",
+        valid_from=1,
+    )
+    assert task.goal == "Search the web"
+    assert task.valid_to is None  # current revision
 
 
 def test_eval_suite_run_result_instantiation():
