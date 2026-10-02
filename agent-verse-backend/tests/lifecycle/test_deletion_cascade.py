@@ -266,7 +266,8 @@ async def test_execute_deletion_cascades_and_verifies(
     await _seed_subject(admin, tenant_id=tenant_id, subject_ref=subject_ref)
     await _seed_subject(admin, tenant_id=other_tenant, subject_ref=other_subject)
 
-    audit = AuditV3()
+    # The durable audit chain, as wired in production (CHAIN-03).
+    audit = AuditV3(db_factory=runtime)
     orch = DeletionOrchestrator(db_factory=runtime, audit=audit)
 
     receipt = await orch.execute_deletion(tenant_id, subject_ref)
@@ -274,6 +275,19 @@ async def test_execute_deletion_cascades_and_verifies(
     assert isinstance(receipt, DeletionReceipt)
     assert receipt.suspended is False
     assert receipt.subject_ref == subject_ref
+    async with admin() as s:
+        phases = (
+            await s.execute(
+                text(
+                    "SELECT payload->'metadata'->>'phase' FROM audit_chain "
+                    "WHERE tenant_id = :t AND payload->>'action' = 'data_subject_deletion' "
+                    "ORDER BY seq"
+                ),
+                {"t": tenant_id},
+            )
+        ).scalars().all()
+    assert phases == ["started", "completed"]
+    assert (await audit.averify_chain(tenant_id))["valid"] is True
     assert receipt.total_deleted > 0
     # Every subject-scoped store deleted at least one row.
     for key in _SUBJECT_SCOPED_KEYS:
@@ -285,9 +299,6 @@ async def test_execute_deletion_cascades_and_verifies(
     # Independent re-scan: nothing survives for this subject.
     residue = await orch.verify_deleted(tenant_id, subject_ref)
     assert residue == {}, f"unexpected residue: {residue}"
-
-    # Audit entry emitted.
-    assert any(r.action == "data_subject_deletion" for r in audit._records)
 
     # Isolation: the other tenant's data is intact.
     other_residue = await orch.verify_deleted(other_tenant, other_subject)

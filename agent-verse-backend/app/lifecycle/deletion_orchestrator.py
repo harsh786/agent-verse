@@ -83,6 +83,10 @@ _RECORDED_ONLY: dict[str, str] = {
 }
 
 
+class DeletionAuditError(RuntimeError):
+    """The erasure's audit record could not be stored (fail closed)."""
+
+
 class DeletionOrchestrator:
     """Executes and verifies data-subject deletion cascades."""
 
@@ -159,7 +163,14 @@ class DeletionOrchestrator:
             )
             return receipt
 
-        # 2. Resolve the subject's goal ids up front (goal-linked cascade anchor).
+        # 2. Record the intent BEFORE anything is destroyed: if the audit trail
+        #    cannot take it, nothing is deleted (CHAIN-03).
+        if not dry_run:
+            await self._emit_audit(
+                tenant_id, subject_ref, receipt, suspended=False, phase="started"
+            )
+
+        # Resolve the subject's goal ids up front (goal-linked cascade anchor).
         goal_ids = await self._subject_goal_ids(tenant_id, pat)
 
         # 3. Direct-subject stores.
@@ -390,7 +401,13 @@ class DeletionOrchestrator:
         receipt: DeletionReceipt,
         *,
         suspended: bool,
+        phase: str = "completed",
     ) -> None:
+        """Append the erasure's audit record; raises :class:`DeletionAuditError`.
+
+        An erasure is an irreversible, regulated action: it used to proceed (and
+        report success) when its audit record was lost behind a warning.
+        """
         if self._audit is None:
             return
         try:
@@ -400,6 +417,7 @@ class DeletionOrchestrator:
                 action="data_subject_deletion",
                 actor="system",
                 metadata={
+                    "phase": phase,
                     "subject_ref": subject_ref,
                     "suspended": suspended,
                     "total_deleted": receipt.total_deleted,
@@ -407,5 +425,8 @@ class DeletionOrchestrator:
                     "suspension_reason": receipt.suspension_reason,
                 },
             )
-        except Exception as exc:  # pragma: no cover - audit must not block erasure
-            logger.warning("deletion_audit_failed", error=str(exc)[:120])
+        except Exception as exc:
+            logger.error("deletion_audit_failed", phase=phase, error=str(exc)[:120])
+            raise DeletionAuditError(
+                f"erasure audit record ({phase}) could not be stored"
+            ) from exc

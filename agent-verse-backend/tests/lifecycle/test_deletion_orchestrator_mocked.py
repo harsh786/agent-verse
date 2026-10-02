@@ -228,7 +228,10 @@ async def test_execute_deletion_full_cascade_and_verifies_clean() -> None:
     # Rows were actually removed from every fake table.
     assert all(rows == [] for table, rows in tables.items())
 
-    audit.append.assert_awaited_once()
+    # Intent before destroying anything, outcome after (CHAIN-03).
+    assert audit.append.await_count == 2
+    assert audit.append.await_args_list[0].kwargs["metadata"]["phase"] == "started"
+    assert audit.append.await_args.kwargs["metadata"]["phase"] == "completed"
     assert audit.append.await_args.kwargs["metadata"]["total_deleted"] == expected_total
 
 
@@ -298,19 +301,41 @@ async def test_count_failure_is_treated_as_unverifiable_residue() -> None:
     assert receipt.residue.get("documents") == -1
 
 
-# ── Audit failure must not break the run ────────────────────────────────────────
+# ── CHAIN-03: an erasure that cannot be audited does not run ─────────────────────
 
 
-async def test_audit_failure_does_not_break_deletion() -> None:
+async def test_unauditable_erasure_destroys_nothing() -> None:
+    """The intent record is written BEFORE any data is destroyed; if it cannot be
+    stored the deletion fails (it used to proceed with only a warning)."""
+    import pytest
+
+    from app.lifecycle.deletion_orchestrator import DeletionAuditError
+
     tables = _full_subject_tables()
+    before = {t: list(rows) for t, rows in tables.items()}
     audit = AsyncMock()
     audit.append.side_effect = RuntimeError("audit sink down")
     orch = DeletionOrchestrator(db_factory=_db_factory(tables), audit=audit)
 
-    receipt = await orch.execute_deletion("tenant-1", "subject-audit-fail")
+    with pytest.raises(DeletionAuditError):
+        await orch.execute_deletion("tenant-1", "subject-audit-fail")
+    assert tables == before
 
-    assert receipt.total_deleted > 0
-    assert receipt.verified is True
+
+async def test_completion_audit_failure_is_reported_not_swallowed() -> None:
+    import pytest
+
+    from app.lifecycle.deletion_orchestrator import DeletionAuditError
+
+    tables = _full_subject_tables()
+    audit = AsyncMock()
+    audit.append.side_effect = [None, RuntimeError("audit sink down")]
+    orch = DeletionOrchestrator(db_factory=_db_factory(tables), audit=audit)
+
+    with pytest.raises(DeletionAuditError):
+        await orch.execute_deletion("tenant-1", "subject-audit-fail")
+    phases = [c.kwargs["metadata"]["phase"] for c in audit.append.await_args_list]
+    assert phases == ["started", "completed"]
 
 
 async def test_no_audit_configured_is_a_noop() -> None:

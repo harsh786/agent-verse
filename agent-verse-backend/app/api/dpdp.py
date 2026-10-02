@@ -130,7 +130,15 @@ async def execute_erasure(
     if orchestrator is None or getattr(orchestrator, "_db", None) is None:
         raise HTTPException(503, "Deletion orchestrator unavailable")
 
-    receipt = await orchestrator.execute_deletion(tenant.tenant_id, data_principal_id)
+    from app.lifecycle.deletion_orchestrator import DeletionAuditError
+
+    try:
+        receipt = await orchestrator.execute_deletion(tenant.tenant_id, data_principal_id)
+    except DeletionAuditError as exc:
+        # Never report an erasure the audit trail does not record.
+        raise HTTPException(
+            503, "Erasure audit trail unavailable; the erasure was not confirmed"
+        ) from exc
 
     db = getattr(request.app.state, "db_session_factory", None)
     if db is not None:
