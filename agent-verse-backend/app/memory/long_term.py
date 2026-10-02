@@ -9,6 +9,7 @@ In production backed by PostgreSQL long_term_memory table.
 from __future__ import annotations
 
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -137,6 +138,31 @@ class LongTermMemory:
     tags: list[str] = field(default_factory=list)
 
 
+#: Bounds of the per-process cache (MEM-34). Postgres is the source of truth;
+#: the cache only serves same-process reads and the DB-less build.
+_CACHE_PER_TENANT = 200
+_CACHE_TENANTS = 1_000
+
+
+class _BoundedTenantCache(OrderedDict[str, list[LongTermMemory]]):
+    """tenant_id -> newest-last memories, capped per tenant and LRU-capped in tenants.
+
+    The API singleton appended every write and every recall hit and never
+    evicted, so replica memory grew with total LTM traffic across all tenants.
+    """
+
+    def add(self, tenant_id: str, memory: LongTermMemory) -> None:
+        bucket = self.setdefault(tenant_id, [])
+        if any(m.memory_id == memory.memory_id for m in bucket):
+            return
+        bucket.append(memory)
+        if len(bucket) > _CACHE_PER_TENANT:
+            del bucket[: len(bucket) - _CACHE_PER_TENANT]
+        self.move_to_end(tenant_id)
+        while len(self) > _CACHE_TENANTS:
+            self.popitem(last=False)
+
+
 class LongTermMemoryStore:
     """Per-tenant store for cross-session learnings.
 
@@ -146,7 +172,7 @@ class LongTermMemoryStore:
 
     def __init__(self) -> None:
         # tenant_id → list of LongTermMemory
-        self._memories: dict[str, list[LongTermMemory]] = {}
+        self._memories: _BoundedTenantCache = _BoundedTenantCache()
         # Wired at startup by lifespan so async methods can use it without
         # callers having to pass db explicitly.
         self._db_factory: Any = None
@@ -186,7 +212,7 @@ class LongTermMemoryStore:
             get_logger(__name__).warning("memory_created_publish_failed", error=str(exc))
 
     def store(self, *, memory: LongTermMemory, tenant_ctx: TenantContext) -> str:
-        self._memories.setdefault(tenant_ctx.tenant_id, []).append(memory)
+        self._memories.add(tenant_ctx.tenant_id, memory)
         return memory.memory_id
 
     def recall(
@@ -224,7 +250,8 @@ class LongTermMemoryStore:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[LongTermMemory]:
-        """Return this tenant's cached memories, optionally windowed.
+        """Return this tenant's cached memories (bounded: at most
+        ``_CACHE_PER_TENANT``, newest last), optionally windowed.
 
         ``limit``/``offset`` let callers page instead of materialising the whole
         list; ``limit=None`` preserves the original unbounded behaviour for
@@ -810,9 +837,7 @@ class LongTermMemoryStore:
                             )
                             memories.append(m)
                             # Also populate in-memory cache
-                            existing = self._memories.setdefault(tenant_ctx.tenant_id, [])
-                            if not any(e.memory_id == m.memory_id for e in existing):
-                                existing.append(m)
+                            self._memories.add(tenant_ctx.tenant_id, m)
                         return memories
             except Exception as exc:
                 from app.observability.logging import get_logger
