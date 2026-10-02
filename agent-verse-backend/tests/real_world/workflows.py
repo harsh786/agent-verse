@@ -177,3 +177,28 @@ def audit_rows(api: LiveAPI, subject_id: str) -> list[dict[str, Any]]:
     if resp.status_code != 200:
         return [{"error": f"/governance/audit -> {resp.status_code}"}]
     return list(resp.json())
+
+
+def import_yaml(api: LiveAPI, cleanup: Any, yaml_text: str) -> str:
+    """Import a workflow from YAML (deleted at test end); returns its id."""
+    resp = api.post(f"{V1}/workflows/import-yaml", content=yaml_text.encode(),
+                    headers={"Content-Type": "application/x-yaml"})
+    assert resp.status_code in (200, 201), (
+        f"import-yaml -> {resp.status_code}: {mask(resp.text[:500])}"
+    )
+    wf_id = str(resp.json().get("id") or resp.json().get("workflow_id"))
+    cleanup("DELETE", f"{V1}/workflows/{wf_id}")
+    return wf_id
+
+
+def trigger_run(api: LiveAPI, cleanup: Any, wf_id: str,
+                inputs: dict[str, Any] | None = None) -> str:
+    """Start a run (cancelled at test end if still live); returns its id."""
+    run_id = str(api.json_ok("POST", f"{V1}/workflows/{wf_id}/trigger",
+                             json={"inputs": inputs or {}})["run_id"])
+    cleanup("POST", f"{V1}/runs/{run_id}/cancel")
+    return run_id
+
+
+def output_of(steps: dict[str, dict[str, Any]], sid: str) -> Any:
+    return step_output(steps.get(sid)) or {}
