@@ -12,7 +12,11 @@ export default defineConfig({
   // reason other than "no backend is listening". Run them with:
   //   npx playwright test --config=playwright.real-e2e.config.ts
   // e2e/real-world has its own config too (playwright.real-world.config.ts, live stack).
-  testIgnore: ['**/real-e2e/**', '**/real-world/**'],
+  // e2e/real-backend (and *.realbe.spec.ts) need a live API too: the mocked
+  // full-live / mobile projects match '**/*.spec.ts' and swept them in, so they
+  // failed with nothing listening. Only the `real-backend` project (which
+  // overrides testIgnore below) runs them.
+  testIgnore: ['**/real-e2e/**', '**/real-world/**', '**/real-backend/**', '**/*.realbe.spec.ts'],
 
   /** Global per-test timeout (ms). Increase for slow CI runners. */
   timeout: 30_000,
@@ -136,6 +140,9 @@ export default defineConfig({
     {
       name: 'real-backend',
       testMatch: ['**/real-backend/**', '**/*.realbe.spec.ts'],
+      // Overrides the top-level testIgnore, which excludes these from every
+      // mocked project.
+      testIgnore: ['**/real-e2e/**', '**/real-world/**'],
       // Use the full chromium build (channel) rather than the headless-shell so
       // a plain `npx playwright install chromium` is sufficient.
       use: { ...devices['Desktop Chrome'], channel: 'chromium' },

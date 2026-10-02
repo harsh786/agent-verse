@@ -199,6 +199,38 @@ jobs:
           name: playwright-nightly-report
           path: agent-verse-frontend/playwright-report/
 
+  # ── Mocked full suite + mobile viewport ──────────────────────────────────────
+  # Every mocked spec (page.route; no backend), desktop and Pixel 5. Never ran in
+  # CI before: playwright-full above runs only the tagged projects.
+  # e2e/real-world is NOT run in CI: it drives the full live docker-compose stack
+  # with pre-provisioned tenants (REAL_WORLD=1, AGENTVERSE_TENANT_FILE); run it
+  # locally with `npm run test:e2e:real-world`.
+  playwright-mocked-full:
+    name: Playwright Mocked Full + Mobile
+    runs-on: ubuntu-latest
+    needs: [frontend-full]
+    defaults:
+      run:
+        working-directory: agent-verse-frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: agent-verse-frontend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+      - name: Run full-live and mobile projects (no backend needed)
+        run: npm run test:e2e:mocked -- --reporter=line
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-mocked-full-report
+          path: agent-verse-frontend/playwright-report/
+
   # ── Live platform tests (conditional on env var or workflow_dispatch) ────────
   live-platform:
     name: Live Platform Tests
@@ -289,7 +321,9 @@ jobs:
       DATABASE_URL: "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse_rbe"
       REDIS_URL: "redis://localhost:6379/0"
       ENVIRONMENT: "development"
-      BASE_URL: "http://localhost:5173"
+      # playwright.config.ts's webServer serves Vite on 5174 (--strictPort);
+      # 5173 here pointed every test at a port nothing listened on.
+      BASE_URL: "http://localhost:5174"
       API_BASE_URL: "http://localhost:8000"
 
     steps:
@@ -329,6 +363,15 @@ jobs:
         working-directory: agent-verse-frontend
         run: npx playwright test --project=real-backend --reporter=line
 
+      # e2e/real-e2e (no mocks) against the same live backend. Its config starts
+      # its own Vite (e2e mode → API on :8000) when PW_START_WEB_SERVER=1.
+      - name: Run the real-e2e suite (no mocks)
+        if: ${{ !cancelled() }}
+        working-directory: agent-verse-frontend
+        env:
+          PW_START_WEB_SERVER: "1"
+        run: npm run test:e2e:real -- --reporter=line
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -338,7 +381,7 @@ jobs:
   # ── Nightly summary notification ────────────────────────────────────────────
   notify:
     name: Notify
-    needs: [backend-full, backend-e2e-full, frontend-full, security-smoke, playwright-full, playwright-real-backend]
+    needs: [backend-full, backend-e2e-full, frontend-full, security-smoke, playwright-full, playwright-mocked-full, playwright-real-backend]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -350,4 +393,5 @@ jobs:
           echo "frontend-full: ${{ needs.frontend-full.result }}"
           echo "security-smoke: ${{ needs.security-smoke.result }}"
           echo "playwright-full: ${{ needs.playwright-full.result }}"
+          echo "playwright-mocked-full: ${{ needs.playwright-mocked-full.result }}"
           echo "playwright-real-backend: ${{ needs.playwright-real-backend.result }}"

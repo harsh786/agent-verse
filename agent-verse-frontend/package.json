@@ -16,6 +16,9 @@
     "test:e2e:update-snapshots": "playwright test e2e/visual-regression.spec.ts --update-snapshots",
     "test:e2e:snapshots": "CI=true playwright test e2e/visual-regression.spec.ts",
     "test:e2e:build": "playwright test --config=playwright.build.config.ts",
+    "test:e2e:mocked": "playwright test --project=full-live --project=mobile",
+    "test:e2e:real": "playwright test --config=playwright.real-e2e.config.ts",
+    "test:e2e:real-world": "playwright test --config=playwright.real-world.config.ts",
     "build:e2e": "tsc && vite build --mode e2e"
   },
   "dependencies": {

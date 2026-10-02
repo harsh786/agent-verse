@@ -34,7 +34,9 @@ export default defineConfig({
   ],
 
   use: {
-    baseURL: process.env.BASE_URL ?? 'http://localhost:5173',
+    baseURL:
+      process.env.BASE_URL ??
+      (process.env.PW_START_WEB_SERVER ? 'http://localhost:5174' : 'http://localhost:5173'),
     // No route interception — all traffic reaches the real backend
     bypassCSP: false,
     ignoreHTTPSErrors: false,
@@ -63,4 +65,17 @@ export default defineConfig({
 
   // Validate backend is up before running
   globalSetup: undefined, // inline health check is done per-test via fixture
+
+  // CI (and anyone without a dev server running) sets PW_START_WEB_SERVER=1 to
+  // have Playwright start Vite itself — on 5174 with --strictPort, never
+  // attaching to whatever holds 5173 (the compose frontend's stale bundle). Set
+  // BASE_URL=http://localhost:5174 alongside it.
+  webServer: process.env.PW_START_WEB_SERVER
+    ? {
+        command: 'npm run dev -- --port 5174 --strictPort --mode e2e',
+        url: 'http://localhost:5174',
+        reuseExistingServer: false,
+        timeout: 120_000,
+      }
+    : undefined,
 });
