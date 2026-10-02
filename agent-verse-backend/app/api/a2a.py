@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac as _hmac
+import json
 import os
 import uuid
 from datetime import UTC, datetime
@@ -12,7 +13,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
+from app.net.ssrf_guard import (
+    SSRFError,
+    assert_public_url,
+    assert_public_url_async,
+    public_async_client,
+)
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -91,6 +97,7 @@ async def _await_goal_outcome(
     if status == "canceled":
         return "canceled", detail or f"Goal {goal_id} was cancelled"
     return "failed", detail or f"Goal {goal_id} failed"
+
 
 # ── startup check: warn loudly when HMAC auth is disabled ─────────────────────
 if not os.getenv("A2A_SHARED_SECRET", ""):
@@ -274,32 +281,64 @@ async def _get_task(task_id: str, db: Any, tenant_id: str) -> dict[str, Any] | N
     }
 
 
-async def _send_callback(callback_url: str, task_id: str, status: str, result: str) -> None:
-    """POST task completion to callback URL."""
+def sign_a2a_payload(raw_body: bytes, secret: str, timestamp: int | None = None) -> dict[str, str]:
+    """``X-A2A-Timestamp`` / ``X-A2A-Signature`` headers for *raw_body*.
+
+    Same scheme the platform verifies on inbound tasks: HMAC-SHA256 over
+    ``f"{timestamp}.".encode() + raw_body``, hex, prefixed ``sha256=``.
+    """
+    import time
+
+    ts = int(time.time()) if timestamp is None else int(timestamp)
+    digest = _hmac.new(secret.encode(), f"{ts}.".encode() + raw_body, hashlib.sha256).hexdigest()
+    return {"X-A2A-Timestamp": str(ts), "X-A2A-Signature": f"sha256={digest}"}
+
+
+async def _send_callback(callback_url: str, task_id: str, status: str, result: str) -> bool:
+    """POST the task outcome to *callback_url*, signed (A2A-04). True only on a 2xx.
+
+    The body is signed with ``A2A_SHARED_SECRET`` so the receiver can verify it
+    came from this platform (it used to be an unsigned POST anyone could forge).
+    Production never sends an unsigned callback. Never raises.
+    """
     if not callback_url:
-        return
+        return False
+    secret = _get_a2a_secret()
+    if not secret and _is_production():
+        logger.warning("a2a_callback_unsigned_refused", task_id=task_id)
+        return False
     try:
         # Re-checked at send time, not just at submission: the goal can run for
         # minutes, and a hostname validated then can resolve somewhere internal
-        # now (DNS rebinding). Redirects are not followed for the same reason.
-        assert_public_url(callback_url, context="A2A callback (send)")
+        # now. The pinned client re-checks at connect (DNS rebinding) and
+        # redirects are not followed.
+        await assert_public_url_async(callback_url, context="A2A callback (send)")
     except SSRFError as exc:
         logger.warning("a2a_callback_blocked", task_id=task_id, error=str(exc)[:200])
-        return
+        return False
+    raw = json.dumps(
+        {
+            "task_id": task_id,
+            "status": status,
+            "result": result,
+            "completed_at": datetime.now(UTC).isoformat(),
+        },
+        separators=(",", ":"),
+    ).encode()
+    headers = {"Content-Type": "application/json"}
+    if secret:
+        headers.update(sign_a2a_payload(raw, secret))
     try:
         async with public_async_client(timeout=10.0) as client:
-            await client.post(
-                callback_url,
-                json={
-                    "task_id": task_id,
-                    "status": status,
-                    "result": result,
-                    "completed_at": datetime.now(UTC).isoformat(),
-                },
-            )
-        logger.info("a2a_callback_sent", task_id=task_id, url=callback_url)
+            resp = await client.post(callback_url, content=raw, headers=headers)
     except Exception as exc:
-        logger.warning("a2a_callback_failed", task_id=task_id, error=str(exc))
+        logger.warning("a2a_callback_failed", task_id=task_id, error=str(exc)[:200])
+        return False
+    if not 200 <= int(resp.status_code) < 300:
+        logger.warning("a2a_callback_rejected", task_id=task_id, status_code=resp.status_code)
+        return False
+    logger.info("a2a_callback_sent", task_id=task_id, url=callback_url)
+    return True
 
 
 class A2ATaskRequest(BaseModel):
