@@ -5,13 +5,12 @@ from __future__ import annotations
 import datetime
 import logging
 import uuid
-from collections import deque
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.skills_runtime import tenant_store
+from app.skills_runtime import history_store, tenant_store
 from app.skills_runtime.executor import (
     SkillExecutor,
     SkillProviderUnavailableError,
@@ -87,14 +86,58 @@ async def _run_skill(request: Request, tenant: Any, **kwargs: Any) -> SkillExecu
         ) from exc
 
 
+async def _record_execution(request: Request, execution: dict[str, Any]) -> bool:
+    """Persist one execution to the durable history (OPS-04).
+
+    The skill already ran (and was paid for) when this is called, so a history
+    write failure does not discard the output: it is logged and reported to
+    the caller as ``history_recorded: false`` instead of being hidden.
+    """
+    try:
+        await history_store.record_execution(_state_db(request), execution)
+    except history_store.SkillHistoryUnavailableError as exc:
+        _log.warning(
+            "skill_execution_history_write_failed tenant=%s skill=%s: %s",
+            execution.get("tenant_id"),
+            execution.get("skill_id"),
+            exc,
+        )
+        return False
+    return True
+
+
+async def _record_result(
+    request: Request, result: SkillExecution, skill_name: str
+) -> bool:
+    return await _record_execution(
+        request,
+        {
+            "execution_id": result.execution_id,
+            "tenant_id": result.tenant_id,
+            "skill_id": result.skill_id,
+            "skill_name": skill_name,
+            "goal_id": result.goal_id,
+            "input_preview": (result.input_context or "")[:100],
+            "output_preview": (result.output or "")[:200],
+            "success": result.success,
+            "error": result.error,
+            "duration_ms": result.duration_ms,
+        },
+    )
+
+
+def _history_unavailable(tenant_id: str, exc: Exception) -> HTTPException:
+    _log.warning("skill_history_unavailable tenant=%s: %s", tenant_id, exc)
+    return HTTPException(503, "Skill history unavailable; please retry")
+
+
 # Platform registry (builtins loaded at startup)
 _platform_skills: dict[str, dict] = {}
 # Tenant custom skills live in app.skills_runtime.tenant_store (Postgres; OPS-34).
-_executions: dict[str, deque] = {}  # tenant_id → bounded deque of executions (maxlen=1000)
+# Execution and version history live in app.skills_runtime.history_store (OPS-04).
 # Legacy per-process map — no longer read or written. Enable/disable state lives
 # in app.skills_runtime.state_store (Postgres when wired; OPS-03).
 _enabled_skills: dict[str, set] = {}
-_skill_versions: dict[str, list] = {}  # skill_id → list of archived versions
 
 # Load builtins
 for _s in BUILTIN_SKILLS:
@@ -276,6 +319,7 @@ async def execute_skill_by_id(
         input_context=body.input_context,
         goal_id=body.goal_id,
     )
+    recorded = await _record_result(request, result, skill_dict["name"])
     return {
         "execution_id": result.execution_id,
         "skill_id": result.skill_id,
@@ -283,6 +327,7 @@ async def execute_skill_by_id(
         "success": result.success,
         "error": result.error,
         "duration_ms": result.duration_ms,
+        "history_recorded": recorded,
     }
 
 
@@ -307,9 +352,11 @@ async def execute_best_match(
     result = await _run_skill(
         request, tenant, skill=best_skill, input_context=body.goal, goal_id=body.goal_id
     )
+    recorded = await _record_result(request, result, best_skill.name)
     return {
         "skill_id": best_skill.skill_id,
         "score": round(score, 4),
+        "history_recorded": recorded,
         "execution": {
             "execution_id": result.execution_id,
             "output": result.output,
@@ -503,7 +550,7 @@ async def execute_skill(
         "model_used": model_used,
         "created_at": now,
     }
-    _executions.setdefault(tenant.tenant_id, deque(maxlen=1000)).append(execution)
+    recorded = await _record_execution(request, execution)
 
     return {
         "execution_id": execution_id,
@@ -512,15 +559,28 @@ async def execute_skill(
         "success": success,
         "error": error,
         "duration_ms": execution["duration_ms"],
+        "history_recorded": recorded,
     }
 
 
 @router.get("/{skill_id}/executions")
-async def list_skill_executions(request: Request, skill_id: str) -> dict[str, Any]:
-    """List execution history for a skill."""
+async def list_skill_executions(
+    request: Request,
+    skill_id: str,
+    limit: int = Query(default=20, ge=1, le=history_store.MAX_PAGE),
+    cursor: str | None = Query(default=None, max_length=200),
+) -> dict[str, Any]:
+    """A newest-first page of this tenant's execution history for a skill."""
     tenant = _require_tenant(request)
-    executions = [e for e in _executions.get(tenant.tenant_id, []) if e["skill_id"] == skill_id]
-    return {"executions": list(reversed(executions))[:20], "total": len(executions)}
+    try:
+        executions, next_cursor = await history_store.list_executions(
+            _state_db(request), tenant.tenant_id, skill_id, limit=limit, cursor=cursor
+        )
+    except history_store.InvalidCursorError as exc:
+        raise HTTPException(422, "Invalid cursor") from exc
+    except history_store.SkillHistoryUnavailableError as exc:
+        raise _history_unavailable(tenant.tenant_id, exc) from exc
+    return {"executions": executions, "count": len(executions), "next_cursor": next_cursor}
 
 
 @router.put("/{skill_id}")
@@ -531,12 +591,10 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
     if not isinstance(body, dict):
         raise HTTPException(422, "Body must be a JSON object")
 
-    async def _archive(_session: Any, previous: dict[str, Any]) -> None:
-        old_version = {
-            **previous,
-            "archived_at": datetime.datetime.now(datetime.UTC).isoformat(),
-        }
-        _skill_versions.setdefault(skill_id, []).append(old_version)
+    async def _archive(session: Any, previous: dict[str, Any]) -> None:
+        # Same transaction as the skill update (OPS-04): no version is lost or
+        # orphaned if either write fails.
+        await history_store.archive_version(session, tenant.tenant_id, previous)
 
     # One locked read-modify-write in Postgres (OPS-34): the version bump is
     # atomic across replicas and a failed write is a 503, not "updated".
@@ -553,17 +611,30 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
 
 
 @router.get("/{skill_id}/versions")
-async def get_skill_versions(request: Request, skill_id: str) -> dict[str, Any]:
-    """List version history for a skill."""
+async def get_skill_versions(
+    request: Request,
+    skill_id: str,
+    limit: int = Query(default=20, ge=1, le=history_store.MAX_PAGE),
+    cursor: str | None = Query(default=None, max_length=200),
+) -> dict[str, Any]:
+    """A newest-first page of this tenant's archived versions of a skill."""
     tenant = _require_tenant(request)
     skill = await _find_skill(request, tenant.tenant_id, skill_id)
     if not skill:
         raise HTTPException(404, "Skill not found")
 
-    versions = _skill_versions.get(skill_id, [])
+    try:
+        versions, next_cursor = await history_store.list_versions(
+            _state_db(request), tenant.tenant_id, skill_id, limit=limit, cursor=cursor
+        )
+    except history_store.InvalidCursorError as exc:
+        raise HTTPException(422, "Invalid cursor") from exc
+    except history_store.SkillHistoryUnavailableError as exc:
+        raise _history_unavailable(tenant.tenant_id, exc) from exc
     return {
         "versions": versions,
         "current_version": skill.get("version", "1.0.0"),
+        "next_cursor": next_cursor,
     }
 
 

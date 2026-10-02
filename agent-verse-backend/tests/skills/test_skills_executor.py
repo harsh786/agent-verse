@@ -129,27 +129,19 @@ def test_scope_enforcement_agent_scope() -> None:
 # ── 6. Execution history must be bounded ─────────────────────────────────────
 
 
-def test_skill_execution_history_bounded() -> None:
-    """_executions must use bounded deque storage to prevent unbounded memory growth."""
-    from collections import deque
+async def test_skill_execution_history_bounded_in_dbless_build() -> None:
+    """OPS-04: history is durable (Postgres) when wired; the DB-less build keeps a
+    bounded per-(tenant, skill) buffer and pages newest-first."""
+    from app.skills_runtime import history_store
 
-    from app.api.skills_runtime import _executions
-
-    # Seed a tenant's execution queue by simulating the runtime insert
-    tid = "tenant_bounded_test"
-    q: deque = deque(maxlen=1000)
-    for i in range(1500):
-        q.append({"execution_id": str(i)})
-    _executions[tid] = q
-
-    # After 1500 inserts, only the most recent 1000 entries must be kept
-    assert len(_executions[tid]) == 1000, (
-        f"Expected 1000 entries (maxlen), got {len(_executions[tid])}"
-    )
-    # The oldest entry (0) must have been evicted; the newest (1499) must be present
-    assert _executions[tid][-1]["execution_id"] == "1499"
-    assert _executions[tid][0]["execution_id"] == "500"  # first surviving entry
-
-    # Verify the store is a deque, not a plain list
-    assert isinstance(_executions[tid], deque), "_executions values must be deque instances"
-    assert _executions[tid].maxlen == 1000
+    tid, sid = "tenant_bounded_test", "skill-bounded"
+    for i in range(1005):
+        await history_store.record_execution(
+            None,
+            {"execution_id": f"e{i:05d}", "tenant_id": tid, "skill_id": sid, "success": True},
+        )
+    assert len(history_store._local_executions[(tid, sid)]) == 1000
+    page, cursor = await history_store.list_executions(None, tid, sid, limit=3)
+    assert len(page) == 3 and cursor is not None
+    # Another tenant sees nothing of it.
+    assert (await history_store.list_executions(None, "other", sid))[0] == []

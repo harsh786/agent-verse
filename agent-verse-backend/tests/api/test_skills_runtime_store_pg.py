@@ -35,7 +35,7 @@ TENANT_B = "ops34-tenant-b"
 HA = {"X-API-Key": KEY_A}
 HB = {"X-API-Key": KEY_B}
 
-_TABLES = ["skill_runtime_tenant_state", "skills"]
+_TABLES = ["skill_runtime_tenant_state", "skills", "skill_versions", "skill_executions"]
 
 
 @pytest.fixture(scope="module")
@@ -110,3 +110,45 @@ def test_skill_created_on_a_is_seen_and_run_on_b_after_b_listed(factory: Any) ->
     assert replica_a.put(
         f"/skills-runtime/{skill_id}", headers=HB, json={"name": "hijack"}
     ).status_code == 404
+
+
+def test_history_is_shared_across_replicas_and_tenant_isolated(factory: Any) -> None:
+    """OPS-04: execution + version history written on A is read on B (and after a
+    restart — B has no process state); tenant B reads none of it."""
+    replica_a = TestClient(_app(factory))
+    replica_b = TestClient(_app(factory))
+
+    sid = replica_a.post(
+        "/skills-runtime", headers=HA, json={"name": "Hist", "description": "d"}
+    ).json()["skill_id"]
+    for name in ("Hist v2", "Hist v3"):
+        assert replica_a.put(f"/skills-runtime/{sid}", headers=HA,
+                             json={"name": name}).status_code == 200
+    exec_ids = []
+    for i in range(3):
+        r = replica_a.post(f"/skills-runtime/{sid}/execute", headers=HA,
+                           json={"input_context": f"run {i}"})
+        assert r.status_code == 200, r.text
+        assert r.json()["history_recorded"] is True
+        exec_ids.append(r.json()["execution_id"])
+    by_id = replica_a.post("/skills-runtime/execute", headers=HA,
+                           json={"skill_id": sid, "input_context": "body path"}).json()
+    exec_ids.append(by_id["execution_id"])
+
+    versions = replica_b.get(f"/skills-runtime/{sid}/versions", headers=HA).json()
+    assert [v["name"] for v in versions["versions"]] == ["Hist v2", "Hist"]
+    assert versions["current_version"] == "1.0.2"
+
+    page1 = replica_b.get(f"/skills-runtime/{sid}/executions?limit=3", headers=HA).json()
+    assert page1["count"] == 3 and page1["next_cursor"]
+    page2 = replica_b.get(f"/skills-runtime/{sid}/executions", headers=HA,
+                          params={"limit": 3, "cursor": page1["next_cursor"]}).json()
+    got = [e["execution_id"] for e in page1["executions"] + page2["executions"]]
+    assert sorted(got) == sorted(exec_ids)
+    assert page2["next_cursor"] is None
+
+    # Tenant B: the skill is 404 and the execution history is empty under RLS.
+    assert replica_b.get(f"/skills-runtime/{sid}/versions", headers=HB).status_code == 404
+    assert replica_b.get(f"/skills-runtime/{sid}/executions", headers=HB).json()[
+        "executions"
+    ] == []

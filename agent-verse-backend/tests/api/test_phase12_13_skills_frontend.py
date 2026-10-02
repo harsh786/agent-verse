@@ -112,7 +112,7 @@ def test_skill_execution_history():
 
     resp = client.get("/skills-runtime/headroom/executions", headers=_HEADERS)
     assert resp.status_code == 200
-    assert resp.json()["total"] >= 1
+    assert resp.json()["count"] >= 1
 
 
 def test_match_trigger():

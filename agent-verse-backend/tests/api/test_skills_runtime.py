@@ -519,7 +519,7 @@ def test_execute_skill_without_provider_is_503_not_canned_success() -> None:
 
     assert resp.status_code == 503
     history = client.get("/skills-runtime/headroom/executions", headers=H).json()
-    assert history["total"] == 0  # no execution recorded for a run that never happened
+    assert history["count"] == 0  # no execution recorded for a run that never happened
 
 
 def test_execute_by_id_and_match_without_provider_are_503_not_canned_success() -> None:
@@ -603,7 +603,7 @@ def test_execute_skill_records_execution_history() -> None:
 
     assert hist_resp.status_code == 200
     body = hist_resp.json()
-    assert body["total"] >= 1
+    assert body["count"] >= 1
     assert any(e["execution_id"] == execution_id for e in body["executions"])
 
 
@@ -846,3 +846,67 @@ def test_update_is_503_when_the_db_write_fails() -> None:
         f"/skills-runtime/{uuid.uuid4()}", headers=H, json={"name": "x"}
     )
     assert resp.status_code == 503
+
+
+# ── Durable history (OPS-04) ─────────────────────────────────────────────────
+
+
+def test_executions_page_with_cursor_and_body_id_path_is_recorded() -> None:
+    app = _make_app(tenant_id=_uniq("tenant"), provider=FakeProvider(responses=["a", "b", "c"]))
+    client = TestClient(app)
+    ids = [
+        client.post(
+            "/skills-runtime/execute", headers=H,
+            json={"skill_id": "headroom", "input_context": f"in {i}"},
+        ).json()["execution_id"]
+        for i in range(3)
+    ]
+    first = client.get("/skills-runtime/headroom/executions?limit=2", headers=H).json()
+    assert first["count"] == 2 and first["next_cursor"]
+    second = client.get(
+        "/skills-runtime/headroom/executions",
+        params={"limit": 2, "cursor": first["next_cursor"]}, headers=H,
+    ).json()
+    seen = [e["execution_id"] for e in first["executions"] + second["executions"]]
+    assert sorted(seen) == sorted(ids)
+    assert second["next_cursor"] is None
+    bad = client.get("/skills-runtime/headroom/executions?cursor=garbage", headers=H)
+    assert bad.status_code == 422
+
+
+def test_versions_are_tenant_scoped() -> None:
+    owner = TestClient(_make_app(tenant_id=_uniq("tenant")))
+    sid = owner.post("/skills-runtime", headers=H, json={"name": "V", "description": "d"}).json()[
+        "skill_id"
+    ]
+    owner.put(f"/skills-runtime/{sid}", headers=H, json={"name": "V2"})
+    assert len(owner.get(f"/skills-runtime/{sid}/versions", headers=H).json()["versions"]) == 1
+    # Another tenant cannot see the skill nor its history.
+    other = TestClient(_make_app(tenant_id=_uniq("tenant")))
+    assert other.get(f"/skills-runtime/{sid}/versions", headers=H).status_code == 404
+
+
+def test_history_read_failure_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.skills_runtime import history_store
+
+    async def _boom(*_a: Any, **_k: Any) -> Any:
+        raise history_store.SkillHistoryUnavailableError("db down")
+
+    monkeypatch.setattr(history_store, "list_executions", _boom)
+    client = TestClient(_make_app(tenant_id=_uniq("tenant")))
+    assert client.get("/skills-runtime/headroom/executions", headers=H).status_code == 503
+
+
+def test_history_write_failure_is_reported_not_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.skills_runtime import history_store
+
+    async def _boom(*_a: Any, **_k: Any) -> None:
+        raise history_store.SkillHistoryUnavailableError("db down")
+
+    monkeypatch.setattr(history_store, "record_execution", _boom)
+    client = TestClient(_make_app(tenant_id=_uniq("tenant"), provider=FakeProvider(responses=["x"])))
+    body = client.post(
+        "/skills-runtime/headroom/execute", headers=H, json={"input_context": "x"}
+    ).json()
+    assert body["success"] is True
+    assert body["history_recorded"] is False
