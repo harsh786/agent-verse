@@ -499,7 +499,16 @@ class AgentGraph(
             g.add_node("debate", self._node_debate)
 
         g.add_edge(START, "initialize")
-        g.add_edge("initialize", "rag_retrieval")
+        # A goal rejected at initialize (guardrails, fail-closed safety checks) ends
+        # here: it used to flow on into retrieval, planning and execution, so a
+        # rejected goal still ran its steps and only `_route` (after verify) stopped it.
+        g.add_conditional_edges(
+            "initialize",
+            lambda s: (
+                "rejected" if s.get("terminal_reason") == "guardrail_rejected" else "continue"
+            ),
+            {"rejected": END, "continue": "rag_retrieval"},
+        )
         # Pre-plan reasoning chain: rag_retrieval → [think] → [tree_of_thoughts] →
         # [supervisor] → [debate] → plan. Each optional node is inserted only when
         # enabled, so the default path stays rag_retrieval → plan.

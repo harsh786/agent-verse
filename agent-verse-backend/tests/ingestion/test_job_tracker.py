@@ -16,8 +16,21 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.ingestion.job_tracker import IngestionJobTracker
 from app.ingestion.source_config import SourceConfig, SourceFamily
+
+
+@pytest.fixture(autouse=True)
+def _no_tenant_envelope_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fake sessions here model only source_configs: no tenant has an envelope
+    key (tenant_vault_keys is covered by test_tenant_envelope_all_pg)."""
+
+    async def _no_key(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr("app.providers.tenant_vault.ensure_tenant_vault", _no_key)
 
 
 def _config(**overrides: Any) -> SourceConfig:

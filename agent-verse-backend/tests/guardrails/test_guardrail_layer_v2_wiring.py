@@ -276,8 +276,14 @@ async def test_step_layer_fails_closed_on_engine_error_for_high_risk_step(monkey
     tenant = TenantContext(tenant_id="g2-step-t3", plan=PlanTier.ENTERPRISE, api_key_id="k1")
     _clear_tenant(tenant.tenant_id)
 
-    async def _boom(**kwargs: object) -> None:
-        raise RuntimeError("engine down")
+    from app.guardrails_v2.models import GuardrailLayer
+
+    async def _boom(**kwargs: object) -> dict[str, object]:
+        # Only the STEP layer errors: the goal-level check passes, so the run
+        # reaches the step whose own guardrail check must fail closed.
+        if kwargs.get("layer") == GuardrailLayer.STEP:
+            raise RuntimeError("engine down")
+        return {"blocked": False}
 
     monkeypatch.setattr(guardrails_engine, "evaluate", _boom)
     try:
