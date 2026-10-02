@@ -140,3 +140,56 @@ async def test_idle_local_stream_emits_heartbeats(monkeypatch: pytest.MonkeyPatc
     await gen.aclose()
     assert first["type"] == "_sse_heartbeat"
     assert rec.subscribers == []  # closing the stream unregisters it
+
+
+async def test_goal_that_ended_before_subscribe_ends_the_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The terminal event was published before SUBSCRIBE (pub/sub keeps no
+    history): the stream must still end, delivering the persisted tail once."""
+    server = fakeredis.FakeServer()
+    svc = _remote_svc(monkeypatch, server, "g-race")
+    svc._db_get_goal_record = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[_db_record("g-race"), _db_record("g-race", GoalStatus.COMPLETE)]
+    )
+    svc._list_persisted_events = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"type": "step_started"}]
+    )
+    svc._list_events_since_persisted = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {"type": "step_started", "_seq": 1},  # already replayed: not repeated
+            {"type": "goal_complete", "_seq": 2},
+        ]
+    )
+
+    async def _collect() -> list[dict[str, Any]]:
+        return [e async for e in svc.subscribe_events("g-race", CTX)]
+
+    events = await asyncio.wait_for(_collect(), timeout=5)
+    assert [e["type"] for e in events] == ["step_started", "goal_complete"]
+
+
+async def test_idle_stream_ends_when_the_goal_row_turns_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker published its terminal event before the goal row said so: the
+    idle re-check (with backoff) ends the stream instead of heartbeating forever."""
+    monkeypatch.setattr(gs_mod, "_SSE_HEARTBEAT_SECONDS", 0.02)
+    server = fakeredis.FakeServer()
+    svc = _remote_svc(monkeypatch, server, "g-late")
+    statuses = [GoalStatus.EXECUTING, GoalStatus.EXECUTING, GoalStatus.EXECUTING]
+
+    async def _record(*_a: Any, **_k: Any) -> GoalRecord:
+        return _db_record("g-late", statuses.pop(0) if statuses else GoalStatus.FAILED)
+
+    svc._db_get_goal_record = _record  # type: ignore[method-assign]
+    svc._list_events_since_persisted = AsyncMock(  # type: ignore[method-assign]
+        return_value=[{"type": "worker_failed", "_seq": 7, "error": "timeout"}]
+    )
+
+    async def _collect() -> list[dict[str, Any]]:
+        return [e async for e in svc.subscribe_events("g-late", CTX)]
+
+    events = await asyncio.wait_for(_collect(), timeout=5)
+    assert events[-1]["type"] == "worker_failed"
+    assert events[:-1] and all(e["type"] == "_sse_heartbeat" for e in events[:-1])

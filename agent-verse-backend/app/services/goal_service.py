@@ -5794,18 +5794,57 @@ class GoalService:
                 )
             else:
                 replay_events = await self._list_persisted_events(goal_id, tenant_ctx)
+            # What this stream already delivered: the replay cursor and the
+            # events themselves (``_seq`` stripped — live copies carry none).
+            cursor = since_sequence
+            delivered: set[str] = set()
+
+            def _note(ev: dict[str, Any]) -> None:
+                nonlocal cursor
+                seq = ev.get("_seq")
+                if isinstance(seq, int) and seq > cursor:
+                    cursor = seq
+                delivered.add(self._event_key({k: v for k, v in ev.items() if k != "_seq"}))
+
+            def _is_terminal(rec: GoalRecord) -> bool:
+                raw = rec.status.value if hasattr(rec.status, "value") else str(rec.status)
+                return raw in ("complete", "failed", "cancelled")
+
             for event in replay_events:
+                _note(event)
                 yield event
 
             # If the goal is already in a terminal state we're done — no need
             # to subscribe to live events.
-            status_str = (
-                db_record.status.value
-                if hasattr(db_record.status, "value")
-                else str(db_record.status)
-            )
-            if status_str in ("complete", "failed", "cancelled"):
+            if _is_terminal(db_record):
                 return
+
+            async def _terminal_tail() -> list[dict[str, Any]] | None:
+                """The undelivered persisted events when the goal has ended
+                meanwhile, else ``None``. Pub/sub keeps no history: a terminal
+                event published before SUBSCRIBE (or before the goal row said
+                terminal) is otherwise never seen, and the stream heartbeats
+                forever. A failed check keeps the stream open (no silent end)."""
+                try:
+                    rec = await self._db_get_goal_record(goal_id, tenant_ctx)
+                    if rec is None or not _is_terminal(rec):
+                        return None
+                    tail = await self._list_events_since_persisted(
+                        goal_id, after_sequence=cursor, tenant_ctx=tenant_ctx
+                    )
+                except Exception as exc:
+                    _svc_logger.warning(
+                        "cross_replica_sse_status_check_failed",
+                        goal_id=goal_id,
+                        error=str(exc)[:120],
+                    )
+                    return None
+                return [
+                    e
+                    for e in tail
+                    if self._event_key({k: v for k, v in e.items() if k != "_seq"})
+                    not in delivered
+                ]
 
             # Subscribe to Redis pub/sub for live events published by the
             # owning replica's _dispatch_event() and by workers.
@@ -5828,21 +5867,46 @@ class GoalService:
                 ):
                     channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
                     await pubsub.subscribe(channel)
+                    # Subscribed: anything published from now on arrives live,
+                    # so one status check closes the read-then-subscribe gap.
+                    tail = await _terminal_tail()
+                    if tail is not None:
+                        for event in tail:
+                            yield event
+                        return
+                    idle_ticks = 0
+                    next_check = 1  # idle ticks until the next status check
                     while True:
                         message = await pubsub.get_message(
                             ignore_subscribe_messages=True, timeout=_SSE_HEARTBEAT_SECONDS
                         )
                         if message is None:
-                            # Idle (e.g. waiting for approval): a heartbeat lets
-                            # the endpoint notice a client that went away.
+                            # Idle (e.g. waiting for approval). The terminal
+                            # event may have been published before the goal row
+                            # said terminal: re-check with backoff (1, 2, 4, then
+                            # every 8 idle ticks) — bounded DB reads per stream.
+                            idle_ticks += 1
+                            if idle_ticks >= next_check:
+                                idle_ticks = 0
+                                next_check = min(next_check * 2, 8)
+                                tail = await _terminal_tail()
+                                if tail is not None:
+                                    for event in tail:
+                                        yield event
+                                    return
+                            # A heartbeat lets the endpoint notice a client
+                            # that went away.
                             yield {"type": SSE_HEARTBEAT_TYPE}
                             continue
-                        if message.get("type") != "message":
+                        if not isinstance(message, dict) or message.get("type") != "message":
+                            # Never spin without yielding to the event loop.
+                            await asyncio.sleep(0)
                             continue
                         try:
                             event = self._normalize_bus_event(json.loads(message["data"]))
                         except Exception:
                             continue
+                        _note(event)
                         yield event
                         # Every terminal event ends the stream — worker_failed
                         # (timeout, crash, lock failure) used to leave it open.

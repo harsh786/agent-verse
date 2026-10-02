@@ -844,25 +844,28 @@ class TestSubscribeEventsCrossReplicaLive:
         del svc._goals[goal_id]
         svc._redis_url_for_pubsub = "redis://x"
 
-        async def _async_gen():
-            yield {
-                "type": "message",
-                "data": json.dumps({"type": "step_started", "payload": {}}),
-            }
-            yield {
-                "type": "message",
-                "data": "not-json",  # parse failure -> continue
-            }
-            yield {
-                "type": "message",
-                "data": json.dumps({"type": "goal_complete", "payload": {}}),
-            }
-            # Should never reach this due to the terminal-event break above.
-            yield {"type": "message", "data": json.dumps({"type": "unreachable"})}
+        # The live loop polls get_message() (SVC-06); it used to iterate
+        # listen(). An AsyncMock get_message returned a truthy non-message
+        # forever and the stream spun without yielding — a suite-wide hang.
+        messages = [
+            {"type": "message", "data": json.dumps({"type": "step_started", "payload": {}})},
+            {"type": "message", "data": "not-json"},  # parse failure -> continue
+            {"type": "message", "data": json.dumps({"type": "goal_complete", "payload": {}})},
+            # Never reached: the terminal event above ends the stream.
+            {"type": "message", "data": json.dumps({"type": "unreachable"})},
+        ]
+        polled = {"n": 0}
+
+        async def _get_message(**_kwargs: Any) -> dict[str, Any] | None:
+            await asyncio.sleep(0)
+            polled["n"] += 1
+            if not messages:
+                raise AssertionError("stream kept polling after the terminal event")
+            return messages.pop(0)
 
         mock_pubsub = AsyncMock()
         mock_pubsub.subscribe = AsyncMock()
-        mock_pubsub.listen = _async_gen
+        mock_pubsub.get_message = _get_message
         mock_pubsub.__aenter__ = AsyncMock(return_value=mock_pubsub)
         mock_pubsub.__aexit__ = AsyncMock(return_value=False)
 
@@ -871,6 +874,9 @@ class TestSubscribeEventsCrossReplicaLive:
         mock_redis_ctx.__aexit__ = AsyncMock(return_value=False)
         mock_redis_ctx.pubsub = MagicMock(return_value=mock_pubsub)
 
+        async def _collect() -> list[dict[str, Any]]:
+            return [e async for e in svc.subscribe_events(goal_id, ctx, since_sequence=1)]
+
         with (
             patch.object(svc, "_db_get_goal_record", AsyncMock(return_value=db_record)),
             patch.object(
@@ -878,16 +884,19 @@ class TestSubscribeEventsCrossReplicaLive:
             ),
             patch("redis.asyncio.from_url", return_value=mock_redis_ctx),
         ):
-            events = [
-                e async for e in svc.subscribe_events(goal_id, ctx, since_sequence=1)
-            ]
+            # Timeout guard: a regression must fail, never hang the suite.
+            events = await asyncio.wait_for(_collect(), timeout=10)
 
+        assert polled["n"] == 3
         types = [e.get("type") for e in events if "type" in e]
         assert types[0] == "step_started"
         assert "goal_complete" in types
         assert "unreachable" not in types
 
-    async def test_no_redis_url_returns_after_replay(self):
+    async def test_no_redis_url_is_unavailable_after_replay(self):
+        """SVC-06: no live channel is a 503, never a silently empty stream."""
+        from app.core.errors import ServiceUnavailableError
+
         svc = _svc()
         ctx = _ctx("cb-sse-2")
         goal_id = "cross-replica-goal-2"
@@ -895,13 +904,18 @@ class TestSubscribeEventsCrossReplicaLive:
         del svc._goals[goal_id]
         svc._redis_url_for_pubsub = ""
 
+        events: list[dict[str, Any]] = []
         with (
             patch.object(svc, "_db_get_goal_record", AsyncMock(return_value=db_record)),
-            patch.object(svc, "_list_persisted_events", AsyncMock(return_value=[])),
+            patch.object(
+                svc, "_list_persisted_events", AsyncMock(return_value=[{"type": "step_started"}])
+            ),
+            pytest.raises(ServiceUnavailableError),
         ):
-            events = [e async for e in svc.subscribe_events(goal_id, ctx)]
+            async for e in svc.subscribe_events(goal_id, ctx):
+                events.append(e)
 
-        assert events == []
+        assert events == [{"type": "step_started"}]  # the replay was delivered first
 
     async def test_terminal_db_record_returns_after_replay_no_subscribe(self):
         svc = _svc()
@@ -919,7 +933,10 @@ class TestSubscribeEventsCrossReplicaLive:
 
         assert [e.get("type") for e in events] == ["goal_complete"]
 
-    async def test_redis_error_is_caught_and_logged(self):
+    async def test_redis_error_is_logged_and_surfaced_as_unavailable(self):
+        """SVC-06: a broken live channel tells the client to reconnect (503)."""
+        from app.core.errors import ServiceUnavailableError
+
         svc = _svc()
         ctx = _ctx("cb-sse-4")
         goal_id = "cross-replica-goal-4"
@@ -931,10 +948,12 @@ class TestSubscribeEventsCrossReplicaLive:
             patch.object(svc, "_db_get_goal_record", AsyncMock(return_value=db_record)),
             patch.object(svc, "_list_persisted_events", AsyncMock(return_value=[])),
             patch("redis.asyncio.from_url", side_effect=RuntimeError("conn refused")),
+            pytest.raises(ServiceUnavailableError) as excinfo,
         ):
-            events = [e async for e in svc.subscribe_events(goal_id, ctx)]
+            async for _ in svc.subscribe_events(goal_id, ctx):
+                pass
 
-        assert events == []
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
 
 
 # ── _make_agent_loop_for_tenant: per-tenant LLM provider dispatch ─────────────
