@@ -28,4 +28,5 @@ def _bypass_ssrf(monkeypatch):
     noop = lambda *_a, **_kw: None  # noqa: E731
     monkeypatch.setattr(_ssrf, "assert_public_url", noop)
     monkeypatch.setattr(_mcp_client, "assert_public_url", noop)
-    monkeypatch.setattr(_connectors_api, "assert_public_url", noop)
+    # connectors only uses the async guard now (MCPREG-04)
+    monkeypatch.setattr(_connectors_api, "assert_public_url", noop, raising=False)

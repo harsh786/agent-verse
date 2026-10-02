@@ -20,7 +20,6 @@ from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import (
     SSRFError,
-    assert_public_url,
     assert_public_url_async,
     public_async_client,
 )
@@ -1180,17 +1179,21 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
             "latency_ms": 0,
         }
 
+    if "://" not in url:
+        url = f"https://{url}"  # same default as MCPClient
+    # SSRF protection: validate the URL before making any outbound request.
+    # Never allow requests to internal/metadata endpoints. Async (never the
+    # blocking getaddrinfo on the event loop); the pinned probe client
+    # re-validates the IPs it actually connects to. Outside the probe's
+    # try/except so a refusal is a 400, not a "failed" test.
     try:
-        # SSRF protection: validate the URL before making any outbound request.
-        # Never allow requests to internal/metadata endpoints.
-        try:
-            assert_public_url(url, context="connector test")
-        except SSRFError as ssrf_exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="SSRF protection: disallowed URL",
-            ) from ssrf_exc
-
+        await assert_public_url_async(url, context="connector test")
+    except (SSRFError, ValueError) as ssrf_exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SSRF protection: disallowed URL",
+        ) from ssrf_exc
+    try:
         # Build auth headers from connector config — never forward the incoming
         # request's own Authorization header to external services.
         headers: dict[str, str] = {}
