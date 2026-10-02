@@ -23,6 +23,13 @@ from cryptography.fernet import Fernet, MultiFernet
 _vault_log = _logging.getLogger(__name__)
 
 _DEV_INSECURE_MASTER_KEY = "dev-insecure-master-key"
+# The published dev key is allowed ONLY here (SECRET-05): any other environment
+# name (staging, prod-eu, qa, a typo of "production") needs a real key.
+_DEV_KEY_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
+
+
+def _dev_key_allowed() -> bool:
+    return os.getenv("ENVIRONMENT", "development").strip().lower() in _DEV_KEY_ENVIRONMENTS
 _CONNECTOR_SECRET_PREFIX = "vault://connectors/"
 
 
@@ -45,10 +52,10 @@ def _get_master_key() -> str:
     key = os.getenv("VAULT_MASTER_KEY", "")
     if key:
         return key
-    env = os.getenv("ENVIRONMENT", "development").lower()
-    if env == "production":
+    if not _dev_key_allowed():
         raise RuntimeError(
-            "VAULT_MASTER_KEY must be set in production. Set VAULT_MASTER_KEY environment variable."
+            "VAULT_MASTER_KEY must be set in production (and in every environment other "
+            "than development/test)."
         )
     allow_dev = os.getenv("ALLOW_DEV_VAULT", "").lower() in ("true", "1", "yes")
     if not allow_dev:
@@ -303,21 +310,24 @@ def get_vault() -> CredentialVault:
     """Create a vault from the environment master key."""
     from app.core.secrets import SecretNotFoundError, read_secret
 
-    is_production = os.environ.get("ENVIRONMENT", "development").lower() == "production"
+    dev_allowed = _dev_key_allowed()
     for secret_name in ("AGENTVERSE_VAULT_KEY", "VAULT_MASTER_KEY"):
         try:
             master_key = read_secret(secret_name)
-            if is_production and master_key == _DEV_INSECURE_MASTER_KEY:
+            if not dev_allowed and master_key == _DEV_INSECURE_MASTER_KEY:
                 raise RuntimeError(
-                    "The dev-insecure-master-key vault key is not allowed in production."
+                    "The dev-insecure-master-key vault key is only allowed in "
+                    "development/test, not in ENVIRONMENT="
+                    f"{os.environ.get('ENVIRONMENT', '')!r}."
                 )
             return _cached_vault(master_key, _previous_master_keys())
         except SecretNotFoundError:
             pass
 
-    if is_production:
+    if not dev_allowed:
         raise RuntimeError(
-            "A vault master key is required in production; set "
+            "A vault master key is required in production (and in every environment "
+            "other than development/test); set "
             "AGENTVERSE_VAULT_KEY_FILE, AGENTVERSE_VAULT_KEY, "
             "VAULT_MASTER_KEY_FILE, or VAULT_MASTER_KEY."
         )
