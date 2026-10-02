@@ -8,11 +8,15 @@ import {
   DollarSign, Cpu, Timer, ChevronDown, ChevronRight, Hash,
   Pause, Play, Square,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { workflowEngineApi, type WEStepResult } from '../../lib/api/client';
 import { getStatusClasses } from './design/tokens';
+import { latestStepRows } from './stepRows';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+
+// Statuses in which the run can still change on its own (worker / reviewer).
+const LIVE_STATUSES = ['running', 'pending', 'waiting_hitl', 'waiting_timer'];
 
 // ── Step result row ───────────────────────────────────────────────────────────
 
@@ -93,16 +97,31 @@ export default function WorkflowRunDetailPage() {
     enabled: !!runId,
     refetchInterval: (d) => {
       const status = d.state.data?.status;
-      return status && ['running', 'pending', 'waiting_hitl'].includes(status) ? 3000 : false;
+      return status && LIVE_STATUSES.includes(status) ? 3000 : false;
     },
   });
 
-  const { data: steps } = useQuery({
+  // Steps poll in every live status — not only 'running': after an approval the
+  // run goes waiting_hitl -> complete without passing a poll window, so the
+  // final step results were never fetched (header "complete", timeline stuck).
+  const { data: rawSteps } = useQuery({
     queryKey: ['workflow-engine', 'run-steps', runId],
     queryFn: () => workflowEngineApi.getRunSteps(runId!),
     enabled: !!runId,
-    refetchInterval: run?.status === 'running' ? 2000 : false,
+    refetchInterval: run?.status && LIVE_STATUSES.includes(run.status) ? 2000 : false,
   });
+  const steps = useMemo(() => latestStepRows(rawSteps ?? []), [rawSteps]);
+
+  // Whenever the run's status changes (e.g. the gate was decided and the run
+  // finished), fetch the steps once more so the timeline matches the header.
+  const lastStatus = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    const status = run?.status;
+    if (lastStatus.current !== undefined && status !== lastStatus.current) {
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'run-steps', runId] });
+    }
+    lastStatus.current = status;
+  }, [run?.status, qc, runId]);
 
   const refreshRun = () => {
     qc.invalidateQueries({ queryKey: ['workflow-engine', 'run', runId] });
@@ -299,11 +318,11 @@ export default function WorkflowRunDetailPage() {
           <h2 id="steps-heading" className="text-sm font-semibold text-[#F1F5F9] mb-3">
             Step Timeline
           </h2>
-          {(steps ?? []).length === 0 ? (
+          {steps.length === 0 ? (
             <p className="text-xs text-[#F1F5F9]/30">No step results yet.</p>
           ) : (
             <div className="space-y-2" role="list" aria-label="Step results">
-              {(steps ?? []).map((step) => (
+              {steps.map((step) => (
                 <StepResultRow key={step.step_id} step={step} />
               ))}
             </div>

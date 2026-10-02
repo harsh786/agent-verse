@@ -35,6 +35,23 @@ test('shows the pending count', async () => {
   expect(await screen.findByText('2')).toBeInTheDocument();
 });
 
+test('counts workflow gate approvals and publish requests, not only goal approvals', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+    const url = String(input);
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/api/v1/approvals'))
+      return json({ items: [{ request_id: 'w1', run_id: 'r', step_id: 's', workflow_id: 'wf', status: 'pending' }], total: 1 });
+    if (url.includes('/api/v1/workflows'))
+      return json({ items: [{ id: 'wf2', name: 'x', status: 'pending_approval' }], total: 1 });
+    if (url.includes('/governance/approvals'))
+      return json([{ request_id: 'g1', goal_id: 'g1', status: 'pending' }]);
+    return json([]);
+  });
+  renderBadge();
+  expect(await screen.findByText('3')).toBeInTheDocument();
+});
+
 test('renders nothing when there are no pending approvals', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(
     new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } }),

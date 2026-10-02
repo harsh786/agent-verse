@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Bell } from "lucide-react";
-import { governanceApi } from "@/lib/api/client";
+import { usePendingApprovalCount } from "@/features/approvals/unifiedApprovals";
 
 export function PendingApprovalsBadge() {
   const navigate = useNavigate();
@@ -12,16 +11,8 @@ export function PendingApprovalsBadge() {
   // pages stuck on loading spinners. A header badge doesn't need sub-second
   // latency, so a light poll is enough; the dedicated Approvals page keeps its
   // own live stream.
-  const { data: approvals = [] } = useQuery({
-    queryKey: ["approvals"],
-    queryFn: () => governanceApi.listApprovals(),
-    refetchInterval: 20_000,
-  });
-
-  // See Sidebar: a non-array 200 body must not take the shell down.
-  const pending = Array.isArray(approvals)
-    ? approvals.filter((a) => a.status === "pending").length
-    : 0;
+  // Every approval kind (goal HITL, workflow gates, publish requests).
+  const pending = usePendingApprovalCount({ refetchInterval: 20_000 });
   if (pending === 0) return null;
 
   return (

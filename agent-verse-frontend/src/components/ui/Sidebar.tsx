@@ -15,8 +15,7 @@ import {
   MessageSquare, GitMerge, Share2, Moon, ScanText, ShieldAlert, Braces, Workflow,
 } from "lucide-react";
 import { useUiStore } from "@/stores/ui";
-import { useQuery } from "@tanstack/react-query";
-import { governanceApi } from "@/lib/api/client";
+import { usePendingApprovalCount } from "@/features/approvals/unifiedApprovals";
 import { useAuthStore } from "@/stores/auth";
 import { useTranslation } from "react-i18next";
 
@@ -53,20 +52,14 @@ export function Sidebar() {
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [enterpriseExpanded, setEnterpriseExpanded] = useState(false);
 
-  // Poll pending approvals every 10s for badge count
-  const { data: approvals = [] } = useQuery({
-    queryKey: ["approvals"],
-    queryFn: () => governanceApi.listApprovals(),
-    refetchInterval: 10_000,
+  // Pending approvals of EVERY kind (goal HITL, workflow gates, publish
+  // requests) for the badge — it used to count goal approvals only. The hook is
+  // defensive about non-array bodies: the sidebar renders on every route, so a
+  // single bad response must never replace the app with the error boundary.
+  const pendingCount = usePendingApprovalCount({
     enabled: isAuthenticated,
+    refetchInterval: 10_000,
   });
-  // Defensive: `data: approvals = []` only defaults when data is undefined, so a
-  // non-array 200 body (an envelope, an error object) reached .filter() and threw
-  // — inside the SIDEBAR, which renders on every route, so a single bad response
-  // from this badge endpoint replaced the whole app with the error boundary.
-  const pendingCount = Array.isArray(approvals)
-    ? approvals.filter((a) => a.status === "pending").length
-    : 0;
 
   const NAV_SECTIONS: NavSection[] = [
     {

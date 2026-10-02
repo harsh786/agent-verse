@@ -11,6 +11,8 @@
  *  - Collapsible note textarea per card
  *  - Keyboard navigation: ↑↓ navigate, A approve, R reject, ? help
  *  - Toast notification on new arrivals via SSE
+ *  - Every approval kind in one inbox (goal, step, org sub-task, workflow gate,
+ *    workflow publish) with a kind filter; approvals of one goal / run grouped
  *  - Rich empty state and history tab
  */
 import {
@@ -23,7 +25,27 @@ import {
   ChevronDown, ChevronUp, History, MessageSquare, ExternalLink,
   Keyboard, X, Check, Users,
 } from "lucide-react";
-import { governanceApi, type ApprovalRequest } from "@/lib/api/client";
+import {
+  governanceApi,
+  workflowEngineApi,
+  type ApprovalRequest,
+  type WEApprovalRequest,
+  type WEWorkflow,
+} from "@/lib/api/client";
+import {
+  KIND_LABELS,
+  KIND_ORDER,
+  PUBLISH_REQUESTS_KEY,
+  WORKFLOW_APPROVALS_KEY,
+  fetchPublishRequests,
+  fetchWorkflowGateApprovals,
+  fromGovernance,
+  fromPublishRequest,
+  fromWorkflowGate,
+  groupApprovals,
+  type ApprovalKind,
+  type UnifiedApproval,
+} from "./unifiedApprovals";
 import { useAuthStore } from "@/stores/auth";
 import { useEventStream } from "@/lib/sse/useEventStream";
 import { toast } from "@/stores/toast";
@@ -113,7 +135,7 @@ function ShortcutHelp({ onClose }: { onClose: () => void }) {
 
 // ── SLA stats bar ─────────────────────────────────────────────────────────────
 
-function StatsBar({ pending }: { pending: ApprovalRequest[] }) {
+function StatsBar({ pending }: { pending: UnifiedApproval[] }) {
   const { data: sla } = useQuery({
     queryKey: ["approval-sla-stats"],
     queryFn: () => governanceApi.getSlaStats(),
@@ -122,7 +144,7 @@ function StatsBar({ pending }: { pending: ApprovalRequest[] }) {
 
   const byRisk = useMemo(() => {
     const counts: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const r of pending) counts[r.risk_level ?? "medium"] = (counts[r.risk_level ?? "medium"] ?? 0) + 1;
+    for (const r of pending) counts[r.risk] = (counts[r.risk] ?? 0) + 1;
     return counts;
   }, [pending]);
 
@@ -163,6 +185,14 @@ function StatsBar({ pending }: { pending: ApprovalRequest[] }) {
 
 // ── Approval card ─────────────────────────────────────────────────────────────
 
+const KIND_BADGE: Record<ApprovalKind, string> = {
+  goal: "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
+  step: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300",
+  subtask: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+  workflow: "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300",
+  publish: "bg-slate-100 text-slate-700 dark:bg-slate-800/60 dark:text-slate-300",
+};
+
 function ApprovalCard({
   req,
   isSelected,
@@ -174,7 +204,7 @@ function ApprovalCard({
   rejecting,
   cardRef,
 }: {
-  req: ApprovalRequest;
+  req: UnifiedApproval;
   isSelected: boolean;
   isFocused: boolean;
   onSelect: () => void;
@@ -186,9 +216,9 @@ function ApprovalCard({
 }) {
   const [note, setNote] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
-  const style = riskStyle(req.risk_level);
+  const style = riskStyle(req.risk);
   const sla = slaCountdown(req.created_at);
-  const isBusy = approving || rejecting;
+  const isBusy = approving || rejecting || !req.canDecide;
 
   return (
     <div
@@ -197,6 +227,7 @@ function ApprovalCard({
         isFocused ? "ring-2 ring-primary ring-offset-1" : ""
       } ${style.pulse ? "animate-pulse-once" : ""}`}
       data-testid="approval-card"
+      data-kind={req.kind}
       tabIndex={-1}
     >
       <div className="p-4 space-y-3">
@@ -206,14 +237,21 @@ function ApprovalCard({
             type="checkbox"
             checked={isSelected}
             onChange={onSelect}
+            disabled={!req.canDecide}
             className="mt-0.5 h-4 w-4 accent-primary shrink-0 cursor-pointer"
-            aria-label={`Select request ${req.request_id}`}
+            aria-label={`Select request ${req.id}`}
           />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-1">
-              {req.risk_level && (
+              <span
+                className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${KIND_BADGE[req.kind]}`}
+                data-testid="approval-kind"
+              >
+                {KIND_LABELS[req.kind]}
+              </span>
+              {req.risk && (
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide ${style.badge}`}>
-                  {req.risk_level}
+                  {req.risk}
                 </span>
               )}
               <span className="text-[10px] bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400 px-2 py-0.5 rounded-full font-medium">
@@ -231,18 +269,21 @@ function ApprovalCard({
             </div>
 
             {/* Action */}
-            {req.action && (
-              <p className="text-sm font-semibold leading-snug">{req.action}</p>
+            {req.title && (
+              <p className="text-sm font-semibold leading-snug">{req.title}</p>
             )}
 
-            {/* Goal + multi-person progress */}
+            {/* Origin link + multi-person progress */}
             <div className="flex items-center gap-3 flex-wrap mt-1">
-              <GoalLink goalId={req.goal_id} />
+              <OriginLink req={req} />
               {(req.required_approvers ?? 1) > 1 && (
                 <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
                   <Users className="h-3 w-3" aria-hidden="true" />
                   {req.approvals_received ?? 0}/{req.required_approvers} approvers
                 </span>
+              )}
+              {req.blockedReason && (
+                <span className="text-[10px] text-muted-foreground italic">{req.blockedReason}</span>
               )}
             </div>
           </div>
@@ -291,23 +332,42 @@ function ApprovalCard({
             {rejecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> : <XCircle className="h-3.5 w-3.5" aria-hidden="true" />}
             Reject
           </button>
-          <span className="text-[10px] text-muted-foreground font-mono truncate ml-auto">{req.request_id.slice(0, 16)}…</span>
+          <span className="text-[10px] text-muted-foreground font-mono truncate ml-auto">{req.id.slice(0, 16)}…</span>
         </div>
       </div>
     </div>
   );
 }
 
-function GoalLink({ goalId }: { goalId: string }) {
+/** Where the approval came from: its goal, its workflow run, or the workflow. */
+function OriginLink({ req }: { req: UnifiedApproval }) {
   const navigate = useNavigate();
+  let to: string | null = null;
+  let label = "";
+  let title = "";
+  if (req.goalId) {
+    to = `/goals/${req.goalId}`;
+    label = `${req.goalId.slice(0, 16)}…`;
+    title = `Go to goal ${req.goalId}`;
+  } else if (req.runId && req.workflowId) {
+    to = `/workflows/${req.workflowId}/runs/${req.runId}`;
+    label = `run ${req.runId.slice(0, 8)}…`;
+    title = `Go to workflow run ${req.runId}`;
+  } else if (req.workflowId) {
+    to = `/workflows/${req.workflowId}/edit`;
+    label = `workflow ${req.workflowId.slice(0, 8)}…`;
+    title = `Go to workflow ${req.workflowId}`;
+  }
+  if (!to) return null;
+  const target = to;
   return (
     <button
-      onClick={(e) => { e.stopPropagation(); navigate(`/goals/${goalId}`); }}
+      onClick={(e) => { e.stopPropagation(); navigate(target); }}
       className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary transition-colors font-mono"
-      title={`Go to goal ${goalId}`}
+      title={title}
     >
       <ExternalLink className="h-3 w-3" aria-hidden="true" />
-      {goalId.slice(0, 16)}…
+      {label}
     </button>
   );
 }
@@ -351,6 +411,31 @@ function HistoryRow({ req }: { req: ApprovalRequest }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+type KindFilter = ApprovalKind | "all";
+
+async function decideOne(
+  item: UnifiedApproval,
+  verdict: "approve" | "reject",
+  approverId: string,
+  note: string,
+): Promise<unknown> {
+  switch (item.kind) {
+    case "workflow":
+      return workflowEngineApi.decideApproval(item.id, {
+        action: verdict === "approve" ? item.approveAction : item.rejectAction,
+        note,
+      });
+    case "publish":
+      return verdict === "approve"
+        ? workflowEngineApi.approvePublish(item.id, note)
+        : workflowEngineApi.rejectPublish(item.id, note);
+    default:
+      return verdict === "approve"
+        ? governanceApi.approve(item.id, approverId, note)
+        : governanceApi.reject(item.id, approverId, note);
+  }
+}
+
 export function ApprovalsPage() {
   const qc = useQueryClient();
   const { tenantId } = useAuthStore();
@@ -359,6 +444,7 @@ export function ApprovalsPage() {
   // ── State ──────────────────────────────────────────────────────────────────
   const [tab, setTab] = useState<Tab>("inbox");
   const [riskFilter, setRiskFilter] = useState<RiskLevel | "all">("all");
+  const [kindFilter, setKindFilter] = useState<KindFilter>("all");
   const [sort, setSort] = useState<SortKey>("risk");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIndex, setFocusIndex] = useState(0);
@@ -370,10 +456,23 @@ export function ApprovalsPage() {
   const prevCountRef = useRef(0);
 
   // ── Queries ────────────────────────────────────────────────────────────────
+  // Every approval kind: goal HITL (goal / step / org sub-task gates), workflow
+  // gate approvals and workflow publish requests. This page used to read only
+  // the first, so workflow approvals were invisible here.
   const { data: approvals = [], isLoading, error } = useQuery<ApprovalRequest[]>({
     queryKey: ["approvals"],
     queryFn: () => governanceApi.listApprovals(),
     refetchInterval: 30_000,
+  });
+  const { data: gateApprovals = [], error: gateError } = useQuery<WEApprovalRequest[]>({
+    queryKey: WORKFLOW_APPROVALS_KEY,
+    queryFn: fetchWorkflowGateApprovals,
+    refetchInterval: 30_000,
+  });
+  const { data: publishRequests = [], error: publishError } = useQuery<WEWorkflow[]>({
+    queryKey: PUBLISH_REQUESTS_KEY,
+    queryFn: fetchPublishRequests,
+    refetchInterval: 60_000,
   });
 
   const { data: history = [], isLoading: historyLoading } = useQuery<ApprovalRequest[]>({
@@ -383,74 +482,115 @@ export function ApprovalsPage() {
     staleTime: 30_000,
   });
 
-  // SSE for live updates
+  // SSE for live updates (goal HITL + workflow gate inbox)
   const { connected } = useEventStream(governanceApi.approvalsStreamPath(), {
     onEvent: () => qc.invalidateQueries({ queryKey: ["approvals"] }),
   });
+  useEventStream("/api/v1/approvals/stream", {
+    onEvent: () => qc.invalidateQueries({ queryKey: WORKFLOW_APPROVALS_KEY }),
+  });
+
+  const invalidateAll = useCallback(() => {
+    qc.invalidateQueries({ queryKey: ["approvals"] });
+    qc.invalidateQueries({ queryKey: WORKFLOW_APPROVALS_KEY });
+    qc.invalidateQueries({ queryKey: PUBLISH_REQUESTS_KEY });
+  }, [qc]);
+
+  // ── Unified, filtered, sorted, grouped ─────────────────────────────────────
+  const allPending = useMemo<UnifiedApproval[]>(() => {
+    const gov = Array.isArray(approvals) ? approvals : [];
+    const gates = Array.isArray(gateApprovals) ? gateApprovals : [];
+    const pubs = Array.isArray(publishRequests) ? publishRequests : [];
+    return [
+      ...gov.filter((a) => a.status === "pending").map(fromGovernance),
+      ...gates.filter((a) => a.status === "pending").map(fromWorkflowGate),
+      ...pubs.map(fromPublishRequest),
+    ];
+  }, [approvals, gateApprovals, publishRequests]);
+
+  const kindCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const a of allPending) counts[a.kind] = (counts[a.kind] ?? 0) + 1;
+    return counts;
+  }, [allPending]);
 
   // Toast when new items arrive
   useEffect(() => {
-    const pending = approvals.filter((a) => a.status === "pending");
-    if (prevCountRef.current > 0 && pending.length > prevCountRef.current) {
-      toast({ kind: "info", message: `${pending.length - prevCountRef.current} new approval request(s) arrived.` });
+    if (prevCountRef.current > 0 && allPending.length > prevCountRef.current) {
+      toast({ kind: "info", message: `${allPending.length - prevCountRef.current} new approval request(s) arrived.` });
     }
-    prevCountRef.current = pending.length;
-  }, [approvals]);
+    prevCountRef.current = allPending.length;
+  }, [allPending.length]);
 
-  // ── Derived lists ──────────────────────────────────────────────────────────
-  const pending = useMemo(() => {
-    let list = approvals.filter((a) => a.status === "pending");
-    if (riskFilter !== "all") list = list.filter((a) => a.risk_level === riskFilter);
-    if (sort === "risk") list = [...list].sort((a, b) => (RISK_ORDER[a.risk_level ?? "medium"] ?? 3) - (RISK_ORDER[b.risk_level ?? "medium"] ?? 3));
+  const groups = useMemo(() => {
+    let list = allPending;
+    if (kindFilter !== "all") list = list.filter((a) => a.kind === kindFilter);
+    if (riskFilter !== "all") list = list.filter((a) => a.risk === riskFilter);
+    if (sort === "risk") list = [...list].sort((a, b) => (RISK_ORDER[a.risk] ?? 3) - (RISK_ORDER[b.risk] ?? 3));
     else list = [...list].sort((a, b) => new Date(b.created_at ?? 0).getTime() - new Date(a.created_at ?? 0).getTime());
-    return list;
-  }, [approvals, riskFilter, sort]);
+    return groupApprovals(list);
+  }, [allPending, kindFilter, riskFilter, sort]);
+
+  // Flattened in display order (keyboard navigation walks this).
+  const pending = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
   // ── Mutations ──────────────────────────────────────────────────────────────
   const approveMutation = useMutation({
-    mutationFn: ({ requestId, note }: { requestId: string; note: string }) =>
-      governanceApi.approve(requestId, approverId, note),
-    onMutate: ({ requestId }) => setActionPending(requestId),
+    mutationFn: ({ item, note }: { item: UnifiedApproval; note: string }) =>
+      decideOne(item, "approve", approverId, note),
+    onMutate: ({ item }) => setActionPending(item.key),
     onSuccess: () => { toast({ kind: "success", message: "Request approved." }); },
-    onSettled: () => { setActionPending(null); qc.invalidateQueries({ queryKey: ["approvals"] }); },
+    onSettled: () => { setActionPending(null); invalidateAll(); },
     onError: (e) => toast({ kind: "error", message: `Approve failed: ${String(e)}` }),
   });
 
   const rejectMutation = useMutation({
-    mutationFn: ({ requestId, note }: { requestId: string; note: string }) =>
-      governanceApi.reject(requestId, approverId, note),
-    onMutate: ({ requestId }) => setActionPending(requestId),
+    mutationFn: ({ item, note }: { item: UnifiedApproval; note: string }) =>
+      decideOne(item, "reject", approverId, note),
+    onMutate: ({ item }) => setActionPending(item.key),
     onSuccess: () => { toast({ kind: "success", message: "Request rejected." }); },
-    onSettled: () => { setActionPending(null); qc.invalidateQueries({ queryKey: ["approvals"] }); },
+    onSettled: () => { setActionPending(null); invalidateAll(); },
     onError: (e) => toast({ kind: "error", message: `Reject failed: ${String(e)}` }),
   });
 
   const batchMutation = useMutation({
-    mutationFn: ({ action, note }: { action: "approve" | "reject"; note: string }) =>
-      governanceApi.batchApprove(Array.from(selected), action, approverId, note),
-    onSuccess: (data) => {
-      const n = data.approved + data.rejected;
+    mutationFn: async ({ action, note }: { action: "approve" | "reject"; note: string }) => {
+      const chosen = allPending.filter((a) => selected.has(a.key));
+      const governance = chosen.filter((a) => a.kind === "goal" || a.kind === "step" || a.kind === "subtask");
+      const others = chosen.filter((a) => !governance.includes(a));
+      let processed = 0;
+      if (governance.length > 0) {
+        const data = await governanceApi.batchApprove(governance.map((a) => a.id), action, approverId, note);
+        processed += data.approved + data.rejected;
+      }
+      const results = await Promise.allSettled(others.map((a) => decideOne(a, action, approverId, note)));
+      processed += results.filter((r) => r.status === "fulfilled").length;
+      return processed;
+    },
+    onSuccess: (n) => {
       toast({ kind: "success", message: `Batch action complete: ${n} request(s) processed.` });
       setSelected(new Set());
       setBulkNote("");
       setBulkAction(null);
-      qc.invalidateQueries({ queryKey: ["approvals"] });
+      invalidateAll();
     },
     onError: (e) => toast({ kind: "error", message: `Batch action failed: ${String(e)}` }),
   });
 
   // ── Selection helpers ──────────────────────────────────────────────────────
-  const toggleSelect = useCallback((id: string) => {
+  const toggleSelect = useCallback((key: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   }, []);
 
+  const selectable = useMemo(() => pending.filter((r) => r.canDecide), [pending]);
+
   const selectAll = useCallback(() => {
-    setSelected(new Set(pending.map((r) => r.request_id)));
-  }, [pending]);
+    setSelected(new Set(selectable.map((r) => r.key)));
+  }, [selectable]);
 
   const clearSelection = useCallback(() => setSelected(new Set()), []);
 
@@ -463,26 +603,26 @@ export function ApprovalsPage() {
       e.preventDefault();
       setFocusIndex((i) => Math.min(i + 1, pending.length - 1));
       const next = pending[Math.min(focusIndex + 1, pending.length - 1)];
-      if (next) cardRefs.current.get(next.request_id)?.focus();
+      if (next) cardRefs.current.get(next.key)?.focus();
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
       setFocusIndex((i) => Math.max(i - 1, 0));
       const prev = pending[Math.max(focusIndex - 1, 0)];
-      if (prev) cardRefs.current.get(prev.request_id)?.focus();
+      if (prev) cardRefs.current.get(prev.key)?.focus();
     }
     if (e.key === "a" || e.key === "A") {
       const req = pending[focusIndex];
-      if (req && !actionPending) approveMutation.mutate({ requestId: req.request_id, note: "" });
+      if (req && req.canDecide && !actionPending) approveMutation.mutate({ item: req, note: "" });
     }
     if (e.key === "r" || e.key === "R") {
       const req = pending[focusIndex];
-      if (req && !actionPending) rejectMutation.mutate({ requestId: req.request_id, note: "" });
+      if (req && req.canDecide && !actionPending) rejectMutation.mutate({ item: req, note: "" });
     }
     if (e.key === " ") {
       e.preventDefault();
       const req = pending[focusIndex];
-      if (req) toggleSelect(req.request_id);
+      if (req && req.canDecide) toggleSelect(req.key);
     }
     if ((e.metaKey || e.ctrlKey) && e.key === "a") {
       e.preventDefault();
@@ -490,7 +630,8 @@ export function ApprovalsPage() {
     }
   }, [showHelp, pending, focusIndex, actionPending, approveMutation, rejectMutation, toggleSelect, selectAll, clearSelection]);
 
-  const allSelected = pending.length > 0 && pending.every((r) => selected.has(r.request_id));
+  const allSelected = selectable.length > 0 && selectable.every((r) => selected.has(r.key));
+  const sourceErrors = [gateError && "workflow gate approvals", publishError && "publish requests"].filter(Boolean);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -514,7 +655,7 @@ export function ApprovalsPage() {
             )}
           </h1>
           <p className="text-muted-foreground text-sm mt-0.5">
-            Human-in-the-loop requests awaiting your decision
+            Goal, step, sub-task, workflow and publish requests awaiting your decision
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -565,6 +706,18 @@ export function ApprovalsPage() {
         {/* Inbox controls */}
         {tab === "inbox" && (
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Kind filter */}
+            <select
+              value={kindFilter}
+              onChange={(e) => setKindFilter(e.target.value as KindFilter)}
+              className="text-xs border border-input rounded px-2 py-1 bg-background"
+              aria-label="Filter by kind"
+            >
+              <option value="all">All kinds ({allPending.length})</option>
+              {KIND_ORDER.map((k) => (
+                <option key={k} value={k}>{KIND_LABELS[k]} ({kindCounts[k] ?? 0})</option>
+              ))}
+            </select>
             {/* Risk filter pills */}
             <div className="flex gap-1">
               {(["all", "critical", "high", "medium", "low"] as const).map((r) => (
@@ -606,6 +759,14 @@ export function ApprovalsPage() {
               Failed to load approvals: {String(error)}
             </div>
           )}
+          {sourceErrors.length > 0 && (
+            <div
+              className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl px-4 py-2 text-xs text-amber-800 dark:text-amber-300"
+              role="status"
+            >
+              Could not load {sourceErrors.join(" and ")} — this list may be incomplete.
+            </div>
+          )}
           {!isLoading && !error && pending.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20 text-center" data-testid="empty-state">
               <div className="w-16 h-16 bg-muted/40 rounded-full flex items-center justify-center mb-4">
@@ -615,10 +776,15 @@ export function ApprovalsPage() {
               <p className="text-muted-foreground text-sm max-w-xs">
                 {riskFilter !== "all"
                   ? `No pending ${riskFilter} risk requests.`
+                  : kindFilter !== "all"
+                  ? `No pending ${KIND_LABELS[kindFilter].toLowerCase()} requests.`
                   : "No pending approval requests. Agents are running autonomously."}
               </p>
-              {riskFilter !== "all" && (
-                <button onClick={() => setRiskFilter("all")} className="mt-3 text-xs text-primary hover:underline">
+              {(riskFilter !== "all" || kindFilter !== "all") && (
+                <button
+                  onClick={() => { setRiskFilter("all"); setKindFilter("all"); }}
+                  className="mt-3 text-xs text-primary hover:underline"
+                >
                   Show all requests
                 </button>
               )}
@@ -649,7 +815,7 @@ export function ApprovalsPage() {
           )}
 
           {/* Select all toggle */}
-          {pending.length > 1 && (
+          {selectable.length > 1 && (
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -660,31 +826,50 @@ export function ApprovalsPage() {
                 aria-label="Select all requests"
               />
               <label htmlFor="select-all" className="text-xs text-muted-foreground cursor-pointer select-none">
-                {allSelected ? "Deselect all" : "Select all"} ({pending.length})
+                {allSelected ? "Deselect all" : "Select all"} ({selectable.length})
               </label>
             </div>
           )}
 
-          {/* Cards */}
+          {/* Cards, grouped per goal / run */}
           {pending.length > 0 && (
             <div className="space-y-3">
-              {pending.map((req, i) => (
-                <ApprovalCard
-                  key={req.request_id}
-                  req={req}
-                  isSelected={selected.has(req.request_id)}
-                  isFocused={focusIndex === i}
-                  onSelect={() => toggleSelect(req.request_id)}
-                  onApprove={(note) => approveMutation.mutate({ requestId: req.request_id, note })}
-                  onReject={(note) => rejectMutation.mutate({ requestId: req.request_id, note })}
-                  approving={actionPending === req.request_id && approveMutation.isPending}
-                  rejecting={actionPending === req.request_id && rejectMutation.isPending}
-                  cardRef={(el) => {
-                    if (el) cardRefs.current.set(req.request_id, el);
-                    else cardRefs.current.delete(req.request_id);
-                  }}
-                />
-              ))}
+              {groups.map((group) => {
+                const cards = group.items.map((req) => {
+                  const i = pending.indexOf(req);
+                  return (
+                    <ApprovalCard
+                      key={req.key}
+                      req={req}
+                      isSelected={selected.has(req.key)}
+                      isFocused={focusIndex === i}
+                      onSelect={() => toggleSelect(req.key)}
+                      onApprove={(note) => approveMutation.mutate({ item: req, note })}
+                      onReject={(note) => rejectMutation.mutate({ item: req, note })}
+                      approving={actionPending === req.key && approveMutation.isPending}
+                      rejecting={actionPending === req.key && rejectMutation.isPending}
+                      cardRef={(el) => {
+                        if (el) cardRefs.current.set(req.key, el);
+                        else cardRefs.current.delete(req.key);
+                      }}
+                    />
+                  );
+                });
+                if (group.items.length === 1) return cards;
+                return (
+                  <section
+                    key={group.key}
+                    className="space-y-2 rounded-xl border border-dashed border-border p-2"
+                    data-testid="approval-group"
+                    aria-label={`${group.label}: ${group.items.length} approvals`}
+                  >
+                    <p className="px-1 text-[11px] font-medium text-muted-foreground">
+                      {group.label} · {group.items.length} approvals
+                    </p>
+                    {cards}
+                  </section>
+                );
+              })}
             </div>
           )}
 

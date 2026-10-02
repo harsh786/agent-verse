@@ -762,4 +762,153 @@ describe('ApprovalsPage', () => {
       expect(toasts.some((t) => /new approval request\(s\) arrived/i.test(t.message))).toBe(true);
     });
   });
+
+  // ── Every approval kind (UI-APPROVALS-WORKFLOW) ───────────────────────────
+
+  const WF_GATE = (overrides: Record<string, unknown> = {}) => ({
+    request_id: 'wfreq-1',
+    run_id: 'run-0001-aaaa',
+    step_id: 'manager_gate',
+    step_name: 'Engineering manager sign-off',
+    workflow_id: 'wf-42',
+    workflow_name: 'Weekly status report',
+    priority: 'high',
+    status: 'pending',
+    context: [],
+    actions: [{ id: 'approve', label: 'Approve' }, { id: 'reject', label: 'Reject' }],
+    deadline_at: null,
+    created_at: new Date().toISOString(),
+    can_decide: true,
+    ...overrides,
+  });
+
+  function mockAllSources(opts: {
+    goal?: ReturnType<typeof PENDING>[];
+    gates?: ReturnType<typeof WF_GATE>[];
+    publish?: Array<Record<string, unknown>>;
+  }) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
+      if (url.includes('/approvals/sla-stats')) return json({});
+      if (url.includes('/approvals/history')) return json([]);
+      if (url.includes('/api/v1/approvals/') && url.includes('/decide') && method === 'POST')
+        return json({ status: 'approved' });
+      if (url.includes('/api/v1/approvals') && method === 'GET')
+        return json({ items: opts.gates ?? [], total: (opts.gates ?? []).length });
+      if (url.includes('/approve-publish') && method === 'POST') return json({ status: 'published' });
+      if (url.includes('/reject-publish') && method === 'POST') return json({ status: 'draft' });
+      if (url.includes('/api/v1/workflows') && method === 'GET')
+        return json({ items: opts.publish ?? [], total: (opts.publish ?? []).length, page: 1, per_page: 100 });
+      if (url.includes('/governance/approvals') && url.includes('/approve') && method === 'POST')
+        return json({ status: 'approved' });
+      if (url.includes('/governance/approvals') && method === 'GET') return json(opts.goal ?? []);
+      return json([]);
+    });
+  }
+
+  test('shows workflow gate approvals next to goal approvals and decides them on /api/v1', async () => {
+    const fetchSpy = mockAllSources({
+      goal: [PENDING({ request_id: 'g-1', action: 'Goal level gate', goal_id: 'goal-zzz' })],
+      gates: [WF_GATE()],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('approval-card')).toHaveLength(2));
+    const wfCard = screen
+      .getAllByTestId('approval-card')
+      .find((c) => c.getAttribute('data-kind') === 'workflow')!;
+    expect(within(wfCard).getByText(/weekly status report — engineering manager sign-off/i)).toBeInTheDocument();
+    expect(within(wfCard).getByTestId('approval-kind')).toHaveTextContent(/workflow gate/i);
+    // The run link targets the run view of the gate's workflow.
+    expect(within(wfCard).getByTitle(/go to workflow run run-0001-aaaa/i)).toBeInTheDocument();
+
+    await userEvent.click(within(wfCard).getByRole('button', { name: /approve request/i }));
+    await waitFor(() => {
+      const call = fetchSpy.mock.calls.find(
+        ([u, i]) => String(u).includes('/api/v1/approvals/wfreq-1/decide') && (i as RequestInit)?.method === 'POST',
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toMatchObject({ action: 'approve' });
+    });
+    // The goal-approval endpoint was NOT used for the workflow approval.
+    expect(fetchSpy.mock.calls.some(([u]) => String(u).includes('/governance/approvals/wfreq-1'))).toBe(false);
+  });
+
+  test('shows publish requests and approves them via approve-publish', async () => {
+    const fetchSpy = mockAllSources({
+      publish: [{
+        id: 'wf-pub-1', name: 'Invoice sync', description: '', status: 'pending_approval',
+        version: '3', labels: {}, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }],
+    });
+    renderPage();
+    const card = await screen.findByTestId('approval-card');
+    expect(within(card).getByText(/publish workflow "invoice sync"/i)).toBeInTheDocument();
+    expect(within(card).getByTestId('approval-kind')).toHaveTextContent(/publish/i);
+    await userEvent.click(within(card).getByRole('button', { name: /approve request/i }));
+    await waitFor(() =>
+      expect(
+        fetchSpy.mock.calls.some(([u, i]) =>
+          String(u).includes('/api/v1/workflows/wf-pub-1/approve-publish') && (i as RequestInit)?.method === 'POST'),
+      ).toBe(true),
+    );
+  });
+
+  test('kind filter narrows the inbox to one approval kind', async () => {
+    mockAllSources({
+      goal: [PENDING({ request_id: 'g-1', action: 'Goal level gate', goal_id: 'goal-zzz' })],
+      gates: [WF_GATE()],
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('approval-card')).toHaveLength(2));
+    await userEvent.selectOptions(screen.getByLabelText(/filter by kind/i), 'workflow');
+    await waitFor(() => expect(screen.getAllByTestId('approval-card')).toHaveLength(1));
+    expect(screen.getByTestId('approval-card').getAttribute('data-kind')).toBe('workflow');
+    await userEvent.selectOptions(screen.getByLabelText(/filter by kind/i), 'publish');
+    expect(await screen.findByText(/no pending publish requests/i)).toBeInTheDocument();
+  });
+
+  test('groups a supervisor goal approval with its step approvals and classifies each kind', async () => {
+    mockAllSources({
+      goal: [
+        PENDING({ request_id: 'sup', goal_id: 'goal-sup-1', action: 'supervisor plan: delete stale records', risk_level: 'high' }),
+        PENDING({ request_id: 'st1', goal_id: 'goal-sup-1', action: 'shell_exec: rm -rf /tmp/stale', risk_level: 'high' }),
+        PENDING({ request_id: 'other', goal_id: 'goal-other', action: 'deploy to prod', risk_level: 'low' }),
+        { ...PENDING({ request_id: 'org1', goal_id: 'mission-9', action: 'Sign the vendor contract' }), org_id: 'org-1' } as ReturnType<typeof PENDING>,
+      ],
+    });
+    renderPage();
+    const group = await screen.findByTestId('approval-group');
+    expect(within(group).getByText(/goal goal-sup-1/i)).toBeInTheDocument();
+    expect(within(group).getByText(/2 approvals/i)).toBeInTheDocument();
+    const kinds = within(group).getAllByTestId('approval-kind').map((k) => k.textContent);
+    expect(kinds.sort()).toEqual(['Goal', 'Step']);
+    const cards = screen.getAllByTestId('approval-card');
+    expect(cards).toHaveLength(4);
+    const org = cards.find((c) => within(c).queryByText('Sign the vendor contract'))!;
+    expect(within(org).getByTestId('approval-kind')).toHaveTextContent('Sub-task');
+  });
+
+  test('a workflow approval the caller cannot decide shows who it is assigned to and disables the buttons', async () => {
+    mockAllSources({ gates: [WF_GATE({ can_decide: false, assigned_to: 'key-of-manager' })] });
+    renderPage();
+    const card = await screen.findByTestId('approval-card');
+    expect(within(card).getByText(/assigned to key-of-manager/i)).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: /approve request/i })).toBeDisabled();
+    expect(within(card).getByRole('button', { name: /reject request/i })).toBeDisabled();
+  });
+
+  test('an unavailable workflow source is reported, not silently dropped', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/api/v1/approvals')) return new Response('{"detail":"down"}', { status: 503 });
+      if (url.includes('/governance/approvals') && !url.includes('history') && !url.includes('sla'))
+        return new Response(JSON.stringify([PENDING()]), { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    expect(await screen.findByText(/could not load workflow gate approvals/i)).toBeInTheDocument();
+    expect(screen.getByTestId('approval-card')).toBeInTheDocument();
+  });
 });

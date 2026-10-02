@@ -955,6 +955,10 @@ export const tenantsApi = {
 export interface ApprovalRequest {
   request_id: string;
   goal_id: string;
+  /** Org approval gates (mission tasks) carry their org. */
+  org_id?: string | null;
+  /** Optional server-provided kind; the inbox derives one when absent. */
+  kind?: string;
   action?: string;
   risk_level?: string;
   status: string;
@@ -3211,7 +3215,7 @@ export interface WEWorkflow {
   id: string;
   name: string;
   description: string;
-  status: 'draft' | 'published' | 'archived';
+  status: 'draft' | 'published' | 'archived' | 'pending_approval';
   version: string;
   labels: Record<string, string>;
   trigger_type?: string;
@@ -3277,7 +3281,9 @@ export interface WEApprovalRequest {
   request_id: string;
   run_id: string;
   step_id: string;
+  step_name?: string;
   workflow_id: string;
+  workflow_name?: string;
   priority: string;
   status: string;
   context: Array<{ display_type: string; title: string; data: unknown }>;
@@ -3337,6 +3343,17 @@ export const workflowEngineApi = {
 
   unpublish: (id: string) =>
     request<WEWorkflow>(`${V1}/workflows/${id}/unpublish`, { method: 'POST', body: '{}' }),
+
+  /** Four-eyes publish approval (workflows with requires_publish_approval). */
+  approvePublish: (id: string, note = '') =>
+    request<WEWorkflow>(`${V1}/workflows/${id}/approve-publish`, {
+      method: 'POST', body: JSON.stringify({ note }),
+    }),
+
+  rejectPublish: (id: string, note = '') =>
+    request<WEWorkflow>(`${V1}/workflows/${id}/reject-publish`, {
+      method: 'POST', body: JSON.stringify({ note }),
+    }),
 
   validate: (id: string) =>
     request<{ valid: boolean; errors: string[] }>(`${V1}/workflows/${id}/validate`, { method: 'POST', body: '{}' }),
