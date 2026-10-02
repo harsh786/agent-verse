@@ -176,6 +176,54 @@ class PostgresWorkflowApprovalStore:
             await session.commit()
             return row is not None
 
+    async def mutate_if_pending(
+        self,
+        request_id: str,
+        tenant_id: str,
+        *,
+        discussion_entry: dict[str, Any],
+        assignment: dict[str, Any] | None = None,
+    ) -> WorkflowHITLRequest | None:
+        """Append a discussion entry (and optionally reassign) a PENDING approval.
+
+        WF-41: delegate / escalate / comment used to upsert a stale full copy
+        of the approval — status included — so racing a decision flipped the
+        decided approval back to ``pending`` and allowed a second decision and a
+        second resume. This is one conditional UPDATE that never writes
+        ``status``; ``None`` means the approval is not pending (or not found).
+        """
+        from sqlalchemy import text as sa_text
+
+        patch = dict(assignment or {})
+        sets = [
+            "payload = jsonb_set(payload || CAST(:patch AS jsonb), '{discussion}', "
+            " COALESCE(payload->'discussion', '[]'::jsonb) || "
+            " jsonb_build_array(CAST(:entry AS jsonb)))",
+            "updated_at = NOW()",
+        ]
+        if "assigned_to" in patch:
+            sets.append("assigned_to = :assigned_to")
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        f"UPDATE workflow_approvals SET {', '.join(sets)} "
+                        "WHERE request_id = :rid AND tenant_id = CAST(:tid AS uuid) "
+                        "AND status = 'pending' RETURNING payload"
+                    ),
+                    {
+                        "rid": request_id,
+                        "tid": tenant_id,
+                        "patch": json.dumps(patch),
+                        "entry": json.dumps(discussion_entry, default=str),
+                        "assigned_to": patch.get("assigned_to"),
+                    },
+                )
+            ).first()
+            await session.commit()
+        return self._from_payload(row[0]) if row is not None else None
+
     # ── Read ──────────────────────────────────────────────────────────────────
     async def get(
         self, request_id: str, tenant_id: str | None = None

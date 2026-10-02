@@ -99,7 +99,7 @@ def celery_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     )
     try:
         # Wait for the worker to report ready (celery prints "<node> ready.").
-        deadline = time.monotonic() + 60.0
+        deadline = time.monotonic() + float(os.getenv("E2E_WORKER_READY_SECONDS", "180"))
         ready = False
         while time.monotonic() < deadline:
             if proc.poll() is not None:  # worker died on startup

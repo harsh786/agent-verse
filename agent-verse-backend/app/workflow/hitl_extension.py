@@ -117,6 +117,10 @@ class WorkflowHITLRequest:
 _SLA_ACTOR = "system:sla"
 
 
+class ApprovalNotPendingError(ValueError):
+    """The approval was decided (or withdrawn) meanwhile (HTTP 409)."""
+
+
 class ApprovalPersistenceError(RuntimeError):
     """The durable approval store could not record a change (HTTP 503).
 
@@ -441,20 +445,18 @@ class HITLWorkflowGateway:
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
         if req.status != "pending":
-            raise ValueError("Cannot delegate a non-pending request")
+            raise ApprovalNotPendingError("Cannot delegate a non-pending request")
 
-        req.assigned_to = to_user
-        req.discussion.append(
-            {
-                "type": "delegation",
-                "from": from_user,
-                "to": to_user,
-                "note": note,
-                "at": datetime.now(UTC).isoformat(),
-            }
+        entry = {
+            "type": "delegation",
+            "from": from_user,
+            "to": to_user,
+            "note": note,
+            "at": datetime.now(UTC).isoformat(),
+        }
+        req = await self._mutate_pending(
+            req, entry, {"assigned_to": to_user}, action="delegate"
         )
-
-        await self._save(req)
         await self._send_notification(req)
 
         _log.info(
@@ -477,22 +479,22 @@ class HITLWorkflowGateway:
         req = await self.get_request(request_id, tenant_id)
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
+        if req.status != "pending":
+            raise ApprovalNotPendingError("Cannot escalate a non-pending request")
 
-        req.discussion.append(
-            {
-                "type": "escalation",
-                "by": actor_id,
-                "note": note,
-                "at": datetime.now(UTC).isoformat(),
-            }
-        )
-
+        entry = {
+            "type": "escalation",
+            "by": actor_id,
+            "note": note,
+            "at": datetime.now(UTC).isoformat(),
+        }
         # Change assignment to escalation role
-        if req.escalation_to_role:
-            req.assigned_role = req.escalation_to_role
-            req.assigned_to = None
-
-        await self._save(req)
+        assignment = (
+            {"assigned_role": req.escalation_to_role, "assigned_to": None}
+            if req.escalation_to_role
+            else None
+        )
+        req = await self._mutate_pending(req, entry, assignment, action="escalate")
         await self._send_notification(req)
         return req
 
@@ -528,17 +530,63 @@ class HITLWorkflowGateway:
         req = await self.get_request(request_id, tenant_id)
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
+        if req.status != "pending":
+            raise ApprovalNotPendingError("Cannot comment on a non-pending request")
 
-        req.discussion.append(
-            {
-                "type": "comment",
-                "by": actor_id,
-                "text": comment,
-                "at": datetime.now(UTC).isoformat(),
-            }
-        )
+        entry = {
+            "type": "comment",
+            "by": actor_id,
+            "text": comment,
+            "at": datetime.now(UTC).isoformat(),
+        }
+        return await self._mutate_pending(req, entry, None, action="comment")
 
-        await self._save(req)
+    async def _mutate_pending(
+        self,
+        req: WorkflowHITLRequest,
+        entry: dict[str, Any],
+        assignment: dict[str, Any] | None,
+        *,
+        action: str,
+    ) -> WorkflowHITLRequest:
+        """Apply a discussion entry / reassignment to a still-PENDING approval.
+
+        With the durable store this is one conditional UPDATE that never
+        writes ``status`` (WF-41), so a decision racing it can never be reverted
+        to pending. Raises :class:`ApprovalNotPendingError` when the approval was
+        decided meanwhile, :class:`ApprovalPersistenceError` when unwritable.
+        """
+        mutate = getattr(self._approval_store, "mutate_if_pending", None)
+        if mutate is not None:
+            try:
+                updated = await mutate(
+                    req.request_id,
+                    req.tenant_id,
+                    discussion_entry=entry,
+                    assignment=assignment,
+                )
+            except Exception as exc:
+                _log.error(
+                    "hitl_approval_db_save_failed", request_id=req.request_id, error=str(exc)
+                )
+                raise ApprovalPersistenceError(
+                    "the approval could not be saved; try again"
+                ) from exc
+            if updated is None:
+                raise ApprovalNotPendingError(
+                    f"Cannot {action}: the approval was decided meanwhile"
+                )
+            return updated  # type: ignore[no-any-return]
+        async with self._decide_lock:
+            local = self._store.get(req.request_id)
+            if local is not None and local.status != "pending":
+                raise ApprovalNotPendingError(
+                    f"Cannot {action}: the approval was decided meanwhile"
+                )
+            for key, value in (assignment or {}).items():
+                setattr(req, key, value)
+            req.discussion.append(entry)
+            await self._save(req)
         return req
 
     # ── Magic link ────────────────────────────────────────────────────────────
