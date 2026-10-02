@@ -83,7 +83,7 @@ worker:
     repository: agentverse/backend
     tag: local
   concurrency: 4
-  queues: celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance
+  queues: celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,triggers.poll,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance
   resources:
     requests:
       cpu: 500m

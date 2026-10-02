@@ -69,7 +69,8 @@ def _utc(*args: int) -> dt.datetime:
             },
             _utc(2026, 10, 2, 7, 0),
         ),
-        ({"trigger_type": "api_poll", "poll_url": "https://x"}, None),  # every tick
+        # TRG-54: polling types are evaluated once per poll interval, not every tick.
+        ({"trigger_type": "api_poll", "poll_url": "https://x"}, _utc(2026, 9, 30, 12, 1, 30)),
         ({"trigger_type": "file_drop"}, None),
     ],
 )

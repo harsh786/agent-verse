@@ -127,7 +127,7 @@ def default_command(args: argparse.Namespace) -> list[str]:
 # submitted goal sticks in PLANNING forever (the queue just grows in Redis).
 _CELERY_QUEUES = (
     "goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,"
-    "schedules,maintenance,"
+    "schedules,triggers.poll,maintenance,"
     "workflows.run,workflows.free,workflows.starter,workflows.professional,"
     "workflows.enterprise,workflows.maintenance"
 )

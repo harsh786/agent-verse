@@ -139,7 +139,7 @@ services:
     # default "celery" queue) — enforced by tests/scaling/test_worker_queue_coverage.py.
     command: ["celery", "-A", "app.scaling.celery_app", "worker",
               "--loglevel=info", "-Q",
-              "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance",
+              "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,triggers.poll,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance",
               "--concurrency=4", "--max-tasks-per-child=100"]
     environment:
       <<: *common-env

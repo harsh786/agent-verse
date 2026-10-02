@@ -4784,6 +4784,9 @@ def _next_evaluation_at(
         if seconds <= 0 or last is None:
             return None
         return _utc(last + datetime.timedelta(seconds=seconds))
+    if trigger_type in _POLL_TRIGGER_TYPES:
+        # TRG-54: polled every interval, not loaded on every tick.
+        return now_aware + datetime.timedelta(seconds=_poll_interval_seconds(sched))
     if trigger_type in ("once", "relative_delay", "deadline"):
         if last is not None:
             return _NEVER
@@ -5312,6 +5315,335 @@ def check_mcp_health() -> dict[str, Any]:
 health_check_mcp = check_mcp_health
 
 
+def _run_poll_trigger(
+    key: str, sched: dict[str, Any], r: Any, now: datetime.datetime
+) -> int:
+    """Fetch one polling trigger and fire its governed goals (TRG-54).
+
+    Runs in the ``poll_trigger`` worker task, never in the beat. Returns the
+    number of goals dispatched. Dedup state lives in Redis (``r``).
+    """
+    fired = 0
+    trigger_type = str(sched.get("trigger_type") or "")
+    # ── RSS_FEED trigger ──────────────────────────────────────────
+    if trigger_type == "rss_feed":
+        # Poll the configured feed, dispatch one goal per *new* entry
+        # (deduped by entry id in Redis), capped at 5 per cycle.
+        try:
+            import json as _json_rss
+
+            from app.triggers.rss import fetch_rss_entries, new_entries
+
+            rss_url = sched.get("rss_url", "")
+            _tenant_id_rss = str(sched.get("tenant_id") or "")
+            if rss_url and _tenant_id_rss:
+                processed_key = f"processed_rss:{key}"
+                processed_rss: set[str] = set()
+                if r is not None:
+                    _rss_raw = r.get(processed_key)
+                    if _rss_raw:
+                        processed_rss = set(_json_rss.loads(_rss_raw))
+                try:
+                    entries = fetch_rss_entries(rss_url)
+                except Exception as _rss_fetch_exc:
+                    logger.warning(
+                        "rss_fetch_error url=%s error=%s",
+                        rss_url,
+                        str(_rss_fetch_exc)[:100],
+                    )
+                    entries = []
+
+                fresh_entries = new_entries(entries, processed_rss)
+                from app.tenancy.context import (
+                    PlanTier as _PT_rss,
+                )
+                from app.tenancy.context import (
+                    TenantContext as _TC_rss,
+                )
+
+                _tenant_ctx_rss = _TC_rss(
+                    tenant_id=_tenant_id_rss,
+                    plan=_PT_rss.PROFESSIONAL,
+                    api_key_id="trigger-rss",
+                )
+                for _entry in fresh_entries[:5]:
+                    _rss_alert = {
+                        "entry_id": _entry.entry_id,
+                        "title": _entry.title,
+                        "link": _entry.link,
+                        "rss_url": rss_url,
+                    }
+                    _rss_kw = _run_async(
+                        _build_goal_kwargs_for_alert(
+                            sched,
+                            "rss_feed",
+                            _rss_alert,
+                            goal_service=None,
+                            tenant_ctx=_tenant_ctx_rss,
+                        )
+                    )
+                    # Governed dispatch (was a direct run_goal).
+                    if _rss_kw and _dispatch_beat_event_fire(
+                        key,
+                        sched,
+                        goal_text=str(_rss_kw["goal"]),
+                        fire_instance_id=f"rss:{_entry.entry_id}",
+                        event_payload=_rss_alert,
+                    ):
+                        fired += 1
+
+                if entries and r is not None:
+                    _all_rss = list(
+                        processed_rss | {e.entry_id for e in entries}
+                    )
+                    r.set(
+                        processed_key,
+                        _json_rss.dumps(_all_rss[-1000:]),
+                        ex=604800,
+                    )
+                if fresh_entries:
+                    logger.info(
+                        "rss_trigger_fired",
+                        new_entries=len(fresh_entries),
+                        schedule_id=sched.get("schedule_id", key),
+                    )
+        except Exception as _rss_exc:
+            logger.warning(
+                "rss_trigger_error",
+                error=str(_rss_exc)[:100],
+                schedule_id=sched.get("schedule_id", key),
+            )
+
+    # ── API_POLL trigger ──────────────────────────────────────────
+    elif trigger_type == "api_poll":
+        # Poll a JSON endpoint; fire when the extracted value changes
+        # (and, if set, matches poll_expected_value). Deduped by the
+        # last-seen value in Redis.
+        try:
+            from app.triggers.polling import (
+                extract_path,
+                fetch_json,
+                poll_should_fire,
+            )
+
+            poll_url = sched.get("poll_url", "")
+            _tenant_id_ap = str(sched.get("tenant_id") or "")
+            # The poll slot (TRG-33 interval) was claimed by the beat.
+            if poll_url and _tenant_id_ap:
+                last_key = f"api_poll_last:{key}"
+                last_value: Any = None
+                if r is not None:
+                    _lv = r.get(last_key)
+                    if _lv is not None:
+                        last_value = _lv.decode() if isinstance(_lv, bytes) else _lv
+                try:
+                    data = fetch_json(
+                        poll_url, method=sched.get("poll_method", "GET")
+                    )
+                except Exception as _ap_fetch_exc:
+                    logger.warning(
+                        "api_poll_fetch_error url=%s error=%s",
+                        poll_url,
+                        str(_ap_fetch_exc)[:100],
+                    )
+                    data = None
+
+                if data is not None:
+                    current = extract_path(data, sched.get("poll_jsonpath", ""))
+                    if poll_should_fire(
+                        current,
+                        last_value,
+                        sched.get("poll_expected_value", ""),
+                    ):
+                        # Only the goal text is used; the governed
+                        # dispatch resolves the real plan (TRG-06).
+                        _ap_alert = {
+                            "poll_url": poll_url,
+                            "value": current,
+                            "jsonpath": sched.get("poll_jsonpath", ""),
+                        }
+                        _ap_kw = _run_async(
+                            _build_goal_kwargs_for_alert(
+                                sched,
+                                "api_poll",
+                                _ap_alert,
+                                goal_service=None,
+                                tenant_ctx=None,
+                            )
+                        )
+                        # Governed dispatch (was a direct run_goal).
+                        if _ap_kw and _dispatch_beat_event_fire(
+                            key,
+                            sched,
+                            goal_text=str(_ap_kw["goal"]),
+                            fire_instance_id=f"apipoll:{current}",
+                            event_payload=_ap_alert,
+                        ):
+                            fired += 1
+                            logger.info(
+                                "api_poll_trigger_fired",
+                                schedule_id=sched.get("schedule_id", key),
+                            )
+                    if r is not None and current is not None:
+                        r.set(last_key, str(current), ex=604800)
+        except Exception as _ap_err:
+            logger.warning(
+                "api_poll_trigger_error",
+                error=str(_ap_err)[:100],
+                schedule_id=sched.get("schedule_id", key),
+            )
+
+    # ── DB_ROW_CHANGE trigger ─────────────────────────────────────
+    elif trigger_type == "db_row_change":
+        # Poll an allowlisted table's tenant row count; fire when it
+        # grows. Fail-closed: a table not in the allowlist never runs.
+        try:
+            table = str(sched.get("db_table", "") or "")
+            _tenant_id_db = str(sched.get("tenant_id") or "")
+            allow = _db_row_change_allowlist()
+            if _tenant_id_db and _safe_db_table(table, allow):
+                count_key = f"db_row_count:{key}"
+                last_count: int | None = None
+                if r is not None:
+                    _lc = r.get(count_key)
+                    if _lc is not None:
+                        try:
+                            last_count = int(_lc)
+                        except (TypeError, ValueError):
+                            last_count = None
+                current = _run_async(
+                    _count_tenant_rows(table, _tenant_id_db, allow)
+                )
+                if current is not None:
+                    if _row_change_fires(current, last_count):
+                        from app.tenancy.context import (
+                            PlanTier as _PT_db,
+                        )
+                        from app.tenancy.context import (
+                            TenantContext as _TC_db,
+                        )
+
+                        _tc_db = _TC_db(
+                            tenant_id=_tenant_id_db,
+                            plan=_PT_db.PROFESSIONAL,
+                            api_key_id="trigger-db-row-change",
+                        )
+                        _db_alert = {
+                            "db_table": table,
+                            "row_count": current,
+                            "previous_count": last_count,
+                        }
+                        _db_kw = _run_async(
+                            _build_goal_kwargs_for_alert(
+                                sched,
+                                "db_row_change",
+                                _db_alert,
+                                goal_service=None,
+                                tenant_ctx=_tc_db,
+                            )
+                        )
+                        # Governed dispatch (was a direct run_goal).
+                        if _db_kw and _dispatch_beat_event_fire(
+                            key,
+                            sched,
+                            goal_text=str(_db_kw["goal"]),
+                            fire_instance_id=f"dbrow:{current}",
+                            event_payload=_db_alert,
+                        ):
+                            fired += 1
+                            logger.info(
+                                "db_row_change_trigger_fired",
+                                schedule_id=sched.get("schedule_id", key),
+                            )
+                    if r is not None:
+                        r.set(count_key, str(current), ex=604800)
+        except Exception as _db_err:
+            logger.warning(
+                "db_row_change_error",
+                error=str(_db_err)[:100],
+                schedule_id=sched.get("schedule_id", key),
+            )
+
+    return fired
+
+
+_POLL_TRIGGER_TYPES: tuple[str, ...] = ("rss_feed", "api_poll", "db_row_change")
+# Seconds between polls when the trigger has no interval of its own.
+_DEFAULT_POLL_INTERVAL_SECONDS = 60
+
+
+def _poll_interval_seconds(sched: dict[str, Any]) -> int:
+    """How often a polling trigger is fetched (beat cadence floor of 60s).
+
+    Only api_poll has its own interval (TRG-33); rss_feed / db_row_change poll at
+    the beat cadence."""
+    if str(sched.get("trigger_type") or "") == "api_poll":
+        return max(int(sched.get("poll_interval_seconds") or 0), _DEFAULT_POLL_INTERVAL_SECONDS)
+    return _DEFAULT_POLL_INTERVAL_SECONDS
+
+
+def _poll_claim_key(key: str, sched: dict[str, Any]) -> str:
+    # api_poll keeps its TRG-33 key so an in-flight claim survives the deploy.
+    if str(sched.get("trigger_type") or "") == "api_poll":
+        return f"api_poll_claim:{key}"
+    return f"poll_claim:{key}"
+
+
+def _enqueue_poll_trigger(
+    key: str, sched: dict[str, Any], r: Any, now: datetime.datetime
+) -> bool:
+    """Claim this trigger's poll slot and enqueue its poll task (TRG-54).
+
+    ``SET NX EX`` (interval - 5s) is an atomic per-trigger claim shared by every
+    beat replica, so a due poll is enqueued once per interval. Without Redis
+    every tick enqueues (the poll task's own dedup state still applies). A
+    failed enqueue releases the claim so the next tick retries.
+    """
+    if not str(sched.get("tenant_id") or ""):
+        return False
+    claim = _poll_claim_key(key, sched)
+    if r is not None:
+        try:
+            if not r.set(
+                claim, now.isoformat(), nx=True, ex=max(_poll_interval_seconds(sched) - 5, 1)
+            ):
+                return False
+        except Exception as exc:
+            logger.warning("poll_claim_failed", schedule=key, error=str(exc)[:100])
+    try:
+        poll_trigger.apply_async(kwargs={"key": key, "sched": sched}, queue="triggers.poll")
+    except Exception as exc:
+        logger.warning("poll_enqueue_failed", schedule=key, error=str(exc)[:120])
+        if r is not None:
+            with contextlib.suppress(Exception):
+                r.delete(claim)
+        return False
+    return True
+
+
+@celery_app.task(name="app.scaling.tasks.poll_trigger", bind=True, max_retries=0)  # type: ignore[untyped-decorator]
+def poll_trigger(self: Any, key: str, sched: dict[str, Any]) -> dict[str, Any]:
+    """Poll ONE rss_feed / api_poll / db_row_change trigger (TRG-54).
+
+    Enqueued by ``fire_due_schedules`` on the dedicated ``triggers.poll`` queue,
+    so fetches run in parallel on workers instead of serially inside the beat.
+    """
+    import os
+
+    r: Any | None = None
+    redis_url = os.getenv("REDIS_URL", "")
+    if redis_url:
+        try:
+            import redis as sync_redis
+
+            r = cast(Any, sync_redis.from_url)(redis_url, decode_responses=True)
+        except Exception as exc:
+            logger.warning("poll_trigger_redis_unavailable: %s", exc)
+    now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
+    fired = _run_poll_trigger(key, sched, r, now)
+    return {"status": "ok", "schedule": key, "fired": fired}
+
+
 @celery_app.task(name="app.scaling.tasks.fire_due_schedules", bind=True, max_retries=3)  # type: ignore[untyped-decorator]
 @beat_task_guard(lock_ttl_seconds=300)
 def fire_due_schedules(self: Any) -> dict[str, Any]:
@@ -5321,6 +5653,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 
     now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
     fired = 0
+    polls_enqueued = 0
 
     try:
         redis_url = os.getenv("REDIS_URL", "")
@@ -5745,264 +6078,14 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                             schedule_id=sched.get("schedule_id", key),
                         )
 
-                # ── RSS_FEED trigger ──────────────────────────────────────────
-                elif trigger_type == "rss_feed":
-                    # Poll the configured feed, dispatch one goal per *new* entry
-                    # (deduped by entry id in Redis), capped at 5 per cycle.
-                    try:
-                        import json as _json_rss
-
-                        from app.triggers.rss import fetch_rss_entries, new_entries
-
-                        rss_url = sched.get("rss_url", "")
-                        _tenant_id_rss = str(sched.get("tenant_id") or "")
-                        if rss_url and _tenant_id_rss:
-                            processed_key = f"processed_rss:{key}"
-                            processed_rss: set[str] = set()
-                            if r is not None:
-                                _rss_raw = r.get(processed_key)
-                                if _rss_raw:
-                                    processed_rss = set(_json_rss.loads(_rss_raw))
-                            try:
-                                entries = fetch_rss_entries(rss_url)
-                            except Exception as _rss_fetch_exc:
-                                logger.warning(
-                                    "rss_fetch_error url=%s error=%s",
-                                    rss_url,
-                                    str(_rss_fetch_exc)[:100],
-                                )
-                                entries = []
-
-                            fresh_entries = new_entries(entries, processed_rss)
-                            from app.tenancy.context import (
-                                PlanTier as _PT_rss,
-                            )
-                            from app.tenancy.context import (
-                                TenantContext as _TC_rss,
-                            )
-
-                            _tenant_ctx_rss = _TC_rss(
-                                tenant_id=_tenant_id_rss,
-                                plan=_PT_rss.PROFESSIONAL,
-                                api_key_id="trigger-rss",
-                            )
-                            for _entry in fresh_entries[:5]:
-                                _rss_alert = {
-                                    "entry_id": _entry.entry_id,
-                                    "title": _entry.title,
-                                    "link": _entry.link,
-                                    "rss_url": rss_url,
-                                }
-                                _rss_kw = _run_async(
-                                    _build_goal_kwargs_for_alert(
-                                        sched,
-                                        "rss_feed",
-                                        _rss_alert,
-                                        goal_service=None,
-                                        tenant_ctx=_tenant_ctx_rss,
-                                    )
-                                )
-                                # Governed dispatch (was a direct run_goal).
-                                if _rss_kw and _dispatch_beat_event_fire(
-                                    key,
-                                    sched,
-                                    goal_text=str(_rss_kw["goal"]),
-                                    fire_instance_id=f"rss:{_entry.entry_id}",
-                                    event_payload=_rss_alert,
-                                ):
-                                    fired += 1
-
-                            if entries and r is not None:
-                                _all_rss = list(
-                                    processed_rss | {e.entry_id for e in entries}
-                                )
-                                r.set(
-                                    processed_key,
-                                    _json_rss.dumps(_all_rss[-1000:]),
-                                    ex=604800,
-                                )
-                            if fresh_entries:
-                                logger.info(
-                                    "rss_trigger_fired",
-                                    new_entries=len(fresh_entries),
-                                    schedule_id=sched.get("schedule_id", key),
-                                )
-                    except Exception as _rss_exc:
-                        logger.warning(
-                            "rss_trigger_error",
-                            error=str(_rss_exc)[:100],
-                            schedule_id=sched.get("schedule_id", key),
-                        )
-
-                # ── API_POLL trigger ──────────────────────────────────────────
-                elif trigger_type == "api_poll":
-                    # Poll a JSON endpoint; fire when the extracted value changes
-                    # (and, if set, matches poll_expected_value). Deduped by the
-                    # last-seen value in Redis.
-                    try:
-                        from app.triggers.polling import (
-                            extract_path,
-                            fetch_json,
-                            poll_should_fire,
-                        )
-
-                        poll_url = sched.get("poll_url", "")
-                        _tenant_id_ap = str(sched.get("tenant_id") or "")
-                        # TRG-33: poll at most every poll_interval_seconds (it
-                        # was never read: every trigger polled each 60s tick).
-                        # SET NX EX is an atomic per-trigger claim, shared by
-                        # every beat replica. Without Redis: every tick.
-                        _ap_due = True
-                        if poll_url and _tenant_id_ap and r is not None:
-                            _ap_interval = max(int(sched.get("poll_interval_seconds") or 0), 60)
-                            try:
-                                # 5s slack so the claim has expired by the next due tick.
-                                _ap_due = bool(
-                                    r.set(
-                                        f"api_poll_claim:{key}",
-                                        now.isoformat(),
-                                        nx=True,
-                                        ex=max(_ap_interval - 5, 1),
-                                    )
-                                )
-                            except Exception as _ap_claim_exc:
-                                logger.warning(
-                                    "api_poll_claim_failed", error=str(_ap_claim_exc)[:100]
-                                )
-                        if poll_url and _tenant_id_ap and _ap_due:
-                            last_key = f"api_poll_last:{key}"
-                            last_value: Any = None
-                            if r is not None:
-                                _lv = r.get(last_key)
-                                if _lv is not None:
-                                    last_value = _lv.decode() if isinstance(_lv, bytes) else _lv
-                            try:
-                                data = fetch_json(
-                                    poll_url, method=sched.get("poll_method", "GET")
-                                )
-                            except Exception as _ap_fetch_exc:
-                                logger.warning(
-                                    "api_poll_fetch_error url=%s error=%s",
-                                    poll_url,
-                                    str(_ap_fetch_exc)[:100],
-                                )
-                                data = None
-
-                            if data is not None:
-                                current = extract_path(data, sched.get("poll_jsonpath", ""))
-                                if poll_should_fire(
-                                    current,
-                                    last_value,
-                                    sched.get("poll_expected_value", ""),
-                                ):
-                                    # Only the goal text is used; the governed
-                                    # dispatch resolves the real plan (TRG-06).
-                                    _ap_alert = {
-                                        "poll_url": poll_url,
-                                        "value": current,
-                                        "jsonpath": sched.get("poll_jsonpath", ""),
-                                    }
-                                    _ap_kw = _run_async(
-                                        _build_goal_kwargs_for_alert(
-                                            sched,
-                                            "api_poll",
-                                            _ap_alert,
-                                            goal_service=None,
-                                            tenant_ctx=None,
-                                        )
-                                    )
-                                    # Governed dispatch (was a direct run_goal).
-                                    if _ap_kw and _dispatch_beat_event_fire(
-                                        key,
-                                        sched,
-                                        goal_text=str(_ap_kw["goal"]),
-                                        fire_instance_id=f"apipoll:{current}",
-                                        event_payload=_ap_alert,
-                                    ):
-                                        fired += 1
-                                        logger.info(
-                                            "api_poll_trigger_fired",
-                                            schedule_id=sched.get("schedule_id", key),
-                                        )
-                                if r is not None and current is not None:
-                                    r.set(last_key, str(current), ex=604800)
-                    except Exception as _ap_err:
-                        logger.warning(
-                            "api_poll_trigger_error",
-                            error=str(_ap_err)[:100],
-                            schedule_id=sched.get("schedule_id", key),
-                        )
-
-                # ── DB_ROW_CHANGE trigger ─────────────────────────────────────
-                elif trigger_type == "db_row_change":
-                    # Poll an allowlisted table's tenant row count; fire when it
-                    # grows. Fail-closed: a table not in the allowlist never runs.
-                    try:
-                        table = str(sched.get("db_table", "") or "")
-                        _tenant_id_db = str(sched.get("tenant_id") or "")
-                        allow = _db_row_change_allowlist()
-                        if _tenant_id_db and _safe_db_table(table, allow):
-                            count_key = f"db_row_count:{key}"
-                            last_count: int | None = None
-                            if r is not None:
-                                _lc = r.get(count_key)
-                                if _lc is not None:
-                                    try:
-                                        last_count = int(_lc)
-                                    except (TypeError, ValueError):
-                                        last_count = None
-                            current = _run_async(
-                                _count_tenant_rows(table, _tenant_id_db, allow)
-                            )
-                            if current is not None:
-                                if _row_change_fires(current, last_count):
-                                    from app.tenancy.context import (
-                                        PlanTier as _PT_db,
-                                    )
-                                    from app.tenancy.context import (
-                                        TenantContext as _TC_db,
-                                    )
-
-                                    _tc_db = _TC_db(
-                                        tenant_id=_tenant_id_db,
-                                        plan=_PT_db.PROFESSIONAL,
-                                        api_key_id="trigger-db-row-change",
-                                    )
-                                    _db_alert = {
-                                        "db_table": table,
-                                        "row_count": current,
-                                        "previous_count": last_count,
-                                    }
-                                    _db_kw = _run_async(
-                                        _build_goal_kwargs_for_alert(
-                                            sched,
-                                            "db_row_change",
-                                            _db_alert,
-                                            goal_service=None,
-                                            tenant_ctx=_tc_db,
-                                        )
-                                    )
-                                    # Governed dispatch (was a direct run_goal).
-                                    if _db_kw and _dispatch_beat_event_fire(
-                                        key,
-                                        sched,
-                                        goal_text=str(_db_kw["goal"]),
-                                        fire_instance_id=f"dbrow:{current}",
-                                        event_payload=_db_alert,
-                                    ):
-                                        fired += 1
-                                        logger.info(
-                                            "db_row_change_trigger_fired",
-                                            schedule_id=sched.get("schedule_id", key),
-                                        )
-                                if r is not None:
-                                    r.set(count_key, str(current), ex=604800)
-                    except Exception as _db_err:
-                        logger.warning(
-                            "db_row_change_error",
-                            error=str(_db_err)[:100],
-                            schedule_id=sched.get("schedule_id", key),
-                        )
+                # ── Polling triggers (TRG-54): claimed here, fetched by a worker ─
+                elif trigger_type in _POLL_TRIGGER_TYPES:
+                    # The beat never does the (blocking, up to 10s) fetch: it
+                    # claims the poll slot and enqueues one poll_trigger task on
+                    # the triggers.poll queue, so slow feeds cannot starve other
+                    # schedules or outlive the beat guard.
+                    if _enqueue_poll_trigger(key, sched, r, now):
+                        polls_enqueued += 1
 
                 # ── External alert triggers (Alertmanager / Datadog / PagerDuty) ─
                 elif trigger_type in ("alertmanager", "datadog", "pagerduty"):
@@ -6104,6 +6187,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
             "checked_at": now.isoformat(),
             "schedules_fired": fired,
             "schedules_checked": len(schedules),
+            "polls_enqueued": polls_enqueued,
         }
     except Exception as exc:
         logger.error("fire_due_schedules failed: %s", exc)

@@ -35,6 +35,30 @@ def _redis_url_env(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
 
 
+_POLLED: list[int] = []
+
+
+@pytest.fixture(autouse=True)
+def _inline_poll_tasks(monkeypatch):
+    """TRG-54: the beat only ENQUEUES polling triggers (poll_trigger on the
+    triggers.poll queue); run each enqueued poll inline so these tests still
+    cover fetch -> dedup -> governed dispatch end to end."""
+    from app.scaling import tasks
+
+    _POLLED.clear()
+
+    def _apply_async(*, kwargs, queue):
+        assert queue == "triggers.poll"
+        _POLLED.append(tasks.poll_trigger.run(**kwargs)["fired"])
+
+    monkeypatch.setattr(tasks.poll_trigger, "apply_async", _apply_async)
+
+
+def _fired(result: dict) -> int:
+    """Goals fired by the beat itself plus by the poll tasks it enqueued."""
+    return int(result["schedules_fired"]) + sum(_POLLED)
+
+
 def _redis_mock(payloads: dict[str, dict], *, extra_get: dict[str, str] | None = None):
     """A ``redis.from_url`` stand-in whose ``get`` resolves both the schedule
     payload keys (``schedule:...``) and any per-trigger dedupe keys."""
@@ -92,7 +116,7 @@ class TestDeadlineAndBusinessCalendar:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
+        assert _fired(result) == 1
         mock_apply.assert_called_once()
 
     def test_business_calendar_trigger_fires(self):
@@ -117,7 +141,7 @@ class TestDeadlineAndBusinessCalendar:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
+        assert _fired(result) == 1
         mock_apply.assert_called_once()
 
     def test_business_calendar_parse_error_is_skipped(self):
@@ -144,7 +168,7 @@ class TestDeadlineAndBusinessCalendar:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 0
+        assert _fired(result) == 0
 
 
 class TestFileDropTrigger:
@@ -180,7 +204,7 @@ class TestFileDropTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
+        assert _fired(result) == 1
         mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
         _assert_governed(mock_apply)
         mock_apply.assert_called_once()
@@ -206,7 +230,7 @@ class TestFileDropTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 0
+        assert _fired(result) == 0
 
 
 class TestRssFeedTrigger:
@@ -239,7 +263,7 @@ class TestRssFeedTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
+        assert _fired(result) == 1
         mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
         _assert_governed(mock_apply)
         mock_apply.assert_called_once()
@@ -264,7 +288,7 @@ class TestRssFeedTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 0
+        assert _fired(result) == 0
 
 
 class TestApiPollTrigger:
@@ -298,7 +322,7 @@ class TestApiPollTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
+        assert _fired(result) == 1
         mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
         _assert_governed(mock_apply)
         mock_apply.assert_called_once()
@@ -322,7 +346,7 @@ class TestApiPollTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 0
+        assert _fired(result) == 0
 
 
 class TestDbRowChangeTrigger:
@@ -358,7 +382,7 @@ class TestDbRowChangeTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
+        assert _fired(result) == 1
         mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
         _assert_governed(mock_apply)
         mock_apply.assert_called_once()
@@ -386,7 +410,7 @@ class TestDbRowChangeTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 0
+        assert _fired(result) == 0
         mock_apply.assert_not_called()
 
     def test_no_growth_does_not_fire(self):
@@ -414,7 +438,7 @@ class TestDbRowChangeTrigger:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 0
+        assert _fired(result) == 0
         mock_apply.assert_not_called()
 
 
@@ -480,7 +504,7 @@ class TestExternalAlertTriggers:
             result = fire_due_schedules.run()
             again = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
+        assert _fired(result) == 1
         assert again["schedules_fired"] == 0  # consumed once
         mock_direct.assert_not_called()
         _assert_governed(mock_apply)
@@ -506,5 +530,5 @@ class TestExternalAlertTriggers:
         ):
             result = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 0
+        assert _fired(result) == 0
         mock_apply.assert_not_called()

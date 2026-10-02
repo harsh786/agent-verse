@@ -31,6 +31,10 @@ def _run_ticks(monkeypatch: pytest.MonkeyPatch, sched: dict[str, Any], ticks: in
     monkeypatch.setattr("redis.from_url", lambda *_a, **_k: r)
     monkeypatch.setattr("app.triggers.polling.fetch_json", fake_fetch)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", lambda **_k: None)
+    # TRG-54: the beat enqueues poll_trigger; run it inline here.
+    monkeypatch.setattr(
+        tasks.poll_trigger, "apply_async", lambda *, kwargs, queue: tasks.poll_trigger.run(**kwargs)
+    )
     for _ in range(ticks):
         r.delete("beat_guard:fire_due_schedules")  # each call is a new beat tick
         tasks.fire_due_schedules()

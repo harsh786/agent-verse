@@ -122,6 +122,8 @@ celery_app.conf.update(
         "app.scaling.tasks.run_goal_dlq": {"queue": "goals_dlq"},
         "app.scaling.tasks.run_scheduled_goal": {"queue": "schedules"},
         "app.scaling.tasks.fire_due_schedules": {"queue": "schedules"},
+        # TRG-54: one task per polling trigger, off the beat, on its own queue.
+        "app.scaling.tasks.poll_trigger": {"queue": "triggers.poll"},
         "app.scaling.tasks.check_mcp_health": {"queue": "maintenance"},
         "app.scaling.tasks.health_check_mcp": {"queue": "maintenance"},
         "app.scaling.tasks.record_queue_depths": {"queue": "maintenance"},

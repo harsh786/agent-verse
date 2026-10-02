@@ -335,7 +335,7 @@ services:
     env_file:
       - ../.env
     restart: unless-stopped
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,maintenance,governance,ingestion,goals_dlq"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,triggers.poll,maintenance,governance,ingestion,goals_dlq"]
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
