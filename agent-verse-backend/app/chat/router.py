@@ -616,9 +616,21 @@ async def execute_code(
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    result = await _executor.execute(
-        body.code, body.language, session_id, tenant_id=tenant.tenant_id
-    )
+    from app.governance.audit import AuditPersistenceError
+
+    try:
+        result = await _executor.execute(
+            body.code,
+            body.language,
+            session_id,
+            tenant_ctx=tenant,
+            audit_log=getattr(request.app.state, "audit_log", None),
+        )
+    except AuditPersistenceError as exc:
+        # Never an unaudited 200 for arbitrary code execution.
+        raise HTTPException(
+            status_code=503, detail="Code execution could not be audited; result withheld."
+        ) from exc
     return {
         "exit_code": result.exit_code,
         "stdout": result.stdout,

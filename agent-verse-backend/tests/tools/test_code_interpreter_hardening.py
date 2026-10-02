@@ -113,11 +113,14 @@ def test_api_passes_tenant_and_writes_audit(monkeypatch: pytest.MonkeyPatch) -> 
     seen: dict[str, Any] = {}
 
     class _Interp:
+        def __init__(self, **_kw: Any) -> None:
+            pass
+
         async def execute(self, code: str, language: str, timeout: int, tenant_id: str) -> Any:
             seen["tenant_id"] = tenant_id
             return ci.CodeResult(stdout="hi", stderr="", exit_code=0)
 
-    monkeypatch.setattr("app.tools.code_interpreter.CodeInterpreter", _Interp)
+    monkeypatch.setattr("app.tools.code_execution.CodeInterpreter", _Interp)
     ctx = TenantContext(tenant_id="tenant-code", plan=PlanTier.FREE, api_key_id="k1")
     app = FastAPI()
 

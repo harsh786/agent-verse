@@ -15,6 +15,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.governance.audit import AuditLog
+    from app.tenancy.context import TenantContext
 
 SUPPORTED_LANGUAGES = {"python", "javascript", "bash"}
 
@@ -52,9 +57,14 @@ class ChatCodeExecutor:
         session_id: str,
         timeout: int = TIMEOUT_SECONDS,
         *,
-        tenant_id: str | None = None,
+        tenant_ctx: TenantContext,
+        audit_log: AuditLog | None = None,
     ) -> ExecutionResult:
-        """Run *code* in the sandbox and return the result."""
+        """Run *code* in the sandbox through the governed entrypoint (durably audited).
+
+        Raises :class:`app.governance.audit.AuditPersistenceError` when the audit
+        row cannot be committed; the route answers 503.
+        """
         lang = LANGUAGE_ALIASES.get(language.lower(), language.lower())
         if lang not in SUPPORTED_LANGUAGES:
             return ExecutionResult(
@@ -69,13 +79,25 @@ class ChatCodeExecutor:
                 error="unsupported_language",
             )
 
-        from app.tools.code_interpreter import CodeInterpreter
+        from app.tools.code_execution import (
+            AuditPersistenceError,
+            CodeExecutionContext,
+            execute_governed,
+        )
 
         start = time.monotonic()
         try:
-            result = await CodeInterpreter(default_timeout=timeout).execute(
-                code, lang, timeout, tenant_id=tenant_id
+            result = await execute_governed(
+                code,
+                lang,
+                timeout,
+                ctx=CodeExecutionContext(
+                    tenant_ctx=tenant_ctx, source="chat.execute", ref_id=session_id
+                ),
+                audit_log=audit_log,
             )
+        except AuditPersistenceError:
+            raise
         except RuntimeError as exc:
             # No sandbox (production without Docker): refuse, never run on the host.
             return ExecutionResult(

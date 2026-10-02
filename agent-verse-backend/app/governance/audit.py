@@ -46,6 +46,13 @@ class AuditQueryUnavailableError(RuntimeError):
     """
 
 
+def _durable_audit_required() -> bool:
+    """Outside development an audit record must reach Postgres to count."""
+    from app.core.config import get_settings
+
+    return str(get_settings().environment).strip().lower() != "development"
+
+
 @dataclass
 class AuditEvent:
     goal_id: str
@@ -67,6 +74,14 @@ class AuditEvent:
 
 class AuditWriteError(RuntimeError):
     """An audit event could not be stored durably (after retries)."""
+
+
+class AuditPersistenceError(AuditWriteError):
+    """A durable audit record could not be committed (see :meth:`AuditLog.record_durable`).
+
+    Lets a call path that must not succeed unaudited refuse (503) instead of
+    returning 200 with no trail.
+    """
 
 
 def _audit_row(event: AuditEvent, tenant_id: str) -> dict[str, Any]:
@@ -282,6 +297,28 @@ class AuditLog:
                 "auth_type": event.auth_type,
             },
         }
+
+    async def record_durable(self, event: AuditEvent, *, tenant_ctx: TenantContext) -> None:
+        """:meth:`record_async`, plus: without a DB the event only counts in development.
+
+        For call paths that must not succeed unaudited (code execution, outbound
+        email, workspace writes/deletes): raises :class:`AuditPersistenceError`
+        (an :class:`AuditWriteError`) when the row was not committed, or when no
+        DB is wired outside development (in-memory mode would "audit" into a
+        process dict that no other replica, and no restart, ever sees).
+        """
+        if self._db is None and _durable_audit_required():
+            raise AuditPersistenceError("audit store unavailable (no database configured)")
+        try:
+            await self.record_async(event, tenant_ctx=tenant_ctx)
+        except AuditWriteError as exc:
+            _log.error(
+                "audit_durable_record_failed",
+                tool_name=event.tool_name,
+                tenant_id=tenant_ctx.tenant_id,
+                error=str(exc.__cause__ or exc)[:200],
+            )
+            raise AuditPersistenceError(str(exc)) from exc
 
     async def _db_record(self, event: AuditEvent, tenant_id: str) -> None:
         """INSERT one event, idempotent on ``id``: a retry after an unknown commit

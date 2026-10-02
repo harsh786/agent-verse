@@ -33,7 +33,12 @@ class CodeStepNode:
             output = result.output if hasattr(result, "output") else result
         else:
             output = await _run_in_code_sandbox(
-                self.step.id, getattr(self.step, "runtime", "python") or "python", code, inputs
+                self.step.id,
+                getattr(self.step, "runtime", "python") or "python",
+                code,
+                inputs,
+                tenant_id=str(state.get("tenant_id") or ""),
+                run_id=str(state.get("run_id") or ""),
             )
 
         return {"step_outputs": {**(state.get("step_outputs") or {}), self.step.id: output}}
@@ -43,7 +48,13 @@ _OUTPUT_MARKER = "__AGENTVERSE_STEP_OUTPUT__"
 
 
 async def _run_in_code_sandbox(
-    step_id: str, runtime: str, code: str, inputs: dict[str, Any]
+    step_id: str,
+    runtime: str,
+    code: str,
+    inputs: dict[str, Any],
+    *,
+    tenant_id: str,
+    run_id: str,
 ) -> Any:
     """Run a code step in the Docker code sandbox (app.tools.code_interpreter).
 
@@ -56,8 +67,12 @@ async def _run_in_code_sandbox(
     """
     import json
 
-    from app.tools.code_interpreter import CodeInterpreter
+    from app.tenancy.context import PlanTier, TenantContext
+    from app.tools import code_execution
 
+    if not tenant_id:
+        # Every execution is audited against a tenant; never run unattributed code.
+        raise RuntimeError(f"code step {step_id!r}: no tenant in the workflow run state")
     lang = "javascript" if runtime.lower() in {"javascript", "js", "node"} else "python"
     payload = json.dumps(json.dumps(inputs, default=str))
     if lang == "python":
@@ -76,8 +91,17 @@ async def _run_in_code_sandbox(
             f"{code}\n"
             f"console.log({_OUTPUT_MARKER!r} + JSON.stringify(output ?? result));\n"
         )
+    ctx = code_execution.CodeExecutionContext(
+        # Only the tenant id matters for the sandbox + audit row (no plan/roles used).
+        tenant_ctx=TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="workflow"),
+        source="workflow.code_step",
+        ref_id=run_id,
+        step_id=step_id,
+    )
     try:
-        res = await CodeInterpreter(default_timeout=30).execute(program, lang)
+        res = await code_execution.execute_governed(program, lang, 30, ctx=ctx)
+    except code_execution.AuditPersistenceError as exc:
+        raise RuntimeError(f"code step {step_id!r}: execution could not be audited") from exc
     except RuntimeError as exc:  # no sandbox in production
         raise RuntimeError(f"code step {step_id!r}: sandbox unavailable: {exc}") from exc
     if res.timed_out:

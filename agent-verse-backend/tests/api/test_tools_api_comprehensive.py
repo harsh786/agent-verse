@@ -24,6 +24,10 @@ def _make_app() -> FastAPI:
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(tools_router)
+    # In-memory audit (development): code execution refuses to run unaudited.
+    from app.governance.audit import AuditLog
+
+    app.state.audit_log = AuditLog()
     return app
 
 

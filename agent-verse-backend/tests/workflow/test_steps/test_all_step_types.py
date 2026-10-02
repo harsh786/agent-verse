@@ -313,8 +313,12 @@ async def test_parallel_step_no_branches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_code_step_python_execution() -> None:
+async def test_code_step_python_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.governance.audit import AuditLog
     from app.workflow.steps.code_step import CodeStepNode
+
+    # Code steps are durably audited; use the in-memory (development) audit log.
+    monkeypatch.setattr("app.tools.code_execution._default_audit_log", AuditLog())
     step = StepDefinition(
         id="code1",
         type="code",
@@ -329,8 +333,12 @@ async def test_code_step_python_execution() -> None:
 
 
 @pytest.mark.asyncio
-async def test_code_step_blocked_import() -> None:
+async def test_code_step_blocked_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.governance.audit import AuditLog
     from app.workflow.steps.code_step import CodeStepNode
+
+    # Code steps are durably audited; use the in-memory (development) audit log.
+    monkeypatch.setattr("app.tools.code_execution._default_audit_log", AuditLog())
     step = StepDefinition(
         id="code1",
         type="code",
