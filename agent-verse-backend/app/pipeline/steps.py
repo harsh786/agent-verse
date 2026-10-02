@@ -93,20 +93,21 @@ async def hitl_gate(
     gateway: HITLGateway | None = None,
     goal_id: str = "",
 ) -> bool:
-    """Log a HITL approval request for high-risk actions; auto-proceed.
+    """File a HITL approval request for high-risk actions.
 
-    Returns False (auto-proceed) in all cases — blocking wait is handled
-    externally.  Returns True if an approval request was created.
+    Returns False when no approval is needed, True once the request is durable
+    (blocking wait is handled externally). Raises ``HITLDeliveryError`` when the
+    request could not be persisted — the caller must not proceed (HITL-01; it
+    used to be a fire-and-forget write whose failure was only logged).
     """
     if gateway is None or risk_level != "high":
         return False
-    gateway.request_approval(
-        goal_id=goal_id,
-        action=action,
-        risk_level=risk_level,
-        tenant_ctx=tenant_ctx,
+    from app.agent.hitl_filing import file_persisted_approval
+
+    await file_persisted_approval(
+        gateway, goal_id=goal_id, action=action, risk_level=risk_level, tenant_ctx=tenant_ctx
     )
-    return True  # request was logged; caller decides whether to block
+    return True
 
 
 async def record_usage(

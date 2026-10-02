@@ -3116,22 +3116,21 @@ class OrgService:
                             _gateway = getattr(app_state, "hitl_gateway", None)
                             if _gateway is not None:
                                 try:
-                                    _hitl_req = _gateway.request_approval(
+                                    # Durable before its id is recorded on the task
+                                    # (HITL-01): a fire-and-forget row could be lost
+                                    # while the task pointed at it.
+                                    from app.agent.hitl_filing import (
+                                        file_persisted_approval,
+                                    )
+
+                                    _hitl_rid = await file_persisted_approval(
+                                        _gateway,
                                         goal_id=str(mission.id),
                                         action=f"Org approval gate: {gate_title}",
                                         risk_level=getattr(_chain, "risk_threshold", "high")
                                         if _chain
                                         else "high",
                                         tenant_ctx=tenant_ctx,
-                                        context={
-                                            "org_id": org_id,
-                                            "mission_id": str(mission.id),
-                                            "task_id": str(task.id),
-                                            "gate": gate_title,
-                                        },
-                                    )
-                                    _hitl_rid = getattr(
-                                        _hitl_req, "request_id", str(_hitl_req)
                                     )
                                     await self.update_task_status(
                                         str(task.id),

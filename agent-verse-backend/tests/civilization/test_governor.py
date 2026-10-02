@@ -766,11 +766,13 @@ async def test_governor_resume_emits_civilization_resumed_event():
 async def test_governor_auto_pause_calls_hitl_on_breach():
     """_auto_pause calls HITL gateway when configured."""
     mock_hitl = AsyncMock()
-    mock_hitl.request_approval = AsyncMock()
+    mock_hitl.request_approval_async = AsyncMock(return_value="req-1")
     g = _make_governor(hitl_gateway=mock_hitl)
     g.pause = AsyncMock()
     await g._auto_pause(reasons=["budget exhausted"])
-    mock_hitl.request_approval.assert_called_once()
+    # Filed durably (HITL-01), not via the fire-and-forget request_approval.
+    mock_hitl.request_approval_async.assert_awaited_once()
+    assert mock_hitl.request_approval_async.await_args.kwargs["require_persisted"] is True
 
 
 @pytest.mark.asyncio

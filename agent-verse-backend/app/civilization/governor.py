@@ -584,25 +584,30 @@ class Governor:
             logger.warning("governor_pause_event_failed", error=str(exc))
         # Raise HITL if configured
         if self._hitl is not None:
-            try:
-                from app.tenancy.context import PlanTier, TenantContext
+            await self._raise_breach_approval(reasons)
 
-                tenant_ctx = TenantContext(
-                    tenant_id=self._tenant_id,
-                    plan=PlanTier.ENTERPRISE,
-                    api_key_id="governor",
-                )
-                await self._hitl.request_approval(
-                    goal_id=f"civ_breach_{self._civilization_id}",
-                    step_description=(
-                        f"Civilization breach: {'; '.join(reasons)}. Approve to resume."
-                    ),
-                    tenant_ctx=tenant_ctx,
-                    risk_level="high",
-                    required_approvers=1,
-                )
-            except Exception as exc:
-                logger.warning("governor_hitl_breach_failed", error=str(exc))
+    async def _raise_breach_approval(self, reasons: list[str]) -> None:
+        """File the resume approval durably (HITL-01): the civilization stays
+        paused either way; a request that could not be persisted is logged as an
+        error instead of living in one process's memory."""
+        try:
+            from app.agent.hitl_filing import file_persisted_approval
+            from app.tenancy.context import PlanTier, TenantContext
+
+            tenant_ctx = TenantContext(
+                tenant_id=self._tenant_id,
+                plan=PlanTier.ENTERPRISE,
+                api_key_id="governor",
+            )
+            await file_persisted_approval(
+                self._hitl,
+                goal_id=f"civ_breach_{self._civilization_id}",
+                action=f"Civilization breach: {'; '.join(reasons)}. Approve to resume.",
+                risk_level="high",
+                tenant_ctx=tenant_ctx,
+            )
+        except Exception as exc:
+            logger.error("governor_hitl_breach_failed", error=str(exc))
 
     async def _set_civilization_status(self, status: str) -> None:
         if self._db is None:
