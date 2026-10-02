@@ -232,15 +232,10 @@ def test_agent_analytics(monkeypatch) -> None:
 # get_spans
 # ---------------------------------------------------------------------------
 
-def test_get_spans(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "app.observability.tracing.get_recent_spans",
-        lambda limit: [{"span_id": "s1", "name": "test"}],
-    )
+def test_get_spans_no_store_is_503() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/analytics/observability/spans", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

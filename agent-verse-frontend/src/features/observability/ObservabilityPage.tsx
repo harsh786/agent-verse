@@ -779,7 +779,7 @@ function TracesTab({ apiKey, since, until }: { apiKey: string; since: string; un
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
 
-  const { data: spans = [], isLoading } = useQuery({
+  const { data: spans = [], isLoading, isError } = useQuery({
     queryKey: ['observability', 'spans', since, until],
     queryFn: () => observabilityApi.getSpans(100, { since, until }),
     enabled: !!apiKey,
@@ -827,6 +827,12 @@ function TracesTab({ apiKey, since, until }: { apiKey: string; since: string; un
 
       {isLoading ? (
         <div className="text-center py-12 text-sm text-muted-foreground">Loading traces…</div>
+      ) : isError ? (
+        <Card className="p-8 text-center">
+          <Activity className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
+          <p className="text-sm text-foreground font-medium">Span view unavailable</p>
+          <p className="text-xs text-muted-foreground mt-1">The span store could not be reached. Use the OTLP trace backend for full traces.</p>
+        </Card>
       ) : filtered.length === 0 ? (
         <Card className="p-8 text-center">
           <Activity className="h-8 w-8 text-muted-foreground mx-auto mb-2" />

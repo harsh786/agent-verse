@@ -1,5 +1,5 @@
 """Comprehensive tests for tracing.py — configure_tracing, get_tracer,
-NoOpTracer, NoOpSpanContext, get_recent_spans.
+NoOpTracer, NoOpSpanContext.
 """
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from app.observability.tracing import (
     _NoOpSpanContext,
     _NoOpTracer,
     configure_tracing,
-    get_recent_spans,
     get_tracer,
 )
 
@@ -86,13 +85,16 @@ def test_get_tracer_noop_on_exception():
     assert tracer is not None
 
 
-# ── 4. configure_tracing — no OTLP endpoint ──────────────────────────────────
+# ── 4. build_tracer_provider / configure_tracing ─────────────────────────────
 
-def test_configure_tracing_no_endpoint_sets_in_memory():
-    """Without OTLP endpoint, in-memory exporter is set up."""
-    configure_tracing("test-service", otlp_endpoint=None)
-    # After calling configure_tracing without endpoint, _in_memory_exporter is set
-    assert tracing_module._in_memory_exporter is not None
+def test_build_provider_no_endpoint_has_no_in_memory_exporter():
+    """Without OTLP endpoint nothing is exported to process memory (ENT-48)."""
+    provider = tracing_module.build_tracer_provider("test-service", otlp_endpoint=None)
+    names = [
+        type(p).__name__
+        for p in provider._active_span_processor._span_processors
+    ]
+    assert names == ["RunTimelineSpanProcessor"]
 
 
 def test_configure_tracing_multiple_calls_no_crash():
@@ -101,15 +103,11 @@ def test_configure_tracing_multiple_calls_no_crash():
     configure_tracing("svc2", otlp_endpoint=None)
 
 
-# ── 5. configure_tracing — with OTLP endpoint ────────────────────────────────
-
-def test_configure_tracing_with_invalid_otlp_falls_back():
-    """Invalid OTLP endpoint → falls back to in-memory exporter gracefully."""
-    configure_tracing("test-service", otlp_endpoint="http://localhost:99999")
-    # Should not raise; may fall back to in-memory
+def test_build_provider_with_invalid_otlp_does_not_raise_in_dev():
+    tracing_module.build_tracer_provider("test-service", otlp_endpoint="http://localhost:99999")
 
 
-def test_configure_tracing_with_mock_otlp():
+def test_build_provider_with_mock_otlp():
     mock_exporter = MagicMock()
     mock_processor = MagicMock()
     mock_provider = MagicMock()
@@ -117,113 +115,6 @@ def test_configure_tracing_with_mock_otlp():
     with patch("opentelemetry.sdk.trace.TracerProvider", return_value=mock_provider), \
          patch("opentelemetry.sdk.resources.Resource"), \
          patch("opentelemetry.exporter.otlp.proto.grpc.trace_exporter.OTLPSpanExporter", return_value=mock_exporter), \
-         patch("opentelemetry.sdk.trace.export.BatchSpanProcessor", return_value=mock_processor), \
-         patch("opentelemetry.trace.set_tracer_provider"):
-        configure_tracing("svc", otlp_endpoint="http://jaeger:4317")
-        mock_provider.add_span_processor.assert_called()
-
-
-# ── 6. get_recent_spans ───────────────────────────────────────────────────────
-
-def test_get_recent_spans_returns_empty_when_no_exporter():
-    """Before any tracing configured, returns empty list or list."""
-    # Reset module-level exporter
-    original = tracing_module._in_memory_exporter
-    tracing_module._in_memory_exporter = None
-    result = get_recent_spans()
-    assert result == []
-    tracing_module._in_memory_exporter = original
-
-
-def test_get_recent_spans_after_configure():
-    """After configure_tracing, get_recent_spans returns a list."""
-    configure_tracing("span-test-service")
-    result = get_recent_spans()
-    assert isinstance(result, list)
-
-
-def test_get_recent_spans_with_mock_exporter():
-    mock_span = MagicMock()
-    mock_span.name = "test_span"
-    mock_span.context.trace_id = 0xABCD1234ABCD1234ABCD1234ABCD1234
-    mock_span.context.span_id = 0x1234ABCD1234ABCD
-    mock_span.start_time = 1000
-    mock_span.end_time = 2000
-    mock_span.attributes = {"key": "val"}
-    mock_span.status.status_code.name = "OK"
-
-    mock_exporter = MagicMock()
-    mock_exporter.get_finished_spans.return_value = [mock_span]
-
-    original = tracing_module._in_memory_exporter
-    tracing_module._in_memory_exporter = mock_exporter
-    try:
-        spans = get_recent_spans(limit=10)
-        assert len(spans) == 1
-        assert spans[0]["name"] == "test_span"
-        assert "trace_id" in spans[0]
-        assert "span_id" in spans[0]
-        assert spans[0]["attributes"] == {"key": "val"}
-        assert spans[0]["status"] == "OK"
-    finally:
-        tracing_module._in_memory_exporter = original
-
-
-def test_get_recent_spans_limit():
-    mock_spans = []
-    for i in range(20):
-        s = MagicMock()
-        s.name = f"span_{i}"
-        s.context.trace_id = i
-        s.context.span_id = i
-        s.start_time = i
-        s.end_time = i + 1
-        s.attributes = {}
-        s.status.status_code.name = "OK"
-        mock_spans.append(s)
-
-    mock_exporter = MagicMock()
-    mock_exporter.get_finished_spans.return_value = mock_spans
-
-    original = tracing_module._in_memory_exporter
-    tracing_module._in_memory_exporter = mock_exporter
-    try:
-        spans = get_recent_spans(limit=5)
-        assert len(spans) == 5
-    finally:
-        tracing_module._in_memory_exporter = original
-
-
-def test_get_recent_spans_exception_returns_empty():
-    mock_exporter = MagicMock()
-    mock_exporter.get_finished_spans.side_effect = Exception("export error")
-
-    original = tracing_module._in_memory_exporter
-    tracing_module._in_memory_exporter = mock_exporter
-    try:
-        result = get_recent_spans()
-        assert result == []
-    finally:
-        tracing_module._in_memory_exporter = original
-
-
-def test_get_recent_spans_handles_null_attributes():
-    mock_span = MagicMock()
-    mock_span.name = "span_no_attrs"
-    mock_span.context.trace_id = 1
-    mock_span.context.span_id = 2
-    mock_span.start_time = 0
-    mock_span.end_time = 1
-    mock_span.attributes = None  # null attributes
-    mock_span.status.status_code.name = "UNSET"
-
-    mock_exporter = MagicMock()
-    mock_exporter.get_finished_spans.return_value = [mock_span]
-
-    original = tracing_module._in_memory_exporter
-    tracing_module._in_memory_exporter = mock_exporter
-    try:
-        spans = get_recent_spans()
-        assert spans[0]["attributes"] == {}
-    finally:
-        tracing_module._in_memory_exporter = original
+         patch("opentelemetry.sdk.trace.export.BatchSpanProcessor", return_value=mock_processor):
+        tracing_module.build_tracer_provider("svc", otlp_endpoint="http://jaeger:4317")
+        mock_provider.add_span_processor.assert_any_call(mock_processor)

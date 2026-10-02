@@ -3212,7 +3212,15 @@ def create_app(
 
     register_routers(app, settings, logger)
 
-    configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
+    configure_tracing(
+        settings.service_name,
+        settings.otel_exporter_otlp_endpoint,
+        redis_url=str(settings.redis_url) if settings.redis_url else None,
+        production=settings.is_production,
+    )
+    from app.observability.tracing import get_span_store
+
+    app.state.span_store = get_span_store()
     # Real auto-instrumentation (FastAPI server spans + HTTPX/DB/Redis/Celery) so a
     # goal's trace tree is complete end-to-end. Fail-safe: never breaks startup.
     instrument_app(app)

@@ -87,6 +87,7 @@ interface FetchOpts {
   grafanaOk?: boolean;
   failHealth?: boolean;
   spans?: object[];
+  spansStatus?: number;
   structuredMetrics?: object;
   timeseries?: object;
   logs?: object[];
@@ -98,6 +99,7 @@ function makeFetch({
   grafanaOk = false,
   failHealth = false,
   spans = [] as object[],
+  spansStatus = 200,
   structuredMetrics,
   timeseries,
   logs = [] as object[],
@@ -136,6 +138,11 @@ function makeFetch({
       });
     }
     if (url.includes('/analytics/observability/spans')) {
+      if (spansStatus !== 200) {
+        return new Response(JSON.stringify({ detail: 'Span store unavailable' }), {
+          status: spansStatus, headers: { 'Content-Type': 'application/json' },
+        });
+      }
       return new Response(JSON.stringify(spans), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       });
@@ -389,6 +396,14 @@ describe('ObservabilityPage — additional branches', () => {
     await waitFor(() =>
       expect(screen.getByText(/No tool call data yet/i)).toBeInTheDocument()
     );
+  });
+
+  test('Traces tab shows an unavailable state (not "no spans") when the span store 503s', async () => {
+    makeFetch({ spansStatus: 503 });
+    renderPage();
+    await userEvent.click(screen.getByRole('tab', { name: 'Traces' }));
+    expect(await screen.findByText(/Span view unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText('No spans recorded yet')).not.toBeInTheDocument();
   });
 
   // ── Traces tab branches ─────────────────────────────────────────────────────

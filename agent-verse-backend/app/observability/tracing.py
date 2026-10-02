@@ -1,8 +1,9 @@
 """OpenTelemetry tracing bootstrap.
 
 Instruments the FastAPI app and configures an OTLP exporter when an endpoint is set.
-When no endpoint is configured (local dev / tests) an in-process InMemorySpanExporter
-is used so spans are always recorded — useful for the replay API and local debugging.
+Tenant-stamped spans are additionally batched into a bounded, per-tenant Redis store
+(``app.observability.span_store``) behind the in-app span view. No process-memory
+span exporter is used.
 """
 
 from __future__ import annotations
@@ -27,12 +28,16 @@ _SAFE_PATTERN_ATTRIBUTE_KEYS = frozenset(
 )
 
 
-# Module-level in-memory exporter; populated by _add_console_span_processor
-_in_memory_exporter: Any = None
+# Tenant-scoped recent-span store (Redis) backing GET /analytics/observability/spans.
+# None when no Redis is configured — the route then answers 503.
+_span_store: Any = None
 
 # Process-wide per-goal step-timeline store, fed by the RunTimelineSpanProcessor and
 # read by the Run Inspector API. Swappable for a Redis-backed store in prod wiring.
 _run_timeline_store: Any = None
+
+# The provider installed by configure_tracing (OTel allows setting it only once).
+_installed_provider: Any = None
 
 
 def get_run_timeline_store() -> Any:
@@ -45,33 +50,52 @@ def get_run_timeline_store() -> Any:
     return _run_timeline_store
 
 
-def configure_tracing(service_name: str, otlp_endpoint: str | None = None) -> None:
-    """Configure OpenTelemetry tracing.
+def get_span_store() -> Any:
+    """Return the tenant span store wired by configure_tracing (None if no Redis)."""
+    return _span_store
 
-    When OTLP endpoint is set: exports to Jaeger/Collector.
-    Otherwise: uses in-process SimpleSpanProcessor for local debugging.
+
+def build_tracer_provider(
+    service_name: str,
+    otlp_endpoint: str | None = None,
+    *,
+    span_store: Any = None,
+    production: bool = False,
+) -> Any:
+    """Build a TracerProvider.
+
+    * OTLP endpoint set: spans export to the collector. If the exporter cannot be
+      built in production this raises — a production process must not silently
+      run with no trace export.
+    * ``span_store`` given: tenant-stamped spans are also batched into the
+      bounded per-tenant Redis store behind the in-app span view.
+    No process-memory span exporter is ever installed.
     """
-    from opentelemetry import trace
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
     provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
+    log = get_logger(__name__)
 
     if otlp_endpoint:
         try:
             from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
             exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
             provider.add_span_processor(BatchSpanProcessor(exporter))
-            get_logger(__name__).info("otlp_tracing_enabled", endpoint=otlp_endpoint)
+            log.info("otlp_tracing_enabled", endpoint=otlp_endpoint)
         except Exception as exc:
-            get_logger(__name__).warning("otlp_exporter_failed", error=str(exc))
-            _add_console_span_processor(provider, service_name)
-    else:
-        # Always have in-process span tracking (useful in dev for replay/debugging)
-        _add_console_span_processor(provider, service_name)
-        get_logger(__name__).info("in_process_tracing_enabled_no_otlp")
+            if production:
+                raise RuntimeError(
+                    f"OTLP trace exporter could not be initialised for {otlp_endpoint}"
+                ) from exc
+            log.warning("otlp_exporter_failed", error=str(exc))
+
+    if span_store is not None:
+        from app.observability.span_store import TenantSpanExporter
+
+        provider.add_span_processor(BatchSpanProcessor(TenantSpanExporter(span_store)))
 
     # Per-goal step timeline: capture goal-scoped spans into a queryable store so
     # the Run Inspector can render how a goal ran without depending on Jaeger/
@@ -79,8 +103,40 @@ def configure_tracing(service_name: str, otlp_endpoint: str | None = None) -> No
     from app.observability.run_timeline import RunTimelineSpanProcessor
 
     provider.add_span_processor(RunTimelineSpanProcessor(get_run_timeline_store()))
+    return provider
 
+
+def configure_tracing(
+    service_name: str,
+    otlp_endpoint: str | None = None,
+    *,
+    redis_url: str | None = None,
+    production: bool = False,
+) -> None:
+    """Configure process-wide OpenTelemetry tracing (idempotent).
+
+    OTel lets a process install its global TracerProvider only once, so later
+    calls (e.g. a second ``create_app`` in the same process) are no-ops rather
+    than building providers whose background export threads would never be used.
+    """
+    global _installed_provider, _span_store
+    if _installed_provider is not None:
+        return
+    from opentelemetry import trace
+
+    store = None
+    if redis_url:
+        from app.observability.span_store import RedisSpanStore
+
+        store = RedisSpanStore(redis_url=redis_url)
+    provider = build_tracer_provider(
+        service_name, otlp_endpoint, span_store=store, production=production
+    )
     trace.set_tracer_provider(provider)
+    _installed_provider = provider
+    _span_store = store
+    if not otlp_endpoint:
+        get_logger(__name__).info("tracing_enabled_no_otlp", span_store=store is not None)
 
 
 _libraries_instrumented = False
@@ -165,16 +221,6 @@ def instrument_app(app: Any) -> None:
     instrument_libraries()
 
 
-def _add_console_span_processor(provider: Any, service_name: str) -> None:
-    """Add an in-memory span store for local tracing without OTLP."""
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    global _in_memory_exporter
-    _in_memory_exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(_in_memory_exporter))
-
-
 def get_tracer(name: str) -> Any:
     """Get a named OTel tracer.  No-ops gracefully when OTel is not installed."""
     try:
@@ -215,25 +261,3 @@ class _NoOpSpanContext:
 
     def record_exception(self, exc: Exception) -> None:
         pass
-
-
-def get_recent_spans(limit: int = 100) -> list[dict]:
-    """Get recently recorded in-process spans for debugging."""
-    if _in_memory_exporter is None:
-        return []
-    try:
-        spans = _in_memory_exporter.get_finished_spans()
-        return [
-            {
-                "name": s.name,
-                "trace_id": format(s.context.trace_id, "032x"),
-                "span_id": format(s.context.span_id, "016x"),
-                "start_time": s.start_time,
-                "end_time": s.end_time,
-                "attributes": dict(s.attributes or {}),
-                "status": s.status.status_code.name,
-            }
-            for s in spans[-limit:]
-        ]
-    except Exception:
-        return []

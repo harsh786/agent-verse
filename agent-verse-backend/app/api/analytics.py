@@ -7,6 +7,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
@@ -273,11 +277,32 @@ async def list_traces(
 
 
 @router.get("/observability/spans")
-async def get_spans(request: Request, limit: int = 50) -> list[dict]:
-    """Get recent in-process trace spans (dev mode when OTLP not configured)."""
-    from app.observability.tracing import get_recent_spans
+async def get_spans(
+    request: Request, limit: int = Query(50, ge=1, le=500)
+) -> list[dict[str, Any]]:
+    """Recent spans for the caller's tenant only (newest first).
 
-    return get_recent_spans(limit=limit)
+    Served from the bounded, per-tenant Redis span store shared by every replica
+    and worker. 503 when no store is wired (no Redis) or it cannot be read —
+    never another tenant's spans and never a fake empty list.
+    """
+    import asyncio
+
+    tenant = _require_tenant(request)
+    store = getattr(request.app.state, "span_store", None)
+    if store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Span store unavailable: Redis is not configured for this deployment.",
+        )
+    try:
+        spans: list[dict[str, Any]] = await asyncio.to_thread(
+            store.recent, tenant.tenant_id, limit
+        )
+    except Exception as exc:
+        logger.warning("span_store_read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Span store temporarily unavailable.") from exc
+    return spans
 
 
 @router.get("/evals")
