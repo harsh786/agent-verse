@@ -7,6 +7,7 @@ module fresh via `load_entrypoint()` with the environment it needs.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import os
 import sys
@@ -64,20 +65,26 @@ def load_entrypoint(monkeypatch: pytest.MonkeyPatch, **env: str):
     return _import_fresh()
 
 
-class FakeSSEResponse:
-    """Minimal stand-in for the object `urllib.request.urlopen` returns."""
+SSE_URL = "http://localhost:8000/goals/goal-1/stream"
 
-    def __init__(self, lines: list[bytes]):
-        self._lines = lines
 
-    def __enter__(self):
-        return self
+def _sse_returns(result):
+    """Stand-in for the async SSE wait that returns ``result`` immediately."""
 
-    def __exit__(self, *exc_info):
-        return False
+    async def _wait(_client, goal_id, _deadline):
+        return None if result is None else {**result, "goal_id": goal_id}
 
-    def __iter__(self):
-        return iter(self._lines)
+    return _wait
+
+
+async def run_sse(module, lines: list[bytes], *, status: int = 200, timeout: float = 30.0):
+    """Drive the real async SSE wait against a mocked stream of ``lines``."""
+    with respx.mock:
+        respx.get(SSE_URL).mock(return_value=httpx.Response(status, content=b"".join(lines)))
+        async with httpx.AsyncClient() as client:
+            return await module.wait_for_completion_sse(
+                client, "goal-1", module._now() + timeout
+            )
 
 
 # --------------------------------------------------------------------------
@@ -134,108 +141,91 @@ class TestConfiguration:
 
 
 class TestWaitForCompletionSSE:
-    def test_goal_complete_event_returns_complete(self, monkeypatch):
+    async def test_goal_complete_event_returns_complete(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse([b'data: {"type": "goal_complete"}\n'])
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-
-        result = module.wait_for_completion_sse("goal-1")
-
+        result = await run_sse(module, [b'data: {"type": "goal_complete"}\n'])
         assert result == {"status": "complete", "goal_id": "goal-1"}
 
-    def test_goal_finished_event_returns_complete(self, monkeypatch):
+    async def test_goal_finished_event_returns_complete(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse([b'data: {"type": "goal_finished"}\n'])
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-
-        result = module.wait_for_completion_sse("goal-1")
-
+        result = await run_sse(module, [b'data: {"type": "goal_finished"}\n'])
         assert result == {"status": "complete", "goal_id": "goal-1"}
 
-    def test_goal_failed_event_returns_failed_with_reason(self, monkeypatch):
+    async def test_goal_failed_event_returns_failed_with_reason(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse(
-            [b'data: {"type": "goal_failed", "reason": "tool exploded"}\n']
+        result = await run_sse(
+            module, [b'data: {"type": "goal_failed", "reason": "tool exploded"}\n']
         )
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-
-        result = module.wait_for_completion_sse("goal-1")
-
         assert result == {"status": "failed", "goal_id": "goal-1", "error": "tool exploded"}
 
-    def test_goal_error_event_returns_failed(self, monkeypatch):
+    async def test_goal_error_event_returns_failed(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse([b'data: {"type": "goal_error"}\n'])
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-
-        result = module.wait_for_completion_sse("goal-1")
-
+        result = await run_sse(module, [b'data: {"type": "goal_error"}\n'])
         assert result == {"status": "failed", "goal_id": "goal-1", "error": None}
 
-    def test_malformed_json_line_is_skipped(self, monkeypatch):
+    async def test_malformed_json_line_is_skipped(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse(
-            [
-                b"data: {not valid json\n",
-                b'data: {"type": "goal_complete"}\n',
-            ]
+        result = await run_sse(
+            module, [b"data: {not valid json\n", b'data: {"type": "goal_complete"}\n']
         )
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-
-        result = module.wait_for_completion_sse("goal-1")
-
         assert result == {"status": "complete", "goal_id": "goal-1"}
 
-    def test_non_data_lines_are_ignored(self, monkeypatch):
+    async def test_non_data_lines_are_ignored(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse(
-            [
-                b": keep-alive comment\n",
-                b"event: ping\n",
-                b"\n",
-                b'data: {"type": "goal_complete"}\n',
-            ]
+        result = await run_sse(
+            module,
+            [b": keep-alive comment\n", b"event: ping\n", b"\n",
+             b'data: {"type": "goal_complete"}\n'],
         )
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-
-        result = module.wait_for_completion_sse("goal-1")
-
         assert result == {"status": "complete", "goal_id": "goal-1"}
 
-    def test_unknown_event_type_keeps_waiting_and_returns_none_at_stream_end(self, monkeypatch):
+    async def test_unknown_event_type_keeps_waiting_and_returns_none_at_stream_end(
+        self, monkeypatch
+    ):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse([b'data: {"type": "step_started"}\n'])
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
+        assert await run_sse(module, [b'data: {"type": "step_started"}\n']) is None
 
-        result = module.wait_for_completion_sse("goal-1")
+    async def test_connection_error_returns_none(self, monkeypatch, capsys):
+        module = load_entrypoint(monkeypatch)
+        with respx.mock:
+            respx.get(SSE_URL).mock(side_effect=httpx.ConnectError("connection refused"))
+            async with httpx.AsyncClient() as client:
+                result = await module.wait_for_completion_sse(
+                    client, "goal-1", module._now() + 30
+                )
+        assert result is None
+        assert "::warning::" in capsys.readouterr().out
 
+    async def test_non_200_stream_returns_none(self, monkeypatch):
+        module = load_entrypoint(monkeypatch)
+        assert await run_sse(module, [b"{}"], status=404) is None
+
+    async def test_returns_none_at_once_when_the_deadline_has_passed(self, monkeypatch):
+        module = load_entrypoint(monkeypatch)
+        # A past deadline: no request is even made (respx would flag an unmocked call).
+        async with httpx.AsyncClient() as client:
+            result = await module.wait_for_completion_sse(
+                client, "goal-1", module._now() - 1
+            )
         assert result is None
 
-    def test_connection_error_returns_none(self, monkeypatch):
+    async def test_a_stalled_stream_is_cut_off_at_the_deadline(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
 
-        def _raise(*args, **kwargs):
-            raise OSError("connection refused")
+        async def _stall(*_a, **_k):
+            await asyncio.sleep(10)
+            return httpx.Response(200, content=b"")
 
-        monkeypatch.setattr(module.urllib.request, "urlopen", _raise)
-
-        result = module.wait_for_completion_sse("goal-1")
-
+        with respx.mock:
+            respx.get(SSE_URL).mock(side_effect=_stall)
+            async with httpx.AsyncClient() as client:
+                started = module._now()
+                result = await module.wait_for_completion_sse(
+                    client, "goal-1", started + 0.2
+                )
+                elapsed = module._now() - started
         assert result is None
-
-    def test_breaks_and_returns_none_once_timeout_elapsed(self, monkeypatch):
-        module = load_entrypoint(monkeypatch, AGENTVERSE_TIMEOUT="5")
-        # First call is `start`, second is the in-loop check that exceeds TIMEOUT.
-        times = iter([1000.0, 1010.0])
-        monkeypatch.setattr(module.time, "time", lambda: next(times))
-        # If the timeout check didn't short-circuit, this line would resolve
-        # to a "complete" result — so seeing None proves the break fired.
-        fake_resp = FakeSSEResponse([b'data: {"type": "goal_complete"}\n'])
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-
-        result = module.wait_for_completion_sse("goal-1")
-
-        assert result is None
+        assert elapsed < 2
 
 
 # --------------------------------------------------------------------------
@@ -251,7 +241,7 @@ class TestMainSSEPath:
         monkeypatch.setattr(
             module,
             "wait_for_completion_sse",
-            lambda goal_id: {"status": "complete", "goal_id": goal_id},
+            _sse_returns({"status": "complete"}),
         )
 
         with respx.mock:
@@ -286,7 +276,7 @@ class TestMainSSEPath:
         monkeypatch.setattr(
             module,
             "wait_for_completion_sse",
-            lambda goal_id: {"status": "failed", "goal_id": goal_id, "error": "boom"},
+            _sse_returns({"status": "failed", "error": "boom"}),
         )
 
         with respx.mock:
@@ -310,7 +300,7 @@ class TestMainSSEPath:
         monkeypatch.setattr(
             module,
             "wait_for_completion_sse",
-            lambda goal_id: {"status": "failed", "goal_id": goal_id, "error": "boom"},
+            _sse_returns({"status": "failed", "error": "boom"}),
         )
 
         with respx.mock:
@@ -329,7 +319,7 @@ class TestMainSSEPath:
         monkeypatch.setattr(
             module,
             "wait_for_completion_sse",
-            lambda goal_id: {"status": "cancelled", "goal_id": goal_id},
+            _sse_returns({"status": "cancelled"}),
         )
 
         with respx.mock:
@@ -351,7 +341,7 @@ class TestMainSSEPath:
         monkeypatch.setattr(
             module,
             "wait_for_completion_sse",
-            lambda goal_id: {"status": "complete", "goal_id": goal_id},
+            _sse_returns({"status": "complete"}),
         )
 
         with respx.mock:
@@ -379,7 +369,7 @@ class TestMainPollingPath:
     async def test_polling_success_writes_outputs(self, monkeypatch, tmp_path):
         output_file = tmp_path / "github_output.txt"
         module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
 
         async def no_sleep(_seconds):
             return None
@@ -411,7 +401,7 @@ class TestMainPollingPath:
     async def test_polling_failure_exits_when_fail_on_error(self, monkeypatch, tmp_path):
         output_file = tmp_path / "github_output.txt"
         module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
 
         async def no_sleep(_seconds):
             return None
@@ -439,7 +429,7 @@ class TestMainPollingPath:
         module = load_entrypoint(
             monkeypatch, GITHUB_OUTPUT=str(output_file), AGENTVERSE_FAIL_ON_ERROR="false"
         )
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
 
         async def no_sleep(_seconds):
             return None
@@ -465,7 +455,7 @@ class TestMainPollingPath:
         module = load_entrypoint(
             monkeypatch, GITHUB_OUTPUT=str(output_file), AGENTVERSE_TIMEOUT="0"
         )
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
 
         with respx.mock:
             respx.post("http://localhost:8000/goals").mock(
@@ -488,7 +478,7 @@ class TestMainPollingPath:
             AGENTVERSE_TIMEOUT="0",
             AGENTVERSE_FAIL_ON_ERROR="false",
         )
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
 
         with respx.mock:
             respx.post("http://localhost:8000/goals").mock(
@@ -553,7 +543,7 @@ class TestMainSubmissionErrors:
         what running outside of an actual GitHub Actions runner looks like."""
         module = load_entrypoint(monkeypatch)
         assert "GITHUB_OUTPUT" not in os.environ
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
 
         async def no_sleep(_seconds):
             return None
@@ -592,28 +582,26 @@ async def _no_sleep(_seconds):
 
 
 class TestHonestTerminalStates:
-    def test_sse_waiting_human_event_returns_waiting_human(self, monkeypatch):
+    async def test_sse_waiting_human_event_returns_waiting_human(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse(
-            [b'data: {"type": "goal_waiting_human", "reason": "pending approvals"}\n']
+        result = await run_sse(
+            module, [b'data: {"type": "goal_waiting_human", "reason": "pending approvals"}\n']
         )
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-        assert module.wait_for_completion_sse("goal-1") == {
+        assert result == {
             "status": "waiting_human", "goal_id": "goal-1", "error": "pending approvals",
         }
 
-    def test_sse_cancelled_event_returns_cancelled(self, monkeypatch):
+    async def test_sse_cancelled_event_returns_cancelled(self, monkeypatch):
         module = load_entrypoint(monkeypatch)
-        fake_resp = FakeSSEResponse([b'data: {"type": "goal_cancelled"}\n'])
-        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
-        assert module.wait_for_completion_sse("goal-1")["status"] == "cancelled"
+        result = await run_sse(module, [b'data: {"type": "goal_cancelled"}\n'])
+        assert result["status"] == "cancelled"
 
     async def test_waiting_human_warns_with_the_approval_link_and_does_not_time_out(
         self, monkeypatch, tmp_path, capsys
     ):
         output_file = tmp_path / "out.txt"
         module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
         monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
         with respx.mock:
             respx.post("http://localhost:8000/goals").mock(
@@ -638,7 +626,7 @@ class TestHonestTerminalStates:
         )
         monkeypatch.setattr(
             module, "wait_for_completion_sse",
-            lambda goal_id: {"status": "waiting_human", "goal_id": goal_id},
+            _sse_returns({"status": "waiting_human"}),
         )
         with respx.mock:
             respx.post("http://localhost:8000/goals").mock(
@@ -654,7 +642,7 @@ class TestHonestTerminalStates:
     ):
         output_file = tmp_path / "out.txt"
         module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
         monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
         with respx.mock:
             respx.post("http://localhost:8000/goals").mock(
@@ -677,7 +665,7 @@ class TestHonestTerminalStates:
     ):
         output_file = tmp_path / "out.txt"
         module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
         monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
         with respx.mock:
             respx.post("http://localhost:8000/goals").mock(
@@ -696,7 +684,7 @@ class TestHonestTerminalStates:
     async def test_a_transient_5xx_recovers(self, monkeypatch, tmp_path):
         output_file = tmp_path / "out.txt"
         module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
-        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module, "wait_for_completion_sse", _sse_returns(None))
         monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
         with respx.mock:
             respx.post("http://localhost:8000/goals").mock(
@@ -713,3 +701,69 @@ class TestHonestTerminalStates:
             )
             await module.main()
         assert "status=complete\n" in output_file.read_text()
+
+
+# --------------------------------------------------------------------------
+# FE-20: one deadline for SSE + polling
+# --------------------------------------------------------------------------
+
+
+class TestSharedDeadline:
+    async def test_total_wait_never_exceeds_the_timeout(self, monkeypatch, tmp_path):
+        output_file = tmp_path / "out.txt"
+        module = load_entrypoint(
+            monkeypatch, GITHUB_OUTPUT=str(output_file), AGENTVERSE_TIMEOUT="60",
+            AGENTVERSE_FAIL_ON_ERROR="false",
+        )
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(module, "_now", lambda: clock["now"])
+
+        async def fake_sleep(seconds):
+            clock["now"] += seconds
+
+        monkeypatch.setattr(module.asyncio, "sleep", fake_sleep)
+
+        async def stalled_sse(_client, _goal_id, deadline):
+            assert deadline == 1060.0
+            clock["now"] += 40  # the stream stalled for 40 of the 60 s
+            return None
+
+        monkeypatch.setattr(module, "wait_for_completion_sse", stalled_sse)
+        with respx.mock:
+            respx.post("http://localhost:8000/goals").mock(
+                return_value=httpx.Response(200, json={"goal_id": "goal-7"})
+            )
+            polls = respx.get("http://localhost:8000/goals/goal-7").mock(
+                return_value=httpx.Response(200, json={"status": "executing"})
+            )
+            await module.main()
+
+        # Polling used only the 20 s left, not a fresh 60 s window.
+        assert clock["now"] - 1000.0 <= 60.0
+        assert polls.call_count == 4
+        assert "status=timeout\n" in output_file.read_text()
+
+    async def test_sse_that_used_the_whole_budget_skips_polling(self, monkeypatch, tmp_path):
+        output_file = tmp_path / "out.txt"
+        module = load_entrypoint(
+            monkeypatch, GITHUB_OUTPUT=str(output_file), AGENTVERSE_TIMEOUT="30",
+            AGENTVERSE_FAIL_ON_ERROR="false",
+        )
+        clock = {"now": 0.0}
+        monkeypatch.setattr(module, "_now", lambda: clock["now"])
+
+        async def stalled_sse(_client, _goal_id, _deadline):
+            clock["now"] += 30
+            return None
+
+        monkeypatch.setattr(module, "wait_for_completion_sse", stalled_sse)
+        with respx.mock:
+            respx.post("http://localhost:8000/goals").mock(
+                return_value=httpx.Response(200, json={"goal_id": "goal-7"})
+            )
+            polls = respx.get("http://localhost:8000/goals/goal-7").mock(
+                return_value=httpx.Response(200, json={"status": "executing"})
+            )
+            await module.main()
+        assert polls.call_count == 0
+        assert "status=timeout\n" in output_file.read_text()

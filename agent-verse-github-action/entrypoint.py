@@ -5,7 +5,6 @@ import json
 import os
 import sys
 import time
-import urllib.request
 
 import httpx
 
@@ -25,50 +24,64 @@ MAX_POLL_ERRORS = 3
 HEADERS = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
 
 
-def wait_for_completion_sse(goal_id: str) -> dict | None:
-    """Wait for goal completion using SSE (efficient) with polling fallback.
+def _now() -> float:
+    """Monotonic clock for the wait deadline (a seam for tests)."""
+    return time.monotonic()
 
-    Returns a result dict on terminal event, or None if SSE is unavailable.
+
+def _terminal_from_event(evt: dict, goal_id: str) -> dict | None:
+    """Map one goal SSE event to a terminal result, or None to keep waiting."""
+    etype = evt.get("type", "")
+    if etype in ("goal_complete", "goal_finished"):
+        return {"status": "complete", "goal_id": goal_id}
+    if etype in ("goal_failed", "goal_error", "goal_rejected"):
+        return {"status": "failed", "goal_id": goal_id, "error": evt.get("reason")}
+    if etype == "goal_cancelled":
+        return {"status": "cancelled", "goal_id": goal_id}
+    if etype == "goal_waiting_human":
+        return {"status": "waiting_human", "goal_id": goal_id, "error": evt.get("reason")}
+    return None
+
+
+async def wait_for_completion_sse(
+    client: httpx.AsyncClient, goal_id: str, deadline: float
+) -> dict | None:
+    """Wait for a terminal goal event over SSE, never past ``deadline``.
+
+    Returns a result dict on a terminal event, or None when SSE is unavailable
+    or the deadline passed (the caller then polls until the SAME deadline — the
+    old sync urllib wait blocked the event loop for up to TIMEOUT and polling
+    then started a fresh TIMEOUT window, so a run could take twice the limit).
     """
-    start = time.time()
+    remaining = deadline - _now()
+    if remaining <= 0:
+        return None
     url = f"{BASE_URL}/goals/{goal_id}/stream"
-
     try:
-        req = urllib.request.Request(
-            url,
-            headers={"X-API-Key": API_KEY, "Accept": "text/event-stream"},
-        )
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            for line in resp:
-                if time.time() - start > TIMEOUT:
-                    break
-                line = line.decode("utf-8").strip()
-                if line.startswith("data: "):
+        async with asyncio.timeout(remaining):
+            async with client.stream(
+                "GET", url, headers={"Accept": "text/event-stream"}
+            ) as resp:
+                if resp.status_code != 200:
+                    print(f"::warning::SSE wait unavailable (HTTP {resp.status_code}), polling")
+                    return None
+                async for raw in resp.aiter_lines():
+                    line = raw.strip()
+                    if not line.startswith("data: "):
+                        continue
                     try:
                         evt = json.loads(line[6:])
-                        etype = evt.get("type", "")
-                        if etype in ("goal_complete", "goal_finished"):
-                            return {"status": "complete", "goal_id": goal_id}
-                        elif etype in ("goal_failed", "goal_error", "goal_rejected"):
-                            return {
-                                "status": "failed",
-                                "goal_id": goal_id,
-                                "error": evt.get("reason"),
-                            }
-                        elif etype == "goal_cancelled":
-                            return {"status": "cancelled", "goal_id": goal_id}
-                        elif etype == "goal_waiting_human":
-                            return {
-                                "status": "waiting_human",
-                                "goal_id": goal_id,
-                                "error": evt.get("reason"),
-                            }
                     except json.JSONDecodeError:
-                        pass
+                        continue
+                    if isinstance(evt, dict):
+                        result = _terminal_from_event(evt, goal_id)
+                        if result is not None:
+                            return result
+    except TimeoutError:
+        return None
     except Exception as exc:
         # Not fatal (we fall back to polling), but never silent.
         print(f"::warning::SSE wait unavailable, polling instead: {exc}")
-
     return None
 
 
@@ -137,8 +150,9 @@ async def main() -> None:
         print(f"::notice::Goal submitted: {goal_id}")
         _write_output("goal-id", goal_id)
 
-        # Try SSE-based waiting first (efficient)
-        sse_result = wait_for_completion_sse(goal_id)
+        # One deadline for the whole wait: SSE first (efficient), then polling.
+        deadline = _now() + TIMEOUT
+        sse_result = await wait_for_completion_sse(client, goal_id, deadline)
         if sse_result is not None:
             status = sse_result.get("status", "unknown")
             if status == "complete":
@@ -157,10 +171,9 @@ async def main() -> None:
                 return
 
         # Fallback: poll for status
-        start = time.time()
         errors = 0
-        while time.time() - start < TIMEOUT:
-            await asyncio.sleep(5)
+        while (remaining := deadline - _now()) > 0:
+            await asyncio.sleep(min(5.0, remaining))
             try:
                 resp = await client.get(f"{BASE_URL}/goals/{goal_id}")
             except httpx.TransportError as exc:
