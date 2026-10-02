@@ -56,6 +56,23 @@ async def env(pg_url: str, redis_url: str, monkeypatch: pytest.MonkeyPatch) -> A
     try:
         yield {"db": db, "redis": redis, "tenant": tenant, "other": other}
     finally:
+        # The session-scoped DB is shared: secrets sealed with this test's master
+        # key would read as unreadable to another test's vault-rotate run.
+        from sqlalchemy import text
+
+        async with engine.begin() as conn:
+            for table in (
+                "tenant_vault_keys", "tenant_llm_configs", "oauth_tokens", "schedules",
+                "source_configs",
+            ):
+                await conn.execute(
+                    text(f"DELETE FROM {table} WHERE tenant_id = ANY(:ts)"),
+                    {"ts": [tenant, other]},
+                )
+        for t in (tenant, other):
+            for match in (f"mcp:connector_secrets:{t}:*", f"mcp:servers:{t}:*", f"llm_config:{t}"):
+                async for key in redis.scan_iter(match=match):
+                    await redis.delete(key)
         invalidate_tenant_vault()
         await redis.aclose()
         await engine.dispose()

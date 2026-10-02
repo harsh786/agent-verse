@@ -29,6 +29,14 @@ async def db(pg_url: str, monkeypatch: pytest.MonkeyPatch) -> Any:
     try:
         yield async_sessionmaker(engine, expire_on_commit=False), tenant
     finally:
+        # The session-scoped DB is shared: tokens sealed with this test's keys
+        # would read as unreadable to other tests' rotation runs.
+        from sqlalchemy import text
+
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM oauth_tokens WHERE tenant_id = :t"), {"t": tenant}
+            )
         await engine.dispose()
 
 
