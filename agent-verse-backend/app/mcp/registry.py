@@ -439,12 +439,23 @@ class MCPRegistry:
                 for sid, data in rows
             ]
         ids: set[str] = await self._redis.smembers(self._index_key(tid))
+        sids = sorted(i.decode() if isinstance(i, bytes) else str(i) for i in ids)
+        if not sids:
+            return []
+        # One MGET round-trip instead of a GET per connector (MCPREG-06).
+        keys = [self._server_key(tid, sid) for sid in sids]
+        mget = getattr(self._redis, "mget", None)
+        if mget is not None:
+            raws = list(await mget(keys))
+        else:  # minimal duck-typed clients (test doubles) without MGET
+            raws = [await self._redis.get(k) for k in keys]
         servers: list[tuple[str, MCPServerConfig]] = []
-        for server_id in ids:
-            sid = server_id.decode() if isinstance(server_id, bytes) else str(server_id)
-            cfg = await self.get(sid, tenant_ctx=tenant_ctx)
-            if cfg is not None:
-                servers.append((sid, cfg))
+        for sid, raw in zip(sids, raws, strict=True):
+            text_raw = _text(raw)
+            if text_raw is None:
+                continue  # dangling index entry
+            cfg = MCPServerConfig.model_validate_json(text_raw)
+            servers.append((sid, self._attach_handler(cfg, sid)))
         return servers
 
     async def _merge_legacy(

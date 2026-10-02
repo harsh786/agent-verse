@@ -323,6 +323,9 @@ class _FakeRedis:
             return None
         return self._d.get(key)
 
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        return [await self.get(k) for k in keys]
+
     async def set(self, key: str, value: str, ex: int | None = None, **kwargs: Any) -> None:
         self._d[key] = value
         if ex is not None:
