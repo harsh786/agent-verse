@@ -479,6 +479,46 @@ class ExecutorMixin:
             # Never silent: an unrecorded spend means the cap cannot bind.
             self._logger.warning("grant_spend_record_failed", error=str(exc)[:200])
 
+    async def _delegate_grants_to_child(
+        self, state: Any, tenant_ctx: Any, child_agent_id: str
+    ) -> list[Any]:
+        """Grantex delegation: mint narrowed grants for a spawned child agent.
+
+        The parent is the agent whose grants the tool gate enforces
+        (``self._agent_id``, else the goal's ``context['agent_id']``) — it used to
+        be ``state.agent_id``, a field AgentState does not have, so every child got
+        no grant. A failure is logged, never silent; the child then holds no grant
+        and is denied under enforcement (fail closed, never over-permitted).
+        """
+        parent = str(
+            getattr(self, "_agent_id", None)
+            or (getattr(state, "context", None) or {}).get("agent_id")
+            or ""
+        )
+        if not parent or not child_agent_id:
+            self._logger.warning(
+                "grant_delegation_skipped", parent=parent, child=child_agent_id
+            )
+            return []
+        try:
+            from datetime import UTC, datetime
+
+            from app.governance.grants import delegate_active_grants
+
+            minted: list[Any] = await delegate_active_grants(
+                self._grant_store,
+                tenant_id=tenant_ctx.tenant_id,
+                parent_agent_id=parent,
+                child_agent_id=child_agent_id,
+                now=datetime.now(UTC),
+            )
+            return minted
+        except Exception as exc:
+            self._logger.warning(
+                "grant_delegation_failed", parent=parent, child=child_agent_id, error=str(exc)[:200]
+            )
+            return []
+
     async def _agent_permission_gate(
         self,
         *,
@@ -2546,19 +2586,9 @@ class ExecutorMixin:
                             # on failure the child simply holds no grant (fail-closed
                             # under enforcement), never over-permitted.
                             if self._enforce_grants and self._grant_store:
-                                _child_aid = str(spawn_result.get("agent_id") or "")
-                                with contextlib.suppress(Exception):
-                                    from datetime import UTC, datetime
-
-                                    from app.governance.grants import delegate_active_grants
-
-                                    await delegate_active_grants(
-                                        self._grant_store,
-                                        tenant_id=tenant_ctx.tenant_id,
-                                        parent_agent_id=str(getattr(state, "agent_id", "") or ""),
-                                        child_agent_id=_child_aid,
-                                        now=datetime.now(UTC),
-                                    )
+                                await self._delegate_grants_to_child(
+                                    state, tenant_ctx, str(spawn_result.get("agent_id") or "")
+                                )
                             record_tool_call(
                                 tool_call.tool,
                                 "civilization",
