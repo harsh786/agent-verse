@@ -62,9 +62,12 @@ export function CursorPresence({ orgId, className }: CursorPresenceProps) {
   useEffect(() => {
     // Nothing to authenticate with yet — don't attempt a doomed connection.
     if (!apiKey) return;
-    // Real org-presence channel, same-origin so Vite's dev proxy (and prod)
-    // forward it to the backend. Auth rides the WS subprotocol.
-    const wsUrl = `${window.location.origin.replace('http', 'ws')}/collab/presence/${orgId}/ws`;
+    // Real org-presence channel on the backend's WS origin (VITE_WS_URL), like
+    // useCollabSocket/useGroupChat. It was the SPA origin, which only Vite's dev
+    // proxy forwards — the production nginx image serves static files and has no
+    // WebSocket proxy, so presence never connected. Auth rides the subprotocol.
+    const wsBase = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000';
+    const wsUrl = `${wsBase}/collab/presence/${orgId}/ws`;
     const protocol = encodeProtocolToken(apiKey);
     let stopped = false;
     let delay   = 1000;

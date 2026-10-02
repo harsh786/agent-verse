@@ -66,6 +66,10 @@ describe('CursorPresence', () => {
     const { container } = render(<CursorPresence orgId="org-1" />);
     await waitFor(() => expect(sockets.length).toBeGreaterThan(0));
     expect(sockets[0].url).toContain('/collab/presence/org-1/ws');
+    // The backend WS origin (VITE_WS_URL), never the SPA origin: the production
+    // nginx image serves static files only and cannot proxy a WebSocket.
+    const wsBase = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000';
+    expect(sockets[0].url).toBe(`${wsBase}/collab/presence/org-1/ws`);
     expect(container.firstChild).toBeNull();
   });
 
