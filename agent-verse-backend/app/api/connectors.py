@@ -1625,6 +1625,12 @@ async def oauth_start(request: Request, server_id: str) -> dict[str, Any]:
     }
 
 
+# Keys the OAuth callback used to copy tokens into (SECRET-03; never read).
+_LEGACY_OAUTH_COPY_KEYS = frozenset(
+    {"_encrypted_access_token", "_encrypted_refresh_token", "_token_scope", "_token_type"}
+)
+
+
 @router.get("/oauth/callback")
 async def oauth_callback(
     request: Request,
@@ -1714,42 +1720,17 @@ async def oauth_callback(
             "message": "Invalid OAuth state parameter — flow may have expired",
         }
 
-    # Encrypt and persist tokens via auth_config — with the tenant's own vault
-    # key when it set one (TENANT-ENVELOPE-ALL), else the platform vault. A
-    # tenant key that cannot be read fails the callback (never a weaker key).
-    from app.providers.tenant_vault import (
-        TenantVaultError,
-        ensure_tenant_vault,
-        seal_for_tenant,
-    )
-
-    try:
-        tenant_vault = await ensure_tenant_vault(
-            getattr(request.app.state, "db_session_factory", None), tenant_ctx.tenant_id
-        )
-    except TenantVaultError as exc:
-        raise HTTPException(503, f"Tenant vault key could not be read: {exc}") from exc
-    encrypted_access = seal_for_tenant(tenant_vault, token.access_token)
-    encrypted_refresh = (
-        seal_for_tenant(tenant_vault, token.refresh_token) if token.refresh_token else ""
-    )
-
+    # The token lives only in oauth_tokens (written by exchange_code, sealed with
+    # the tenant's envelope key). The callback used to also seal a copy into the
+    # connector's auth_config, where nothing read it (SECRET-03); a copy left by
+    # an earlier connect is removed here.
     if cfg is not None:
-
-        updated_config = dict(cfg.auth_config)
-        updated_config["_encrypted_access_token"] = encrypted_access
-        updated_config["_encrypted_refresh_token"] = encrypted_refresh
-        updated_config["_token_scope"] = token.scope
-        updated_config["_token_type"] = token.token_type
-
-        # Update in place, keeping the server_id. It used to unregister and
-        # re-register a NEW config (new random server_id), so the token stored
-        # under the old id was never found by the MCP client, which looks the
-        # token up by the connector's (new) id — OAuth connect "succeeded" and
-        # the connector never sent a bearer token.
-        updated_cfg = cfg.model_copy(update={"auth_config": updated_config})
-        if not await reg.update(server_id, updated_cfg, tenant_ctx=tenant_ctx):
-            raise HTTPException(status_code=404, detail="Connector not found")
+        stale = [k for k in cfg.auth_config if k in _LEGACY_OAUTH_COPY_KEYS]
+        if stale:
+            cleaned = {k: v for k, v in cfg.auth_config.items() if k not in stale}
+            updated_cfg = cfg.model_copy(update={"auth_config": cleaned})
+            if not await reg.update(server_id, updated_cfg, tenant_ctx=tenant_ctx):
+                raise HTTPException(status_code=404, detail="Connector not found")
 
     return {
         "server_id": server_id,
