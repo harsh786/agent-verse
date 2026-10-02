@@ -439,6 +439,25 @@ def test_fire_due_schedules_sanitizes_undispatched_legacy_redis_secrets(
     assert str(payload["webhook_token"]) not in rewritten
 
 
+
+def _patch_db_discovery(monkeypatch: Any, session_cls: Any) -> None:
+    """TRG-15: discovery is one cross-tenant claim on the maintenance session,
+    not the tenant list + per-tenant queries these fakes script; serve the
+    scripted schedule rows (``_results[1]``) through ``_load_db_schedules``."""
+    from app.scaling import tasks
+
+    rows = session_cls()._results[1].all()
+
+    async def _load(now: Any = None, **_k: Any) -> dict[str, dict[str, Any]]:
+        return {
+            tasks._schedule_key(str(r.tenant_id), str(r.id)): tasks._db_schedule_payload(r)
+            for r in rows
+            if not getattr(r, "paused", False)
+        }
+
+    monkeypatch.setattr(tasks, "_load_db_schedules", _load)
+
+
 def test_fire_due_schedules_does_not_discover_db_by_default_with_redis(
     monkeypatch: Any,
 ) -> None:
@@ -530,6 +549,7 @@ def test_fire_due_schedules_discovers_db_schedule_without_redis(monkeypatch: Any
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true")
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
 
@@ -637,6 +657,7 @@ def test_fire_due_schedules_persists_db_interval_last_fired_at(monkeypatch: Any)
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true")
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
     monkeypatch.setattr(
@@ -737,6 +758,7 @@ def test_fire_due_schedules_updates_db_last_fired_after_dispatch(
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true")
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
     monkeypatch.setattr(
@@ -824,6 +846,7 @@ def test_fire_due_schedules_db_dispatch_failure_does_not_update_last_fired_at(
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true")
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fail_apply_async)
     monkeypatch.setattr(
@@ -1058,6 +1081,7 @@ def test_fire_due_schedules_updates_db_when_schedule_also_exists_in_redis(
         SimpleNamespace(from_url=lambda *args, **kwargs: FakeRedis()),
     )
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_goal, "apply_async", fake_direct_apply_async)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
@@ -1193,6 +1217,7 @@ def test_fire_due_schedules_skips_cron_already_fired_for_current_occurrence(
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true")
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
 
@@ -1278,6 +1303,7 @@ def test_fire_due_schedules_skips_recent_db_interval_schedule(monkeypatch: Any) 
     monkeypatch.delenv("REDIS_URL", raising=False)
     monkeypatch.setenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", "true")
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_apply_async)
     monkeypatch.setattr(
@@ -1407,6 +1433,7 @@ def test_fire_due_schedules_merges_redis_and_db_without_duplicate(monkeypatch: A
         SimpleNamespace(from_url=lambda *args, **kwargs: FakeRedis()),
     )
     monkeypatch.setattr("app.db.session.get_session_factory", lambda: FakeSession)
+    _patch_db_discovery(monkeypatch, FakeSession)
     monkeypatch.setattr("app.db.rls.sqlalchemy_rls_context", fake_rls_context)
     monkeypatch.setattr(tasks.run_goal, "apply_async", fake_apply_async)
     monkeypatch.setattr(tasks.run_scheduled_goal, "apply_async", fake_scheduled_apply_async)

@@ -439,7 +439,8 @@ async def test_beat_loads_only_due_schedules(
             ),
             {"t": dbs.t1},
         )
-    monkeypatch.setattr("app.db.session.get_session_factory", lambda: dbs.app)
+    # TRG-15: discovery is one cross-tenant claim on the maintenance session.
+    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: dbs.admin)
 
     def _mine(found: dict[str, Any]) -> list[str]:
         prefix = f"schedule:{dbs.t1}:"
@@ -448,10 +449,68 @@ async def test_beat_loads_only_due_schedules(
     due = await tasks._load_db_schedules()
     assert due is not None
     assert _mine(due) == [f"due{i:029d}" for i in range(1, 11)]
+    # Claimed rows are leased: an overlapping claim does not see them again.
+    leased = await tasks._load_db_schedules()
+    assert leased is not None and _mine(leased) == []
 
-    # The beat records the next evaluation time; the schedule is then not due.
-    later = datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=1)
-    await tasks._persist_next_evaluations([(dbs.t1, f"due{1:029d}", later)])
+    # The beat records each claimed row's real next time (one statement): one
+    # moves an hour ahead, the rest are due again.
+    now = datetime.datetime.now(datetime.UTC)
+    later = now + datetime.timedelta(hours=1)
+    past = now - datetime.timedelta(seconds=1)
+    await tasks._persist_next_evaluations(
+        [(dbs.t1, f"due{1:029d}", later)]
+        + [(dbs.t1, f"due{i:029d}", past) for i in range(2, 11)]
+    )
     again = await tasks._load_db_schedules()
     assert again is not None
     assert _mine(again) == [f"due{i:029d}" for i in range(2, 11)]
+
+
+@pytest.mark.asyncio
+async def test_beat_claims_due_rows_of_a_thousand_tenants_in_one_query(
+    dbs: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TRG-15: 10k schedules across 1k tenants (1 due per tenant) are found by
+    ONE statement - no per-tenant loop - and an inactive tenant's are not."""
+    from sqlalchemy import event
+
+    from app.scaling import tasks
+
+    async with dbs.admin() as s, s.begin():
+        await s.execute(
+            text(
+                "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                "SELECT 'bt' || lpad(g::text, 6, '0'), 'n', 'bt' || g || '@x.test', 'free', "
+                "g <> 1000 FROM generate_series(1, 1000) g"
+            )
+        )
+        await s.execute(
+            text(
+                "INSERT INTO schedules (id, tenant_id, goal_id_template, trigger_type, "
+                "cron_expression, interval_seconds, config, paused, next_fire_at) "
+                "SELECT 'bs' || lpad(g::text, 7, '0'), 'bt' || lpad(((g - 1) / 10 + 1)::text, 6, '0'), "
+                "'x', 'cron', '* * * * *', 0, '{}'::jsonb, false, "
+                "CASE WHEN g % 10 = 0 THEN NOW() - interval '1 minute' "
+                "ELSE NOW() + interval '1 hour' END "
+                "FROM generate_series(1, 10000) g"
+            )
+        )
+    statements: list[str] = []
+    engine = dbs.admin.kw["bind"].sync_engine
+
+    def _count(conn: Any, cursor: Any, statement: str, *args: Any) -> None:
+        if "schedules" in statement:
+            statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _count)
+    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: dbs.admin)
+    try:
+        found = await tasks._load_db_schedules(limit=5000)
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+    assert found is not None
+    mine = {k for k in found if k.startswith("schedule:bt")}
+    assert len(mine) == 999  # one due row per ACTIVE tenant
+    assert not any(k.startswith("schedule:bt001000:") for k in mine)
+    assert len(statements) == 1

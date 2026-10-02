@@ -1527,7 +1527,7 @@ async def test_load_db_schedules_handles_db_error() -> None:
     then falls back to the Redis mirror instead of seeing "no schedules")."""
     from app.scaling.tasks import _load_db_schedules
 
-    with patch("app.db.session.get_session_factory", side_effect=Exception("no db")):
+    with patch("app.db.session.get_system_session_factory", side_effect=Exception("no db")):
         result = await _load_db_schedules()
 
     assert result is None

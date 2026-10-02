@@ -4744,8 +4744,12 @@ _BEAT_DISCOVERY_TYPES: tuple[str, ...] = (
     "datadog",
     "pagerduty",
 )
-# Upper bound on due rows loaded per tenant per tick (the rest are next tick's).
-_DUE_BATCH_PER_TENANT = 1000
+# Upper bound on due rows claimed per tick across ALL tenants (oldest due first;
+# the rest are next tick's). BEAT_DUE_BATCH overrides.
+_DUE_BATCH = 5000
+# How long a claimed row stays invisible to the next claim; the beat writes the
+# real next_fire_at well within it (and fire_due_schedules' guard is 300s).
+_CLAIM_LEASE_SECONDS = 600
 # "Never again" for fired one-shot schedules (Python cannot hold 'infinity').
 _NEVER = datetime.datetime(9999, 1, 1, tzinfo=datetime.UTC)
 
@@ -4797,83 +4801,124 @@ def _next_evaluation_at(
 async def _persist_next_evaluations(
     updates: list[tuple[str, str, datetime.datetime | None]],
 ) -> None:
-    """Write ``schedules.next_fire_at`` for the evaluated DB schedules (RLS)."""
+    """Write ``schedules.next_fire_at`` for every evaluated schedule in ONE
+    statement (TRG-15: it was one transaction per schedule), through the
+    maintenance (BYPASSRLS) session with an explicit (id, tenant_id) match."""
+    rows = [(sid, tid, nxt) for tid, sid, nxt in updates if tid and sid]
+    if not rows:
+        return
     try:
-        from sqlalchemy import update
+        from sqlalchemy import text
 
-        from app.db.models.scheduling import Schedule
-        from app.db.rls import sqlalchemy_rls_context
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
 
-        db_factory = _get_fresh_db()
-        for tenant_id, schedule_id, nxt in updates:
-            if not tenant_id or not schedule_id:
-                continue
-            async with (
-                db_factory() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
-                await session.execute(
-                    update(Schedule)
-                    .where(Schedule.tenant_id == tenant_id, Schedule.id == schedule_id)
-                    .values(next_fire_at=nxt)
-                )
+        db_factory = get_system_session_factory()
+        async with db_factory() as session, session.begin(), system_session(session):
+            await session.execute(
+                text(
+                    "UPDATE schedules AS s SET next_fire_at = v.nxt "
+                    "FROM unnest(CAST(:ids AS varchar[]), CAST(:tids AS varchar[]), "
+                    "CAST(:nxts AS timestamptz[])) AS v(id, tid, nxt) "
+                    "WHERE s.id = v.id AND s.tenant_id = v.tid"
+                ),
+                {
+                    "ids": [r[0] for r in rows],
+                    "tids": [r[1] for r in rows],
+                    "nxts": [_aware_utc(r[2]) for r in rows],
+                },
+            )
     except Exception as exc:
-        # Harmless: a stale next_fire_at in the past only means the schedule is
-        # evaluated again next tick.
+        # Harmless: a claimed row whose next time is not written becomes due
+        # again when its lease expires (_CLAIM_LEASE_SECONDS).
         logger.warning("next_fire_at_update_failed: %s", exc)
+
+
+def _aware_utc(dt: datetime.datetime | None) -> datetime.datetime | None:
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=datetime.UTC) if dt.tzinfo is None else dt.astimezone(datetime.UTC)
 
 
 async def _load_db_schedules(
     now: datetime.datetime | None = None,
+    *,
+    limit: int | None = None,
 ) -> dict[str, dict[str, Any]] | None:
-    """Due beat schedules from Postgres, or ``None`` when the DB is unreachable."""
+    """Claim the due beat schedules of EVERY tenant in one statement (TRG-15).
+
+    This used to list every active tenant and run one RLS query per tenant on
+    every tick - O(tenants) round trips a minute. Now a single cross-tenant
+    ``UPDATE ... FROM (SELECT ... ORDER BY next_fire_at LIMIT n FOR UPDATE SKIP
+    LOCKED) RETURNING`` on the maintenance (BYPASSRLS) session picks the due
+    rows (partial index ``ix_schedules_due_global``) and leases them by pushing
+    ``next_fire_at`` ``_CLAIM_LEASE_SECONDS`` ahead, so a concurrent claimer
+    skips them and a crashed beat's rows come back after the lease; the beat
+    then writes each row's real next time in one batched UPDATE. Rows beyond
+    ``limit`` are simply next tick's (oldest due first). ``None`` when the DB
+    is unreachable (the caller falls back to the Redis mirror).
+    """
     due_at = now or datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
     due_at = due_at.replace(tzinfo=datetime.UTC) if due_at.tzinfo is None else due_at
+    lease_until = due_at + datetime.timedelta(seconds=_CLAIM_LEASE_SECONDS)
     try:
-        from sqlalchemy import or_, select
+        from sqlalchemy import text
 
-        from app.db.models.scheduling import Schedule
-        from app.db.models.tenant import Tenant
-        from app.db.rls import sqlalchemy_rls_context
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
 
-        db_factory = _get_fresh_db()
+        db_factory = get_system_session_factory()
         schedules: dict[str, dict[str, Any]] = {}
-        async with db_factory() as session:
-            tenant_result = await session.execute(
-                select(Tenant).where(Tenant.is_active == True)  # noqa: E712
+        async with db_factory() as session, session.begin(), system_session(session):
+            result = await session.execute(
+                text(
+                    "UPDATE schedules AS s SET next_fire_at = :lease "
+                    "FROM (SELECT d.id FROM schedules d "
+                    "JOIN tenants t ON t.id = d.tenant_id AND t.is_active "
+                    "WHERE NOT d.paused AND d.trigger_type = ANY(CAST(:types AS varchar[])) "
+                    "AND (d.next_fire_at IS NULL OR d.next_fire_at <= :due) "
+                    "ORDER BY d.next_fire_at ASC NULLS FIRST LIMIT :lim "
+                    "FOR UPDATE OF d SKIP LOCKED) AS due "
+                    "WHERE s.id = due.id RETURNING s.*"
+                ),
+                {
+                    "lease": lease_until,
+                    "types": list(_BEAT_DISCOVERY_TYPES),
+                    "due": due_at,
+                    "lim": int(limit or _due_batch_size()),
+                },
             )
-            tenants = tenant_result.scalars().all()
-            for tenant in tenants:
-                tenant_id = str(tenant.id)
-                async with sqlalchemy_rls_context(session, tenant_id):
-                    schedule_result = await session.execute(
-                        select(Schedule)
-                        .where(
-                            Schedule.tenant_id == tenant_id,
-                            Schedule.paused == False,  # noqa: E712
-                            Schedule.trigger_type.in_(_BEAT_DISCOVERY_TYPES),
-                            or_(
-                                Schedule.next_fire_at.is_(None),
-                                Schedule.next_fire_at <= due_at,
-                            ),
-                        )
-                        .order_by(Schedule.next_fire_at.asc().nulls_first())
-                        .limit(_DUE_BATCH_PER_TENANT)
-                    )
-                for row in schedule_result.scalars().all():
-                    payload = _db_schedule_payload(row)
-                    schedule_id = str(payload.get("schedule_id") or "")
-                    row_tenant_id = str(payload.get("tenant_id") or tenant_id)
-                    if not schedule_id or not row_tenant_id or payload.get("paused"):
-                        continue
-                    schedules[_schedule_key(row_tenant_id, schedule_id)] = payload
+            rows = result.mappings().all()
+        for row in rows:
+            payload = _db_schedule_payload(_RowAttrs(row))
+            schedule_id = str(payload.get("schedule_id") or "")
+            row_tenant_id = str(payload.get("tenant_id") or "")
+            if not schedule_id or not row_tenant_id or payload.get("paused"):
+                continue
+            schedules[_schedule_key(row_tenant_id, schedule_id)] = payload
         return schedules
     except Exception as exc:
         logger.warning("DB schedule discovery failed: %s", exc)
         return None
+
+
+class _RowAttrs:
+    """Attribute view of a RETURNING row for :func:`_db_schedule_payload`."""
+
+    def __init__(self, mapping: Any) -> None:
+        self._m = mapping
+
+    def __getattr__(self, name: str) -> Any:
+        return self._m.get(name)
+
+
+def _due_batch_size() -> int:
+    import os
+
+    try:
+        return max(1, int(os.getenv("BEAT_DUE_BATCH", "") or _DUE_BATCH))
+    except ValueError:
+        return _DUE_BATCH
 
 
 async def _update_db_schedule_last_fired_at(
