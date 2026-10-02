@@ -352,9 +352,16 @@ class MCPRegistry:
             )
             await self._cache_invalidate(tid, server_id)
             return server_id
-        created = await self._redis.set(
-            self._server_key(tid, server_id), resolved_config.model_dump_json(), nx=True
-        )
+        key = self._server_key(tid, server_id)
+        try:
+            created = await self._redis.set(key, resolved_config.model_dump_json(), nx=True)
+        except TypeError:
+            # Minimal duck-typed clients (test doubles) without SET NX: best effort.
+            if await self._redis.get(key) is not None:
+                created = None
+            else:
+                await self._redis.set(key, resolved_config.model_dump_json())
+                created = True
         if not created:
             raise ConnectorConflictError("id", f"A connector with id '{server_id}' already exists")
         await self._redis.sadd(self._index_key(tid), server_id)

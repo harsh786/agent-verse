@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
+from app.mcp.connector_store import ConnectorConflictError
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import (
     SSRFError,
@@ -145,6 +146,40 @@ async def _new_connection_id(reg: Any, canonical: str, name: str, *, tenant_ctx:
     except Exception:
         taken = False
     return f"{candidate}-{uuid.uuid4().hex[:6]}" if taken else candidate
+
+
+async def _create_connector(
+    reg: Any,
+    config_for: Callable[[str], MCPServerConfig],
+    *,
+    tenant_ctx: Any,
+    name: str,
+    pending_secrets: dict[str, str],
+    on_id_conflict: Callable[[], None] | None = None,
+) -> str:
+    """Atomic create (MCPREG-07): an insert, never an unconditional upsert.
+
+    A display name taken concurrently is a 409 (the durable store's unique
+    (tenant, name) index decides); a connection id taken concurrently is retried
+    after ``on_id_conflict`` picks a new one (a generated id is fresh anyway).
+    """
+    create = getattr(reg, "create", None) or reg.register
+    for attempt in range(3):
+        pending_secrets.clear()
+        try:
+            return str(await create(config_for, tenant_ctx=tenant_ctx))
+        except ConnectorConflictError as exc:
+            if exc.kind == "name" or attempt == 2:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"A connector named '{name}' already exists. "
+                        "Connector names must be unique; choose a different name."
+                    ),
+                ) from exc
+            if on_id_conflict is not None:
+                on_id_conflict()
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 class RegisterConnectorRequest(BaseModel):
@@ -587,8 +622,16 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
         else ""
     )
 
+    connection = {"id": _connection_id}
+
+    def _new_suffix() -> None:
+        if _canonical_id:
+            connection["id"] = (
+                f"{_canonical_id}:{_connection_slug(body.name)}-{uuid.uuid4().hex[:6]}"
+            )
+
     def _config_for(server_id: str) -> MCPServerConfig:
-        sid = _connection_id or server_id
+        sid = connection["id"] or server_id
         return MCPServerConfig(
             server_id=sid,
             name=body.name,
@@ -606,7 +649,14 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             builtin_type=_canonical_id,
         )
 
-    server_id = await reg.register(_config_for, tenant_ctx=tenant_ctx)
+    server_id = await _create_connector(
+        reg,
+        _config_for,
+        tenant_ctx=tenant_ctx,
+        name=body.name,
+        pending_secrets=pending_secrets,
+        on_id_conflict=_new_suffix,
+    )
 
     # The process-local handler registry is keyed by built-in TYPE.
     if _builtin_cfg is not None:
@@ -1915,7 +1965,13 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
         )
 
     reg = _registry(request)
-    server_id = await reg.register(_config_for, tenant_ctx=tenant_ctx)
+    server_id = await _create_connector(
+        reg,
+        _config_for,
+        tenant_ctx=tenant_ctx,
+        name=connector_name,
+        pending_secrets=pending_secrets,
+    )
     try:
         await _persist_connector_secrets(
             pending_secrets,

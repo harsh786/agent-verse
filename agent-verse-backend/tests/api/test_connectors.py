@@ -63,7 +63,8 @@ def _make_app(fake_registry: Any) -> FastAPI:
 
 def test_register_connector_returns_201() -> None:
     reg = AsyncMock()
-    reg.register.return_value = "srv-abc"
+    # Registration is an atomic create (MCPREG-07), never an upsert.
+    reg.create.return_value = "srv-abc"
     client = TestClient(_make_app(reg), raise_server_exceptions=False)
     resp = client.post(
         "/connectors",

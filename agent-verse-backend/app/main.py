@@ -326,12 +326,15 @@ class _FakeRedis:
     async def mget(self, keys: list[str]) -> list[str | None]:
         return [await self.get(k) for k in keys]
 
-    async def set(self, key: str, value: str, ex: int | None = None, **kwargs: Any) -> None:
+    async def set(self, key: str, value: str, ex: int | None = None, **kwargs: Any) -> bool | None:
+        if kwargs.get("nx") and await self.get(key) is not None:
+            return None  # SET NX on an existing key: not set (as Redis answers)
         self._d[key] = value
         if ex is not None:
             import time
 
             self._ttl[key] = time.monotonic() + ex
+        return True
 
     async def delete(self, key: str) -> int:
         existed = key in self._d
