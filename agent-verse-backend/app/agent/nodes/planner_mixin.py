@@ -240,10 +240,13 @@ class PlannerMixin:
                     # Fetched here, asynchronously, from the SQL-backed store:
                     # ContextPipeline.run is synchronous, and a persisted graph
                     # is not held in process for a sync read to consult.
-                    with contextlib.suppress(Exception):
+                    # MEM-48: a graph-store error is surfaced, not suppressed.
+                    try:
                         _prefetched_graph_facts = await KnowledgeGraphFactsSource(
                             self._knowledge_graph_store
                         ).aget_facts(agent_state.goal, tenant_id=tenant_ctx.tenant_id, top_k=5)
+                    except Exception as _kg_exc:
+                        await self._memory_degraded(agent_state, "graph_facts", _kg_exc)
                 _sem_cache_hits = agent_state.context.get("_semantic_cache_hits")
                 if self._semantic_cache is not None and not isinstance(_sem_cache_hits, list):
                     from app.context.context_sources import SemanticCacheHitsSource
