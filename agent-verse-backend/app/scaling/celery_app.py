@@ -95,6 +95,8 @@ celery_app = Celery(
         "app.orchestration.evidence_maintenance",
         # Coordination outbox delivery (beat: dispatch-coordination-outbox).
         "app.coordination.outbox_tasks",
+        # Coordination pattern runs admitted by the REST route (ORG-39).
+        "app.coordination.pattern_runs.tasks",
     ],
 )
 

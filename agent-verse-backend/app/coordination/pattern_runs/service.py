@@ -127,8 +127,48 @@ class PatternRunService:
         observer: Observer | None = None,
         provider: Any = None,
     ) -> dict[str, Any]:
-        """Run *pattern*; ``goal_id``/``max_calls`` bind it to a goal's budget and
-        limits, ``observer`` receives every published frame (goal progress)."""
+        """Run *pattern* to completion in this process (the goal bridge, already on
+        a worker); ``goal_id``/``max_calls`` bind it to a goal's budget and limits,
+        ``observer`` receives every published frame (goal progress)."""
+        document, pending = await self.admit(
+            tenant_ctx,
+            session_id,
+            pattern,
+            objective=objective,
+            participants=participants,
+            max_rounds=max_rounds,
+            options=options,
+            idempotency_key=idempotency_key,
+            goal_id=goal_id,
+            max_calls=max_calls,
+            provider=provider,
+        )
+        if not pending:
+            return await self._result(tenant_ctx, pattern, document, replay=True)
+        return await self._execute(
+            tenant_ctx, pattern, document, observer=observer, provider=provider
+        )
+
+    async def admit(
+        self,
+        tenant_ctx: Any,
+        session_id: str,
+        pattern: str,
+        *,
+        objective: str,
+        participants: tuple[str, ...],
+        max_rounds: int,
+        options: dict[str, Any],
+        idempotency_key: str,
+        goal_id: str | None = None,
+        max_calls: int | None = None,
+        provider: Any = None,
+    ) -> tuple[RunDocument, bool]:
+        """Validate and persist the run document; no LLM call.
+
+        Returns the document and whether it still needs executing (False once it
+        is terminal or awaiting human review). The REST route admits here and
+        hands the execution to a worker (ORG-39)."""
         spec = PATTERNS.get(pattern)
         if spec is None:
             raise UnknownPatternError(f"unknown coordination pattern: {pattern}")
@@ -160,14 +200,45 @@ class PatternRunService:
             if any(document.config[key] != config[key] for key in common):
                 raise PatternSessionError("Idempotency-Key reused with a different run request")
             if document.view.get("phase") in TERMINAL_PHASES | {"awaiting_human"}:
-                return await self._result(tenant_ctx, pattern, document, replay=True)
+                return document, False
         else:
             if pattern == "magentic":
                 await self._require_no_ledger(tenant_id, session_id)
             await document.create(config)
-        return await self._execute(
-            tenant_ctx, pattern, document, observer=observer, provider=provider
-        )
+        return document, True
+
+    async def resume(
+        self,
+        tenant_ctx: Any,
+        session_id: str,
+        pattern: str,
+        execution_id: str,
+        *,
+        provider: Any = None,
+    ) -> dict[str, Any]:
+        """Execute an admitted run from its persisted checkpoint (the worker task).
+
+        Safe to repeat (a redelivered task, a retried command): a terminal run is
+        returned as stored."""
+        repository = self.repository(pattern)
+        document = await RunDocument(
+            repository,
+            tenant_id=str(tenant_ctx.tenant_id),
+            session_id=session_id,
+            execution_id=execution_id,
+        ).load()
+        if not document.exists:
+            raise PatternRequestError(f"no admitted {pattern} run {execution_id}")
+        if document.view.get("phase") in TERMINAL_PHASES | {"awaiting_human"}:
+            return _public_document(pattern, document) | {"replayed": True}
+        return await self._execute(tenant_ctx, pattern, document, provider=provider)
+
+    async def admitted_result(
+        self, tenant_ctx: Any, pattern: str, document: RunDocument
+    ) -> dict[str, Any]:
+        """The stored outcome of a run that needs no execution (re-issues a Magentic
+        human-review token to the operator re-running the command)."""
+        return await self._result(tenant_ctx, pattern, document, replay=True)
 
     async def apply_magentic_review(
         self,

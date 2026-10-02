@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from app.api.coordination_moa import router as moa_router
 from app.api.coordination_patterns import router as patterns_router
 from app.api.coordination_swarm import router as swarm_router
 from app.coordination.pattern_runs.service import PatternRunService
+from app.coordination.pattern_runs.tasks import run_pattern_once, tenant_payload
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 from tests.coordination.pattern_run_support import (
@@ -58,16 +60,37 @@ def _client(provider: Any | None = None) -> tuple[TestClient, str, Any]:
     for name, value in vars(state).items():
         setattr(app.state, name, value)
     app.state.pattern_run_service = PatternRunService(app.state)
+    app.state.queued = []
     session_id = asyncio.run(active_session(state))
     return TestClient(app), session_id, app.state
 
 
+def _post(client: TestClient, session_id: str, pattern: str, key: str, body: dict) -> Any:
+    state = client.app.state  # type: ignore[attr-defined]
+
+    def _enqueue(tenant: Any, sid: str, pat: str, execution_id: str) -> None:
+        state.queued.append((tenant_payload(tenant), sid, pat, execution_id))
+
+    with patch("app.api.coordination_patterns._enqueue", _enqueue):
+        return client.post(
+            f"/api/v1/coordination/sessions/{session_id}/patterns/{pattern}/runs",
+            headers={"X-API-Key": key, "Idempotency-Key": f"{pattern}-1"},
+            json={"objective": "Write a short market report", **body},
+        )
+
+
 def _run(client: TestClient, session_id: str, pattern: str, key: str = "op", **body: Any) -> Any:
-    return client.post(
-        f"/api/v1/coordination/sessions/{session_id}/patterns/{pattern}/runs",
-        headers={"X-API-Key": key, "Idempotency-Key": f"{pattern}-1"},
-        json={"objective": "Write a short market report", **body},
-    )
+    """POST (admitted + queued, 202), run the queued task as the worker does, then
+    re-POST with the same Idempotency-Key, which returns the stored outcome."""
+    state = client.app.state  # type: ignore[attr-defined]
+    first = _post(client, session_id, pattern, key, body)
+    if first.status_code != 202:
+        return first
+    assert first.json()["status"] == "queued"
+    tenant, sid, pat, execution_id = state.queued.pop()
+    assert execution_id == first.json()["execution_id"]
+    asyncio.run(run_pattern_once(tenant, sid, pat, execution_id, state=state))
+    return _post(client, session_id, pattern, key, body)
 
 
 def test_swarm_run_fills_topology_route() -> None:
@@ -148,3 +171,67 @@ def test_run_route_fails_closed() -> None:
     assert _run(client, session_id, "camel", key="other").status_code == 404
     state.llm_provider = None
     assert _run(client, session_id, "camel").status_code == 503
+
+
+def test_post_admits_and_queues_without_running_the_pattern() -> None:
+    """ORG-39: the request never awaits the pattern; it returns 202 + execution id."""
+    provider = ScriptedProvider()
+    calls = {"n": 0}
+    original = provider.complete
+
+    async def counting(request: Any) -> Any:
+        calls["n"] += 1
+        return await original(request)
+
+    provider.complete = counting  # type: ignore[method-assign]
+    client, session_id, state = _client(provider)
+    response = _post(client, session_id, "camel", "op", {})
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["status"] == "queued" and body["execution_id"]
+    assert len(state.queued) == 1
+    assert calls["n"] == 0  # no LLM call inside the request
+    runs = client.get(
+        f"/api/v1/coordination/sessions/{session_id}/patterns/camel/runs",
+        headers={"X-API-Key": "op"},
+    ).json()["items"]
+    assert [r["execution_id"] for r in runs] == [body["execution_id"]]
+    assert runs[0]["phase"] != "completed"
+
+    # A retry before the worker ran re-queues the same execution (no duplicate run).
+    again = _post(client, session_id, "camel", "op", {})
+    assert again.status_code == 202
+    assert again.json()["execution_id"] == body["execution_id"]
+
+    # The worker runs it; a redelivered task returns the stored outcome.
+    tenant, sid, pat, execution_id = state.queued[0]
+    done = asyncio.run(run_pattern_once(tenant, sid, pat, execution_id, state=state))
+    assert done["phase"] == "completed"
+    assert calls["n"] > 0
+    replay = asyncio.run(run_pattern_once(tenant, sid, pat, execution_id, state=state))
+    assert replay["phase"] == "completed" and replay["replayed"] is True
+
+
+def test_enqueue_failure_is_503_and_the_retry_queues_it() -> None:
+    client, session_id, state = _client()
+
+    def _broken(*_a: Any) -> None:
+        raise ConnectionError("broker down")
+
+    with patch("app.api.coordination_patterns._enqueue", _broken):
+        down = client.post(
+            f"/api/v1/coordination/sessions/{session_id}/patterns/camel/runs",
+            headers={"X-API-Key": "op", "Idempotency-Key": "camel-1"},
+            json={"objective": "Write a short market report"},
+        )
+    assert down.status_code == 503
+    assert "Idempotency-Key" in down.json()["detail"]
+    assert _post(client, session_id, "camel", "op", {}).status_code == 202
+
+
+def test_run_pattern_task_is_registered_on_the_worker() -> None:
+    from app.coordination.pattern_runs import tasks
+    from app.scaling.celery_app import celery_app
+
+    assert "app.coordination.pattern_runs.tasks" in celery_app.conf.include
+    assert tasks.run_pattern.name == tasks.TASK_NAME

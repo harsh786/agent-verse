@@ -215,3 +215,52 @@ async def test_magentic_review_round_trip_through_postgres(app_factory: Any) -> 
         _ctx(tenant), session_id, approved=True
     )
     assert resumed is not None and resumed["phase"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_api_admits_and_a_worker_executes_the_run(app_factory: Any) -> None:
+    """ORG-39: the API replica only admits (no LLM call); the worker task, with its
+    own state over the same database, executes from the persisted document."""
+    from app.coordination.pattern_runs.tasks import run_pattern_once, tenant_payload
+
+    api = _state(app_factory)
+    tenant = TENANTS[1]
+    session_id = await _session(api, tenant)
+    document, pending = await PatternRunService(api).admit(
+        _ctx(tenant),
+        session_id,
+        "camel",
+        objective="Write a short market report",
+        participants=(),
+        max_rounds=6,
+        options={},
+        idempotency_key="camel-async",
+    )
+    assert pending is True
+    queued = await api.camel_repository.list_session(tenant, session_id)
+    assert [r.execution_id for r in queued] == [document.execution_id]
+    assert (queued[0].state.get("view") or {}).get("phase") != "completed"
+
+    worker = _state(app_factory)
+    done = await run_pattern_once(
+        tenant_payload(_ctx(tenant)), session_id, "camel", document.execution_id, state=worker
+    )
+    assert done["phase"] == "completed"
+    stored = await api.camel_repository.list_session(tenant, session_id)
+    assert stored[0].state["view"]["phase"] == "completed"
+    # A redelivered task returns the stored outcome; a re-admit needs no execution.
+    again = await run_pattern_once(
+        tenant_payload(_ctx(tenant)), session_id, "camel", document.execution_id, state=worker
+    )
+    assert again["replayed"] is True
+    _doc, still_pending = await PatternRunService(api).admit(
+        _ctx(tenant),
+        session_id,
+        "camel",
+        objective="Write a short market report",
+        participants=(),
+        max_rounds=6,
+        options={},
+        idempotency_key="camel-async",
+    )
+    assert still_pending is False
