@@ -82,6 +82,7 @@ const AgentCreatePage = lazy(() => import('@/features/agents/AgentCreatePage').t
 const AgentDetailPage = lazy(() => import('@/features/agents/AgentDetailPage').then(m => ({ default: m.AgentDetailPage })));
 const AgentDashboardPage = lazy(() => import('@/features/agents/AgentDashboardPage').then(m => ({ default: m.AgentDashboardPage })));
 const ApprovalsPage = lazy(() => import('@/features/approvals/ApprovalsPage').then(m => ({ default: m.ApprovalsPage })));
+const HitlLinkDecisionPage = lazy(() => import('@/features/approvals/HitlLinkDecisionPage').then(m => ({ default: m.HitlLinkDecisionPage })));
 const OnboardingPage = lazy(() => import('@/features/onboarding/OnboardingPage').then(m => ({ default: m.OnboardingPage })));
 const ConnectorsCatalogPage = lazy(() => import('@/features/connectors/ConnectorsCatalogPage').then(m => ({ default: m.ConnectorsCatalogPage })));
 const ConnectorsRegisteredPage = lazy(() => import('@/features/connectors/ConnectorsRegisteredPage').then(m => ({ default: m.ConnectorsRegisteredPage })));
@@ -238,6 +239,8 @@ export default function App() {
         <Route path="agents/:agentId/radar"       element={lazy_rb("Agent Radar",       <AgentRadarPage />)} />
         <Route path="agents/:agentId/personality" element={lazy_rb("Agent Personality", <AgentPersonalityPage />)} />
         <Route path="approvals"             element={lazy_rb("Approvals",          <ApprovalsPage />)} />
+        {/* HITL-05: landing page of the signed approve/reject links in approval emails. */}
+        <Route path="hitl/:requestId/:decision" element={lazy_rb("Approval Link", <HitlLinkDecisionPage />)} />
         <Route path="onboarding"            element={lazy_rb("Onboarding",         <OnboardingPage />)} />
         <Route path="connectors/catalog"    element={lazy_rb("Connectors Catalog", <ConnectorsCatalogPage />)} />
         <Route path="connectors"            element={lazy_rb("Connectors",         <ConnectorsRegisteredPage />)} />
