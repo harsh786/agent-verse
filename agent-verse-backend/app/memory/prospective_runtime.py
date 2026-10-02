@@ -31,6 +31,8 @@ _log = get_logger(__name__)
 DEFAULT_TTL = timedelta(days=30)
 MAX_TTL = timedelta(days=365)
 MAX_INTENTION_CHARS = 2_000
+#: Fire attempts (leases) before an intention that keeps failing is marked failed.
+MAX_FIRE_ATTEMPTS = 5
 
 GoalSubmitter = Callable[[ProspectiveMemory], Awaitable[dict[str, Any]]]
 
@@ -100,6 +102,7 @@ def intention_json(item: ProspectiveMemory) -> dict[str, Any]:
         "due_at": item.due_at.isoformat(),
         "expires_at": item.expires_at.isoformat(),
         "state": item.state,
+        "attempts": item.attempts,
         "source_goal_id": item.source_goal_id,
         "agent_id": (item.policy_snapshot or {}).get("agent_id"),
         "result": item.result,
@@ -117,24 +120,37 @@ async def fire_due_intentions(
 ) -> list[ProspectiveMemory]:
     """Lease the tenant's due intentions, submit each as a goal, mark it completed.
 
-    A submission failure leaves the item leased; the lease expires and a later
-    run retries it (attempts counts tries). A lost fencing race (another worker
-    re-leased it) is skipped, never double-completed.
+    At most once (MEM-43): before submitting, the goal an earlier attempt
+    already produced is looked up by the intention's id — a submission whose
+    ``complete`` was lost is completed with THAT goal, never re-submitted. A
+    ``complete`` error never escapes (the next run resolves it the same way).
+    A submission failure leaves the item leased for a later retry until it has
+    been attempted ``MAX_FIRE_ATTEMPTS`` times, then it is marked ``failed``.
+    A lost fencing race (another worker re-leased it) is skipped.
     """
     when = now or datetime.now(UTC)
     claimed = await service.lease_due(tenant_id, now=when, lease_duration=lease_duration)
     fired: list[ProspectiveMemory] = []
+    find_goal = getattr(service, "find_submitted_goal", None)
     for item in claimed[:maximum_items]:
-        try:
-            result = await submit(item)
-        except Exception as exc:
-            _log.warning(
-                "prospective_fire_failed",
-                tenant_id=tenant_id,
-                memory_id=item.memory_id,
-                error=f"{type(exc).__name__}: {str(exc)[:200]}",
-            )
-            continue
+        existing = await find_goal(tenant_id, item.memory_id) if find_goal else None
+        if existing:
+            result: dict[str, Any] = {"goal_id": existing, "deduplicated": True}
+        else:
+            try:
+                result = await submit(item)
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {str(exc)[:200]}"
+                _log.warning(
+                    "prospective_fire_failed",
+                    tenant_id=tenant_id,
+                    memory_id=item.memory_id,
+                    attempts=item.attempts,
+                    error=error,
+                )
+                if item.attempts >= MAX_FIRE_ATTEMPTS:
+                    await _mark_failed(service, item, error)
+                continue
         try:
             fired.append(
                 await service.complete(
@@ -147,7 +163,29 @@ async def fire_due_intentions(
             )
         except RuntimeError:
             _log.info("prospective_lease_lost", tenant_id=tenant_id, memory_id=item.memory_id)
+        except Exception as exc:
+            _log.warning(
+                "prospective_complete_failed",
+                tenant_id=tenant_id,
+                memory_id=item.memory_id,
+                goal_id=result.get("goal_id"),
+                error=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
     return fired
+
+
+async def _mark_failed(service: Any, item: ProspectiveMemory, error: str) -> None:
+    try:
+        await service.fail(
+            item.tenant_id, item.memory_id, fencing_token=item.fencing_token, error=error
+        )
+    except Exception as exc:
+        _log.warning(
+            "prospective_mark_failed_failed",
+            tenant_id=item.tenant_id,
+            memory_id=item.memory_id,
+            error=f"{type(exc).__name__}: {str(exc)[:200]}",
+        )
 
 
 # ── Agent tool: builtin-memory ────────────────────────────────────────────────
@@ -252,6 +290,7 @@ call_tool._tenant_scoped = True  # type: ignore[attr-defined]
 
 
 __all__ = [
+    "MAX_FIRE_ATTEMPTS",
     "SERVER_DESCRIPTION",
     "SERVER_ID",
     "SERVER_NAME",

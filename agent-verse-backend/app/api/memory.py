@@ -498,8 +498,14 @@ async def create_prospective_intention(request: Request, body: CreateIntentionRe
 
 
 @router.get("/prospective")
-async def list_prospective_intentions(request: Request) -> list[dict]:
-    """The tenant's pending (non-terminal, unexpired) intentions, due first."""
+async def list_prospective_intentions(
+    request: Request, include_failed: bool = False
+) -> list[dict]:
+    """The tenant's pending (non-terminal, unexpired) intentions, due first.
+
+    ``include_failed`` also returns intentions that kept failing to fire
+    (state ``failed``, with their attempts and error) so a user can see them.
+    """
     from datetime import UTC
 
     from app.memory.prospective_runtime import intention_json
@@ -507,7 +513,7 @@ async def list_prospective_intentions(request: Request) -> list[dict]:
     tenant = _require_tenant(request)
     try:
         items = await _prospective_service(request).list_active(
-            tenant.tenant_id, now=datetime.now(UTC)
+            tenant.tenant_id, now=datetime.now(UTC), include_failed=include_failed
         )
     except HTTPException:
         raise

@@ -22,6 +22,8 @@ _COLS = (
     "fencing_token, lease_expires_at, result"
 )
 _TERMINAL = ("completed", "failed", "cancelled", "expired")
+#: Rows a tenant's intention list returns at most (due-first).
+_LIST_LIMIT = 200
 
 
 def _row(r: Any) -> ProspectiveMemory:
@@ -105,21 +107,71 @@ class PostgresProspectiveMemoryService:
         return _row(row) if row else None
 
     async def list_active(
-        self, tenant_id: str, *, now: datetime
+        self, tenant_id: str, *, now: datetime, include_failed: bool = False
     ) -> tuple[ProspectiveMemory, ...]:
+        hidden = "('completed','cancelled','expired')" if include_failed else (
+            "('completed','failed','cancelled','expired')"
+        )
         async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
             rows = (
                 await s.execute(
                     text(
                         f"SELECT {_COLS} FROM prospective_memory "
                         "WHERE tenant_id=:t "
-                        "AND state NOT IN ('completed','failed','cancelled','expired') "
-                        "AND expires_at > :now ORDER BY due_at ASC"
+                        f"AND state NOT IN {hidden} "
+                        "AND expires_at > :now ORDER BY due_at ASC LIMIT :lim"
                     ),
-                    {"t": tenant_id, "now": now},
+                    {"t": tenant_id, "now": now, "lim": _LIST_LIMIT},
                 )
             ).mappings().all()
         return tuple(_row(r) for r in rows)
+
+    async def fail(
+        self, tenant_id: str, memory_id: str, *, fencing_token: int, error: str
+    ) -> ProspectiveMemory:
+        """Leased -> failed (it kept failing to fire); stale tokens are refused."""
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                await s.execute(
+                    text(
+                        "UPDATE prospective_memory SET state='failed', "
+                        "result=CAST(:result AS jsonb) "
+                        "WHERE memory_id=:m AND tenant_id=:t "
+                        "AND state='leased' AND fencing_token=:ft "
+                        f"RETURNING {_COLS}"
+                    ),
+                    {
+                        "m": memory_id,
+                        "t": tenant_id,
+                        "ft": fencing_token,
+                        "result": json.dumps({"error": error[:500]}),
+                    },
+                )
+            ).mappings().one_or_none()
+        if row is None:
+            raise RuntimeError("stale prospective-memory lease")
+        return _row(row)
+
+    async def find_submitted_goal(self, tenant_id: str, memory_id: str) -> str | None:
+        """MEM-43: the goal this intention already produced, if any.
+
+        ``submit_goal`` persists ``execution_context.prospective_memory_id`` on
+        the goal row, so a re-leased intention whose earlier submission went
+        through (but whose ``complete`` was lost) finds that goal instead of
+        submitting a second one. Served by ``ix_goals_prospective_memory_id``.
+        """
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            gid = (
+                await s.execute(
+                    text(
+                        "SELECT id FROM goals WHERE tenant_id=:t "
+                        "AND (execution_context ->> 'prospective_memory_id') = :m "
+                        "ORDER BY created_at ASC LIMIT 1"
+                    ),
+                    {"t": tenant_id, "m": memory_id},
+                )
+            ).scalar_one_or_none()
+        return str(gid) if gid else None
 
     async def lease_due(
         self, tenant_id: str, *, now: datetime, lease_duration: timedelta

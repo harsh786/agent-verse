@@ -71,6 +71,31 @@ describe('DeferredIntentionsPanel (MEM-16)', () => {
     await waitFor(() => expect(screen.getByText(/no pending intentions/i)).toBeInTheDocument());
   });
 
+  test('MEM-43: requests failed intentions and shows the failed state with attempts', async () => {
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      urls.push(String(input));
+      return new Response(
+        JSON.stringify([
+          {
+            ...ITEM,
+            id: 'f1',
+            intention: 'Rotate the keys',
+            state: 'failed',
+            attempts: 5,
+            result: { error: 'RuntimeError: daily goal limit reached' },
+          },
+        ]),
+        { status: 200 },
+      );
+    });
+    renderPanel();
+    expect(await screen.findByText('Rotate the keys')).toBeInTheDocument();
+    expect(urls.some((u) => u.includes('include_failed=true'))).toBe(true);
+    expect(screen.getByText(/failed after 5 attempts/i)).toBeInTheDocument();
+    expect(screen.getByText(/daily goal limit reached/i)).toBeInTheDocument();
+  });
+
   test('shows an error state when the list fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"detail":"down"}', { status: 503 }));
     renderPanel();

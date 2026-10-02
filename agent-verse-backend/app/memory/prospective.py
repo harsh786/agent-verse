@@ -105,6 +105,26 @@ class ProspectiveMemoryService:
             self._items[key] = completed
             return completed
 
+    async def fail(
+        self, tenant_id: str, memory_id: str, *, fencing_token: int, error: str
+    ) -> ProspectiveMemory:
+        """Leased -> failed (it kept failing to fire); stale tokens are refused."""
+        async with self._lock:
+            key = (tenant_id, memory_id)
+            item = self._items[key]
+            if item.state != "leased" or item.fencing_token != fencing_token:
+                raise RuntimeError("stale prospective-memory lease")
+            failed = item.model_copy(
+                update={"state": "failed", "result": {"error": error[:500]}}
+            )
+            self._items[key] = failed
+            return failed
+
+    async def find_submitted_goal(self, tenant_id: str, memory_id: str) -> str | None:
+        """The goal this intention already produced. The in-process build has no
+        goals table to consult, so it reports none."""
+        return None
+
     async def cancel(self, tenant_id: str, memory_id: str, *, reason: str) -> ProspectiveMemory:
         async with self._lock:
             key = (tenant_id, memory_id)
@@ -121,7 +141,7 @@ class ProspectiveMemoryService:
         return self._items.get((tenant_id, memory_id))
 
     async def list_active(
-        self, tenant_id: str, *, now: datetime
+        self, tenant_id: str, *, now: datetime, include_failed: bool = False
     ) -> tuple[ProspectiveMemory, ...]:
         """Read-only: non-terminal, non-expired intentions for a tenant, due-first.
 
@@ -129,7 +149,9 @@ class ProspectiveMemoryService:
         surfacing "pending intentions" into an agent's planning context without
         claiming the items for execution.
         """
-        terminal = {"completed", "failed", "cancelled", "expired"}
+        terminal = {"completed", "cancelled", "expired"} | (
+            set() if include_failed else {"failed"}
+        )
         async with self._lock:
             items = [
                 item

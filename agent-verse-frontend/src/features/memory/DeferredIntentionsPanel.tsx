@@ -26,7 +26,7 @@ export function DeferredIntentionsPanel(): JSX.Element {
 
   const { data: items = [], isLoading, isError, refetch } = useQuery({
     queryKey: ['prospective-intentions'],
-    queryFn: () => memoryApi.listIntentions(),
+    queryFn: () => memoryApi.listIntentions({ includeFailed: true }),
   });
 
   const create = useMutation({
@@ -110,13 +110,22 @@ export function DeferredIntentionsPanel(): JSX.Element {
           {items.map((it: ProspectiveIntention) => {
             const due = new Date(it.due_at);
             const overdue = due.getTime() <= Date.now();
+            const failed = it.state === 'failed';
+            const error = typeof it.result?.error === 'string' ? it.result.error : '';
             return (
               <li key={it.id} className="flex items-start gap-3 px-5 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-white/70">{it.intention}</p>
-                  <p className="text-[10px] text-white/30 font-mono">
-                    {overdue ? 'due now' : `due ${due.toLocaleString()}`} · {it.state}
-                  </p>
+                  {failed ? (
+                    <p className="text-[10px] text-mission-red font-mono" role="status">
+                      failed after {it.attempts ?? 0} attempts{error ? ` · ${error}` : ''}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-white/30 font-mono">
+                      {overdue ? 'due now' : `due ${due.toLocaleString()}`} · {it.state}
+                      {it.attempts ? ` · ${it.attempts} attempt${it.attempts === 1 ? '' : 's'}` : ''}
+                    </p>
+                  )}
                 </div>
                 <button
                   type="button"

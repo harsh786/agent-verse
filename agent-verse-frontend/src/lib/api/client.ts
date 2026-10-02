@@ -1543,6 +1543,8 @@ export interface ProspectiveIntention {
   due_at: string;
   expires_at: string;
   state: string;
+  /** Fire attempts so far; an intention that keeps failing ends in state "failed". */
+  attempts?: number;
   source_goal_id: string;
   agent_id: string | null;
   result: Record<string, unknown> | null;
@@ -1578,7 +1580,10 @@ export const memoryApi = {
     request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>(
       `/memory/execution?limit=${params.limit ?? 50}&offset=${params.offset ?? 0}`,
     ),
-  listIntentions: () => request<ProspectiveIntention[]>("/memory/prospective"),
+  listIntentions: (opts: { includeFailed?: boolean } = {}) =>
+    request<ProspectiveIntention[]>(
+      opts.includeFailed ? "/memory/prospective?include_failed=true" : "/memory/prospective",
+    ),
   createIntention: (data: { intention: string; due_at: string; expires_at?: string }) =>
     request<ProspectiveIntention>("/memory/prospective", {
       method: "POST",
