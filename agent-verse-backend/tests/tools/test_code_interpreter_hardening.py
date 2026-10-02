@@ -33,7 +33,7 @@ def _fake_docker(logs: bytes = b"ok") -> tuple[ModuleType, MagicMock]:
 @pytest.mark.asyncio
 async def test_container_is_created_with_pids_and_capability_limits() -> None:
     mod, client = _fake_docker()
-    with patch.dict(sys.modules, {"docker": mod}), patch.object(ci, "_DOCKER_AVAILABLE", True):
+    with patch.dict(sys.modules, {"docker": mod}), patch.object(ci, "_docker_available", lambda: True):
         res = await ci.CodeInterpreter().execute("print(1)", "python", 5)
     kwargs = client.containers.create.call_args.kwargs
     assert kwargs["pids_limit"] == ci._PIDS_LIMIT
@@ -46,7 +46,7 @@ async def test_container_is_created_with_pids_and_capability_limits() -> None:
 @pytest.mark.asyncio
 async def test_output_is_capped() -> None:
     mod, _client = _fake_docker(logs=b"x" * (ci._MAX_OUTPUT_CHARS + 500))
-    with patch.dict(sys.modules, {"docker": mod}), patch.object(ci, "_DOCKER_AVAILABLE", True):
+    with patch.dict(sys.modules, {"docker": mod}), patch.object(ci, "_docker_available", lambda: True):
         res = await ci.CodeInterpreter().execute("print(1)", "python", 5)
     assert len(res.stdout) < ci._MAX_OUTPUT_CHARS + 100
     assert "output truncated: 500 more characters" in res.stdout

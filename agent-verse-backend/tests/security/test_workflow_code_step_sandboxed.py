@@ -61,7 +61,7 @@ async def test_code_step_fails_closed_without_sandbox_in_production(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ENVIRONMENT", "production")
-    monkeypatch.setattr("app.tools.code_interpreter._DOCKER_AVAILABLE", False)
+    monkeypatch.setattr("app.tools.code_interpreter._docker_available", lambda: False)
     monkeypatch.setattr(builtins, "exec", _no_exec)
 
     with pytest.raises(RuntimeError):

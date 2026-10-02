@@ -12,7 +12,7 @@ def executor(monkeypatch: pytest.MonkeyPatch) -> ChatCodeExecutor:
     # No Docker in unit tests: exercise the explicit development-only opt-in.
     import app.tools.code_interpreter as ci
 
-    monkeypatch.setattr(ci, "_DOCKER_AVAILABLE", False)
+    monkeypatch.setattr(ci, "_docker_available", lambda: False)
     monkeypatch.setenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
     monkeypatch.setenv("ENVIRONMENT", "development")
     return ChatCodeExecutor()
@@ -94,7 +94,7 @@ async def test_snippets_never_see_the_api_process_secrets(
 async def test_without_a_sandbox_nothing_runs_on_the_host(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.tools.code_interpreter as ci
 
-    monkeypatch.setattr(ci, "_DOCKER_AVAILABLE", False)
+    monkeypatch.setattr(ci, "_docker_available", lambda: False)
     monkeypatch.delenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", raising=False)
     result = await ChatCodeExecutor().execute("print('ran')", "python", "s1")
     assert result.exit_code != 0 and "ran" not in result.stdout

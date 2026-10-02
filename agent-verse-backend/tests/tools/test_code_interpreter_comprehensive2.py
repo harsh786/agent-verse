@@ -78,7 +78,7 @@ async def test_execute_unsupported_language():
 async def test_subprocess_fallback_disabled_without_env():
     interp = CodeInterpreter()
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "false"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute("print('hi')", language="python")
     assert result.exit_code == 1
     assert "Subprocess execution is disabled" in result.stderr
@@ -90,7 +90,7 @@ async def test_subprocess_fallback_disabled_without_env():
 async def test_subprocess_python_execution():
     interp = CodeInterpreter(default_timeout=10)
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute('print("hello subprocess")', language="python")
     assert result.exit_code == 0
     assert "hello subprocess" in result.stdout
@@ -100,7 +100,7 @@ async def test_subprocess_python_execution():
 async def test_subprocess_bash_execution():
     interp = CodeInterpreter(default_timeout=10)
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute('echo "bash works"', language="bash")
     assert result.exit_code == 0
     assert "bash works" in result.stdout
@@ -110,7 +110,7 @@ async def test_subprocess_bash_execution():
 async def test_subprocess_python_stderr():
     interp = CodeInterpreter(default_timeout=10)
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute('import sys; sys.stderr.write("error\n")', language="python")
     assert "error" in result.stderr
 
@@ -119,7 +119,7 @@ async def test_subprocess_python_stderr():
 async def test_subprocess_python_exit_code():
     interp = CodeInterpreter(default_timeout=10)
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute('import sys; sys.exit(2)', language="python")
     assert result.exit_code == 2
     assert result.success is False
@@ -129,7 +129,7 @@ async def test_subprocess_python_exit_code():
 async def test_subprocess_timeout():
     interp = CodeInterpreter(default_timeout=1)
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute('import time; time.sleep(10)', language="python", timeout=1)
     assert result.timed_out is True
     assert result.exit_code == 1
@@ -139,7 +139,7 @@ async def test_subprocess_timeout():
 async def test_subprocess_execution_time_recorded():
     interp = CodeInterpreter(default_timeout=10)
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute('print("time")', language="python")
     assert result.execution_time_ms >= 0
 
@@ -163,7 +163,7 @@ async def test_subprocess_fallback_unsupported_language():
     """execute() validates language before dispatch, so unsupported gets error result."""
     interp = CodeInterpreter()
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute("some code", language="cobol")
     assert result.exit_code == 1
     assert "Unsupported" in result.stderr
@@ -312,7 +312,7 @@ def test_get_interpreter_default_timeout():
 async def test_subprocess_javascript_execution():
     interp = CodeInterpreter(default_timeout=10)
     with patch.dict(os.environ, {"AGENTVERSE_ALLOW_SUBPROCESS_EXEC": "true"}):
-        with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", False):
+        with patch("app.tools.code_interpreter._docker_available", lambda: False):
             result = await interp.execute('console.log("js works")', language="javascript")
     # node may not be available in CI — just verify no crash
     assert isinstance(result.exit_code, int)

@@ -20,6 +20,8 @@ import asyncio
 import contextlib
 import os
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -80,15 +82,54 @@ def _cap_output(text: str) -> str:
     return text[:_MAX_OUTPUT_CHARS] + f"\n[output truncated: {dropped} more characters]"
 
 
-# Docker is optional -- detected at runtime
-_DOCKER_AVAILABLE = False
-try:
-    import docker as _docker_module
+# Docker is optional -- detected at RUNTIME, never cached as "unavailable".
+#
+# This used to probe once at import time and keep the answer for the life of
+# the process. A worker whose first import happened while the daemon was briefly
+# unreachable (a VM resuming from sleep, a socket not mounted yet) was pinned to
+# the subprocess fallback — which is disabled — so its code steps failed with
+# "Subprocess execution is disabled" while other workers ran them fine. Now a
+# successful probe is remembered (the daemon is there), a failed one only for
+# _DOCKER_RETRY_SECONDS, so the sandbox is used as soon as Docker is reachable.
+_DOCKER_RETRY_SECONDS = 2.0
+_docker_lock = threading.Lock()
+_docker_ok = False
+_docker_checked_at = 0.0
+_docker_error = "not probed yet"
 
-    _docker_module.from_env()
-    _DOCKER_AVAILABLE = True
-except Exception:
-    pass
+
+def _probe_docker() -> tuple[bool, str]:
+    """Ping the daemon. (ok, reason-if-not)."""
+    try:
+        import docker
+
+        client = docker.from_env()
+        try:
+            client.ping()
+        finally:
+            with contextlib.suppress(Exception):
+                client.close()
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"[:300]
+
+
+def _docker_available() -> bool:
+    """Whether the Docker sandbox can be used now (blocking; see module note)."""
+    global _docker_ok, _docker_checked_at, _docker_error
+    with _docker_lock:
+        if _docker_ok:
+            return True
+        now = time.monotonic()
+        if _docker_checked_at and now - _docker_checked_at < _DOCKER_RETRY_SECONDS:
+            return False
+        ok, reason = _probe_docker()
+        _docker_ok, _docker_checked_at, _docker_error = ok, time.monotonic(), reason
+        return ok
+
+
+def _docker_unavailable_reason() -> str:
+    return _docker_error
 
 
 class CodeInterpreter:
@@ -115,8 +156,8 @@ class CodeInterpreter:
 
     @staticmethod
     def _check_docker() -> bool:
-        """Return True if Docker is available on this host."""
-        return _DOCKER_AVAILABLE
+        """Return True if Docker is available on this host (probed live)."""
+        return _docker_available()
 
     async def execute(
         self,
@@ -137,7 +178,7 @@ class CodeInterpreter:
                 exit_code=1,
             )
 
-        if not _DOCKER_AVAILABLE:
+        if not await asyncio.to_thread(_docker_available):
             return await self._execute_subprocess_fallback(code, language, timeout)
 
         return await self._execute_docker(code, language, timeout)
@@ -283,7 +324,8 @@ class CodeInterpreter:
 
         if os.getenv("ENVIRONMENT", "development") == "production":
             raise RuntimeError(
-                "Unsandboxed subprocess execution is disabled in production. "
+                f"Docker sandbox unavailable ({_docker_unavailable_reason()}); "
+                "unsandboxed subprocess execution is disabled in production. "
                 "Start the Docker sandbox (colima start + docker pull python:3.12-slim)."
             )
 
@@ -291,6 +333,7 @@ class CodeInterpreter:
             return CodeResult(
                 stdout="",
                 stderr=(
+                    f"Docker sandbox unavailable ({_docker_unavailable_reason()}). "
                     "Subprocess execution is disabled. "
                     "Set AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true to enable "
                     "(testing/development only -- not sandboxed)."

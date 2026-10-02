@@ -26,7 +26,7 @@ import pytest
 from app.tools import code_interpreter as ci
 
 pytestmark = pytest.mark.skipif(
-    not ci._DOCKER_AVAILABLE, reason="Docker daemon not reachable on this host"
+    not ci._docker_available(), reason="Docker daemon not reachable on this host"
 )
 
 
