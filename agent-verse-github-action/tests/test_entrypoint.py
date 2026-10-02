@@ -25,6 +25,7 @@ _AGENTVERSE_ENV_VARS = (
     "AGENTVERSE_GOAL",
     "AGENTVERSE_TIMEOUT",
     "AGENTVERSE_FAIL_ON_ERROR",
+    "AGENTVERSE_FAIL_ON_WAITING_HUMAN",
     "GITHUB_OUTPUT",
 )
 
@@ -579,3 +580,136 @@ def test_multiline_result_uses_a_delimiter(monkeypatch, tmp_path):
     content = output_file.read_text()
     assert content.startswith("result<<AGENTVERSE_EOF_")
     assert "line one\nline two\n" in content
+
+
+# --------------------------------------------------------------------------
+# FE-19: waiting_human / cancelled / HTTP errors are reported as what they are
+# --------------------------------------------------------------------------
+
+
+async def _no_sleep(_seconds):
+    return None
+
+
+class TestHonestTerminalStates:
+    def test_sse_waiting_human_event_returns_waiting_human(self, monkeypatch):
+        module = load_entrypoint(monkeypatch)
+        fake_resp = FakeSSEResponse(
+            [b'data: {"type": "goal_waiting_human", "reason": "pending approvals"}\n']
+        )
+        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
+        assert module.wait_for_completion_sse("goal-1") == {
+            "status": "waiting_human", "goal_id": "goal-1", "error": "pending approvals",
+        }
+
+    def test_sse_cancelled_event_returns_cancelled(self, monkeypatch):
+        module = load_entrypoint(monkeypatch)
+        fake_resp = FakeSSEResponse([b'data: {"type": "goal_cancelled"}\n'])
+        monkeypatch.setattr(module.urllib.request, "urlopen", lambda *a, **k: fake_resp)
+        assert module.wait_for_completion_sse("goal-1")["status"] == "cancelled"
+
+    async def test_waiting_human_warns_with_the_approval_link_and_does_not_time_out(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        output_file = tmp_path / "out.txt"
+        module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
+        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
+        with respx.mock:
+            respx.post("http://localhost:8000/goals").mock(
+                return_value=httpx.Response(200, json={"goal_id": "goal-7"})
+            )
+            route = respx.get("http://localhost:8000/goals/goal-7").mock(
+                return_value=httpx.Response(200, json={"status": "waiting_human"})
+            )
+            await module.main()  # default: warn, do not fail
+        assert route.call_count == 1  # reported at once, not after the full wait
+        content = output_file.read_text()
+        assert "status=waiting_human\n" in content
+        assert "status=timeout" not in content
+        out = capsys.readouterr().out
+        assert "::warning::" in out
+        assert "http://localhost:8000/governance/approvals" in out
+
+    async def test_waiting_human_fails_when_configured(self, monkeypatch, tmp_path):
+        output_file = tmp_path / "out.txt"
+        module = load_entrypoint(
+            monkeypatch, GITHUB_OUTPUT=str(output_file), AGENTVERSE_FAIL_ON_WAITING_HUMAN="true"
+        )
+        monkeypatch.setattr(
+            module, "wait_for_completion_sse",
+            lambda goal_id: {"status": "waiting_human", "goal_id": goal_id},
+        )
+        with respx.mock:
+            respx.post("http://localhost:8000/goals").mock(
+                return_value=httpx.Response(200, json={"goal_id": "goal-7"})
+            )
+            with pytest.raises(SystemExit) as exc_info:
+                await module.main()
+        assert exc_info.value.code == 1
+        assert "status=waiting_human\n" in output_file.read_text()
+
+    async def test_401_while_polling_fails_fast_with_a_clear_error(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        output_file = tmp_path / "out.txt"
+        module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
+        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
+        with respx.mock:
+            respx.post("http://localhost:8000/goals").mock(
+                return_value=httpx.Response(200, json={"goal_id": "goal-7"})
+            )
+            route = respx.get("http://localhost:8000/goals/goal-7").mock(
+                return_value=httpx.Response(401, json={"detail": "Invalid API key"})
+            )
+            with pytest.raises(SystemExit) as exc_info:
+                await module.main()
+        assert exc_info.value.code == 1
+        assert route.call_count == 1
+        assert "status=error\n" in output_file.read_text()
+        out = capsys.readouterr().out
+        assert "HTTP 401" in out and "Invalid API key" in out
+        assert "timed out" not in out
+
+    async def test_5xx_is_retried_then_fails_with_http_details(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        output_file = tmp_path / "out.txt"
+        module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
+        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
+        with respx.mock:
+            respx.post("http://localhost:8000/goals").mock(
+                return_value=httpx.Response(200, json={"goal_id": "goal-7"})
+            )
+            route = respx.get("http://localhost:8000/goals/goal-7").mock(
+                return_value=httpx.Response(503, json={"detail": "db down"})
+            )
+            with pytest.raises(SystemExit):
+                await module.main()
+        assert route.call_count == module.MAX_POLL_ERRORS
+        assert "status=error\n" in output_file.read_text()
+        out = capsys.readouterr().out
+        assert "HTTP 503" in out and "timed out" not in out
+
+    async def test_a_transient_5xx_recovers(self, monkeypatch, tmp_path):
+        output_file = tmp_path / "out.txt"
+        module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
+        monkeypatch.setattr(module, "wait_for_completion_sse", lambda goal_id: None)
+        monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
+        with respx.mock:
+            respx.post("http://localhost:8000/goals").mock(
+                return_value=httpx.Response(200, json={"goal_id": "goal-7"})
+            )
+            respx.get("http://localhost:8000/goals/goal-7").mock(
+                side_effect=[
+                    httpx.Response(502, json={"detail": "bad gateway"}),
+                    httpx.Response(200, json={"status": "complete", "result": "ok"}),
+                ]
+            )
+            respx.get("http://localhost:8000/goals/goal-7/cost-metrics").mock(
+                return_value=httpx.Response(200, json={"total_cost_usd": 0.1})
+            )
+            await module.main()
+        assert "status=complete\n" in output_file.read_text()

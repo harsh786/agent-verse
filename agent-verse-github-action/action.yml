@@ -25,12 +25,16 @@ inputs:
     description: 'Fail the workflow step if the goal fails'
     required: false
     default: 'true'
+  fail-on-waiting-human:
+    description: 'Fail the step when the goal pauses for human approval (default: warn, status=waiting_human)'
+    required: false
+    default: 'false'
 
 outputs:
   goal-id:
     description: 'The submitted goal ID'
   status:
-    description: 'Final goal status'
+    description: 'Final status: complete | failed | cancelled | waiting_human | timeout | error'
   result:
     description: 'Goal result text (truncated to 2000 chars)'
   cost-usd:
@@ -45,3 +49,4 @@ runs:
     AGENTVERSE_GOAL: ${{ inputs.goal }}
     AGENTVERSE_TIMEOUT: ${{ inputs.wait-timeout }}
     AGENTVERSE_FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+    AGENTVERSE_FAIL_ON_WAITING_HUMAN: ${{ inputs.fail-on-waiting-human }}
