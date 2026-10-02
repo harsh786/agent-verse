@@ -72,15 +72,23 @@ class ReflexionStore:
             try:
                 import asyncio
 
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
+                try:
+                    asyncio.get_running_loop()
+                    running = True
+                except RuntimeError:
+                    running = False
+                if running:
                     # Schedule hydration asynchronously (best-effort)
                     asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                         self.load_from_db(tenant_id=tenant_id, db_factory=self._db_factory)
                     )
                 else:
-                    # Sync context — load directly
-                    loop.run_until_complete(
+                    # Sync context — load on a fresh loop that is torn down
+                    # (engines disposed) before it closes; the persistent
+                    # get_event_loop() kept pooled connections on a stale loop.
+                    from app.db.session import run_in_fresh_loop
+
+                    run_in_fresh_loop(
                         self.load_from_db(tenant_id=tenant_id, db_factory=self._db_factory)
                     )
                 # Re-read after sync load

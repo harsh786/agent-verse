@@ -478,8 +478,7 @@ def vault_rotate(
     this until it reports ``complete`` (``previous_keys_retirable: true``), then
     drop VAULT_PREVIOUS_MASTER_KEYS. Exits 1 unless complete (or a clean dry run).
     """
-    import asyncio
-
+    from app.db.session import run_in_fresh_loop
     from app.providers.vault import CredentialVault, get_vault, rotate_master_key
 
     new_key = os.environ.get(new_key_env, "")
@@ -510,7 +509,7 @@ def vault_rotate(
             progress=_progress,
         )
 
-    result = asyncio.run(_run())
+    result = run_in_fresh_loop(_run())
     typer.echo(json.dumps(result, indent=2))
     if result.get("status") not in ("complete", "dry_run") or result.get("unreadable"):
         raise typer.Exit(1)
@@ -541,8 +540,7 @@ def tenant_key_compact(
     Idempotent; progress as JSON lines on stderr. Exits 1 unless every tenant is
     compacted or had nothing to compact (or a clean dry run).
     """
-    import asyncio
-
+    from app.db.session import run_in_fresh_loop
     from app.providers.tenant_key_compaction import compact_tenant_keys
 
     def _progress(event: dict) -> None:  # type: ignore[type-arg]
@@ -568,7 +566,7 @@ def tenant_key_compact(
             progress=_progress,
         )
 
-    result = asyncio.run(_run())
+    result = run_in_fresh_loop(_run())
     typer.echo(json.dumps(result, indent=2))
     if result.get("status") not in ("complete", "dry_run"):
         raise typer.Exit(1)
@@ -590,9 +588,8 @@ def mfa_rotate(
     resumable and idempotent; progress as JSON lines on stderr. Exits 1 unless
     complete (or a clean dry run).
     """
-    import asyncio
-
     from app.api.mfa_crypto import rotate_mfa_secrets
+    from app.db.session import run_in_fresh_loop
 
     def _progress(event: dict) -> None:  # type: ignore[type-arg]
         typer.echo(json.dumps(event), err=True)
@@ -608,7 +605,7 @@ def mfa_rotate(
             progress=_progress,
         )
 
-    result = asyncio.run(_run())
+    result = run_in_fresh_loop(_run())
     typer.echo(json.dumps(result, indent=2))
     if result.get("status") not in ("complete", "dry_run") or result.get("unreadable"):
         raise typer.Exit(1)

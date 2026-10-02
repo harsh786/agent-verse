@@ -62,7 +62,7 @@ def get_inverse_fn(
     **Legacy mode** (``arguments`` provided):
         Returns a zero-arg *sync* callable that schedules the real async work
         as a ``create_task`` when a running loop is present, or via
-        ``asyncio.run()`` otherwise.  Registered functions may be:
+        ``run_in_fresh_loop()`` otherwise.  Registered functions may be:
 
         - sync 1-arg: ``lambda args: ...`` (old style, used in tests)
         - async 2-arg: ``async def fn(args, mcp_client): ...`` (built-ins)
@@ -127,8 +127,11 @@ def get_inverse_fn(
                 running_loop = asyncio.get_running_loop()
                 running_loop.create_task(_async_inverse())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
             except RuntimeError:
-                # No running loop — we're in a sync context; create a fresh one
-                asyncio.run(_async_inverse())
+                # No running loop — we're in a sync context; a fresh loop that
+                # is fully torn down (engines disposed) before it closes.
+                from app.db.session import run_in_fresh_loop
+
+                run_in_fresh_loop(_async_inverse())
         except Exception as exc:
             logger.warning("rollback_wrapper_failed tool=%s error=%s", tool_name, str(exc))
 

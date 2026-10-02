@@ -154,17 +154,17 @@ def _setup_worker_checkpointer(**kwargs: Any) -> None:
 
 def _probe_worker_model_windows() -> None:
     """Fill this worker's on-prem model context-window map (best effort)."""
-    import asyncio as _asyncio
     import logging as _logging
 
     try:
         from app.ai_router import deployment_roles
         from app.core.config import get_settings
+        from app.db.session import run_in_fresh_loop
 
         settings = get_settings()
         if not getattr(settings, "onprem_enabled", False):
             return
-        windows = _asyncio.run(deployment_roles.probe_model_windows(settings))
+        windows = run_in_fresh_loop(deployment_roles.probe_model_windows(settings))
         _logging.getLogger(__name__).info("worker_onprem_model_windows windows=%s", windows)
     except Exception as exc:  # unknown windows keep small models out of roles (fail closed)
         _logging.getLogger(__name__).warning("worker_model_window_probe_failed: %s", exc)

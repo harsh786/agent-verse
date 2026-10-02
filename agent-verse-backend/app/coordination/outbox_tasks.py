@@ -36,11 +36,17 @@ async def dispatch_coordination_outbox_once() -> dict[str, Any]:
 
 @celery_app.task(name="agentverse.coordination.dispatch_outbox")  # type: ignore[untyped-decorator]
 def dispatch_coordination_outbox() -> dict[str, Any]:
-    """Claim due outbox rows per tenant and publish them (retry/backoff/dead-letter)."""
-    import asyncio
+    """Claim due outbox rows per tenant and publish them (retry/backoff/dead-letter).
+
+    Runs on ``run_in_fresh_loop``: ``asyncio.run`` closed the loop without
+    disposing the engines, so this beat task (every few seconds) left pooled
+    asyncpg connections on a dead loop and broke the NEXT task on the worker
+    ("Event loop is closed" / "attached to a different loop").
+    """
+    from app.db import session as db_session
 
     try:
-        result = asyncio.run(dispatch_coordination_outbox_once())
+        result = db_session.run_in_fresh_loop(dispatch_coordination_outbox_once())
     except Exception as exc:
         _log.warning("coordination_outbox_dispatch_failed", error=str(exc)[:200])
         return {"status": "error", "error": type(exc).__name__}

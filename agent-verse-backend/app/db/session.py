@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import weakref
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -110,6 +112,9 @@ def get_system_session_factory() -> async_sessionmaker[AsyncSession]:
         return get_session_factory()
     if _system_session_factory is None:
         _system_engine = _make_engine(url)
+        # Tracked like the application engine: a captured maintenance factory
+        # (e.g. IngestionJobTracker's) is reused across task loops too.
+        _task_engines.add(_system_engine)
         _system_session_factory = async_sessionmaker(
             _system_engine, expire_on_commit=False, class_=AsyncSession
         )
@@ -130,14 +135,14 @@ async def dispose_task_engine() -> None:
         loop.close()
     """
     global _engine, _session_factory, _system_engine, _system_session_factory
-    if _engine is not None:
-        _task_engines.add(_engine)
+    for current in (_engine, _system_engine):
+        if current is not None:
+            _task_engines.add(current)
     # Includes engines of factories captured before an earlier reset (see
-    # _task_engines); a disposed engine rebuilds its pool lazily on next use.
+    # _task_engines), application and maintenance alike; a disposed engine
+    # rebuilds its pool lazily on next use.
     for engine in list(_task_engines):
         await engine.dispose()
-    if _system_engine is not None:
-        await _system_engine.dispose()
     _system_engine = None
     _system_session_factory = None
     # Drop the references so the NEXT event loop builds a fresh engine instead of
@@ -161,7 +166,6 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
     tearing the task down cannot also abort the rollback mid-await; the original
     exception is always re-raised.
     """
-    import asyncio
     import contextlib
 
     async with get_session_factory()() as session:
@@ -182,6 +186,32 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 _LEFTOVER_TASK_GRACE_S = 10.0
 
+# Async closers for loop-bound clients (redis.asyncio, ...) created on a task
+# loop, keyed by that loop. run_in_fresh_loop awaits them before the loop closes,
+# so no client outlives its loop and none is reused on the next one.
+_loop_closers: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, list[Callable[[], Awaitable[Any]]]
+] = weakref.WeakKeyDictionary()
+
+
+def on_loop_teardown(closer: Callable[[], Awaitable[Any]]) -> None:
+    """Register ``closer`` to be awaited when the RUNNING loop is torn down.
+
+    Only loops driven by :func:`run_in_fresh_loop` run their closers; a client
+    registered on another loop (the API's) is simply released with that loop.
+    """
+    _loop_closers.setdefault(asyncio.get_running_loop(), []).append(closer)
+
+
+async def _run_loop_closers() -> None:
+    for closer in _loop_closers.pop(asyncio.get_running_loop(), []):
+        try:
+            await closer()
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "loop_teardown_closer_failed: %s: %s", type(exc).__name__, exc
+            )
+
 
 def run_in_fresh_loop(coro: Any) -> Any:
     """Run ``coro`` to completion on a new event loop, leaving no DB state behind.
@@ -199,13 +229,11 @@ def run_in_fresh_loop(coro: Any) -> Any:
       session) were never resumed, so their sessions never rolled back.
 
     Teardown, on the still-running loop: cancel and await every leftover task
-    (their ``async with`` blocks roll back and return connections), dispose every
+    (their ``async with`` blocks roll back and return connections), close the
+    loop-bound clients registered with :func:`on_loop_teardown`, dispose every
     engine used in this loop (``dispose_task_engine``), shut down async
     generators, then close the loop.
     """
-    import asyncio
-    import logging
-
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(coro)
@@ -216,6 +244,7 @@ def run_in_fresh_loop(coro: Any) -> Any:
                 task.cancel()
             if leftovers:
                 loop.run_until_complete(asyncio.wait(leftovers, timeout=_LEFTOVER_TASK_GRACE_S))
+            loop.run_until_complete(_run_loop_closers())
             loop.run_until_complete(dispose_task_engine())
             loop.run_until_complete(loop.shutdown_asyncgens())
         except Exception as exc:
