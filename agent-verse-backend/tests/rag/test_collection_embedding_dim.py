@@ -23,6 +23,8 @@ from tests.rag.test_store_db_paths import _Result, _ScriptedDB
 pytestmark = pytest.mark.asyncio
 
 _CTX = TenantContext(tenant_id="dim-t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
+# RATE-01: advisory lock + collection count precede the INSERT.
+_LIMIT_OK = (_Result(), _Result(scalar=0))
 
 
 def _inserted_dim(db: _ScriptedDB) -> int:
@@ -33,7 +35,7 @@ def _inserted_dim(db: _ScriptedDB) -> int:
 
 
 async def test_known_embedder_dimension_wins_over_the_static_setting() -> None:
-    db = _ScriptedDB(_Result(scalar="c1"))
+    db = _ScriptedDB(*_LIMIT_OK, _Result(scalar="c1"))
     store = KnowledgeStore(db_session_factory=db, embedding_dim=768)
     with patch("app.core.config.get_settings", return_value=Settings(embedding_dim=2048)):
         await store.create_collection_async(
@@ -43,7 +45,7 @@ async def test_known_embedder_dimension_wins_over_the_static_setting() -> None:
 
 
 async def test_embedder_dimension_can_be_bound_after_construction() -> None:
-    db = _ScriptedDB(_Result(scalar="c2"))
+    db = _ScriptedDB(*_LIMIT_OK, _Result(scalar="c2"))
     store = KnowledgeStore(db_session_factory=db)
     store.set_embedding_dim(1024)
     with patch("app.core.config.get_settings", return_value=Settings(embedding_dim=2048)):
@@ -54,7 +56,7 @@ async def test_embedder_dimension_can_be_bound_after_construction() -> None:
 
 
 async def test_unknown_embedder_dimension_falls_back_to_the_setting() -> None:
-    db = _ScriptedDB(_Result(scalar="c3"))
+    db = _ScriptedDB(*_LIMIT_OK, _Result(scalar="c3"))
     store = KnowledgeStore(db_session_factory=db)
     with patch("app.core.config.get_settings", return_value=Settings(embedding_dim=1536)):
         await store.create_collection_async(

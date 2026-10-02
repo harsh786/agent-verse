@@ -1082,6 +1082,31 @@ describe('KnowledgePage – Collections tab (error paths & inputs)', () => {
     await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true));
   });
 
+  test('a plan-limit 429 on create shows the plan-limit message (RATE-01)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/knowledge/collections') && method === 'POST')
+        return new Response(
+          JSON.stringify({ error: { code: 'PLAN_LIMIT_EXCEEDED', message: "Knowledge collection limit (1) reached for plan 'free'." } }),
+          { status: 429, headers: { 'Content-Type': 'application/json' } },
+        );
+      if (url.includes('/knowledge/collections'))
+        return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    await screen.findByTestId('collections-grid');
+    await userEvent.click(screen.getByRole('button', { name: /new collection/i }));
+    await userEvent.type(screen.getByPlaceholderText(/my-knowledge-base/i), 'Second');
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    const expected =
+      "Plan limit reached: Knowledge collection limit (1) reached for plan 'free'. Upgrade your plan or delete a collection.";
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error' && t.message === expected)).toBe(true),
+    );
+  });
+
   test('cancels the delete-collection confirmation without deleting', async () => {
     const spy = mockFetch();
     renderPage();

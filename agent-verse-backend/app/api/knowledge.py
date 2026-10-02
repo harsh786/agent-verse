@@ -83,6 +83,7 @@ from app.rag.store import (
 )
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
+from app.tenancy.limits import PlanLimitExceededError
 from app.tenancy.rbac import require_role
 
 if TYPE_CHECKING:
@@ -641,6 +642,8 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
     )
     try:
         cid = await store.create_collection_async(collection, tenant_ctx=tenant_ctx)
+    except PlanLimitExceededError:
+        raise  # 429 via the PlatformError handler (RATE-01), not "unavailable"
     except EmbeddingDimensionError as exc:
         # The active embedder's width has no chunk table: a clear client-facing
         # configuration error, not "persistence unavailable".

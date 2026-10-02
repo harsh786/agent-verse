@@ -265,7 +265,12 @@ class KnowledgeStore:
         """Create a collection in the explicit in-memory development store."""
         if self._db is not None:
             raise RuntimeError("Use create_collection_async for a persisted KnowledgeStore")
+        from app.tenancy.limits import check_knowledge_collection_limit
+
         key = (tenant_ctx.tenant_id, collection.collection_id)
+        if key not in self._data:  # RATE-01: the plan's collection limit
+            current = sum(1 for tid, _ in self._data if tid == tenant_ctx.tenant_id)
+            check_knowledge_collection_limit(tenant_ctx, current)
         self._data[key] = _CollectionStore(collection=collection)
         return collection.collection_id
 
@@ -285,19 +290,24 @@ class KnowledgeStore:
         if self._db is None:
             return self.create_collection(collection, tenant_ctx=tenant_ctx)
         # Persist to DB first (fail-closed). Only expose in-memory after success.
-        await self._db_create_collection(collection, tenant_ctx.tenant_id)
+        await self._db_create_collection(collection, tenant_ctx)
         self._data[(tenant_ctx.tenant_id, collection.collection_id)] = _CollectionStore(
             collection=collection
         )
         return collection.collection_id
 
-    async def _db_create_collection(self, collection: KnowledgeCollection, tenant_id: str) -> None:
+    async def _db_create_collection(
+        self, collection: KnowledgeCollection, tenant_ctx: TenantContext
+    ) -> None:
         if self._db is None:
             return
         from sqlalchemy import text
 
         from app.core.config import get_settings
         from app.db.rls import sqlalchemy_rls_context
+        from app.tenancy.limits import check_knowledge_collection_limit
+
+        tenant_id = tenant_ctx.tenant_id
 
         # Size the collection to the ACTIVE embedder's real output width when it
         # is known (e.g. all-mpnet-base-v2 → 768 even with EMBEDDING_DIM=2048);
@@ -317,6 +327,20 @@ class KnowledgeStore:
             session.begin(),
             sqlalchemy_rls_context(session, tenant_id),
         ):
+            # RATE-01: the plan's collection limit, counted and enforced in the
+            # INSERT's transaction under a per-tenant advisory lock, so
+            # concurrent creates on any replica serialise and cannot overshoot.
+            await session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"knowledge_collections:{tenant_id}"},
+            )
+            current = (
+                await session.execute(
+                    text("SELECT count(*) FROM knowledge_collections WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+            ).scalar_one()
+            check_knowledge_collection_limit(tenant_ctx, int(current))
             created_id = (
                 await session.execute(
                     text(

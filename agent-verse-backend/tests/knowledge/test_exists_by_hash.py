@@ -26,7 +26,7 @@ from app.tenancy.context import PlanTier, TenantContext
 
 
 def _ctx(tenant_id: str) -> TenantContext:
-    return TenantContext(tenant_id=tenant_id, api_key_id="test", plan=PlanTier.FREE)
+    return TenantContext(tenant_id=tenant_id, api_key_id="test", plan=PlanTier.STARTER)
 
 
 def _store_with_collection(tenant_id: str, collection_id: str) -> KnowledgeStore:

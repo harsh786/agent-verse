@@ -160,7 +160,13 @@ function CollectionsTab() {
   const createMutation = useMutation({
     mutationFn: () => apiFetch('/knowledge/collections', { method: 'POST', body: JSON.stringify({ name: newName, embedder_type: newEmbedder }) }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['knowledge-collections'] }); setShowCreate(false); setNewName(''); toast({ kind: 'success', message: 'Collection created.' }); },
-    onError: (e) => toast({ kind: 'error', message: String(e) }),
+    onError: (e) => toast({
+      kind: 'error',
+      // A 429 here is the plan's collection limit (RATE-01), not a transient error.
+      message: e instanceof ApiError && e.status === 429
+        ? `Plan limit reached: ${e.message} Upgrade your plan or delete a collection.`
+        : e instanceof ApiError ? e.message : String(e),
+    }),
   });
   const deleteMutation = useMutation({
     mutationFn: (id: string) => apiFetch(`/knowledge/collections/${id}`, { method: 'DELETE' }),

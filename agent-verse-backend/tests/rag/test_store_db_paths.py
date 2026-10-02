@@ -148,7 +148,7 @@ class TestCreateCollectionAsync:
         assert store.get_collection("cid1", tenant_ctx=_CTX) is not None
 
     async def test_db_success_persists_then_caches(self):
-        db = _ScriptedDB(_Result(scalar="cid2"))
+        db = _ScriptedDB(_Result(), _Result(scalar=0), _Result(scalar="cid2"))  # lock, count, insert
         store = KnowledgeStore(db_session_factory=db)
         col = KnowledgeCollection(name="c2", collection_id="cid2")
         result = await store.create_collection_async(col, tenant_ctx=_CTX)
@@ -156,7 +156,7 @@ class TestCreateCollectionAsync:
         assert store.get_collection("cid2", tenant_ctx=_CTX) is not None
 
     async def test_db_inactive_tenant_raises_keyerror(self):
-        db = _ScriptedDB(_Result(scalar=None))
+        db = _ScriptedDB(_Result(), _Result(scalar=0), _Result(scalar=None))  # lock, count, insert
         store = KnowledgeStore(db_session_factory=db)
         col = KnowledgeCollection(name="c3", collection_id="cid3")
         with pytest.raises(KeyError):
@@ -342,7 +342,7 @@ class TestIngestionJobLifecycle:
         assert len(job_id) == 32
 
     async def test_create_missing_collection_raises(self):
-        db = _ScriptedDB(_Result(scalar=None))
+        db = _ScriptedDB(_Result(), _Result(scalar=0), _Result(scalar=None))  # lock, count, insert
         store = KnowledgeStore(db_session_factory=db)
         with pytest.raises(KeyError):
             await store.create_ingestion_job_async(
