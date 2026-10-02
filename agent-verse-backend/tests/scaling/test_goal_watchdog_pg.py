@@ -123,13 +123,15 @@ class _Recorder:
     def __init__(self) -> None:
         self.enqueued: list[str] = []
         self.released: list[str] = []
+        self.released_goals: list[str] = []  # the slot is a lease keyed by goal id
         self.published: list[tuple[str, str]] = []
 
     def enqueue(self, goal: dict[str, Any]) -> None:
         self.enqueued.append(goal["goal_id"])
 
-    async def release(self, tenant_id: str, ctx: dict[str, Any]) -> None:
+    async def release(self, tenant_id: str, goal_id: str, ctx: dict[str, Any]) -> None:
         self.released.append(tenant_id)
+        self.released_goals.append(goal_id)
 
     def publish(self, tenant_id: str, goal_id: str, event: dict[str, Any]) -> None:
         self.published.append((goal_id, str(event.get("type"))))
@@ -270,6 +272,7 @@ async def test_dead_runner_without_side_effects_is_requeued_once(
     row = await _row(db, gid)
     assert row["status"] == "failed" and "already requeued" in row["error"]
     assert rec.released == [tenant]
+    assert rec.released_goals == [gid]
 
 
 async def test_dead_runner_after_a_tool_ran_is_failed_not_rerun(
@@ -289,6 +292,7 @@ async def test_dead_runner_after_a_tool_ran_is_failed_not_rerun(
     assert events[-2:] == ["goal_runner_lost", "goal_failed"]
     assert (gid, "goal_failed") in rec.published
     assert rec.released == [tenant]
+    assert rec.released_goals == [gid]
 
 
 async def test_live_and_finished_goals_are_left_alone(db: Any, redis_client: Any) -> None:

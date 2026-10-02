@@ -222,7 +222,8 @@ def release_dead_runner_lock(redis_client: Any, goal_id: str, runner_token: str 
 
 
 EnqueueFn = Callable[[dict[str, Any]], None]
-ReleaseSlotFn = Callable[[str, dict[str, Any]], Awaitable[None]]
+# (tenant_id, goal_id, execution_context): the slot is a lease keyed by goal id.
+ReleaseSlotFn = Callable[[str, str, dict[str, Any]], Awaitable[None]]
 PublishFn = Callable[[str, str, dict[str, Any]], None]
 
 
@@ -326,7 +327,7 @@ async def reap_stale_goal_runners(
         if await _fail(db_factory, goal, reason, publish, stale):
             failed.append(goal["goal_id"])
             with contextlib.suppress(Exception):
-                await release_slot(goal["tenant_id"], goal["execution_context"])
+                await release_slot(goal["tenant_id"], goal["goal_id"], goal["execution_context"])
     if requeued or failed:
         _log.warning("stale_goal_runners_reaped", requeued=requeued, failed=failed)
     return {"requeued": requeued, "failed": failed, "stale_after_s": stale}

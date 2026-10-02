@@ -6360,11 +6360,13 @@ async def _reap_stale_goal_runners() -> dict[str, Any]:
             **_subgoal_queue_kwargs(goal["execution_context"]),
         )
 
-    async def _release_slot(tenant_id: str, execution_context: dict[str, Any]) -> None:
+    async def _release_slot(
+        tenant_id: str, goal_id: str, execution_context: dict[str, Any]
+    ) -> None:
         from app.services.goal_service import _holds_concurrency_slot
 
         if _holds_concurrency_slot(execution_context):
-            await _decrement_after_completion(tenant_id, REDIS_URL)
+            await _decrement_after_completion(tenant_id, REDIS_URL, goal_id)
 
     def _publish(tenant_id: str, goal_id: str, event: dict[str, Any]) -> None:
         import json as _json
