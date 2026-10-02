@@ -339,6 +339,39 @@ class ExecutorMixin:
         except Exception:
             pass
 
+    async def _record_rpa_failure(
+        self,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        *,
+        tool_name: str,
+        url: str,
+        error: str,
+    ) -> None:
+        """MEM-37: write an RPA failure to execution memory, awaited (one INSERT).
+
+        It was a fire-and-forget task, so a lost write never reached the goal.
+        A lost write (False or an error) marks ``execution_memory_write`` in
+        ``memory_degraded``, as the success path does.
+        """
+        exec_memory = getattr(self, "_exec_memory", None)
+        db = getattr(self, "_db_session_factory", None)
+        if exec_memory is None or db is None:
+            return
+        exc: BaseException | None = None
+        try:
+            ok = await exec_memory.record_failure_async(
+                goal=state.goal,
+                error=f"RPA {tool_name} failed on {url}: {error}",
+                tenant_id=tenant_ctx.tenant_id,
+                db=db,
+                goal_id=str(state.goal_id or ""),
+            )
+        except Exception as caught:
+            ok, exc = False, caught
+        if ok is False:
+            await self._memory_degraded(state, "execution_memory_write", exc)  # type: ignore[attr-defined]
+
     async def _record_tool_reliability(
         self,
         tenant_ctx: TenantContext,
@@ -2598,24 +2631,13 @@ class ExecutorMixin:
                                         else ""
                                     )
                                     # Record failure in ExecutionMemory for recall
-                                    if (
-                                        self._exec_memory is not None
-                                        and self._db_session_factory is not None
-                                    ):
-                                        _fail_task = asyncio.create_task(
-                                            self._exec_memory.record_failure_async(
-                                                goal=state.goal,
-                                                error=(
-                                                    f"RPA {rpa_tool_name} failed on "
-                                                    f"{_rpa_url_fail}: "
-                                                    f"{rpa_result.error or 'unknown'}"
-                                                ),
-                                                tenant_id=tenant_ctx.tenant_id,
-                                                db=self._db_session_factory,
-                                            )
-                                        )
-                                        self._background_tasks.add(_fail_task)
-                                        _fail_task.add_done_callback(self._background_tasks.discard)
+                                    await self._record_rpa_failure(
+                                        state,
+                                        tenant_ctx,
+                                        tool_name=rpa_tool_name,
+                                        url=str(_rpa_url_fail),
+                                        error=rpa_result.error or "unknown",
+                                    )
                                     # Generate RPA-specific suggestions
                                     if self._self_optimizer is not None:
                                         self._self_optimizer.analyze_rpa_failure(
