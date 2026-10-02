@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
 
 class ExecuteCodeRequest(BaseModel):
-    code: str
-    language: str = "python"  # python | javascript | bash
+    # Bounded like POST /chat/sessions/{id}/execute: an unbounded body was parsed
+    # whole in API memory and then streamed to the container.
+    code: str = Field(..., min_length=1, max_length=50_000)
+    language: Literal["python", "javascript", "bash"] = "python"
     timeout: int = 30
 
 

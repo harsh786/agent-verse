@@ -202,6 +202,29 @@ def test_api_answers_429_when_the_cap_is_full(monkeypatch: pytest.MonkeyPatch) -
     assert "concurrent" in resp.json()["detail"]
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"code": "x" * 50_001},  # CODE-05: same 50k cap as chat execute
+        {"code": ""},
+        {"code": "print(1)", "language": "ruby"},
+    ],
+)
+def test_execute_code_request_is_bounded(body: dict[str, Any]) -> None:
+    from app.api.tools import router
+
+    ctx = TenantContext(tenant_id="t", plan=PlanTier.FREE, api_key_id="k")
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _inject(request: Any, call_next: Any) -> Any:
+        request.state.tenant = ctx
+        return await call_next(request)
+
+    app.include_router(router)
+    assert TestClient(app).post("/tools/execute-code", json=body).status_code == 422
+
+
 def test_sandbox_runs_on_a_dedicated_bounded_pool(caps: None) -> None:
     import app.tools.code_interpreter as ci
 
