@@ -64,7 +64,9 @@ async def test_ambiguous_spend_is_logged_not_charged_to_a_guess() -> None:
     state = AgentState(goal="g", goal_id="goal-1", tenant_ctx=CTX)
     await ex._charge_grant_spend(state, CTX, 4.0)  # type: ignore[attr-defined]
     assert (await store.get("t1", "g-a")).spent_usd == 0.0
-    ex._logger.warning.assert_called()  # type: ignore[attr-defined]
+    assert (await store.get("t1", "g-b")).spent_usd == 0.0
+    # GRANT-03: held for the grant the tool gate names, not dropped.
+    assert state.context["_pending_grant_spend"] == 4.0
 
 
 @pytest.mark.asyncio

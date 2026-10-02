@@ -472,12 +472,28 @@ class ExecutorMixin:
                     tenant_ctx.tenant_id, target.grant_id, cost_usd
                 )
             elif capped:
-                self._logger.warning(
-                    "grant_spend_unattributed", capped_grants=len(capped), cost_usd=cost_usd
+                # Several capped grants and the tool gate has not yet decided which
+                # one authorises this goal (the step-start charge runs before the
+                # gate): hold the spend and charge it to the authorising grant as
+                # soon as the gate names it (GRANT-03) — never to a guess, never lost.
+                state.context["_pending_grant_spend"] = (
+                    float(state.context.get("_pending_grant_spend", 0.0) or 0.0) + cost_usd
+                )
+                self._logger.info(
+                    "grant_spend_deferred", capped_grants=len(capped), cost_usd=cost_usd
                 )
         except Exception as exc:
             # Never silent: an unrecorded spend means the cap cannot bind.
             self._logger.warning("grant_spend_record_failed", error=str(exc)[:200])
+
+    async def _set_authorizing_grant(
+        self, state: AgentState, tenant_ctx: TenantContext, grant_id: str
+    ) -> None:
+        """Record the grant the tool gate matched and charge any deferred spend to it."""
+        state.context["_authorizing_grant_id"] = grant_id
+        pending = float(state.context.pop("_pending_grant_spend", 0.0) or 0.0)
+        if pending > 0.0 and self._grant_store is not None:
+            await self._charge_grant_spend(state, tenant_ctx, pending)
 
     async def _delegate_grants_to_child(
         self, state: Any, tenant_ctx: Any, child_agent_id: str
@@ -2463,7 +2479,9 @@ class ExecutorMixin:
                     if not _grant_decision.allowed:
                         _grant_denial = _grant_decision
                     elif _grant_decision.grant_id:
-                        state.context["_authorizing_grant_id"] = _grant_decision.grant_id
+                        await self._set_authorizing_grant(
+                            state, tenant_ctx, _grant_decision.grant_id
+                        )
                 if _pol_denial is not None:
                     _taint_step_cache()
                     await self._emit(
@@ -3640,7 +3658,7 @@ class ExecutorMixin:
                     f"({grant.reason}). Do not call it again.",
                 )
             if grant.grant_id:
-                state.context["_authorizing_grant_id"] = grant.grant_id
+                await self._set_authorizing_grant(state, tenant_ctx, grant.grant_id)
             # Risk gate — same rules as the primary path (per-connector opt-in).
             risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
             eff = resolve_effective_tool_risk(
