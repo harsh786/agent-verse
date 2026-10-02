@@ -425,7 +425,7 @@ def _inject_cached_values(xlsx: bytes, sheet_xml: str, values: dict[str, float])
                 for cell, value in values.items():
                     xml = re.sub(
                         rf'(<c r="{cell}"[^>]*>)(<f>[^<]*</f>)(<v\s*/>|<v></v>)?',
-                        lambda m, v=value: f"{m.group(1)}{m.group(2)}<v>{v:g}</v>",
+                        lambda m, v=value: f"{m.group(1)}{m.group(2)}<v>{v}</v>",
                         xml,
                     )
                 raw = xml.encode()

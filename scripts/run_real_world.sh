@@ -5,15 +5,19 @@
 #   scripts/run_real_world.sh <report-dir>
 #
 # Credentials (never printed): AGENTVERSE_API_KEY, or AGENTVERSE_TENANT_FILE pointing
-# at a JSON file with an "api_key" field. Optional:
+# at a JSON file with an "api_key" field. Every optional RW_* variable is documented in
+# agent-verse-backend/tests/real_world/README.md; scenarios whose RW_* inputs are absent
+# are SKIPPED with the exact variables they need (never silently passed). Common ones:
 #   AGENTVERSE_BASE_URL (default http://localhost:8000)  BASE_URL (frontend, default :5173)
-#   RW_PYTEST_ARGS  extra pytest args (e.g. "-k hitl")   RW_SKIP_UI=1  skip Playwright
-#   RW_HITL_PERSIST=0 skip WF-HITL-RESTART               RW_RSS_URL (public feed)
-#   RW_SCHEDULE_MAX_WAIT  longest cron wait in s (default 960 = free plan's 900 s floor)
-#   RW_APPROVER_API_KEY   a 2nd key of the same tenant: runs the four-eyes publish approval
-#   RW_REDIS_URL (+ RW_REDIS_SEED_CONTAINER) / RW_MONGO_URI (+ RW_MONGO_DB, RW_MONGO_COLLECTION,
-#                RW_MONGO_FACT)  stack-reachable sources for real ingestion; without them the
-#                connectors are checked against the egress guard only
+#   RW_ONLY         pytest -k expression (e.g. "kb_ or wf_complex")
+#   RW_PYTEST_ARGS  extra pytest args                     RW_SKIP_UI=1  skip Playwright
+#   RW_FIXTURE_PUBLIC_URL  public URL (tunnel) of the local fixture server (RW_FIXTURE_PORT)
+#   RW_SECOND_TENANT_API_KEY / RW_ENTERPRISE_API_KEY / RW_APPROVER_API_KEY  extra tenants
+#   RW_REDIS_URL, RW_MONGO_URI, RW_S3_*  stack-reachable sources   RW_SCALE=1  5k-doc smoke
+#
+# Output: <report-dir>/real_world_report.{md,json} with per-scenario pass/fail, metrics
+# (hit@5, answer accuracy, latencies, throughput, cost) and failure details; a
+# per-scenario summary is printed at the end.
 set -uo pipefail
 
 OUT="${1:?usage: $0 <report-dir>}"
@@ -35,7 +39,8 @@ echo "== backend real-world scenarios"
   cd "$ROOT/agent-verse-backend" &&
   AGENTVERSE_REAL_WORLD=1 RW_RESULTS_FILE="$BACKEND_RESULTS" \
     uv run pytest tests/real_world --no-cov -p no:cacheprovider \
-      -W default -q --tb=short ${RW_PYTEST_ARGS:-} 2>&1 | tee "$OUT/backend_pytest.log"
+      -W default -q --tb=short -rs ${RW_ONLY:+-k "$RW_ONLY"} ${RW_PYTEST_ARGS:-} 2>&1 \
+      | tee "$OUT/backend_pytest.log"
 )
 BACKEND_RC=${PIPESTATUS[0]}
 
