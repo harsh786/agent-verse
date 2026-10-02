@@ -1843,4 +1843,5 @@ class PostgresWorkflowRunStore:
             "finished_at": _iso(row["completed_at"]),
             "duration_ms": float(row["duration_ms"]) if row["duration_ms"] is not None else None,
             "state_delta": _as_obj(row.get("state_delta")),
+            "attempt_number": row.get("attempt_number"),
         }

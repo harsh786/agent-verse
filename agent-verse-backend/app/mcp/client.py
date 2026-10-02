@@ -8,6 +8,8 @@ Follows the MCP (Model Context Protocol) spec:
 from __future__ import annotations
 
 import base64
+import contextlib
+import contextvars
 import inspect
 import json
 import logging
@@ -24,6 +26,35 @@ from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
 from app.providers.vault import is_connector_secret_ref, resolve_connector_secret_ref
 from app.tenancy.context import TenantContext
+
+# WF-14: an idempotency key for the tool call being made in this task (set by a
+# workflow tool step). Sent as an ``Idempotency-Key`` header and as MCP
+# ``_meta.idempotencyKey`` so a server can dedupe a replay after a worker crash.
+_IDEMPOTENCY_KEY: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mcp_idempotency_key", default=None
+)
+
+
+def current_idempotency_key() -> str | None:
+    return _IDEMPOTENCY_KEY.get()
+
+
+@contextlib.contextmanager
+def idempotency_scope(key: str | None) -> Any:
+    """Attach ``key`` to the MCP tool calls made inside the block."""
+    token = _IDEMPOTENCY_KEY.set(key)
+    try:
+        yield
+    finally:
+        _IDEMPOTENCY_KEY.reset(token)
+
+
+def _idempotency_request_parts() -> tuple[dict[str, str], dict[str, Any]]:
+    """(extra HTTP headers, extra tools/call params) for the current key."""
+    key = _IDEMPOTENCY_KEY.get()
+    if not key:
+        return {}, {}
+    return {"Idempotency-Key": key}, {"_meta": {"idempotencyKey": key}}
 
 # Structlog logger: the call sites pass structured kwargs (tool=, server=, …),
 # which the stdlib logging.getLogger() logger rejects with a TypeError at
@@ -1130,6 +1161,8 @@ class MCPClient:
         # 4. Normal MCP/HTTP dispatch
         headers = await self._build_auth_headers(cfg, tenant_ctx=tenant_ctx, server_id=server_id)
         headers["Content-Type"] = "application/json"
+        _idem_headers, _idem_params = _idempotency_request_parts()
+        headers.update(_idem_headers)
         using_jsonrpc = _is_mcp_endpoint(cfg.url)
         if using_jsonrpc:
             headers["Accept"] = "application/json, text/event-stream"
@@ -1139,7 +1172,7 @@ class MCPClient:
             if using_jsonrpc:
                 _call_req = _jsonrpc(
                     "tools/call",
-                    {"name": tool_name, "arguments": arguments},
+                    {"name": tool_name, "arguments": arguments, **_idem_params},
                 )
                 _call_req_id = _call_req["id"]
                 resp = await client.post(
@@ -1153,7 +1186,7 @@ class MCPClient:
                     )
                     _call_req = _jsonrpc(
                         "tools/call",
-                        {"name": tool_name, "arguments": arguments},
+                        {"name": tool_name, "arguments": arguments, **_idem_params},
                     )
                     _call_req_id = _call_req["id"]
                     resp = await client.post(

@@ -47,6 +47,14 @@ class HTTPStepNode:
         # SSRF check — raises SSRFBlockedError if unsafe
         _ssrf_guard.validate(url)
 
+        # WF-14: the same key on every execution of this step in this run, so a
+        # replay after a worker crash is recognisable by the receiver. A key the
+        # workflow author set explicitly wins.
+        if not any(str(h).lower() == "idempotency-key" for h in headers):
+            from app.workflow.idempotency import step_idempotency_key
+
+            headers["Idempotency-Key"] = step_idempotency_key(state, self.step.id)
+
         # Resolve auth header
         if auth.get("type") == "bearer" and auth.get("token"):
             headers["Authorization"] = f"Bearer {auth['token']}"

@@ -350,6 +350,7 @@ class WorkflowCompiler:
             # Checked at every step boundary against the persisted run status.
             _rid = state.get("run_id")
             _tid = state.get("tenant_id")
+            attempt_number = 1
             if run_store is not None and _rid and _tid and not state.get("is_test_run"):
                 # RESUME: a step already completed in a prior (paused) attempt of
                 # this run is not re-executed — return its persisted output so the
@@ -368,6 +369,19 @@ class WorkflowCompiler:
                         if _prior.get("output") is None:
                             return replay
                         return {**replay, "step_outputs": {step.id: _prior["output"]}}
+                    if _prior and _prior.get("status") == StepStatus.RUNNING.value:
+                        # WF-14: the step was in flight when its worker died (the
+                        # run's lease keeps a live worker from being swept). Run
+                        # it again as a NEW attempt; side-effecting steps reuse
+                        # their deterministic idempotency key, so the receiver
+                        # can recognise the repeat.
+                        attempt_number = int(_prior.get("attempt_number") or 1) + 1
+                        _log.warning(
+                            "workflow_step_inflight_replayed",
+                            run_id=_rid,
+                            step_id=step.id,
+                            attempt=attempt_number,
+                        )
                 # STOP / PAUSE: honor an operator control status set via the API.
                 # Raising halts the whole run (propagates out of ainvoke) so no
                 # further steps execute — the runner maps the signal to the
@@ -390,7 +404,9 @@ class WorkflowCompiler:
                 and not state.get("is_test_run")
             )
             if persist:
-                await self._record_step_start(run_store, state, step)
+                await self._record_step_start(
+                    run_store, state, step, attempt_number=attempt_number
+                )
 
             # DSL enforcement (2.W-7): retry with backoff, per-step deadline,
             # and on_failure routing on exhaustion.
@@ -470,7 +486,7 @@ class WorkflowCompiler:
         return payload
 
     async def _record_step_start(
-        self, run_store: Any, state: WorkflowState, step: Any
+        self, run_store: Any, state: WorkflowState, step: Any, *, attempt_number: int = 1
     ) -> None:
         resolved_input: dict[str, Any] | None = None
         try:
@@ -489,6 +505,7 @@ class WorkflowCompiler:
                 step_type=step.type,
                 step_name=getattr(step, "name", None) or None,
                 resolved_input=resolved_input,
+                **({"attempt_number": attempt_number} if attempt_number > 1 else {}),
             )
         except Exception as exc:  # persistence must never break execution
             _log.warning("step_start_persist_failed", step_id=step.id, error=str(exc))

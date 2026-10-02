@@ -41,6 +41,10 @@ class EmitEventStepNode:
         payload.setdefault("_source_run_id", state.get("run_id"))
         tenant_id = str(state.get("tenant_id") or "")
         payload.setdefault("_tenant_id", tenant_id)
+        # WF-14: subscribers dedupe a replay of this emit after a worker crash.
+        from app.workflow.idempotency import step_idempotency_key
+
+        payload.setdefault("_idempotency_key", step_idempotency_key(state, self.step.id))
         output: dict[str, Any] = {"channel": channel, "payload": payload}
 
         if state.get("is_test_run"):

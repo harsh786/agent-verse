@@ -68,12 +68,18 @@ class ToolStepNode:
                 )
             # The step's saved connector instance when set; a bare tool name
             # exposed by several connectors is refused as ambiguous.
-            result = await self.mcp_client.call_tool_by_name(
-                tool_name=self.step.tool or "",
-                arguments=resolved_input,
-                tenant_ctx=_tctx,
-                server_id=self.step.server_id or None,
-            )
+            from app.mcp.client import idempotency_scope
+            from app.workflow.idempotency import step_idempotency_key
+
+            # WF-14: the MCP call carries this step's deterministic key
+            # (Idempotency-Key header + _meta.idempotencyKey).
+            with idempotency_scope(step_idempotency_key(state, self.step.id)):
+                result = await self.mcp_client.call_tool_by_name(
+                    tool_name=self.step.tool or "",
+                    arguments=resolved_input,
+                    tenant_ctx=_tctx,
+                    server_id=self.step.server_id or None,
+                )
             if hasattr(result, "success"):  # ToolCallResult
                 # Raise on failure so the runner's on_failure handling (pause /
                 # skip / abort) applies — preserving the tool step's error contract.
