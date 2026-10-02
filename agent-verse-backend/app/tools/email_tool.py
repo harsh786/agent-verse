@@ -311,4 +311,20 @@ async def email_send(
         )
         return {"success": True, "to": recipients, "subject": subject}
     except Exception as exc:
-        return {"success": False, "error": str(exc)}
+        # The relay is the PLATFORM's: its host, port and auth failure text are
+        # logged here with a correlation id and never returned to the tenant.
+        import logging
+        import uuid
+
+        error_id = uuid.uuid4().hex[:12]
+        logging.getLogger(__name__).error(
+            "email_relay_send_failed error_id=%s tenant_id=%s error=%s",
+            error_id,
+            tenant_id,
+            exc,
+        )
+        return {
+            "success": False,
+            "error": f"email delivery failed (error id {error_id})",
+            "error_id": error_id,
+        }

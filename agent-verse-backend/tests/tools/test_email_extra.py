@@ -520,7 +520,9 @@ async def test_email_send_smtp_exception(monkeypatch):
     with patch("aiosmtplib.send", new_callable=AsyncMock, side_effect=OSError("connection refused")):
         result = await email_send(to="r@x.com", subject="Fail", body="Body")
     assert result["success"] is False
-    assert "connection refused" in result["error"]
+    # NATIVE-05: relay detail is logged with an error id, never returned.
+    assert "connection refused" not in result["error"]
+    assert result["error_id"] in result["error"]
 
 
 @pytest.mark.asyncio

@@ -311,8 +311,9 @@ async def send_email(
     if result.get("rejected"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("error"))
     if not result.get("success", True):
+        # email_send never puts relay detail in "error" (logged with error_id).
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=result.get("error", "Email send failed"),
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=result.get("error") or "email delivery failed",
         )
     return {**result, "quota_remaining": quota.remaining, "quota_limit": quota.limit}
