@@ -34,7 +34,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -2096,9 +2096,10 @@ def create_app(
                 # OAuthFlowManager: DB token persistence.
                 _oauth = getattr(app.state, "oauth_manager", None)
                 if _oauth is not None and hasattr(_oauth, "_db_session_factory"):
+                    # Tokens are read through on first use (aget_token). Loading
+                    # every tenant's decrypted tokens into each replica at boot
+                    # was an unbounded, cross-tenant memory copy (OAUTH-03).
                     _oauth._db_session_factory = db_factory
-                    with suppress(Exception):
-                        await _oauth.load_tokens_from_db()
 
                 # MCPClient: Redis circuit-breaker + oauth + tool cache.
                 _mcp = getattr(app.state, "mcp_client", None)

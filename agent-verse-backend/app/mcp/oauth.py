@@ -9,6 +9,7 @@ import hashlib
 import logging
 import secrets
 import time
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -85,6 +86,9 @@ _RELEASE_LOCK_LUA = (
 # How long a token read from the durable store is served from process memory
 # before it is re-read (another replica/worker may have refreshed or revoked it).
 _TOKEN_CACHE_TTL_SECONDS = 30.0
+# Upper bound of the per-process token cache and refresh-lock table (OAUTH-03):
+# with the durable store they are caches, never the full tenant set.
+_TOKEN_CACHE_MAX = 10_000
 
 _log = logging.getLogger(__name__)
 
@@ -101,7 +105,7 @@ class OAuthFlowManager:
         # short-lived read-through cache of the oauth_tokens table (the durable,
         # RLS-scoped, vault-encrypted source of truth shared by every API replica
         # and the Celery worker); without one (dev/tests) it is the store.
-        self._tokens: dict[tuple[str, str], OAuthToken] = {}
+        self._tokens: OrderedDict[tuple[str, str], OAuthToken] = OrderedDict()
         # (tenant_id, server_id) → monotonic time the cached token was read/written.
         self._token_cached_at: dict[tuple[str, str], float] = {}
         # Set externally to enable DB persistence
@@ -114,7 +118,7 @@ class OAuthFlowManager:
         # request with the now-superseded refresh_token would fail with
         # invalid_grant instead of just reusing the token the first request
         # already obtained.
-        self._refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._refresh_locks: OrderedDict[tuple[str, str], asyncio.Lock] = OrderedDict()
         # Shared store for pending PKCE flows (wired in the app lifespan). The
         # flows lived only in this process: on a multi-replica deployment the
         # provider's callback usually lands on another pod, which rejected it
@@ -393,7 +397,14 @@ class OAuthFlowManager:
 
     def _cache_token(self, key: tuple[str, str], token: OAuthToken) -> None:
         self._tokens[key] = token
+        self._tokens.move_to_end(key)
         self._token_cached_at[key] = time.monotonic()
+        # Bounded LRU when the durable store holds the truth (without a DB, in
+        # dev/tests, this dict IS the store and is left unbounded).
+        if self._db_session_factory is not None:
+            while len(self._tokens) > _TOKEN_CACHE_MAX:
+                old_key, _ = self._tokens.popitem(last=False)
+                self._token_cached_at.pop(old_key, None)
 
     def _drop_cached(self, key: tuple[str, str]) -> None:
         self._tokens.pop(key, None)
@@ -584,6 +595,16 @@ class OAuthFlowManager:
         if lock is None:
             lock = asyncio.Lock()
             self._refresh_locks[key] = lock
+            # Bounded: evict the oldest locks nobody holds (a held one stays, so
+            # its waiters keep serialising on the same object).
+            if len(self._refresh_locks) > _TOKEN_CACHE_MAX:
+                for old_key in list(self._refresh_locks):
+                    if len(self._refresh_locks) <= _TOKEN_CACHE_MAX:
+                        break
+                    if old_key != key and not self._refresh_locks[old_key].locked():
+                        del self._refresh_locks[old_key]
+        else:
+            self._refresh_locks.move_to_end(key)
         return lock
 
     @contextlib.asynccontextmanager
