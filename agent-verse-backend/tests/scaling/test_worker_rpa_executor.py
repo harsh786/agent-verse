@@ -60,6 +60,7 @@ def worker(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     class _Graph(real_graph_cls):  # type: ignore[misc, valid-type]
         async def run(self, **kwargs: Any) -> Any:
             seen["graphs"].append(self)
+            seen["initial_context"] = kwargs.get("initial_context") or {}
             # The planned step calls rpa_open_url; drive the real executor node.
             self._executor = FakeProvider(
                 responses=['{"tool": "rpa_open_url", "arguments": {"url": "https://example.com"}}']
@@ -103,6 +104,19 @@ def test_worker_goal_rpa_open_url_dispatches_to_the_rpa_executor(
     output = worker["outputs"][0]
     assert "Tool not found" not in output
     assert output == "Navigated to https://example.com"
+
+
+def test_worker_tool_context_offers_the_rpa_tools(worker: dict[str, Any]) -> None:
+    """RPA-01: queued goals plan with the same rpa_* ToolRefs as in-process goals."""
+    from app.rpa.tools import RPA_TOOLS
+    from app.scaling import tasks
+
+    tasks.run_goal.run("g-rpa-w0", T.tenant_id, "open example.com", "normal", False)
+    tool_context = worker["initial_context"].get("tool_context")
+    assert tool_context is not None, "the worker built no tool context"
+    rpa_refs = {t.name for t in tool_context.tools if t.server_id == "rpa"}
+    assert rpa_refs == {str(t["name"]) for t in RPA_TOOLS}
+    assert "rpa_open_url" in tool_context.to_prompt_block()
 
 
 def test_worker_closes_rpa_sessions_when_the_run_ends(worker: dict[str, Any]) -> None:

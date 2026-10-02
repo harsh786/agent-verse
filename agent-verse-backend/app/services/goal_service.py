@@ -2589,18 +2589,10 @@ class GoalService:
         self, agent_id: str | None, tenant_ctx: TenantContext, goal: str = ""
     ) -> ToolContext:
         # Always include built-in RPA tools so agents can use browser automation
-        from app.rpa.tools import RPA_TOOLS
+        # (same builder as the Celery worker's tool context).
+        from app.rpa.tools import rpa_tool_refs
 
-        tools: list[ToolRef] = [
-            ToolRef(
-                server_id="rpa",
-                server_name="rpa",
-                name=str(rpa_tool["name"]),
-                description=str(rpa_tool["description"]),
-                input_schema=dict(rpa_tool.get("input_schema", {})),
-            )
-            for rpa_tool in RPA_TOOLS
-        ]
+        tools: list[ToolRef] = rpa_tool_refs()
 
         if agent_id is None or self._app_state is None:
             return ToolContext(connectors=[], tools=tools)

@@ -188,6 +188,28 @@ RPA_TOOLS: tuple[dict[str, Any], ...] = (
 _RISK_BY_TOOL = {str(tool["name"]): str(tool["risk"]) for tool in RPA_TOOLS}
 
 
+def rpa_tool_refs() -> list[Any]:
+    """The built-in rpa_* tools as planner ToolRefs (server "rpa").
+
+    One builder for the in-process path (GoalService._build_tool_context) and the
+    Celery worker's tool context: queued goals used to plan with MCP connector
+    tools only, so they could never call rpa_* although the worker had an RPA
+    executor wired.
+    """
+    from app.agent.tool_context import ToolRef
+
+    return [
+        ToolRef(
+            server_id="rpa",
+            server_name="rpa",
+            name=str(tool["name"]),
+            description=str(tool["description"]),
+            input_schema=dict(tool.get("input_schema", {})),
+        )
+        for tool in RPA_TOOLS
+    ]
+
+
 def classify_rpa_tool_risk(tool_name: str) -> RPARisk:
     """Classify built-in RPA tools without changing global MCP risk behavior."""
 

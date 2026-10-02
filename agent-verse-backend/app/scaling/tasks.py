@@ -3081,7 +3081,11 @@ def run_goal(
             except Exception as _discover_exc:
                 logger.warning("worker_all_connector_discovery_failed: %s", _discover_exc)
 
-        tools: list[ToolRef] = []
+        # Built-in rpa_* tools, exactly as the in-process path offers them: the
+        # worker has an RPA executor, so queued goals must be able to plan them.
+        from app.rpa.tools import rpa_tool_refs
+
+        tools: list[ToolRef] = rpa_tool_refs()
         connectors: list[dict[str, Any]] = []
         for connector_id in worker_connector_ids:
             cfg = await registry.get(connector_id, tenant_ctx=tenant_ctx)
