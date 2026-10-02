@@ -324,10 +324,14 @@ class ProceduralMemoryStore:
         return skills
 
     def format_for_context(self, skills: list[Skill]) -> str:
-        """Format skills as a context block for planner prompt."""
-        if not skills:
-            return ""
-        lines = ["[Procedural memory — relevant skills for this goal type:]"]
-        for skill in skills:
-            lines.append(f"  • {skill.to_hint()}")
-        return "\n".join(lines)
+        """Format skills as a context block for planner prompt.
+
+        Framed as untrusted data; a skill carrying an injection payload is
+        dropped (MEM-68 read side).
+        """
+        from app.memory.prompt_framing import frame_memory_block
+
+        return frame_memory_block(
+            "Procedural memory — relevant skills for this goal type",
+            [f"  • {skill.to_hint()}" for skill in skills],
+        )

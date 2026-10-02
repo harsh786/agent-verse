@@ -328,18 +328,22 @@ class PlannerMixin:
             extra_parts.append(f"[Knowledge base context]\n{rag_knowledge}")
         # MEM-14: department memory (SOPs, decisions, lessons) pre-fetched by
         # AgentGraph.run for org-dispatched goals. Nothing read it before.
+        # MEM-68: every recalled memory block is framed as untrusted DATA and
+        # memories carrying an injection payload are dropped.
+        from app.memory.prompt_framing import UNTRUSTED_NOTE, frame_memory_block
+
         _dept_entries = agent_state.context.get("dept_memory")
         if isinstance(_dept_entries, list) and _dept_entries:
-            _dept_lines = [
-                f"- {str(e.get('content', ''))[:400]}"
-                for e in _dept_entries[:6]
-                if isinstance(e, dict) and e.get("content")
-            ]
-            if _dept_lines:
-                extra_parts.append(
-                    "[Department memory — SOPs, decisions and lessons for this department]\n"
-                    + "\n".join(_dept_lines)
-                )
+            _dept_block = frame_memory_block(
+                "Department memory — SOPs, decisions and lessons for this department",
+                [
+                    f"- {str(e.get('content', ''))[:400]}"
+                    for e in _dept_entries[:6]
+                    if isinstance(e, dict) and e.get("content")
+                ],
+            )
+            if _dept_block:
+                extra_parts.append(_dept_block)
         tool_prompt = agent_state.context.get("tool_prompt")
         # Under grant enforcement, show the planner only the tools this agent may
         # actually call. It used to see the whole catalogue: a real model with the
@@ -499,7 +503,11 @@ class PlannerMixin:
                 _pending = await _prospective.list_active(tenant_ctx.tenant_id, now=_now)
                 _pi_block = pending_intentions_block(_pending, _now)
                 if _pi_block:
-                    extra_parts.append(f"[Pending intentions]\n{_pi_block}")
+                    _pi_framed = frame_memory_block(
+                        "Pending intentions", _pi_block.split("\n")
+                    )
+                    if _pi_framed:
+                        extra_parts.append(_pi_framed)
         except Exception as _blk_exc:
             self._planner_block_failed("prospective_recall", _blk_exc)
 
@@ -515,6 +523,12 @@ class PlannerMixin:
                     top_k=5,
                     token_budget=800,
                     agent_id=getattr(self, "_agent_id", None) or None,
+                )
+                from app.memory.prompt_framing import memory_text_is_safe
+
+                # A poisoned lesson is neither shown nor credited for the outcome.
+                _reflexion_records = tuple(
+                    r for r in _reflexion_records if memory_text_is_safe(r.safe_summary)
                 )
                 if _reflexion_records:
                     # Remember which memories shaped this plan so the goal's
@@ -533,10 +547,11 @@ class PlannerMixin:
                         _reflexion_lines.append(
                             f"- [{_conf}/10000] {_summary} (evidence: {_refs})"
                         )
-                    extra_parts.append(
-                        "[Structured reflexion — evidence-backed lessons]\n"
-                        + "\n".join(_reflexion_lines)
+                    _rx_block = frame_memory_block(
+                        "Structured reflexion — evidence-backed lessons", _reflexion_lines
                     )
+                    if _rx_block:
+                        extra_parts.append(_rx_block)
         except Exception as _blk_exc:
             self._planner_block_failed("reflexion_recall", _blk_exc)
 
@@ -548,6 +563,13 @@ class PlannerMixin:
         extra_parts.extend(self._pattern_result_parts(agent_state))
 
         user_content = f"Goal: {agent_state.goal}"
+        # One data-not-instructions directive for every framed block (the
+        # context pipeline adds it to its own section; add it when only the
+        # memory blocks above are framed).
+        if any("[UNTRUSTED REFERENCE DATA]" in p for p in extra_parts) and not any(
+            UNTRUSTED_NOTE in p for p in extra_parts
+        ):
+            extra_parts.insert(0, UNTRUSTED_NOTE)
         if extra_parts:
             user_content += "\n\n" + "\n\n".join(extra_parts)
         # Use a PromptOptimizer variant when one exists for this tenant (Task 7).

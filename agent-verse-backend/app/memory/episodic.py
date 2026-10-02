@@ -426,11 +426,14 @@ class EpisodicMemoryStore:
         return _rank(episodes, goal, query_vec, limit)
 
     def format_for_context(self, episodes: list[Episode]) -> str:
-        """Format episodes as a context block for planner prompt."""
-        if not episodes:
-            return ""
-        lines = ["[Episodic memory — similar past experiences:]"]
-        for ep in episodes:
-            lines.append(ep.to_context_snippet())
-            lines.append("")
-        return "\n".join(lines).strip()
+        """Format episodes as a context block for planner prompt.
+
+        Framed as untrusted data; an episode carrying an injection payload is
+        dropped (MEM-68 read side).
+        """
+        from app.memory.prompt_framing import frame_memory_block
+
+        return frame_memory_block(
+            "Episodic memory — similar past experiences",
+            [ep.to_context_snippet() + "\n" for ep in episodes],
+        )

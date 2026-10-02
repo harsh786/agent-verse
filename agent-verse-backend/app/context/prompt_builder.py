@@ -30,7 +30,25 @@ _UNTRUSTED_NOTE = (
 )
 
 
-def _frame_untrusted(label: str, content: str) -> str:
+UNTRUSTED_NOTE = _UNTRUSTED_NOTE
+# Single angle quotation marks (U+2039 / U+203A): read like the delimiters but
+# can never form one.
+_DEFANGED_OPEN = chr(0x2039) * 3
+_DEFANGED_CLOSE = chr(0x203A) * 3
+
+
+def neutralize_delimiters(content: str) -> str:
+    """Defang the framing delimiters inside untrusted text.
+
+    A stored memory or retrieved chunk containing ``<<<END ...>>>`` could close
+    its own block early and smuggle the rest of its text out as if it were
+    trusted prompt. The angle triples are replaced with look-alike guillemets so
+    the text reads the same but can never form a delimiter.
+    """
+    return content.replace("<<<", _DEFANGED_OPEN).replace(">>>", _DEFANGED_CLOSE)
+
+
+def frame_untrusted(label: str, content: str) -> str:
     """Wrap retrieved ``content`` as clearly-delimited untrusted reference data.
 
     The human-readable ``label`` (e.g. ``"Web context"``) is preserved as a
@@ -38,8 +56,11 @@ def _frame_untrusted(label: str, content: str) -> str:
     """
     return (
         f"{label} [UNTRUSTED REFERENCE DATA]:\n"
-        f"<<<BEGIN {label}>>>\n{content}\n<<<END {label}>>>"
+        f"<<<BEGIN {label}>>>\n{neutralize_delimiters(content)}\n<<<END {label}>>>"
     )
+
+
+_frame_untrusted = frame_untrusted
 
 
 def _field_or_self(item: Any, key: str) -> str:
