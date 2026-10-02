@@ -10,8 +10,15 @@ HANDOFF_TRANSITIONS: dict[HandoffState, frozenset[HandoffState]] = {
     HandoffState.ACCEPTED: frozenset(
         {HandoffState.EXECUTING, HandoffState.CANCELLED, HandoffState.EXPIRED}
     ),
+    # A target that crashed mid-work never reports: past the deadline the sweeper
+    # expires the handoff so the parent session resumes (ORG-38).
     HandoffState.EXECUTING: frozenset(
-        {HandoffState.COMPLETED, HandoffState.FAILED, HandoffState.CANCELLED}
+        {
+            HandoffState.COMPLETED,
+            HandoffState.FAILED,
+            HandoffState.CANCELLED,
+            HandoffState.EXPIRED,
+        }
     ),
     HandoffState.REJECTED: frozenset(),
     HandoffState.EXPIRED: frozenset(),

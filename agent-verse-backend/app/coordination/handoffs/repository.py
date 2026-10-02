@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
+import sqlalchemy as sa
 from sqlalchemy import insert, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -86,6 +87,34 @@ class InMemoryHandoffRepository:
             self._commands[command_key] = event
             return updated, event, False
 
+    async def list_overdue_delegated(
+        self, *, now: datetime, limit: int, after: tuple[datetime, str] | None = None
+    ) -> list[HandoffRecord]:
+        rows = sorted(
+            (
+                r
+                for r in self._records.values()
+                if r.state in _DELEGATED
+                and r.deadline < now
+                and (after is None or (r.deadline, r.handoff_id) > after)
+            ),
+            key=lambda r: (r.deadline, r.handoff_id),
+        )
+        return rows[:limit]
+
+    async def list_released_awaiting_resume(
+        self, *, since: datetime, limit: int
+    ) -> list[HandoffRecord]:
+        # The in-memory path has no session table to join; the sweeper's expire
+        # phase (which resumes inline) is what it exercises.
+        return []
+
+
+_DELEGATED = frozenset({HandoffState.ACCEPTED, HandoffState.EXECUTING})
+_RELEASED = frozenset(
+    {HandoffState.COMPLETED, HandoffState.FAILED, HandoffState.CANCELLED, HandoffState.EXPIRED}
+)
+
 
 class HandoffRepository(Protocol):
     async def create(self, record: HandoffRecord) -> tuple[HandoffRecord, bool]: ...
@@ -102,6 +131,14 @@ class HandoffRepository(Protocol):
         idempotency_key: str,
         result_reference: str | None = None,
     ) -> tuple[HandoffRecord, HandoffTransition, bool]: ...
+
+    async def list_overdue_delegated(
+        self, *, now: datetime, limit: int, after: tuple[datetime, str] | None = None
+    ) -> list[HandoffRecord]: ...
+
+    async def list_released_awaiting_resume(
+        self, *, since: datetime, limit: int
+    ) -> list[HandoffRecord]: ...
 
 
 def _record_from_row(row: Any) -> HandoffRecord:
@@ -133,8 +170,15 @@ def _record_from_row(row: Any) -> HandoffRecord:
 class PostgresHandoffRepository:
     """RLS-scoped handoff state, event, and outbox writes in one transaction."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        system_session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ) -> None:
         self._sessions = session_factory
+        # Cross-tenant sweeps (ORG-38) run on the BYPASSRLS maintenance factory.
+        self._system_sessions = system_session_factory
 
     @staticmethod
     async def _allocate_event(
@@ -403,6 +447,79 @@ class PostgresHandoffRepository:
                 occurred_at=now,
             )
             return updated, event, False
+
+    def _require_system(self) -> async_sessionmaker[AsyncSession]:
+        if self._system_sessions is None:
+            raise RuntimeError("handoff sweeps need the maintenance session factory")
+        return self._system_sessions
+
+    async def list_overdue_delegated(
+        self, *, now: datetime, limit: int, after: tuple[datetime, str] | None = None
+    ) -> list[HandoffRecord]:
+        """Accepted/executing handoffs past their deadline, every tenant, keyset-paged
+        on (deadline, id) over ``ix_handoffs_delegated_deadline``."""
+        from app.db.rls import system_session
+
+        handoffs = COORDINATION_TABLES["handoffs"]
+        query = (
+            select(handoffs)
+            .where(
+                handoffs.c.state.in_([s.value for s in _DELEGATED]),
+                handoffs.c.deadline < now,
+            )
+            .order_by(handoffs.c.deadline, handoffs.c.id)
+            .limit(limit)
+        )
+        if after is not None:
+            query = query.where(
+                sa.tuple_(handoffs.c.deadline, handoffs.c.id)
+                > sa.tuple_(sa.literal(after[0]), sa.literal(after[1]))
+            )
+        async with self._require_system()() as db, db.begin(), system_session(db):
+            rows = (await db.execute(query)).mappings().all()
+        return [_record_from_row(r) for r in rows]
+
+    async def list_released_awaiting_resume(
+        self, *, since: datetime, limit: int
+    ) -> list[HandoffRecord]:
+        """Handoffs that ended (released their parent) while the parent session is
+        still paused from the handoff -- a resume that failed after the committed
+        transition. ``s.updated_at <= h.updated_at`` skips a session someone paused
+        again after the handoff ended; a session with another delegated handoff is
+        legitimately still waiting."""
+        from app.db.rls import system_session
+
+        async with self._require_system()() as db, db.begin(), system_session(db):
+            ids = (
+                (
+                    await db.execute(
+                        sa.text(
+                            "SELECT h.id FROM handoffs h "
+                            "JOIN coordination_sessions s "
+                            "  ON s.id = h.session_id AND s.tenant_id = h.tenant_id "
+                            "WHERE h.state IN ('completed', 'failed', 'cancelled', 'expired') "
+                            "  AND h.updated_at >= :since "
+                            "  AND s.state = 'paused' AND s.updated_at <= h.updated_at "
+                            "  AND NOT EXISTS (SELECT 1 FROM handoffs o "
+                            "    WHERE o.tenant_id = h.tenant_id AND o.session_id = h.session_id "
+                            "      AND o.state IN ('accepted', 'executing')) "
+                            "ORDER BY h.updated_at, h.id LIMIT :lim"
+                        ),
+                        {"since": since, "lim": limit},
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not ids:
+                return []
+            handoffs = COORDINATION_TABLES["handoffs"]
+            rows = (
+                (await db.execute(select(handoffs).where(handoffs.c.id.in_(list(ids)))))
+                .mappings()
+                .all()
+            )
+        return [_record_from_row(r) for r in rows]
 
 
 __all__ = [

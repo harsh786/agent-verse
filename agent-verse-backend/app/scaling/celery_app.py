@@ -244,6 +244,13 @@ celery_app.conf.update(
             "schedule": 5.0,
             "options": {"queue": "maintenance"},
         },
+        # ORG-38: expire handoffs whose target crashed (past deadline) and re-run
+        # parent resumes that failed after the committed transition.
+        "sweep-coordination-handoffs": {
+            "task": "agentverse.coordination.sweep_handoffs",
+            "schedule": 60.0,
+            "options": {"queue": "maintenance"},
+        },
         "purge-expired-strategy-evidence": {
             "task": "agentverse.maintenance.purge_expired_strategy_evidence",
             # Hourly: one row per strategy per finished goal must be purged at

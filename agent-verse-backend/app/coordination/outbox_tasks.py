@@ -55,4 +55,68 @@ def dispatch_coordination_outbox() -> dict[str, Any]:
     return result
 
 
-__all__ = ["dispatch_coordination_outbox", "dispatch_coordination_outbox_once"]
+async def sweep_handoffs_once(redis_client: Any = None) -> dict[str, int]:
+    """Expire overdue handoffs and re-run failed parent resumes (ORG-38)."""
+    from app.coordination.handoffs.membership import DatabaseHandoffMembership
+    from app.coordination.handoffs.repository import PostgresHandoffRepository
+    from app.coordination.handoffs.resumption import HandoffParentResumer
+    from app.coordination.handoffs.service import HandoffService
+    from app.coordination.live_bus import CoordinationLiveBus
+    from app.coordination.service import CoordinationService
+    from app.coordination.store import CoordinationStore
+    from app.coordination.transcript.repository import PostgresTranscriptRepository
+    from app.coordination.transcript.service import TranscriptService
+    from app.db.session import get_session_factory, get_system_session_factory
+
+    sessions = get_session_factory()
+    coordination = CoordinationService(CoordinationStore(sessions))
+    transcript = TranscriptService(PostgresTranscriptRepository(sessions))
+    bus = CoordinationLiveBus(lambda: redis_client)
+    resumer = HandoffParentResumer(
+        coordination_service=lambda: coordination,
+        transcript_service=lambda: transcript,
+        live_bus=lambda: bus,
+    )
+    service = HandoffService(
+        PostgresHandoffRepository(sessions, system_session_factory=get_system_session_factory()),
+        membership=DatabaseHandoffMembership(lambda: sessions),
+        emit_event=resumer.emit_event,
+        pause_parent=resumer.pause_parent,
+        resume_parent=resumer.resume_parent,
+    )
+    return await service.sweep()
+
+
+@celery_app.task(name="agentverse.coordination.sweep_handoffs")  # type: ignore[untyped-decorator]
+def sweep_handoffs() -> dict[str, int]:
+    """Beat: a crashed handoff target must not leave its parent paused forever.
+
+    Failures raise so Celery records them (the next tick retries; every step is
+    idempotent per handoff)."""
+    import asyncio
+
+    import redis.asyncio as aioredis
+
+    from app.core.config import get_settings
+
+    async def _run() -> dict[str, int]:
+        redis_url = (get_settings().redis_url or "").strip()
+        client = aioredis.from_url(redis_url) if redis_url else None
+        try:
+            return await sweep_handoffs_once(client)
+        finally:
+            if client is not None:
+                await client.aclose()
+
+    result = asyncio.run(_run())
+    if result.get("expired") or result.get("resumed") or result.get("errors"):
+        _log.info("coordination_handoffs_swept", **result)
+    return result
+
+
+__all__ = [
+    "dispatch_coordination_outbox",
+    "dispatch_coordination_outbox_once",
+    "sweep_handoffs",
+    "sweep_handoffs_once",
+]

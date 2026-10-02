@@ -8,12 +8,17 @@ import hmac
 import inspect
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
+
+import structlog
 
 from app.coordination.contracts import Classification
 from app.coordination.handoffs.models import HandoffRecord, HandoffState
 from app.coordination.handoffs.repository import HandoffRepository
+from app.coordination.store import OptimisticConflictError
+
+_log = structlog.get_logger(__name__)
 
 
 class HandoffMembership(Protocol):
@@ -186,6 +191,68 @@ class HandoffService:
         return await self._transition(
             record, target, expected_version, idempotency_key, result_reference
         )
+
+    async def sweep(
+        self,
+        *,
+        batch_size: int = 200,
+        max_batches: int = 50,
+        resume_window: timedelta = timedelta(days=7),
+    ) -> dict[str, int]:
+        """Expire overdue delegated handoffs and re-run failed parent resumes (ORG-38).
+
+        A target that crashed never reports, and ``accept`` only expired lazily, so
+        the parent session stayed paused forever. Each overdue ACCEPTED/EXECUTING
+        handoff moves to EXPIRED (which resumes its parent). A handoff that already
+        ended but whose resume failed after the committed transition is resumed
+        again -- the resumer is idempotent per handoff. One record's failure is
+        counted and retried next sweep; it never stops the batch.
+        """
+        stats = {"expired": 0, "resumed": 0, "conflicts": 0, "errors": 0}
+        now = datetime.now(UTC)
+        after: tuple[datetime, str] | None = None
+        for _ in range(max_batches):
+            overdue = await self._repository.list_overdue_delegated(
+                now=now, limit=batch_size, after=after
+            )
+            for record in overdue:
+                try:
+                    await self._transition(
+                        record,
+                        HandoffState.EXPIRED,
+                        record.version,
+                        f"sweeper:expire:{record.handoff_id}",
+                    )
+                    stats["expired"] += 1
+                except OptimisticConflictError:
+                    stats["conflicts"] += 1  # the target reported meanwhile
+                except Exception as exc:
+                    stats["errors"] += 1
+                    _log.warning(
+                        "handoff_sweep_expire_failed",
+                        handoff_id=record.handoff_id,
+                        error=type(exc).__name__,
+                    )
+            if len(overdue) < batch_size:
+                break
+            after = (overdue[-1].deadline, overdue[-1].handoff_id)
+
+        released = await self._repository.list_released_awaiting_resume(
+            since=now - resume_window, limit=batch_size
+        )
+        for record in released:
+            try:
+                await self._invoke(self._resume, record)
+                self._resumed.add(record.handoff_id)
+                stats["resumed"] += 1
+            except Exception as exc:
+                stats["errors"] += 1
+                _log.warning(
+                    "handoff_sweep_resume_failed",
+                    handoff_id=record.handoff_id,
+                    error=type(exc).__name__,
+                )
+        return stats
 
     async def _required(self, tenant_id: str, handoff_id: str) -> HandoffRecord:
         record = await self._repository.get(tenant_id, handoff_id)
