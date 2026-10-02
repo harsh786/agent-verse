@@ -90,7 +90,8 @@ async def test_racing_a_decision_never_reverts_it(op: str) -> None:
         gw.decide(rid, "approve", "alice", tenant_id=_T), mutate(), return_exceptions=True
     )
     final = await store.get(rid, _T)
-    assert final.status == "decided" and final.action_taken == "approve", (final, results)
+    # "approve" leaves status "approved" (WF-APPROVAL-WORKFLOW-ID); never "pending".
+    assert final.status == "approved" and final.action_taken == "approve", (final, results)
     assert resumed == ["approve"]
     # A second decision is refused: the approval stayed decided.
     with pytest.raises(Exception, match=r"(?i)already decided"):
@@ -110,7 +111,7 @@ async def test_mutating_a_decided_approval_is_refused(op: str) -> None:
             await gw.escalate(rid, "alice", tenant_id=_T)
         else:
             await gw.add_comment(rid, "alice", "x", tenant_id=_T)
-    assert (await store.get(rid, _T)).status == "decided"
+    assert (await store.get(rid, _T)).status == "approved"
 
 
 @pytest.mark.asyncio
