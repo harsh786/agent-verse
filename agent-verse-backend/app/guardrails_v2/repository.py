@@ -107,6 +107,20 @@ class PostgresGuardrailRuleRepository:
             )
             await db.execute(stmt)
 
+    async def delete(self, tenant_id: str, rule_id: str) -> None:
+        from sqlalchemy import delete
+
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            await db.execute(
+                delete(GuardrailRuleRow).where(
+                    GuardrailRuleRow.rule_id == rule_id, GuardrailRuleRow.tenant_id == tenant_id
+                )
+            )
+
     async def load(self, tenant_id: str) -> list[GuardrailRule]:
         """Load ONE tenant's rules under that tenant's RLS context.
 

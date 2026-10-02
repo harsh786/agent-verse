@@ -92,9 +92,105 @@ async def create_rule(
         config=body.config,
         created_at=datetime.datetime.now(datetime.UTC).isoformat(),
     )
-    guardrails_engine.add_rule(rule)
+    # Persisted BEFORE answering "created" (GRD-02): it used to be a best-effort
+    # background flush, so a failed write still reported success.
+    try:
+        durable = await guardrails_engine.add_rule_durable(rule)
+    except Exception as exc:
+        raise HTTPException(503, "Guardrail rule could not be saved; nothing was created") from exc
 
-    return {"rule_id": rule.rule_id, "status": "created", "name": rule.name}
+    return {"rule_id": rule.rule_id, "status": "created", "name": rule.name, "durable": durable}
+
+
+class UpdateRuleRequest(BaseModel):
+    name: str | None = None
+    enabled: bool | None = None
+    action: str | None = None
+    severity: str | None = None
+    layers: list[str] | None = None
+    config: dict[str, Any] | None = None
+
+
+def _rule_view(r: GuardrailRule) -> dict[str, Any]:
+    return {
+        "rule_id": r.rule_id,
+        "name": r.name,
+        "rule_type": r.rule_type,
+        "layers": [layer_val.value for layer_val in r.layers],
+        "action": r.action.value,
+        "severity": r.severity,
+        "enabled": r.enabled,
+        "version": r.version,
+    }
+
+
+def _is_seeded(rule_id: str) -> bool:
+    # Baseline / compliance-bundle rules are re-seeded on every fresh process;
+    # deleting one would bring it back — disable it instead.
+    return rule_id.startswith(("gr-default:", "gr-bundle:"))
+
+
+@router.patch("/rules/{rule_id}")
+async def update_rule(
+    request: Request,
+    rule_id: str,
+    body: UpdateRuleRequest,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Update or disable/enable a rule (GRD-01). Persisted before it answers."""
+    tenant = _require_tenant(request)
+    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
+
+    changes: dict[str, Any] = {}
+    if body.name is not None:
+        changes["name"] = body.name
+    if body.enabled is not None:
+        changes["enabled"] = body.enabled
+    if body.severity is not None:
+        changes["severity"] = body.severity
+    if body.config is not None:
+        changes["config"] = body.config
+    try:
+        if body.action is not None:
+            changes["action"] = GuardrailAction(body.action)
+        if body.layers is not None:
+            changes["layers"] = [GuardrailLayer(v) for v in body.layers]
+    except ValueError as exc:
+        raise HTTPException(400, f"Invalid value: {exc}") from exc
+    if not changes:
+        raise HTTPException(400, "No changes supplied")
+    try:
+        updated = await guardrails_engine.update_rule_durable(tenant.tenant_id, rule_id, **changes)
+    except GuardrailRulesUnavailableError as exc:
+        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
+    except Exception as exc:
+        raise HTTPException(503, "Guardrail rule could not be saved; nothing changed") from exc
+    if updated is None:
+        raise HTTPException(404, "Rule not found")
+    return {"status": "updated", "rule": _rule_view(updated)}
+
+
+@router.delete("/rules/{rule_id}")
+async def delete_rule(
+    request: Request,
+    rule_id: str,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Delete a custom rule (GRD-01). Baseline/bundle rules can only be disabled."""
+    tenant = _require_tenant(request)
+    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
+
+    if _is_seeded(rule_id):
+        raise HTTPException(409, "Baseline and compliance-bundle rules can only be disabled")
+    try:
+        deleted = await guardrails_engine.delete_rule_durable(tenant.tenant_id, rule_id)
+    except GuardrailRulesUnavailableError as exc:
+        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
+    except Exception as exc:
+        raise HTTPException(503, "Guardrail rule could not be deleted; nothing changed") from exc
+    if not deleted:
+        raise HTTPException(404, "Rule not found")
+    return {"status": "deleted", "rule_id": rule_id}
 
 
 @router.get("/rules")
@@ -106,24 +202,11 @@ async def list_rules(request: Request) -> dict[str, Any]:
     # aget_rules loads this tenant's persisted rules on a fresh process (there is
     # no cross-tenant warm-up at startup any more).
     try:
-        rules = await guardrails_engine.aget_rules(tenant.tenant_id)
+        await guardrails_engine.ensure_tenant_loaded(tenant.tenant_id)
     except GuardrailRulesUnavailableError as exc:
         raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
-    return {
-        "rules": [
-            {
-                "rule_id": r.rule_id,
-                "name": r.name,
-                "rule_type": r.rule_type,
-                "layers": [layer_val.value for layer_val in r.layers],
-                "action": r.action.value,
-                "severity": r.severity,
-                "enabled": r.enabled,
-                "version": r.version,
-            }
-            for r in rules
-        ]
-    }
+    # Disabled rules are listed too, so they can be re-enabled.
+    return {"rules": [_rule_view(r) for r in guardrails_engine.all_rules(tenant.tenant_id)]}
 
 
 @router.post("/evaluate")

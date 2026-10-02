@@ -282,6 +282,67 @@ class GuardrailsEngine:
     def add_rule(self, rule: GuardrailRule) -> None:
         self._add(rule, seed=False)
 
+    def _put_in_memory(self, rule: GuardrailRule) -> None:
+        rules = self._rules.setdefault(rule.tenant_id, [])
+        for i, existing in enumerate(rules):
+            if existing.rule_id == rule.rule_id:
+                rules[i] = rule
+                return
+        rules.append(rule)
+
+    async def add_rule_durable(self, rule: GuardrailRule) -> bool:
+        """Persist *rule*, THEN make it live here; returns whether it is durable.
+
+        ``POST /rules`` used to answer "created" while persistence was a
+        best-effort background flush (GRD-02). With a repository bound a failed
+        write raises and nothing changes; without one (in-memory create_app /
+        unit tests) the rule lives in this process only and ``False`` says so.
+        """
+        if self._repo is None:
+            self._put_in_memory(rule)
+            return False
+        await self._repo.upsert(rule)
+        self._put_in_memory(rule)
+        return True
+
+    def all_rules(self, tenant_id: str) -> list[GuardrailRule]:
+        """Every in-memory rule of the tenant, disabled ones included."""
+        return list(self._rules.get(tenant_id, []))
+
+    def find_rule(self, tenant_id: str, rule_id: str) -> GuardrailRule | None:
+        return next((r for r in self._rules.get(tenant_id, []) if r.rule_id == rule_id), None)
+
+    async def update_rule_durable(
+        self, tenant_id: str, rule_id: str, **changes: Any
+    ) -> GuardrailRule | None:
+        """Apply *changes* to a rule (incl. ``enabled``), persist, bump its version.
+
+        Returns ``None`` when the tenant has no such rule. Raises when the write
+        fails (nothing changes then).
+        """
+        import dataclasses
+
+        await self.ensure_tenant_loaded(tenant_id)
+        current = self.find_rule(tenant_id, rule_id)
+        if current is None:
+            return None
+        updated = dataclasses.replace(current, **changes, version=current.version + 1)
+        if self._repo is not None:
+            await self._repo.upsert(updated)
+        self._put_in_memory(updated)
+        return updated
+
+    async def delete_rule_durable(self, tenant_id: str, rule_id: str) -> bool:
+        """Delete a tenant's rule (durably first). Returns False if it did not exist."""
+        await self.ensure_tenant_loaded(tenant_id)
+        if self.find_rule(tenant_id, rule_id) is None:
+            return False
+        if self._repo is not None:
+            await self._repo.delete(tenant_id, rule_id)
+        self._rules[tenant_id] = [r for r in self._rules.get(tenant_id, []) if r.rule_id != rule_id]
+        self._unsaved = [r for r in self._unsaved if r.rule_id != rule_id]
+        return True
+
     def _add(self, rule: GuardrailRule, *, seed: bool) -> None:
         self._rules.setdefault(rule.tenant_id, []).append(rule)
         if self._repo is not None:
@@ -365,6 +426,14 @@ class GuardrailsEngine:
                 existing[idx] = rule
         # A seed whose row already exists needs no insert.
         self._unsaved_seeds = [r for r in self._unsaved_seeds if r.rule_id not in persisted]
+        # A rule deleted on another replica disappears here too (Postgres is the
+        # source of truth) — except writes/seeds this process has not flushed yet.
+        not_yet_saved = pending_writes | {
+            r.rule_id for r in self._unsaved_seeds if r.tenant_id == tenant_id
+        }
+        self._rules[tenant_id] = [
+            r for r in existing if r.rule_id in persisted or r.rule_id in not_yet_saved
+        ]
         return loaded
 
     async def ensure_tenant_loaded(self, tenant_id: str) -> None:
