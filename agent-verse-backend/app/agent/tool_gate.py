@@ -6,7 +6,8 @@ checks, in the same order and with the same fail-closed semantics, that the
 AgentGraph executor applies to a tool call:
 
 1. Guardrails 2.0 ``TOOL_ARGS`` evaluation (errors fail closed on high-risk tools)
-2. Permission matrix (``DENY`` blocks)
+2. Permission matrix (``DENY`` blocks), then the agent's own ``agent_permissions`` rules
+   (DENY / APPROVAL / per-goal and daily limits — PERM-01)
 3. Policy engine (``DENY`` blocks, ``REQUIRE_APPROVAL`` forces HITL)
 4. Grantex grants (``enforce_tool_call``)
 5. Tool risk → destructive denied, ``write_high`` (and anything needing approval)
@@ -51,7 +52,15 @@ class GovernedToolGate:
         hitl_timeout: float | None = None,
         agent_id: str | None = None,
         guardrails: Any = "default",
+        db_session_factory: Any = None,
+        redis: Any = None,
     ) -> None:
+        # Per-agent ``agent_permissions`` rules (PERM-01): loaded from the DB and
+        # enforced like the AgentGraph executor's gate, incl. per-goal and daily
+        # limits (shared Redis counter).
+        self._db = db_session_factory
+        self._redis = redis
+        self._perm_calls: dict[tuple[str, str], int] = {}
         self._policy_engine = policy_engine
         self._permission_matrix = permission_matrix
         self._hitl = hitl_gateway
@@ -117,6 +126,13 @@ class GovernedToolGate:
             if level == ActionLevel.APPROVAL:
                 requires_approval = True
 
+        # 2b. Per-agent permission rules (agent_permissions).
+        perm = await self._agent_permission(tool_name, step_description, tenant_ctx, goal_id)
+        if perm == "approval":
+            requires_approval = True
+        elif perm is not None:
+            return GateDecision(False, perm)
+
         # 3. Policy engine.
         if self._policy_engine is not None:
             policy = self._policy_engine.evaluate(tool_name=tool_name, tenant_ctx=tenant_ctx)
@@ -168,6 +184,60 @@ class GovernedToolGate:
             if not ok:
                 return GateDecision(False, "budget_exceeded: goal/tenant cost budget exhausted")
         return GateDecision(True)
+
+    async def _agent_permission(
+        self, tool_name: str, step: str, tenant_ctx: Any, goal_id: str
+    ) -> str | None:
+        """``None`` to allow, ``"approval"`` to require HITL, else a denial reason.
+
+        Same semantics as the AgentGraph executor's per-agent gate: a load
+        failure fails closed for high-risk tools; DENY blocks; per-goal and daily
+        limits bind (the daily counter is the shared Redis one).
+        """
+        if not self._agent_id or self._db is None or tenant_ctx is None:
+            return None
+        from app.agent.nodes._helpers import _extract_scope_value
+        from app.governance.agent_permissions import (
+            AgentPermissionsUnavailableError,
+            DailyLimitUnavailableError,
+            load_agent_permissions,
+            reserve_daily_call,
+            resolve_level,
+        )
+
+        try:
+            rules = await load_agent_permissions(self._db, tenant_ctx.tenant_id, self._agent_id)
+        except AgentPermissionsUnavailableError:
+            if classify_tool_risk(tool_name) in ("write_high", "destructive"):
+                return "agent permissions unavailable; failing closed for a high-risk tool"
+            return None
+        if not rules:
+            return None
+        count_key = (goal_id, tool_name)
+        level, rule, reason = resolve_level(
+            rules,
+            tool_name,
+            scope_value=_extract_scope_value(step),
+            goal_call_count=self._perm_calls.get(count_key, 0),
+        )
+        if level is None:
+            return None
+        if level is ActionLevel.DENY:
+            return f"'{tool_name}' denied by agent permission ({reason})"
+        if level is ActionLevel.APPROVAL:
+            return "approval"
+        limit = getattr(rule, "daily_limit", None)
+        if limit:
+            try:
+                ok = await reserve_daily_call(
+                    self._redis, tenant_ctx.tenant_id, self._agent_id, tool_name, int(limit)
+                )
+            except DailyLimitUnavailableError:
+                return "agent permission daily limit could not be checked; failing closed"
+            if not ok:
+                return f"'{tool_name}' denied by agent permission (daily_limit {limit} reached)"
+        self._perm_calls[count_key] = self._perm_calls.get(count_key, 0) + 1
+        return None
 
     async def _approve(
         self, tool_name: str, step: str, tenant_ctx: Any, goal_id: str
@@ -253,4 +323,6 @@ def gate_from_app_state(app_state: Any, *, agent_id: str | None = None) -> Gover
         enforce_grants=enforce,
         cost_controller=_get("redis_cost_controller") or _get("cost_controller"),
         agent_id=agent_id,
+        db_session_factory=_get("db_session_factory"),
+        redis=_get("_redis"),
     )

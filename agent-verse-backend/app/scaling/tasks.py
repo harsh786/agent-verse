@@ -1445,8 +1445,20 @@ def _worker_tool_gate(policy: Any, hitl: Any, cost: Any, agent_id: str) -> Any:
 
     from app.agent.tool_gate import gate_from_app_state
 
+    db_factory: Any = None
+    with contextlib.suppress(Exception):
+        from app.db.session import get_session_factory
+
+        db_factory = get_session_factory()
     return gate_from_app_state(
-        _types.SimpleNamespace(policy_engine=policy, hitl_gateway=hitl, cost_controller=cost),
+        _types.SimpleNamespace(
+            policy_engine=policy,
+            hitl_gateway=hitl,
+            cost_controller=cost,
+            # PERM-01: per-agent permission rules + the shared daily counter.
+            db_session_factory=db_factory,
+            _redis=_worker_async_redis(),
+        ),
         agent_id=agent_id or None,
     )
 
