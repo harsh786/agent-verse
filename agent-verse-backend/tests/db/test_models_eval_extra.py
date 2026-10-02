@@ -12,7 +12,7 @@ class TestEvalSuiteModel:
         assert hasattr(EvalSuite, "id")
         assert hasattr(EvalSuite, "tenant_id")
         assert hasattr(EvalSuite, "name")
-        assert hasattr(EvalSuite, "tasks")
+        assert hasattr(EvalSuite, "dataset_version")
         assert hasattr(EvalSuite, "created_at")
         assert hasattr(EvalSuite, "updated_at")
 
@@ -22,12 +22,12 @@ class TestEvalSuiteModel:
             id="abc123",
             tenant_id="t1",
             name="My Suite",
-            tasks=[{"input": "q", "expected": "a"}],
+            dataset_version=3,
         )
         assert suite.id == "abc123"
         assert suite.tenant_id == "t1"
         assert suite.name == "My Suite"
-        assert len(suite.tasks) == 1
+        assert suite.dataset_version == 3
 
     def test_default_id_generated(self):
         # The default factory is a lambda that returns uuid4().hex
@@ -39,10 +39,12 @@ class TestEvalSuiteModel:
         assert id1 != id2
         assert len(id1) == 32
 
-    def test_tasks_defaults_to_list(self):
-        from app.db.models.eval import EvalSuite
-        suite = EvalSuite(tenant_id="t", name="empty")
-        assert suite.tasks == [] or suite.tasks is None or isinstance(suite.tasks, list)
+    def test_golden_tasks_are_revision_rows(self):
+        # MEM-54: tasks are versioned rows in golden_tasks, not a JSON column.
+        from app.db.models.eval import EvalSuite, GoldenTaskRevision
+        assert not hasattr(EvalSuite, "tasks")
+        assert GoldenTaskRevision.__tablename__ == "golden_tasks"
+        assert {"valid_from", "valid_to", "task_id"} <= set(GoldenTaskRevision.__table__.c.keys())
 
 
 class TestEvalSuiteRunResultModel:

@@ -58,16 +58,15 @@ async def test_rollout_gate_fails_without_data():
     assert result["run_count"] == 0
 
 
-def test_add_golden_task_is_coroutine():
-    from app.intelligence.eval_suite import add_golden_task
+def test_golden_task_crud_lives_on_the_versioned_store():
+    # MEM-54: the unversioned add_golden_task/get_golden_tasks helpers are gone;
+    # golden tasks are revision rows managed by EvalSuiteStore.
+    import app.intelligence.eval_suite as eval_suite
+    from app.intelligence.eval_suite_store import EvalSuiteStore
 
-    assert asyncio.iscoroutinefunction(add_golden_task)
-
-
-def test_get_golden_tasks_is_coroutine():
-    from app.intelligence.eval_suite import get_golden_tasks
-
-    assert asyncio.iscoroutinefunction(get_golden_tasks)
+    assert not hasattr(eval_suite, "add_golden_task")
+    for name in ("add_task", "update_task", "delete_task", "import_tasks", "export"):
+        assert asyncio.iscoroutinefunction(getattr(EvalSuiteStore, name))
 
 
 def test_migration_0038_exists():

@@ -121,6 +121,9 @@ GRANT_TABLES = (
     "audit_log",
     # Erasure is gated on legal_holds (fail-closed); the role must be able to read it.
     "legal_holds",
+    # Golden tasks are written through EvalSuiteStore, which bumps the suite's
+    # dataset version (MEM-54).
+    "eval_suites",
 )
 
 
@@ -417,45 +420,47 @@ async def test_org_blueprints_global_readable_owner_writable(factories: tuple) -
     assert glob is not None
 
 
-# ── golden_tasks: upsert cannot overwrite another tenant's task ──────────────
+# ── golden_tasks: a tenant cannot edit another tenant's golden task ─────────
 
 
 @pytest.mark.asyncio
-async def test_golden_task_upsert_cannot_overwrite_another_tenants_task(
+async def test_golden_task_edit_cannot_touch_another_tenants_task(
     factories: tuple,
 ) -> None:
+    # MEM-54: golden tasks are revision rows written by EvalSuiteStore; task ids
+    # are scoped to (tenant, suite), so the same id in another tenant is a
+    # different task and an edit through tenant B never reaches A's row.
     admin, app, _ = factories
-    from app.intelligence.eval_suite import GoldenTask, add_golden_task, get_golden_tasks
+    from app.intelligence.eval_suite_store import EvalSuiteStore
 
     a, b = _tid(), _tid()
+    store_a, store_b = EvalSuiteStore(app, a), EvalSuiteStore(app, b)
+    await store_a.create("s1", name="s1", description="")
+    await store_b.create("s1", name="s1", description="")
     task_id = _tid()
-    await add_golden_task(
-        eval_suite_id="s1", task=GoldenTask(task_id=task_id, goal="original"), tenant_id=a,
-        db=app,
+    await store_a.import_tasks(
+        "s1", [{"task_id": task_id, "goal": "original", "expected_tools": ["t"]}],
+        replace=False,
     )
-    with pytest.raises(ValueError, match="already in use"):
-        await add_golden_task(
-            eval_suite_id="s1", task=GoldenTask(task_id=task_id, goal="hijacked"),
-            tenant_id=b, db=app,
-        )
+    assert await store_b.update_task("s1", task_id, {"goal": "hijacked"}) is None
+    await store_b.import_tasks(
+        "s1", [{"task_id": task_id, "goal": "b's own", "expected_tools": ["t"]}],
+        replace=False,
+    )
     async with admin() as s:
-        row = (
+        rows = (
             await s.execute(
-                text("SELECT tenant_id, goal FROM golden_tasks WHERE id = :id"), {"id": task_id}
+                text("SELECT tenant_id, goal FROM golden_tasks WHERE task_id = :id "
+                     "ORDER BY tenant_id = :a DESC"),
+                {"id": task_id, "a": a},
             )
-        ).one()
-    assert tuple(row) == (a, "original")
-    assert [t.goal for t in await get_golden_tasks(eval_suite_id="s1", tenant_id=a, db=app)] == [
-        "original"
-    ]
-    assert await get_golden_tasks(eval_suite_id="s1", tenant_id=b, db=app) == []
-    # The owner can still update its own task through the same upsert.
-    await add_golden_task(
-        eval_suite_id="s1", task=GoldenTask(task_id=task_id, goal="edited"), tenant_id=a, db=app
-    )
-    assert [t.goal for t in await get_golden_tasks(eval_suite_id="s1", tenant_id=a, db=app)] == [
-        "edited"
-    ]
+        ).all()
+    assert [tuple(r) for r in rows] == [(a, "original"), (b, "b's own")]
+    assert [t["goal"] for t in await store_a.list_tasks("s1")] == ["original"]
+    edited = await store_a.update_task("s1", task_id, {"goal": "edited"})
+    assert edited is not None
+    assert [t["goal"] for t in await store_a.list_tasks("s1")] == ["edited"]
+    assert [t["goal"] for t in await store_b.list_tasks("s1")] == ["b's own"]
 
 
 # ── Request paths end to end, as the app role ─────────────────────────────────

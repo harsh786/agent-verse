@@ -1711,66 +1711,10 @@ class TestEvalSuiteExtra:
         mock_goal_service = AsyncMock()
         mock_goal_service.submit_goal = AsyncMock(side_effect=RuntimeError("goal service down"))
 
-        task = GoldenTask(task_id="t1", goal="Do something risky")
+        task = GoldenTask(task_id="t1", goal="Do something risky", expected_tools=["x"])
         result = await runner._run_task(task, mock_goal_service, _CTX)
         assert not result.passed
         assert "goal service down" in (result.failure_reasons or [""])[0]
-
-    # lines 399–422 — add_golden_task DB insert
-    @pytest.mark.asyncio
-    async def test_add_golden_task_db_insert(self) -> None:
-        from app.intelligence.eval_suite import GoldenTask, add_golden_task
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.begin = MagicMock(return_value=type("CM", (), {
-            "__aenter__": AsyncMock(return_value=None),
-            "__aexit__": AsyncMock(return_value=False),
-        })())
-        # The upsert RETURNs the row it wrote (see add_golden_task).
-        written = MagicMock()
-        written.first = MagicMock(return_value=("gt-1",))
-        mock_session.execute = AsyncMock(return_value=written)
-
-        def _db():
-            return mock_session
-
-        task = GoldenTask(task_id="gt-1", goal="Verify deployment")
-        task_id = await add_golden_task(
-            eval_suite_id="suite-1", task=task, tenant_id="t1", db=_db
-        )
-        assert task_id == "gt-1"
-
-    # lines 425–455 — get_golden_tasks DB fetch
-    @pytest.mark.asyncio
-    async def test_get_golden_tasks_returns_rows(self) -> None:
-        from app.intelligence.eval_suite import get_golden_tasks
-
-        mock_row = (
-            "gt-1",       # id
-            "Deploy app", # goal
-            "deployed",   # expected_output_contains
-            ["deploy.run"],  # expected_tool_calls
-            [],           # forbidden_tools
-            0.9,          # min_score
-            ["deploy"],   # tags
-        )
-
-        mock_result = MagicMock()
-        mock_result.fetchall = MagicMock(return_value=[mock_row])
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-
-        def _db():
-            return mock_session
-
-        tasks = await get_golden_tasks(eval_suite_id="suite-1", tenant_id="t1", db=_db)
-        assert len(tasks) == 1
-        assert tasks[0].goal == "Deploy app"
 
 
 # ===========================================================================

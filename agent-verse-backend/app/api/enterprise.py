@@ -1227,21 +1227,50 @@ class AddGoldenTaskRequest(BaseModel):
     max_iterations: int = Field(default=15, ge=1, le=100)
     tags: list[str] = []
 
+    # Kept on import so a dataset round-trips; generated when absent.
+    task_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                pattern=r"^[A-Za-z0-9_.:-]+$")
+
     @model_validator(mode="after")
     def _has_checks(self) -> AddGoldenTaskRequest:
         # MEM-51: a task with no checks measures nothing — it passed whenever
         # its goal returned, so a failing agent could clear the rollout gate.
-        if not (
-            self.expected_tools
-            or self.forbidden_tools
-            or [p for p in self.expected_output_contains if p.strip()]
-            or self.expected_output.strip()
-        ):
-            raise ValueError(
-                "a golden task needs at least one check: expected_tools, "
-                "forbidden_tools, expected_output_contains or expected_output"
-            )
+        _require_checks(self.model_dump())
         return self
+
+
+def _require_checks(task: dict[str, Any]) -> None:
+    if not (
+        task.get("expected_tools")
+        or task.get("forbidden_tools")
+        or [p for p in (task.get("expected_output_contains") or []) if str(p).strip()]
+        or str(task.get("expected_output") or "").strip()
+    ):
+        raise ValueError(
+            "a golden task needs at least one check: expected_tools, "
+            "forbidden_tools, expected_output_contains or expected_output"
+        )
+
+
+class UpdateGoldenTaskRequest(BaseModel):
+    """Edit a golden task; only the given fields change (a new dataset version)."""
+
+    goal: str | None = Field(default=None, min_length=1, max_length=10_000)
+    expected_tools: list[str] | None = None
+    forbidden_tools: list[str] | None = None
+    expected_output_contains: list[str] | None = None
+    expected_output: str | None = Field(default=None, max_length=10_000)
+    min_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_iterations: int | None = Field(default=None, ge=1, le=100)
+    tags: list[str] | None = None
+
+
+class ImportGoldenDatasetRequest(BaseModel):
+    """Import golden tasks (e.g. a GET .../export document) as ONE new dataset version."""
+
+    tasks: list[AddGoldenTaskRequest] = Field(min_length=1, max_length=10_000)
+    # True: the imported tasks REPLACE the current dataset; False: they are appended.
+    replace: bool = False
 
 
 def _eval_store(request: Request) -> Any:
@@ -1308,6 +1337,7 @@ async def add_golden_task(
     from app.intelligence.eval_suite_store import task_to_dict
 
     task = GoldenTask(
+        task_id=body.task_id or "",
         suite_id=suite_id,
         goal=body.goal,
         expected_tools=body.expected_tools,
@@ -1318,9 +1348,94 @@ async def add_golden_task(
         max_iterations=body.max_iterations,
         tags=body.tags,
     )
-    if not await _eval_store(request).add_task(suite_id, task_to_dict(task)):
+    try:
+        version = await _eval_store(request).add_task(suite_id, task_to_dict(task))
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if version is None:
         raise HTTPException(404, f"Eval suite {suite_id} not found")
-    return {"task_id": task.task_id, "suite_id": suite_id, "goal": body.goal}
+    return {"task_id": task.task_id, "suite_id": suite_id, "goal": body.goal,
+            "dataset_version": version}
+
+
+@intelligence_router.get("/eval-suites/{suite_id}/tasks")
+async def list_golden_tasks(
+    request: Request,
+    suite_id: str,
+    version: int | None = Query(default=None, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, Any]:
+    """One page of a suite's golden tasks at dataset ``version`` (default: current)."""
+    store = _eval_store(request)
+    meta = await store.get_meta(suite_id)
+    if meta is None:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    v = int(meta["dataset_version"]) if version is None else version
+    if v > int(meta["dataset_version"]):
+        raise HTTPException(404, f"Dataset version {v} does not exist")
+    tasks = await store.list_tasks(suite_id, version=v, limit=limit, offset=offset)
+    return {"suite_id": suite_id, "dataset_version": v,
+            "current_version": meta["dataset_version"], "limit": limit, "offset": offset,
+            "tasks": tasks}
+
+
+@intelligence_router.patch("/eval-suites/{suite_id}/tasks/{task_id}")
+async def update_golden_task(
+    request: Request, suite_id: str, task_id: str, body: UpdateGoldenTaskRequest
+) -> dict[str, Any]:
+    """Edit a golden task. Earlier dataset versions keep the old revision unchanged."""
+    store = _eval_store(request)
+    changes = body.model_dump(exclude_none=True)
+    if not changes:
+        raise HTTPException(422, "Nothing to change")
+    try:
+        # The edited task must still check something (MEM-51).
+        updated = await store.update_task(suite_id, task_id, changes, validate=_require_checks)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if updated is None:
+        raise HTTPException(404, f"Golden task {task_id} not found in suite {suite_id}")
+    return {"suite_id": suite_id, **updated}
+
+
+@intelligence_router.delete("/eval-suites/{suite_id}/tasks/{task_id}")
+async def delete_golden_task(request: Request, suite_id: str, task_id: str) -> dict[str, Any]:
+    """Remove a golden task from the dataset (a new version; old versions keep it)."""
+    version = await _eval_store(request).delete_task(suite_id, task_id)
+    if version is None:
+        raise HTTPException(404, f"Golden task {task_id} not found in suite {suite_id}")
+    return {"suite_id": suite_id, "task_id": task_id, "dataset_version": version}
+
+
+@intelligence_router.get("/eval-suites/{suite_id}/export")
+async def export_golden_dataset(
+    request: Request, suite_id: str, version: int | None = Query(default=None, ge=0)
+) -> dict[str, Any]:
+    """The whole golden dataset at ``version`` (default: current), re-importable."""
+    try:
+        doc: dict[str, Any] | None = await _eval_store(request).export(suite_id, version=version)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if doc is None:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    return doc
+
+
+@intelligence_router.post("/eval-suites/{suite_id}/import", status_code=201)
+async def import_golden_dataset(
+    request: Request, suite_id: str, body: ImportGoldenDatasetRequest
+) -> dict[str, Any]:
+    """Append (or replace with) many golden tasks as one new dataset version."""
+    _eval_runner(request)
+    tasks = [t.model_dump() for t in body.tasks]
+    try:
+        result = await _eval_store(request).import_tasks(suite_id, tasks, replace=body.replace)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if result is None:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    return {"suite_id": suite_id, "imported": len(tasks), "replace": body.replace, **result}
 
 
 async def _execute_eval_run(
@@ -1368,12 +1483,13 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
     if goal_service is None:
         raise HTTPException(503, "Goal service not configured")
     store = _eval_store(request)
-    suite = await store.get(suite_id)
-    if suite is None:
+    meta = await store.get_meta(suite_id)
+    if meta is None:
         raise HTTPException(404, f"Eval suite {suite_id} not found")
-    tasks = [task_from_dict(suite_id, t) for t in suite["tasks"]]
+    version = int(meta["dataset_version"])
+    tasks = [task_from_dict(suite_id, t) async for t in store.iter_tasks(suite_id, version)]
     run_id = _uuid.uuid4().hex
-    await store.start_run(suite_id, run_id, len(tasks))
+    await store.start_run(suite_id, run_id, len(tasks), dataset_version=version)
 
     running: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault(
         "_eval_run_tasks", set()
@@ -1388,14 +1504,15 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
     )
     running.add(task)  # keep a strong reference until it finishes
     task.add_done_callback(running.discard)
-    return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": len(tasks)}
+    return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": len(tasks),
+            "dataset_version": version}
 
 
 @intelligence_router.get("/eval-suites/{suite_id}/results")
 async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, Any]]:
     """Newest-first run history of one of the caller's eval suites."""
     store = _eval_store(request)
-    if await store.get(suite_id) is None:
+    if await store.get_meta(suite_id) is None:
         raise HTTPException(404, f"Eval suite {suite_id} not found")
     runs: list[dict[str, Any]] = await store.list_runs(suite_id)
     return runs
