@@ -409,9 +409,14 @@ async def receive_a2a_task(
         except SSRFError as exc:
             raise HTTPException(status_code=400, detail="Callback URL is not permitted") from exc
 
+    goal_service = getattr(request.app.state, "goal_service", None)
+    if goal_service is None:
+        # A2A-05: the task used to be stored and answered 202 "accepted" with
+        # nothing able to run it — it stayed "accepted" forever.
+        raise HTTPException(503, "Goal execution is unavailable; the task was not accepted")
+
     task_id = uuid.uuid4().hex
     db = getattr(request.app.state, "db_session_factory", None)
-    goal_service = getattr(request.app.state, "goal_service", None)
 
     tenant_ctx = caller
     a2a_tenant_id = str(caller.tenant_id)
@@ -429,7 +434,7 @@ async def receive_a2a_task(
     await _persist_task(task_id, task_data, db)
 
     # Execute goal asynchronously
-    if goal_service:
+    if goal_service:  # always set (checked above)
         import asyncio
 
         async def execute_and_callback() -> None:

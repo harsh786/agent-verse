@@ -10,10 +10,12 @@ from app.api.a2a import router as a2a_router
 
 
 def _make_app() -> FastAPI:
+    from tests.api._a2a_fakes import FakeGoalService
+
     app = FastAPI()
     # Wire minimal state
     app.state.db_session_factory = None
-    app.state.goal_service = None
+    app.state.goal_service = FakeGoalService()
     # The real app puts /a2a behind TenantMiddleware; inbound tasks now run as
     # that authenticated caller (they used to run as the fixed A2A_TENANT_ID).
     @app.middleware("http")

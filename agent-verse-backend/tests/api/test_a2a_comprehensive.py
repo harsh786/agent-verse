@@ -26,9 +26,11 @@ _A2A_TID = "a2a-test-caller"
 
 
 def _make_app() -> FastAPI:
+    from tests.api._a2a_fakes import FakeGoalService
+
     app = FastAPI()
     app.state.db_session_factory = None
-    app.state.goal_service = None
+    app.state.goal_service = FakeGoalService()
     # The real app puts /a2a behind TenantMiddleware; inbound tasks now run as
     # that authenticated caller (they used to run as the fixed A2A_TENANT_ID).
     @app.middleware("http")
@@ -170,6 +172,15 @@ def test_receive_task_no_longer_depends_on_a2a_tenant_id(monkeypatch) -> None:
     assert resp.status_code == 202
 
 
+def test_receive_task_without_a_goal_service_is_503_not_accepted() -> None:
+    """A2A-05: the task was stored and 202 'accepted' but could never run."""
+    app = _make_app()
+    app.state.goal_service = None
+    resp = TestClient(app).post("/a2a/tasks", json={"goal": "Do X"})
+    assert resp.status_code == 503
+    assert _tasks == {}  # nothing stranded as 'accepted'
+
+
 def test_receive_task_without_an_authenticated_caller_is_401() -> None:
     app = FastAPI()
     app.state.db_session_factory = None
@@ -274,7 +285,7 @@ def test_get_task_returns_status() -> None:
     task_id = create.json()["task_id"]
     resp = client.get(f"/a2a/tasks/{task_id}")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "accepted"
+    assert resp.json()["status"] in ("accepted", "complete")
 
 
 def test_get_task_not_found_returns_404() -> None:

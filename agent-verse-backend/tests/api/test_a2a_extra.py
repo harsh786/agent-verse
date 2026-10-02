@@ -52,8 +52,9 @@ def _make_app(goal_service=None) -> FastAPI:
         return await call_next(request)
 
     app.include_router(a2a_router)
-    if goal_service is not None:
-        app.state.goal_service = goal_service
+    from tests.api._a2a_fakes import FakeGoalService
+
+    app.state.goal_service = goal_service if goal_service is not None else FakeGoalService()
     return app
 
 
