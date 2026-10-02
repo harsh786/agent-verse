@@ -605,12 +605,12 @@ class TestTaskApproval:
         self, client: AsyncClient, mock_service: MagicMock, test_app: FastAPI
     ) -> None:
         # Task carries a paired HITL request id — exercises _extract_hitl_request_id
-        # and _resolve_task_hitl_request's synchronous-approve path.
+        # and _resolve_task_hitl_request's DB-first approve path.
         mock_service.get_task = AsyncMock(
             return_value=_fake_task(outputs=[{"hitl_request_id": "req-1"}])
         )
         gateway = MagicMock()
-        gateway.approve = MagicMock(return_value=True)  # sync return, not awaitable
+        gateway.approve_async = AsyncMock(return_value=True)
         test_app.state.hitl_gateway = gateway
         with patch("app.org.events.get_org_event_publisher") as get_pub:
             pub = MagicMock()
@@ -623,23 +623,23 @@ class TestTaskApproval:
         assert r.status_code == 200
         pub.publish.assert_awaited()
 
-    async def test_approve_task_hitl_gateway_awaitable_result(
+    async def test_approve_task_whose_gate_is_no_longer_pending_is_409(
         self, client: AsyncClient, mock_service: MagicMock, test_app: FastAPI
     ) -> None:
+        # HITL-04: approve_async's False used to be ignored and the task flipped
+        # to 'running' while the agent's gate was already decided/expired.
         mock_service.get_task = AsyncMock(
             return_value=_fake_task(extra_data={"approval_request_id": "req-2"})
         )
+        mock_service.update_task_status = AsyncMock()
         gateway = MagicMock()
-
-        async def _approve_result() -> bool:
-            return True
-
-        gateway.approve = MagicMock(return_value=_approve_result())
+        gateway.approve_async = AsyncMock(return_value=False)
         test_app.state.hitl_gateway = gateway
         r = await client.post(
             f"/v1/org/{ORG_ID}/tasks/{TASK_ID}/approve", json={"approver": "bob"}
         )
-        assert r.status_code == 200
+        assert r.status_code == 409
+        mock_service.update_task_status.assert_not_awaited()
 
     async def test_approve_task_event_publish_failure_is_swallowed(
         self, client: AsyncClient, mock_service: MagicMock
@@ -701,30 +701,33 @@ class TestTaskApproval:
         )
         assert r.status_code == 200
 
-    async def test_resolve_hitl_no_gateway_noop(
+    async def test_resolve_hitl_no_gateway_is_503(
         self, client: AsyncClient, mock_service: MagicMock
     ) -> None:
+        # A paired agent gate that cannot be resolved is not silently skipped.
         mock_service.get_task = AsyncMock(
             return_value=_fake_task(outputs=[{"hitl_request_id": "req-4"}])
         )
         r = await client.post(
             f"/v1/org/{ORG_ID}/tasks/{TASK_ID}/reject", json={"approver": "alice"}
         )
-        assert r.status_code == 200
+        assert r.status_code == 503
 
-    async def test_resolve_hitl_gateway_raises_is_swallowed(
+    async def test_resolve_hitl_gateway_error_is_503_not_swallowed(
         self, client: AsyncClient, mock_service: MagicMock, test_app: FastAPI
     ) -> None:
         mock_service.get_task = AsyncMock(
             return_value=_fake_task(outputs=[{"approval_request_id": "req-5"}])
         )
+        mock_service.update_task_status = AsyncMock()
         gateway = MagicMock()
         gateway.reject = AsyncMock(side_effect=RuntimeError("gateway down"))
         test_app.state.hitl_gateway = gateway
         r = await client.post(
             f"/v1/org/{ORG_ID}/tasks/{TASK_ID}/reject", json={"approver": "alice"}
         )
-        assert r.status_code == 200
+        assert r.status_code == 503
+        mock_service.update_task_status.assert_not_awaited()
 
 
 # ══════════════════════════════════════════════════════════════════════════════

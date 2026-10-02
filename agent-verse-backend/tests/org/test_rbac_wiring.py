@@ -76,6 +76,9 @@ def test_sensitive_endpoints_have_rbac_dependency_attached() -> None:
         ("create_mission", OrgRole.TEAM_LEAD),
         ("approve_org_request", OrgRole.TEAM_LEAD),
         ("reject_org_request", OrgRole.TEAM_LEAD),
+        # HITL-04: the task-level gate decisions had no role check.
+        ("approve_task", OrgRole.TEAM_LEAD),
+        ("reject_task", OrgRole.TEAM_LEAD),
     ]:
         fn = getattr(org_router, fn_name)
         assert "_rbac" in inspect.signature(fn).parameters, f"{fn_name} missing RBAC dependency"

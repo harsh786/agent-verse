@@ -910,6 +910,9 @@ async def approve_task(
     request: Request,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    # HITL-04: deciding a gate is a team-lead action (as on the inbox routes);
+    # these had no role check, so any authenticated key could approve.
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> TaskResponse:
     """G-28: Approve a task that is in approval_required status.
 
@@ -973,41 +976,56 @@ def _extract_hitl_request_id(task: Any) -> str | None:
 async def _resolve_task_hitl_request(
     request: Request, tenant_id: str, task: Any, action: str, body: Any, *, approver: str
 ) -> None:
-    """Resolve the HITLGateway request paired with an org task (best-effort).
+    """Resolve the HITLGateway request paired with an org task — or refuse.
 
     Approving/rejecting an org task must release the same gateway approval a
-    blocked agent waits on — otherwise the two mechanisms drift. No-ops silently
-    when the task has no paired request or the gateway is unavailable.
+    blocked agent waits on. It used to ignore approve_async's ``False`` and
+    swallow every error (including HITLResolutionUnavailableError), so the task
+    moved to 'running' while the agent's gate was still pending or had already
+    been rejected/expired (HITL-04). Now:
+
+    * no paired request → nothing to resolve (a gate without an agent waiting);
+    * the decision did not take (not pending) → 409, the task is not flipped;
+    * the gateway is missing or the decision cannot be written → 503.
     """
     request_id = _extract_hitl_request_id(task)
     if not request_id:
         return
     gateway = getattr(getattr(request.app, "state", None), "hitl_gateway", None)
     if gateway is None:
-        return
-    try:
-        from app.tenancy.context import PlanTier, TenantContext
-
-        tenant_ctx = TenantContext(
-            tenant_id=tenant_id,
-            plan=PlanTier.PROFESSIONAL,
-            api_key_id="org_task_approval",
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Approval gateway unavailable; the decision was not recorded",
         )
-        note = getattr(body, "note", "")
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_ctx = getattr(getattr(request, "state", None), "tenant", None)
+    if getattr(tenant_ctx, "tenant_id", None) != tenant_id:
+        tenant_ctx = TenantContext(
+            tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="org_task_approval"
+        )
+    note = getattr(body, "note", "") or getattr(body, "reason", "") or ""
+    try:
         if action == "approve":
             # DB-first (approve_async): finds a request raised on any replica and
             # releases the blocked agent only after the decision is committed.
-            # The sync approve() saw this process's requests only and unblocked
-            # the agent before the DB write.
-            await gateway.approve_async(
+            decided = await gateway.approve_async(
                 request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
             )
         else:
-            await gateway.reject(
+            decided = await gateway.reject(
                 request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
             )
-    except Exception:
-        pass  # Non-critical — status transition + event still proceed.
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The approval decision could not be recorded; nothing changed",
+        ) from exc
+    if not decided:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The agent's approval is no longer pending (already decided or expired)",
+        )
 
 
 # ── G-28: Task-level reject endpoint ─────────────────────────────────────────
@@ -1026,6 +1044,9 @@ async def reject_task(
     request: Request,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    # HITL-04: deciding a gate is a team-lead action (as on the inbox routes);
+    # these had no role check, so any authenticated key could approve.
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> TaskResponse:
     """G-28: Reject a task that is in approval_required status.
 
@@ -1411,11 +1432,10 @@ async def approve_org_request(
     ):
         raise _not_found("Approval", approval_id, x_request_id)
 
-    # gateway is ephemeral/best-effort — the DB task is the source of truth
-    with contextlib.suppress(Exception):
-        await _resolve_task_hitl_request(
-            request, service._tenant_id, task, "approve", body, approver=approver
-        )
+    # The paired gateway request must take, or the task is not flipped (HITL-04).
+    await _resolve_task_hitl_request(
+        request, service._tenant_id, task, "approve", body, approver=approver
+    )
 
     updated = await service.update_task_status(
         approval_id,
@@ -1505,10 +1525,9 @@ async def reject_org_request(
     ):
         raise _not_found("Approval", approval_id, x_request_id)
 
-    with contextlib.suppress(Exception):
-        await _resolve_task_hitl_request(
-            request, service._tenant_id, task, "reject", body, approver=approver
-        )
+    await _resolve_task_hitl_request(
+        request, service._tenant_id, task, "reject", body, approver=approver
+    )
 
     updated = await service.update_task_status(
         approval_id,
