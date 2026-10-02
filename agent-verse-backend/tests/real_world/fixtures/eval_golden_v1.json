@@ -1,0 +1,18 @@
+{
+  "name": "larkspur-dispatch-basics",
+  "version": 1,
+  "description": "Golden tasks a dispatch assistant must always get right (deterministic answers).",
+  "golden_tasks": [
+    {"id": "t01", "goal": "What is 17 multiplied by 23? Reply with the number only.", "expected_output": "391", "must_contain": ["391"]},
+    {"id": "t02", "goal": "Convert 2.5 kilometres to metres. Reply with the number only.", "expected_output": "2500", "must_contain": ["2500"]},
+    {"id": "t03", "goal": "Reverse the letters of the word LARKSPUR. Reply with the reversed word only.", "expected_output": "RUPSKRAL", "must_contain": ["rupskral"]},
+    {"id": "t04", "goal": "Sort these shipment ids in ascending order and reply comma-separated: SHP-9, SHP-2, SHP-5", "expected_output": "SHP-2, SHP-5, SHP-9", "must_contain": ["shp-2, shp-5, shp-9"]},
+    {"id": "t05", "goal": "How many days does February have in a leap year? Reply with the number only.", "expected_output": "29", "must_contain": ["29"]},
+    {"id": "t06", "goal": "Write the word consignment in upper case. Reply with the word only.", "expected_output": "CONSIGNMENT", "must_contain": ["CONSIGNMENT"], "case_sensitive": true},
+    {"id": "t07", "goal": "What is the ISO 4217 currency code of the Indian rupee? Reply with the code only.", "expected_output": "INR", "must_contain": ["inr"]},
+    {"id": "t08", "goal": "One pallet weighs 640 kg. How many kg do 5 such pallets weigh? Reply with the number only.", "expected_output": "3200", "must_contain": ["3200"]},
+    {"id": "t09", "goal": "Which is the largest of 482, 1290 and 977? Reply with the number only.", "expected_output": "1290", "must_contain": ["1290"]},
+    {"id": "t10", "goal": "What day of the week was 1 January 2026? Reply with the weekday only.", "expected_output": "Thursday", "must_contain": ["thursday"]}
+  ],
+  "edit_for_v2": {"id": "t01", "goal": "What is 19 multiplied by 23? Reply with the number only.", "expected_output": "437", "must_contain": ["437"]}
+}
