@@ -501,3 +501,27 @@ async def test_connector_usage_exact_match_rls_and_index(app_db: Any, pg_url: st
     await client._record_goal_usage("slack-main", tid)  # no goal running: nothing
     slack = await connector_usage(app_db, tid, "slack-main", limit=10)
     assert [g["id"] for g in slack["goals"]] == [f"g2-{tid}"]
+
+
+# ── MCPREG-05: erasing a connector's secrets ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_server_erases_rows_cache_and_legacy_keys(app_db: Any, redis: Any) -> None:
+    await _mark_backfilled(app_db)
+    tid = f"t-{uuid.uuid4().hex[:8]}"
+    store = _secret_store(app_db, redis)
+    await store.store("vault://connectors/gone:x/token", "a", tenant_ctx=_ctx(tid))
+    await store.store("vault://connectors/gone:x/password", "b", tenant_ctx=_ctx(tid))
+    await store.store("vault://connectors/kept/token", "c", tenant_ctx=_ctx(tid))
+    await store.resolve("vault://connectors/gone:x/token", tenant_ctx=_ctx(tid))  # cached
+    await redis.set(f"mcp:connector_secrets:{tid}:gone:x:legacy_only", "ct")
+
+    assert await store.delete_server("gone:x", tenant_ctx=_ctx(tid)) == 2
+
+    rows = await _tenant_rows(
+        app_db, tid, "SELECT server_id FROM mcp_credentials WHERE tenant_id = :t"
+    )
+    assert [r[0] for r in rows] == ["kept"]
+    assert await redis.keys(f"mcp:*:{tid}:gone:x:*") == []
+    assert await store.resolve("vault://connectors/kept/token", tenant_ctx=_ctx(tid)) == "c"
