@@ -2036,35 +2036,11 @@ def create_app(
             except Exception as _ep_exc:
                 logger.warning("episodic_procedural_memory_wire_failed", error=str(_ep_exc))
 
-            # Load governance policies from DB into PolicyEngine (H2 fix)
-            try:
-                from sqlalchemy import text as _sql_text
-
-                async with db_factory() as _pol_session:
-                    _pol_result = await _pol_session.execute(
-                        _sql_text(
-                            "SELECT name, tenant_id, tools_pattern, action, description "
-                            "FROM governance_policies"
-                        )
-                    )
-                    _pol_rows = _pol_result.fetchall()
-                from app.governance.policies import Policy as _PolicyClass
-
-                for _row in _pol_rows:
-                    _pname, _ptenant, _ppattern, _paction, _pdesc = _row
-                    _denied = [_ppattern] if _paction == "deny" else []
-                    _approval = [_ppattern] if _paction == "require_approval" else []
-                    _p = _PolicyClass(
-                        name=_pname,
-                        description=_pdesc or "",
-                        denied_tools=_denied,
-                        approval_tools=_approval,
-                        tenant_id=_ptenant or "",
-                    )
-                    _policy_engine._policies.append(_p)
-                logger.info("policy_engine_loaded", count=len(_pol_rows))
-            except Exception as _pol_exc:
-                logger.warning("policy_engine_load_failed", error=str(_pol_exc))
+            # Tenant governance policies are loaded per tenant, under that tenant's
+            # RLS context, by the execution paths themselves
+            # (PolicyEngine.ensure_tenant_loaded, POL-04). The old startup load read
+            # governance_policies with no tenant GUC — 0 rows under the app role —
+            # and mis-mapped NULL patterns / time windows.
 
             # Re-wire compliance controller with DB-backed services and DB factory.
             _compliance_controller.configure_services(

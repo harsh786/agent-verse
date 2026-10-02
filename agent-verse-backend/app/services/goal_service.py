@@ -2260,6 +2260,20 @@ class GoalService:
             raise ServiceUnavailableError(reason, code="EMERGENCY_STOP_UNVERIFIABLE")
         raise ConflictError(reason, code="EMERGENCY_STOP_ACTIVE")
 
+    async def _refresh_tenant_policies(self, tenant_ctx: TenantContext) -> None:
+        """Load/refresh the tenant's governance policies before an in-process run.
+
+        The engine on ``app.state`` is shared; its tenant slice is (re)loaded under
+        the tenant's RLS context when missing or stale (POL-04 / POL-05). A first
+        load that fails leaves a deny-all policy for the tenant (fail closed).
+        """
+        app_state = getattr(self._app_state, "state", self._app_state)
+        engine = getattr(app_state, "policy_engine", None) if app_state is not None else None
+        ensure = getattr(engine, "ensure_tenant_loaded", None)
+        if ensure is None or self._db is None:
+            return
+        await ensure(self._db, tenant_ctx.tenant_id)
+
     async def active_goal_ids(self, tenant_ctx: TenantContext) -> list[str]:
         """Every non-terminal goal of the tenant — on ANY replica or worker.
 
@@ -3259,6 +3273,7 @@ class GoalService:
 
         record = self._goals.get(goal_id)
         bind_cost_agent(getattr(record, "agent_id", None))  # per-agent caps (COST-02)
+        await self._refresh_tenant_policies(tenant_ctx)
 
         async def callback(event: dict[str, Any]) -> None:
             await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)
@@ -3527,6 +3542,7 @@ class GoalService:
         from app.governance.cost import bind_cost_agent
 
         bind_cost_agent(getattr(self._goals.get(goal_id), "agent_id", None))
+        await self._refresh_tenant_policies(tenant_ctx)
         with _tracer.start_as_current_span("goal.execute") as span:
             span.set_attribute("goal_id", goal_id)
 

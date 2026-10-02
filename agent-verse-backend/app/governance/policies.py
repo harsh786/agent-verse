@@ -17,12 +17,19 @@ from __future__ import annotations
 import asyncio
 import enum
 import fnmatch
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import Any
 
+from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
+
+_log = get_logger(__name__)
+
+# How stale a tenant's policy slice may get before an execution path reloads it.
+TENANT_POLICY_MAX_AGE_S = 30.0
 
 # Domains that require a human approval when NO policy matches (fail-closed).
 REGULATED_DOMAINS: frozenset[str] = frozenset(
@@ -114,6 +121,48 @@ class PolicyEngine:
         # added straight to ``_policies`` — reverting an explicit
         # allow/deny decision until the next reload happens to run again.
         self.lock: asyncio.Lock = asyncio.Lock()
+        # tenant_id → monotonic time of its last successful strict load here.
+        self._tenant_loaded_at: dict[str, float] = {}
+
+    async def ensure_tenant_loaded(
+        self, db: Any, tenant_id: str, *, max_age_s: float = TENANT_POLICY_MAX_AGE_S
+    ) -> None:
+        """Load (or refresh) one tenant's policies under its RLS context.
+
+        The API replica's startup load read ``governance_policies`` with no
+        tenant GUC — 0 rows under the least-privilege role (FORCE RLS) and the
+        wrong mapping anyway — so after a restart in-process goals ran with no
+        tenant policy (POL-04). Execution paths now call this per goal: a stale
+        (older than *max_age_s*) or missing tenant slice is reloaded strictly,
+        which also resyncs a replica that missed a pub/sub change (POL-05).
+        A tenant never loaded here whose load fails gets a deny-all policy
+        until a load succeeds (fail closed); a refresh failure keeps the
+        last-known policies.
+        """
+        if db is None or not tenant_id:
+            return
+        loaded_at = self._tenant_loaded_at.get(tenant_id)
+        now = time.monotonic()
+        if loaded_at is not None and now - loaded_at < max_age_s:
+            return
+        try:
+            await self.reload_from_db(db, tenant_id=tenant_id, strict=True)
+        except Exception as exc:
+            _log.warning(
+                "tenant_policy_load_failed", tenant_id=tenant_id, error=type(exc).__name__
+            )
+            if loaded_at is None:
+                async with self.lock:
+                    self._policies = [p for p in self._policies if p.tenant_id != tenant_id]
+                    self._policies.append(
+                        Policy(
+                            name="policy-load-failed",
+                            tenant_id=tenant_id,
+                            denied_tools=["*"],
+                        )
+                    )
+            return
+        self._tenant_loaded_at[tenant_id] = now
 
     def add_policy(self, policy: Policy) -> None:
         self._policies.append(policy)
