@@ -398,6 +398,9 @@ class Settings(BaseSettings):
     # At a full cap, a session idle this long may be closed to make room (never a
     # recently used one, which may be mid-workflow for another goal).
     rpa_session_evict_idle_s: int = 120
+    # Largest upstream response the browser SSRF guard will relay (bytes); larger
+    # ones are aborted rather than buffered in the API/worker.
+    rpa_max_response_bytes: int = 25 * 1024 * 1024
 
     # --- platform email relay (POST /tools/email/send) ---
     email_max_recipients: int = 50

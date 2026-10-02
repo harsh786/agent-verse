@@ -294,6 +294,30 @@ async def test_too_many_redirects_fails_closed() -> None:
     assert len(server.requests) == 4
 
 
+async def test_oversized_upstream_body_is_aborted_not_buffered() -> None:
+    """RPA-05: the guarded fetch streams the body with a byte cap; past it the
+    route is aborted instead of the whole response being held in memory."""
+    server = _Server(httpx.Response(200, content=b"x" * 5000))
+    route = _route(PUBLIC)
+    await make_route_guard(http_client=server.factory(), max_body_bytes=4096)(route)
+    route.abort.assert_awaited_once()
+    route.fulfill.assert_not_called()
+
+
+async def test_body_under_the_cap_is_fulfilled() -> None:
+    server = _Server(httpx.Response(200, content=b"y" * 4096))
+    route = _route(PUBLIC)
+    await make_route_guard(http_client=server.factory(), max_body_bytes=4096)(route)
+    route.fulfill.assert_awaited_once()
+    assert route.fulfill.await_args.kwargs["body"] == b"y" * 4096
+
+
+def test_default_body_cap_comes_from_settings() -> None:
+    from app.core.config import get_settings
+
+    assert browser_guard._default_max_body_bytes() == get_settings().rpa_max_response_bytes > 0
+
+
 async def test_fetch_error_fails_closed() -> None:
     def _boom(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("boom")

@@ -62,6 +62,39 @@ _DROP_ON_HOP = frozenset(
 )
 
 RouteHandler = Callable[[Any], Awaitable[None]]
+
+
+class _BodyTooLargeError(Exception):
+    pass
+
+
+def _default_max_body_bytes() -> int:
+    from app.core.config import get_settings
+
+    return int(get_settings().rpa_max_response_bytes)
+
+
+async def _send_streamed(client: Any, method: str, url: str, **kwargs: Any) -> Any:
+    """Send without reading the body (it is read, capped, by :func:`_read_capped`)."""
+    request = client.build_request(method, url, **kwargs)
+    return await client.send(request, stream=True)
+
+
+async def _read_capped(response: Any, cap: int) -> bytes:
+    """Read a streamed body up to *cap* bytes; raise past it (and close the stream).
+
+    The guard used to read ``response.content`` whole, so one page (or a
+    hostile subresource) could make the API/worker buffer gigabytes.
+    """
+    buf = bytearray()
+    try:
+        async for chunk in response.aiter_bytes():
+            buf.extend(chunk)
+            if len(buf) > cap:
+                raise _BodyTooLargeError(f"response body exceeds {cap} bytes")
+    finally:
+        await response.aclose()
+    return bytes(buf)
 # Strong refs for fire-and-forget client closes (context "close" events).
 _CLOSE_TASKS: set[Any] = set()
 
@@ -211,6 +244,7 @@ def make_route_guard(
     cookie_jar: Callable[[], Any] | None = None,
     http_client: Callable[[], Any] | None = None,
     max_redirects: int = MAX_REDIRECTS,
+    max_body_bytes: int | None = None,
 ) -> RouteHandler:
     """Build a Playwright ``route`` handler enforcing the SSRF policy.
 
@@ -228,6 +262,7 @@ def make_route_guard(
     The returned handler has an ``aclose()`` coroutine function.
     """
     owned: dict[str, Any] = {}
+    body_cap = int(max_body_bytes) if max_body_bytes is not None else _default_max_body_bytes()
 
     def _client() -> Any:
         if http_client is not None:
@@ -260,7 +295,8 @@ def make_route_guard(
             method = str(getattr(request, "method", "GET") or "GET").upper()
             body = _request_body(request)
             # First hop: exactly what the browser sent to this origin.
-            response = await client.request(
+            response = await _send_streamed(
+                client,
                 method,
                 url,
                 headers=_upstream_headers(browser_headers, drop=frozenset()),
@@ -269,6 +305,7 @@ def make_route_guard(
             current_url = url
             hops = 0
             while _is_redirect(response):
+                await response.aclose()  # a hop's body is never used
                 hops += 1
                 next_url = urljoin(current_url, response.headers.get("location", ""))
                 if hops > max_redirects:
@@ -293,7 +330,9 @@ def make_route_guard(
                 cookie = await _jar_cookie_header(jar, next_url)
                 if cookie:
                     headers["cookie"] = cookie
-                response = await client.request(method, next_url, headers=headers, content=body)
+                response = await _send_streamed(
+                    client, method, next_url, headers=headers, content=body
+                )
                 current_url = next_url
             # A response from another URL than the browser requested would have
             # its cookies attributed to the wrong origin: store, don't fulfil.
@@ -302,7 +341,10 @@ def make_route_guard(
                 await _store_cookies(jar, response)
             status_code = int(response.status_code)
             fulfil_headers = _fulfil_headers(response, keep_set_cookie=same_url)
-            content = response.content
+            content = await _read_capped(response, body_cap)
+        except _BodyTooLargeError as exc:
+            await _abort(route, url, str(exc))
+            return
         except Exception as exc:
             await _abort(route, url, f"guarded fetch failed: {exc}")
             return
