@@ -134,3 +134,49 @@ def test_wrapped_keyring_format_matches_the_tenant_vault() -> None:
     from app.providers.vault import get_vault
 
     assert _unwrap_keys(get_vault().encrypt(base64.b64encode(KEY_B).decode())) == [KEY_B]
+
+
+async def test_compaction_covers_durable_connector_secrets(env: Any) -> None:  # noqa: F811
+    """SECRET-01: connector secrets live in Postgres mcp_credentials now; a key
+    still sealing one of them must be re-sealed before it is dropped (else the
+    connector's credential becomes unreadable), and the ciphertext cache must
+    not keep serving old-key ciphertext afterwards."""
+    from sqlalchemy import text
+
+    from app.mcp.connector_secrets import DurableConnectorSecretStore
+    from app.providers.tenant_key_compaction import compact_tenant_keys
+    from app.providers.tenant_vault import invalidate_tenant_vault, store_tenant_vault_key
+    from app.tenancy.context import PlanTier, TenantContext
+
+    db, redis, tenant = env["db"], env["redis"], env["tenant"]
+    ctx = TenantContext(tenant_id=tenant, plan=PlanTier.FREE, api_key_id="k")
+    ref = "vault://connectors/builtin-github:work/token"
+    try:
+        await store_tenant_vault_key(db, tenant, KEY_A)
+        invalidate_tenant_vault()
+        store = DurableConnectorSecretStore(db_factory=db, redis=redis)
+        await store.store(ref, "ghp_compacted", tenant_ctx=ctx)
+        assert await store.resolve(ref, tenant_ctx=ctx) == "ghp_compacted"  # cached now
+        await store_tenant_vault_key(db, tenant, KEY_B)  # keyring [B, A]
+
+        done = await compact_tenant_keys(
+            tenant_db=db, redis=redis, tenant_ids=[tenant], min_age_seconds=0
+        )
+        assert done["tenants"][0]["status"] == "compacted", done
+        async with db() as s, s.begin():
+            value = (
+                await s.execute(
+                    text("SELECT encrypted_value FROM mcp_credentials WHERE tenant_id = :t"),
+                    {"t": tenant},
+                )
+            ).scalar_one()
+        assert _opens_with_tenant_key_only(value, KEY_B)
+        assert [k async for k in redis.scan_iter(match=f"mcp:secretcache:v1:{tenant}:*")] == []
+        invalidate_tenant_vault()
+        fresh = DurableConnectorSecretStore(db_factory=db, redis=redis)
+        assert await fresh.resolve(ref, tenant_ctx=ctx) == "ghp_compacted"
+    finally:
+        async with db() as s, s.begin():
+            await s.execute(
+                text("DELETE FROM mcp_credentials WHERE tenant_id = :t"), {"t": tenant}
+            )

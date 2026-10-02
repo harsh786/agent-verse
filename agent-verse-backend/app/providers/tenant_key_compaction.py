@@ -8,7 +8,8 @@ still has previous keys:
 
 1. re-seals, under the tenant's RLS context and in batches, every ``tv1:`` value
    that does not open with the current key — tenant LLM key, OAuth tokens,
-   trigger webhook secrets, ingestion source credentials (Postgres) and connector
+   trigger webhook secrets, ingestion source credentials, durable connector
+   secrets (Postgres) and connector
    secrets, OAuth copies in connector configs and the LLM-config cache (Redis) —
    each write a compare-and-swap on the value it read;
 2. only when that pass leaves nothing under a previous key and nothing
@@ -54,6 +55,15 @@ _PG_STORES: tuple[tuple[str, str, str, tuple[str, ...], bool], ...] = (
         False,
     ),
     ("source_credentials", "source_configs", "id", ("connection_config",), True),
+    # Durable connector secrets (SECRET-01); composite key -> keyset on the
+    # "<server_id>\x1f<secret_key>" expression (a handful of rows per tenant).
+    (
+        "connector_secrets_pg",
+        "mcp_credentials",
+        "(server_id || chr(31) || secret_key)",
+        ("encrypted_value",),
+        False,
+    ),
 )
 
 _REDIS_CAS = (
@@ -211,6 +221,14 @@ async def _redis_pass(redis: Any, tenant_id: str, sealer: _Sealer, dry_run: bool
             return
         if await redis.eval(_REDIS_CAS, 1, key, old, new) is None:
             sealer.report.lost_races += 1
+
+    if not dry_run:
+        # Short-TTL read caches of the durable connector stores may hold values
+        # sealed with a key about to be dropped: drop them (they refill from
+        # Postgres, re-sealed above).
+        for cache in (f"mcp:secretcache:v1:{t}:*", f"mcp:cfgcache:v1:{t}:*"):
+            async for key in redis.scan_iter(match=cache, count=200):
+                await redis.delete(key)
 
     async for key in redis.scan_iter(match=f"mcp:connector_secrets:{t}:*", count=200):
         raw = await redis.get(key)
