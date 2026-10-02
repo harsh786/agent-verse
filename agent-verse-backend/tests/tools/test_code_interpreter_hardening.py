@@ -94,6 +94,32 @@ async def test_output_is_read_live_and_capped_then_the_program_is_stopped() -> N
     container.remove.assert_called_once_with(force=True)
 
 
+@pytest.mark.parametrize(
+    "env", ["production", "Production", "PRODUCTION", " production ", "staging", "prod", ""]
+)
+async def test_unsandboxed_fallback_is_refused_outside_development(
+    env: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CODE-04: the opt-in only works in development/test. ``ENVIRONMENT=Production``
+    (any case/whitespace), staging or an unknown value must never run host code."""
+    monkeypatch.setattr(ci, "_DOCKER_AVAILABLE", False)
+    monkeypatch.setenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
+    monkeypatch.setenv("ENVIRONMENT", env)
+    with pytest.raises(RuntimeError, match="disabled"):
+        await ci.CodeInterpreter().execute("print('ran on host')", "python", 5)
+
+
+@pytest.mark.parametrize("env", ["development", "Development", " test "])
+async def test_unsandboxed_fallback_opt_in_works_in_development(
+    env: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ci, "_DOCKER_AVAILABLE", False)
+    monkeypatch.setenv("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
+    monkeypatch.setenv("ENVIRONMENT", env)
+    res = await ci.CodeInterpreter().execute("print('dev ok')", "python", 10)
+    assert "dev ok" in res.stdout
+
+
 def test_capture_holds_at_most_cap_bytes() -> None:
     cap = 1000
     cap_obj = ci._CappedCapture(on_overflow=lambda: None, cap=cap)

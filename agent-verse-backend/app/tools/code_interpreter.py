@@ -72,6 +72,8 @@ _FILE_EXTENSIONS: dict[str, str] = {
 }
 
 _PIDS_LIMIT = 64
+# The only environments where AGENTVERSE_ALLOW_SUBPROCESS_EXEC may run host code.
+_UNSANDBOXED_ALLOWED_ENVIRONMENTS = frozenset({"development", "test"})
 # Per-stream output cap returned to the caller (the API used to return whatever
 # the program printed — a ``print('x' * 10**9)`` was buffered whole into memory).
 _MAX_OUTPUT_CHARS = 1_000_000
@@ -431,10 +433,14 @@ class CodeInterpreter:
         """
         import time
 
-        if os.getenv("ENVIRONMENT", "development") == "production":
+        # Allow-list, normalised: an exact == "production" check let
+        # ENVIRONMENT=Production (or staging, or a typo) run code on the host.
+        environment = os.getenv("ENVIRONMENT", "development").strip().lower()
+        if environment not in _UNSANDBOXED_ALLOWED_ENVIRONMENTS:
             raise RuntimeError(
                 f"Docker sandbox unavailable ({_docker_unavailable_reason()}); "
-                "unsandboxed subprocess execution is disabled in production. "
+                f"unsandboxed subprocess execution is disabled in {environment or 'this'} "
+                "environment (development/test only). "
                 "Start the Docker sandbox (colima start + docker pull python:3.12-slim)."
             )
 
