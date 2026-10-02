@@ -105,7 +105,8 @@ def bind_goal_to_agent_key(
     the key's restriction for the worker. A goal for any other agent raises
     :class:`AuthorizationError` (403). Non-agent callers pass through unchanged.
     """
-    restriction = tenant_ctx.agent_key
+    # Internal callers (trigger dispatcher, workers) may pass a minimal context.
+    restriction = getattr(tenant_ctx, "agent_key", None)
     if restriction is None:
         return agent_id, execution_context
     from app.core.errors import AuthorizationError
