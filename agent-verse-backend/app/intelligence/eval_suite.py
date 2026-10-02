@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -477,6 +478,8 @@ class EvalSuiteRunner:
         run_id: str | None = None,
         concurrency: int = 4,
         judge: LLMJudge | None = None,
+        agent_id: str | None = None,
+        pin_check: Callable[[], Awaitable[str | None]] | None = None,
     ) -> EvalSuiteResult:
         """Run golden tasks and score them.
 
@@ -496,7 +499,18 @@ class EvalSuiteRunner:
 
         async def _one(task: GoldenTask) -> GoldenTaskResult:
             async with gate:
-                return await self._run_task(task, goal_service, tenant_ctx, active_judge)
+                if pin_check is not None:
+                    # The run is pinned to the agent config it started with
+                    # (MEM-52): a task never runs on a changed agent.
+                    problem = await pin_check()
+                    if problem:
+                        return GoldenTaskResult(
+                            task_id=task.task_id, goal=task.goal, passed=False,
+                            failure_reasons=[problem], status="error",
+                        )
+                return await self._run_task(
+                    task, goal_service, tenant_ctx, active_judge, agent_id=agent_id
+                )
 
         for task_result in await asyncio.gather(*(_one(t) for t in tasks)):
             result.task_results.append(task_result)
@@ -516,6 +530,8 @@ class EvalSuiteRunner:
         goal_service: Any,
         tenant_ctx: Any,
         judge: LLMJudge | None = None,
+        *,
+        agent_id: str | None = None,
     ) -> GoldenTaskResult:
         t0 = time.monotonic()
         events: list[dict[str, Any]] = []
@@ -524,9 +540,15 @@ class EvalSuiteRunner:
             return invalid_task_result(task)
 
         try:
-            sub = await goal_service.submit_goal(
-                goal=task.goal, priority="normal", dry_run=False, tenant_ctx=tenant_ctx
-            )
+            submit_kwargs: dict[str, Any] = {
+                "goal": task.goal, "priority": "normal", "dry_run": False,
+                "tenant_ctx": tenant_ctx,
+            }
+            if agent_id:
+                # The golden goal runs ON the agent being evaluated (MEM-52),
+                # not on whatever the router picks.
+                submit_kwargs["agent_id"] = agent_id
+            sub = await goal_service.submit_goal(**submit_kwargs)
             goal_id = sub["goal_id"]
         except Exception as exc:
             return GoldenTaskResult(
@@ -708,74 +730,21 @@ class EvalSuiteRunner:
         return output
 
 
-# Pass rate an agent's attached eval suite must reach on its latest completed
-# run before the agent may run fully-autonomous.
-ROLLOUT_MIN_PASS_RATE = 0.8
+# The rollout gate lives in app.intelligence.rollout_gate (MEM-52); re-exported
+# here for existing importers.
+from app.intelligence.rollout_gate import (  # noqa: E402
+    ROLLOUT_MIN_PASS_RATE,
+    check_agent_rollout_gate,
+)
 
-
-async def check_agent_rollout_gate(
-    *,
-    agent_id: str | None,
-    eval_suite_id: str | None,
-    tenant_id: str,
-    db: Any,
-    min_pass_rate: float = ROLLOUT_MIN_PASS_RATE,
-) -> dict[str, Any]:
-    """Does the agent's eval suite pass well enough for fully-autonomous rollout?
-
-    Reads the NAMED suite's latest completed run (the tenant's
-    ``eval_suite_results`` under RLS; the store's in-memory runs without a DB)
-    and compares its pass rate with ``min_pass_rate``. It used to ignore the
-    suite and average every evaluation of the agent's goals against a
-    hard-coded 0.8. A store error propagates: callers fail closed.
-    """
-    from app.intelligence.eval_suite_store import EvalSuiteStore
-
-    report: dict[str, Any] = {
-        "agent_id": agent_id,
-        "eval_suite_id": eval_suite_id or None,
-        "min_pass_rate_required": min_pass_rate,
-        "gate_passed": False,
-        "run_id": None,
-        "run_at": None,
-        "run_count": 0,
-        "total_tasks": 0,
-        "passed_tasks": 0,
-        "pass_rate": 0.0,
-    }
-    if not eval_suite_id:
-        report["reason"] = "No eval suite is attached to this agent."
-        return report
-    store = EvalSuiteStore(db, tenant_id)
-    if await store.get(eval_suite_id) is None:
-        report["reason"] = f"Eval suite {eval_suite_id} not found."
-        return report
-    runs = await store.list_runs(eval_suite_id)
-    completed = [r for r in runs if r.get("status") == "completed"]
-    report["run_count"] = len(completed)
-    if not completed:
-        report["reason"] = (
-            f"Eval suite {eval_suite_id} has no completed run. "
-            "Run it before enabling fully-autonomous mode."
-        )
-        return report
-    latest = completed[0]  # list_runs is newest-first
-    total = int(latest.get("total") or 0)
-    pass_rate = float(latest.get("pass_rate") or 0.0)
-    report.update(
-        run_id=latest.get("run_id"),
-        run_at=latest.get("run_at"),
-        total_tasks=total,
-        passed_tasks=int(latest.get("passed") or 0),
-        pass_rate=pass_rate,
-    )
-    if total == 0:
-        report["reason"] = f"The latest run of eval suite {eval_suite_id} had no tasks."
-        return report
-    report["gate_passed"] = pass_rate >= min_pass_rate
-    verdict = "meets" if report["gate_passed"] else "is below"
-    report["reason"] = (
-        f"Latest run of eval suite {eval_suite_id}: pass rate {pass_rate:.1%} "
-        f"{verdict} the {min_pass_rate:.1%} threshold."
-    )
-    return report
+__all__ = [
+    "ROLLOUT_MIN_PASS_RATE",
+    "EvalSuiteResult",
+    "EvalSuiteRunner",
+    "GoldenTask",
+    "GoldenTaskResult",
+    "LLMJudge",
+    "check_agent_rollout_gate",
+    "platform_judge",
+    "score_golden_task",
+]

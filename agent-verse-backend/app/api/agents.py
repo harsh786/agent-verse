@@ -926,6 +926,8 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
             ),
         )
     if _gate_on and body.autonomy_mode == "fully-autonomous" and body.eval_suite_id:
+        # A new agent has never run the suite, so no run can vouch for it
+        # (MEM-52): this always refuses, with the gate's explanation.
         await _enforce_rollout_gate(
             request, tenant_ctx, agent_id=None, eval_suite_id=body.eval_suite_id
         )
@@ -1132,8 +1134,11 @@ async def update_agent(request: Request, agent_id: str, body: UpdateAgentRequest
         current.get("autonomy_mode") != "fully-autonomous"
         or new_eval_suite != current.get("eval_suite_id")
     ):
+        # The gate vouches for the configuration being WRITTEN (MEM-52).
+        proposed = {**current, **{k: v for k, v in body.model_dump().items() if v is not None}}
         await _enforce_rollout_gate(
-            request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite)
+            request, tenant_ctx, agent_id=agent_id, eval_suite_id=str(new_eval_suite),
+            agent_config=proposed,
         )
 
     # Build update dict (only non-None fields)
@@ -1778,10 +1783,15 @@ async def _rollout_gate_report(
     *,
     agent_id: str | None,
     eval_suite_id: str | None,
+    agent_config: dict[str, Any] | None = None,
     min_pass_rate: float | None = None,
 ) -> dict[str, Any]:
-    """The rollout-gate report for *eval_suite_id*; 503 when it cannot be computed."""
-    from app.intelligence.eval_suite import ROLLOUT_MIN_PASS_RATE, check_agent_rollout_gate
+    """The rollout-gate report for *eval_suite_id*; 503 when it cannot be computed.
+
+    ``agent_config`` is the configuration the gate must vouch for (MEM-52): the
+    agent's record, or the record an update is about to write.
+    """
+    from app.intelligence.rollout_gate import check_agent_rollout_gate
 
     try:
         return await check_agent_rollout_gate(
@@ -1789,7 +1799,8 @@ async def _rollout_gate_report(
             eval_suite_id=eval_suite_id,
             tenant_id=tenant_ctx.tenant_id,
             db=getattr(request.app.state, "db_session_factory", None),
-            min_pass_rate=ROLLOUT_MIN_PASS_RATE if min_pass_rate is None else min_pass_rate,
+            agent_config=agent_config,
+            min_pass_rate=min_pass_rate,
         )
     except Exception as exc:
         raise HTTPException(
@@ -1802,11 +1813,17 @@ async def _rollout_gate_report(
 
 
 async def _enforce_rollout_gate(
-    request: Request, tenant_ctx: TenantContext, *, agent_id: str | None, eval_suite_id: str
+    request: Request,
+    tenant_ctx: TenantContext,
+    *,
+    agent_id: str | None,
+    eval_suite_id: str,
+    agent_config: dict[str, Any] | None = None,
 ) -> None:
     """Refuse (409, with the gate report) to make an agent fully-autonomous on a failing suite."""
     report = await _rollout_gate_report(
-        request, tenant_ctx, agent_id=agent_id, eval_suite_id=eval_suite_id
+        request, tenant_ctx, agent_id=agent_id, eval_suite_id=eval_suite_id,
+        agent_config=agent_config,
     )
     if not report["gate_passed"]:
         raise HTTPException(
@@ -1824,7 +1841,7 @@ async def check_rollout_gate(
     request: Request,
     agent_id: str,
     eval_suite_id: str = "",
-    min_pass_rate: float = Query(default=0.8, ge=0.0, le=1.0),
+    min_pass_rate: float | None = Query(default=None, ge=0.0, le=1.0),
 ) -> dict[str, Any]:
     """Whether the agent's eval suite passes well enough for fully-autonomous rollout.
 
@@ -1845,6 +1862,7 @@ async def check_rollout_gate(
         tenant_ctx,
         agent_id=agent_id,
         eval_suite_id=eval_suite_id or agent.get("eval_suite_id") or "",
+        agent_config=agent,
         min_pass_rate=min_pass_rate,
     )
     report["agent_id"] = agent_id

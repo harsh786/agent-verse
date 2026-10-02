@@ -1112,7 +1112,7 @@ def test_rollout_gate_with_db() -> None:
 
     client = TestClient(_make_app(agent_store=store), raise_server_exceptions=False)
 
-    with patch("app.intelligence.eval_suite.check_agent_rollout_gate", new_callable=AsyncMock, return_value=mock_result):
+    with patch("app.intelligence.rollout_gate.check_agent_rollout_gate", new_callable=AsyncMock, return_value=mock_result):
         resp = client.get(
             f"/agents/{agent_id}/rollout-gate?eval_suite_id=suite-1&min_pass_rate=0.8",
             headers=H,

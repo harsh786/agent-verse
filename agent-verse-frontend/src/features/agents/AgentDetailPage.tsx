@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { RolloutGatePanel, type RolloutGateReport } from "@/features/eval/RolloutGatePanel";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
@@ -875,59 +876,9 @@ export function AgentDetailPage() {
           description="Rollout gates control traffic steering to this agent version."
           variant="float"
         />
-          ) : (() => {
-            // Backend returns { gate_passed, reason, eval_suite_id, min_pass_rate_required,
-            // pass_rate (latest completed suite run), run_count (completed runs), agent_id }
-            const raw = rolloutGate as any;
-            const gatePassed: boolean = raw.gate_passed ?? raw.gate_status === 'passed';
-            const passRate: number = raw.pass_rate ?? 0;
-            const runCount: number = raw.run_count ?? 0;
-            const threshold: number | null =
-              typeof raw.min_pass_rate_required === 'number' ? raw.min_pass_rate_required : null;
-            const suiteId: string | null = raw.eval_suite_id ?? null;
-            const reason: string = raw.reason ?? '';
-            const conditions: string[] = Array.isArray(raw.conditions) ? raw.conditions : [];
-
-            return (
-              <div className="p-4 rounded-lg border bg-card space-y-3">
-                <div className="flex items-center gap-3">
-                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold ${gatePassed ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'}`}>
-                    {gatePassed ? '✓ Gate passed' : '✗ Gate blocked'}
-                  </span>
-                  <span className="text-xs text-muted-foreground" data-testid="rollout-suite">
-                    Eval suite: {suiteId ?? 'none attached'}
-                  </span>
-                </div>
-                <div className="grid grid-cols-3 gap-3 text-sm">
-                  <div className="bg-muted/40 rounded-lg p-3">
-                    <p className="text-xs text-muted-foreground">Pass rate</p>
-                    <p className="font-semibold text-lg">{(passRate * 100).toFixed(1)}%</p>
-                  </div>
-                  <div className="bg-muted/40 rounded-lg p-3">
-                    <p className="text-xs text-muted-foreground">Runs</p>
-                    <p className="font-semibold text-lg">{runCount}</p>
-                  </div>
-                  <div className="bg-muted/40 rounded-lg p-3">
-                    <p className="text-xs text-muted-foreground">Threshold</p>
-                    <p className="font-semibold text-lg">
-                      {threshold == null ? '—' : `${(threshold * 100).toFixed(0)}%`}
-                    </p>
-                  </div>
-                </div>
-                {reason && (
-                  <p className="text-sm text-muted-foreground italic">{reason}</p>
-                )}
-                {conditions.length > 0 && (
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Conditions</p>
-                    <ul className="list-disc pl-4 text-sm space-y-1">
-                      {conditions.map((c, i) => <li key={i}>{c}</li>)}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            );
-          })()}
+          ) : (
+            <RolloutGatePanel agentId={agentId!} report={rolloutGate as RolloutGateReport} />
+          )}
         </div>
       )}
 

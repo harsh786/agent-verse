@@ -539,6 +539,11 @@ class Settings(BaseSettings):
     # Making an agent fully-autonomous requires an attached eval suite whose
     # latest completed run passes the rollout gate. False skips both checks.
     fully_autonomous_eval_gate_enabled: bool = True
+    # The gate's run must reach this pass rate over at least this many golden
+    # tasks, against the agent's current config and the suite's current dataset
+    # version (MEM-52).
+    rollout_min_pass_rate: float = Field(default=0.8, ge=0.0, le=1.0)
+    rollout_min_suite_size: int = Field(default=5, ge=1, le=100_000)
     # A supervisor's sub-goals run under the parent's concurrent-goal slot
     # (a parent at the tenant limit can never starve its own children). False
     # makes each sub-goal take, and release, a slot of its own.

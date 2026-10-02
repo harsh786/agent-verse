@@ -619,25 +619,36 @@ class EvalSuiteStore:
     # ── runs ──────────────────────────────────────────────────────────────────
 
     async def start_run(
-        self, suite_id: str, run_id: str, total: int, *, dataset_version: int | None = None
+        self,
+        suite_id: str,
+        run_id: str,
+        total: int,
+        *,
+        dataset_version: int | None = None,
+        agent_id: str | None = None,
+        agent_config_hash: str | None = None,
+        agent_version: int | None = None,
     ) -> None:
         if self._db is None:
             _MEM_RUNS.setdefault(self._tenant_id, {}).setdefault(suite_id, {})[run_id] = {
                 "run_id": run_id, "status": "running", "total": total, "passed": 0,
                 "failed": 0, "pass_rate": 0.0, "task_results": [], "error": None,
                 "run_at": datetime.now(UTC).isoformat(), "finished_at": None,
-                "dataset_version": dataset_version,
+                "dataset_version": dataset_version, "agent_id": agent_id,
+                "agent_config_hash": agent_config_hash, "agent_version": agent_version,
             }
             return
         async with _scoped(self._db, self._tenant_id) as s:
             await s.execute(
                 sa_text(
                     "INSERT INTO eval_suite_results (id, suite_id, tenant_id, run_id, "
-                    " total_tasks, status, dataset_version) "
-                    "VALUES (:id, :sid, :tid, :id, :total, 'running', :dv)"
+                    " total_tasks, status, dataset_version, agent_id, agent_config_hash, "
+                    " agent_version) "
+                    "VALUES (:id, :sid, :tid, :id, :total, 'running', :dv, :aid, :ahash, :aver)"
                 ),
                 {"id": run_id, "sid": suite_id, "tid": self._tenant_id, "total": total,
-                 "dv": dataset_version},
+                 "dv": dataset_version, "aid": agent_id, "ahash": agent_config_hash,
+                 "aver": agent_version},
             )
 
     async def finish_run(
@@ -687,12 +698,17 @@ class EvalSuiteStore:
                  "tid": self._tenant_id, "id": run_id},
             )
 
-    async def list_runs(self, suite_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
-        """Newest-first run history of one suite."""
+    async def list_runs(
+        self, suite_id: str, *, limit: int = 50, agent_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Newest-first run history of one suite (optionally: runs against one agent)."""
         if self._db is None:
             runs = list(_MEM_RUNS.get(self._tenant_id, {}).get(suite_id, {}).values())
+            if agent_id is not None:
+                runs = [r for r in runs if r.get("agent_id") == agent_id]
             runs.sort(key=lambda r: r["run_at"], reverse=True)
             return [dict(r) for r in runs[:limit]]
+        agent_filter = "AND agent_id = :aid " if agent_id is not None else ""
         async with _scoped(self._db, self._tenant_id) as s:
             rows = (
                 await s.execute(
@@ -700,17 +716,18 @@ class EvalSuiteStore:
                         "SELECT run_id, CASE WHEN status = 'running' AND run_at < :stale "
                         " THEN 'abandoned' ELSE status END, total_tasks, passed_tasks, "
                         " failed_tasks, pass_rate, task_results, error, run_at, finished_at, "
-                        " dataset_version "
+                        " dataset_version, agent_id, agent_config_hash, agent_version "
                         "FROM eval_suite_results WHERE tenant_id = :tid AND suite_id = :sid "
-                        "ORDER BY run_at DESC, id LIMIT :limit"
+                        f"{agent_filter}ORDER BY run_at DESC, id LIMIT :limit"
                     ),
                     {"tid": self._tenant_id, "sid": suite_id, "limit": limit,
-                     "stale": datetime.now(UTC) - STALE_RUN_AFTER},
+                     "stale": datetime.now(UTC) - STALE_RUN_AFTER, "aid": agent_id},
                 )
             ).all()
         return [
             {"run_id": r[0], "status": r[1], "total": r[2], "passed": r[3], "failed": r[4],
              "pass_rate": r[5], "task_results": _loads(r[6]) or [], "error": r[7],
-             "run_at": _iso(r[8]), "finished_at": _iso(r[9]), "dataset_version": r[10]}
+             "run_at": _iso(r[8]), "finished_at": _iso(r[9]), "dataset_version": r[10],
+             "agent_id": r[11], "agent_config_hash": r[12], "agent_version": r[13]}
             for r in rows
         ]

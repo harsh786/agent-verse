@@ -1440,7 +1440,7 @@ async def import_golden_dataset(
 
 async def _execute_eval_run(
     store: Any, runner: Any, goal_service: Any, ctx: Any, suite_id: str, run_id: str,
-    tasks: list[Any], judge: Any = None,
+    tasks: list[Any], judge: Any = None, agent_id: str | None = None, pin_check: Any = None,
 ) -> None:
     """Background body of a suite run: execute, then record the outcome durably.
 
@@ -1453,7 +1453,8 @@ async def _execute_eval_run(
     try:
         result = await runner.run_suite(
             suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx,
-            tasks=tasks, run_id=run_id, judge=judge,
+            tasks=tasks, run_id=run_id, judge=judge, agent_id=agent_id,
+            pin_check=pin_check,
         )
         await store.finish_run(suite_id, run_id, result=result)
     except Exception as exc:
@@ -1464,8 +1465,31 @@ async def _execute_eval_run(
             log.error("eval_suite_run_status_lost", run_id=run_id, error=str(store_exc))
 
 
+class RunEvalSuiteRequest(BaseModel):
+    # The agent every golden goal runs on. Required for the run to vouch for an
+    # agent in the rollout gate; without it the goals are auto-routed and the
+    # run is exploratory only.
+    agent_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+async def _agent_for_run(request: Request, ctx: Any, agent_id: str) -> dict[str, Any]:
+    from app.api._deps import get_agent_store
+
+    try:
+        agent: dict[str, Any] | None = await get_agent_store(request).get_async(
+            agent_id, tenant_ctx=ctx
+        )
+    except Exception as exc:
+        raise HTTPException(503, "Agent lookup failed; try again") from exc
+    if agent is None:
+        raise HTTPException(404, f"Agent {agent_id} not found")
+    return agent
+
+
 @intelligence_router.post("/eval-suites/{suite_id}/run", status_code=202)
-async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
+async def run_eval_suite(
+    request: Request, suite_id: str, body: RunEvalSuiteRequest | None = None
+) -> dict[str, Any]:
     """Start a run of one of the caller's eval suites against the live agent.
 
     Returns 202 immediately with a ``run_id``; poll ``GET .../results`` for the
@@ -1487,9 +1511,29 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
     if meta is None:
         raise HTTPException(404, f"Eval suite {suite_id} not found")
     version = int(meta["dataset_version"])
+    agent_id = body.agent_id if body is not None else None
+    config_hash: str | None = None
+    pin_check = None
+    if agent_id:
+        from app.intelligence.rollout_gate import agent_config_hash
+
+        agent = await _agent_for_run(request, ctx, agent_id)
+        config_hash = agent_config_hash(agent)
+        pinned = config_hash
+
+        async def pin_check() -> str | None:
+            # Every task runs on the config the run started with (MEM-52).
+            current = await _agent_for_run(request, ctx, str(agent_id))
+            if agent_config_hash(current) != pinned:
+                return "the agent's configuration changed during the run"
+            return None
+
     tasks = [task_from_dict(suite_id, t) async for t in store.iter_tasks(suite_id, version)]
     run_id = _uuid.uuid4().hex
-    await store.start_run(suite_id, run_id, len(tasks), dataset_version=version)
+    await store.start_run(
+        suite_id, run_id, len(tasks), dataset_version=version, agent_id=agent_id,
+        agent_config_hash=config_hash,
+    )
 
     running: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault(
         "_eval_run_tasks", set()
@@ -1500,12 +1544,15 @@ async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
     # configured, and its score must reach the task's min_score.
     judge = platform_judge(getattr(request.app.state, "_app_provider", None))
     task = asyncio.create_task(
-        _execute_eval_run(store, runner, goal_service, ctx, suite_id, run_id, tasks, judge)
+        _execute_eval_run(
+            store, runner, goal_service, ctx, suite_id, run_id, tasks, judge,
+            agent_id=agent_id, pin_check=pin_check,
+        )
     )
     running.add(task)  # keep a strong reference until it finishes
     task.add_done_callback(running.discard)
     return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": len(tasks),
-            "dataset_version": version}
+            "dataset_version": version, "agent_id": agent_id, "agent_config_hash": config_hash}
 
 
 @intelligence_router.get("/eval-suites/{suite_id}/results")

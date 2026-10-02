@@ -2345,8 +2345,12 @@ export const evalSuitesApi = {
       method: "POST",
       body: JSON.stringify(task),
     }),
-  runSuite: (id: string) =>
-    request<{ run_id: string }>(`/intelligence/eval-suites/${id}/run`, { method: "POST" }),
+  /** With ``agentId`` every golden goal runs on that agent and the run can vouch for it in the rollout gate. */
+  runSuite: (id: string, agentId?: string) =>
+    request<{ run_id: string; dataset_version?: number; agent_id?: string | null }>(
+      `/intelligence/eval-suites/${id}/run`,
+      { method: "POST", body: JSON.stringify(agentId ? { agent_id: agentId } : {}) },
+    ),
   getSuiteResults: (id: string) =>
     request<EvalSuiteResult[]>(`/intelligence/eval-suites/${id}/results`),
   deleteSuite: (suiteId: string) =>

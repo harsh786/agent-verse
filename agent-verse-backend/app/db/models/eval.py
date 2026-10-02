@@ -58,6 +58,10 @@ class EvalSuiteRunResult(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="completed")
     # The suite dataset version the run executed (MEM-54).
     dataset_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The agent the golden goals ran on and its behaviour-config hash (MEM-52).
+    agent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    agent_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     run_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
