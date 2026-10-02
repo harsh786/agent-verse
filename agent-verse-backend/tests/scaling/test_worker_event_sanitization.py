@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-_SECRET = "sk_" + "live_" + "ABCDEFGHIJKLMNOPQRST1234"  # assembled: a key-shaped literal trips secret scanners
+_SECRET = "sk_" + "live_" + "ABCDEFGHIJKLMNOPQRST1234"  # split: secret scanners
 
 
 class _DeniedGraph:
