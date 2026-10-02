@@ -386,6 +386,27 @@ describe('MarketplacePage — branches', () => {
     expect(screen.queryByLabelText('Dismiss deploy banner')).not.toBeInTheDocument();
   });
 
+  test('quick deploy of a paid template (402) explains purchasing is unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/deploy') && method === 'POST') {
+        return jsonResponse({ detail: { error: 'PAYMENT_REQUIRED', price_usd: 9.99 } }, 402);
+      }
+      return jsonResponse(listResponse([v2Template()]));
+    });
+    renderPage();
+    await screen.findByText('PR Review Agent');
+    await userEvent.click(screen.getByRole('button', { name: /^deploy$/i }));
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(
+        toasts.some((t) => t.kind === 'error' && /paid template/i.test(t.message))
+      ).toBe(true);
+    });
+  });
+
   test('quick deploy that rejects with a falsy error field falls back to the default message', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);

@@ -1286,6 +1286,26 @@ _VISIBLE_SQL = (
 )
 
 
+def _template_price(template: dict[str, Any]) -> float:
+    try:
+        return float(template.get("price_usd") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _payment_required(template_id: str, price: float) -> dict[str, Any]:
+    return {
+        "success": False,
+        "payment_required": True,
+        "price_usd": price,
+        "error": (
+            f"Template {template_id} is priced at ${price:.2f}; it can only be installed "
+            "after a completed purchase."
+        ),
+        "template_id": template_id,
+    }
+
+
 def _is_system_builtin(template: dict[str, Any]) -> bool:
     return template.get("tenant_id") == _SYSTEM_TENANT_ID and bool(template.get("is_builtin"))
 
@@ -1732,6 +1752,38 @@ class MarketplaceV2:
         return record
 
     @staticmethod
+    async def _price_requiring_purchase(session: Any, template_id: str, tenant_id: str) -> float:
+        """Price the caller still has to pay before installing (0 = may install).
+
+        Free templates, the author's own templates and templates the caller
+        holds a ``completed`` purchase for need no payment.
+        """
+        row = (
+            await session.execute(
+                _t(
+                    "SELECT COALESCE(price_usd, 0), tenant_id, author_tenant_id "
+                    "FROM marketplace_templates WHERE id = :id"
+                ),
+                {"id": template_id},
+            )
+        ).fetchone()
+        if row is None:
+            return 0.0  # built-in catalogue entry not seeded yet: never priced
+        price = float(row[0] or 0)
+        if price <= 0 or tenant_id in (row[1], row[2]):
+            return 0.0
+        paid = (
+            await session.execute(
+                _t(
+                    "SELECT 1 FROM marketplace_purchases WHERE template_id = :id "
+                    "AND buyer_tenant_id = :buyer AND status = 'completed' LIMIT 1"
+                ),
+                {"id": template_id, "buyer": tenant_id},
+            )
+        ).fetchone()
+        return 0.0 if paid is not None else price
+
+    @staticmethod
     async def _require_counter_update(
         session: Any, sql: str, template_id: str, *, what: str
     ) -> None:
@@ -1770,6 +1822,9 @@ class MarketplaceV2:
         template = await self.get_template(template_id=template_id, tenant_id=tenant_ctx.tenant_id)
         if template is None:
             return {"success": False, "error": "Template not found", "template_id": template_id}
+        if self._db is None and _template_price(template) > 0:
+            # No purchase ledger without a DB: a priced template cannot be paid for.
+            return _payment_required(template_id, _template_price(template))
 
         # Auto-fill schema defaults for any parameter not supplied by the caller.
         # This allows quick-deploy (empty params {}) to work when all required
@@ -1835,6 +1890,15 @@ class MarketplaceV2:
                         _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant_ctx.tenant_id},
                     )
+                    # ENT-28: a priced template installs only for its author or a
+                    # buyer holding a COMPLETED purchase — read in THIS transaction
+                    # under the buyer's RLS context (purchases are buyer-scoped).
+                    price = await self._price_requiring_purchase(
+                        session, template_id, tenant_ctx.tenant_id
+                    )
+                    if price > 0:
+                        await session.rollback()
+                        return _payment_required(template_id, price)
                     connector_ids = template.get("required_connectors", [])
                     system_prompt = config.get("system_prompt") or template.get("system_prompt", "")
                     # The install record goes FIRST and is the authority on which

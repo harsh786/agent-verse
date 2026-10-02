@@ -25,9 +25,18 @@ import {
   Package, BookmarkPlus,
 } from "lucide-react";
 import {
-  marketplaceApi, templatesApi,
+  ApiError, marketplaceApi, templatesApi,
   type MarketplaceV2Template, type MarketplaceReview,
 } from "@/lib/api/client";
+
+/** Paid templates cannot be bought yet, so the backend refuses their install with 402. */
+export const PAID_TEMPLATE_MESSAGE =
+  "This is a paid template. Purchasing templates is not available yet, so it cannot be installed.";
+
+function deployErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 402) return PAID_TEMPLATE_MESSAGE;
+  return `Deploy failed: ${String(e)}`;
+}
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { toast } from "@/stores/toast";
@@ -296,7 +305,7 @@ function TemplateDetailDrawer({
         toast({ kind: "error", message: data.error ?? "Deploy failed" });
       }
     },
-    onError: (e) => toast({ kind: "error", message: `Deploy failed: ${String(e)}` }),
+    onError: (e) => toast({ kind: "error", message: deployErrorMessage(e) }),
   });
 
   const saveToLibraryMutation = useMutation({
@@ -809,7 +818,7 @@ export function MarketplacePage() {
         toast({ kind: "error", message: result.error ?? "Deploy failed" });
       }
     } catch (e) {
-      toast({ kind: "error", message: `Deploy failed: ${String(e)}` });
+      toast({ kind: "error", message: deployErrorMessage(e) });
     } finally {
       setDeployingId(null);
     }

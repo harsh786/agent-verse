@@ -95,7 +95,6 @@ from app.proactive.router import router as _proactive_router
 # (log name, module, attribute, include prefix) for routers registered through
 # _include_guarded — see register_routers for the failure contract.
 _GUARDED_ROUTERS: tuple[tuple[str, str, str, str | None], ...] = (
-    ("marketplace_monetization_router", "app.api.marketplace_monetization", "router", None),
     ("dpdp_router", "app.api.dpdp", "router", None),
     ("gst_billing_router", "app.api.gst_billing", "router", None),
     ("sla_router", "app.api.sla", "router", None),

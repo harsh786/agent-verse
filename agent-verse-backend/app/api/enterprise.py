@@ -77,6 +77,19 @@ def _marketplace(request: Request) -> Any:
     return _gmp(request)
 
 
+def _raise_if_payment_required(result: dict[str, Any]) -> None:
+    """402 for a priced template the caller has not purchased (ENT-28)."""
+    if result.get("payment_required"):
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "PAYMENT_REQUIRED",
+                "price_usd": result.get("price_usd"),
+                "message": result.get("error", "Purchase required"),
+            },
+        )
+
+
 def _marketplace_v2(request: Request) -> Any:
     """Return the DB-backed MarketplaceV2 service (falls back to v1)."""
     v2 = getattr(request.app.state, "marketplace_v2", None)
@@ -598,6 +611,7 @@ async def deploy_template_v2(
         agent_store=agent_store,
     )
     if not result.get("success"):
+        _raise_if_payment_required(result)
         # Return structured error without raising (lets client inspect details)
         missing = result.get("missing_connectors")
         if missing:
@@ -819,6 +833,7 @@ async def deploy_template(
         agent_store=getattr(request.app.state, "agent_store", None),
     )
     if not result.get("success"):
+        _raise_if_payment_required(result)
         if result.get("missing_connectors"):
             raise HTTPException(
                 status_code=400,
