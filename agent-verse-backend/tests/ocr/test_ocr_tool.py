@@ -61,7 +61,7 @@ async def test_execute_with_file_path(tmp_path):
 
     mock_engine = MagicMock()
     mock_engine.extract = AsyncMock(return_value=_make_result())
-    tool = OcrDocumentTool(ocr_engine=mock_engine)
+    tool = OcrDocumentTool(ocr_engine=mock_engine, allow_local_files=True)
 
     result = await tool.execute(file_path=str(fake_img))
 
@@ -77,7 +77,7 @@ async def test_execute_with_file_path_pdf(tmp_path):
 
     mock_engine = MagicMock()
     mock_engine.extract = AsyncMock(return_value=_make_result())
-    tool = OcrDocumentTool(ocr_engine=mock_engine)
+    tool = OcrDocumentTool(ocr_engine=mock_engine, allow_local_files=True)
 
     await tool.execute(file_path=str(fake_pdf))
 
@@ -150,3 +150,34 @@ async def test_result_shape():
     assert "engine_used" in result
     assert "overall_confidence" in result
     assert "page_count" in result
+
+
+@pytest.mark.asyncio
+async def test_agent_callable_tool_refuses_local_file_paths(tmp_path):
+    """The default (agent-callable) tool never reads the worker's filesystem: a
+    planned or prompt-injected step could otherwise OCR other tenants' files or
+    read /dev/zero until the worker runs out of memory."""
+    secret = tmp_path / "other-tenant.pdf"
+    secret.write_bytes(b"%PDF-1.4 other tenant data")
+    mock_engine = MagicMock()
+    mock_engine.extract = AsyncMock(return_value=_make_result())
+    tool = OcrDocumentTool(ocr_engine=mock_engine)
+    with pytest.raises(ValueError, match="file_path is not accepted"):
+        await tool.execute(file_path=str(secret))
+    mock_engine.extract.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_trusted_tool_refuses_devices_and_directories(tmp_path):
+    tool = OcrDocumentTool(ocr_engine=MagicMock(), allow_local_files=True)
+    with pytest.raises(ValueError, match="regular file"):
+        await tool.execute(file_path="/dev/zero")
+    with pytest.raises(ValueError, match="regular file"):
+        await tool.execute(file_path=str(tmp_path))
+
+
+def test_mcp_schema_does_not_offer_file_path():
+    from app.mcp.servers.utility_server import TOOL_DEFINITIONS
+
+    schema = next(t for t in TOOL_DEFINITIONS if t["name"] == "extract_document")
+    assert "file_path" not in schema["parameters"]["properties"]

@@ -18,7 +18,11 @@ class OcrDocumentTool:
     """Extract text and structured fields from any document image or PDF.
 
     Accepts one of:
-    - file_path: local file path (image or PDF)
+    - file_path: local file path (image or PDF) — ONLY when the tool was built
+      with ``allow_local_files=True`` (trusted, non-agent callers). The
+      agent-callable instance refuses it: a planned or prompt-injected step could
+      otherwise read any file on the worker (other tenants' documents, secrets,
+      ``/dev/zero``).
     - image_base64: base64-encoded image bytes
     - pdf_base64: base64-encoded PDF bytes
 
@@ -28,15 +32,18 @@ class OcrDocumentTool:
     name = "extract_document"
     description = (
         "Extract text and structured fields from ANY document. "
-        "Accepts file_path (local path), image_base64, pdf_base64, or "
+        "Accepts image_base64, pdf_base64, or "
         "document_base64 (+ content_type/filename) for any other format "
         "(office docs, etc. — routed through universal OCR). "
         "Returns raw_text, document_type, structured fields, and source_format/"
         "degradation metadata."
     )
 
-    def __init__(self, ocr_engine: OcrEngine | None = None) -> None:
+    def __init__(
+        self, ocr_engine: OcrEngine | None = None, *, allow_local_files: bool = False
+    ) -> None:
         self._engine = ocr_engine or OcrEngine()
+        self._allow_local_files = allow_local_files
 
     async def execute(
         self,
@@ -96,6 +103,11 @@ class OcrDocumentTool:
     ) -> tuple[bytes | None, bytes | None]:
         """Resolve input to (image_bytes, pdf_bytes). Raises ValueError if invalid."""
         if file_path:
+            if not self._allow_local_files:
+                raise ValueError(
+                    "file_path is not accepted here; send the document as "
+                    "image_base64, pdf_base64 or document_base64."
+                )
             return self._read_file(file_path)
 
         if image_base64:
@@ -110,8 +122,14 @@ class OcrDocumentTool:
 
     def _read_file(self, file_path: str) -> tuple[bytes | None, bytes | None]:
         path = Path(file_path).resolve()
-        # Security: reject paths that resolve outside /tmp or typical upload dirs
-        data = path.read_bytes()
+        # Only regular files, size-checked before reading and read with a hard
+        # cap (devices like /dev/zero report size 0 and never end).
+        if not path.is_file():
+            raise ValueError("file_path must point to a regular file.")
+        if path.stat().st_size > _MAX_BYTES:
+            raise ValueError(f"File exceeds maximum allowed size of {_MAX_BYTES // 1_048_576} MB.")
+        with path.open("rb") as fh:
+            data = fh.read(_MAX_BYTES + 1)
         if len(data) > _MAX_BYTES:
             raise ValueError(f"File exceeds maximum allowed size of {_MAX_BYTES // 1_048_576} MB.")
         suffix = path.suffix.lower()

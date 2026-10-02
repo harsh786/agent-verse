@@ -47,10 +47,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "file_path": {
-                    "type": "string",
-                    "description": "Local filesystem path to an image or PDF.",
-                },
                 "image_base64": {
                     "type": "string",
                     "description": "Base64-encoded image bytes.",
