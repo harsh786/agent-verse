@@ -670,8 +670,23 @@ def test_discover_connector_tools_with_mcp_client() -> None:
     mock_client = MagicMock()
     mock_client.discover_tools = AsyncMock(return_value=[mock_tool])
 
+    class _Session:
+        async def execute(self, *a: Any, **k: Any) -> None:
+            return None
+
+        def begin(self) -> Any:
+            return self
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
     registry = _make_registry()
-    client = TestClient(_make_app(registry=registry, mcp_client=mock_client), raise_server_exceptions=False)
+    app = _make_app(registry=registry, mcp_client=mock_client)
+    app.state.db_session_factory = _Session  # tools are saved only with a DB (OAPI-01)
+    client = TestClient(app, raise_server_exceptions=False)
 
     # Register a connector first
     connector = _register_connector(client, name="GitHub")
@@ -685,6 +700,7 @@ def test_discover_connector_tools_with_mcp_client() -> None:
     body = resp.json()
     assert body["server_id"] == server_id
     assert body["tools_discovered"] == 1
+    assert body["tools_saved"] == 1
     mock_client.discover_tools.assert_awaited_once()
 
 

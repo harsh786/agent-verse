@@ -2095,13 +2095,19 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
     except Exception as exc:
         raise HTTPException(500, f"Discovery failed: {exc}") from exc
 
+    if not tools:
+        return {"server_id": server_id, "tools_discovered": 0, "tools_saved": 0}
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
-        from app.db.session import get_session_factory
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tools were discovered but cannot be saved (no database configured).",
+        )
 
-        db = get_session_factory()
-
+    # Counted only once the transaction has committed (OAPI-01): a rolled-back
+    # write used to answer 200 with tools_saved = the rows it had attempted.
     saved = 0
+    attempted = 0
     if db is not None:
         try:
             import json
@@ -2152,11 +2158,22 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
                             "risk": getattr(tool, "risk_level", "low"),
                         },
                     )
-                    saved += 1
+                    attempted += 1
+            saved = attempted
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("tool_capability_persist_failed: %s", exc)
+            _logger.error(
+                "tool_capability_persist_failed tenant=%s server=%s error=%s",
+                tenant_ctx.tenant_id,
+                server_id,
+                exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    f"{len(tools)} tools were discovered but could not be saved; "
+                    "nothing was persisted. Retry shortly."
+                ),
+            ) from exc
 
     return {
         "server_id": server_id,
