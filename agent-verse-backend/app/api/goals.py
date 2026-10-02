@@ -801,6 +801,7 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
 
     async def event_generator() -> AsyncGenerator[str, None]:
         from app.core.errors import ServiceUnavailableError
+        from app.services.goal_service import SSE_HEARTBEAT_TYPE
 
         seq = 0
         try:
@@ -809,6 +810,13 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
                 tenant_ctx=tenant_ctx,
                 since_sequence=since_sequence,
             ):
+                # Stop on a client that went away (heartbeats make sure this is
+                # checked even while the goal is idle, e.g. waiting for approval).
+                if await request.is_disconnected():
+                    break
+                if event.get("type") == SSE_HEARTBEAT_TYPE:
+                    yield ": ping\n\n"
+                    continue
                 seq += 1
                 event_seq = event.get("_seq", seq)
                 yield f"id: {event_seq}\ndata: {json.dumps(event)}\n\n"

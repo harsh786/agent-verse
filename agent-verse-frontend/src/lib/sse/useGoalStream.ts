@@ -40,6 +40,23 @@ export interface StreamingToken {
   cumulative: string;
 }
 
+/**
+ * Whether *event* ends the goal's stream. Mirrors the backend: worker_failed
+ * (timeout, crash, lock failure) is terminal, and worker_complete is terminal
+ * only for the final status it carries (waiting_human is a suspension).
+ */
+export function isTerminalGoalEvent(event: GoalEvent): boolean {
+  const t = event.type;
+  if (t === "goal_complete" || t === "goal_failed" || t === "goal_cancelled" || t === "worker_failed") {
+    return true;
+  }
+  if (t === "worker_complete") {
+    const status = String(event.status ?? "complete").toLowerCase();
+    return status === "complete" || status === "failed" || status === "cancelled";
+  }
+  return false;
+}
+
 interface UseGoalStreamOptions {
   onEvent?: (event: GoalEvent) => void;
   reconnectKey?: number;
@@ -216,11 +233,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
                   setStreamingToken(null);
                 }
 
-                if (
-                  etype === "goal_complete" ||
-                  etype === "goal_failed" ||
-                  etype === "goal_cancelled"
-                ) {
+                if (isTerminalGoalEvent(parsed)) {
                   retryCountRef.current = 0; // Reset retries on terminal event
                   terminalReceived = true;
                   setConnected(false);

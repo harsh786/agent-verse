@@ -159,6 +159,10 @@ _EVICTION_INTERVAL_SECONDS = 60  # evict at most once every 60 seconds
 # truth, so read traffic over many distinct goals must not grow the heap. Records
 # with a live local task or SSE subscribers are never dropped by the cap.
 _MAX_CACHED_GOALS = 5_000
+# An idle goal stream yields a heartbeat marker this often (the SSE endpoint
+# turns it into a ": ping" comment and checks for a disconnected client).
+_SSE_HEARTBEAT_SECONDS = 15.0
+SSE_HEARTBEAT_TYPE = "_sse_heartbeat"
 
 
 def _row_completed_at(row: Any, status: GoalStatus) -> str | None:
@@ -2745,6 +2749,26 @@ class GoalService:
         if not record.events:
             return persisted_events
         return self._merge_events_without_duplicates(persisted_events, list(record.events))
+
+    @staticmethod
+    def _normalize_bus_event(message: Any) -> dict[str, Any]:
+        """A goal event read from ``goal_events:*``: workers publish an envelope
+        ``{goal_id, tenant_id, type, payload: <event>}``, the API publishes the
+        event itself. Always return the event (keeping a ``_seq`` from either)."""
+        if not isinstance(message, dict):
+            return {"type": "unknown"}
+        payload = message.get("payload")
+        if (
+            isinstance(payload, dict)
+            and "goal_id" in message
+            and payload.get("type", message.get("type")) == message.get("type")
+        ):
+            event = dict(payload)
+            event.setdefault("type", message.get("type", ""))
+            if "_seq" in message and "_seq" not in event:
+                event["_seq"] = message["_seq"]
+            return event
+        return message
 
     @staticmethod
     def _worker_complete_status(event: dict[str, Any]) -> GoalStatus | None:
@@ -5784,9 +5808,14 @@ class GoalService:
                 return
 
             # Subscribe to Redis pub/sub for live events published by the
-            # owning replica's _dispatch_event().
+            # owning replica's _dispatch_event() and by workers.
             if not self._redis_url_for_pubsub:
-                return  # No Redis URL configured — cross-replica delivery unavailable
+                # It used to end the stream silently, as if the goal had no
+                # further events.
+                raise ServiceUnavailableError(
+                    "Live delivery for this goal is unavailable on this replica.",
+                    code="GOAL_STREAM_UNAVAILABLE",
+                )
 
             try:
                 import redis.asyncio as _aioredis
@@ -5799,27 +5828,39 @@ class GoalService:
                 ):
                     channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
                     await pubsub.subscribe(channel)
-                    async for message in pubsub.listen():
+                    while True:
+                        message = await pubsub.get_message(
+                            ignore_subscribe_messages=True, timeout=_SSE_HEARTBEAT_SECONDS
+                        )
+                        if message is None:
+                            # Idle (e.g. waiting for approval): a heartbeat lets
+                            # the endpoint notice a client that went away.
+                            yield {"type": SSE_HEARTBEAT_TYPE}
+                            continue
                         if message.get("type") != "message":
                             continue
                         try:
-                            event = json.loads(message["data"])
-                            yield event
-                            # Stop streaming at terminal events
-                            if event.get("type") in (
-                                "goal_complete",
-                                "goal_failed",
-                                "goal_cancelled",
-                            ):
-                                break
+                            event = self._normalize_bus_event(json.loads(message["data"]))
                         except Exception:
                             continue
+                        yield event
+                        # Every terminal event ends the stream — worker_failed
+                        # (timeout, crash, lock failure) used to leave it open.
+                        if self._status_from_events([event]) is not None:
+                            break
+            except ServiceUnavailableError:
+                raise
             except Exception as exc:
                 _svc_logger.warning(
                     "cross_replica_sse_failed",
                     goal_id=goal_id,
                     error=str(exc)[:120],
                 )
+                raise ServiceUnavailableError(
+                    "Live delivery for this goal was interrupted; reconnect.",
+                    code="GOAL_STREAM_UNAVAILABLE",
+                    cause=exc,
+                ) from exc
             return
 
         # ── Local replica path (unchanged) ────────────────────────────────────
@@ -5872,7 +5913,11 @@ class GoalService:
             if queue is None:
                 return
             while True:
-                item = await queue.get()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=_SSE_HEARTBEAT_SECONDS)
+                except TimeoutError:
+                    yield {"type": SSE_HEARTBEAT_TYPE}
+                    continue
                 if item is None:  # end-of-stream
                     break
                 yield item

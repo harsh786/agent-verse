@@ -238,6 +238,48 @@ describe('useGoalStream — reconnection, backoff, and resilience', () => {
     await advance(0);
   });
 
+  test('worker_failed is terminal: no reconnect after it (SVC-06)', async () => {
+    vi.useFakeTimers();
+    const ctl = makeControllableStream();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(ctl.stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderHook(() => useGoalStream('goal-worker-failed'));
+    ctl.push(sseFrame({ type: 'worker_failed', error: 'timeout' }));
+    await advance(0);
+    ctl.close();
+    await advance(60_000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test('worker_complete with a waiting_human status is not terminal', async () => {
+    vi.useFakeTimers();
+    const ctl1 = makeControllableStream();
+    const ctl2 = makeControllableStream();
+    const streams = [ctl1, ctl2];
+    let call = 0;
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(streams[call++].stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderHook(() => useGoalStream('goal-wh'));
+    ctl1.push(sseFrame({ type: 'worker_complete', status: 'waiting_human' }));
+    await advance(0);
+    ctl1.close();
+    await advance(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    ctl2.push(sseFrame({ type: 'goal_complete' }));
+    await advance(0);
+  });
+
   test('backs off exponentially across repeated network failures (1s, 2s, 4s, 8s)', async () => {
     // Exponential growth only applies while the connection never actually
     // establishes (network error / non-2xx) — once setConnected(true) fires
