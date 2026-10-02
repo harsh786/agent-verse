@@ -348,7 +348,8 @@ async def test_connect_service_skill_returns_oauth_url_not_secrets() -> None:
     from app.chat.skills.builtin import build_connect_service_skill
 
     class _API:
-        def initiate_connection(self, tenant_id, name, url, scopes):  # type: ignore[no-untyped-def]
+        # ORG-35: the async (durable) path, never the process-local dict.
+        async def initiate_connection_async(self, tenant_id, name, url, scopes):  # type: ignore[no-untyped-def]
             return {"service_id": "svc1", "oauth_url": "https://x/oauth?id=svc1",
                     "service": object()}
 

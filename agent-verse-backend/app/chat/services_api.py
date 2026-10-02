@@ -2,7 +2,7 @@
 
 Provides endpoints to list, connect, and disconnect MCP tool connectors.
   GET    /chat/services         — list all connectors for tenant
-  POST   /chat/services         — initiate connection (returns OAuth URL)
+  POST   /chat/services         — register a pending service (no OAuth URL here)
   DELETE /chat/services/{id}    — disconnect (revoke credentials)
 """
 
@@ -12,6 +12,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+
+# Where a service is actually authorized: the Connectors PKCE OAuth flow, which
+# exchanges the code and stores the token in the vault.
+AUTHORIZE_VIA = "POST /connectors/{server_id}/oauth/start"
 
 
 def _now() -> datetime:
@@ -29,8 +33,8 @@ class ConnectedService:
     name: str
     url: str
     scopes: list[str] = field(default_factory=list)
-    # pending  → connection initiated, OAuth token exchange NOT yet completed
-    # connected → OAuth completed (complete_connection called by the callback)
+    # pending  → registered; no OAuth token exchange has happened (ORG-35: nothing
+    #            in this panel marks a service connected without one)
     # error / disconnected
     status: str = "pending"  # pending | connected | disconnected | error
     created_at: datetime = field(default_factory=_now)
@@ -121,33 +125,10 @@ class ServicesAPI:
             )
         return {
             "service_id": svc.id,
-            "oauth_url": f"https://agentverse.app/oauth/mcp?service_id={svc.id}",
+            "oauth_url": None,
+            "authorize_via": AUTHORIZE_VIA,
             "service": svc,
         }
-
-    async def complete_connection_async(
-        self, service_id: str, tenant_id: str
-    ) -> ConnectedService | None:
-        if self._db_factory is None:
-            return self.complete_connection(service_id, tenant_id)
-        from sqlalchemy import text as _t
-
-        async with self._db_factory() as s, s.begin():
-            await s.execute(
-                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-            )
-            row = (
-                await s.execute(
-                    _t(
-                        "UPDATE chat_connected_services SET status = 'connected', "
-                        "connected_at = now() WHERE id = :id AND tenant_id = :tid "
-                        "RETURNING id, tenant_id, name, url, scopes, status, created_at, "
-                        "connected_at"
-                    ),
-                    {"id": service_id, "tid": tenant_id},
-                )
-            ).first()
-        return self._row_to_service(row) if row is not None else None
 
     async def disconnect_service_async(self, service_id: str, tenant_id: str) -> bool:
         if self._db_factory is None:
@@ -173,11 +154,12 @@ class ServicesAPI:
         url: str,
         scopes: list[str] | None = None,
     ) -> dict:
-        """Register a service in the *pending* state and return an OAuth setup URL.
+        """Register a service in the *pending* state.
 
-        The connector is NOT usable until the OAuth flow completes and
-        ``complete_connection`` is called by the callback — status stays
-        ``pending`` until then rather than falsely reporting ``connected``.
+        This panel has no OAuth client (authorize/token URL, client id), so it
+        returns no authorization URL and nothing here ever marks a service
+        connected: authorization happens through the Connectors OAuth flow
+        (``AUTHORIZE_VIA``), which exchanges the code and vaults the token.
         """
         svc = ConnectedService(
             id=_hex(),
@@ -188,17 +170,12 @@ class ServicesAPI:
             status="pending",
         )
         self._services[svc.id] = svc
-        oauth_url = f"https://agentverse.app/oauth/mcp?service_id={svc.id}"
-        return {"service_id": svc.id, "oauth_url": oauth_url, "service": svc}
-
-    def complete_connection(self, service_id: str, tenant_id: str) -> ConnectedService | None:
-        """Mark a pending connection connected — called after OAuth token exchange."""
-        svc = self._services.get(service_id)
-        if not svc or svc.tenant_id != tenant_id:
-            return None
-        svc.status = "connected"
-        svc.connected_at = _now()
-        return svc
+        return {
+            "service_id": svc.id,
+            "oauth_url": None,
+            "authorize_via": AUTHORIZE_VIA,
+            "service": svc,
+        }
 
     def disconnect_service(self, service_id: str, tenant_id: str) -> bool:
         svc = self._services.get(service_id)

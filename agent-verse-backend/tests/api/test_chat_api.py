@@ -368,10 +368,15 @@ async def test_services_list_and_connect(client_with_tenant) -> None:
     svc = next(s for s in services if s["id"] == data["service_id"])
     assert svc["status"] == "pending"
     assert svc["connected_at"] is None
-    # Completing the OAuth callback flips it to connected.
+    # ORG-35: "complete" never marks a service connected without an OAuth code
+    # exchange; there is none behind this panel, so it is 501 and stays pending.
+    assert data["oauth_url"] is None
     r3 = await client_with_tenant.post(f"/chat/services/{data['service_id']}/complete")
-    assert r3.status_code == 200
-    assert r3.json()["status"] == "connected"
+    assert r3.status_code == 501
+    assert "/connectors" in r3.json()["detail"]
+    r4 = await client_with_tenant.get("/chat/services")
+    svc = next(s for s in r4.json()["services"] if s["id"] == data["service_id"])
+    assert svc["status"] == "pending" and svc["connected_at"] is None
 
 
 @pytest.mark.asyncio

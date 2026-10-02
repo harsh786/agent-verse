@@ -985,27 +985,32 @@ async def connect_service(body: ConnectServiceRequest, request: Request) -> dict
     result = await _services_api.initiate_connection_async(
         tenant.tenant_id, body.name, body.url, body.scopes
     )
-    # status is "pending" — the connector is not usable until the OAuth callback
-    # hits /services/{id}/complete. Surface that so the UI can show "Authorizing…".
+    # status is "pending": this panel has no OAuth client, so there is no
+    # authorization URL to open (it used to be a made-up agentverse.app link).
     return {
         "service_id": result["service_id"],
         "oauth_url": result["oauth_url"],
+        "authorize_via": result["authorize_via"],
         "status": "pending",
     }
 
 
 @router.post("/services/{service_id}/complete")
 async def complete_service(service_id: str, request: Request) -> dict[str, Any]:
-    """OAuth callback landing — flips a pending connector to connected."""
-    tenant = _tenant(request)
-    svc = await _services_api.complete_connection_async(service_id, tenant.tenant_id)
-    if svc is None:
-        raise HTTPException(status_code=404, detail="Service not found")
-    return {
-        "id": svc.id,
-        "status": svc.status,
-        "connected_at": svc.connected_at.isoformat() if svc.connected_at else None,
-    }
+    """Never marks a service connected without an OAuth code exchange (ORG-35).
+
+    It used to flip status to ``connected`` with no code and no token. There is no
+    OAuth client behind this panel, so there is nothing to exchange: 501, and the
+    service stays ``pending``.
+    """
+    _tenant(request)
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail=(
+            "Connected services cannot be authorized here. Authorize the connector "
+            "through the Connectors OAuth flow (POST /connectors/{server_id}/oauth/start)."
+        ),
+    )
 
 
 @router.delete("/services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)

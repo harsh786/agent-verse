@@ -121,9 +121,8 @@ async def test_connected_services_cross_pod(db_factory: async_sessionmaker) -> N
         sid = r["service_id"]
         lst = await b.list_services_async(tenant)
         assert [(s.name, s.status) for s in lst] == [("GitHub", "pending")]
-        done = await b.complete_connection_async(sid, tenant)
-        assert done is not None and done.status == "connected"
-        assert (await a.list_services_async(tenant))[0].connected_at is not None
+        # ORG-35: nothing marks it connected without an OAuth exchange.
+        assert (await a.list_services_async(tenant))[0].connected_at is None
         assert await a.disconnect_service_async(sid, tenant) is True
         assert await a.list_services_async(tenant) == []
     finally:

@@ -15,11 +15,13 @@ def api() -> ServicesAPI:
     return ServicesAPI()
 
 
-def test_initiate_connection_returns_oauth_url(api: ServicesAPI) -> None:
+def test_initiate_connection_returns_no_fake_oauth_url(api: ServicesAPI) -> None:
+    # ORG-35: there is no OAuth client behind this panel, so it must not hand out a
+    # made-up authorization URL.
     result = api.initiate_connection(TENANT, "GitHub", "https://github.com", ["repo"])
     assert "service_id" in result
-    assert "oauth_url" in result
-    assert result["oauth_url"].startswith("https://")
+    assert result["oauth_url"] is None
+    assert "/connectors" in result["authorize_via"]
 
 
 def test_list_services(api: ServicesAPI) -> None:
@@ -57,18 +59,11 @@ def test_initiate_connection_is_pending_not_connected(api: ServicesAPI) -> None:
     assert svc.connected_at is None
 
 
-def test_complete_connection_marks_connected(api: ServicesAPI) -> None:
-    result = api.initiate_connection(TENANT, "GitHub", "https://github.com")
-    sid = result["service_id"]
-    svc = api.complete_connection(sid, TENANT)
-    assert svc is not None
-    assert svc.status == "connected"
-    assert svc.connected_at is not None
-
-
-def test_complete_connection_wrong_tenant(api: ServicesAPI) -> None:
-    result = api.initiate_connection(TENANT, "GitHub", "https://github.com")
-    assert api.complete_connection(result["service_id"], OTHER) is None
+def test_nothing_marks_a_service_connected_without_an_oauth_exchange(api: ServicesAPI) -> None:
+    # ORG-35: the "complete" shortcut flipped status to connected with no code
+    # exchange and no stored token.
+    assert not hasattr(api, "complete_connection")
+    assert not hasattr(api, "complete_connection_async")
 
 
 def test_get_service_wrong_tenant(api: ServicesAPI) -> None:

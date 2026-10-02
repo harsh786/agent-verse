@@ -36,15 +36,23 @@ def build_connect_service_skill(services_api: Any) -> ChatSkill:
     async def handler(
         tenant_id: str, name: str, url: str = "", scopes: list[str] | None = None
     ) -> dict[str, Any]:
-        result = services_api.initiate_connection(tenant_id, name, url, scopes)
+        # The async path persists to Postgres when wired (the sync one only wrote
+        # this process's dict).
+        result = await services_api.initiate_connection_async(tenant_id, name, url, scopes)
         # Safety: only ever hand back the authorization URL for the user to open —
         # never request, accept, or store credentials/secrets in chat.
-        return {
+        out: dict[str, Any] = {
             "service_id": result.get("service_id"),
             "authorization_url": result.get("oauth_url"),
             "next_step": "Open the authorization URL to grant access — do not share "
             "any password or token in chat.",
         }
+        if not out["authorization_url"]:
+            out["next_step"] = (
+                "Authorize this service through Connectors (OAuth) — do not share any "
+                "password or token in chat."
+            )
+        return out
 
     return ChatSkill(
         name="connect_service",
