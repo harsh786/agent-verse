@@ -53,7 +53,7 @@ def _docker_ps(stdout: str, returncode: int = 0) -> Any:
 def test_detects_running_compose_worker_and_beat(rf: ModuleType) -> None:
     run = _docker_ps("backend\nworker\nbeat\nworkflow-worker\nredis\n")
     services = rf.compose_fleet_services(project="agentverse-backend", runner=run)
-    assert services == {"worker", "beat", "workflow-worker"}
+    assert services == {"backend", "worker", "beat", "workflow-worker"}
     cmd = run.calls[0]
     assert cmd[:2] == ["docker", "ps"]
     assert "label=com.docker.compose.project=agentverse-backend" in cmd
@@ -152,3 +152,32 @@ def test_gate_rechecks_and_logs_only_on_change(rf: ModuleType) -> None:
     clock[0] = 22.0
     assert gate.allowed() is True  # compose worker gone: start ours, log it
     assert len(logs) == 2
+
+
+def test_local_api_stands_down_while_the_compose_backend_serves_8000(rf: ModuleType) -> None:
+    states = [{"backend", "worker"}, set()]
+    logs: list[str] = []
+    clock = [0.0]
+    probe = rf.ComposeFleetProbe(
+        project="agentverse-backend", ttl=10.0, detect=lambda: states.pop(0),
+        clock=lambda: clock[0],
+    )
+    gate = rf.FleetGate(probe, role="api", want=True, force=False, log=logs.append)
+    assert gate.allowed() is False
+    assert "compose backend is running" in logs[-1]
+    clock[0] = 11.0
+    assert gate.allowed() is True  # compose backend gone: run the local API
+    assert len(logs) == 2
+
+
+def test_local_api_runs_when_forced_or_docker_unknown(rf: ModuleType) -> None:
+    forced = rf.FleetGate(
+        rf.ComposeFleetProbe(project="p", detect=lambda: {"backend"}),
+        role="api", want=True, force=True, log=lambda _m: None,
+    )
+    assert forced.allowed() is True
+    unknown = rf.FleetGate(
+        rf.ComposeFleetProbe(project="p", detect=lambda: None),
+        role="api", want=True, force=False, log=lambda _m: None,
+    )
+    assert unknown.allowed() is True

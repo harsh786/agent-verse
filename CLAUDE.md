@@ -48,9 +48,9 @@ These are non-obvious and have bitten previous sessions — read before running 
   (`~/Library/LaunchAgents/com.local.agentverse.runforever.plist`) runs
   `scripts/run_forever.py` — a local API + Celery worker + beat from the repo `.venv` —
   against the same Redis/Postgres as the docker compose stack (project
-  `agentverse-backend`). To keep ONE worker fleet and ONE beat, `run_forever.py` does not
-  start its own worker/beat while the compose stack's `worker`/`*-worker`/`beat` containers
-  are running (checked with `docker ps` every 60 s; its worker/beat stop if compose's come up
+  `agentverse-backend`). To keep ONE API, ONE worker fleet and ONE beat, `run_forever.py` does
+  not start its own API (:8000) / worker / beat while the compose stack's `backend` /
+  `worker`/`*-worker` / `beat` containers are running (checked with `docker ps` every 60 s; its worker/beat stop if compose's come up
   later, and start if they go away) and logs why. Override with `--force-workers` or
   `AGENTVERSE_FORCE_WORKERS=1`; `AGENTVERSE_COMPOSE_PROJECT` changes the project name. Logs:
   `~/.local/state/agentverse_run_forever/run_forever.log`. Code changes reach the launchd

@@ -184,7 +184,8 @@ def compose_fleet_services(
     if result.returncode != 0:
         return None
     names = {line.strip() for line in (result.stdout or "").splitlines() if line.strip()}
-    return {n for n in names if n in ("worker", "beat") or n.endswith("-worker")}
+    # ``backend`` too: the compose API publishes :8000, the same port as the local API.
+    return {n for n in names if n in ("worker", "beat", "backend") or n.endswith("-worker")}
 
 
 @dataclass(frozen=True)
@@ -260,6 +261,8 @@ class FleetGate:
         self._last: bool | None = None
 
     def allowed(self) -> bool:
+        if self._role == "api":
+            return self._api_allowed()
         decision = decide_fleet(
             want_worker=self._want,
             want_beat=self._want,
@@ -272,6 +275,27 @@ class FleetGate:
             ok, reason = decision.run_beat, decision.beat_reason
         if ok != self._last:
             self._log(f"[{self._role}] {reason}")
+            self._last = ok
+        return ok
+
+    def _api_allowed(self) -> bool:
+        """The local API stands down while the compose backend runs: both serve
+        :8000 against the same Redis/Postgres, and whichever binds the port first
+        (after a reboot, often this stale local process) shadows the other."""
+        compose = self._probe.services()
+        if self._force:
+            ok, reason = True, f"api forced (--force-workers / {FORCE_WORKERS_ENV})"
+        elif compose is None:
+            ok, reason = True, "could not query docker; running the local api"
+        elif "backend" in compose:
+            ok, reason = False, (
+                "docker compose backend is running (it serves :8000); not starting "
+                f"a second API (override: --force-workers or {FORCE_WORKERS_ENV}=1)"
+            )
+        else:
+            ok, reason = True, "no docker compose backend running; running the local api"
+        if ok != self._last:
+            self._log(f"[api] {reason}")
             self._last = ok
         return ok
 
@@ -308,10 +332,11 @@ def resolve_services(args: argparse.Namespace) -> list[_Service]:
     if args.command:
         return [_Service("service", list(args.command), Path(args.cwd or REPO_ROOT))]
     cwd = Path(args.cwd or BACKEND_DIR)
-    services = [_Service("api", default_command(args), cwd)]
     project = os.environ.get(COMPOSE_PROJECT_ENV, "").strip() or COMPOSE_PROJECT_DEFAULT
     probe = ComposeFleetProbe(project)
     force = force_workers(args)
+    api_gate = FleetGate(probe, role="api", want=True, force=force)
+    services = [_Service("api", default_command(args), cwd, gate=api_gate)]
     if getattr(args, "worker", True):
         gate = FleetGate(probe, role="worker", want=True, force=force)
         services.append(_Service("worker", worker_command(), cwd, gate=gate))
