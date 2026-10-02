@@ -20,6 +20,8 @@ from app.observability.traced_provider import TracedProvider
 from app.providers.onprem import MultiEndpointLLMProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
 
+pytestmark = pytest.mark.usefixtures("readable_emergency_stop")
+
 _NVIDIA = "nvidia/test-top-model"
 _QWEN = "Qwen/test-qwen"
 

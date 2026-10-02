@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("readable_emergency_stop")
+
 _DENIAL = (
     "Step 'deploy the api' requires human approval (high-risk step), but the goal "
     "runs in 'bounded-autonomous' mode where no approval is awaited; the step was "

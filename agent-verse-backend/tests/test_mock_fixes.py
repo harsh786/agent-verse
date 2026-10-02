@@ -73,7 +73,7 @@ def test_analytics_aggregator_accepts_db_param():
     assert agg is not None
 
 
-def test_production_guard_fake_provider_celery(monkeypatch):
+def test_production_guard_fake_provider_celery(monkeypatch, readable_emergency_stop):
     """run_goal with FakeProvider in production mode should fail, not succeed."""
     monkeypatch.setenv("ENVIRONMENT", "production")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

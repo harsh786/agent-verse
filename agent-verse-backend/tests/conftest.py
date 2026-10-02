@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import socket
+from typing import Any
 
 import pytest
 
@@ -589,6 +590,90 @@ def in_memory_goal_lock(monkeypatch: pytest.MonkeyPatch) -> _GuardLocks:
     locks = _GuardLocks()
     monkeypatch.setattr(tasks_mod, "_goal_lock_client", lambda _url: locks)
     return locks
+
+
+class _ReadableControlRedis:
+    """In-memory sync Redis that serves run_goal's control-plane reads.
+
+    Holds no emergency stop and no cancel flag unless a test writes one. Any
+    command it does not model raises ``ConnectionError``, i.e. behaves like the
+    suite's deliberately unreachable Redis for everything else.
+    """
+
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {}
+        self.sets: dict[str, set[str]] = {}
+        self.published: list[tuple[str, Any]] = []
+
+    def get(self, key: str) -> Any:
+        return self.values.get(key)
+
+    def set(self, key: str, value: Any, *args: Any, **kwargs: Any) -> bool:
+        self.values[key] = value
+        return True
+
+    def delete(self, *keys: str) -> int:
+        return sum(1 for k in keys if self.values.pop(k, None) is not None)
+
+    def exists(self, *keys: str) -> int:
+        return sum(1 for k in keys if k in self.values)
+
+    def smembers(self, key: str) -> set[str]:
+        return set(self.sets.get(key, set()))
+
+    def sadd(self, key: str, *members: str) -> int:
+        self.sets.setdefault(key, set()).update(members)
+        return len(members)
+
+    def srem(self, key: str, *members: str) -> int:
+        self.sets.get(key, set()).difference_update(members)
+        return len(members)
+
+    def scan_iter(self, *args: Any, **kwargs: Any) -> Any:
+        return iter(())
+
+    def publish(self, channel: str, message: Any) -> int:
+        self.published.append((channel, message))
+        return 0
+
+    def __getattr__(self, name: str) -> Any:
+        def _unavailable(*args: Any, **kwargs: Any) -> Any:
+            raise ConnectionError(f"_ReadableControlRedis does not model {name!r}")
+
+        return _unavailable
+
+
+@pytest.fixture
+def readable_emergency_stop(monkeypatch: pytest.MonkeyPatch) -> _ReadableControlRedis:
+    """Give run_goal a READABLE emergency-stop state with no stop active.
+
+    Since WF-16 the worker fails closed (retries, then records the goal as
+    blocked) when it cannot read the stop flags, and the suite's Redis is
+    deliberately unreachable. Unit tests of what happens after the start check
+    use this; the fail-closed check itself is tested in
+    tests/scaling/test_run_goal_estop_failclosed.py and test_worker_emergency_stop.py.
+    A test that patches ``tasks._get_sync_redis`` itself overrides this.
+    """
+    import app.scaling.tasks as tasks_mod
+
+    fake = _ReadableControlRedis()
+    monkeypatch.setattr(tasks_mod, "_get_sync_redis", lambda: fake)
+    return fake
+
+
+@pytest.fixture(autouse=True)
+def _fresh_goal_deduplicator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test gets its own process-global goal deduplicator.
+
+    ``GoalService.submit_goal`` wires the FIRST service's Redis into the module
+    singleton (``_redis_wired``) and otherwise keeps 60 s in-memory claims, so a
+    goal submitted by one test was "deduplicated" onto another test's goal with
+    the same text in a full-suite run (order-dependent KeyErrors on the submit
+    result). Tests that patch the deduplicator themselves still override this.
+    """
+    import app.services.dedup as dedup_mod
+
+    monkeypatch.setattr(dedup_mod, "_default_deduplicator", dedup_mod.GoalDeduplicator())
 
 
 @pytest.fixture(autouse=True)

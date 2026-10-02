@@ -31,6 +31,17 @@ class _Redis:
     def publish(self, channel: str, data: str) -> None:
         self.published.append((channel, data))
 
+    # A readable, empty control plane: no emergency stop, no cancel flag
+    # (run_goal fails closed on an unreadable stop state, WF-16).
+    def get(self, key: str) -> None:
+        return None
+
+    def smembers(self, key: str) -> set[str]:
+        return set()
+
+    def scan_iter(self, *a: Any, **k: Any) -> Any:
+        return iter(())
+
     def __getattr__(self, name: str) -> Any:  # xadd etc. used by other publishers
         return lambda *a, **k: None
 

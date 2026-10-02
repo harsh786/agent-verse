@@ -11,6 +11,8 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("readable_emergency_stop")
+
 
 class _State:
     class Status:

@@ -12,6 +12,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("readable_emergency_stop")
+
 
 class _SyncRedis:
     def __init__(self) -> None:

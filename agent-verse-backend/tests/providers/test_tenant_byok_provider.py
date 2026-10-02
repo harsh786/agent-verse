@@ -216,7 +216,7 @@ def test_worker_gemini_config_is_not_ignored(worker_store: Any) -> None:
 
 
 def test_worker_run_goal_fails_on_decrypt_error(
-    worker_store: Any, monkeypatch: pytest.MonkeyPatch
+    worker_store: Any, monkeypatch: pytest.MonkeyPatch, readable_emergency_stop: Any
 ) -> None:
     import app.agent.graph as graph_mod
     from app.scaling import tasks

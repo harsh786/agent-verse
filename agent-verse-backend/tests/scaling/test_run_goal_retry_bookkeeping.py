@@ -46,6 +46,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("readable_emergency_stop")
+
 
 class _RaisingAgentGraph:
     """Fake AgentGraph whose run() always raises — simulates a failing step."""

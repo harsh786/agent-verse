@@ -15,6 +15,8 @@ from app.scaling.parallel_executor import ParallelExecutor
 from app.scaling.priority_queue import Priority, PriorityQueue, Task
 from app.scaling.tasks import _scheduled_goal_kwargs, run_goal
 
+pytestmark = pytest.mark.usefixtures("readable_emergency_stop")
+
 # ── PriorityQueue ──────────────────────────────────────────────────────────────
 
 def test_priority_queue_dequeues_highest_priority_first() -> None:
