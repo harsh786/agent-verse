@@ -1,0 +1,19 @@
+{
+ "region": "South-West",
+ "batch": "BATCH-2026-10-02-A",
+ "currency": "INR",
+ "orders": [
+  {"order_id": "ORD-77101", "customer": "Corvid Cold Storage", "city": "Hosur", "amount": 18450.0, "handling": "cold-chain"},
+  {"order_id": "ORD-77102", "customer": "Saffron Pharma", "city": "Coimbatore", "amount": 6200.5, "handling": "cold-chain"},
+  {"order_id": "ORD-77103", "customer": "Marigold Retail", "city": "Pune", "amount": 2399.0, "handling": "standard"},
+  {"order_id": "ORD-77104", "customer": "Tamarind Foods", "city": "Nagpur", "amount": 11875.25, "handling": "standard"},
+  {"order_id": "ORD-77105", "customer": "Kestrel Electronics", "city": "Hosur", "amount": 4310.0, "handling": "hazmat"},
+  {"order_id": "ORD-77106", "customer": "Quokka Pay", "city": "Coimbatore", "amount": 950.0, "handling": "standard"},
+  {"order_id": "ORD-77107", "customer": "Heron Labs", "city": "Guwahati", "amount": 15020.0, "handling": "cold-chain"},
+  {"order_id": "ORD-77108", "customer": "Ibex Industrial", "city": "Pune", "amount": 3388.75, "handling": "standard"},
+  {"order_id": "ORD-77109", "customer": "Oryx Textiles", "city": "Surat", "amount": 7120.0, "handling": "standard"},
+  {"order_id": "ORD-77110", "customer": "Zephyrine Analytics", "city": "Hosur", "amount": 1290.0, "handling": "standard"},
+  {"order_id": "ORD-77111", "customer": "Juniper Health", "city": "Kochi", "amount": 9640.0, "handling": "cold-chain"},
+  {"order_id": "ORD-77112", "customer": "Plover Auto", "city": "Nagpur", "amount": 2215.5, "handling": "hazmat"}
+ ]
+}

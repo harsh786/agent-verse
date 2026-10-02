@@ -238,3 +238,39 @@ def docker_logs(needles: list[str], since: str = "15m", limit: int = 12) -> list
         out, key=lambda ln: 0 if re.search(r"error|exception|traceback|fail", ln, re.I) else 1
     )
     return [mask(x) for x in ranked[:limit]]
+
+
+# ── Optional environment (scenarios that need it SKIP with an explicit reason) ──
+
+
+def missing_env(*names: str) -> list[str]:
+    return [n for n in names if not os.getenv(n, "").strip()]
+
+
+def require_env(*names: str, why: str) -> dict[str, str]:
+    """The named env vars, or skip the calling test saying exactly what is missing."""
+    import pytest
+
+    missing = missing_env(*names)
+    if missing:
+        pytest.skip(f"needs {', '.join(missing)}: {why}")
+    return {n: os.environ[n].strip() for n in names}
+
+
+def key_from_env(var: str, file_var: str = "") -> str:
+    """A tenant key from ``var`` or the ``api_key`` field of the JSON file in ``file_var``."""
+    key = os.getenv(var, "").strip()
+    if not key and file_var:
+        path = os.getenv(file_var, "").strip()
+        if path and os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                key = str(json.load(fh).get("api_key") or "").strip()
+    register_secret(key)
+    return key
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "") or default)
+    except ValueError:
+        return default

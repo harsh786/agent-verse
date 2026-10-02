@@ -91,6 +91,66 @@ def cleanup(api: LiveAPI) -> Iterator[Callable[[str, str], None]]:
             api.request(method, path)
 
 
+# ── Shared fixtures of the complex scenarios ───────────────────────────────
+
+
+@pytest.fixture(scope="session")
+def fixture_server() -> Iterator[Any]:
+    """The local HTTP fixture server (counters, flaky / failing endpoints, feeds)."""
+    from tests.real_world.fixture_server import FixtureServer
+
+    server = FixtureServer().start()
+    yield server
+    server.stop()
+
+
+@pytest.fixture(scope="session")
+def corpus() -> list[Any]:
+    """The generated Larkspur corpus (deterministic; built once per session)."""
+    from tests.real_world.corpus import build_corpus
+
+    return build_corpus()
+
+
+@pytest.fixture(scope="session")
+def complex_kb(api: LiveAPI, corpus: list[Any]) -> Iterator[dict[str, Any]]:
+    """One collection holding the whole corpus, shared by the read-only KB scenarios
+    (retrieval, strategies, multi-step RAG goal). Upload results are kept per file."""
+    from tests.real_world import kb
+
+    cid = kb.create_collection(api, "rw-complex-kb")
+    uploads = {d.filename: kb.upload(api, cid, d) for d in corpus}
+    yield {"collection_id": cid, "docs": corpus, "uploads": uploads}
+    with contextlib.suppress(Exception):
+        api.delete(f"/knowledge/collections/{cid}")
+
+
+def _optional_client(var: str, file_var: str) -> Iterator[LiveAPI | None]:
+    from tests.real_world.helpers import key_from_env
+
+    key = key_from_env(var, file_var)
+    if not key:
+        yield None
+        return
+    client = LiveAPI(key)
+    try:
+        yield client
+    finally:
+        client.close()
+
+
+@pytest.fixture(scope="session")
+def second_tenant_api() -> Iterator[LiveAPI | None]:
+    """A key of a DIFFERENT tenant (RW_SECOND_TENANT_API_KEY / RW_SECOND_TENANT_FILE)."""
+    yield from _optional_client("RW_SECOND_TENANT_API_KEY", "RW_SECOND_TENANT_FILE")
+
+
+@pytest.fixture(scope="session")
+def enterprise_api() -> Iterator[LiveAPI | None]:
+    """A key of an enterprise-plan tenant (short schedule floors, high rate limits)."""
+    yield from _optional_client("RW_ENTERPRISE_API_KEY", "RW_ENTERPRISE_TENANT_FILE")
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _sweep_leftovers(request: pytest.FixtureRequest) -> Iterator[None]:
     """At session end, delete ``rw-*`` objects a crashed/aborted test left behind.
