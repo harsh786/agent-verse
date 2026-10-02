@@ -1453,33 +1453,6 @@ async def import_golden_dataset(
     return {"suite_id": suite_id, "imported": len(tasks), "replace": body.replace, **result}
 
 
-async def _execute_eval_run(
-    store: Any, runner: Any, goal_service: Any, ctx: Any, suite_id: str, run_id: str,
-    tasks: list[Any], judge: Any = None, agent_id: str | None = None, pin_check: Any = None,
-) -> None:
-    """Background body of a suite run: execute, then record the outcome durably.
-
-    If this replica dies mid-run the row stays ``running`` and reads report it
-    ``abandoned`` after ``STALE_RUN_AFTER`` — it never claims a result it lacks.
-    """
-    from app.observability.logging import get_logger
-
-    log = get_logger(__name__)
-    try:
-        result = await runner.run_suite(
-            suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx,
-            tasks=tasks, run_id=run_id, judge=judge, agent_id=agent_id,
-            pin_check=pin_check,
-        )
-        await store.finish_run(suite_id, run_id, result=result)
-    except Exception as exc:
-        log.warning("eval_suite_run_failed", suite_id=suite_id, run_id=run_id, error=str(exc))
-        try:
-            await store.finish_run(suite_id, run_id, result=None, error=str(exc)[:2000])
-        except Exception as store_exc:
-            log.error("eval_suite_run_status_lost", run_id=run_id, error=str(store_exc))
-
-
 class RunEvalSuiteRequest(BaseModel):
     # The agent every golden goal runs on. Required for the run to vouch for an
     # agent in the rollout gate; without it the goals are auto-routed and the
@@ -1501,23 +1474,64 @@ async def _agent_for_run(request: Request, ctx: Any, agent_id: str) -> dict[str,
     return agent
 
 
+def _eval_runs_on_workers(request: Request, store: Any) -> bool:
+    """Durable runs go to Celery workers whenever goals do (and a database exists)."""
+    goal_service = getattr(request.app.state, "goal_service", None)
+    return (
+        getattr(store, "_db", None) is not None
+        and getattr(goal_service, "_task_queue", None) is not None
+    )
+
+
+def _start_in_process_workers(
+    request: Request, ctx: Any, store: Any, run_id: str, workers: int
+) -> None:
+    """Without Celery (dev / single process): the same claim loop, in this process."""
+    from app.api._deps import get_agent_store
+    from app.intelligence.eval_suite import platform_judge
+    from app.intelligence.eval_suite_jobs import run_suite_worker
+    from app.intelligence.eval_suite_post_run import on_run_completed
+
+    goal_service = request.app.state.goal_service
+    agent_store = get_agent_store(request)
+    judge = platform_judge(getattr(request.app.state, "_app_provider", None))
+
+    async def _load_agent(agent_id: str) -> dict[str, Any] | None:
+        found: dict[str, Any] | None = await agent_store.get_async(agent_id, tenant_ctx=ctx)
+        return found
+
+    running: set[asyncio.Task[Any]] = request.app.state.__dict__.setdefault(
+        "_eval_run_tasks", set()
+    )
+    for _ in range(workers):
+        task = asyncio.create_task(
+            run_suite_worker(
+                store=store, run_id=run_id, goal_service=goal_service, tenant_ctx=ctx,
+                judge=judge, agent_loader=_load_agent, on_completed=on_run_completed,
+            )
+        )
+        running.add(task)  # keep a strong reference until it finishes
+        task.add_done_callback(running.discard)
+
+
 @intelligence_router.post("/eval-suites/{suite_id}/run", status_code=202)
 async def run_eval_suite(
     request: Request, suite_id: str, body: RunEvalSuiteRequest | None = None
 ) -> dict[str, Any]:
-    """Start a run of one of the caller's eval suites against the live agent.
+    """Start a durable run of one of the caller's eval suites.
 
-    Returns 202 immediately with a ``run_id``; poll ``GET .../results`` for the
-    outcome. Every golden task is a real goal that may take up to a minute, so
-    the run no longer executes inside the request (which held the connection
-    for the whole suite and was cut off by any proxy timeout).
+    Returns 202 with a ``run_id``; poll ``GET .../results`` for progress and the
+    outcome. Every golden task of the current dataset version is enqueued as a
+    result row and executed by up to ``eval_suite_run_concurrency`` workers
+    (Celery when goals run on Celery), which survive restarts (MEM-53). With
+    ``agent_id`` every goal runs on that agent, pinned to its current config.
     """
     import uuid as _uuid
 
-    from app.intelligence.eval_suite_store import task_from_dict
+    from app.core.config import get_settings
 
     ctx = _require_tenant(request)
-    runner = _eval_runner(request)
+    _eval_runner(request)
     goal_service = getattr(request.app.state, "goal_service", None)
     if goal_service is None:
         raise HTTPException(503, "Goal service not configured")
@@ -1526,58 +1540,75 @@ async def run_eval_suite(
     if meta is None:
         raise HTTPException(404, f"Eval suite {suite_id} not found")
     version = int(meta["dataset_version"])
+    if int(meta["task_count"]) == 0:
+        raise HTTPException(422, f"Eval suite {suite_id} has no golden tasks")
     agent_id = body.agent_id if body is not None else None
     config_hash: str | None = None
-    pin_check = None
     if agent_id:
         from app.intelligence.rollout_gate import agent_config_hash
 
-        agent = await _agent_for_run(request, ctx, agent_id)
-        config_hash = agent_config_hash(agent)
-        pinned = config_hash
+        config_hash = agent_config_hash(await _agent_for_run(request, ctx, agent_id))
 
-        async def pin_check() -> str | None:
-            # Every task runs on the config the run started with (MEM-52).
-            current = await _agent_for_run(request, ctx, str(agent_id))
-            if agent_config_hash(current) != pinned:
-                return "the agent's configuration changed during the run"
-            return None
-
-    tasks = [task_from_dict(suite_id, t) async for t in store.iter_tasks(suite_id, version)]
+    settings = get_settings()
     run_id = _uuid.uuid4().hex
-    await store.start_run(
-        suite_id, run_id, len(tasks), dataset_version=version, agent_id=agent_id,
-        agent_config_hash=config_hash,
+    plan = getattr(getattr(ctx, "plan", None), "value", None) or str(getattr(ctx, "plan", ""))
+    concurrency = max(1, min(int(settings.eval_suite_run_concurrency), int(meta["task_count"])))
+    total = await store.start_run(
+        suite_id, run_id, dataset_version=version, agent_id=agent_id,
+        agent_config_hash=config_hash, enqueue=True, tenant_plan=plan,
+        concurrency=concurrency,
     )
+    if _eval_runs_on_workers(request, store):
+        try:
+            from app.scaling.tasks import run_eval_suite_worker
 
-    running: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault(
-        "_eval_run_tasks", set()
-    )
-    from app.intelligence.eval_suite import platform_judge
-
-    # MEM-51: every task is judged (charged to the tenant) when a real LLM is
-    # configured, and its score must reach the task's min_score.
-    judge = platform_judge(getattr(request.app.state, "_app_provider", None))
-    task = asyncio.create_task(
-        _execute_eval_run(
-            store, runner, goal_service, ctx, suite_id, run_id, tasks, judge,
-            agent_id=agent_id, pin_check=pin_check,
-        )
-    )
-    running.add(task)  # keep a strong reference until it finishes
-    task.add_done_callback(running.discard)
-    return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": len(tasks),
-            "dataset_version": version, "agent_id": agent_id, "agent_config_hash": config_hash}
+            for i in range(concurrency):
+                run_eval_suite_worker.apply_async(
+                    args=[ctx.tenant_id, plan, run_id, i], queue="maintenance"
+                )
+        except Exception as exc:
+            await store.fail_run(run_id, f"could not enqueue the run's workers: {exc}")
+            raise HTTPException(503, "Could not enqueue the eval run; try again") from exc
+        executor = "celery"
+    else:
+        _start_in_process_workers(request, ctx, store, run_id, concurrency)
+        executor = "in_process"
+    return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": total,
+            "dataset_version": version, "agent_id": agent_id, "agent_config_hash": config_hash,
+            "workers": concurrency, "executor": executor}
 
 
 @intelligence_router.get("/eval-suites/{suite_id}/results")
 async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, Any]]:
-    """Newest-first run history of one of the caller's eval suites."""
+    """Newest-first run history of one of the caller's eval suites (with live progress)."""
     store = _eval_store(request)
     if await store.get_meta(suite_id) is None:
         raise HTTPException(404, f"Eval suite {suite_id} not found")
     runs: list[dict[str, Any]] = await store.list_runs(suite_id)
     return runs
+
+
+@intelligence_router.get("/eval-suites/{suite_id}/runs/{run_id}/tasks")
+async def get_suite_run_tasks(
+    request: Request,
+    suite_id: str,
+    run_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    failures_first: bool = False,
+) -> dict[str, Any]:
+    """Per-task results of one run, paged (a run may have thousands of tasks)."""
+    store = _eval_store(request)
+    run = await store.get_run(run_id)
+    if run is None or run.get("suite_id") != suite_id:
+        raise HTTPException(404, f"Run {run_id} not found in suite {suite_id}")
+    return {
+        "run_id": run_id, "status": run.get("status"),
+        "progress": await store.run_progress(run_id),
+        "tasks": await store.list_run_tasks(
+            run_id, limit=limit, offset=offset, failures_first=failures_first
+        ),
+    }
 
 
 @intelligence_router.get("/calibration")

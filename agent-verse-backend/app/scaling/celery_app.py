@@ -137,6 +137,8 @@ celery_app.conf.update(
         "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
         # AI-Ops dataset runs (durable, resumable per case) — MEM-25.
         "app.scaling.tasks.run_ai_ops_dataset": {"queue": "maintenance"},
+        "app.scaling.tasks.run_eval_suite_worker": {"queue": "maintenance"},
+        "app.scaling.tasks.resume_stalled_eval_suite_runs": {"queue": "maintenance"},
         "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
         "app.scaling.event_outbox_tasks.drain_goal_event_outbox": {"queue": "maintenance"},
         # GDPR export — runs in background, long-running
@@ -184,6 +186,12 @@ celery_app.conf.update(
         "agentverse.workflows.run_enterprise": {"queue": "workflows.enterprise"},
     },
     beat_schedule={
+        # MEM-53: re-dispatch eval-suite runs whose workers died.
+        "resume-stalled-eval-suite-runs-every-60s": {
+            "task": "app.scaling.tasks.resume_stalled_eval_suite_runs",
+            "schedule": 60.0,
+            "options": {"queue": "maintenance"},
+        },
         "mcp-health-check-every-30s": {
             "task": "app.scaling.tasks.check_mcp_health",
             "schedule": 30.0,

@@ -39,12 +39,14 @@ from sqlalchemy import text as sa_text
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from app.intelligence.eval_suite import EvalSuiteResult, GoldenTask
+    from app.intelligence.eval_suite import EvalSuiteResult, GoldenTask, GoldenTaskResult
 
 __all__ = ["STALE_RUN_AFTER", "EvalSuiteStore", "task_from_dict", "task_to_dict"]
 
-# A run still "running" after this long lost its worker (replica restart/crash).
+# Kept for importers; the live threshold is Settings.eval_suite_stalled_after_seconds.
 STALE_RUN_AFTER = timedelta(hours=1)
+# Per-task results kept on the run row (failures first); page the rest.
+SUMMARY_TASKS = 200
 # GET /eval-suites/{id} inlines at most this many tasks; page the rest.
 GET_TASK_LIMIT = 200
 MAX_TASK_PAGE = 500
@@ -56,6 +58,31 @@ _TASK_COLUMNS = (
 
 _MEM_SUITES: dict[str, dict[str, dict[str, Any]]] = {}
 _MEM_RUNS: dict[str, dict[str, dict[str, Any]]] = {}
+_MEM_TASKS: dict[tuple[str, str], list[dict[str, Any]]] = {}
+
+
+def _stalled_after_seconds() -> float:
+    from app.core.config import get_settings
+
+    return float(getattr(get_settings(), "eval_suite_stalled_after_seconds", 1800))
+
+
+def _run_task_public(row: dict[str, Any]) -> dict[str, Any]:
+    task = row.get("task") or {}
+    return {
+        "task_id": row["task_id"],
+        "goal": task.get("goal", ""),
+        "state": row.get("state"),
+        "attempts": row.get("attempts", 0),
+        "goal_id": row.get("goal_id"),
+        "status": row.get("status"),
+        "passed": bool(row.get("passed")),
+        "score": row.get("score"),
+        "terminal_event": row.get("terminal_event"),
+        "failure_reasons": list(row.get("failure_reasons") or []),
+        "judge": row.get("judge"),
+        "duration_seconds": row.get("duration_seconds"),
+    }
 
 
 def task_to_dict(task: GoldenTask) -> dict[str, Any]:
@@ -622,34 +649,402 @@ class EvalSuiteStore:
         self,
         suite_id: str,
         run_id: str,
-        total: int,
+        total: int = 0,
         *,
         dataset_version: int | None = None,
         agent_id: str | None = None,
         agent_config_hash: str | None = None,
         agent_version: int | None = None,
-    ) -> None:
+        enqueue: bool = False,
+        tenant_plan: str | None = None,
+        concurrency: int | None = None,
+    ) -> int:
+        """Record a ``running`` run; returns its task count.
+
+        ``enqueue`` (MEM-53) also writes one ``pending`` result row per task of
+        ``dataset_version`` (``INSERT ... SELECT``, so thousands of tasks cost one
+        statement) for the durable workers to claim; ``total`` is then the
+        number of rows enqueued.
+        """
+        now = datetime.now(UTC)
         if self._db is None:
+            rows: list[dict[str, Any]] = []
+            if enqueue and dataset_version is not None:
+                suite = _MEM_SUITES.get(self._tenant_id, {}).get(suite_id) or {}
+                for i, t in enumerate(_mem_tasks_at(suite, dataset_version), start=1):
+                    task = {k: v for k, v in t.items() if k != "revision"}
+                    rows.append({
+                        "task_id": t["task_id"], "ordinal": i, "task": task,
+                        "state": "pending", "attempts": 0, "lease_owner": None,
+                        "lease_expires_at": None, "goal_id": None, "status": None,
+                        "passed": None, "score": None, "terminal_event": None,
+                        "failure_reasons": [], "judge": None, "duration_seconds": None,
+                    })
+                total = len(rows)
+                _MEM_TASKS[(self._tenant_id, run_id)] = rows
             _MEM_RUNS.setdefault(self._tenant_id, {}).setdefault(suite_id, {})[run_id] = {
-                "run_id": run_id, "status": "running", "total": total, "passed": 0,
-                "failed": 0, "pass_rate": 0.0, "task_results": [], "error": None,
-                "run_at": datetime.now(UTC).isoformat(), "finished_at": None,
+                "run_id": run_id, "suite_id": suite_id, "status": "running", "total": total,
+                "passed": 0, "failed": 0, "pass_rate": 0.0, "task_results": [], "error": None,
+                "run_at": now.isoformat(), "finished_at": None,
                 "dataset_version": dataset_version, "agent_id": agent_id,
                 "agent_config_hash": agent_config_hash, "agent_version": agent_version,
+                "tenant_plan": tenant_plan, "concurrency": concurrency,
+                "last_progress_at": now.isoformat(), "unscored": 0,
             }
-            return
+            return total
         async with _scoped(self._db, self._tenant_id) as s:
             await s.execute(
                 sa_text(
                     "INSERT INTO eval_suite_results (id, suite_id, tenant_id, run_id, "
                     " total_tasks, status, dataset_version, agent_id, agent_config_hash, "
-                    " agent_version) "
-                    "VALUES (:id, :sid, :tid, :id, :total, 'running', :dv, :aid, :ahash, :aver)"
+                    " agent_version, tenant_plan, concurrency, last_progress_at) "
+                    "VALUES (:id, :sid, :tid, :id, :total, 'running', :dv, :aid, :ahash, "
+                    " :aver, :plan, :conc, now())"
                 ),
                 {"id": run_id, "sid": suite_id, "tid": self._tenant_id, "total": total,
                  "dv": dataset_version, "aid": agent_id, "ahash": agent_config_hash,
-                 "aver": agent_version},
+                 "aver": agent_version, "plan": tenant_plan, "conc": concurrency},
             )
+            if enqueue and dataset_version is not None:
+                await s.execute(
+                    sa_text(
+                        "INSERT INTO eval_suite_task_results "
+                        " (tenant_id, run_id, task_id, suite_id, ordinal, task) "
+                        "SELECT :tid, :rid, task_id, :sid, "
+                        " row_number() OVER (ORDER BY position, task_id), "
+                        " jsonb_build_object('task_id', task_id, 'goal', goal, "
+                        "  'expected_tools', expected_tool_calls, "
+                        "  'forbidden_tools', forbidden_tools, "
+                        "  'expected_output_contains', expected_phrases, "
+                        "  'expected_output', expected_output, 'min_score', min_score, "
+                        "  'max_iterations', max_iterations, 'tags', tags) "
+                        "FROM golden_tasks WHERE tenant_id = :tid AND eval_suite_id = :sid "
+                        "AND valid_from <= :v AND (valid_to IS NULL OR valid_to > :v)"
+                    ),
+                    {"tid": self._tenant_id, "rid": run_id, "sid": suite_id,
+                     "v": int(dataset_version)},
+                )
+                total = int(
+                    (
+                        await s.execute(
+                            sa_text(
+                                "UPDATE eval_suite_results SET total_tasks = ("
+                                " SELECT count(*) FROM eval_suite_task_results "
+                                " WHERE tenant_id = :tid AND run_id = :rid) "
+                                "WHERE tenant_id = :tid AND id = :rid RETURNING total_tasks"
+                            ),
+                            {"tid": self._tenant_id, "rid": run_id},
+                        )
+                    ).scalar()
+                    or 0
+                )
+        return total
+
+    async def get_run(self, run_id: str) -> dict[str, Any] | None:
+        """One run's binding and status (without per-task results)."""
+        if self._db is None:
+            for runs in _MEM_RUNS.get(self._tenant_id, {}).values():
+                if run_id in runs:
+                    return dict(runs[run_id])
+            return None
+        async with _scoped(self._db, self._tenant_id) as s:
+            r = (
+                await s.execute(
+                    sa_text(
+                        "SELECT run_id, suite_id, status, total_tasks, dataset_version, "
+                        " agent_id, agent_config_hash, agent_version, tenant_plan, "
+                        " concurrency, run_at, last_progress_at "
+                        "FROM eval_suite_results WHERE tenant_id = :tid AND id = :rid"
+                    ),
+                    {"tid": self._tenant_id, "rid": run_id},
+                )
+            ).first()
+        if r is None:
+            return None
+        return {"run_id": r[0], "suite_id": r[1], "status": r[2], "total": r[3],
+                "dataset_version": r[4], "agent_id": r[5], "agent_config_hash": r[6],
+                "agent_version": r[7], "tenant_plan": r[8], "concurrency": r[9],
+                "run_at": _iso(r[10]), "last_progress_at": _iso(r[11])}
+
+    async def claim_next(
+        self, run_id: str, owner: str, lease_seconds: float
+    ) -> dict[str, Any] | None:
+        """Lease the next unfinished task of the run (pending, or running with an
+        expired lease — its worker died). ``None`` when nothing is claimable."""
+        if self._db is None:
+            now = datetime.now(UTC)
+            for row in _MEM_TASKS.get((self._tenant_id, run_id), []):
+                expired = (
+                    row["state"] == "running"
+                    and row["lease_expires_at"] is not None
+                    and row["lease_expires_at"] < now
+                )
+                if row["state"] == "pending" or expired:
+                    row.update(state="running", attempts=row["attempts"] + 1,
+                               lease_owner=owner,
+                               lease_expires_at=now + timedelta(seconds=lease_seconds))
+                    self._mem_touch(run_id)
+                    return {"task_id": row["task_id"], "task": dict(row["task"]),
+                            "goal_id": row["goal_id"], "attempts": row["attempts"]}
+            return None
+        async with _scoped(self._db, self._tenant_id) as s:
+            r = (
+                await s.execute(
+                    sa_text(
+                        "UPDATE eval_suite_task_results t SET state = 'running', "
+                        " attempts = t.attempts + 1, lease_owner = :owner, "
+                        " lease_expires_at = now() + make_interval(secs => :lease), "
+                        " started_at = COALESCE(t.started_at, now()) "
+                        "FROM (SELECT task_id FROM eval_suite_task_results "
+                        "      WHERE tenant_id = :tid AND run_id = :rid AND (state = 'pending' "
+                        "        OR (state = 'running' AND lease_expires_at < now())) "
+                        "      ORDER BY ordinal LIMIT 1 FOR UPDATE SKIP LOCKED) c "
+                        "WHERE t.tenant_id = :tid AND t.run_id = :rid AND t.task_id = c.task_id "
+                        "RETURNING t.task_id, t.task, t.goal_id, t.attempts"
+                    ),
+                    {"tid": self._tenant_id, "rid": run_id, "owner": owner,
+                     "lease": float(lease_seconds)},
+                )
+            ).first()
+            if r is not None:
+                await self._touch(s, run_id)
+        if r is None:
+            return None
+        return {"task_id": r[0], "task": dict(_loads(r[1]) or {}), "goal_id": r[2],
+                "attempts": int(r[3])}
+
+    async def set_task_goal(self, run_id: str, task_id: str, owner: str, goal_id: str) -> bool:
+        """Record the submitted goal BEFORE waiting on it, so a resumed task waits on
+        the same goal instead of submitting another. False: the lease was lost."""
+        if self._db is None:
+            row = self._mem_row(run_id, task_id)
+            if row is None or row["lease_owner"] != owner or row["state"] != "running":
+                return False
+            row["goal_id"] = goal_id
+            return True
+        async with _scoped(self._db, self._tenant_id) as s:
+            res = await s.execute(
+                sa_text(
+                    "UPDATE eval_suite_task_results SET goal_id = :gid "
+                    "WHERE tenant_id = :tid AND run_id = :rid AND task_id = :task "
+                    "AND lease_owner = :owner AND state = 'running'"
+                ),
+                {"gid": goal_id, "tid": self._tenant_id, "rid": run_id, "task": task_id,
+                 "owner": owner},
+            )
+        return bool(getattr(res, "rowcount", 0))
+
+    async def renew_lease(
+        self, run_id: str, task_id: str, owner: str, lease_seconds: float
+    ) -> bool:
+        """Extend the lease (and heartbeat the run); False when the lease was lost."""
+        if self._db is None:
+            row = self._mem_row(run_id, task_id)
+            if row is None or row["lease_owner"] != owner or row["state"] != "running":
+                return False
+            row["lease_expires_at"] = datetime.now(UTC) + timedelta(seconds=lease_seconds)
+            self._mem_touch(run_id)
+            return True
+        async with _scoped(self._db, self._tenant_id) as s:
+            res = await s.execute(
+                sa_text(
+                    "UPDATE eval_suite_task_results "
+                    "SET lease_expires_at = now() + make_interval(secs => :lease) "
+                    "WHERE tenant_id = :tid AND run_id = :rid AND task_id = :task "
+                    "AND lease_owner = :owner AND state = 'running'"
+                ),
+                {"lease": float(lease_seconds), "tid": self._tenant_id, "rid": run_id,
+                 "task": task_id, "owner": owner},
+            )
+            ok = bool(getattr(res, "rowcount", 0))
+            if ok:
+                await self._touch(s, run_id)
+        return ok
+
+    async def record_task_result(
+        self, run_id: str, owner: str, result: GoldenTaskResult
+    ) -> bool:
+        """Write a task's outcome (fenced on the lease). False: the lease was lost."""
+        values = {
+            "status": result.status, "passed": bool(result.passed), "score": result.score,
+            "terminal_event": result.terminal_event, "goal_id": result.goal_id,
+            "failure_reasons": list(result.failure_reasons), "judge": result.judge,
+            "duration_seconds": round(float(result.duration_seconds), 3),
+        }
+        if self._db is None:
+            row = self._mem_row(run_id, result.task_id)
+            if row is None or row["lease_owner"] != owner or row["state"] != "running":
+                return False
+            row.update(values, state="done", lease_expires_at=None)
+            if result.goal_id is None:
+                row["goal_id"] = row.get("goal_id")
+            self._mem_touch(run_id)
+            return True
+        async with _scoped(self._db, self._tenant_id) as s:
+            res = await s.execute(
+                sa_text(
+                    "UPDATE eval_suite_task_results SET state = 'done', status = :status, "
+                    " passed = :passed, score = :score, terminal_event = :terminal_event, "
+                    " goal_id = COALESCE(:goal_id, goal_id), "
+                    " failure_reasons = CAST(:failure_reasons AS jsonb), "
+                    " judge = CAST(:judge AS jsonb), duration_seconds = :duration_seconds, "
+                    " lease_expires_at = NULL, finished_at = now() "
+                    "WHERE tenant_id = :tid AND run_id = :rid AND task_id = :task "
+                    "AND lease_owner = :owner AND state = 'running'"
+                ),
+                {**values, "failure_reasons": json.dumps(values["failure_reasons"]),
+                 "judge": json.dumps(values["judge"]) if values["judge"] is not None else None,
+                 "tid": self._tenant_id, "rid": run_id, "task": result.task_id,
+                 "owner": owner},
+            )
+            ok = bool(getattr(res, "rowcount", 0))
+            if ok:
+                await self._touch(s, run_id)
+        return ok
+
+    async def run_progress(self, run_id: str) -> dict[str, int]:
+        """``{total, done, passed, failed, unscored, running, pending}`` from the task rows."""
+        if self._db is None:
+            rows = _MEM_TASKS.get((self._tenant_id, run_id), [])
+            done = [r for r in rows if r["state"] == "done"]
+            return {
+                "total": len(rows), "done": len(done),
+                "passed": sum(1 for r in done if r["passed"]),
+                "failed": sum(1 for r in done if not r["passed"]),
+                "unscored": sum(1 for r in done if r["status"] != "scored"),
+                "running": sum(1 for r in rows if r["state"] == "running"),
+                "pending": sum(1 for r in rows if r["state"] == "pending"),
+            }
+        async with _scoped(self._db, self._tenant_id) as s:
+            r = (
+                await s.execute(
+                    sa_text(
+                        "SELECT count(*), count(*) FILTER (WHERE state = 'done'), "
+                        " count(*) FILTER (WHERE state = 'done' AND passed), "
+                        " count(*) FILTER (WHERE state = 'done' AND NOT passed), "
+                        " count(*) FILTER (WHERE state = 'done' AND status <> 'scored'), "
+                        " count(*) FILTER (WHERE state = 'running'), "
+                        " count(*) FILTER (WHERE state = 'pending') "
+                        "FROM eval_suite_task_results WHERE tenant_id = :tid AND run_id = :rid"
+                    ),
+                    {"tid": self._tenant_id, "rid": run_id},
+                )
+            ).one()
+        keys = ("total", "done", "passed", "failed", "unscored", "running", "pending")
+        return {k: int(v or 0) for k, v in zip(keys, r, strict=True)}
+
+    async def finalize_run(self, run_id: str) -> dict[str, Any] | None:
+        """Complete the run once every task is done. Returns the completed run only
+        to the ONE caller whose update completed it (post-run hooks run once)."""
+        progress = await self.run_progress(run_id)
+        if progress["done"] < progress["total"]:
+            return None
+        total = progress["total"]
+        pass_rate = progress["passed"] / total if total else 0.0
+        summary = await self.list_run_tasks(run_id, limit=SUMMARY_TASKS, failures_first=True)
+        if self._db is None:
+            for runs in _MEM_RUNS.get(self._tenant_id, {}).values():
+                run = runs.get(run_id)
+                if run is not None and run["status"] == "running":
+                    run.update(status="completed", passed=progress["passed"],
+                               failed=progress["failed"], unscored=progress["unscored"],
+                               pass_rate=pass_rate, task_results=summary,
+                               finished_at=datetime.now(UTC).isoformat())
+                    return dict(run)
+            return None
+        async with _scoped(self._db, self._tenant_id) as s:
+            r = (
+                await s.execute(
+                    sa_text(
+                        "UPDATE eval_suite_results SET status = 'completed', "
+                        " passed_tasks = :passed, failed_tasks = :failed, "
+                        " pass_rate = :rate, total_tasks = :total, "
+                        " task_results = CAST(:summary AS json), finished_at = now(), "
+                        " last_progress_at = now() "
+                        "WHERE tenant_id = :tid AND id = :rid AND status = 'running' "
+                        "RETURNING run_id"
+                    ),
+                    {"passed": progress["passed"], "failed": progress["failed"],
+                     "rate": pass_rate, "total": total, "summary": json.dumps(summary),
+                     "tid": self._tenant_id, "rid": run_id},
+                )
+            ).first()
+        if r is None:
+            return None
+        return await self.get_run(run_id)
+
+    async def fail_run(self, run_id: str, error: str) -> None:
+        """Mark a run that cannot continue (its suite was deleted, ...) as failed."""
+        if self._db is None:
+            for runs in _MEM_RUNS.get(self._tenant_id, {}).values():
+                if run_id in runs and runs[run_id]["status"] == "running":
+                    runs[run_id].update(status="failed", error=error[:2000],
+                                        finished_at=datetime.now(UTC).isoformat())
+            return
+        async with _scoped(self._db, self._tenant_id) as s:
+            await s.execute(
+                sa_text(
+                    "UPDATE eval_suite_results SET status = 'failed', error = :err, "
+                    " finished_at = now() WHERE tenant_id = :tid AND id = :rid "
+                    "AND status = 'running'"
+                ),
+                {"err": error[:2000], "tid": self._tenant_id, "rid": run_id},
+            )
+
+    async def list_run_tasks(
+        self, run_id: str, *, limit: int = 100, offset: int = 0, failures_first: bool = False
+    ) -> list[dict[str, Any]]:
+        """Per-task results of a run (paged)."""
+        limit = max(1, min(int(limit), MAX_TASK_PAGE))
+        if self._db is None:
+            rows = list(_MEM_TASKS.get((self._tenant_id, run_id), []))
+            if failures_first:
+                rows.sort(key=lambda r: (bool(r["passed"]), r["ordinal"]))
+            return [_run_task_public(r) for r in rows[offset: offset + limit]]
+        order = "passed IS TRUE, ordinal" if failures_first else "ordinal"
+        async with _scoped(self._db, self._tenant_id) as s:
+            rows2 = (
+                await s.execute(
+                    sa_text(
+                        "SELECT task_id, ordinal, state, attempts, goal_id, status, passed, "
+                        " score, terminal_event, failure_reasons, judge, duration_seconds, task "
+                        "FROM eval_suite_task_results WHERE tenant_id = :tid AND run_id = :rid "
+                        f"ORDER BY {order} LIMIT :lim OFFSET :off"
+                    ),
+                    {"tid": self._tenant_id, "rid": run_id, "lim": limit,
+                     "off": max(0, int(offset))},
+                )
+            ).all()
+        return [
+            _run_task_public({
+                "task_id": r[0], "ordinal": r[1], "state": r[2], "attempts": r[3],
+                "goal_id": r[4], "status": r[5], "passed": r[6], "score": r[7],
+                "terminal_event": r[8], "failure_reasons": _loads(r[9]) or [],
+                "judge": _loads(r[10]), "duration_seconds": r[11], "task": _loads(r[12]) or {},
+            })
+            for r in rows2
+        ]
+
+    async def _touch(self, s: AsyncSession, run_id: str) -> None:
+        await s.execute(
+            sa_text(
+                "UPDATE eval_suite_results SET last_progress_at = now() "
+                "WHERE tenant_id = :tid AND id = :rid"
+            ),
+            {"tid": self._tenant_id, "rid": run_id},
+        )
+
+    def _mem_touch(self, run_id: str) -> None:
+        for runs in _MEM_RUNS.get(self._tenant_id, {}).values():
+            if run_id in runs:
+                runs[run_id]["last_progress_at"] = datetime.now(UTC).isoformat()
+
+    def _mem_row(self, run_id: str, task_id: str) -> dict[str, Any] | None:
+        return next(
+            (r for r in _MEM_TASKS.get((self._tenant_id, run_id), [])
+             if r["task_id"] == task_id),
+            None,
+        )
 
     async def finish_run(
         self,
@@ -659,6 +1054,7 @@ class EvalSuiteStore:
         result: EvalSuiteResult | None,
         error: str | None = None,
     ) -> None:
+        """Record an in-process (library) run's outcome in one write."""
         task_results = [
             {
                 "task_id": r.task_id,
@@ -701,33 +1097,59 @@ class EvalSuiteStore:
     async def list_runs(
         self, suite_id: str, *, limit: int = 50, agent_id: str | None = None
     ) -> list[dict[str, Any]]:
-        """Newest-first run history of one suite (optionally: runs against one agent)."""
+        """Newest-first run history of one suite (optionally: runs against one agent).
+
+        A running run carries live ``progress`` from its task rows; it is reported
+        ``abandoned`` only when no worker has made progress for
+        ``eval_suite_stalled_after_seconds`` (heartbeat), never because it is long.
+        """
+        stale_after = timedelta(seconds=_stalled_after_seconds())
         if self._db is None:
             runs = list(_MEM_RUNS.get(self._tenant_id, {}).get(suite_id, {}).values())
             if agent_id is not None:
                 runs = [r for r in runs if r.get("agent_id") == agent_id]
             runs.sort(key=lambda r: r["run_at"], reverse=True)
-            return [dict(r) for r in runs[:limit]]
+            out = []
+            for r in runs[:limit]:
+                item = dict(r)
+                if item["status"] == "running":
+                    item["progress"] = await self.run_progress(item["run_id"])
+                    last = item.get("last_progress_at") or item["run_at"]
+                    if datetime.fromisoformat(last) < datetime.now(UTC) - stale_after:
+                        item["status"] = "abandoned"
+                out.append(item)
+            return out
         agent_filter = "AND agent_id = :aid " if agent_id is not None else ""
         async with _scoped(self._db, self._tenant_id) as s:
             rows = (
                 await s.execute(
                     sa_text(
-                        "SELECT run_id, CASE WHEN status = 'running' AND run_at < :stale "
+                        "SELECT run_id, CASE WHEN status = 'running' "
+                        " AND COALESCE(last_progress_at, run_at) < :stale "
                         " THEN 'abandoned' ELSE status END, total_tasks, passed_tasks, "
                         " failed_tasks, pass_rate, task_results, error, run_at, finished_at, "
-                        " dataset_version, agent_id, agent_config_hash, agent_version "
+                        " dataset_version, agent_id, agent_config_hash, agent_version, "
+                        " last_progress_at, status "
                         "FROM eval_suite_results WHERE tenant_id = :tid AND suite_id = :sid "
                         f"{agent_filter}ORDER BY run_at DESC, id LIMIT :limit"
                     ),
                     {"tid": self._tenant_id, "sid": suite_id, "limit": limit,
-                     "stale": datetime.now(UTC) - STALE_RUN_AFTER, "aid": agent_id},
+                     "stale": datetime.now(UTC) - stale_after, "aid": agent_id},
                 )
             ).all()
-        return [
-            {"run_id": r[0], "status": r[1], "total": r[2], "passed": r[3], "failed": r[4],
-             "pass_rate": r[5], "task_results": _loads(r[6]) or [], "error": r[7],
-             "run_at": _iso(r[8]), "finished_at": _iso(r[9]), "dataset_version": r[10],
-             "agent_id": r[11], "agent_config_hash": r[12], "agent_version": r[13]}
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            item = {
+                "run_id": r[0], "status": r[1], "total": r[2], "passed": r[3], "failed": r[4],
+                "pass_rate": r[5], "task_results": _loads(r[6]) or [], "error": r[7],
+                "run_at": _iso(r[8]), "finished_at": _iso(r[9]), "dataset_version": r[10],
+                "agent_id": r[11], "agent_config_hash": r[12], "agent_version": r[13],
+                "last_progress_at": _iso(r[14]),
+            }
+            if r[15] == "running":
+                item["progress"] = await self.run_progress(str(r[0]))
+                item["task_results"] = await self.list_run_tasks(
+                    str(r[0]), limit=SUMMARY_TASKS, failures_first=True
+                )
+            out.append(item)
+        return out

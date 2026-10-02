@@ -580,6 +580,19 @@ class Settings(BaseSettings):
     # version (MEM-52).
     rollout_min_pass_rate: float = Field(default=0.8, ge=0.0, le=1.0)
     rollout_min_suite_size: int = Field(default=5, ge=1, le=100_000)
+    # Durable eval-suite runs (MEM-53): Celery workers per run claim golden
+    # tasks under a renewable lease; a task's goal may run
+    # max(60, max_iterations * seconds_per_iteration) seconds, capped below.
+    eval_suite_run_concurrency: int = Field(default=4, ge=1, le=64)
+    eval_suite_lease_seconds: float = Field(default=60.0, ge=5.0, le=3600.0)
+    eval_suite_task_seconds_per_iteration: float = Field(default=20.0, ge=1.0, le=600.0)
+    eval_suite_task_timeout_max_seconds: float = Field(default=1800.0, ge=10.0, le=86_400.0)
+    eval_suite_goal_poll_seconds: float = Field(default=2.0, ge=0.01, le=60.0)
+    eval_suite_max_task_attempts: int = Field(default=3, ge=1, le=20)
+    # A running run with no worker progress for this long is re-dispatched by the
+    # beat sweeper; reads report it "abandoned" after eval_suite_stalled_after_seconds.
+    eval_suite_resume_after_seconds: float = Field(default=180.0, ge=10.0, le=86_400.0)
+    eval_suite_stalled_after_seconds: float = Field(default=1800.0, ge=30.0, le=604_800.0)
     # A supervisor's sub-goals run under the parent's concurrent-goal slot
     # (a parent at the tenant limit can never starve its own children). False
     # makes each sub-goal take, and release, a slot of its own.

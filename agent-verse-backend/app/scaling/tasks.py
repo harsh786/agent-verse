@@ -9403,3 +9403,134 @@ def run_ai_ops_dataset(self: Any, tenant_id: str, plan: str, result_id: str) -> 
     """Execute (or resume) one AI-Ops dataset run on a worker."""
     result: dict[str, Any] = _run_async(_run_ai_ops_dataset_async(tenant_id, plan, result_id))
     return result
+
+
+# ── Durable eval-suite runs (MEM-53) ──────────────────────────────────────────
+
+
+async def _run_eval_suite_worker_async(
+    tenant_id: str, plan: str, run_id: str, worker_no: int
+) -> dict[str, Any]:
+    from app.api.agents import AgentStore
+    from app.intelligence.eval_suite import platform_judge
+    from app.intelligence.eval_suite_jobs import run_suite_worker
+    from app.intelligence.eval_suite_post_run import on_run_completed
+    from app.intelligence.eval_suite_store import EvalSuiteStore
+    from app.tenancy.context import PlanTier, TenantContext
+
+    goal_service, db_factory = _build_worker_goal_service()
+    if goal_service is None or db_factory is None:
+        raise RuntimeError("worker goal service / database unavailable")
+    try:
+        tier = PlanTier(plan)
+    except ValueError:
+        tier = PlanTier.FREE
+    tenant_ctx = TenantContext(tenant_id=tenant_id, plan=tier, api_key_id="eval-suite-run")
+    redis = None
+    redis_url = os.getenv("REDIS_URL", "") or str(celery_app.conf.broker_url or "")
+    if redis_url:
+        # Cancelling a timed-out golden goal reaches its runner (another worker)
+        # through the Redis cancel flag.
+        redis = _worker_async_redis()
+        goal_service._redis = redis
+    agent_store = AgentStore(db_factory)
+
+    async def _load_agent(agent_id: str) -> dict[str, Any] | None:
+        found: dict[str, Any] | None = await agent_store.get_async(agent_id, tenant_ctx=tenant_ctx)
+        return found
+
+    try:
+        return await run_suite_worker(
+            store=EvalSuiteStore(db_factory, tenant_id),
+            run_id=run_id,
+            goal_service=goal_service,
+            tenant_ctx=tenant_ctx,
+            judge=platform_judge(_ai_ops_worker_platform_provider()),
+            agent_loader=_load_agent,
+            on_completed=on_run_completed,
+            owner=f"celery-{worker_no}-{uuid.uuid4().hex[:8]}",
+        )
+    finally:
+        for task in list(getattr(goal_service, "_background_tasks", ())):
+            task.cancel()
+        if redis is not None:
+            with contextlib.suppress(Exception):
+                await redis.aclose()
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.run_eval_suite_worker",
+    bind=True,
+    max_retries=0,
+    # At-least-once: a worker lost mid-task has the message redelivered; the run
+    # resumes from its persisted per-task rows (expired leases are re-claimed and
+    # a recorded goal is waited on, never resubmitted). The stalled-run sweeper
+    # re-dispatches if the message itself is lost.
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def run_eval_suite_worker(
+    self: Any, tenant_id: str, plan: str, run_id: str, worker_no: int = 0
+) -> dict[str, Any]:
+    """One worker of a durable eval-suite run: claim and execute golden tasks."""
+    result: dict[str, Any] = _run_async(
+        _run_eval_suite_worker_async(tenant_id, plan, run_id, worker_no)
+    )
+    return result
+
+
+async def _resume_stalled_eval_suite_runs_async(
+    resume_after_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Re-dispatch workers for running runs that made no progress for a while."""
+    from sqlalchemy import text
+
+    from app.core.config import get_settings
+    from app.db.rls import system_session
+    from app.db.session import get_system_session_factory
+
+    settings = get_settings()
+    after = float(
+        resume_after_seconds
+        if resume_after_seconds is not None
+        else settings.eval_suite_resume_after_seconds
+    )
+    # Cross-tenant scan → maintenance (BYPASSRLS) role. Claiming the row by
+    # bumping last_progress_at keeps two sweeps from dispatching it twice.
+    db = get_system_session_factory()
+    async with db() as session, session.begin(), system_session(session):
+        rows = (
+            await session.execute(
+                text(
+                    "UPDATE eval_suite_results r SET last_progress_at = now() "
+                    "FROM (SELECT tenant_id, id FROM eval_suite_results "
+                    "      WHERE status = 'running' "
+                    "        AND COALESCE(last_progress_at, run_at) "
+                    "            < now() - make_interval(secs => :after) "
+                    "      ORDER BY COALESCE(last_progress_at, run_at) LIMIT 100 "
+                    "      FOR UPDATE SKIP LOCKED) s "
+                    "WHERE r.tenant_id = s.tenant_id AND r.id = s.id "
+                    "RETURNING r.tenant_id, r.id, COALESCE(r.tenant_plan, 'free'), "
+                    " COALESCE(r.concurrency, 1)"
+                ),
+                {"after": after},
+            )
+        ).all()
+    dispatched = 0
+    for tenant_id, run_id, plan, concurrency in rows:
+        for i in range(max(1, int(concurrency))):
+            run_eval_suite_worker.apply_async(
+                args=[str(tenant_id), str(plan), str(run_id), i], queue="maintenance"
+            )
+            dispatched += 1
+        logger.warning("eval_suite_run_resumed", tenant_id=tenant_id, run_id=run_id)
+    return {"resumed_runs": len(rows), "workers_dispatched": dispatched}
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.resume_stalled_eval_suite_runs", bind=True, max_retries=0
+)
+def resume_stalled_eval_suite_runs(self: Any) -> dict[str, Any]:
+    """Beat: resume eval-suite runs whose workers died (no progress heartbeat)."""
+    result: dict[str, Any] = _run_async(_resume_stalled_eval_suite_runs_async())
+    return result
