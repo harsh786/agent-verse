@@ -27,17 +27,54 @@ from app.tenancy.context import PlanTier, TenantContext
 # ---------------------------------------------------------------------------
 # H4: In-process rate-limit fallback (used when Redis is unavailable)
 # ---------------------------------------------------------------------------
-# Maps tenant_id → (window_start: float, count: int)
+# Maps tenant_id → (window_start: float, count: int). Bounded: a Redis outage
+# under traffic from many tenants must not grow this without limit.
 _fallback_counters: dict[str, tuple[float, int]] = {}
 _FALLBACK_RPM_LIMIT = 120  # conservative cap applied on top of the plan limit
+_FALLBACK_MAX_TENANTS = 50_000
+
+
+def _degraded_budget(rpm_limit: int) -> int:
+    """This replica's share of the plan limit while the shared window is down.
+
+    Each replica enforcing the full limit allowed N x the plan limit across N
+    replicas (RATE-03); the budget is divided by RATE_LIMIT_REPLICA_COUNT.
+    """
+    try:
+        from app.core.config import get_settings
+
+        replicas = max(1, int(getattr(get_settings(), "rate_limit_replica_count", 1) or 1))
+    except Exception:
+        replicas = 1
+    return max(1, min(rpm_limit, _FALLBACK_RPM_LIMIT) // replicas)
+
+
+def _prune_fallback_counters(now: float) -> None:
+    if len(_fallback_counters) < _FALLBACK_MAX_TENANTS:
+        return
+    for tid, (start, _count) in list(_fallback_counters.items()):
+        if now - start > 60:
+            _fallback_counters.pop(tid, None)
+    while len(_fallback_counters) >= _FALLBACK_MAX_TENANTS:  # all windows live: drop oldest
+        _fallback_counters.pop(next(iter(_fallback_counters)), None)
+
+
+def _record_degraded(allowed: bool) -> None:
+    try:
+        from app.observability.metrics import RATE_LIMIT_DEGRADED_TOTAL
+
+        RATE_LIMIT_DEGRADED_TOTAL.labels(decision="allowed" if allowed else "denied").inc()
+    except Exception:  # metrics must never break the request path
+        return
 
 
 async def _check_rate_limit_with_fallback(tenant_id: str, redis: Any, rpm_limit: int) -> bool:
     """Check rate limit, using in-process counter when Redis is unavailable.
 
     Returns True if the request should be allowed, False if it should be
-    rate-limited.  Never fails open — always enforces at least
-    ``min(rpm_limit, _FALLBACK_RPM_LIMIT)`` even without Redis.
+    rate-limited.  Never fails open — without Redis each replica enforces its
+    share of the plan limit (:func:`_degraded_budget`), and every degraded
+    decision is counted on ``agentverse_rate_limit_degraded_total``.
     """
     if redis is not None:
         try:
@@ -51,18 +88,23 @@ async def _check_rate_limit_with_fallback(tenant_id: str, redis: Any, rpm_limit:
         except Exception:
             pass  # Redis error — fall through to in-process fallback
 
-    # In-process fallback: conservative sliding window without Redis
+    # In-process fallback: this replica's share of the plan limit
     import time as _time
 
     now = _time.monotonic()
-    window_start, count = _fallback_counters.get(tenant_id, (now, 0))
-    if now - window_start > 60:  # new 60-second window
+    budget = _degraded_budget(rpm_limit)
+    entry = _fallback_counters.get(tenant_id)
+    if entry is None or now - entry[0] > 60:  # new 60-second window
+        _prune_fallback_counters(now)
         _fallback_counters[tenant_id] = (now, 1)
+        _record_degraded(True)
         return True
-    effective_limit = min(rpm_limit, _FALLBACK_RPM_LIMIT)
-    if count >= effective_limit:
+    window_start, count = entry
+    if count >= budget:
+        _record_degraded(False)
         return False  # fail-closed: enforce limit even without Redis
     _fallback_counters[tenant_id] = (window_start, count + 1)
+    _record_degraded(True)
     return True
 
 

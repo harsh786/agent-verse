@@ -184,6 +184,14 @@ GOAL_EVENT_OUTBOX_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+RATE_LIMIT_DEGRADED_TOTAL = Counter(
+    "agentverse_rate_limit_degraded_total",
+    "Rate-limit decisions taken by the per-replica fallback because Redis was "
+    "unreachable (alert on any increase).",
+    labelnames=("decision",),
+    registry=REGISTRY,
+)
+
 DESIRED_WORKERS = Gauge(
     "agentverse_desired_workers",
     "Desired worker count per plan for autoscaling (consumed by KEDA/HPA).",

@@ -502,6 +502,13 @@ class Settings(BaseSettings):
     # (each is a clone of up to repo_ingest_max_repository_bytes on a worker).
     repo_ingest_max_concurrent_per_tenant: int = Field(default=2, ge=1, le=50)
 
+    # --- rate limiting ---
+    # API replicas sharing each tenant's per-minute plan limit. Only used while
+    # Redis (the shared sliding window) is unreachable: each replica then
+    # enforces plan_limit / rate_limit_replica_count locally, so the cluster as
+    # a whole stays within the plan limit instead of N x it (RATE-03).
+    rate_limit_replica_count: int = Field(default=1, ge=1, le=10_000)
+
     # --- search ---
     searxng_url: str = "http://searxng:8080"
     web_search_allowed_domains: str = ""
