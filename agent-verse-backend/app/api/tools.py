@@ -80,6 +80,61 @@ async def execute_code(request: Request, body: ExecuteCodeRequest) -> ExecuteCod
     return ExecuteCodeResponse(**result.to_dict())
 
 
+# ── Audit for side-effecting native tools ─────────────────────────────────────
+
+
+async def _audit_native(
+    request: Request,
+    ctx: Any,
+    *,
+    tool: str,
+    outcome: str,
+    note: str,
+    durable: bool = True,
+) -> None:
+    """Record one audit row for a native-tool side effect.
+
+    ``durable=True`` is the precondition row written BEFORE the side effect:
+    if it cannot be committed the request is refused with 503 (nothing is sent,
+    written or deleted unaudited). ``durable=False`` is the follow-up outcome
+    row for a failed operation (best effort; failure is logged).
+    """
+    from app.governance.audit import AuditEvent, AuditWriteError
+    from app.governance.permissions import ActionLevel
+    from app.tools.code_execution import durable_audit_log
+
+    audit = durable_audit_log(getattr(request.app.state, "audit_log", None))
+    event = AuditEvent(
+        goal_id=f"tools.{tool}"[:64],
+        tool_name=tool,
+        action_level=ActionLevel.ALLOW_LOG,
+        outcome=outcome,
+        api_key_id=(getattr(ctx, "api_key_id", None) or None),
+        note=note[:2000],
+    )
+    if not durable:
+        try:
+            await audit.record_async(event, tenant_ctx=ctx)
+        except AuditWriteError as exc:
+            import logging
+
+            logging.getLogger(__name__).error("native_tool_outcome_audit_failed: %s", exc)
+        return
+    try:
+        await audit.record_durable(event, tenant_ctx=ctx)
+    except AuditWriteError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{tool} could not be audited; nothing was done.",
+        ) from exc
+
+
+def _sha256(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
 # ── File Operations ───────────────────────────────────────────────────────────
 
 
@@ -126,11 +181,29 @@ async def write_file(request: Request, path: str, body: FileWriteRequest) -> dic
     from app.tools.file_ops import FileOps
 
     ops = FileOps(tenant_id=ctx.tenant_id)
+    size = len(body.content.encode("utf-8"))
+    await _audit_native(
+        request,
+        ctx,
+        tool="workspace.write",
+        outcome="requested",
+        note=f"path={path} bytes={size} sha256={_sha256(body.content)}",
+    )
     try:
         bytes_written = await ops.write(path, body.content)
         return {"path": path, "bytes_written": bytes_written, "success": True}
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except OSError as exc:
+        await _audit_native(
+            request,
+            ctx,
+            tool="workspace.write",
+            outcome="failed",
+            note=f"path={path} error={type(exc).__name__}",
+            durable=False,
+        )
+        raise HTTPException(status_code=500, detail="Workspace write failed") from exc
 
 
 @router.delete("/files/{path:path}", status_code=204)
@@ -142,6 +215,9 @@ async def delete_file(request: Request, path: str) -> None:
     from app.tools.file_ops import FileOps
 
     ops = FileOps(tenant_id=ctx.tenant_id)
+    await _audit_native(
+        request, ctx, tool="workspace.delete", outcome="requested", note=f"path={path}"
+    )
     deleted = await ops.delete(path)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"File not found: {path!r}")
@@ -170,9 +246,21 @@ async def send_email(request: Request, body: SendEmailRequest) -> dict[str, Any]
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    from app.tools.email_tool import email_send
+    from app.tools import email_tool
 
-    result = await email_send(
+    recipients = [body.to] if isinstance(body.to, str) else list(body.to)
+    recipients_digest = _sha256(",".join(sorted(r.strip().lower() for r in recipients)))
+    await _audit_native(
+        request,
+        ctx,
+        tool="email.send",
+        outcome="requested",
+        note=(
+            f"recipients={len(recipients)} recipients_sha256={recipients_digest} "
+            f"subject_sha256={_sha256(body.subject)} body_bytes={len(body.body.encode())}"
+        ),
+    )
+    result = await email_tool.email_send(
         body.to,
         body.subject,
         body.body,
@@ -180,6 +268,15 @@ async def send_email(request: Request, body: SendEmailRequest) -> dict[str, Any]
         reply_to=body.reply_to,
         tenant_id=str(ctx.tenant_id),
     )
+    if not result.get("success", True):
+        await _audit_native(
+            request,
+            ctx,
+            tool="email.send",
+            outcome="rejected" if result.get("rejected") else "failed",
+            note=f"recipients_sha256={recipients_digest}",
+            durable=False,
+        )
     if result.get("rejected"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("error"))
     if not result.get("success", True):

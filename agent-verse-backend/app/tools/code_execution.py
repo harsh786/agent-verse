@@ -81,9 +81,12 @@ async def env_redis() -> AsyncIterator[Any]:
             await client.aclose()
 
 
-def _process_audit_log() -> AuditLog:
-    """A DB-backed AuditLog for callers without one (e.g. Celery workers)."""
+def durable_audit_log(app_log: AuditLog | None = None) -> AuditLog:
+    """*app_log* (the app's audit log) or a process DB-backed AuditLog for callers
+    without one (e.g. Celery workers)."""
     global _default_audit_log
+    if app_log is not None:
+        return app_log
     if _default_audit_log is None:
         from app.db.session import get_session_factory
 
@@ -177,7 +180,7 @@ async def execute_governed(
         result: CodeResult = await interp.execute(
             code=code, language=language, timeout=timeout, tenant_id=ctx.tenant_ctx.tenant_id
         )
-    await _audit(ctx, code, language, result, audit_log or _process_audit_log())
+    await _audit(ctx, code, language, result, durable_audit_log(audit_log))
     return result
 
 

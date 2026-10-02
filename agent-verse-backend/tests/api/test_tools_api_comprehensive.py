@@ -65,10 +65,13 @@ def test_execute_code_success(monkeypatch) -> None:
     }
 
     class MockInterpreter:
+        def __init__(self, **_kw):
+            pass
+
         async def execute(self, code, language, timeout, tenant_id=None):
             return result
 
-    monkeypatch.setattr("app.tools.code_interpreter.CodeInterpreter", MockInterpreter)
+    monkeypatch.setattr("app.tools.code_execution.CodeInterpreter", MockInterpreter)
 
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
@@ -95,10 +98,13 @@ def test_execute_code_javascript(monkeypatch) -> None:
     }
 
     class MockInterpreter:
+        def __init__(self, **_kw):
+            pass
+
         async def execute(self, code, language, timeout, tenant_id=None):
             return result
 
-    monkeypatch.setattr("app.tools.code_interpreter.CodeInterpreter", MockInterpreter)
+    monkeypatch.setattr("app.tools.code_execution.CodeInterpreter", MockInterpreter)
 
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
@@ -122,10 +128,13 @@ def test_execute_code_timed_out(monkeypatch) -> None:
     }
 
     class MockInterpreter:
+        def __init__(self, **_kw):
+            pass
+
         async def execute(self, code, language, timeout, tenant_id=None):
             return result
 
-    monkeypatch.setattr("app.tools.code_interpreter.CodeInterpreter", MockInterpreter)
+    monkeypatch.setattr("app.tools.code_execution.CodeInterpreter", MockInterpreter)
 
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(

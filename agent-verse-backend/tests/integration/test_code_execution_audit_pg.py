@@ -119,3 +119,55 @@ def test_each_execution_commits_one_tenant_scoped_row(
     assert sources == ["source=chat.execute", "source=tools.execute_code"]
     assert "sess-a" in {g for g, _ in rows_a}
     assert asyncio.run(_rows(app_role_url, tenant_b)) == []
+
+
+async def _native_rows(url: str, tenant: str) -> list[str]:
+    conn = await asyncpg.connect(_plain(url))
+    try:
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant)
+            recs = await conn.fetch(
+                "SELECT tool_name FROM audit_log WHERE tool_name IN "
+                "('workspace.write', 'workspace.delete', 'email.send') ORDER BY created_at"
+            )
+    finally:
+        await conn.close()
+    return [r["tool_name"] for r in recs]
+
+
+def test_native_tool_side_effects_commit_tenant_scoped_rows(
+    app_role_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NATIVE-03: workspace write/delete and email send each commit a row first."""
+    from app.api.tools import router as tools_router
+
+    async def _send(*_a: Any, **_k: Any) -> dict[str, Any]:
+        return {"success": True}
+
+    monkeypatch.setattr("app.tools.email_tool.email_send", _send)
+    tenant_a = f"ta-{secrets.token_hex(4)}"
+    ctx = TenantContext(tenant_id=tenant_a, plan=PlanTier.FREE, api_key_id="key-a")
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _inject(request: Any, call_next: Any) -> Any:
+        request.state.tenant = ctx
+        return await call_next(request)
+
+    app.include_router(tools_router)
+    app.state.audit_log = AuditLog(db_session_factory=_factory(app_role_url))
+    client = TestClient(app)
+    assert client.post("/tools/files/n.txt", json={"content": "x"}).status_code == 201
+    assert client.delete("/tools/files/n.txt").status_code == 204
+    assert (
+        client.post(
+            "/tools/email/send", json={"to": "a@example.com", "subject": "s", "body": "b"}
+        ).status_code
+        == 200
+    )
+    assert asyncio.run(_native_rows(app_role_url, tenant_a)) == [
+        "workspace.write",
+        "workspace.delete",
+        "email.send",
+    ]
+    assert asyncio.run(_native_rows(app_role_url, f"tb-{secrets.token_hex(4)}")) == []
