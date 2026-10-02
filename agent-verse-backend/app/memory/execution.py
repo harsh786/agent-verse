@@ -93,6 +93,58 @@ async def _screen_record(
     return screened["goal"], [screened[f"t{i}"] for i in range(len(texts))]
 
 
+def _json_value(raw: Any) -> Any:
+    """A jsonb value as Python (asyncpg may hand jsonb back as a str)."""
+    if isinstance(raw, str | bytes):
+        import json
+
+        try:
+            return json.loads(raw)
+        except ValueError:
+            return None
+    return raw
+
+
+async def _relevant_rows(
+    db: Any, *, tenant_id: str, goal_hint: str, success: bool, limit: int
+) -> list[tuple[Any, Any]]:
+    """MEM-36: the tenant's most RELEVANT rows of one kind, selected in SQL.
+
+    pg_trgm similarity / word similarity of ``goal_text`` to the hint (GIN
+    trigram index) orders the candidates, recency breaks ties, LIMIT bounds
+    the read. Recall used to read the newest ``3 * limit`` rows and keyword-
+    filter them in Python, so an active tenant's older relevant plans and
+    failures were never recalled. A blank hint reads the recent window
+    (index ``(tenant_id, success, created_at DESC)``).
+    """
+    from sqlalchemy import text
+
+    hint = goal_hint.strip()[:500]
+    kind = "TRUE" if success else "FALSE"
+    if hint:
+        sql = (
+            "SELECT goal_text, plan FROM execution_memory "
+            f"WHERE tenant_id = :tid AND success = {kind} "
+            "AND (goal_text % :q OR :q <% goal_text) "
+            "ORDER BY GREATEST(similarity(goal_text, :q), word_similarity(:q, goal_text)) DESC, "
+            "created_at DESC LIMIT :lim"
+        )
+        params: dict[str, Any] = {"tid": tenant_id, "q": hint, "lim": limit}
+    else:
+        sql = (
+            "SELECT goal_text, plan FROM execution_memory "
+            f"WHERE tenant_id = :tid AND success = {kind} "
+            "ORDER BY created_at DESC LIMIT :lim"
+        )
+        params = {"tid": tenant_id, "lim": limit}
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
+        return [(r[0], r[1]) for r in (await session.execute(text(sql), params)).fetchall()]
+
+
 class ExecutionMemory:
     """Per-tenant store of past executions (successful plans and failures)."""
 
@@ -440,53 +492,20 @@ class ExecutionMemory:
             return RecallResult(_from_memory())
 
         try:
-            from sqlalchemy import text
-
-            async with (
-                db() as session,
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
-                rows = (
-                    await session.execute(
-                        text("""
-                        SELECT goal_text, plan FROM execution_memory
-                        WHERE tenant_id = :tid AND success = FALSE
-                        ORDER BY created_at DESC LIMIT :lim
-                    """),
-                        {"tid": tenant_id, "lim": limit * 3},
-                    )
-                ).fetchall()
-
-            hint_lower = goal_hint.lower()
-            words = hint_lower.split()[:5]
-            filtered: list[dict] = []
-            for row in rows:
-                goal_text, plan = row
-                goal_str = str(goal_text or "")
-                if words and not any(word in goal_str.lower() for word in words):
-                    continue
-                error = ""
-                if isinstance(plan, dict):
-                    error = str(plan.get("error", ""))
-                elif isinstance(plan, str):
-                    try:
-                        import json
-
-                        parsed = json.loads(plan)
-                        if isinstance(parsed, dict):
-                            error = str(parsed.get("error", ""))
-                    except Exception:
-                        error = ""
-                filtered.append(
-                    {"goal": goal_str, "goal_text": goal_str, "error": error}
-                )
-                if len(filtered) >= limit:
-                    break
-            return RecallResult(filtered)
+            rows = await _relevant_rows(
+                db, tenant_id=tenant_id, goal_hint=goal_hint, success=False, limit=limit
+            )
         except Exception as exc:
             # Was: silently return this replica's in-process failures as truth.
             _log.warning("execution_memory_recall_failures_db_failed", error=str(exc)[:300])
             return RecallResult(degraded=True)
+        filtered: list[dict[str, Any]] = []
+        for goal_text, plan in rows:
+            goal_str = str(goal_text or "")
+            parsed = _json_value(plan)
+            error = str(parsed.get("error", "")) if isinstance(parsed, dict) else ""
+            filtered.append({"goal": goal_str, "goal_text": goal_str, "error": error})
+        return RecallResult(filtered)
 
     async def recall_async(
         self,
@@ -498,6 +517,7 @@ class ExecutionMemory:
     ) -> RecallResult:
         """Recall relevant execution plans from DB for a given goal.
 
+        Relevance is selected in SQL (MEM-36, see :func:`_relevant_rows`).
         Uses the in-memory ``_plans`` only when ``db`` is None (no DB
         configured). A failed query logs a warning and returns an empty
         ``RecallResult(degraded=True)`` — never this replica's local cache.
@@ -520,39 +540,21 @@ class ExecutionMemory:
             return RecallResult(results)
 
         try:
-            from sqlalchemy import text
-
-            async with (
-                db() as session,
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
-                rows = (
-                    await session.execute(
-                        text("""
-                        SELECT goal_text, plan, success FROM execution_memory
-                        WHERE tenant_id = :tid AND success = TRUE
-                        ORDER BY created_at DESC LIMIT :lim
-                    """),
-                        {"tid": tenant_id, "lim": limit * 3},
-                    )
-                ).fetchall()
+            rows = await _relevant_rows(
+                db, tenant_id=tenant_id, goal_hint=goal_hint, success=True, limit=limit
+            )
         except Exception as exc:
             # Was: silently fall back to this replica's in-process plans.
             _log.warning("execution_memory_recall_db_failed", error=str(exc)[:300])
             return RecallResult(degraded=True)
-
-        # Filter by keyword relevance
-        filtered: list[dict[str, Any]] = []
-        for row in rows:
-            goal_text, plan, success = row
-            if any(word in (goal_text or "").lower() for word in words):
-                filtered.append(
-                    {
-                        "goal": goal_text,
-                        "plan": plan if isinstance(plan, list) else [],
-                        "success": success,
-                    }
-                )
-                if len(filtered) >= limit:
-                    break
-        return RecallResult(filtered)
+        out: list[dict[str, Any]] = []
+        for goal_text, plan in rows:
+            parsed = _json_value(plan)
+            out.append(
+                {
+                    "goal": goal_text,
+                    "plan": parsed if isinstance(parsed, list) else [],
+                    "success": True,
+                }
+            )
+        return RecallResult(out)
