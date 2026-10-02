@@ -37,7 +37,9 @@ _TABLES = (
     "mcp_builtin_provisioning",
     "connector_store_backfills",
     "tenant_vault_keys",
+    "goal_connector_usage",
 )
+_GRANT_ONLY = ("goals", "cost_ledger")  # shared by other suites: granted, never emptied
 
 
 def _ctx(tid: str) -> TenantContext:
@@ -59,7 +61,7 @@ async def app_db(pg_url: str) -> AsyncIterator[Any]:
             )
         )
         await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
-        for table in _TABLES:
+        for table in _TABLES + _GRANT_ONLY:
             await conn.execute(
                 text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role}")
             )
@@ -270,3 +272,232 @@ async def test_concurrent_same_name_creates_one_wins(app_db: Any, redis: Any) ->
     )
     assert sum(isinstance(r, str) for r in results) == 1
     assert sum(isinstance(r, ConnectorConflictError) for r in results) == 1
+
+
+# ── SECRET-01: connector secrets are durable in Postgres ─────────────────────
+
+
+def _secret_store(db: Any, redis: Any) -> Any:
+    from app.mcp.connector_secrets import DurableConnectorSecretStore
+
+    return DurableConnectorSecretStore(db_factory=db, redis=redis)
+
+
+async def _tenant_rows(db: Any, tid: str, sql: str) -> list[Any]:
+    async with db() as s, s.begin():
+        await s.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tid})
+        return list((await s.execute(text(sql), {"t": tid})).fetchall())
+
+
+@pytest.mark.asyncio
+async def test_secret_survives_flushall_and_is_encrypted(app_db: Any, redis: Any) -> None:
+    await _mark_backfilled(app_db)
+    tid = f"t-{uuid.uuid4().hex[:8]}"
+    ref = "vault://connectors/builtin-github:work/token"
+    await _secret_store(app_db, redis).store(ref, "ghp_plain_secret", tenant_ctx=_ctx(tid))
+
+    await redis.flushall()
+
+    fresh = _secret_store(app_db, redis)
+    assert await fresh.resolve(ref, tenant_ctx=_ctx(tid)) == "ghp_plain_secret"
+    rows = await _tenant_rows(
+        app_db,
+        tid,
+        "SELECT server_id, secret_key, encrypted_value FROM mcp_credentials "
+        "WHERE tenant_id = :t",
+    )
+    assert len(rows) == 1
+    assert rows[0][0] == "builtin-github:work" and rows[0][1] == "token"
+    assert "ghp_plain_secret" not in rows[0][2]
+
+
+@pytest.mark.asyncio
+async def test_secret_is_tenant_scoped(app_db: Any, redis: Any) -> None:
+    await _mark_backfilled(app_db)
+    a, b = f"ta-{uuid.uuid4().hex[:6]}", f"tb-{uuid.uuid4().hex[:6]}"
+    ref = "vault://connectors/srv1/api_key"
+    store = _secret_store(app_db, redis)
+    await store.store(ref, "secret-a", tenant_ctx=_ctx(a))
+    assert await store.resolve(ref, tenant_ctx=_ctx(b)) is None
+    await redis.flushall()
+    assert await store.resolve(ref, tenant_ctx=_ctx(b)) is None
+    assert await store.resolve(ref, tenant_ctx=_ctx(a)) == "secret-a"
+
+
+@pytest.mark.asyncio
+async def test_secret_uses_tenant_envelope_key(app_db: Any, redis: Any, pg_url: str) -> None:
+    from app.providers.tenant_vault import store_tenant_vault_key
+
+    await _mark_backfilled(app_db)
+    tid = f"t-{uuid.uuid4().hex[:8]}"
+    admin = create_async_engine(pg_url)
+    async with admin.begin() as conn:  # tenant_vault_keys references tenants
+        await conn.execute(
+            text(
+                "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                "VALUES (:id, :id, :email, 'free', true)"
+            ),
+            {"id": tid, "email": f"{tid}@example.test"},
+        )
+    await admin.dispose()
+    await store_tenant_vault_key(app_db, tid, secrets.token_bytes(32))
+    ref = "vault://connectors/srv/token"
+    await _secret_store(app_db, redis).store(ref, "tenant-keyed", tenant_ctx=_ctx(tid))
+    rows = await _tenant_rows(
+        app_db, tid, "SELECT encrypted_value FROM mcp_credentials WHERE tenant_id = :t"
+    )
+    assert rows[0][0].startswith("tv1:")
+    await redis.flushall()
+    fresh = _secret_store(app_db, redis)
+    assert await fresh.resolve(ref, tenant_ctx=_ctx(tid)) == "tenant-keyed"
+
+
+@pytest.mark.asyncio
+async def test_legacy_redis_secrets_are_backfilled_and_read_repaired(
+    app_db: Any, redis: Any
+) -> None:
+    from app.mcp.connector_backfill import backfill_connectors_from_redis
+    from app.providers.vault import RedisConnectorSecretStore, get_vault
+
+    tid = f"t-{uuid.uuid4().hex[:8]}"
+    legacy = RedisConnectorSecretStore(redis=redis, vault=get_vault())
+    await legacy.store("vault://connectors/a:b/token", "legacy-1", tenant_ctx=_ctx(tid))
+    await legacy.store("vault://connectors/c/password", "legacy-2", tenant_ctx=_ctx(tid))
+
+    # Deploy window (no backfill recorded yet): served from the legacy key.
+    store = _secret_store(app_db, redis)
+    assert await store.resolve("vault://connectors/a:b/token", tenant_ctx=_ctx(tid)) == "legacy-1"
+
+    keys_before = sorted(await redis.keys("mcp:connector_secrets:*"))
+    report = await backfill_connectors_from_redis(redis, app_db)
+    assert report["status"] == "complete", report
+    assert report["secrets"]["copied"] + report["secrets"]["present"] == 2
+    assert sorted(await redis.keys("mcp:connector_secrets:*")) == keys_before
+    again = await backfill_connectors_from_redis(redis, app_db)
+    assert again["secrets"]["copied"] == 0
+
+    await redis.flushall()
+    fresh = _secret_store(app_db, redis)
+    assert await fresh.resolve("vault://connectors/c/password", tenant_ctx=_ctx(tid)) == "legacy-2"
+    assert await fresh.resolve("vault://connectors/a:b/token", tenant_ctx=_ctx(tid)) == "legacy-1"
+
+
+@pytest.mark.asyncio
+async def test_rotation_reencrypts_postgres_connector_secrets(
+    app_db: Any, redis: Any, pg_url: str
+) -> None:
+    from app.providers.vault import CredentialVault, get_vault, rotate_master_key
+
+    await _mark_backfilled(app_db)
+    tid = f"t-{uuid.uuid4().hex[:8]}"
+    ref = "vault://connectors/srv/token"
+    await _secret_store(app_db, redis).store(ref, "rotate-me", tenant_ctx=_ctx(tid))
+    new = CredentialVault(master_key="n" * 40)
+    admin = create_async_engine(pg_url)
+    async with admin.begin() as conn:  # rotation walks the tenants table
+        await conn.execute(
+            text(
+                "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                "VALUES (:id, :id, :email, 'free', true)"
+            ),
+            {"id": tid, "email": f"{tid}@example.test"},
+        )
+    try:
+        result = await rotate_master_key(
+            old=get_vault(),
+            new=new,
+            redis=redis,
+            system_db=async_sessionmaker(admin, expire_on_commit=False),
+        )
+        assert result["status"] == "complete", result
+        assert result["stores"]["connector_secrets_pg"]["rotated"] >= 1
+        async with admin.begin() as conn:
+            value = (
+                await conn.execute(
+                    text("SELECT encrypted_value FROM mcp_credentials WHERE tenant_id = :t"),
+                    {"t": tid},
+                )
+            ).scalar_one()
+    finally:
+        await admin.dispose()
+    assert new.decrypt(value) == "rotate-me"
+
+
+# ── MCPREG-03: connector usage is an exact-match, indexed lookup ─────────────
+
+
+@pytest.mark.asyncio
+async def test_connector_usage_exact_match_rls_and_index(app_db: Any, pg_url: str) -> None:
+    from app.mcp.connector_usage import connector_usage, record_goal_connector_usage
+
+    tid, other = f"t-{uuid.uuid4().hex[:8]}", f"o-{uuid.uuid4().hex[:8]}"
+    admin = create_async_engine(pg_url)
+    async with admin.begin() as conn:
+        for t in (tid, other):
+            await conn.execute(
+                text(
+                    "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                    "VALUES (:id, :id, :email, 'free', true)"
+                ),
+                {"id": t, "email": f"{t}@example.test"},
+            )
+        for gid, t, st in (
+            ("g1", tid, "complete"),
+            ("g2", tid, "failed"),
+            ("g3", other, "complete"),
+        ):
+            await conn.execute(
+                text(
+                    "INSERT INTO goals (id, tenant_id, goal_text, status, priority, "
+                    "autonomy_mode, workflow_mode, execution_context, dry_run, iterations) "
+                    "VALUES (:id, :t, 'use it', :st, 'normal', "
+                    "'bounded-autonomous', 'single_agent', '{}', false, 1)"
+                ),
+                {"id": f"{gid}-{tid}", "t": t, "st": st},
+            )
+    await admin.dispose()
+
+    await record_goal_connector_usage(app_db, tid, "builtin-github:work-org", f"g1-{tid}")
+    await record_goal_connector_usage(app_db, tid, "builtin-github:work-org", f"g1-{tid}")  # dup
+    await record_goal_connector_usage(app_db, tid, "builtin-github:work-org", f"g2-{tid}")
+    await record_goal_connector_usage(app_db, tid, "builtin-github", f"g2-{tid}")
+    await record_goal_connector_usage(app_db, other, "builtin-github:work-org", f"g3-{tid}")
+
+    work = await connector_usage(app_db, tid, "builtin-github:work-org", limit=10)
+    assert work["total"] == 2 and work["success_count"] == 1
+    assert {g["id"] for g in work["goals"]} == {f"g1-{tid}", f"g2-{tid}"}
+    # The canonical id does NOT substring-match the multi-connection id.
+    canonical = await connector_usage(app_db, tid, "builtin-github", limit=10)
+    assert canonical["total"] == 1
+    assert (await connector_usage(app_db, tid, "github", limit=10))["total"] == 0
+
+    async with app_db() as s, s.begin():
+        await s.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tid})
+        await s.execute(text("SET LOCAL enable_seqscan = off"))
+        plan = "\n".join(
+            r[0]
+            for r in (
+                await s.execute(
+                    text(
+                        "EXPLAIN SELECT goal_id FROM goal_connector_usage "
+                        "WHERE tenant_id = :t AND connector_id = :c "
+                        "ORDER BY first_used_at DESC LIMIT 20"
+                    ),
+                    {"t": tid, "c": "builtin-github"},
+                )
+            ).fetchall()
+        )
+    assert "ix_goal_connector_usage_lookup" in plan, plan
+
+    # MCPClient records usage for the goal whose run is executing the call.
+    from types import SimpleNamespace
+
+    from app.mcp.client import MCPClient
+    from app.providers.guarded_completion import goal_charge_scope
+
+    client = MCPClient(MCPRegistry(None, db_factory=app_db))
+    with goal_charge_scope(None, SimpleNamespace(goal_id=f"g2-{tid}"), _ctx(tid)):
+        await client._record_goal_usage("slack-main", tid)
+    await client._record_goal_usage("slack-main", tid)  # no goal running: nothing
+    slack = await connector_usage(app_db, tid, "slack-main", limit=10)
+    assert [g["id"] for g in slack["goals"]] == [f"g2-{tid}"]

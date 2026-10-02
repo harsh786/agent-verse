@@ -270,6 +270,45 @@ class MCPClient:
         # Tool result cache (ToolResultCache or None) — wired externally
         self._tool_cache: Any = None
 
+    @property
+    def _db(self) -> Any:
+        """DB session factory for per-call bookkeeping (usage, tool stats).
+
+        Defaults to the durable registry's factory, so every process whose
+        registry is Postgres-backed (API lifespan, every worker) records it
+        without separate wiring; an explicit assignment overrides it.
+        """
+        override = self.__dict__.get("_db_override")
+        if override is not None:
+            return override
+        if isinstance(self._registry, MCPRegistry):
+            return self._registry.db_factory
+        return None
+
+    @_db.setter
+    def _db(self, value: Any) -> None:
+        self.__dict__["_db_override"] = value
+
+    async def _record_goal_usage(self, server_id: str, tenant_id: str) -> None:
+        """Record that the running goal used ``server_id`` (MCPREG-03); never fatal."""
+        db = self._db
+        if db is None or not tenant_id:
+            return
+        from app.mcp.connector_usage import current_goal_id, record_goal_connector_usage
+
+        goal_id = current_goal_id()
+        if not goal_id:
+            return
+        try:
+            await record_goal_connector_usage(db, tenant_id, server_id, goal_id)
+        except Exception as exc:  # bookkeeping must not fail the tool call
+            logger.warning(
+                "connector_usage_record_failed tenant=%s server=%s error=%s",
+                tenant_id,
+                server_id,
+                exc,
+            )
+
     @staticmethod
     def _accepts_tenant_context(resolver: SecretResolver) -> bool:
         try:
@@ -1508,6 +1547,7 @@ class MCPClient:
                     await cb.record_success_async()
             # Update tool capability stats
             try:
+                await self._record_goal_usage(server_id, _tenant_id)
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
                     server_id,
@@ -1528,6 +1568,7 @@ class MCPClient:
                 with suppress(Exception):
                     await cb.record_failure_async()
             try:
+                await self._record_goal_usage(server_id, _tenant_id)
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
                     server_id, tool_name, _tenant_id, success=False, latency_ms=_latency_ms, db=_db
@@ -1546,6 +1587,7 @@ class MCPClient:
                 with suppress(Exception):
                     await cb.record_failure_async()
             try:
+                await self._record_goal_usage(server_id, _tenant_id)
                 _db = getattr(self, "_db", None)
                 await self._update_tool_stats(
                     server_id, tool_name, _tenant_id, success=False, latency_ms=_latency_ms, db=_db

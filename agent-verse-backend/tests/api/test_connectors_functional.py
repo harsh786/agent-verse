@@ -12,7 +12,7 @@ Focus areas (per coverage gap analysis — file was at 67-72% before this file):
     to tenant B for get/update/delete/test.
   - Malformed connector config on create → 422 validation error.
   - SSRF guard at registration time rejects private/loopback URLs → 400.
-  - get_connector_usage in-memory fallback path.
+  - get_connector_usage (goal_connector_usage index, 503 when unavailable).
 """
 from __future__ import annotations
 
@@ -916,56 +916,26 @@ def test_register_connector_builtin_marker_url_bypasses_ssrf_guard() -> None:
 
 
 # ---------------------------------------------------------------------------
-# get_connector_usage — in-memory fallback (no DB session factory on goal_svc)
+# get_connector_usage — exact-match usage index, honest 503s
 # ---------------------------------------------------------------------------
 
 
-def test_get_connector_usage_in_memory_fallback_filters_by_connector() -> None:
-    goal_svc = MagicMock()
-    goal_svc._db = None
-    goal_svc.list_goals = AsyncMock(
-        return_value={
-            "goals": [
-                {
-                    "execution_context": {"connector_ids": ["conn-1"]},
-                    "status": "complete",
-                },
-                {
-                    "execution_context": {"connector_ids": ["conn-2"]},
-                    "status": "failed",
-                },
-            ]
-        }
-    )
-    client = TestClient(_make_app(goal_service=goal_svc), raise_server_exceptions=False)
-
-    resp = client.get("/connectors/conn-1/usage", headers={"X-API-Key": _KEY_A})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 1
-    assert body["success_rate"] == 100.0
-    assert body["connector_id"] == "conn-1"
-
-
-def test_get_connector_usage_without_goal_service_returns_empty() -> None:
+def test_get_connector_usage_without_db_is_503() -> None:
+    """MCPREG-03: no usage store is an honest 503, never zeros."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/connectors/conn-x/usage", headers={"X-API-Key": _KEY_A})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["goals"] == []
-    assert body["total"] == 0
-    assert body["success_rate"] is None
+    assert resp.status_code == 503
 
 
 def test_get_connector_usage_db_path_returns_goals_and_success_rate() -> None:
-    """When goal_svc has a real _db session factory, usage queries the goals table
-    directly (lines 1450-1499) rather than the in-memory fallback."""
+    """Usage reads goal_connector_usage (exact connector id) joined to goals."""
     from contextlib import asynccontextmanager
     from datetime import UTC, datetime
 
     now = datetime.now(UTC)
     goal_rows = [("goal-1", "Sync issues", "complete", now, 0.42)]
     count_row = (3, 2)
+    seen: list[tuple[str, dict[str, Any]]] = []
 
     class _Result:
         def __init__(self, rows: Any) -> None:
@@ -978,16 +948,17 @@ def test_get_connector_usage_db_path_returns_goals_and_success_rate() -> None:
             return self._rows
 
     class _UsageSession:
-        def __init__(self) -> None:
-            self._call = 0
+        async def execute(self, stmt: Any, params: Any = None) -> _Result:
+            sql = str(stmt)
+            seen.append((sql, dict(params or {})))
+            if "set_config" in sql:
+                return _Result(None)
+            if "COUNT(*)" in sql:
+                return _Result(count_row)
+            return _Result(goal_rows)
 
-        async def execute(self, *args: Any, **kwargs: Any) -> _Result:
-            self._call += 1
-            if self._call == 1:
-                return _Result(None)  # SET config statement
-            if self._call == 2:
-                return _Result(goal_rows)
-            return _Result(count_row)
+        def begin(self) -> Any:
+            return self
 
         async def __aenter__(self) -> _UsageSession:
             return self
@@ -999,9 +970,9 @@ def test_get_connector_usage_db_path_returns_goals_and_success_rate() -> None:
     async def _db_factory() -> Any:
         yield _UsageSession()
 
-    goal_svc = MagicMock()
-    goal_svc._db = _db_factory
-    client = TestClient(_make_app(goal_service=goal_svc), raise_server_exceptions=False)
+    app = _make_app()
+    app.state.db_session_factory = _db_factory
+    client = TestClient(app, raise_server_exceptions=False)
 
     resp = client.get("/connectors/conn-1/usage", headers={"X-API-Key": _KEY_A})
     assert resp.status_code == 200
@@ -1017,16 +988,22 @@ def test_get_connector_usage_db_path_returns_goals_and_success_rate() -> None:
             "cost_usd": 0.42,
         }
     ]
+    queries = [(sql, p) for sql, p in seen if "goal_connector_usage" in sql]
+    assert queries, "usage reads the goal_connector_usage index"
+    for sql, params in queries:
+        assert "LIKE" not in sql  # exact match, no substring scan
+        assert params["cid"] == "conn-1"
 
 
-def test_get_connector_usage_db_error_falls_back_to_empty_result() -> None:
-    """A DB error during usage lookup is swallowed and returns the empty shape,
-    not a 500 (lines 1510-1511)."""
+def test_get_connector_usage_db_error_is_503() -> None:
     from contextlib import asynccontextmanager
 
     class _BrokenSession:
         async def execute(self, *args: Any, **kwargs: Any) -> Any:
             raise RuntimeError("db exploded")
+
+        def begin(self) -> Any:
+            return self
 
         async def __aenter__(self) -> _BrokenSession:
             return self
@@ -1038,16 +1015,13 @@ def test_get_connector_usage_db_error_falls_back_to_empty_result() -> None:
     async def _db_factory() -> Any:
         yield _BrokenSession()
 
-    goal_svc = MagicMock()
-    goal_svc._db = _db_factory
-    client = TestClient(_make_app(goal_service=goal_svc), raise_server_exceptions=False)
+    app = _make_app()
+    app.state.db_session_factory = _db_factory
+    client = TestClient(app, raise_server_exceptions=False)
 
     resp = client.get("/connectors/conn-1/usage", headers={"X-API-Key": _KEY_A})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["goals"] == []
-    assert body["total"] == 0
-    assert body["success_rate"] is None
+    assert resp.status_code == 503
+    assert "exploded" not in resp.text
 
 
 # ---------------------------------------------------------------------------

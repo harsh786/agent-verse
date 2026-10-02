@@ -537,6 +537,8 @@ class ComplianceController:
             "collab_sessions",
             "documents",
             "knowledge_collections",
+            "goal_connector_usage",
+            "mcp_builtin_provisioning",
             "mcp_credentials",
             "oauth_tokens",
             "mcp_servers",

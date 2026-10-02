@@ -1694,86 +1694,41 @@ async def oauth_callback(
 async def get_connector_usage(
     connector_id: str,
     request: Request,
-    limit: int = Query(default=20, le=100),
-) -> dict:
-    """Return goals that used this connector."""
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict[str, Any]:
+    """Return the goals that used exactly this connector (MCPREG-03).
+
+    Reads ``goal_connector_usage`` (written when a goal's tool call reaches the
+    connector) with an exact, indexed match — never a substring, so
+    ``builtin-github`` does not count ``builtin-github:work-org``. No database or
+    a failed read is a 503, never zeros.
+    """
+    from app.mcp.connector_usage import connector_usage
+
     tenant = _require_tenant(request)
-    goal_svc = getattr(request.app.state, "goal_service", None)
-
-    goals = []
-    total = 0
-    success_count = 0
-
-    if goal_svc is not None:
-        try:
-            db = getattr(goal_svc, "_db", None)
-            if db:
-                from sqlalchemy import text as _t
-
-                cid_pattern = f"%{connector_id}%"
-                async with db() as session:
-                    await session.execute(
-                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
-                        {"tid": tenant.tenant_id},
-                    )
-                    rows = (
-                        await session.execute(
-                            _t("""
-                            SELECT id, goal_text, status, created_at, cost_usd
-                            FROM goals
-                            WHERE tenant_id = :tid
-                              AND execution_context->>'connector_ids' LIKE :cid_pattern
-                            ORDER BY created_at DESC
-                            LIMIT :limit
-                        """),
-                            {
-                                "tid": tenant.tenant_id,
-                                "cid_pattern": cid_pattern,
-                                "limit": limit,
-                            },
-                        )
-                    ).fetchall()
-                    count_row = (
-                        await session.execute(
-                            _t(
-                                "SELECT COUNT(*), "
-                                "SUM(CASE WHEN status='complete' THEN 1 ELSE 0 END) "
-                                "FROM goals "
-                                "WHERE tenant_id=:tid "
-                                "AND execution_context->>'connector_ids' LIKE :cid_pattern"
-                            ),
-                            {"tid": tenant.tenant_id, "cid_pattern": cid_pattern},
-                        )
-                    ).fetchone()
-                    if count_row:
-                        total = int(count_row[0] or 0)
-                        success_count = int(count_row[1] or 0)
-                    goals = [
-                        {
-                            "id": str(r[0]),
-                            "goal": r[1],
-                            "status": r[2],
-                            "created_at": r[3].isoformat() if r[3] else None,
-                            "cost_usd": float(r[4] or 0),
-                        }
-                        for r in rows
-                    ]
-            else:
-                # In-memory fallback
-                resp = await goal_svc.list_goals(tenant_ctx=tenant)
-                all_goals = resp.get("goals", []) if isinstance(resp, dict) else []
-                matched = [
-                    g for g in all_goals if connector_id in str(g.get("execution_context", {}))
-                ]
-                total = len(matched)
-                success_count = sum(1 for g in matched if g.get("status") == "complete")
-                goals = matched[:limit]
-        except Exception:
-            pass
-
-    success_rate = round(success_count / max(total, 1) * 100, 1) if total > 0 else None
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Connector usage is unavailable (no database configured).",
+        )
+    try:
+        usage = await connector_usage(db, tenant.tenant_id, connector_id, limit=limit)
+    except Exception as exc:
+        _logger.error(
+            "connector_usage_read_failed tenant=%s connector=%s error=%s",
+            tenant.tenant_id,
+            connector_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Connector usage is temporarily unavailable; retry shortly.",
+        ) from exc
+    total = usage["total"]
+    success_rate = round(usage["success_count"] / total * 100, 1) if total > 0 else None
     return {
-        "goals": goals,
+        "goals": usage["goals"],
         "total": total,
         "success_rate": success_rate,
         "connector_id": connector_id,

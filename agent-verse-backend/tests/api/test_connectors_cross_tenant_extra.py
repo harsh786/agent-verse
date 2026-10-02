@@ -119,46 +119,50 @@ def test_health_history_for_other_tenants_connector_is_empty() -> None:
 
 
 def test_usage_for_other_tenants_connector_never_returns_other_tenants_goals() -> None:
-    """GET /connectors/{id}/usage must only ever return the CALLER's own goals,
-    never another tenant's, even when passed a connector_id that in fact
-    belongs to a different tenant."""
+    """GET /connectors/{id}/usage scopes every query to the CALLER's tenant
+    (explicit tenant_id predicate AND the RLS GUC), even when passed a
+    connector_id that belongs to a different tenant. Real-RLS coverage lives in
+    tests/mcp/test_connector_registry_durable_integration.py."""
+    from contextlib import asynccontextmanager
+
     registry = _make_registry()
     created_a = _register_via_registry(registry, tenant_ctx=_CTX_A, name="jira")
+    seen: list[dict[str, Any]] = []
 
-    goal_service = AsyncMock()
+    class _Result:
+        def fetchall(self) -> list[Any]:
+            return []
 
-    async def _list_goals(*, tenant_ctx: TenantContext) -> dict[str, Any]:
-        # Tenant A has a goal that references the connector; tenant B has none.
-        if tenant_ctx.tenant_id == _CTX_A.tenant_id:
-            return {
-                "goals": [
-                    {
-                        "id": "goal-a-1",
-                        "status": "complete",
-                        "execution_context": {"connector_ids": [created_a]},
-                    }
-                ]
-            }
-        return {"goals": []}
+        def fetchone(self) -> Any:
+            return (0, 0)
 
-    goal_service.list_goals = _list_goals
-    goal_service._db = None
+    class _Session:
+        async def execute(self, _stmt: Any, params: Any = None) -> _Result:
+            seen.append(dict(params or {}))
+            return _Result()
+
+        def begin(self) -> Any:
+            return self
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+    @asynccontextmanager
+    async def _db() -> Any:
+        yield _Session()
 
     app = _make_app(registry)
-    app.state.goal_service = goal_service
+    app.state.db_session_factory = _db
     client = TestClient(app, raise_server_exceptions=False)
 
-    # Tenant B queries usage for tenant A's connector_id directly.
     resp_b = client.get(f"/connectors/{created_a}/usage", headers={"X-API-Key": _KEY_B})
     assert resp_b.status_code == 200
-    body_b = resp_b.json()
-    assert body_b["goals"] == []
-    assert body_b["total"] == 0
-
-    # Tenant A sees its own usage as expected.
-    resp_a = client.get(f"/connectors/{created_a}/usage", headers={"X-API-Key": _KEY_A})
-    assert resp_a.status_code == 200
-    assert resp_a.json()["total"] == 1
+    assert resp_b.json()["goals"] == [] and resp_b.json()["total"] == 0
+    tenants = {p.get("tid") for p in seen if "tid" in p}
+    assert tenants == {_CTX_B.tenant_id}
 
 
 def _register_via_registry(registry: MCPRegistry, *, tenant_ctx: TenantContext, name: str) -> str:

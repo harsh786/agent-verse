@@ -128,6 +128,7 @@ class MCPRegistry:
         self._auto_provision_builtins = auto_provision_builtins
         self._cache_ttl_s = cache_ttl_s
         self._rows: Any = None
+        self.db_factory: Any = None
         self._backfill: Any = None
         if db_factory is not None:
             self.set_db(db_factory)
@@ -144,6 +145,7 @@ class MCPRegistry:
 
         if cache is not MCPRegistry._KEEP:
             self._redis = cache
+        self.db_factory = db_factory
         self._rows = PostgresConnectorRows(db_factory)
         self._backfill = BackfillState(db_factory)
 
