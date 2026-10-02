@@ -44,3 +44,30 @@ async def test_two_managers_share_the_tenant_cap(redis_url: str) -> None:
     finally:
         await ra.aclose()
         await rb.aclose()
+
+
+async def test_dead_owner_is_reclaimed_after_its_liveness_key_expires(redis_url: str) -> None:
+    """RPA-04: owner A dies (its liveness key lapses); B may open the session."""
+    import asyncio
+
+    import redis.asyncio as aioredis
+
+    from app.rpa import session_manager as sm
+    from app.rpa.session_manager import SessionOnAnotherReplicaError
+
+    ra, rb = aioredis.from_url(redis_url), aioredis.from_url(redis_url)
+    try:
+        a, b = _manager(ra), _manager(rb)
+        await a.get_or_create("s1", "tenant-dead")
+        with pytest.raises(SessionOnAnotherReplicaError):
+            await b.get_or_create("s1", "tenant-dead")
+        # A crashes: nothing refreshes its liveness key; let it expire for real.
+        await ra.expire(f"rpa_replica:{a.replica_id}:alive", 1)
+        await asyncio.sleep(1.5)
+        assert sm._REPLICA_ALIVE_TTL_S > 1
+        session = await b.get_or_create("s1", "tenant-dead")
+        assert session.is_alive
+        await b.close_all()
+    finally:
+        await ra.aclose()
+        await rb.aclose()

@@ -100,9 +100,10 @@ async def test_register_in_redis_with_mock():
     session = BrowserSession(session_id="s1", tenant_id="t1")
     await mgr._register_in_redis(session)
 
-    mock_redis.setex.assert_called_once()
-    call_args = mock_redis.setex.call_args
-    assert "rpa_session:t1:s1" in str(call_args)
+    # The session record plus this replica's liveness key (RPA-04).
+    keys = [c.args[0] for c in mock_redis.setex.call_args_list]
+    assert "rpa_session:t1:s1" in keys
+    assert f"rpa_replica:{mgr.replica_id}:alive" in keys
 
 
 @pytest.mark.asyncio

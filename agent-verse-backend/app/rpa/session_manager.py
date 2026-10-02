@@ -98,6 +98,19 @@ class BrowserSessionCapError(RuntimeError):
 # cleanup_expired's heartbeat, so a crashed holder's slot frees itself.
 _SLOT_LEASE_S = 120.0
 _HOST_SLOT_KEY = "__host__"
+# Registry record lifetime; refreshed on every use and by heartbeat().
+_REGISTRY_TTL_S = 120
+# A replica's liveness key; heartbeat() refreshes it. When it expires the owner
+# is gone and its sessions may be reopened elsewhere (no hour-long 409s).
+_REPLICA_ALIVE_TTL_S = 90
+_HEARTBEAT_INTERVAL_S = 30.0
+
+
+def _replica_identity() -> str:
+    """Host (pod) name plus a per-process suffix: stable to read, unique per process."""
+    import socket
+
+    return f"{socket.gethostname()[:40]}-{uuid.uuid4().hex[:8]}"
 
 
 class BrowserSessionManager:
@@ -142,9 +155,10 @@ class BrowserSessionManager:
         self._evict_idle_s = float(settings.rpa_session_evict_idle_s)
         self._lock = asyncio.Lock()
         self._redis = redis
-        self._SESSION_TTL = 3600  # 1 hour
+        self._SESSION_TTL = _REGISTRY_TTL_S
         # Identifies this process's live browsers in the shared Redis registry.
-        self.replica_id = uuid.uuid4().hex[:12]
+        self.replica_id = _replica_identity()
+        self._heartbeat_task: asyncio.Task[None] | None = None
 
     async def get_or_create(
         self,
@@ -164,6 +178,7 @@ class BrowserSessionManager:
             if existing and existing.is_alive:
                 existing.touch()
                 await self._refresh_slot(session_id, tenant_id)
+                await self._register_in_redis(existing)  # refresh the registry TTL
                 return existing
             owner = await self.live_elsewhere(session_id, tenant_id)
             if owner is not None:
@@ -193,6 +208,7 @@ class BrowserSessionManager:
                 tenant_id=tenant_id,
             )
             await self._register_in_redis(session)
+            self._ensure_heartbeat()
             return session
 
     # ── Caps: per tenant (global, Redis lease set) and per host ─────────────────
@@ -372,6 +388,11 @@ class BrowserSessionManager:
 
     async def close_all(self) -> int:
         """Close every session this manager holds (owner shutdown)."""
+        task, self._heartbeat_task = self._heartbeat_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
         async with self._lock:
             sessions = list(self._sessions.items())
             self._sessions.clear()
@@ -381,6 +402,42 @@ class BrowserSessionManager:
             await self._deregister_from_redis(sid, tid)
             await self._release_slots(sid, tid)
         return len(sessions)
+
+    async def heartbeat(self) -> None:
+        """Refresh this replica's liveness key and every live session's registry
+        record and tenant slot lease, so long-running sessions keep both."""
+        if self._redis is None:
+            return
+        with contextlib.suppress(Exception):
+            await self._redis.setex(
+                f"rpa_replica:{self.replica_id}:alive", _REPLICA_ALIVE_TTL_S, "1"
+            )
+        for (sid, tid), session in list(self._sessions.items()):
+            if session.is_alive:
+                await self._register_in_redis(session)
+                await self._refresh_slot(sid, tid)
+
+    def _ensure_heartbeat(self) -> None:
+        """Start the periodic heartbeat + idle cleanup in the running loop (once)."""
+        if self._redis is None or (
+            self._heartbeat_task is not None and not self._heartbeat_task.done()
+        ):
+            return
+        try:
+            self._heartbeat_task = asyncio.get_running_loop().create_task(
+                self._heartbeat_loop()
+            )
+        except RuntimeError:
+            self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        while self._sessions:
+            await asyncio.sleep(_HEARTBEAT_INTERVAL_S)
+            try:
+                await self.cleanup_expired()
+                await self.heartbeat()
+            except Exception as exc:
+                logger.warning("rpa_heartbeat_failed", error=str(exc)[:200])
 
     async def cleanup_expired(self) -> int:
         """Close sessions idle longer than max_idle_seconds."""
@@ -429,6 +486,9 @@ class BrowserSessionManager:
         key = f"rpa_session:{session.tenant_id}:{session.session_id}"
         with contextlib.suppress(Exception):
             await self._redis.setex(
+                f"rpa_replica:{self.replica_id}:alive", _REPLICA_ALIVE_TTL_S, "1"
+            )
+            await self._redis.setex(
                 key,
                 self._SESSION_TTL,
                 _json.dumps(
@@ -467,7 +527,23 @@ class BrowserSessionManager:
         if record.get("tenant_id") != tenant_id:
             return None
         owner = str(record.get("replica_id") or "")
-        return owner if owner and owner != self.replica_id else None
+        if not owner or owner == self.replica_id:
+            return None
+        try:
+            owner_alive = await self._redis.get(f"rpa_replica:{owner}:alive")
+        except Exception:
+            return owner  # cannot tell: keep refusing rather than split the session
+        if not owner_alive:
+            # The owner died without closing: its browser is gone with it.
+            logger.info(
+                "rpa_session_owner_dead", session_id=session_id, tenant_id=tenant_id, owner=owner
+            )
+            with contextlib.suppress(Exception):
+                await self._redis.delete(f"rpa_session:{tenant_id}:{session_id}")
+            with contextlib.suppress(Exception):
+                await self._redis.zrem(self._lease_key(tenant_id), session_id)
+            return None
+        return owner
 
     async def _deregister_from_redis(self, session_id: str, tenant_id: str) -> None:
         """Remove session metadata from Redis on close."""
