@@ -192,10 +192,14 @@ def compose_fleet_services(
         "--format", '{{.Label "com.docker.compose.service"}}',
     ]
     try:
-        result = runner(cmd, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
+        # Generous: right after boot or under load `docker ps` can take >10 s, and a
+        # timeout reads as "unknown" (which starts the local fleet).
+        result = runner(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"docker probe failed: {type(exc).__name__}: {str(exc)[:200]}")
         return None
     if result.returncode != 0:
+        log(f"docker probe failed (rc={result.returncode}): {(result.stderr or '')[:200]}")
         return None
     names = {line.strip() for line in (result.stdout or "").splitlines() if line.strip()}
     # ``backend`` too: the compose API publishes :8000, the same port as the local API.
