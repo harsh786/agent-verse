@@ -49,6 +49,7 @@ async def execute_code(request: Request, body: ExecuteCodeRequest) -> ExecuteCod
 
     from app.tools.code_execution import (
         AuditPersistenceError,
+        CodeExecutionBusyError,
         CodeExecutionContext,
         execute_governed,
     )
@@ -60,7 +61,14 @@ async def execute_code(request: Request, body: ExecuteCodeRequest) -> ExecuteCod
             body.timeout,
             ctx=CodeExecutionContext(tenant_ctx=tenant_ctx, source="tools.execute_code"),
             audit_log=getattr(request.app.state, "audit_log", None),
+            redis=getattr(request.app.state, "_redis", None),
         )
+    except CodeExecutionBusyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many concurrent code executions ({exc.scope} limit {exc.limit}).",
+            headers={"Retry-After": "5"},
+        ) from exc
     except AuditPersistenceError as exc:
         # Never an unaudited 200 for arbitrary code execution.
         raise HTTPException(

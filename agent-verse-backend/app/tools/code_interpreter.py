@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -150,6 +151,22 @@ def _cap_output(text: str) -> str:
         return text
     dropped = len(text) - _MAX_OUTPUT_CHARS
     return text[:_MAX_OUTPUT_CHARS] + f"\n[output truncated: {dropped} more characters]"
+
+
+_SANDBOX_POOL: ThreadPoolExecutor | None = None
+_SANDBOX_POOL_LOCK = threading.Lock()
+
+
+def _sandbox_pool() -> ThreadPoolExecutor:
+    """Process-wide pool for blocking container lifecycles (sized to the host cap)."""
+    global _SANDBOX_POOL
+    with _SANDBOX_POOL_LOCK:
+        if _SANDBOX_POOL is None:
+            from app.core.config import get_settings
+
+            size = max(1, int(get_settings().code_exec_max_concurrent_per_host))
+            _SANDBOX_POOL = ThreadPoolExecutor(max_workers=size, thread_name_prefix="code-sandbox")
+        return _SANDBOX_POOL
 
 
 # Docker is optional -- detected at RUNTIME, never cached as "unavailable".
@@ -384,7 +401,11 @@ class CodeInterpreter:
             )
 
         try:
-            return await asyncio.get_running_loop().run_in_executor(None, _run_in_container)
+            # A dedicated, bounded pool: a container holds its thread for up to the
+            # timeout, and the default executor also serves to_thread DNS checks.
+            return await asyncio.get_running_loop().run_in_executor(
+                _sandbox_pool(), _run_in_container
+            )
         except Exception as exc:
             # Infrastructure failure (image pull, daemon error) — NOT a timeout.
             # The old heuristic pattern-matched "timeout" in the message and so

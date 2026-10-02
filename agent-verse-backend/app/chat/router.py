@@ -616,7 +616,7 @@ async def execute_code(
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    from app.governance.audit import AuditPersistenceError
+    from app.tools.code_execution import AuditPersistenceError, CodeExecutionBusyError
 
     try:
         result = await _executor.execute(
@@ -625,7 +625,14 @@ async def execute_code(
             session_id,
             tenant_ctx=tenant,
             audit_log=getattr(request.app.state, "audit_log", None),
+            redis=getattr(request.app.state, "_redis", None),
         )
+    except CodeExecutionBusyError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many concurrent code executions ({exc.scope} limit {exc.limit}).",
+            headers={"Retry-After": "5"},
+        ) from exc
     except AuditPersistenceError as exc:
         # Never an unaudited 200 for arbitrary code execution.
         raise HTTPException(

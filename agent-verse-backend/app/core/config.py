@@ -384,6 +384,12 @@ class Settings(BaseSettings):
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
 
+    # --- code sandbox concurrency (app/tools/code_execution.py) ---
+    # Concurrent sandbox containers one tenant may run across ALL replicas and
+    # workers (Redis lease set), and per process (each holds a dedicated thread).
+    code_exec_max_concurrent_per_tenant: int = 4
+    code_exec_max_concurrent_per_host: int = 8
+
     # --- feature flags ---
     civilization_enabled: bool = False
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.governance.audit import AuditLog
@@ -59,6 +59,7 @@ class ChatCodeExecutor:
         *,
         tenant_ctx: TenantContext,
         audit_log: AuditLog | None = None,
+        redis: Any = None,
     ) -> ExecutionResult:
         """Run *code* in the sandbox through the governed entrypoint (durably audited).
 
@@ -81,6 +82,7 @@ class ChatCodeExecutor:
 
         from app.tools.code_execution import (
             AuditPersistenceError,
+            CodeExecutionBusyError,
             CodeExecutionContext,
             execute_governed,
         )
@@ -95,8 +97,9 @@ class ChatCodeExecutor:
                     tenant_ctx=tenant_ctx, source="chat.execute", ref_id=session_id
                 ),
                 audit_log=audit_log,
+                redis=redis,
             )
-        except AuditPersistenceError:
+        except (AuditPersistenceError, CodeExecutionBusyError):
             raise
         except RuntimeError as exc:
             # No sandbox (production without Docker): refuse, never run on the host.

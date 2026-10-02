@@ -13,7 +13,7 @@ import {
   FolderOpen, Plus, Clock, Terminal, Mail, ChevronRight,
   AlertCircle, Loader2, X, Folder, ChevronLeft,
 } from 'lucide-react';
-import { toolsApi, type ExecuteCodeResult, type WorkspaceFile } from '@/lib/api/client';
+import { ApiError, toolsApi, type ExecuteCodeResult, type WorkspaceFile } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useThemeStore } from '@/stores/theme';
@@ -209,7 +209,14 @@ function CodeRunner() {
       if (!r.success)
         toast({ kind: 'error', message: r.timed_out ? 'Execution timed out.' : 'Code exited non-zero.' });
     },
-    onError: (e) => toast({ kind: 'error', message: `Execution failed: ${String(e)}` }),
+    onError: (e) =>
+      toast({
+        kind: 'error',
+        message:
+          e instanceof ApiError && e.status === 429
+            ? 'Too many concurrent executions — wait for a running one to finish, then retry.'
+            : `Execution failed: ${String(e)}`,
+      }),
   });
 
   return (

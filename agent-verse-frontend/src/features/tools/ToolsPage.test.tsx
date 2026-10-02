@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
-import { toolsApi } from '@/lib/api/client';
+import { ApiError, toolsApi } from '@/lib/api/client';
 import { ToolsPage } from './ToolsPage';
 
 const requestUrl = (input: RequestInfo | URL): string =>
@@ -239,6 +239,22 @@ describe('ToolsPage', () => {
     await waitFor(() => {
       expect(
         useToastStore.getState().toasts.some(t => t.message.includes('Execution failed'))
+      ).toBe(true);
+    });
+  });
+
+  test('a 429 shows a "too many concurrent executions" toast', async () => {
+    vi.spyOn(toolsApi, 'executeCode').mockRejectedValue(
+      new ApiError(429, 'Too many concurrent code executions (tenant limit 4).'),
+    );
+    renderPage();
+    await userEvent.click(screen.getByTitle(/load template/i));
+    await userEvent.click(screen.getByRole('button', { name: /run code/i }));
+    await waitFor(() => {
+      expect(
+        useToastStore.getState().toasts.some(
+          t => t.kind === 'error' && /too many concurrent executions/i.test(t.message),
+        ),
       ).toBe(true);
     });
   });

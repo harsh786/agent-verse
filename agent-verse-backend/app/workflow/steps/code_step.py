@@ -99,7 +99,10 @@ async def _run_in_code_sandbox(
         step_id=step_id,
     )
     try:
-        res = await code_execution.execute_governed(program, lang, 30, ctx=ctx)
+        async with code_execution.env_redis() as redis:
+            res = await code_execution.execute_governed(program, lang, 30, ctx=ctx, redis=redis)
+    except code_execution.CodeExecutionBusyError as exc:
+        raise RuntimeError(f"code step {step_id!r}: {exc}") from exc
     except code_execution.AuditPersistenceError as exc:
         raise RuntimeError(f"code step {step_id!r}: execution could not be audited") from exc
     except RuntimeError as exc:  # no sandbox in production
