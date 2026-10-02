@@ -961,26 +961,30 @@ class VerifierMixin:
             self._background_tasks.add(_so_task)
             _so_task.add_done_callback(self._background_tasks.discard)
 
-        # Record episodic experience after goal completion (success or failure)
-        try:
-            if self._episodic_memory is not None and tenant_ctx is not None:
-                _ep_quality = float(
-                    agent_state.context.get("scorecard", {}).get("overall_score", 0.5)
-                    if isinstance(agent_state.context.get("scorecard"), dict)
-                    else 0.5
-                )
-                _ep_task = asyncio.ensure_future(
+        # Record episodic experience after goal completion (success or failure).
+        # MEM-41: awaited (bounded) — a background task was cancelled by the
+        # worker loop's teardown and the episode lost silently. A lost write
+        # (False, timeout or error) is flagged on the goal.
+        if self._episodic_memory is not None and tenant_ctx is not None:
+            _ep_quality = float(
+                agent_state.context.get("scorecard", {}).get("overall_score", 0.5)
+                if isinstance(agent_state.context.get("scorecard"), dict)
+                else 0.5
+            )
+            _ep_exc: BaseException | None = None
+            try:
+                _ep_ok = await asyncio.wait_for(
                     self._episodic_memory.record(
                         state=agent_state,
                         tenant_ctx=tenant_ctx,
                         quality_score=_ep_quality,
-                    )
+                    ),
+                    timeout=10.0,
                 )
-                if hasattr(self, "_background_tasks"):
-                    self._background_tasks.add(_ep_task)
-                    _ep_task.add_done_callback(self._background_tasks.discard)
-        except Exception:
-            pass
+            except Exception as exc:
+                _ep_ok, _ep_exc = False, exc
+            if _ep_ok is False:
+                await self._memory_degraded(agent_state, "episodic_record", _ep_exc)
 
         # Procedural skills are learned once per goal from its terminal outcome
         # (success AND failure) by AgentGraph._learn_procedural_outcome (MEM-11).
