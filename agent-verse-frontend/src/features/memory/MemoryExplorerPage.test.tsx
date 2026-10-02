@@ -178,6 +178,40 @@ describe('MemoryExplorerPage', () => {
     expect(screen.getByText('80%')).toBeInTheDocument();
   });
 
+  test('MEM-45: shows blacklist expiry and clears a blacklist', async () => {
+    let blacklisted = true;
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/memory/tool-reliability/jira_search/blacklist') && method === 'DELETE') {
+        blacklisted = false;
+        return new Response(null, { status: 204 });
+      }
+      if (url.includes('/memory/tool-reliability'))
+        return new Response(
+          JSON.stringify([
+            {
+              tool_name: 'jira_search', success_count: 8, failure_count: 2, total_calls: 10,
+              success_rate: 0.8, unreliable: blacklisted, blacklisted,
+              blacklist_expires_at: blacklisted ? '2099-01-08T00:00:00Z' : null,
+            },
+          ]),
+          { status: 200 },
+        );
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    expect(await screen.findByText(/blacklisted until/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /clear blacklist for jira_search/i }));
+    await waitFor(() => expect(screen.queryByText(/blacklisted until/i)).not.toBeInTheDocument());
+    expect(
+      spy.mock.calls.some(
+        ([u, i]) => String(u).includes('/memory/tool-reliability/jira_search/blacklist')
+          && (i as RequestInit)?.method === 'DELETE',
+      ),
+    ).toBe(true);
+  });
+
   test('execution memory section expands on click', async () => {
     mockFetch([]);
     renderPage();

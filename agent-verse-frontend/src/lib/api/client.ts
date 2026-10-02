@@ -1509,6 +1509,8 @@ export interface ToolReliabilityRow {
   unreliable?: boolean;
   blacklisted?: boolean;
   blacklist_reason?: string | null;
+  /** When the self-improvement blacklist lapses (MEM-45). */
+  blacklist_expires_at?: string | null;
   [key: string]: unknown;
 }
 
@@ -1576,6 +1578,11 @@ export const memoryApi = {
     request<MemoryEntry>(`/memory/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   clearAll: () => request<void>("/memory", { method: "DELETE" }),
   toolReliability: () => request<ToolReliabilityRow[]>("/memory/tool-reliability"),
+  /** Lift a tool's blacklist now (admin only, audited; 403 otherwise). */
+  clearToolBlacklist: (toolName: string) =>
+    request<void>(`/memory/tool-reliability/${encodeURIComponent(toolName)}/blacklist`, {
+      method: "DELETE",
+    }),
   listExecution: (params: { limit?: number; offset?: number } = {}) =>
     request<Array<{ goal_text: string; success: boolean; recorded_at: string }>>(
       `/memory/execution?limit=${params.limit ?? 50}&offset=${params.offset ?? 0}`,

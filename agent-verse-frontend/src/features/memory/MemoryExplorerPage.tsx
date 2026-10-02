@@ -545,6 +545,21 @@ export function MemoryExplorerPage() {
     onError: (e) => toast({ kind: 'error', message: String(e) }),
   });
 
+  const clearBlacklistMutation = useMutation({
+    mutationFn: (toolName: string) => memoryApi.clearToolBlacklist(toolName),
+    onSuccess: () => {
+      toast({ kind: 'success', message: 'Blacklist cleared.' });
+      void qc.invalidateQueries({ queryKey: ['tool-reliability'] });
+    },
+    onError: (e) => {
+      const msg = String(e);
+      toast({
+        kind: 'error',
+        message: /403/.test(msg) ? 'Only an admin can clear a tool blacklist.' : `Could not clear: ${msg}`,
+      });
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => memoryApi.delete(id),
     onSuccess: () => {
@@ -840,9 +855,22 @@ export function MemoryExplorerPage() {
                         <td className="px-5 py-3 font-mono text-xs font-medium text-telemetry-cyan">
                           {t.tool_name}
                           {t.blacklisted && (
-                            <span className="ml-2 rounded bg-mission-red/15 px-1.5 py-0.5 text-[10px] font-sans text-mission-red">
-                              blacklisted
-                            </span>
+                            <>
+                              <span className="ml-2 rounded bg-mission-red/15 px-1.5 py-0.5 text-[10px] font-sans text-mission-red">
+                                {t.blacklist_expires_at
+                                  ? `blacklisted until ${new Date(t.blacklist_expires_at).toLocaleString()}`
+                                  : 'blacklisted'}
+                              </span>
+                              <button
+                                type="button"
+                                aria-label={`Clear blacklist for ${t.tool_name}`}
+                                disabled={clearBlacklistMutation.isPending}
+                                onClick={() => clearBlacklistMutation.mutate(t.tool_name)}
+                                className="ml-2 text-[10px] font-sans underline text-white/50 hover:text-white disabled:opacity-40"
+                              >
+                                Clear blacklist
+                              </button>
+                            </>
                           )}
                         </td>
                         <td className="px-5 py-3 text-white/40 font-mono text-xs">{t.total_calls ?? (t.success_count + t.failure_count)}</td>

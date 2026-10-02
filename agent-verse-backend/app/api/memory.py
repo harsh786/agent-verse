@@ -7,10 +7,11 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.db.rls import sqlalchemy_rls_context
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -709,6 +710,56 @@ async def get_tool_reliability(request: Request, unreliable_only: bool = False) 
     except ToolReliabilityUnavailableError as exc:
         raise _db_unavailable("tool_reliability", exc) from exc
     return rows
+
+
+@router.delete(
+    "/tool-reliability/{tool_name}/blacklist",
+    status_code=204,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def clear_tool_blacklist(request: Request, tool_name: str) -> None:
+    """Lift a self-improvement blacklist on a tool now (admin, audited — MEM-45).
+
+    The audit record is written durably BEFORE the change (fail closed: no
+    unaudited clear). 404 when the tool has no active blacklist flag; a store
+    or audit outage is 503.
+    """
+    tenant_ctx = _require_tenant(request)
+    from app.governance.audit import AuditEvent
+    from app.governance.permissions import ActionLevel
+    from app.memory.tool_reliability import (
+        ToolReliabilityStore,
+        ToolReliabilityUnavailableError,
+    )
+
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is None:
+        raise HTTPException(503, "audit log unavailable; the blacklist was not cleared")
+    try:
+        await audit_log.record_async(
+            AuditEvent(
+                goal_id="memory.tool_reliability",
+                tool_name=tool_name,
+                action_level=ActionLevel.ALLOW_LOG,
+                outcome="blacklist_cleared",
+                api_key_id=getattr(tenant_ctx, "api_key_id", None),
+                note="admin cleared the tool's self-improvement blacklist",
+            ),
+            tenant_ctx=tenant_ctx,
+        )
+    except Exception as exc:
+        raise _db_unavailable("tool_blacklist_audit", exc) from exc
+    store = getattr(request.app.state, "tool_reliability_store", None)
+    if store is None:
+        store = ToolReliabilityStore(db_session_factory=_get_db(request))
+    try:
+        cleared = await store.clear_blacklist(
+            tenant_id=tenant_ctx.tenant_id, tool_name=tool_name
+        )
+    except ToolReliabilityUnavailableError as exc:
+        raise _db_unavailable("tool_blacklist_clear", exc) from exc
+    if not cleared:
+        raise HTTPException(404, "tool has no blacklist flag")
 
 
 @router.delete("", status_code=204)

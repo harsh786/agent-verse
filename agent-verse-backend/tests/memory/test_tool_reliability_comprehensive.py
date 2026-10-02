@@ -179,4 +179,5 @@ class TestToolReliabilityStoreMetrics:
         store = ToolReliabilityStore()
         await store.record(tenant_id="t1", tool_name="tool1", success=True)
         result = await store.get_reliability(tenant_id="t1", tool_name="tool1")
-        assert result["last_used_at"] is None  # in-memory path has no timestamp
+        # MEM-45: the in-memory path keeps the call time too (decay needs it)
+        assert result["last_used_at"] is not None

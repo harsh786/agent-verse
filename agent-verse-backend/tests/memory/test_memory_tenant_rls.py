@@ -97,11 +97,11 @@ async def test_tool_reliability_upsert_runs_under_tenant_guc() -> None:
 
 async def test_tool_reliability_reads_run_under_tenant_guc() -> None:
     def rows_for(sql: str, _p: dict) -> list:
-        if "SELECT success_count, failure_count, total_latency_ms" in sql:
-            return [(8, 2, 1000.0, None, None, None)]
-        if "SELECT tool_name, success_count" in sql:
-            return [("flaky.tool", 1, 9, 900.0, None, None, None)]
-        return []
+        if "FROM tool_reliability_memory" not in sql or not sql.lstrip().startswith("SELECT"):
+            return []
+        if "tool_name = :tool" in sql:
+            return [("jira.search", 8, 2, 1000.0, None, None, None, None, 8.0, 2.0, None)]
+        return [("flaky.tool", 1, 9, 900.0, None, None, None, None, 1.0, 9.0, None)]
 
     db = RlsRecordingDb(rows_for=rows_for)
     store = ToolReliabilityStore(db_session_factory=db)
