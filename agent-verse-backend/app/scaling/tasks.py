@@ -3067,7 +3067,9 @@ def run_goal(
         try:
             from app.mcp.oauth import build_worker_oauth_manager
 
-            mcp_client._oauth_manager = build_worker_oauth_manager(db_factory)
+            mcp_client._oauth_manager = build_worker_oauth_manager(
+                db_factory, redis=redis_client
+            )
         except Exception as _oauth_exc:
             logger.warning("worker_oauth_manager_wire_failed: %s", _oauth_exc)
         worker_connector_ids = [str(item) for item in (connector_ids or [])]

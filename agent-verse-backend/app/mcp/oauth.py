@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import logging
 import secrets
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -72,6 +74,14 @@ class OAuthTokenPersistError(RuntimeError):
 
 
 _OAUTH_STATE_TTL = 600  # 10 minutes
+# Cross-replica refresh lock (OAUTH-02): held while one process refreshes and
+# persists; others wait for it, then reuse the token it wrote.
+_REFRESH_LOCK_TTL_MS = 20_000
+_REFRESH_LOCK_WAIT_S = 10.0
+_RELEASE_LOCK_LUA = (
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) "
+    "else return 0 end"
+)
 # How long a token read from the durable store is served from process memory
 # before it is re-read (another replica/worker may have refreshed or revoked it).
 _TOKEN_CACHE_TTL_SECONDS = 30.0
@@ -576,6 +586,52 @@ class OAuthFlowManager:
             self._refresh_locks[key] = lock
         return lock
 
+    @contextlib.asynccontextmanager
+    async def _distributed_refresh_lock(
+        self, tenant_id: str, server_id: str
+    ) -> AsyncIterator[bool]:
+        """Redis ``SET NX PX`` lock around one connector's refresh+persist.
+
+        Yields True when held (or when there is no Redis: the in-process lock
+        is then the only serialisation, as before), False when another
+        replica/worker still held it after ``_REFRESH_LOCK_WAIT_S``. A Redis
+        error degrades to the in-process lock with a warning.
+        """
+        if self._redis is None:
+            yield True
+            return
+        import uuid
+
+        key = f"oauth_refresh_lock:{tenant_id}:{server_id}"
+        owner = uuid.uuid4().hex
+        deadline = time.monotonic() + _REFRESH_LOCK_WAIT_S
+        acquired = False
+        try:
+            while True:
+                if await self._redis.set(key, owner, nx=True, px=_REFRESH_LOCK_TTL_MS):
+                    acquired = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(0.05)
+        except Exception as exc:
+            _log.warning("oauth_refresh_lock_unavailable server_id=%s error=%s", server_id, exc)
+            yield True
+            return
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                try:
+                    await self._redis.eval(_RELEASE_LOCK_LUA, 1, key, owner)
+                except Exception:
+                    # No Lua (test doubles): compare-then-delete; the TTL bounds
+                    # the worst case anyway.
+                    with contextlib.suppress(Exception):
+                        current = await self._redis.get(key)
+                        if (current.decode() if isinstance(current, bytes) else current) == owner:
+                            await self._redis.delete(key)
+
     async def refresh_token(
         self,
         *,
@@ -607,7 +663,10 @@ class OAuthFlowManager:
         if existing is None or not existing.refresh_token:
             return None
 
-        async with self._get_refresh_lock(resolved_tenant_id, server_id):
+        async with (
+            self._get_refresh_lock(resolved_tenant_id, server_id),
+            self._distributed_refresh_lock(resolved_tenant_id, server_id) as held,
+        ):
             # Another concurrent caller — in this process, another replica or the
             # worker — may have already refreshed this token. Reuse it instead of
             # sending a second refresh request with our (possibly now superseded)
@@ -629,6 +688,15 @@ class OAuthFlowManager:
                 if current.refresh_token:
                     # Newer (rotated) refresh token written elsewhere.
                     existing = current
+            if not held:
+                # Another replica is still refreshing: sending our refresh token
+                # now would race a rotating provider into invalid_grant.
+                _log.warning(
+                    "oauth_refresh_lock_timeout tenant=%s server_id=%s",
+                    resolved_tenant_id,
+                    server_id,
+                )
+                return None
 
             # Resolve token_url / client_id from auth_config if not given directly
             cfg = auth_config or {}
@@ -809,7 +877,9 @@ class OAuthFlowManager:
         return loaded
 
 
-def build_worker_oauth_manager(db_session_factory: Any) -> OAuthFlowManager | None:
+def build_worker_oauth_manager(
+    db_session_factory: Any, *, redis: Any = None
+) -> OAuthFlowManager | None:
     """An OAuth manager for a process that never ran the OAuth flow (Celery worker).
 
     Reads connector tokens through the durable oauth_tokens store (RLS-scoped,
@@ -822,4 +892,6 @@ def build_worker_oauth_manager(db_session_factory: Any) -> OAuthFlowManager | No
 
     mgr = OAuthFlowManager(vault=get_vault())
     mgr._db_session_factory = db_session_factory
+    # The shared Redis serialises refreshes with the API replicas (OAUTH-02).
+    mgr.set_redis(redis)
     return mgr
