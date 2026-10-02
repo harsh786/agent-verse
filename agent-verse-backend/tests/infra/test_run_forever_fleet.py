@@ -55,7 +55,7 @@ def test_detects_running_compose_worker_and_beat(rf: ModuleType) -> None:
     services = rf.compose_fleet_services(project="agentverse-backend", runner=run)
     assert services == {"backend", "worker", "beat", "workflow-worker"}
     cmd = run.calls[0]
-    assert cmd[:2] == ["docker", "ps"]
+    assert cmd[0].endswith("docker") and cmd[1] == "ps"
     assert "label=com.docker.compose.project=agentverse-backend" in cmd
 
 
@@ -181,3 +181,10 @@ def test_local_api_runs_when_forced_or_docker_unknown(rf: ModuleType) -> None:
         role="api", want=True, force=False, log=lambda _m: None,
     )
     assert unknown.allowed() is True
+
+
+def test_docker_binary_is_found_outside_path(rf: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    """launchd's PATH lacks Homebrew: the CLI must still be found by absolute path."""
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    found = rf._docker_binary()
+    assert found == "docker" or found.startswith("/")

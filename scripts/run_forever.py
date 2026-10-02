@@ -164,6 +164,20 @@ COMPOSE_PROJECT_ENV = "AGENTVERSE_COMPOSE_PROJECT"
 FLEET_RECHECK_SECONDS = 60.0
 
 
+def _docker_binary() -> str:
+    """The docker CLI, also under launchd: its PATH is only /usr/bin:/bin:..., so a
+    bare ``docker`` fails with "could not query docker" and both fleets ran."""
+    import shutil
+
+    found = shutil.which("docker")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/bin/docker", "/usr/local/bin/docker"):
+        if os.path.exists(candidate):
+            return candidate
+    return "docker"
+
+
 def compose_fleet_services(
     project: str = COMPOSE_PROJECT_DEFAULT, runner=subprocess.run
 ) -> set[str] | None:
@@ -173,7 +187,7 @@ def compose_fleet_services(
     subgoal-worker) counts - each of those consumes this platform's queues.
     """
     cmd = [
-        "docker", "ps",
+        _docker_binary(), "ps",
         "--filter", f"label=com.docker.compose.project={project}",
         "--format", '{{.Label "com.docker.compose.service"}}',
     ]
