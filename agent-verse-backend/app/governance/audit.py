@@ -15,6 +15,7 @@ stored); ``record`` tracks its write task so ``flush`` can await it.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,8 +105,15 @@ class AuditLog:
         *,
         write_attempts: int = 3,
         retry_base_delay: float = 0.2,
+        cache_per_tenant: int = 1000,
+        max_cached_tenants: int = 1000,
     ) -> None:
-        self._log: dict[str, list[AuditEvent]] = {}
+        # Bounded warm cache (AUDIT-04): Postgres is the trail; this holds at most
+        # ``cache_per_tenant`` recent events for the ``max_cached_tenants`` most
+        # recently written tenants.
+        self._cache_per_tenant = max(1, cache_per_tenant)
+        self._max_cached_tenants = max(1, max_cached_tenants)
+        self._log: OrderedDict[str, deque[AuditEvent]] = OrderedDict()
         self._db = db_session_factory
         self._write_attempts = max(1, write_attempts)
         self._retry_base_delay = max(0.0, retry_base_delay)
@@ -130,8 +138,19 @@ class AuditLog:
         """Number of ``record`` writes not yet finished."""
         return len(self._pending)
 
+    def _tenant_cache(self, tenant_id: str) -> deque[AuditEvent]:
+        events = self._log.get(tenant_id)
+        if events is None:
+            events = deque(maxlen=self._cache_per_tenant)
+            self._log[tenant_id] = events
+            while len(self._log) > self._max_cached_tenants:
+                self._log.popitem(last=False)
+        else:
+            self._log.move_to_end(tenant_id)
+        return events
+
     def _cache(self, event: AuditEvent, tenant_id: str) -> None:
-        self._log.setdefault(tenant_id, []).append(event)
+        self._tenant_cache(tenant_id).append(event)
         # Forward to SIEM (non-blocking, never raises — protects the write path).
         if self._siem_forwarder is not None:
             try:
@@ -282,7 +301,7 @@ class AuditLog:
         tool_name: str | None = None,
         limit: int = 1000,
     ) -> list[AuditEvent]:
-        events = self._log.get(tenant_ctx.tenant_id, [])
+        events: list[AuditEvent] = list(self._log.get(tenant_ctx.tenant_id, ()))
         if goal_id is not None:
             events = [e for e in events if e.goal_id == goal_id]
         if tool_name is not None:
@@ -430,7 +449,7 @@ class AuditLog:
                     t: {e.event_id for e in evs} for t, evs in self._log.items()
                 }
                 for row in rows:
-                    events = self._log.setdefault(row.tenant_id, [])
+                    events = self._tenant_cache(row.tenant_id)
                     existing_ids = existing_by_tenant.setdefault(row.tenant_id, set())
                     if row.id not in existing_ids:
                         existing_ids.add(row.id)
