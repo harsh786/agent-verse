@@ -1780,7 +1780,7 @@ export const toolsApi = {
     from_addr?: string;
     cc?: string;
   }) =>
-    request<Record<string, unknown>>("/tools/email/send", {
+    request<{ success?: boolean; quota_remaining?: number; quota_limit?: number } & Record<string, unknown>>("/tools/email/send", {
       method: "POST",
       body: JSON.stringify(body),
     }),

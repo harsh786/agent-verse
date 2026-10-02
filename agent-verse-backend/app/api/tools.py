@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
+
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -237,18 +239,47 @@ class SendEmailRequest(BaseModel):
 
 
 @router.post("/email/send")
-async def send_email(request: Request, body: SendEmailRequest) -> dict[str, Any]:
+async def send_email(
+    request: Request,
+    body: SendEmailRequest,
+    _rbac: None = Depends(require_role("operator", "admin")),
+) -> dict[str, Any]:
     """Send an email via SMTP (uses env-var config; MailHog in dev).
 
     The ``From`` header is always the platform-verified sender: this relay uses
-    platform SMTP credentials, so a tenant-chosen From was sender spoofing.
+    platform SMTP credentials, so a tenant-chosen From was sender spoofing. For
+    the same reason it is bounded: operator/admin keys only, at most
+    ``email_max_recipients`` per message (422) and a per-tenant daily recipient
+    quota shared by every replica (429; 503 when the quota store is down).
     """
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    from app.tools import email_tool
+    from app.core.config import get_settings
+    from app.tools import email_quota, email_tool
 
     recipients = [body.to] if isinstance(body.to, str) else list(body.to)
+    max_recipients = max(1, int(get_settings().email_max_recipients))
+    if len(recipients) > max_recipients:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {max_recipients} recipients per message.",
+        )
+    try:
+        quota = await email_quota.consume(
+            getattr(request.app.state, "_redis", None), ctx.tenant_id, ctx.plan, len(recipients)
+        )
+    except email_quota.EmailQuotaExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Daily email recipient quota exhausted ({exc.used}/{exc.limit}).",
+            headers={"Retry-After": "3600"},
+        ) from exc
+    except email_quota.EmailQuotaUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email quota store unavailable; nothing was sent.",
+        ) from exc
     recipients_digest = _sha256(",".join(sorted(r.strip().lower() for r in recipients)))
     await _audit_native(
         request,
@@ -284,4 +315,4 @@ async def send_email(request: Request, body: SendEmailRequest) -> dict[str, Any]
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=result.get("error", "Email send failed"),
         )
-    return result
+    return {**result, "quota_remaining": quota.remaining, "quota_limit": quota.limit}

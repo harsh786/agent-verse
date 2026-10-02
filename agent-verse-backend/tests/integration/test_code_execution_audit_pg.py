@@ -146,7 +146,9 @@ def test_native_tool_side_effects_commit_tenant_scoped_rows(
 
     monkeypatch.setattr("app.tools.email_tool.email_send", _send)
     tenant_a = f"ta-{secrets.token_hex(4)}"
-    ctx = TenantContext(tenant_id=tenant_a, plan=PlanTier.FREE, api_key_id="key-a")
+    ctx = TenantContext(
+        tenant_id=tenant_a, plan=PlanTier.FREE, api_key_id="key-a", roles=("operator",)
+    )
     app = FastAPI()
 
     @app.middleware("http")

@@ -390,6 +390,11 @@ class Settings(BaseSettings):
     code_exec_max_concurrent_per_tenant: int = 4
     code_exec_max_concurrent_per_host: int = 8
 
+    # --- platform email relay (POST /tools/email/send) ---
+    email_max_recipients: int = 50
+    # Recipients per tenant per UTC day; 0 = the plan default (app/tools/email_quota.py).
+    email_daily_recipient_quota: int = 0
+
     # --- feature flags ---
     civilization_enabled: bool = False
 

@@ -502,6 +502,34 @@ describe('ToolsPage', () => {
     expect(await screen.findByText(/smtp down/i)).toBeInTheDocument();
   });
 
+  test('a successful send shows the remaining daily recipient quota', async () => {
+    vi.spyOn(toolsApi, 'sendEmail').mockResolvedValue({
+      success: true, quota_remaining: 97, quota_limit: 100,
+    });
+    renderPage();
+    await userEvent.click(screen.getByRole('tab', { name: /email/i }));
+    await userEvent.type(screen.getByLabelText(/^to$/i), 'x@y.z');
+    await userEvent.type(screen.getByLabelText(/^subject$/i), 'Hi');
+    await userEvent.click(screen.getByRole('button', { name: /send email/i }));
+    expect(await screen.findByText(/97 of 100 recipients left today/i)).toBeInTheDocument();
+  });
+
+  test('a 429 shows the daily quota message', async () => {
+    vi.spyOn(toolsApi, 'sendEmail').mockRejectedValue(
+      new ApiError(429, 'Daily email recipient quota exhausted (100/100).'),
+    );
+    renderPage();
+    await userEvent.click(screen.getByRole('tab', { name: /email/i }));
+    await userEvent.type(screen.getByLabelText(/^to$/i), 'x@y.z');
+    await userEvent.type(screen.getByLabelText(/^subject$/i), 'Hi');
+    await userEvent.click(screen.getByRole('button', { name: /send email/i }));
+    await waitFor(() => {
+      expect(
+        useToastStore.getState().toasts.some(t => /daily email quota reached/i.test(t.message)),
+      ).toBe(true);
+    });
+  });
+
   test('runs code via Ctrl+Enter inside the editor', async () => {
     vi.spyOn(toolsApi, 'executeCode').mockResolvedValue({
       stdout: 'from-keymap', stderr: '', exit_code: 0, success: true,

@@ -638,6 +638,7 @@ function EmailComposer() {
   const [showCc, setShowCc] = useState(false);
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
+  const [quota, setQuota] = useState<{ remaining: number; limit: number } | null>(null);
   const [sent, setSent] = useState<SentItem[]>(() => {
     try { return JSON.parse(localStorage.getItem(SENT_EMAILS_KEY) ?? '[]') as SentItem[]; }
     catch { return []; }
@@ -651,8 +652,10 @@ function EmailComposer() {
         body,
         cc: cc?.trim() || undefined,
       }),
-    onSuccess: () => {
+    onSuccess: (r) => {
       toast({ kind: 'success', message: 'Email sent successfully.' });
+      if (typeof r?.quota_remaining === 'number' && typeof r?.quota_limit === 'number')
+        setQuota({ remaining: r.quota_remaining, limit: r.quota_limit });
       const newSent: SentItem = {
         id: newClientId(),
         to,
@@ -667,7 +670,14 @@ function EmailComposer() {
       });
       setTo(''); setCc(''); setSubject(''); setBody('');
     },
-    onError: (e) => toast({ kind: 'error', message: `Send failed: ${String(e)}` }),
+    onError: (e) =>
+      toast({
+        kind: 'error',
+        message:
+          e instanceof ApiError && e.status === 429
+            ? `Daily email quota reached — ${e.message}`
+            : `Send failed: ${String(e)}`,
+      }),
   });
 
   return (
@@ -743,6 +753,11 @@ function EmailComposer() {
           </div>
 
           <div className="px-5 py-3 border-t border-border bg-muted/20 flex items-center justify-between">
+            {quota && (
+              <p className="text-xs text-muted-foreground">
+                {quota.remaining} of {quota.limit} recipients left today
+              </p>
+            )}
             {sendMutation.isError && (
               <p className="text-xs text-destructive">{String(sendMutation.error)}</p>
             )}

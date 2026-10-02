@@ -11,7 +11,9 @@ from app.api.tools import router as tools_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
-_CTX = TenantContext(tenant_id="tid-tools", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
+_CTX = TenantContext(
+    tenant_id="tid-tools", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1", roles=("operator",)
+)
 _VALID_KEY = "av_test_tools_comp"
 
 
