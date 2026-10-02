@@ -358,10 +358,24 @@ async def agent_card(request: Request) -> dict[str, Any]:
         "version": "0.1.0",
         "description": "World-class Agentic OS with goal execution, connectors, and governance",
         "endpoint": str(request.base_url).rstrip("/") + "/a2a",
+        # A2A-02: everything a peer needs to sign a request (and verify our
+        # callbacks), not just the header name.
         "authentication": {
             "scheme": "hmac-sha256",
             "header": "X-A2A-Signature",
-            "note": "Set A2A_SHARED_SECRET env var. Empty = disabled (dev mode).",
+            "signature_header": "X-A2A-Signature",
+            "timestamp_header": "X-A2A-Timestamp",
+            "timestamp_format": "unix epoch seconds (integer)",
+            "signed_string": "{timestamp}.{raw_body}",
+            "signature_format": "sha256=<lowercase hex HMAC-SHA256>",
+            "key": "shared secret (A2A_SHARED_SECRET), exchanged out of band",
+            "max_clock_skew_seconds": A2A_SIGNATURE_MAX_SKEW_SECONDS,
+            "replay_protection": "each signature is accepted once within the skew window",
+            "callbacks": {
+                "signed": True,
+                "scheme": "same headers and signed string, over the callback body",
+            },
+            "note": "Production refuses inbound tasks when no shared secret is configured.",
         },
         "capabilities": [
             "goal_execution",

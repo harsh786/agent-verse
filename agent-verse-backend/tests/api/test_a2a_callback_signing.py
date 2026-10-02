@@ -62,6 +62,26 @@ async def test_non_2xx_is_not_reported_as_delivered(monkeypatch: pytest.MonkeyPa
         assert await _send_callback(URL, "task-1", "complete", "x") is False
 
 
+def test_agent_card_documents_the_full_signature_scheme() -> None:
+    """A2A-02: the card advertised only X-A2A-Signature, not how to compute it."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.a2a import A2A_SIGNATURE_MAX_SKEW_SECONDS, router
+
+    app = FastAPI()
+    app.include_router(router)
+    auth = TestClient(app).get("/.well-known/agent.json").json()["authentication"]
+    assert auth["scheme"] == "hmac-sha256"
+    assert auth["header"] == auth["signature_header"] == "X-A2A-Signature"
+    assert auth["timestamp_header"] == "X-A2A-Timestamp"
+    assert auth["signed_string"] == "{timestamp}.{raw_body}"
+    assert auth["signature_format"] == "sha256=<lowercase hex HMAC-SHA256>"
+    assert auth["max_clock_skew_seconds"] == A2A_SIGNATURE_MAX_SKEW_SECONDS
+    assert auth["replay_protection"]
+    assert auth["callbacks"]["signed"] is True
+
+
 async def test_production_without_a_secret_sends_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("A2A_SHARED_SECRET", raising=False)
     monkeypatch.setattr("app.api.a2a._is_production", lambda: True)
