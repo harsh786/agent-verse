@@ -16,8 +16,8 @@ import contextlib
 import contextvars
 import time
 from collections import defaultdict
-from collections.abc import Awaitable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -41,10 +41,60 @@ async def llm_spend(call: Awaitable[bool]) -> bool:
         _COST_SCOPE.reset(token)
 
 
+# The agent a charge belongs to, for per-agent daily caps (COST-02): set by the
+# goal runner (worker run_goal / GoalService) around a goal's execution, so every
+# LLM/tool charge made inside it is attributed without threading an argument.
+_COST_AGENT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "agentverse_cost_agent_id", default=""
+)
+
+
+@contextlib.contextmanager
+def cost_agent_scope(agent_id: str | None) -> Iterator[None]:
+    """Attribute every charge made inside the block to *agent_id*."""
+    token = _COST_AGENT.set(str(agent_id or ""))
+    try:
+        yield
+    finally:
+        _COST_AGENT.reset(token)
+
+
+def bind_cost_agent(agent_id: str | None) -> None:
+    """Attribute the rest of the CURRENT task's charges to *agent_id*.
+
+    For a goal-runner task's entry point: the task owns its context copy, so
+    nothing needs resetting (child tasks inherit it).
+    """
+    _COST_AGENT.set(str(agent_id or ""))
+
+
+def _charge_agent(agent_id: str | None, tenant_ctx: Any) -> str:
+    """Explicit agent > running goal's agent > agent-scoped API key's agent."""
+    if agent_id:
+        return str(agent_id)
+    scoped = _COST_AGENT.get()
+    if scoped:
+        return scoped
+    key = getattr(tenant_ctx, "agent_key", None)
+    key_agent = str(getattr(key, "agent_id", "") or "")
+    return "" if key_agent in ("", "unknown") else key_agent
+
+
 @dataclass(frozen=True)
 class BudgetConfig:
     per_goal_usd: float = 10.0
     per_tenant_daily_usd: float = 500.0
+    # agent_id → daily USD cap (absent = no per-agent cap).
+    per_agent_daily_usd: Mapping[str, float] = field(default_factory=dict)
+    alert_pct_thresholds: tuple[int, ...] = (50, 75, 90)
+
+    def agent_daily_limit(self, agent_id: str) -> float:
+        if not agent_id:
+            return 0.0
+        try:
+            return max(0.0, float(self.per_agent_daily_usd.get(agent_id, 0.0) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
 
 class BudgetUnavailableError(RuntimeError):
@@ -105,7 +155,8 @@ class TenantBudgetSource:
                 row = (
                     await session.execute(
                         text(
-                            "SELECT per_goal_usd, per_tenant_daily_usd "
+                            "SELECT per_goal_usd, per_tenant_daily_usd, "
+                            "per_agent_daily_usd, alert_pct_thresholds "
                             "FROM budget_configs WHERE tenant_id = :tid"
                         ),
                         {"tid": tenant_id},
@@ -118,13 +169,35 @@ class TenantBudgetSource:
             if hit is not None:
                 return hit[1]  # stale but real — better than an unknown budget
             raise BudgetUnavailableError(f"budget for tenant {tenant_id} unavailable") from exc
-        cfg = (
-            BudgetConfig(per_goal_usd=float(row[0]), per_tenant_daily_usd=float(row[1]))
-            if row
-            else None
-        )
+        cfg = _budget_from_row(row) if row else None
         self._cache[tenant_id] = (now, cfg)
         return cfg
+
+
+def _budget_from_row(row: Any) -> BudgetConfig:
+    import json as _json
+
+    per_agent: Any = row[2] if len(row) > 2 else None
+    if isinstance(per_agent, str):
+        try:
+            per_agent = _json.loads(per_agent)
+        except ValueError:
+            per_agent = None
+    agents = {
+        str(k): float(v)
+        for k, v in (per_agent or {}).items()
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+    }
+    thresholds_raw: Any = row[3] if len(row) > 3 else None
+    thresholds = tuple(
+        sorted({int(p) for p in (thresholds_raw or ()) if isinstance(p, int) and 0 < p <= 100})
+    )
+    return BudgetConfig(
+        per_goal_usd=float(row[0]),
+        per_tenant_daily_usd=float(row[1]),
+        per_agent_daily_usd=agents,
+        alert_pct_thresholds=thresholds if thresholds_raw is not None else (50, 75, 90),
+    )
 
 
 async def persist_tenant_budget(
@@ -210,6 +283,8 @@ class CostController:
         self._goal_totals: dict[tuple[str, str], float] = defaultdict(float)
         # Key: tenant_id → total daily USD spent
         self._daily_totals: dict[str, float] = defaultdict(float)
+        # Key: (tenant_id, agent_id) → daily USD spent by that agent
+        self._agent_daily_totals: dict[tuple[str, str], float] = {}
         # Track when daily totals were last reset (per tenant: tenant_id → date string)
         self._last_reset_date: dict[str, str] = {}
         # Optional Redis client for cross-replica cost tracking (set by main.py)
@@ -261,6 +336,8 @@ class CostController:
             if self._last_reset_date.get(tenant_id) != today:
                 if self._last_reset_date.get(tenant_id) is not None:
                     self._daily_totals[tenant_id] = 0.0
+                    for key in [k for k in self._agent_daily_totals if k[0] == tenant_id]:
+                        del self._agent_daily_totals[key]
                 self._last_reset_date[tenant_id] = today
 
     async def check_and_record(
@@ -271,6 +348,7 @@ class CostController:
         tenant_ctx: TenantContext,
         tool_name: str = "",
         attempt_id: str = "",
+        agent_id: str | None = None,
     ) -> bool:
         """Atomically check budget and record cost. Returns True if within budget."""
         del attempt_id
@@ -279,21 +357,30 @@ class CostController:
         except BudgetUnavailableError:
             # Unknown budget → fail closed (a looser default could overspend).
             return False
-        lock_key = f"{tenant_ctx.tenant_id}:{goal_id}"
+        agent = _charge_agent(agent_id, tenant_ctx)
+        agent_limit = cfg.agent_daily_limit(agent)
+        # One lock per tenant: the daily (and per-agent) totals are tenant-wide.
+        lock_key = f"tenant:{tenant_ctx.tenant_id}"
         async with self._locks[lock_key]:
             await self._reset_if_new_day_atomic(tenant_ctx.tenant_id)
 
             goal_key = (tenant_ctx.tenant_id, goal_id)
+            agent_key = (tenant_ctx.tenant_id, agent)
             new_goal_total = self._goal_totals[goal_key] + cost_usd
             new_daily_total = self._daily_totals[tenant_ctx.tenant_id] + cost_usd
+            new_agent_total = self._agent_daily_totals.get(agent_key, 0.0) + cost_usd
 
             if new_goal_total > cfg.per_goal_usd:
                 return False
             if new_daily_total > cfg.per_tenant_daily_usd:
                 return False
+            if agent_limit > 0 and new_agent_total > agent_limit:
+                return False
 
             self._goal_totals[goal_key] = new_goal_total
             self._daily_totals[tenant_ctx.tenant_id] = new_daily_total
+            if agent:
+                self._agent_daily_totals[agent_key] = new_agent_total
             # 2.4: 80% budget alert
             if cfg.per_tenant_daily_usd > 0:
                 _pct = new_daily_total / cfg.per_tenant_daily_usd
@@ -345,19 +432,40 @@ local daily_limit = tonumber(ARGV[3])
 local goal_expiry  = tonumber(ARGV[4])
 local daily_expiry = tonumber(ARGV[5])
 
+local agent_limit = tonumber(ARGV[6]) or 0
+local track_agent = ARGV[7] == '1'
+local agent_current = 0
+if track_agent then
+    agent_current = tonumber(redis.call('GET', KEYS[3])) or 0
+end
+
 if goal_limit > 0 and goal_current + cost > goal_limit then
     return redis.error_reply('GOAL_BUDGET_EXCEEDED')
 end
 if daily_limit > 0 and daily_current + cost > daily_limit then
     return redis.error_reply('DAILY_BUDGET_EXCEEDED')
 end
+if track_agent and agent_limit > 0 and agent_current + cost > agent_limit then
+    return redis.error_reply('AGENT_BUDGET_EXCEEDED')
+end
 
 local new_goal  = redis.call('INCRBYFLOAT', KEYS[1], cost)
 redis.call('EXPIREAT', KEYS[1], goal_expiry)
 local new_daily = redis.call('INCRBYFLOAT', KEYS[2], cost)
 redis.call('EXPIREAT', KEYS[2], daily_expiry)
-return tostring(new_goal) .. ':' .. tostring(new_daily)
+local new_agent = 0
+if track_agent then
+    new_agent = redis.call('INCRBYFLOAT', KEYS[3], cost)
+    redis.call('EXPIREAT', KEYS[3], daily_expiry)
+end
+return tostring(new_goal) .. ':' .. tostring(new_daily) .. ':' .. tostring(new_agent)
 """
+
+_BUDGET_EXCEEDED_REPLIES = (
+    "GOAL_BUDGET_EXCEEDED",
+    "DAILY_BUDGET_EXCEEDED",
+    "AGENT_BUDGET_EXCEEDED",
+)
 
 
 class RedisCostController:
@@ -424,6 +532,10 @@ class RedisCostController:
         midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         return max(1, int((midnight - now).total_seconds()))
 
+    def _agent_key(self, tenant_id: str, agent_id: str) -> str:
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
+        return f"cost:agent_daily:{tenant_id}:{agent_id}:{today}"
+
     async def check_and_record_async(
         self,
         *,
@@ -431,12 +543,15 @@ class RedisCostController:
         cost_usd: float,
         tenant_ctx: Any,
         attempt_id: str = "",
+        agent_id: str | None = None,
     ) -> bool:
         """Check budget atomically (check-then-increment). Returns True if within budget.
 
-        Uses a Lua script so the counters are only incremented when both the
-        per-goal and per-tenant-daily limits are satisfied.  On Redis clients
-        that don't support Lua (test doubles), falls back to a non-atomic
+        Uses a Lua script so the counters are only incremented when the
+        per-goal, per-tenant-daily and per-agent-daily limits are all satisfied.
+        The agent is *agent_id*, else the running goal's ``cost_agent_scope``,
+        else the agent-scoped API key's agent (COST-02). On Redis clients that
+        don't support Lua (test doubles), falls back to a non-atomic
         GET-check-INCRBYFLOAT sequence.
 
         ``attempt_id`` enables idempotency: the same (goal_id, attempt_id) pair
@@ -457,27 +572,32 @@ class RedisCostController:
             except Exception:
                 pass
 
+        agent = _charge_agent(agent_id, tenant_ctx)
         try:
             goal_key = self._goal_key(goal_id, tenant_ctx.tenant_id)
             daily_key = self._daily_key(tenant_ctx.tenant_id)
+            agent_key = self._agent_key(tenant_ctx.tenant_id, agent) if agent else daily_key
             goal_limit = cfg.per_goal_usd if cfg.per_goal_usd > 0 else 0.0
             daily_limit = cfg.per_tenant_daily_usd if cfg.per_tenant_daily_usd > 0 else 0.0
+            agent_limit = cfg.agent_daily_limit(agent)
             now_ts = int(time.time())
             ttl = await self._get_ttl_to_midnight()
             goal_expiry = now_ts + 86400
             daily_expiry = now_ts + ttl
 
             if getattr(self._redis, "register_script", None) is not None:
-                # Atomic Lua path — check THEN increment (both counters in one script)
+                # Atomic Lua path — check THEN increment (all counters in one script)
                 script = self._redis.register_script(_LUA_CHECK_AND_INCREMENT)
                 await script(
-                    keys=[goal_key, daily_key],
+                    keys=[goal_key, daily_key, agent_key],
                     args=[
                         str(cost_usd),
                         str(goal_limit),
                         str(daily_limit),
                         str(goal_expiry),
                         str(daily_expiry),
+                        str(agent_limit),
+                        "1" if agent else "0",
                     ],
                 )
             else:
@@ -489,10 +609,17 @@ class RedisCostController:
                     return False
                 if daily_limit > 0 and daily_current + cost_usd > daily_limit:
                     return False
+                if agent and agent_limit > 0:
+                    agent_current = _parse_float(await self._redis.get(agent_key))
+                    if agent_current + cost_usd > agent_limit:
+                        return False
                 await self._redis.incrbyfloat(goal_key, cost_usd)
                 await self._redis.expire(goal_key, 86400)
                 _new_daily = _parse_float(await self._redis.incrbyfloat(daily_key, cost_usd))
                 await self._redis.expireat(daily_key, daily_expiry)
+                if agent:
+                    await self._redis.incrbyfloat(agent_key, cost_usd)
+                    await self._redis.expireat(agent_key, daily_expiry)
                 # 2.4: 80% budget alert
                 if cfg.per_tenant_daily_usd > 0:
                     _pct = _new_daily / cfg.per_tenant_daily_usd
@@ -515,7 +642,7 @@ class RedisCostController:
 
         except Exception as exc:
             err_str = str(exc)
-            if "GOAL_BUDGET_EXCEEDED" in err_str or "DAILY_BUDGET_EXCEEDED" in err_str:
+            if any(reply in err_str for reply in _BUDGET_EXCEEDED_REPLIES):
                 return False
             # Fail closed in every environment: an unset/misspelled ENVIRONMENT
             # used to make a Redis outage wave all spend through unmetered.
@@ -529,6 +656,7 @@ class RedisCostController:
         cost_usd: float,
         tenant_ctx: Any,
         reason: str = "",
+        agent_id: str | None = None,
     ) -> None:
         """Refund a previously charged cost when the downstream operation failed.
 
@@ -541,6 +669,11 @@ class RedisCostController:
             daily_key = self._daily_key(tenant_ctx.tenant_id)
             await self._redis.incrbyfloat(goal_key, -cost_usd)
             await self._redis.incrbyfloat(daily_key, -cost_usd)
+            agent = _charge_agent(agent_id, tenant_ctx)
+            if agent:
+                await self._redis.incrbyfloat(
+                    self._agent_key(tenant_ctx.tenant_id, agent), -cost_usd
+                )
             get_logger(__name__).info(
                 "cost_refunded", goal_id=goal_id, amount=cost_usd, reason=reason
             )
@@ -645,6 +778,7 @@ class RedisCostController:
         cost_usd: float,
         tool_name: str = "",
         attempt_id: str = "",
+        agent_id: str | None = None,
     ) -> bool:
         """Drop-in alias matching CostController.check_and_record signature."""
         return await self.check_and_record_async(
@@ -652,6 +786,7 @@ class RedisCostController:
             goal_id=goal_id,
             cost_usd=cost_usd,
             attempt_id=attempt_id,
+            agent_id=agent_id,
         )
 
     def configure_tenant_budget(self, tenant_id: str, budget: BudgetConfig) -> None:

@@ -434,22 +434,29 @@ class _FakeLuaScript:
         import time as _time
 
         async with self._redis._get_lock():
-            if len(keys) == 2:
+            if len(keys) in (2, 3):
                 # args: cost, goal_limit, daily_limit, goal_expiry, daily_expiry
+                #       [, agent_limit, track_agent]  (3-key per-agent form)
                 goal_key, daily_key = keys[0], keys[1]
                 cost = float(args[0])
                 goal_limit = float(args[1])
                 daily_limit = float(args[2])
-                goal_expiry = int(args[3])
-                daily_expiry = int(args[4])
+                goal_expiry = int(float(args[3]))
+                daily_expiry = int(float(args[4]))
+                track_agent = len(keys) == 3 and len(args) > 6 and args[6] == "1"
+                agent_limit = float(args[5]) if track_agent else 0.0
+                agent_key = keys[2] if track_agent else ""
 
                 goal_current = float(self._redis._d.get(goal_key, 0))
                 daily_current = float(self._redis._d.get(daily_key, 0))
+                agent_current = float(self._redis._d.get(agent_key, 0)) if track_agent else 0.0
 
                 if goal_limit > 0 and goal_current + cost > goal_limit:
                     raise Exception("GOAL_BUDGET_EXCEEDED")
                 if daily_limit > 0 and daily_current + cost > daily_limit:
                     raise Exception("DAILY_BUDGET_EXCEEDED")
+                if track_agent and agent_limit > 0 and agent_current + cost > agent_limit:
+                    raise Exception("AGENT_BUDGET_EXCEEDED")
 
                 new_goal = goal_current + cost
                 new_daily = daily_current + cost
@@ -459,7 +466,12 @@ class _FakeLuaScript:
                 mono = _time.monotonic()
                 self._redis._ttl[goal_key] = float(goal_expiry) - now + mono
                 self._redis._ttl[daily_key] = float(daily_expiry) - now + mono
-                return f"{new_goal}:{new_daily}"
+                new_agent = 0.0
+                if track_agent:
+                    new_agent = agent_current + cost
+                    self._redis._d[agent_key] = str(new_agent)
+                    self._redis._ttl[agent_key] = float(daily_expiry) - now + mono
+                return f"{new_goal}:{new_daily}:{new_agent}"
             else:
                 # Legacy 1-key / 3-arg format used by try_record_and_check
                 key = keys[0]

@@ -416,6 +416,14 @@ def _run_async(coro: Any) -> Any:
     return run_in_fresh_loop(coro)
 
 
+async def _charged_to_agent(coro: Any, agent_id: str | None) -> Any:
+    """Await *coro* with every cost charge attributed to *agent_id* (COST-02)."""
+    from app.governance.cost import bind_cost_agent
+
+    bind_cost_agent(agent_id)
+    return await coro
+
+
 async def _await_then_flush_audit(coro: Any, audit: Any) -> Any:
     """Await *coro*, then every audit write it scheduled, before the loop closes.
 
@@ -3921,10 +3929,13 @@ def run_goal(
             )
             state = _run_async(
                 _await_then_flush_audit(
-                    # The heartbeat is withheld when this loop stops making progress.
-                    _heartbeat.run_with_progress(_goal_run)
-                    if _heartbeat is not None
-                    else _goal_run,
+                    _charged_to_agent(
+                        # The heartbeat is withheld when this loop stops making progress.
+                        _heartbeat.run_with_progress(_goal_run)
+                        if _heartbeat is not None
+                        else _goal_run,
+                        agent_id,
+                    ),
                     _worker_audit,
                 )
             )

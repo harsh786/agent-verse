@@ -3255,8 +3255,10 @@ class GoalService:
     ) -> None:
         """Run agent with persistence — keep retrying until goal achieved."""
         from app.agent.persistence import GoalPersistenceEngine, PersistenceConfig
+        from app.governance.cost import bind_cost_agent
 
         record = self._goals.get(goal_id)
+        bind_cost_agent(getattr(record, "agent_id", None))  # per-agent caps (COST-02)
 
         async def callback(event: dict[str, Any]) -> None:
             await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)
@@ -3520,6 +3522,11 @@ class GoalService:
         agent behaviour (AgentGraph, guardrails, governance,
         RAG, memory, HITL, etc.) is unchanged — only the *where* changes.
         """
+        # Attribute every charge this goal makes to its agent (per-agent daily
+        # caps, COST-02). The task runs in its own context copy.
+        from app.governance.cost import bind_cost_agent
+
+        bind_cost_agent(getattr(self._goals.get(goal_id), "agent_id", None))
         with _tracer.start_as_current_span("goal.execute") as span:
             span.set_attribute("goal_id", goal_id)
 

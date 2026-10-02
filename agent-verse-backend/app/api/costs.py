@@ -299,7 +299,10 @@ async def update_budgets(
         request,
         ctx.tenant_id,
         BudgetConfig(
-            per_goal_usd=body.per_goal_usd, per_tenant_daily_usd=body.per_tenant_daily_usd
+            per_goal_usd=body.per_goal_usd,
+            per_tenant_daily_usd=body.per_tenant_daily_usd,
+            per_agent_daily_usd=dict(body.per_agent_daily_usd),
+            alert_pct_thresholds=tuple(sorted(set(body.alert_pct_thresholds))),
         ),
     )
     return {
