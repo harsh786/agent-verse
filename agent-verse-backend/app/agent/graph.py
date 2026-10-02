@@ -1117,12 +1117,59 @@ class AgentGraph(
             return False
         return all(getattr(s, "status", None) == StepStatus.FAILED for s in recent)
 
+    # Backoff between checkpoint write attempts (CORE-26): 1 try + len() retries.
+    _CHECKPOINT_RETRY_DELAYS_S: tuple[float, ...] = (0.05, 0.25)
+
     async def _write_checkpoint(
         self, goal_id: str, step_index: int, state: Any, tenant_ctx: Any
     ) -> None:
-        """Write step checkpoint to DB after each successful step."""
+        """Write step checkpoint to DB after each step; retried, never silently lost.
+
+        CORE-26: a failed write used to be logged and ignored, so the durable
+        record of a completed side-effecting step could be missing while the
+        goal went on; a crash/redelivery then resumed from an older checkpoint
+        and repeated the step. The upsert is retried with a short backoff; if
+        it still fails the goal is flagged ``checkpoint_degraded`` (and a
+        ``checkpoint_write_failed`` event is emitted), after which every
+        non-read tool call fails closed (see ``_checkpoint_degraded``).
+        """
         if self._db_session_factory is None or not getattr(self, "_checkpoints_enabled", True):
             return
+        delays = tuple(getattr(self, "_CHECKPOINT_RETRY_DELAYS_S", ()))
+        last_exc: Exception | None = None
+        for attempt in range(len(delays) + 1):
+            try:
+                await self._write_checkpoint_once(goal_id, step_index, state, tenant_ctx)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < len(delays):
+                    await asyncio.sleep(delays[attempt])
+        from app.observability.logging import get_logger
+
+        get_logger(__name__).error(
+            "checkpoint_write_failed",
+            goal_id=goal_id,
+            step_index=step_index,
+            error=type(last_exc).__name__,
+        )
+        ctx = getattr(state, "context", None)
+        if isinstance(ctx, dict):
+            ctx["checkpoint_degraded"] = True
+        with contextlib.suppress(Exception):
+            await self._emit(
+                {
+                    "type": "checkpoint_write_failed",
+                    "step_index": step_index,
+                    "error_type": type(last_exc).__name__,
+                    "effect": "side-effecting tool calls are refused for the rest of this run",
+                }
+            )
+
+    async def _write_checkpoint_once(
+        self, goal_id: str, step_index: int, state: Any, tenant_ctx: Any
+    ) -> None:
+        """One checkpoint upsert; raises on failure."""
         try:
             from datetime import UTC, datetime
 
@@ -1199,7 +1246,10 @@ class AgentGraph(
         except Exception as exc:
             from app.observability.logging import get_logger
 
-            get_logger(__name__).warning("checkpoint_write_failed", goal_id=goal_id, error=str(exc))
+            get_logger(__name__).warning(
+                "checkpoint_write_attempt_failed", goal_id=goal_id, error=type(exc).__name__
+            )
+            raise
 
     async def _load_checkpoint(self, goal_id: str, tenant_ctx: Any) -> dict[str, Any] | None:
         """Load latest checkpoint for goal resume."""

@@ -174,6 +174,16 @@ _STEP_CACHE_SCOPE: contextvars.ContextVar[_StepCacheScope | None] = contextvars.
 )
 
 
+def _checkpoint_degraded(state: Any) -> bool:
+    """True once a checkpoint write failed for good this run (CORE-26).
+
+    Every non-read tool call then fails closed: without a durable record of
+    what already ran, a crash/redelivery would repeat it.
+    """
+    ctx = getattr(state, "context", None)
+    return isinstance(ctx, dict) and bool(ctx.get("checkpoint_degraded"))
+
+
 def _taint_step_cache() -> None:
     """Mark the current step's result as never cacheable (a gate refused or a
     side-effecting path ran)."""
@@ -789,7 +799,7 @@ class ExecutorMixin:
                 if self._model_router is not None:
                     with contextlib.suppress(Exception):
                         _tree_model = self._model_router.model_for("planning") or ""
-                from app.agent.fanout_ledger import ledger_for
+                from app.agent.fanout_ledger import ledger_for as fanout_ledger_for
                 from app.providers.guarded_completion import GuardedDecisionProvider
 
                 sub_goals: list[SubGoal] = await execute_goal_tree(
@@ -808,7 +818,7 @@ class ExecutorMixin:
                     graph_factory=_sub_graph_factory,
                     event_callback=self._event_callback,
                     model=_tree_model,
-                    ledger=ledger_for(
+                    ledger=fanout_ledger_for(
                         getattr(self, "_db_session_factory", None),
                         tenant_id=getattr(tenant_ctx, "tenant_id", None),
                         parent_goal_id=agent_state.goal_id,
@@ -2734,10 +2744,15 @@ class ExecutorMixin:
                         )
                     tool_risk = _effective_risk
                     # else: falls through to write_high HITL gate below (default-secure)
-                    if tool_risk == "destructive":
+                    _ckpt_blocked = tool_risk != "read" and _checkpoint_degraded(state)
+                    if tool_risk == "destructive" or _ckpt_blocked:
                         _taint_step_cache()
                         error = self._sanitize_tool_raw_output(
-                            f"Tool '{tool_ref.name}' denied as destructive."
+                            f"Tool '{tool_ref.name}' was not run: this goal's checkpoints "
+                            "could not be saved, so a crash could repeat side effects "
+                            "(checkpoint_degraded)."
+                            if _ckpt_blocked
+                            else f"Tool '{tool_ref.name}' denied as destructive."
                         )
                         await self._emit(
                             {
@@ -3586,6 +3601,12 @@ class ExecutorMixin:
                 return await _deny(
                     tool_ref.name, "risk", "destructive",
                     f"[denied: '{tool_ref.name}' is destructive]",
+                )
+            if risk != "read" and _checkpoint_degraded(state):
+                # CORE-26: checkpoints cannot be saved — no new side effects.
+                return await _deny(
+                    tool_ref.name, "checkpoint", "checkpoint_degraded",
+                    f"[denied: '{tool_ref.name}' not run; checkpoints could not be saved]",
                 )
             if eff == "write_high":
                 if self._hitl_gateway is None or self._autonomy_mode != "supervised":
