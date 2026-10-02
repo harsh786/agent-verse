@@ -335,8 +335,8 @@ async def test_call_tool_server_not_found():
 
 
 @pytest.mark.asyncio
-async def test_call_tool_server_not_found_openapi_fallback():
-    """When server not found, scans for OpenAPI-imported tool."""
+async def test_call_tool_server_not_found_has_no_openapi_fallback():
+    """MCPCLI-02: an unknown server is not found; no other connector is used."""
     registry = MCPRegistry(redis=None)
     client = _make_client(registry=registry)
 
@@ -347,11 +347,15 @@ async def test_call_tool_server_not_found_openapi_fallback():
 
     with patch.object(registry, "get", AsyncMock(return_value=None)), \
          patch.object(registry, "list_all", AsyncMock(return_value=[mock_server])), \
-         patch.object(client, "_dispatch_openapi_tool", AsyncMock(return_value=fallback_result)):
+         patch.object(
+             client, "_dispatch_openapi_tool", AsyncMock(return_value=fallback_result)
+         ) as dispatch:
         result = await client.call_tool(
             server_id="ghost-srv", tool_name="search_web", arguments={}, tenant_ctx=_ctx()
         )
-    assert result.success is True
+        dispatch.assert_not_called()
+    assert result.success is False
+    assert "not found" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------

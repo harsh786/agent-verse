@@ -1357,20 +1357,11 @@ class MCPClient:
 
         cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
         if cfg is None:
-            # Fallback: scan all registered servers for an OpenAPI-imported tool
-            try:
-                for server in await self._registry.list_all(tenant_ctx=tenant_ctx):
-                    if server.tool_definitions:
-                        for tdef in server.tool_definitions:
-                            if tdef.get("name") == tool_name or tdef.get("tool_name") == tool_name:
-                                return await self._dispatch_openapi_tool(
-                                    server=server,
-                                    tool_def=tdef,
-                                    arguments=arguments,
-                                    tenant_ctx=tenant_ctx,
-                                )
-            except Exception:
-                pass
+            # No cross-connector fallback (MCPCLI-02): dispatching another
+            # connector's same-named tool for an unknown id skipped the exfil
+            # guard, cache and breaker and could hit the wrong system. Callers
+            # that only know a tool name use call_tool_by_name, which resolves
+            # the server first and then comes through this guarded path.
             return ToolCallResult(
                 tool_name=tool_name,
                 success=False,

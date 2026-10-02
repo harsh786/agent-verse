@@ -379,8 +379,9 @@ async def test_call_tool_server_not_found_returns_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_tool_falls_back_to_openapi_scan_when_server_missing() -> None:
-    """If server_id not found, scan all registered servers for matching OpenAPI tool."""
+async def test_call_tool_never_falls_back_to_another_connector_when_server_missing() -> None:
+    """MCPCLI-02: an unknown server_id is not found — no scan for another
+    connector's same-named OpenAPI tool (that skipped every guard)."""
     fallback_cfg = _make_cfg(
         server_id="openapi-srv",
         url="https://api.example.com",
@@ -409,7 +410,10 @@ async def test_call_tool_falls_back_to_openapi_scan_when_server_missing() -> Non
             server_id="missing-srv", tool_name="search_items", arguments={}, tenant_ctx=T
         )
 
-    assert result.success is True
+    assert result.success is False
+    assert "not found" in (result.error or "")
+    mock_client_ctx.get.assert_not_called()
+    registry.list_all.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
