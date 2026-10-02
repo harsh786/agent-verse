@@ -396,8 +396,8 @@ class TestPersistTokenToDb:
         mock_vault.encrypt.assert_called()
 
     @pytest.mark.asyncio
-    async def test_persist_db_exception_logged(self):
-        """Lines 275-278: DB exception → logs warning, no raise."""
+    async def test_persist_db_exception_raises(self):
+        """OAUTH-01: a failed durable write raises (it used to be swallowed)."""
         manager = OAuthFlowManager()
 
         mock_session = AsyncMock()
@@ -412,7 +412,10 @@ class TestPersistTokenToDb:
         manager._db_session_factory = MagicMock(return_value=mock_session)
 
         token = OAuthToken(access_token="tok")
-        await manager._persist_token_to_db("t1", "github", token)  # no raise
+        from app.mcp.oauth import OAuthTokenPersistError
+
+        with pytest.raises(OAuthTokenPersistError):
+            await manager._persist_token_to_db("t1", "github", token)
 
 
 # ── load_tokens_from_db ───────────────────────────────────────────────────────

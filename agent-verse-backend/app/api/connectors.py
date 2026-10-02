@@ -19,6 +19,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.connector_store import ConnectorConflictError
+from app.mcp.oauth import OAuthTokenPersistError
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import (
     SSRFError,
@@ -1687,6 +1688,22 @@ async def oauth_callback(
             redirect_uri=redirect_uri,
             tenant_ctx=tenant_ctx,
         )
+    except OAuthTokenPersistError as exc:
+        # The provider issued a token but it could not be stored durably: the
+        # worker and other replicas would never see it — not "connected".
+        _logger.error(
+            "oauth_callback_persist_failed tenant=%s server=%s error=%s",
+            tenant_ctx.tenant_id,
+            server_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "The connection could not be saved; nothing was stored. "
+                "Retry connecting the connector."
+            ),
+        ) from exc
     except Exception as exc:
         return {"server_id": server_id, "status": "error", "message": str(exc)}
 

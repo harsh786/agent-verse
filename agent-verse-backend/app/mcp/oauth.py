@@ -63,6 +63,14 @@ class OAuthReauthorizationRequiredError(RuntimeError):
         self.tenant_id = tenant_id
 
 
+class OAuthTokenPersistError(RuntimeError):
+    """The durable oauth_tokens write failed (OAUTH-01).
+
+    Without the row the worker and every other replica never see the token, so
+    a connect must not be reported as successful.
+    """
+
+
 _OAUTH_STATE_TTL = 600  # 10 minutes
 # How long a token read from the durable store is served from process memory
 # before it is re-read (another replica/worker may have refreshed or revoked it).
@@ -349,9 +357,10 @@ class OAuthFlowManager:
         if not token.access_token:
             return None
 
-        self._cache_token((tenant_ctx.tenant_id, flow.server_id), token)
-        # Persist to DB if factory is configured
+        # Durable first (raises OAuthTokenPersistError): only a token every
+        # replica and the worker can read is cached and reported connected.
         await self._persist_token_to_db(tenant_ctx.tenant_id, flow.server_id, token)
+        self._cache_token((tenant_ctx.tenant_id, flow.server_id), token)
         return token
 
     def get_token(self, *args: Any, **kwargs: Any) -> OAuthToken | None:
@@ -663,12 +672,25 @@ class OAuthFlowManager:
             )
             self._cache_token(key, new_token)
             # Durable, so other replicas and the worker use the refreshed token
-            # (and a rotated refresh token is not lost on restart).
-            await self._persist_token_to_db(resolved_tenant_id, server_id, new_token)
+            # (and a rotated refresh token is not lost on restart). The provider
+            # already issued it, so this call still uses it; the failure is loud.
+            try:
+                await self._persist_token_to_db(resolved_tenant_id, server_id, new_token)
+            except OAuthTokenPersistError as exc:
+                _log.error(
+                    "oauth_refreshed_token_not_persisted tenant=%s server_id=%s error=%s",
+                    resolved_tenant_id,
+                    server_id,
+                    exc,
+                )
             return new_token
 
     async def _persist_token_to_db(self, tenant_id: str, server_id: str, token: OAuthToken) -> None:
-        """Persist an OAuth token to the database for cross-restart recovery."""
+        """Persist an OAuth token to the database (the shared source of truth).
+
+        Raises :class:`OAuthTokenPersistError` when a DB is configured and the
+        write fails (it used to be logged and swallowed).
+        """
         if self._db_session_factory is None:
             return
         try:
@@ -718,9 +740,10 @@ class OAuthFlowManager:
                     },
                 )
         except Exception as exc:
-            from app.observability.logging import get_logger
-
-            get_logger(__name__).warning("oauth_token_persist_failed", error=str(exc))
+            _log.error("oauth_token_persist_failed server_id=%s error=%s", server_id, exc)
+            raise OAuthTokenPersistError(
+                f"OAuth token could not be stored ({type(exc).__name__})"
+            ) from exc
 
     async def _fetch_all_token_rows(self) -> list[tuple[Any, ...]]:
         """Every tenant's stored tokens that are still usable (startup warm-up)."""
