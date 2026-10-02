@@ -137,16 +137,14 @@ async def test_nli_grounding_failure_fails_open_on_normal_risk_goal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transient_grounding_check_error_fails_open_and_skips_retry() -> None:
+async def test_transient_grounding_check_error_fails_open_on_normal_risk_goal() -> None:
     """A transient error raised BY verify_grounding itself (e.g. a dependency
-    hiccup in the underlying NLI checker) is swallowed by the gate's own
-    try/except — documented as 'must never crash verification' — so the
-    verifier is left as-is rather than being driven into a retry. This is the
-    deliberate contrast with a genuine (permanent) unsafe verdict, which DOES
-    flip success and set retry=True (see the fail-closed test above): an
-    infra error must never masquerade as a grounding failure."""
+    hiccup in the underlying NLI checker) is caught by the gate's own
+    try/except — it 'must never crash verification'. On a NORMAL-risk goal it
+    fails open: the verdict is left as-is and no retry is forced, so an infra
+    error never masquerades as a grounding failure."""
     graph = _grounding_graph()
-    agent_state = _state_with_contradiction("deploy the release to production")
+    agent_state = _state_with_contradiction("write an internal status update")
 
     with patch(
         "app.intelligence.grounding_verification.verify_grounding",
@@ -160,14 +158,41 @@ async def test_transient_grounding_check_error_fails_open_and_skips_retry() -> N
 
 
 @pytest.mark.asyncio
-async def test_grounding_check_timeout_during_verification_does_not_crash() -> None:
-    """A hard timeout inside verify_grounding (the NLI backend hangs) must not
-    crash the whole verification node — TimeoutError is caught by the same
-    broad 'grounding gate must never crash' contract as any other exception,
-    so a slow/hung grounding dependency degrades gracefully instead of
-    breaking verification for the whole goal."""
+async def test_transient_grounding_check_error_fails_closed_on_high_risk_goal() -> None:
+    """CORE-29: the same error on a HIGH-risk goal never lets the answer through
+    unverified — the verdict flips to failure and a retry is requested."""
     graph = _grounding_graph()
     agent_state = _state_with_contradiction("deploy the release to production")
+
+    with patch(
+        "app.intelligence.grounding_verification.verify_grounding",
+        AsyncMock(side_effect=ConnectionError("transient NLI backend hiccup")),
+    ):
+        result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": _T})
+
+    updated = result["agent_state"]
+    assert updated.verification_success is False
+    assert updated.context.get("verification_retry") is True
+    assert "grounding check unavailable" in updated.verification_feedback
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("goal", "expected_success"),
+    [
+        ("write an internal status update", True),  # normal risk: fails open
+        ("deploy the release to production", False),  # high risk: fails closed (CORE-29)
+    ],
+)
+async def test_grounding_check_timeout_during_verification_does_not_crash(
+    goal: str, expected_success: bool
+) -> None:
+    """A hard timeout inside verify_grounding (the NLI backend hangs) must not
+    crash the whole verification node — TimeoutError is caught by the same
+    broad 'grounding gate must never crash' contract as any other exception.
+    It degrades to fail-open on normal goals and fail-closed on high-risk ones."""
+    graph = _grounding_graph()
+    agent_state = _state_with_contradiction(goal)
 
     with patch(
         "app.intelligence.grounding_verification.verify_grounding",
@@ -175,4 +200,4 @@ async def test_grounding_check_timeout_during_verification_does_not_crash() -> N
     ):
         result = await graph._node_verify({"agent_state": agent_state, "tenant_ctx": _T})
 
-    assert result["agent_state"].verification_success is True
+    assert result["agent_state"].verification_success is expected_success
