@@ -156,6 +156,7 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
 EXEMPT_PATH_PREFIXES: frozenset[str] = frozenset(
     {
         "/health",
+        "/livez",
         "/metrics",
         "/status",
         "/docs",

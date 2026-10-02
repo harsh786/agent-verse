@@ -69,6 +69,7 @@ async def _check_rate_limit_with_fallback(tenant_id: str, redis: Any, rpm_limit:
 # Paths that do not require API-key authentication
 _BYPASS_PREFIXES = (
     "/health",
+    "/livez",
     "/metrics",
     "/status",
     "/docs",

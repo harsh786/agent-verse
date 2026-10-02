@@ -13,6 +13,14 @@ from app.observability.metrics import render_metrics
 router = APIRouter(tags=["system"])
 
 
+@router.get("/livez")
+async def livez() -> dict[str, str]:
+    """Liveness: the process is up and serving its event loop. Never checks
+    Postgres/Redis — a dependency outage must make pods unready (``/health/ready``),
+    not restart every API pod at once."""
+    return {"status": "alive"}
+
+
 @router.get("/health")
 async def health(request: Request) -> JSONResponse:
     """Readiness check across all registered dependencies (503 if any are down)."""
@@ -37,9 +45,8 @@ async def ready(request: Request) -> JSONResponse:
     background warm-up (app.core.startup) has finished, then the dependency checks.
 
     Uvicorn binds as soon as essential state is loaded; warm caches, catalogue
-    seeding and memory hydration continue in the background. A load balancer or
-    orchestrator should route traffic on this endpoint; ``/health`` stays the
-    fast liveness/dependency probe.
+    seeding and memory hydration continue in the background. This is the
+    readinessProbe; ``/livez`` is the livenessProbe.
     """
     tracker = getattr(request.app.state, "startup", None)
     if tracker is not None and not tracker.ready:
