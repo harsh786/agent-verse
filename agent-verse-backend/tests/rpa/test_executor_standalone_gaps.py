@@ -64,10 +64,14 @@ def _make_playwright_sys_modules(pw, page):
 # ── _execute_playwright_standalone: no playwright (fallback to simulation) ────
 
 @pytest.mark.asyncio
-async def test_standalone_is_not_implemented_when_no_playwright():
-    """When playwright can't be imported, executor._playwright_available=False → simulation."""
+async def test_standalone_is_not_implemented_when_no_playwright(monkeypatch):
+    """When playwright can't be imported the executor answers an honest NOT IMPLEMENTED."""
+    import sys
+
     executor = RPAExecutor(headless=True)
     executor._playwright_available = False
+    # Simulate the package being absent even where the dev venv installs it.
+    monkeypatch.setitem(sys.modules, "playwright.async_api", None)
 
     result = await executor._execute_playwright_standalone(
         tool_name="rpa_open_url",

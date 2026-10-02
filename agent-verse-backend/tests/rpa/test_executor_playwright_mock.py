@@ -1400,25 +1400,23 @@ async def test_standalone_upload_file_not_found() -> None:
 
 @requires_playwright
 @pytest.mark.asyncio
-async def test_standalone_upload_file_success() -> None:
-    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
-        f.write(b"content")
-        tmp_path = f.name
-    try:
-        page = make_mock_page()
-        playwright_cm = make_playwright_cm(page)
-        executor = make_standalone_executor()
+async def test_standalone_upload_file_success(tmp_path, monkeypatch) -> None:
+    # Uploads come only from the tenant's upload directory, by relative path.
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
+    (tmp_path / "t1").mkdir()
+    (tmp_path / "t1" / "doc.txt").write_bytes(b"content")
+    page = make_mock_page()
+    playwright_cm = make_playwright_cm(page)
+    executor = make_standalone_executor()
 
-        with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
-            result = await executor.execute(
-                tool_name="rpa_upload_file",
-                arguments={"selector": "#file-input", "file_path": tmp_path},
-                session_id="standalone",
-                tenant_id="t1",
-            )
-        assert result.success is True
-    finally:
-        os.unlink(tmp_path)
+    with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+        result = await executor.execute(
+            tool_name="rpa_upload_file",
+            arguments={"selector": "#file-input", "file_path": "doc.txt"},
+            session_id="standalone",
+            tenant_id="t1",
+        )
+    assert result.success is True, result.error
 
 
 @requires_playwright
@@ -1775,20 +1773,20 @@ async def test_standalone_upload_file_set_input_files_exception() -> None:
     playwright_cm = make_playwright_cm(page)
     executor = make_standalone_executor()
 
-    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
-        f.write(b"content")
-        tmp_path = f.name
-
-    try:
-        with patch("playwright.async_api.async_playwright", return_value=playwright_cm):
+    with tempfile.TemporaryDirectory() as root:
+        os.makedirs(os.path.join(root, "t1"))
+        with open(os.path.join(root, "t1", "doc.txt"), "wb") as f:
+            f.write(b"content")
+        with (
+            patch.dict(os.environ, {"RPA_UPLOAD_DIR": root}),
+            patch("playwright.async_api.async_playwright", return_value=playwright_cm),
+        ):
             result = await executor.execute(
                 tool_name="rpa_upload_file",
-                arguments={"selector": "#broken-input", "file_path": tmp_path},
+                arguments={"selector": "#broken-input", "file_path": "doc.txt"},
                 session_id="standalone",
                 tenant_id="t1",
             )
-    finally:
-        os.unlink(tmp_path)
 
     assert result.success is False
     assert "Permission denied" in (result.error or "")

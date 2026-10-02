@@ -674,6 +674,13 @@ def create_app(
         manage_pools = True
 
     registry = HealthRegistry(list(health_checks or []))
+    # RPA/perception need a real Chromium: unready instead of failing every rpa_* call.
+    from app.rpa.readiness import browser_required, check_browser_available
+
+    if browser_required():
+        from app.observability.health import HealthCheck as _BrowserHealthCheck
+
+        registry.register(_BrowserHealthCheck(name="rpa_browser", check=check_browser_available))
 
     # ── Build shared services ─────────────────────────────────────────────────
     _tenant_svc = tenant_service or TenantService()

@@ -150,7 +150,7 @@ sandbox = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "agent-verse-backend", extra = ["connectors"] },
+    { name = "agent-verse-backend", extra = ["browser", "connectors"] },
     { name = "asgi-lifespan" },
     { name = "beautifulsoup4" },
     { name = "fakeredis" },
@@ -264,6 +264,7 @@ provides-extras = ["voyage", "gemini", "local-embed", "browser", "artifacts", "p
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "agent-verse-backend", extras = ["browser"] },
     { name = "agent-verse-backend", extras = ["connectors"] },
     { name = "asgi-lifespan", specifier = ">=2.1.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },

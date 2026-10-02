@@ -67,7 +67,10 @@ EXPOSE 8000
 
 # Install Playwright Chromium browser as the app user so the runtime process
 # can locate it at /home/app/.cache/ms-playwright. This is optional for small
-# Minikube smoke profiles; production/RPA builds should keep it enabled.
+# Minikube smoke profiles; production/RPA builds should keep it enabled. Outside
+# development /health and /health/ready report "rpa_browser" down without it
+# (app/rpa/readiness.py): an image built with INSTALL_PLAYWRIGHT=false must run
+# with RPA_BROWSER_REQUIRED=false.
 # Runs before the source COPY so code changes do not re-download the browser.
 ARG INSTALL_PLAYWRIGHT=true
 RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then playwright install chromium; else echo "Skipping Playwright browser install"; fi
