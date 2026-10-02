@@ -67,5 +67,7 @@ async def test_published_payload_drives_the_hitl_consumer() -> None:
     dispatcher = SimpleNamespace(dispatch=AsyncMock())
     consumer = HITLTriggerConsumer(trigger_store=store, dispatcher=dispatcher)
     await consumer._handle({"type": "message", "channel": "hitl.rejected", "data": raw})
-    store.find_by_type_async.assert_awaited_once_with("hitl_rejected", tenant_id=CTX.tenant_id)
+    store.find_by_type_async.assert_awaited_once_with(
+        "hitl_rejected", tenant_id=CTX.tenant_id, strict=True
+    )
     dispatcher.dispatch.assert_awaited_once()

@@ -174,15 +174,29 @@ async def test_slack_button_approval_goes_through_the_db_first_path() -> None:
     async def _bound(request: object, payload: dict) -> str:
         return "t-slack"
 
+    from app.integrations.slack.identity import SlackPrincipal
+
+    # TRG-36: a Slack user decides only through a linked AgentVerse principal
+    # that holds governance:approve; the decision records THAT principal.
+    async def _linked(**kwargs: object) -> SlackPrincipal | None:
+        if (kwargs["tenant_id"], kwargs["team_id"], kwargs["slack_user_id"]) == (
+            "t-slack",
+            "T1",
+            "U9",
+        ):
+            return SlackPrincipal(tenant_id="t-slack", principal_id="key-sam", roles=("approver",))
+        return None
+
     with (
         patch.object(integrations, "_require_slack_signature", lambda *a, **k: None),
         patch.object(integrations, "_slack_bound_tenant", _bound),
+        patch("app.integrations.slack.identity.resolve_slack_principal", _linked),
     ):
         client = TestClient(app, raise_server_exceptions=True)
         resp = client.post("/integrations/slack/events", json=body)
     assert resp.status_code == 200
     gw.approve_async.assert_awaited_once()
-    assert gw.approve_async.await_args.kwargs["approver"] == "slack:U9"
+    assert gw.approve_async.await_args.kwargs["approver"] == "key-sam"
     assert gw.approve_async.await_args.kwargs["tenant_ctx"].tenant_id == "t-slack"
 
 
