@@ -15,6 +15,19 @@ from app.ingestion.content_classifier import ContentClassifier, ContentType
 from app.ingestion.pipeline import IngestionPipeline
 from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
 
+
+def _one_vector_per_text(dim: int):  # type: ignore[no-untyped-def]
+    """embed_texts stand-in that returns exactly one vector per input text.
+
+    KB-40's metered embedding refuses a batch whose result count differs from
+    its input count, so a fixed-size canned list fails real ingestion.
+    """
+
+    async def _embed(texts, **_kwargs):  # type: ignore[no-untyped-def]
+        return [[0.1] * dim for _ in texts]
+
+    return _embed
+
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
@@ -240,7 +253,7 @@ async def test_emit_publishes_knowledge_updated_with_chunk_count():
 
     with patch(
         "app.providers.base.embed_texts",
-        AsyncMock(return_value=[[0.1] * 8, [0.2] * 8]),
+        AsyncMock(side_effect=_one_vector_per_text(8)),
     ):
         pipeline = IngestionPipeline(
             knowledge_store=mock_kb, embedder=mock_embedder, event_bus=bus

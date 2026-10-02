@@ -19,6 +19,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+
+def _one_vector_per_text(dim: int):  # type: ignore[no-untyped-def]
+    """embed_texts stand-in that returns exactly one vector per input text.
+
+    KB-40's metered embedding refuses a batch whose result count differs from
+    its input count, so a fixed-size canned list fails real ingestion.
+    """
+
+    async def _embed(texts, **_kwargs):  # type: ignore[no-untyped-def]
+        return [[0.1] * dim for _ in texts]
+
+    return _embed
+
 # ── SourceConfig / RawDocument / IngestionJob ────────────────────────────────
 
 def test_source_family_has_18_values():
@@ -293,7 +306,7 @@ async def test_pipeline_full_happy_path():
 
     mock_embedder = MagicMock()
 
-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
+    with patch("app.providers.base.embed_texts", AsyncMock(side_effect=_one_vector_per_text(10))):
         pipeline = IngestionPipeline(knowledge_store=mock_kb, embedder=mock_embedder)
         content = ("World-class ingestion pipeline test content. " * 20).encode()
         raw = RawDocument(doc_id="d1", source_id="s1", tenant_id="t1",
@@ -322,7 +335,7 @@ async def test_pipeline_populates_knowledge_graph_per_indexed_doc():
     kg_hook = MagicMock()
     kg_hook.process = AsyncMock(return_value={"entities": 3, "relations": 2})
 
-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
+    with patch("app.providers.base.embed_texts", AsyncMock(side_effect=_one_vector_per_text(10))):
         pipeline = IngestionPipeline(
             knowledge_store=mock_kb, embedder=mock_embedder, kg_hook=kg_hook
         )
@@ -357,7 +370,7 @@ async def test_pipeline_kg_hook_failure_never_blocks_ingestion():
     kg_hook = MagicMock()
     kg_hook.process = AsyncMock(side_effect=RuntimeError("KG store down"))
 
-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
+    with patch("app.providers.base.embed_texts", AsyncMock(side_effect=_one_vector_per_text(10))):
         pipeline = IngestionPipeline(
             knowledge_store=mock_kb, embedder=mock_embedder, kg_hook=kg_hook
         )

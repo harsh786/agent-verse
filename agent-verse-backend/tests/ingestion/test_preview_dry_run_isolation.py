@@ -22,6 +22,19 @@ from app.ingestion.pipeline import IngestionPipeline
 from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
 from tests.api.test_ingestion_api import _CTX, _auth, _make_app
 
+
+def _one_vector_per_text(dim: int):  # type: ignore[no-untyped-def]
+    """embed_texts stand-in that returns exactly one vector per input text.
+
+    KB-40's metered embedding refuses a batch whose result count differs from
+    its input count, so a fixed-size canned list fails real ingestion.
+    """
+
+    async def _embed(texts, **_kwargs):  # type: ignore[no-untyped-def]
+        return [[0.1] * dim for _ in texts]
+
+    return _embed
+
 _TEXT = b"A paragraph long enough to be chunked and indexed by the pipeline. " * 8
 
 
@@ -48,7 +61,7 @@ async def test_dry_run_is_per_call_not_pipeline_state() -> None:
         source_id="s", tenant_id=_CTX.tenant_id, name="s", family=SourceFamily.WEB,
         source_type="http", collection_id="col",
     )
-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 8] * 8)):
+    with patch("app.providers.base.embed_texts", AsyncMock(side_effect=_one_vector_per_text(8))):
         dry = await pipeline.ingest(_doc("d1", "s"), config, dry_run=True)
         real = await pipeline.ingest(_doc("d2", "s"), config)
     assert dry.status == "dry_run"
@@ -85,7 +98,7 @@ async def test_ingest_during_a_preview_still_indexes() -> None:
     try:
         with (
             patch("app.ingestion.connector_registry.get_connector", return_value=_SlowConnector),
-            patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 8] * 8)),
+            patch("app.providers.base.embed_texts", AsyncMock(side_effect=_one_vector_per_text(8))),
         ):
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
