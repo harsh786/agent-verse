@@ -11,9 +11,10 @@ verify results, and replan on failure — with **zero hardcoded workflows**.
 | `agent-verse-backend/` | Python 3.12 · FastAPI · LangGraph · Celery · Postgres+pgvector · Redis | API + AI engine |
 | `agent-verse-frontend/` | React 19 · TypeScript · Vite · TanStack Query 5 · Zustand 5 · Tailwind | UI |
 | `agent-verse-backend/helm/` | Helm 3 | Kubernetes deployment |
+| `agent-verse-github-action/` | Python 3.12 · httpx · Docker | GitHub Action (tested by the `github-action` CI job) |
 | `.github/workflows/` | GitHub Actions | CI/CD |
 
-> **Out of scope**: `agent-verse-sdk-python/`, `agent-verse-sdk-typescript/`, `agent-verse-github-action/`
+> **Removed**: `agent-verse-sdk-python/`, `agent-verse-sdk-typescript/` (2026-08-17)
 
 ---
 

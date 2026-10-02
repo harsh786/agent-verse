@@ -38,6 +38,29 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
 
+  # The GitHub Action users run from their own CI (agent-verse-github-action/).
+  # Nothing ran its tests before, so regressions shipped unseen. Runs on every
+  # push/PR (seconds; no path filter so a required check can never be skipped).
+  github-action:
+    name: GitHub Action
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-verse-github-action
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v2
+        with:
+          version: "latest"
+      - name: Install dependencies
+        run: uv sync
+      - name: Lint (ruff)
+        run: uv run ruff check .
+      - name: Run tests
+        run: uv run pytest tests -q --tb=short
+      - name: Build the action image
+        run: docker build -t agentverse-github-action:ci .
+
   contract-tests:
     name: Contract Tests
     runs-on: ubuntu-latest
