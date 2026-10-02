@@ -341,16 +341,34 @@ async def slack_events(
         if hitl is None:
             return _ephemeral("AgentVerse approvals are unavailable right now.")
         ctx = await _principal_ctx(request, principal)
+        # HITL-02: report what actually happened — the results used to be
+        # ignored and every click answered as if it had worked.
+        outcomes: list[str] = []
         for action in hitl_actions:
             request_id = str(action.get("value"))
-            if action.get("action_id") == "approve_hitl":
-                # DB-first: resolves requests raised on any replica and only
-                # releases the waiting agent once the decision is committed.
-                await hitl.approve_async(
-                    request_id, approver=principal.principal_id, tenant_ctx=ctx
-                )
+            approving = action.get("action_id") == "approve_hitl"
+            try:
+                if approving:
+                    # DB-first: resolves requests raised on any replica and only
+                    # releases the waiting agent once the decision is committed.
+                    ok = await hitl.approve_async(
+                        request_id, approver=principal.principal_id, tenant_ctx=ctx
+                    )
+                else:
+                    ok = await hitl.reject(
+                        request_id, approver=principal.principal_id, tenant_ctx=ctx
+                    )
+            except Exception as exc:
+                import logging
+
+                logging.getLogger(__name__).warning("slack_hitl_decision_failed: %s", exc)
+                outcomes.append(f"{request_id}: the decision could not be recorded; try again.")
+                continue
+            if ok:
+                outcomes.append(f"{request_id}: {'approved' if approving else 'rejected'}.")
             else:
-                await hitl.reject(request_id, approver=principal.principal_id, tenant_ctx=ctx)
+                outcomes.append(f"{request_id}: not pending (already decided, expired or unknown).")
+        return _ephemeral("\n".join(outcomes))
 
     return {"ok": True}
 
@@ -419,25 +437,30 @@ async def slack_interactive_callback(request: Request) -> dict:
     if goal_service is None:
         return _ephemeral("AgentVerse approvals are unavailable right now.")
     tenant_ctx = await _principal_ctx(request, principal)
+    outcomes: list[str] = []
     for action in hitl_actions:
         approved = action.get("action_id") == "approve_hitl"
+        goal_id = str(action.get("value"))
         feedback = (
             f"{'Approved' if approved else 'Rejected'} by {principal.principal_id} via Slack"
         )
         try:
             await goal_service.resume_goal(
-                goal_id=str(action.get("value")),
+                goal_id=goal_id,
                 approved=approved,
                 feedback=feedback,
                 tenant_ctx=tenant_ctx,
             )
+            outcomes.append(f"{goal_id}: {'approved' if approved else 'rejected'}.")
         except Exception as exc:
             import logging
 
+            # HITL-02: never swallowed into a silent "ok" — the clicker is told.
             logging.getLogger(__name__).warning("slack_interactive_resume_failed: %s", exc)
+            outcomes.append(f"{goal_id}: the decision could not be applied ({type(exc).__name__}).")
 
-    # Acknowledge immediately (Slack requires response within 3s)
-    return {"ok": True}
+    # Answer within Slack's 3 s window, with the real outcome.
+    return _ephemeral("\n".join(outcomes))
 
 
 # ── Zapier ─────────────────────────────────────────────────────────────────────

@@ -174,30 +174,36 @@ async def test_slack_button_approval_goes_through_the_db_first_path() -> None:
     async def _bound(request: object, payload: dict) -> str:
         return "t-slack"
 
-    from app.integrations.slack.identity import SlackPrincipal
+    import types
 
-    # TRG-36: a Slack user decides only through a linked AgentVerse principal
-    # that holds governance:approve; the decision records THAT principal.
-    async def _linked(**kwargs: object) -> SlackPrincipal | None:
-        if (kwargs["tenant_id"], kwargs["team_id"], kwargs["slack_user_id"]) == (
-            "t-slack",
-            "T1",
-            "U9",
-        ):
-            return SlackPrincipal(tenant_id="t-slack", principal_id="key-sam", roles=("approver",))
-        return None
+    # TRG-36: the clicker acts through a linked AgentVerse principal.
+    principal = types.SimpleNamespace(
+        principal_id="slack:U9", tenant_id="t-slack", roles=("approver",), scopes=()
+    )
+
+    async def _linked(*a: object, **k: object) -> tuple[object, None]:
+        return principal, None
+
+    async def _plan(*a: object, **k: object) -> str:
+        return "professional"
 
     with (
         patch.object(integrations, "_require_slack_signature", lambda *a, **k: None),
         patch.object(integrations, "_slack_bound_tenant", _bound),
-        patch("app.integrations.slack.identity.resolve_slack_principal", _linked),
+        patch.object(integrations, "_slack_principal", _linked),
+        patch.object(integrations, "_tenant_plan", _plan),
     ):
         client = TestClient(app, raise_server_exceptions=True)
         resp = client.post("/integrations/slack/events", json=body)
-    assert resp.status_code == 200
-    gw.approve_async.assert_awaited_once()
-    assert gw.approve_async.await_args.kwargs["approver"] == "key-sam"
-    assert gw.approve_async.await_args.kwargs["tenant_ctx"].tenant_id == "t-slack"
+        assert resp.status_code == 200
+        assert "req-9: approved." in resp.json()["text"]
+        gw.approve_async.assert_awaited_once()
+        assert gw.approve_async.await_args.kwargs["approver"] == "slack:U9"
+        assert gw.approve_async.await_args.kwargs["tenant_ctx"].tenant_id == "t-slack"
+        # HITL-02: a decision that did not take is reported, not answered "ok".
+        gw.approve_async = AsyncMock(return_value=False)
+        resp2 = client.post("/integrations/slack/events", json=body)
+        assert "not pending" in resp2.json()["text"]
 
 
 @pytest.mark.asyncio
