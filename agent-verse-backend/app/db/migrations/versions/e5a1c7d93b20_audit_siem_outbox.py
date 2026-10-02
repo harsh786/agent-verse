@@ -11,7 +11,7 @@ Tenant RLS (rows are written by the least-privilege app role inside the
 tenant's context); the drainer runs as the BYPASSRLS maintenance role.
 
 Revision ID: e5a1c7d93b20
-Revises: cf87de8eae52
+Revises: 7cd9f383c99a
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "e5a1c7d93b20"
-down_revision = "cf87de8eae52"
+down_revision = "7cd9f383c99a"
 branch_labels = None
 depends_on = None
 
