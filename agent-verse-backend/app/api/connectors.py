@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import inspect
 import logging
 import os
 import re
@@ -1739,10 +1740,76 @@ async def get_connector_usage(
     }
 
 
+async def _erase_connector_secrets(store: Any, server_id: str, tenant_ctx: Any) -> None:
+    """Delete every stored secret of one connector (raises when it cannot)."""
+    if store is None:
+        return
+    deleter = getattr(store, "delete_server", None)
+    if deleter is not None:
+        result = deleter(server_id, tenant_ctx=tenant_ctx)
+        if inspect.isawaitable(result):
+            await result
+        return
+    if isinstance(store, dict):  # dev / test in-process store keyed by ref
+        prefix = connector_secret_ref(server_id, "")
+        for ref in [r for r in store if str(r).startswith(prefix)]:
+            store.pop(ref, None)
+
+
+async def _purge_connector_rows(db: Any, tenant_id: str, server_id: str) -> None:
+    """Drop the connector's OAuth token row and tool capability rows (raises)."""
+    if db is None:
+        return
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        await session.execute(
+            text("DELETE FROM oauth_tokens WHERE tenant_id = :t AND server_id = :sid"),
+            {"t": tenant_id, "sid": server_id},
+        )
+        await session.execute(
+            text("DELETE FROM tool_capabilities WHERE tenant_id = :t AND connector_id = :sid"),
+            {"t": tenant_id, "sid": server_id},
+        )
+
+
 @router.delete("/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def unregister_connector(request: Request, server_id: str) -> None:
+    """Remove a connector AND everything it holds (MCPREG-05).
+
+    Credentials are erased first: if that fails the connector is kept (503) so
+    the delete can be retried — never a removed connector whose encrypted
+    secrets, OAuth token or tool rows linger forever.
+    """
     tenant_ctx = _require_tenant(request)
     reg = _registry(request)
+    if await reg.get(server_id, tenant_ctx=tenant_ctx) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Connector {server_id} not found",
+        )
+    store = getattr(request.app.state, "connector_secret_store", None)
+    db = getattr(request.app.state, "db_session_factory", None)
+    try:
+        await _erase_connector_secrets(store, server_id, tenant_ctx)
+        await _purge_connector_rows(db, tenant_ctx.tenant_id, server_id)
+    except Exception as exc:
+        _logger.error(
+            "connector_erasure_failed tenant=%s server=%s error=%s",
+            tenant_ctx.tenant_id,
+            server_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Connector credentials could not be erased; the connector was kept. Retry.",
+        ) from exc
+    oauth = getattr(request.app.state, "oauth_manager", None)
+    drop = getattr(oauth, "_drop_cached", None)
+    if drop is not None:
+        drop((tenant_ctx.tenant_id, server_id))
     removed = await reg.unregister(server_id, tenant_ctx=tenant_ctx)
     if not removed:
         raise HTTPException(
