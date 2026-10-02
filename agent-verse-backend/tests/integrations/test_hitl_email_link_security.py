@@ -122,7 +122,7 @@ def test_endpoint_attributes_decision_to_authenticated_approver() -> None:
     gw = HITLGateway()
     rid = _pending(gw)
     q = sender.signed_link_query(rid, "approve", tenant_id=TENANT)
-    resp = TestClient(_app(gw)).get(
+    resp = TestClient(_app(gw)).post(
         f"/governance/hitl/{rid}/approve?{q}", headers={"X-API-Key": "k-approver"}
     )
     assert resp.status_code == 200, resp.text
@@ -134,7 +134,7 @@ def test_endpoint_requires_approver_role() -> None:
     gw = HITLGateway()
     rid = _pending(gw)
     q = sender.signed_link_query(rid, "approve", tenant_id=TENANT)
-    resp = TestClient(_app(gw)).get(
+    resp = TestClient(_app(gw)).post(
         f"/governance/hitl/{rid}/approve?{q}", headers={"X-API-Key": "k-viewer"}
     )
     assert resp.status_code == 403
@@ -145,7 +145,7 @@ def test_endpoint_rejects_link_for_another_tenant() -> None:
     gw = HITLGateway()
     rid = _pending(gw)
     q = sender.signed_link_query(rid, "approve", tenant_id=TENANT)
-    resp = TestClient(_app(gw)).get(
+    resp = TestClient(_app(gw)).post(
         f"/governance/hitl/{rid}/approve?{q}", headers={"X-API-Key": "k-other"}
     )
     assert resp.status_code == 403
@@ -156,7 +156,7 @@ def test_endpoint_rejects_expired_link() -> None:
     gw = HITLGateway()
     rid = _pending(gw)
     q = sender.signed_link_query(rid, "reject", tenant_id=TENANT, ttl_s=-5)
-    resp = TestClient(_app(gw)).get(
+    resp = TestClient(_app(gw)).post(
         f"/governance/hitl/{rid}/reject?{q}", headers={"X-API-Key": "k-approver"}
     )
     assert resp.status_code == 403
@@ -167,7 +167,7 @@ def test_endpoint_rejects_legacy_sig_without_exp() -> None:
     gw = HITLGateway()
     rid = _pending(gw)
     sig = sender._sign(rid, "approve", tenant_id=TENANT, exp=int(time.time()) + 60)
-    resp = TestClient(_app(gw)).get(
+    resp = TestClient(_app(gw)).post(
         f"/governance/hitl/{rid}/approve?sig={sig}", headers={"X-API-Key": "k-approver"}
     )
     assert resp.status_code == 403

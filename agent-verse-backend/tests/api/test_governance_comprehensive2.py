@@ -402,7 +402,7 @@ def test_sla_stats_no_db() -> None:
 def test_hitl_web_approve_unknown_returns_4xx() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     # Without valid HMAC sig, returns 403; without request, returns 404
-    resp = client.get(
+    resp = client.post(
         "/governance/hitl/nonexistent-id/approve",
         headers={"X-API-Key": _VALID_KEY},
     )
@@ -411,7 +411,7 @@ def test_hitl_web_approve_unknown_returns_4xx() -> None:
 
 def test_hitl_web_reject_unknown_returns_4xx() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get(
+    resp = client.post(
         "/governance/hitl/nonexistent-id/reject",
         headers={"X-API-Key": _VALID_KEY},
     )

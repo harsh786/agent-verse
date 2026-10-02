@@ -963,7 +963,7 @@ def test_email_approve_link_success_flow_attributes_authenticated_caller() -> No
     request_id = _pending_email_request(gateway, "g-email")
 
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-    resp = client.get(
+    resp = client.post(
         f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_h()
     )
     assert resp.status_code == 200, resp.text
@@ -989,7 +989,7 @@ def test_email_approve_link_uses_caller_context_not_tenant_service() -> None:
     client = TestClient(
         _make_app(hitl=gateway, tenant_service=tenant_svc), raise_server_exceptions=False
     )
-    resp = client.get(
+    resp = client.post(
         f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_h()
     )
     assert resp.status_code == 200, resp.text
@@ -1003,7 +1003,7 @@ def test_email_approve_link_requires_approver_role() -> None:
     request_id = _pending_email_request(gateway, "g-email-viewer")
 
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-    resp = client.get(
+    resp = client.post(
         f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}",
         headers=_h(_VIEWER_KEY),
     )
@@ -1015,7 +1015,7 @@ def test_email_reject_link_success_flow() -> None:
     gateway = HITLGateway()
     request_id = _pending_email_request(gateway, "g-email3")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-    resp = client.get(
+    resp = client.post(
         f"/governance/hitl/{request_id}/reject?{_link(request_id, 'reject')}", headers=_h()
     )
     assert resp.status_code == 200, resp.text
@@ -1034,7 +1034,7 @@ def test_email_reject_link_uses_caller_context_not_tenant_service() -> None:
     client = TestClient(
         _make_app(hitl=gateway, tenant_service=tenant_svc), raise_server_exceptions=False
     )
-    resp = client.get(
+    resp = client.post(
         f"/governance/hitl/{request_id}/reject?{_link(request_id, 'reject')}", headers=_h()
     )
     assert resp.status_code == 200, resp.text
@@ -1048,7 +1048,7 @@ def test_email_approve_link_cross_action_signature_is_rejected() -> None:
     gateway = HITLGateway()
     request_id = _pending_email_request(gateway, "g-cross")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-    resp = client.get(
+    resp = client.post(
         f"/governance/hitl/{request_id}/reject?{_link(request_id, 'approve')}", headers=_h()
     )
     assert resp.status_code == 403
@@ -1065,7 +1065,7 @@ def test_email_approve_link_signed_for_other_tenant_is_rejected() -> None:
     gateway = HITLGateway()
     request_id = _pending_email_request(gateway, "g-cross-tenant")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-    resp = client.get(
+    resp = client.post(
         f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve', 'tid-other')}",
         headers=_h(),
     )
@@ -1089,11 +1089,22 @@ def test_email_approve_link_already_resolved_returns_409() -> None:
     query = _link(request_id, "approve")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
 
-    first = client.get(f"/governance/hitl/{request_id}/approve?{query}", headers=_h())
+    first = client.post(f"/governance/hitl/{request_id}/approve?{query}", headers=_h())
     assert first.status_code == 200, first.text
 
-    second = client.get(f"/governance/hitl/{request_id}/approve?{query}", headers=_h())
+    second = client.post(f"/governance/hitl/{request_id}/approve?{query}", headers=_h())
     assert second.status_code == 409
+
+
+def test_signed_link_decision_is_never_a_state_changing_get() -> None:
+    """HITL-10: a GET that approves is prefetchable/CSRF-prone; only POST decides."""
+    gateway = HITLGateway()
+    request_id = _pending_email_request(gateway, "g-get")
+    query = _link(request_id, "approve")
+    client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
+
+    assert client.get(f"/governance/hitl/{request_id}/approve?{query}", headers=_h()).status_code == 405
+    assert client.post(f"/governance/hitl/{request_id}/approve?{query}", headers=_h()).status_code == 200
 
 
 def test_email_reject_link_already_resolved_returns_409() -> None:
@@ -1103,10 +1114,10 @@ def test_email_reject_link_already_resolved_returns_409() -> None:
     query = _link(request_id, "reject")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
 
-    first = client.get(f"/governance/hitl/{request_id}/reject?{query}", headers=_h())
+    first = client.post(f"/governance/hitl/{request_id}/reject?{query}", headers=_h())
     assert first.status_code == 200, first.text
 
-    second = client.get(f"/governance/hitl/{request_id}/reject?{query}", headers=_h())
+    second = client.post(f"/governance/hitl/{request_id}/reject?{query}", headers=_h())
     assert second.status_code == 409
 
 

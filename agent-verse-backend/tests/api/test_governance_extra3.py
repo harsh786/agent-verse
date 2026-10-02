@@ -412,7 +412,7 @@ def test_email_approve_link_invalid_sig() -> None:
     """Lines 826-827: invalid or empty sig → 403."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     # No sig parameter
-    resp = client.get("/governance/hitl/req-123/approve?sig=", headers=_headers())
+    resp = client.post("/governance/hitl/req-123/approve?sig=", headers=_headers())
     assert resp.status_code == 403
 
 
@@ -420,7 +420,7 @@ def test_email_approve_link_bad_sig() -> None:
     """Lines 826-827: bad signature → 403."""
     with patch("app.integrations.email.approval_sender._verify", return_value=False):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req-123/approve?sig=invalid-sig",
             headers=_headers(),
         )
@@ -434,7 +434,7 @@ def test_email_approve_link_no_gateway() -> None:
         del app.state.hitl_gateway
 
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req-abc/approve?sig=valid-sig",
             headers=_headers(),
         )
@@ -450,7 +450,7 @@ def test_email_approve_link_not_found() -> None:
         # Empty gateway has no requests
 
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req-notexist/approve?sig=valid-sig&exp=123",
             headers=_headers(),
         )
@@ -468,7 +468,7 @@ def test_email_approve_link_not_found() -> None:
 def test_email_reject_link_invalid_sig() -> None:
     """Lines 874-875: invalid sig → 403."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/governance/hitl/req-123/reject?sig=", headers=_headers())
+    resp = client.post("/governance/hitl/req-123/reject?sig=", headers=_headers())
     assert resp.status_code == 403
 
 
@@ -476,7 +476,7 @@ def test_email_reject_link_bad_sig() -> None:
     """Lines 874-875: bad signature → 403."""
     with patch("app.integrations.email.approval_sender._verify", return_value=False):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req-456/reject?sig=bad",
             headers=_headers(),
         )
@@ -490,7 +490,7 @@ def test_email_reject_link_no_gateway() -> None:
         del app.state.hitl_gateway
 
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req-789/reject?sig=valid",
             headers=_headers(),
         )
@@ -504,7 +504,7 @@ def test_email_reject_link_not_found() -> None:
     ) as verify:
         gateway = HITLGateway()
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req-missing/reject?sig=valid&exp=456",
             headers=_headers(),
         )

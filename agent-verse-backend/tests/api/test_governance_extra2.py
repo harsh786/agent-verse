@@ -60,19 +60,19 @@ def _link(request_id: str, action: str) -> str:
 class TestHitlEmailLinks:
     def test_approve_link_invalid_sig_returns_403(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req123/approve", params={"sig": "bad_sig", "exp": _exp()}, headers=_H
         )
         assert resp.status_code == 403
 
     def test_approve_link_missing_sig_returns_403(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get("/governance/hitl/req123/approve", headers=_H)
+        resp = client.post("/governance/hitl/req123/approve", headers=_H)
         assert resp.status_code == 403
 
     def test_reject_link_invalid_sig_returns_403(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             "/governance/hitl/req456/reject", params={"sig": "wrong", "exp": _exp()}, headers=_H
         )
         assert resp.status_code == 403
@@ -81,7 +81,7 @@ class TestHitlEmailLinks:
         """A valid signature alone is not enough: the caller must authenticate."""
         client = TestClient(_make_app(), raise_server_exceptions=False)
         request_id = "req-unauth"
-        resp = client.get(
+        resp = client.post(
             f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}"
         )
         assert resp.status_code == 401
@@ -90,7 +90,7 @@ class TestHitlEmailLinks:
         """Valid sig but no matching pending HITL request for the tenant → 409."""
         client = TestClient(_make_app(), raise_server_exceptions=False)
         request_id = "nonexistent-req-id"
-        resp = client.get(
+        resp = client.post(
             f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_H
         )
         assert resp.status_code == 409
@@ -106,7 +106,7 @@ class TestHitlEmailLinks:
         )
 
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_H
         )
         assert resp.status_code == 200, resp.text
@@ -126,7 +126,7 @@ class TestHitlEmailLinks:
         )
 
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-        resp = client.get(
+        resp = client.post(
             f"/governance/hitl/{request_id}/reject?{_link(request_id, 'reject')}", headers=_H
         )
         assert resp.status_code == 200, resp.text

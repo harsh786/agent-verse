@@ -1551,7 +1551,7 @@ async def _email_link_decision(
     return gateway, tenant_ctx, _approver_identity(tenant_ctx)
 
 
-@router.get("/hitl/{request_id}/approve")
+@router.post("/hitl/{request_id}/approve")
 async def email_approve_link(
     request: Request,
     request_id: str,
@@ -1559,7 +1559,9 @@ async def email_approve_link(
     exp: int = 0,
     _rbac: None = Depends(require_role("approver")),
 ) -> dict[str, Any]:
-    """Handle one-click approve link from HITL approval email."""
+    """Approve via a signed email/notification link (HITL-10: POST from the
+    authenticated confirmation page at ``/hitl/{id}/approve`` — never a
+    state-changing GET, which link prefetchers and CSRF can trigger)."""
     gateway, tenant_ctx, approver = await _email_link_decision(
         request, request_id, "approve", sig, exp
     )
@@ -1581,7 +1583,7 @@ async def email_approve_link(
     }
 
 
-@router.get("/hitl/{request_id}/reject")
+@router.post("/hitl/{request_id}/reject")
 async def email_reject_link(
     request: Request,
     request_id: str,
@@ -1589,7 +1591,7 @@ async def email_reject_link(
     exp: int = 0,
     _rbac: None = Depends(require_role("approver")),
 ) -> dict[str, Any]:
-    """Handle one-click reject link from HITL approval email."""
+    """Reject via a signed email/notification link (POST only, see approve)."""
     gateway, tenant_ctx, approver = await _email_link_decision(
         request, request_id, "reject", sig, exp
     )
