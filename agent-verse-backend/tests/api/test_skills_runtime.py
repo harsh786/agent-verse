@@ -244,7 +244,7 @@ def test_execute_skill_by_id_permission_denied_returns_failed_result() -> None:
 
 def test_execute_skill_by_id_finds_tenant_skill() -> None:
     tenant_id = _uniq("tenant")
-    app = _make_app(tenant_id=tenant_id)
+    app = _make_app(tenant_id=tenant_id, provider=FakeProvider(responses=["ok"]))
     client = TestClient(app)
 
     create_resp = client.post(
@@ -520,6 +520,33 @@ def test_execute_skill_without_provider_is_503_not_canned_success() -> None:
     assert resp.status_code == 503
     history = client.get("/skills-runtime/headroom/executions", headers=H).json()
     assert history["total"] == 0  # no execution recorded for a run that never happened
+
+
+def test_execute_by_id_and_match_without_provider_are_503_not_canned_success() -> None:
+    """OPS-35: SkillExecutor answered success=True with a placeholder output when
+    no LLM provider was configured; /execute and /execute/match returned it."""
+    client = TestClient(_make_app(tenant_id=_uniq("tenant")))  # no provider
+
+    by_id = client.post(
+        "/skills-runtime/execute", headers=H,
+        json={"skill_id": "headroom", "input_context": "compress this"},
+    )
+    assert by_id.status_code == 503
+    match = client.post(
+        "/skills-runtime/execute/match", headers=H, json={"goal": "create knowledge graph"}
+    )
+    assert match.status_code == 503
+
+
+async def test_skill_executor_without_provider_raises_not_success() -> None:
+    from app.skills_runtime.executor import SkillExecutor, SkillProviderUnavailableError
+    from app.skills_runtime.models import SkillDefinition, SkillScope
+
+    skill = SkillDefinition(
+        skill_id="s", name="S", description="d", scope=SkillScope.PLATFORM, instructions="i"
+    )
+    with pytest.raises(SkillProviderUnavailableError):
+        await SkillExecutor().execute(skill=skill, input_context="x", tenant_id="t")
 
 
 def test_execute_skill_with_provider_success() -> None:

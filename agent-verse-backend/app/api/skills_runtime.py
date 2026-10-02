@@ -14,12 +14,14 @@ from pydantic import BaseModel, Field
 from app.skills_runtime import tenant_store
 from app.skills_runtime.executor import (
     SkillExecutor,
+    SkillProviderUnavailableError,
     permission_checker,
     trigger_matcher,
 )
 from app.skills_runtime.models import (
     BUILTIN_SKILLS,
     SkillDefinition,
+    SkillExecution,
     SkillScope,
     SkillStatus,
 )
@@ -71,6 +73,18 @@ async def _executor(request: Request, tenant: Any) -> SkillExecutor:
         provider=await tenant_llm_provider(request, tenant),
         state_db_factory=_state_db(request),
     )
+
+
+async def _run_skill(request: Request, tenant: Any, **kwargs: Any) -> SkillExecution:
+    """Execute through SkillExecutor; no configured LLM provider is a 503 (OPS-35)."""
+    try:
+        return await (await _executor(request, tenant)).execute(
+            tenant_id=tenant.tenant_id, **kwargs
+        )
+    except SkillProviderUnavailableError as exc:
+        raise HTTPException(
+            503, "No LLM provider is configured; the skill cannot be executed"
+        ) from exc
 
 
 # Platform registry (builtins loaded at startup)
@@ -255,10 +269,11 @@ async def execute_skill_by_id(
     if not skill_dict:
         raise HTTPException(404, f"Skill {body.skill_id!r} not found")
 
-    result = await (await _executor(request, tenant)).execute(
+    result = await _run_skill(
+        request,
+        tenant,
         skill=_dict_to_skill_def(skill_dict),
         input_context=body.input_context,
-        tenant_id=tenant.tenant_id,
         goal_id=body.goal_id,
     )
     return {
@@ -289,11 +304,8 @@ async def execute_best_match(
         return {"matched": False}
 
     best_skill, score = ranked[0]
-    result = await (await _executor(request, tenant)).execute(
-        skill=best_skill,
-        input_context=body.goal,
-        tenant_id=tenant.tenant_id,
-        goal_id=body.goal_id,
+    result = await _run_skill(
+        request, tenant, skill=best_skill, input_context=body.goal, goal_id=body.goal_id
     )
     return {
         "skill_id": best_skill.skill_id,

@@ -19,6 +19,13 @@ from app.providers.base import CompletionRequest, Message
 from app.skills_runtime.models import SkillDefinition, SkillExecution, SkillScope, SkillStatus
 
 
+class SkillProviderUnavailableError(RuntimeError):
+    """No LLM provider is configured, so nothing can execute the skill (callers: 503).
+
+    Raised instead of returning a placeholder output as a successful run.
+    """
+
+
 class TriggerMatcher:
     """Score how well a goal/step matches a skill's trigger hints."""
 
@@ -223,10 +230,7 @@ class SkillExecutor:
 
             # 2. Build prompt and call provider
             if self._provider is None:
-                output = (
-                    f"[{skill.name} Skill] Processing: {input_context[:100]}"
-                    " (LLM provider not configured)"
-                )
+                raise SkillProviderUnavailableError("no LLM provider configured")
             else:
                 req = CompletionRequest(
                     messages=[Message(role="user", content=input_context)],
@@ -274,8 +278,10 @@ class SkillExecutor:
                 created_at=now,
             )
 
-        except DecisionBudgetExceededError:
-            raise  # the tenant's budget refused the call: surface it (429), never hide it
+        except (DecisionBudgetExceededError, SkillProviderUnavailableError):
+            # A budget refusal (429) or a missing provider (503) is not a skill
+            # failure to bury in a result: surface it, never fake a run.
+            raise
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
             # 6. Return failed execution on any exception
