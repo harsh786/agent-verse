@@ -416,6 +416,33 @@ def _run_async(coro: Any) -> Any:
     return run_in_fresh_loop(coro)
 
 
+def _worker_compliance_ceiling(db_factory: Any, tenant_id: str) -> str:
+    """The tenant's compliance autonomy ceiling for a worker goal (fail closed).
+
+    No DB, a lookup error or an unknown value → ``supervised`` (the strictest
+    bundle ceiling), exactly like the API path's ``compliance_autonomy_ceiling``.
+    """
+    from app.services.goal_service import _AUTONOMY_ORDER
+
+    if db_factory is None:
+        logger.warning("worker_compliance_ceiling_no_db_fail_closed tenant=%s", tenant_id)
+        return "supervised"
+    try:
+        from app.governance.compliance_bundles import (
+            PostgresComplianceBundleStore,
+            effective_max_autonomy_for,
+        )
+
+        ceiling = _run_async(
+            effective_max_autonomy_for(PostgresComplianceBundleStore(db_factory), tenant_id)
+        )
+    except Exception as exc:
+        logger.warning("worker_compliance_ceiling_failed_closed: %s", type(exc).__name__)
+        return "supervised"
+    ceiling = str(ceiling or "fully-autonomous")
+    return ceiling if ceiling in _AUTONOMY_ORDER else "supervised"
+
+
 async def _charged_to_agent(coro: Any, agent_id: str | None) -> Any:
     """Await *coro* with every cost charge attributed to *agent_id* (COST-02)."""
     from app.governance.cost import bind_cost_agent
@@ -3440,23 +3467,18 @@ def run_goal(
                     clamp_autonomy_mode,
                 )
 
+                # TRUST-05: the ceiling binds first and fails CLOSED (supervised)
+                # on any lookup error or a missing DB, as on the API path — it
+                # used to be skipped, leaving e.g. a fully-autonomous agent of a
+                # HIPAA tenant unclamped during a DB blip.
+                _agent_autonomy_mode = clamp_autonomy_mode(
+                    _agent_autonomy_mode, _worker_compliance_ceiling(db_factory, tenant_id)
+                )
                 _worker_enforce_grants = _agent_grants_enforced()
                 if db_factory is not None:
-                    from app.governance.compliance_bundles import (
-                        PostgresComplianceBundleStore,
-                        effective_max_autonomy_for,
-                    )
                     from app.governance.grants.postgres_store import PostgresGrantStore
 
                     _worker_grant_store = PostgresGrantStore(db_factory)
-                    _ceiling = _run_async(
-                        effective_max_autonomy_for(
-                            PostgresComplianceBundleStore(db_factory), tenant_id
-                        )
-                    )
-                    _agent_autonomy_mode = clamp_autonomy_mode(
-                        _agent_autonomy_mode, str(_ceiling or "fully-autonomous")
-                    )
             except Exception as _gov_exc:
                 # Fail toward the restrictive side: no store under enforcement
                 # means tool calls are denied (enforce_tool_call has no grants).
