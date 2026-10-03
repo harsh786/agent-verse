@@ -32,6 +32,13 @@ def rules(monkeypatch: pytest.MonkeyPatch) -> list[AgentPermissionRule]:
         return tuple(current)
 
     monkeypatch.setattr(agent_permissions, "load_agent_permissions", _load)
+
+    async def _no_policy_rules(db: Any, tenant_id: str) -> list[Any]:
+        return []  # the fake DB holds no policy-as-code rules (POL-01)
+
+    from app.governance import policy_rules
+
+    monkeypatch.setattr(policy_rules, "load_active_policy_rules", _no_policy_rules)
     return current
 
 

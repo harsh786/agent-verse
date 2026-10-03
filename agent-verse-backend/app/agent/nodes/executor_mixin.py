@@ -709,6 +709,7 @@ class ExecutorMixin:
         state: AgentState,
         tenant_ctx: TenantContext,
         already_checked: str | None = None,
+        arguments: dict[str, Any] | None = None,
     ) -> str | None:
         """Tenant tool policy for the tool a call ACTUALLY targets.
 
@@ -727,6 +728,24 @@ class ExecutorMixin:
         if _key_denial is not None:
             record_tool_call(tool_name, "agent_key", "denied", 0.0)
             return _key_denial
+        # Policy-as-code rules (POL-01: they were CRUD + dry-run only).
+        if tool_name and tenant_ctx is not None:
+            from app.governance.policy_rules import policy_rules_denial
+
+            _rule_denial = await policy_rules_denial(
+                getattr(self, "_db_session_factory", None),
+                tenant_ctx.tenant_id,
+                {
+                    "tool_name": tool_name,
+                    "arguments": arguments or {},
+                    "agent_id": getattr(self, "_agent_id", None) or "",
+                    "goal_id": getattr(state, "goal_id", "") or "",
+                    "step": step,
+                },
+            )
+            if _rule_denial is not None:
+                record_tool_call(tool_name, "policy_rule", "denied", 0.0)
+                return _rule_denial
         if self._policy_engine is None or not tool_name or tool_name == already_checked:
             return None
         try:
@@ -2456,6 +2475,7 @@ class ExecutorMixin:
                     state=state,
                     tenant_ctx=tenant_ctx,
                     already_checked=_step_policy_tool,
+                    arguments=tool_call.arguments,
                 )
                 _perm_denial = (
                     None
@@ -3628,6 +3648,7 @@ class ExecutorMixin:
                 state=state,
                 tenant_ctx=tenant_ctx,
                 already_checked=policy_checked_tool,
+                arguments=args,
             )
             if pol_denial is not None:
                 return await _deny(

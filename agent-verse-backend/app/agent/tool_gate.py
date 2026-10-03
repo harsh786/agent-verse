@@ -133,6 +133,24 @@ class GovernedToolGate:
         elif perm is not None:
             return GateDecision(False, perm)
 
+        # 2c. Policy-as-code rules (POL-01).
+        if tenant_ctx is not None:
+            from app.governance.policy_rules import policy_rules_denial
+
+            rule_denial = await policy_rules_denial(
+                self._db,
+                tenant_ctx.tenant_id,
+                {
+                    "tool_name": tool_name,
+                    "arguments": arguments or {},
+                    "agent_id": self._agent_id,
+                    "goal_id": goal_id,
+                    "step": step_description,
+                },
+            )
+            if rule_denial is not None:
+                return GateDecision(False, rule_denial)
+
         # 3. Policy engine.
         if self._policy_engine is not None:
             policy = self._policy_engine.evaluate(tool_name=tool_name, tenant_ctx=tenant_ctx)

@@ -118,3 +118,79 @@ def evaluate_rules(rules: list[dict[str, Any]], context: dict[str, Any]) -> Poli
         if not result.allowed:
             return result
     return PolicyRuleResult(allowed=True)
+
+
+# ── Enforcement on execution paths (POL-01) ──────────────────────────────────
+# The rules were CRUD + dry-run only: no execution path read them. Every tool
+# call (AgentGraph executor and the workflow GovernedToolGate) now evaluates the
+# tenant's active rules. Rules are cached per process for RULES_CACHE_TTL_S, so a
+# change made on one replica binds on every replica/worker within that window
+# (and immediately on the replica that made it, which invalidates its cache).
+
+RULES_CACHE_TTL_S = 15.0
+_RULES_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+
+class PolicyRulesUnavailableError(RuntimeError):
+    """The tenant's policy rules could not be loaded (and none are cached)."""
+
+
+def invalidate_policy_rules(tenant_id: str | None = None) -> None:
+    if tenant_id is None:
+        _RULES_CACHE.clear()
+    else:
+        _RULES_CACHE.pop(tenant_id, None)
+
+
+async def load_active_policy_rules(db_factory: Any, tenant_id: str) -> list[dict[str, Any]]:
+    """The tenant's active rule documents (stale cache on a DB error, else raise)."""
+    import time
+
+    now = time.monotonic()
+    hit = _RULES_CACHE.get(tenant_id)
+    if hit is not None and now - hit[0] < RULES_CACHE_TTL_S:
+        return hit[1]
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db_factory() as session, sqlalchemy_rls_context(session, tenant_id):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT rule_json FROM policy_rules "
+                        "WHERE tenant_id = :tid AND is_active = true ORDER BY name"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchall()
+    except Exception as exc:
+        if hit is not None:
+            return hit[1]  # stale but real
+        raise PolicyRulesUnavailableError(str(exc)) from exc
+    rules = [r[0] for r in rows if isinstance(r[0], dict)]
+    _RULES_CACHE[tenant_id] = (now, rules)
+    return rules
+
+
+async def policy_rules_denial(
+    db_factory: Any, tenant_id: str, context: dict[str, Any]
+) -> str | None:
+    """Why the tenant's policy-as-code rules deny *context*, or ``None``.
+
+    An unloadable rule set denies (fail closed): the tenant may have a deny rule
+    for exactly this call.
+    """
+    if db_factory is None or not tenant_id:
+        return None
+    try:
+        rules = await load_active_policy_rules(db_factory, tenant_id)
+    except PolicyRulesUnavailableError:
+        return "policy rules could not be loaded; failing closed"
+    if not rules:
+        return None
+    result = evaluate_rules(rules, context)
+    if result.allowed:
+        return None
+    return f"denied by policy rule '{result.rule_name}': {result.message}"

@@ -112,9 +112,15 @@ async def test_second_call_denied_by_agent_permission_does_not_run() -> None:
     graph._agent_id = "agent-1"
     graph._db_session_factory = object()
     rules = (AgentPermissionRule(tool_name="search_b", level=ActionLevel.DENY),)
-    with patch(
-        "app.governance.agent_permissions.load_agent_permissions",
-        AsyncMock(return_value=rules),
+    with (
+        patch(
+            "app.governance.agent_permissions.load_agent_permissions",
+            AsyncMock(return_value=rules),
+        ),
+        # The fake DB has no policy-as-code rules (POL-01 reads them too).
+        patch(
+            "app.governance.policy_rules.load_active_policy_rules", AsyncMock(return_value=[])
+        ),
     ):
         out = await graph._execute_step("gather data", state, T)
 

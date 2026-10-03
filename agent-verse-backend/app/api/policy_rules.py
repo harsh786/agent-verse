@@ -87,6 +87,9 @@ async def create_policy_rule(body: PolicyRuleUpsert, request: Request) -> dict[s
             },
         )
         await session.commit()
+    from app.governance.policy_rules import invalidate_policy_rules
+
+    invalidate_policy_rules(tenant.tenant_id)  # binds on this replica now (POL-01)
     return {"id": rule_id, "name": body.name, "status": "created"}
 
 
@@ -106,6 +109,9 @@ async def delete_policy_rule(rule_id: str, request: Request) -> None:
             {"id": rule_id, "tid": tenant.tenant_id},
         )
         await session.commit()
+    from app.governance.policy_rules import invalidate_policy_rules
+
+    invalidate_policy_rules(tenant.tenant_id)  # binds on this replica now (POL-01)
 
 
 @router.post("/evaluate")
