@@ -39,6 +39,8 @@ class Episode:
     steps_count: int = 0
     tools_used: list[str] = field(default_factory=list)
     embedding: list[float] | None = None
+    #: Cosine similarity to the recall query, computed in SQL (MEM-40).
+    similarity: float | None = None
 
     def to_context_snippet(self) -> str:
         """Format for injection into planner context."""
@@ -50,10 +52,31 @@ class Episode:
         )
 
 
-#: Most-recent/best episodes scored per recall. ``episodic_memories.embedding``
-#: is JSONB (migration 0089), not a pgvector column, so similarity is computed
-#: in Python over this candidate window rather than by an ANN index.
-_CANDIDATE_WINDOW = 200
+#: Candidates each recall query returns (MEM-40: each is index-backed — HNSW on
+#: ``embedding_vec``, GIN trigram on ``goal_text``, and the quality window).
+_CANDIDATE_WINDOW = 50
+#: Width of ``episodic_memories.embedding_vec`` (migration d46b0c2e4f85).
+_EPISODIC_EMBEDDING_DIM = 2048
+#: HNSW candidate list for the tenant-filtered similarity query.
+_HNSW_EF_SEARCH = 200
+#: Tenants with at most this many embedded episodes are searched exactly.
+_EXACT_SEARCH_MAX_ROWS = 5_000
+_ORDER_SUFFIX = "/*order*/"
+
+
+def _fit_vector(vec: list[float]) -> list[float] | None:
+    """Zero-pad a narrower embedding to the column width (cosine unchanged);
+    a wider one cannot be stored without changing its geometry."""
+    n = len(vec)
+    if n == _EPISODIC_EMBEDDING_DIM:
+        return list(vec)
+    if 0 < n < _EPISODIC_EMBEDDING_DIM:
+        return [*vec, *([0.0] * (_EPISODIC_EMBEDDING_DIM - n))]
+    return None
+
+
+def _vector_literal(vec: list[float]) -> str:
+    return "[" + ",".join(str(float(v)) for v in vec) + "]"
 
 
 def _parse_embedding(raw: Any) -> list[float] | None:
@@ -93,6 +116,8 @@ def _rank(
     words = set(goal.lower().split())
 
     def _relevance(ep: Episode) -> float:
+        if ep.similarity is not None:
+            return ep.similarity
         if query_vec is not None and ep.embedding:
             sim = _cosine(query_vec, ep.embedding)
             if sim is not None:
@@ -128,6 +153,7 @@ class EpisodicMemoryStore:
     def __init__(self, db_factory: Any = None, embedder: Any = None) -> None:
         self._db = db_factory
         self._embedder = embedder
+        self._iterative_scan: bool | None = None
         # In-memory cache for current session (fast recall)
         self._cache: dict[str, list[Episode]] = {}  # tenant_id → episodes
 
@@ -209,13 +235,15 @@ class EpisodicMemoryStore:
         )
 
         # Embed goal text for semantic recall
+        embedding_model = ""
         if self._embedder is not None:
             try:
                 from app.providers.base import EmbedRequest
 
                 resp = await self._embedder.embed(EmbedRequest(texts=[episode.goal_text]))
                 if resp.embeddings:
-                    episode.embedding = resp.embeddings[0]
+                    episode.embedding = list(resp.embeddings[0])
+                    embedding_model = str(getattr(resp, "model", "") or "")
             except Exception as exc:
                 # The episode is still stored, but only keyword recall can find
                 # it — say so instead of swallowing the failure.
@@ -228,6 +256,7 @@ class EpisodicMemoryStore:
 
         # DB persistence
         if self._db is not None:
+            fitted = _fit_vector(episode.embedding) if episode.embedding else None
             try:
                 import json
 
@@ -245,12 +274,14 @@ class EpisodicMemoryStore:
                         text("""
                         INSERT INTO episodic_memories
                             (id, tenant_id, goal_id, goal_text, action_summary,
-                             outcome, lessons, embedding, quality_score,
-                             steps_count, tools_used, created_at)
+                             outcome, lessons, embedding, embedding_vec, embedding_dim,
+                             embedding_model, quality_score, steps_count, tools_used,
+                             created_at)
                         VALUES
                             (:id, :tenant_id, :goal_id, :goal_text, :action_summary,
-                             :outcome, :lessons, CAST(:embedding AS jsonb), :quality_score,
-                             :steps_count, CAST(:tools_used AS jsonb), NOW())
+                             :outcome, :lessons, NULL, CAST(:vec AS vector), :dim,
+                             :model, :quality_score, :steps_count,
+                             CAST(:tools_used AS jsonb), NOW())
                     """),
                         {
                             "id": episode.episode_id,
@@ -260,9 +291,11 @@ class EpisodicMemoryStore:
                             "action_summary": action_summary,
                             "outcome": outcome,
                             "lessons": lessons,
-                            "embedding": json.dumps(episode.embedding)
-                            if episode.embedding
-                            else "null",
+                            # MEM-40: the indexed vector column (the JSONB copy
+                            # is no longer written — recall never reads it).
+                            "vec": _vector_literal(fitted) if fitted else None,
+                            "dim": len(episode.embedding or []) if fitted else None,
+                            "model": embedding_model or None if fitted else None,
                             "quality_score": quality_score,
                             "steps_count": len(state.steps),
                             "tools_used": json.dumps(tools_used[:10]),
@@ -273,21 +306,56 @@ class EpisodicMemoryStore:
                 return False
         return True
 
+    @staticmethod
+    async def _small_tenant(session: Any, tenant_id: str) -> bool:
+        """Whether the tenant has few enough embedded episodes for exact search."""
+        from sqlalchemy import text
+
+        count = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM (SELECT 1 FROM episodic_memories "
+                    "WHERE tenant_id = :t AND embedding_vec IS NOT NULL LIMIT :cap) AS x"
+                ),
+                {"t": tenant_id, "cap": _EXACT_SEARCH_MAX_ROWS + 1},
+            )
+        ).scalar()
+        return int(count or 0) <= _EXACT_SEARCH_MAX_ROWS
+
+    async def _iterative_scan_supported(self, session: Any) -> bool:
+        """pgvector >= 0.8 (hnsw.iterative_scan); probed once per store."""
+        if self._iterative_scan is None:
+            from sqlalchemy import text
+
+            version = (
+                await session.execute(
+                    text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+                )
+            ).scalar()
+            try:
+                parts = tuple(int(p) for p in str(version or "0").split(".")[:2])
+            except ValueError:
+                parts = (0, 0)
+            self._iterative_scan = parts >= (0, 8)
+        return self._iterative_scan
+
     async def _embed_query(
         self, goal: str, tenant_id: str, degraded: list[str] | None
-    ) -> list[float] | None:
+    ) -> tuple[list[float] | None, str]:
+        """``(query vector, embedding model)``; ``(None, "")`` without one."""
         if self._embedder is None:
-            return None
+            return None, ""
         try:
             from app.providers.base import EmbedRequest
 
             resp = await self._embedder.embed(EmbedRequest(texts=[goal[:200]]))
-            return _parse_embedding(resp.embeddings[0]) if resp.embeddings else None
+            vec = _parse_embedding(resp.embeddings[0]) if resp.embeddings else None
+            return vec, str(getattr(resp, "model", "") or "")
         except Exception as exc:
             _log_degraded("embed", tenant_id, exc)
             if degraded is not None:
                 degraded.append("episodic_query_embed_failed")
-            return None
+            return None, ""
 
     async def recall(
         self,
@@ -306,7 +374,7 @@ class EpisodicMemoryStore:
         :class:`EpisodicMemoryUnavailableError` — it never silently answers from
         this process's cache.
         """
-        query_vec = await self._embed_query(goal, tenant_id, degraded)
+        query_vec, query_model = await self._embed_query(goal, tenant_id, degraded)
         if self._db is not None:
             try:
                 return await self._recall_from_db(
@@ -315,6 +383,7 @@ class EpisodicMemoryStore:
                     limit=limit,
                     outcome_filter=outcome_filter,
                     query_vec=query_vec,
+                    query_model=query_model,
                 )
             except Exception as exc:
                 _log_degraded("recall", tenant_id, exc)
@@ -334,43 +403,52 @@ class EpisodicMemoryStore:
         limit: int,
         outcome_filter: str | None,
         query_vec: list[float] | None = None,
+        query_model: str = "",
     ) -> list[Episode]:
         from sqlalchemy import text
 
         where_outcome = "AND outcome = :outcome" if outcome_filter else ""
-        columns = (
+        base_cols = (
             "id, goal_id, goal_text, action_summary, outcome, lessons, quality_score, "
-            "steps_count, tools_used, embedding"
+            "steps_count, tools_used"
         )
         base: dict[str, Any] = {
             "tenant_id": tenant_id,
             "window": max(limit * 3, _CANDIDATE_WINDOW),
             **({"outcome": outcome_filter} if outcome_filter else {}),
         }
-        # MEM-13: candidates are selected by RELEVANCE in SQL (pgvector cosine
-        # distance on the stored embedding when there is a query vector, and
-        # pg_trgm word similarity on the goal text), plus the quality/recency
-        # window. Relevance used to be a Python re-rank of the quality/recency
-        # window alone, so an older or low-quality relevant episode was never
-        # seen. Quality stays the tiebreak in ``_rank``.
+        # MEM-40: every candidate query is index-backed. Semantic: HNSW over
+        # embedding_vec::halfvec (same embedder dimension/model only). Lexical:
+        # the pg_trgm ``%`` / ``<%`` operators (GIN trigram on goal_text) —
+        # word_similarity over every row of the tenant used to run per call.
+        # Quality window: (tenant_id, quality_score DESC, created_at DESC).
         queries: list[tuple[str, dict[str, Any]]] = []
-        if query_vec is not None:
+        fitted = _fit_vector(query_vec) if query_vec is not None else None
+        if fitted is not None and query_vec is not None:
+            dim = _EPISODIC_EMBEDDING_DIM
             queries.append(
                 (
-                    f"SELECT {columns} FROM episodic_memories "
-                    f"WHERE tenant_id = :tenant_id {where_outcome} "
-                    "AND jsonb_typeof(embedding) = 'array' "
-                    "AND jsonb_array_length(embedding) = :dim "
-                    "ORDER BY CAST(CAST(embedding AS text) AS vector) "
-                    "<=> CAST(:qvec AS vector) LIMIT :window",
-                    {**base, "dim": len(query_vec), "qvec": json.dumps(query_vec)},
+                    f"SELECT {base_cols}, 1 - (embedding_vec::halfvec({dim}) "
+                    f"<=> CAST(:qvec AS halfvec({dim}))) AS similarity "
+                    f"FROM episodic_memories WHERE tenant_id = :tenant_id {where_outcome} "
+                    "AND embedding_vec IS NOT NULL AND embedding_dim = :qdim "
+                    "AND (embedding_model IS NULL OR :qmodel = '' OR embedding_model = :qmodel) "
+                    f"ORDER BY (embedding_vec::halfvec({dim}) <=> CAST(:qvec AS halfvec({dim})))"
+                    f"{_ORDER_SUFFIX} LIMIT :window",
+                    {
+                        **base,
+                        "qvec": _vector_literal(fitted),
+                        "qdim": len(query_vec),
+                        "qmodel": query_model or "",
+                    },
                 )
             )
         if goal.strip():
             queries.append(
                 (
-                    f"SELECT {columns} FROM episodic_memories "
+                    f"SELECT {base_cols}, NULL AS similarity FROM episodic_memories "
                     f"WHERE tenant_id = :tenant_id {where_outcome} "
+                    "AND (goal_text % :goal OR :goal <% goal_text) "
                     "ORDER BY word_similarity(:goal, goal_text) DESC, created_at DESC "
                     "LIMIT :window",
                     {**base, "goal": goal[:500]},
@@ -378,7 +456,7 @@ class EpisodicMemoryStore:
             )
         queries.append(
             (
-                f"SELECT {columns} FROM episodic_memories "
+                f"SELECT {base_cols}, NULL AS similarity FROM episodic_memories "
                 f"WHERE tenant_id = :tenant_id {where_outcome} "
                 "ORDER BY quality_score DESC, created_at DESC LIMIT :window",
                 base,
@@ -392,7 +470,19 @@ class EpisodicMemoryStore:
             session.begin(),
             sqlalchemy_rls_context(session, tenant_id),
         ):
+            # Small tenant: exact cosine order (``+ 0`` keeps the planner off
+            # the approximate HNSW index, which can miss an outlier). Large
+            # tenant: HNSW with iterative scan — the scan is tenant-filtered, and
+            # without it stops after ef_search global neighbours, so a tenant
+            # whose episodes are not among them would get nothing back.
+            exact = True
+            if fitted is not None:
+                exact = await self._small_tenant(session, tenant_id)
+                if not exact and await self._iterative_scan_supported(session):
+                    await session.execute(text("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+                    await session.execute(text(f"SET LOCAL hnsw.ef_search = {_HNSW_EF_SEARCH}"))
             for sql, params in queries:
+                sql = sql.replace(_ORDER_SUFFIX, " + 0" if exact else "")
                 for row in (await session.execute(text(sql), params)).fetchall():
                     seen.setdefault(str(row[0]), row)
         rows = list(seen.values())
@@ -420,7 +510,9 @@ class EpisodicMemoryStore:
                     quality_score=float(row[6]),
                     steps_count=int(row[7]),
                     tools_used=list(tools),
-                    embedding=_parse_embedding(row[9]) if len(row) > 9 else None,
+                    similarity=(
+                        float(row[9]) if len(row) > 9 and row[9] is not None else None
+                    ),
                 )
             )
         return _rank(episodes, goal, query_vec, limit)

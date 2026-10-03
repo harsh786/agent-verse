@@ -8,7 +8,6 @@ the payment service" (no shared words), however similar the embeddings.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -70,16 +69,17 @@ def _db_with_rows(rows: list[tuple[Any, ...]]) -> Any:
 
 @pytest.mark.asyncio
 async def test_db_recall_ranks_by_stored_embedding() -> None:
+    # Column 9 is the cosine similarity Postgres computed (MEM-40: HNSW query).
     rows = [
         # keyword-favoured, semantically far; high quality
         (
             "e-cake", "g1", "bake a chocolate cake for the billing party", "s", "success", "",
-            0.9, 1, "[]", json.dumps(_VECTORS["bake a chocolate cake for the billing party"]),
+            0.9, 1, "[]", 0.12,
         ),
         # no shared keywords, semantically close; low quality
         (
             "e-deploy", "g2", "deploy the payment service", "s", "success", "",
-            0.3, 1, "[]", _VECTORS["deploy the payment service"],
+            0.3, 1, "[]", 0.97,
         ),
     ]
     factory, session = _db_with_rows(rows)
@@ -87,7 +87,7 @@ async def test_db_recall_ranks_by_stored_embedding() -> None:
     eps = await store.recall(goal="ship the billing microservice", tenant_id=_CTX.tenant_id)
     assert eps[0].episode_id == "e-deploy"
     sqls = [str(c.args[0]) for c in session.execute.call_args_list]
-    assert any("FROM episodic_memories" in s and "embedding" in s for s in sqls)
+    assert any("FROM episodic_memories" in s and "embedding_vec" in s for s in sqls)
 
 
 @pytest.mark.asyncio

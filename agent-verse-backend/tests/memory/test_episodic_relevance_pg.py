@@ -50,8 +50,13 @@ async def _seed(admin_url: str) -> None:
         )
         insert = text(
             "INSERT INTO episodic_memories (id, tenant_id, goal_id, goal_text, action_summary, "
-            "outcome, lessons, embedding, quality_score, steps_count, tools_used, created_at) "
-            "VALUES (:id, :t, 'g', :goal, 's', 'success', '', CAST(:emb AS jsonb), :q, 1, "
+            "outcome, lessons, embedding_vec, embedding_dim, quality_score, steps_count, "
+            "tools_used, created_at) "
+            "VALUES (:id, :t, 'g', :goal, 's', 'success', '', "
+            # MEM-40: the indexed vector column, zero-padded to 2048 like record()
+            "CAST(array_cat(ARRAY(SELECT x::float4 FROM jsonb_array_elements_text("
+            f"CAST(:emb AS jsonb)) AS x), array_fill(0::float4, ARRAY[{2048 - DIM}])) "
+            f"AS vector(2048)), {DIM}, :q, 1, "
             "'[]', now() - (:age * interval '1 day'))"
         )
         # 300 newer, high-quality, unrelated episodes.
