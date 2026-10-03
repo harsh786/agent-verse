@@ -189,9 +189,18 @@ async def test_http_fallback_revalidates_every_redirect_hop(location: str) -> No
 
 
 @pytest.mark.asyncio
-async def test_allowlist_permits_an_internal_host_but_still_blocks_others() -> None:
+async def test_allowlist_permits_an_internal_host_but_still_blocks_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """An explicit allowlist is the sanctioned override for e.g. an internal
     staging host; hosts not on the list stay blocked."""
+    import app.net.ssrf_guard as guard
+
+    # The allowlisted host must resolve (an unresolvable one is refused, SSRF-02).
+    real = guard._resolve_host
+    monkeypatch.setattr(
+        guard, "_resolve_host", lambda h: ["10.20.30.40"] if h == "internal.example" else real(h)
+    )
     ex = RPAExecutor(allowed_domains=["internal.example"])
     with patch("httpx.AsyncClient", _ok_httpx()):
         allowed = await ex.execute(
