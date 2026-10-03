@@ -51,10 +51,25 @@ _TEST_SOURCE_HOSTS = (
 def _allow_connector_test_hosts(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     from app.core.config import get_settings
 
+    import app.net.ssrf_guard as guard
+
     monkeypatch.setenv("INGESTION_ALLOW_INTERNAL_SOURCES", "true")
     monkeypatch.setenv(
         "INGESTION_INTERNAL_SOURCE_ALLOWLIST", ",".join(_TEST_SOURCE_HOSTS)
     )
+    # An allowlisted name that does not resolve is refused (SSRF-02), so the
+    # placeholder hosts resolve to a private test address here — no live DNS.
+    real_resolve = guard._resolve_host
+    placeholders = {h.lower() for h in _TEST_SOURCE_HOSTS}
+
+    def _resolve(host: str) -> list[str]:
+        if host.lower() in placeholders or any(
+            host.lower().endswith("." + p) for p in placeholders
+        ):
+            return ["10.255.0.1"]
+        return real_resolve(host)
+
+    monkeypatch.setattr(guard, "_resolve_host", _resolve)
     get_settings.cache_clear()
     try:
         yield

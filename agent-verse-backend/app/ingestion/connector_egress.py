@@ -129,8 +129,8 @@ def assert_source_url(url: str, *, context: str, config: SourceConfig | None = N
     ``get_delta``, since validation runs against the same attacker-supplied URL
     and returns its own response body/error to the caller.
 
-    Returns the checked addresses (empty for an operator-allowlisted internal
-    name that does not resolve from here).
+    Returns the checked addresses. A name that does not resolve is refused,
+    allowlisted or not (SSRF-02: nothing would have been checked).
     """
     del config  # tenant config must never widen the policy; kept for call-site clarity
     if not url:

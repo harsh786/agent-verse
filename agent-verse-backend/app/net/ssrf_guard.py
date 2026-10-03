@@ -163,13 +163,21 @@ def assert_public_url(
                     )
                 try:
                     allowed_ips = _resolve_host(hostname)
-                except Exception:
-                    # An operator-allowlisted internal name may not resolve from
-                    # here (split-horizon DNS / the connector's own driver
-                    # resolves it). Nothing to check; the pinned client
-                    # (public_async_client) re-checks at connect time.
+                except Exception as exc:
+                    # Fail closed (SSRF-02): this used to return [] — nothing
+                    # checked — trusting every caller to connect through the
+                    # pinned client. A driver or plain client resolves the name
+                    # itself, to whatever it points at by then.
                     logger.warning("ssrf_allowlisted_host_unresolved", hostname=hostname)
-                    return []
+                    raise SSRFError(
+                        f"SSRF guard [{context}]: cannot resolve allowlisted host "
+                        f"'{hostname}' — fail closed"
+                    ) from exc
+                if not allowed_ips:
+                    raise SSRFError(
+                        f"SSRF guard [{context}]: cannot resolve allowlisted host "
+                        f"'{hostname}' — fail closed"
+                    )
                 for ip in allowed_ips:
                     if _is_always_blocked_ip(ip):
                         raise SSRFError(
@@ -303,6 +311,8 @@ class PinnedNetworkBackend:
         ips = await asyncio.to_thread(
             resolve_and_check_host, host, allowed_domains=self._allowed_domains
         )
+        if not ips:
+            raise SSRFError(f"SSRF guard [connect]: no checked address for '{host}'")
         last_exc: Exception | None = None
         for ip in ips:
             try:
@@ -361,6 +371,8 @@ class PinnedSyncNetworkBackend:
         socket_options: Any = None,
     ) -> Any:
         ips = resolve_and_check_host(host, allowed_domains=self._allowed_domains)
+        if not ips:
+            raise SSRFError(f"SSRF guard [connect]: no checked address for '{host}'")
         last_exc: Exception | None = None
         for ip in ips:
             try:
