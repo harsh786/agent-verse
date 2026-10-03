@@ -202,6 +202,32 @@ describe('OAuthPopupButton', () => {
     expect(useToastStore.getState().toasts.some((t) => t.kind === 'success')).toBe(false);
   });
 
+  test.each([
+    [400, 'oauth_invalid_state', /expired.*start the connection again/i],
+    [502, 'oauth_provider_rejected', /provider rejected/i],
+    [504, 'oauth_provider_unreachable', /could not be reached/i],
+    [503, undefined, /could not be saved.*retry/i],
+  ])('a %s %s exchange failure shows a specific message (OAUTH-05)', async (status, code, text) => {
+    mockFetch({
+      callback: () =>
+        json(
+          code
+            ? { detail: { code, message: 'server message', server_id: 'srv-1' } }
+            : { detail: 'The connection could not be saved; nothing was stored. Retry connecting the connector.' },
+          status,
+        ),
+    });
+    vi.spyOn(window, 'open').mockReturnValue({ closed: false, close: vi.fn() } as unknown as Window);
+    const onSuccess = vi.fn();
+    renderButton({ onSuccess });
+
+    await startAndWait();
+    postCallback({ type: 'oauth_callback', code: 'code-123', state: 'state-xyz' });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(text);
+    expect(onSuccess).not.toHaveBeenCalled();
+  });
+
   test('a provider error relayed by the popup is shown and nothing is exchanged', async () => {
     const spy = mockFetch();
     vi.spyOn(window, 'open').mockReturnValue({ closed: false, close: vi.fn() } as unknown as Window);

@@ -33,6 +33,18 @@ interface OAuthPopupButtonProps {
 
 const CALLBACK_PATH = '/connectors/oauth/callback';
 
+const EXCHANGE_ERROR_MESSAGES: Record<string, string> = {
+  oauth_invalid_state:
+    'The authorization expired or was already used — start the connection again.',
+  oauth_provider_rejected:
+    'The OAuth provider rejected the authorization code. Check the client id/secret and redirect URI, then retry.',
+  oauth_provider_unreachable:
+    "The OAuth provider's token endpoint could not be reached. Retry in a moment.",
+  oauth_provider_bad_response: 'The OAuth provider returned no usable token. Retry the connection.',
+  oauth_token_url_rejected: "The connector's token URL is not an allowed public URL.",
+  oauth_exchange_failed: 'The OAuth token exchange failed. Retry the connection.',
+};
+
 function errorText(e: unknown): string {
   if (e instanceof ApiError) {
     const body = e.body as { detail?: { code?: string; type?: string } } | undefined;
@@ -40,6 +52,9 @@ function errorText(e: unknown): string {
     if (e.status === 501 && code === 'oauth-token-exchange-unavailable') {
       return 'The server could not exchange the authorization code, so the connector was NOT connected.';
     }
+    // Code-exchange failures carry a stable code (OAUTH-05).
+    const mapped = code ? EXCHANGE_ERROR_MESSAGES[code] : undefined;
+    if (mapped) return mapped;
     return e.message || `Request failed (${e.status})`;
   }
   return e instanceof Error ? e.message : String(e);

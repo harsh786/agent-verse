@@ -98,11 +98,11 @@ def test_oauth_callback_invalid_state_returns_error():
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    data = resp.json()
-    # exchange_code returns None for unknown state → error
-    assert data["status"] == "error"
-    assert "state" in data["message"].lower() or "expired" in data["message"].lower()
+    # OAUTH-05: an unknown/expired state is a 400 with a stable code.
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["code"] == "oauth_invalid_state"
+    assert "state" in detail["message"].lower()
 
 
 def test_oauth_callback_valid_flow_returns_connected():

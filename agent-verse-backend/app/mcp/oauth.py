@@ -66,6 +66,51 @@ class OAuthReauthorizationRequiredError(RuntimeError):
         self.tenant_id = tenant_id
 
 
+class OAuthExchangeError(RuntimeError):
+    """A code exchange failed for a reason the caller can act on (OAUTH-05).
+
+    ``status_code`` / ``code`` map to the HTTP answer; ``public_message`` is safe
+    to show (never the provider's body or an exception's text).
+    """
+
+    status_code = 502
+    code = "oauth_exchange_failed"
+    public_message = "The OAuth token exchange failed."
+
+    def __init__(self, detail: str = "") -> None:
+        super().__init__(detail or self.public_message)
+
+
+class OAuthInvalidStateError(OAuthExchangeError):
+    status_code = 400
+    code = "oauth_invalid_state"
+    public_message = "Unknown or expired OAuth state - start the connection again."
+
+
+class OAuthTokenUrlRejectedError(OAuthExchangeError):
+    status_code = 400
+    code = "oauth_token_url_rejected"
+    public_message = "The connector's token_url is not an allowed public URL."
+
+
+class OAuthProviderRejectedError(OAuthExchangeError):
+    status_code = 502
+    code = "oauth_provider_rejected"
+    public_message = "The OAuth provider rejected the authorization code."
+
+
+class OAuthProviderUnreachableError(OAuthExchangeError):
+    status_code = 504
+    code = "oauth_provider_unreachable"
+    public_message = "The OAuth provider's token endpoint could not be reached."
+
+
+class OAuthProviderBadResponseError(OAuthExchangeError):
+    status_code = 502
+    code = "oauth_provider_bad_response"
+    public_message = "The OAuth provider returned no usable token."
+
+
 class OAuthTokenPersistError(RuntimeError):
     """The durable oauth_tokens write failed (OAUTH-01).
 
@@ -277,7 +322,7 @@ class OAuthFlowManager:
             redirect_uri=data.get("redirect_uri", ""),
         )
 
-    async def exchange_code(
+    async def exchange_code_or_raise(
         self,
         *,
         code: str,
@@ -286,8 +331,11 @@ class OAuthFlowManager:
         client_id: str,
         redirect_uri: str,
         tenant_ctx: TenantContext,
-    ) -> OAuthToken | None:
+    ) -> OAuthToken:
         """Exchange authorization code for tokens (PKCE flow).
+
+        Raises an :class:`OAuthExchangeError` subclass naming why it failed, and
+        :class:`OAuthTokenPersistError` when the token cannot be stored.
 
         The redirect_uri stored by :meth:`start_flow` takes precedence over the
         ``redirect_uri`` argument, which is only a fallback for flows started
@@ -298,17 +346,17 @@ class OAuthFlowManager:
         if pending is None:
             shared = await self._take_shared_flow(state)
             if shared is None or time.time() - shared.created_at > _OAUTH_STATE_TTL:
-                return None
+                raise OAuthInvalidStateError()
             pending = shared
             self._pending_flows[state] = shared
         # A flow is bound to the tenant that started it: another tenant holding
         # the state must not complete it into its own token store.
         if pending.tenant_id and pending.tenant_id != getattr(tenant_ctx, "tenant_id", ""):
             self._pending_flows.pop(state, None)
-            return None
+            raise OAuthInvalidStateError()
         flow = self._pending_flows.pop(state, None)
         if flow is None:
-            return None
+            raise OAuthInvalidStateError()
         effective_redirect_uri = flow.redirect_uri or redirect_uri
         # token_url comes from the tenant's connector config: never POST the
         # authorization code (and client credentials) to an internal host.
@@ -316,11 +364,9 @@ class OAuthFlowManager:
 
         try:
             await assert_public_url_async(token_url, context="oauth_token_url")
-        except ValueError:
-            import logging
-
-            logging.getLogger(__name__).warning("OAuth token_url blocked: %s", token_url)
-            return None
+        except ValueError as exc:
+            _log.warning("OAuth token_url blocked: %s", token_url)
+            raise OAuthTokenUrlRejectedError() from exc
 
         data: dict[str, Any]
         try:
@@ -340,24 +386,18 @@ class OAuthFlowManager:
                 resp.raise_for_status()
                 data = resp.json()
         except httpx.HTTPStatusError as exc:
-            import logging
-
-            logging.getLogger(__name__).warning(
+            _log.warning(
                 "OAuth token exchange failed: %s %s",
                 exc.response.status_code,
                 exc.response.text[:200],
             )
-            return None
-        except (httpx.ConnectError, httpx.TimeoutException):
-            import logging
-
-            logging.getLogger(__name__).error("OAuth token endpoint unreachable: %s", token_url)
-            return None
+            raise OAuthProviderRejectedError() from exc
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            _log.error("OAuth token endpoint unreachable: %s", token_url)
+            raise OAuthProviderUnreachableError() from exc
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).error("OAuth exchange unexpected error: %s", exc)
-            return None
+            _log.error("OAuth exchange unexpected error: %s", exc)
+            raise OAuthProviderBadResponseError() from exc
 
         token = OAuthToken(
             access_token=data.get("access_token", ""),
@@ -369,13 +409,39 @@ class OAuthFlowManager:
 
         # Only store if we got a real token
         if not token.access_token:
-            return None
+            raise OAuthProviderBadResponseError()
 
         # Durable first (raises OAuthTokenPersistError): only a token every
         # replica and the worker can read is cached and reported connected.
         await self._persist_token_to_db(tenant_ctx.tenant_id, flow.server_id, token)
         self._cache_token((tenant_ctx.tenant_id, flow.server_id), token)
         return token
+
+    async def exchange_code(
+        self,
+        *,
+        code: str,
+        state: str,
+        token_url: str,
+        client_id: str,
+        redirect_uri: str,
+        tenant_ctx: TenantContext,
+    ) -> OAuthToken | None:
+        """:meth:`exchange_code_or_raise`, answering ``None`` for an exchange failure.
+
+        A token that cannot be persisted still raises :class:`OAuthTokenPersistError`.
+        """
+        try:
+            return await self.exchange_code_or_raise(
+                code=code,
+                state=state,
+                token_url=token_url,
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                tenant_ctx=tenant_ctx,
+            )
+        except OAuthExchangeError:
+            return None
 
     def get_token(self, *args: Any, **kwargs: Any) -> OAuthToken | None:
         """Flexible token lookup.

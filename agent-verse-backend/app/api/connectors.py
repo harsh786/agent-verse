@@ -19,7 +19,12 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.connector_store import ConnectorConflictError
-from app.mcp.oauth import OAuthTokenPersistError
+from app.mcp.oauth import (
+    OAuthExchangeError,
+    OAuthFlowManager,
+    OAuthInvalidStateError,
+    OAuthTokenPersistError,
+)
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import (
     SSRFError,
@@ -1684,9 +1689,16 @@ async def oauth_callback(
             "received_state": bool(state),
         }
 
-    # Actually exchange the authorization code for tokens
+    # Exchange the authorization code; each failure has its own status code
+    # and a safe message (OAUTH-05) — never 200 {status: error} with raw
+    # exception text, and never "invalid state" for an unrelated error.
+    exchange = (
+        oauth_manager.exchange_code_or_raise
+        if isinstance(oauth_manager, OAuthFlowManager)
+        else oauth_manager.exchange_code
+    )
     try:
-        token = await oauth_manager.exchange_code(
+        token = await exchange(
             code=code,
             state=state,
             token_url=token_url,
@@ -1710,15 +1722,33 @@ async def oauth_callback(
                 "Retry connecting the connector."
             ),
         ) from exc
+    except OAuthExchangeError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": exc.public_message, "server_id": server_id},
+        ) from exc
     except Exception as exc:
-        return {"server_id": server_id, "status": "error", "message": str(exc)}
+        _logger.error(
+            "oauth_callback_exchange_failed tenant=%s server=%s error=%s",
+            tenant_ctx.tenant_id,
+            server_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "oauth_exchange_failed",
+                "message": "The OAuth token exchange failed.",
+                "server_id": server_id,
+            },
+        ) from exc
 
     if token is None:
-        return {
-            "server_id": server_id,
-            "status": "error",
-            "message": "Invalid OAuth state parameter — flow may have expired",
-        }
+        err = OAuthInvalidStateError()
+        raise HTTPException(
+            status_code=err.status_code,
+            detail={"code": err.code, "message": err.public_message, "server_id": server_id},
+        )
 
     # The token lives only in oauth_tokens (written by exchange_code, sealed with
     # the tenant's envelope key). The callback used to also seal a copy into the

@@ -442,10 +442,11 @@ def test_oauth_callback_exchange_error_returns_error_status() -> None:
         f"/connectors/oauth/callback?code=bad-code&state=st&server_id={server_id}",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "error"
-    assert "Invalid code" in body["message"]
+    # OAUTH-05: an unexpected exchange error is a 502 with a safe message —
+    # not 200 {status: error} echoing the exception text.
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["code"] == "oauth_exchange_failed"
+    assert "Invalid code" not in resp.text
 
 
 # ---------------------------------------------------------------------------
