@@ -402,6 +402,12 @@ class Settings(BaseSettings):
     # ones are aborted rather than buffered in the API/worker.
     rpa_max_response_bytes: int = 25 * 1024 * 1024
 
+    # --- perception (app/perception/browser_agent.py, app/api/perception.py) ---
+    # Pages one process renders at once on its single shared Chromium.
+    perception_max_concurrent_pages: int = 8
+    # Pages one tenant may have loading at once across all replicas (Redis leases).
+    perception_max_pages_per_tenant: int = 10
+
     # --- platform email relay (POST /tools/email/send) ---
     email_max_recipients: int = 50
     # Recipients per tenant per UTC day; 0 = the plan default (app/tools/email_quota.py).

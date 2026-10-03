@@ -17,7 +17,10 @@ per action) are in place.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,6 +62,83 @@ async def _guarded_context(browser: Any, **kwargs: Any) -> Any:
     from app.net.browser_guard import new_guarded_context
 
     return await new_guarded_context(browser, context="perception browser", **kwargs)
+
+
+class _SharedBrowser:
+    """One long-lived Chromium per process (per event loop) with a bounded page pool.
+
+    Every perception action used to launch its own Chromium (a 10-URL batch
+    started 20 at once, with no cap), so a few tenants could exhaust a
+    replica's memory/CPU. Pages now share one browser; each action gets a fresh
+    SSRF-guarded context (isolation) and at most
+    ``perception_max_concurrent_pages`` run at once — the rest wait.
+    """
+
+    def __init__(self) -> None:
+        self._pw: Any = None
+        self._pw_cm: Any = None
+        self._browser: Any = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock: asyncio.Lock | None = None
+        self._sem: asyncio.Semaphore | None = None
+        self.launches = 0
+
+    async def _ensure(self, headless: bool) -> Any:
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            # Playwright objects belong to one loop; a new loop gets its own.
+            self._loop, self._pw, self._browser = loop, None, None
+            self._lock = asyncio.Lock()
+            from app.core.config import get_settings
+
+            self._sem = asyncio.Semaphore(
+                max(1, int(get_settings().perception_max_concurrent_pages))
+            )
+        assert self._lock is not None
+        async with self._lock:
+            connected = getattr(self._browser, "is_connected", None)
+            if self._browser is None or (callable(connected) and not connected()):
+                if self._pw is None:
+                    # __aenter__ is PlaywrightContextManager.start(); kept for aclose.
+                    self._pw_cm = async_playwright()
+                    self._pw = await self._pw_cm.__aenter__()
+                self._browser = await self._pw.chromium.launch(headless=headless)
+                self.launches += 1
+        return self._browser
+
+    @contextlib.asynccontextmanager
+    async def page(
+        self, *, headless: bool, timeout_ms: int, **context_kwargs: Any
+    ) -> AsyncIterator[Any]:
+        browser = await self._ensure(headless)
+        assert self._sem is not None
+        async with self._sem:
+            context = await _guarded_context(browser, **context_kwargs)
+            try:
+                page = await context.new_page()
+                page.set_default_timeout(timeout_ms)
+                yield page
+            finally:
+                with contextlib.suppress(Exception):
+                    await context.close()
+
+    async def aclose(self) -> None:
+        browser, cm = self._browser, self._pw_cm
+        self._browser = self._pw = self._pw_cm = None
+        if browser is not None:
+            with contextlib.suppress(Exception):
+                await browser.close()
+        if cm is not None:
+            with contextlib.suppress(Exception):
+                await cm.__aexit__(None, None, None)
+
+
+_SHARED = _SharedBrowser()
+
+
+async def aclose_shared_browser() -> None:
+    """Close the process's shared perception browser (app shutdown)."""
+    await _SHARED.aclose()
 
 
 @dataclass
@@ -109,28 +189,22 @@ class BrowserAgent:
         if reason := await _blocked_reason(url):
             return BrowserResult(success=False, action="screenshot", error=reason)
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=self._headless)
-            try:
-                context = await _guarded_context(
-                    browser,
-                    viewport={"width": 1280, "height": 720},
-                )
-                page = await context.new_page()
-                page.set_default_timeout(self._timeout)
+        try:
+            async with _SHARED.page(
+                headless=self._headless,
+                timeout_ms=self._timeout,
+                viewport={"width": 1280, "height": 720},
+            ) as page:
                 await page.goto(url, wait_until="domcontentloaded")
                 screenshot_bytes = await page.screenshot(full_page=False)
-                screenshot_b64 = base64.b64encode(screenshot_bytes).decode()
-                return BrowserResult(
-                    success=True,
-                    action="screenshot",
-                    output=f"Screenshot taken of {url}",
-                    screenshot_b64=screenshot_b64,
-                )
-            except Exception as exc:
-                return BrowserResult(success=False, action="screenshot", error=str(exc))
-            finally:
-                await browser.close()
+            return BrowserResult(
+                success=True,
+                action="screenshot",
+                output=f"Screenshot taken of {url}",
+                screenshot_b64=base64.b64encode(screenshot_bytes).decode(),
+            )
+        except Exception as exc:
+            return BrowserResult(success=False, action="screenshot", error=str(exc))
 
     async def extract_text(self, url: str, selector: str = "body") -> BrowserResult:
         """Extract visible text from a URL."""
@@ -141,22 +215,63 @@ class BrowserAgent:
         if reason := await _blocked_reason(url):
             return BrowserResult(success=False, action="extract_text", error=reason)
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=self._headless)
-            try:
-                page = await (await _guarded_context(browser)).new_page()
-                page.set_default_timeout(self._timeout)
+        try:
+            async with _SHARED.page(headless=self._headless, timeout_ms=self._timeout) as page:
                 await page.goto(url, wait_until="domcontentloaded")
                 text = await page.inner_text(selector)
-                return BrowserResult(
-                    success=True,
-                    action="extract_text",
-                    output=text[:5000],  # Truncate long content
-                )
-            except Exception as exc:
-                return BrowserResult(success=False, action="extract_text", error=str(exc))
-            finally:
-                await browser.close()
+            return BrowserResult(
+                success=True,
+                action="extract_text",
+                output=text[:5000],  # Truncate long content
+            )
+        except Exception as exc:
+            return BrowserResult(success=False, action="extract_text", error=str(exc))
+
+    async def capture(
+        self, url: str, *, screenshot: bool = True, text: bool = True, selector: str = "body"
+    ) -> tuple[BrowserResult, BrowserResult]:
+        """Screenshot and text from ONE page load (screenshot result, text result).
+
+        analyze_url used to load the page twice (take_screenshot + extract_text),
+        two Chromium launches per URL.
+        """
+        if not _PLAYWRIGHT_AVAILABLE:
+            err = "Playwright not installed"
+            return (
+                BrowserResult(success=False, action="screenshot", error=err),
+                BrowserResult(success=False, action="extract_text", error=err),
+            )
+        if reason := await _blocked_reason(url):
+            return (
+                BrowserResult(success=False, action="screenshot", error=reason),
+                BrowserResult(success=False, action="extract_text", error=reason),
+            )
+        shot = BrowserResult(success=False, action="screenshot", error="not requested")
+        txt = BrowserResult(success=False, action="extract_text", error="not requested")
+        try:
+            async with _SHARED.page(
+                headless=self._headless,
+                timeout_ms=self._timeout,
+                viewport={"width": 1280, "height": 720},
+            ) as page:
+                await page.goto(url, wait_until="domcontentloaded")
+                if screenshot:
+                    raw = await page.screenshot(full_page=False)
+                    shot = BrowserResult(
+                        success=True,
+                        action="screenshot",
+                        output=f"Screenshot taken of {url}",
+                        screenshot_b64=base64.b64encode(raw).decode(),
+                    )
+                if text:
+                    content = await page.inner_text(selector)
+                    txt = BrowserResult(success=True, action="extract_text", output=content[:5000])
+        except Exception as exc:
+            if screenshot and not shot.success:
+                shot = BrowserResult(success=False, action="screenshot", error=str(exc))
+            if text and not txt.success:
+                txt = BrowserResult(success=False, action="extract_text", error=str(exc))
+        return shot, txt
 
     async def click_and_screenshot(self, url: str, selector: str) -> BrowserResult:
         """Navigate to URL, click element, return screenshot."""
@@ -165,25 +280,20 @@ class BrowserAgent:
         if reason := await _blocked_reason(url):
             return BrowserResult(success=False, action="click", error=reason)
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=self._headless)
-            try:
-                page = await (await _guarded_context(browser)).new_page()
-                page.set_default_timeout(self._timeout)
+        try:
+            async with _SHARED.page(headless=self._headless, timeout_ms=self._timeout) as page:
                 await page.goto(url, wait_until="domcontentloaded")
                 await page.click(selector)
                 await page.wait_for_load_state("networkidle", timeout=5000)
                 screenshot_bytes = await page.screenshot()
-                return BrowserResult(
-                    success=True,
-                    action="click",
-                    output=f"Clicked {selector} on {url}",
-                    screenshot_b64=base64.b64encode(screenshot_bytes).decode(),
-                )
-            except Exception as exc:
-                return BrowserResult(success=False, action="click", error=str(exc))
-            finally:
-                await browser.close()
+            return BrowserResult(
+                success=True,
+                action="click",
+                output=f"Clicked {selector} on {url}",
+                screenshot_b64=base64.b64encode(screenshot_bytes).decode(),
+            )
+        except Exception as exc:
+            return BrowserResult(success=False, action="click", error=str(exc))
 
     async def fill_and_submit(
         self,
@@ -198,27 +308,22 @@ class BrowserAgent:
         if reason := await _blocked_reason(url):
             return BrowserResult(success=False, action="fill", error=reason)
 
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=self._headless)
-            try:
-                page = await (await _guarded_context(browser)).new_page()
-                page.set_default_timeout(self._timeout)
+        try:
+            async with _SHARED.page(headless=self._headless, timeout_ms=self._timeout) as page:
                 await page.goto(url, wait_until="domcontentloaded")
                 await page.fill(selector, value)
                 if submit_selector:
                     await page.click(submit_selector)
                     await page.wait_for_load_state("networkidle", timeout=5000)
                 screenshot_bytes = await page.screenshot()
-                return BrowserResult(
-                    success=True,
-                    action="fill",
-                    output=f"Filled {selector} with value",
-                    screenshot_b64=base64.b64encode(screenshot_bytes).decode(),
-                )
-            except Exception as exc:
-                return BrowserResult(success=False, action="fill", error=str(exc))
-            finally:
-                await browser.close()
+            return BrowserResult(
+                success=True,
+                action="fill",
+                output=f"Filled {selector} with value",
+                screenshot_b64=base64.b64encode(screenshot_bytes).decode(),
+            )
+        except Exception as exc:
+            return BrowserResult(success=False, action="fill", error=str(exc))
 
     @property
     def has_vision(self) -> bool:

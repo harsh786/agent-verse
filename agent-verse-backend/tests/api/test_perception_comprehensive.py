@@ -373,6 +373,11 @@ def _real_agent(provider: Any = None) -> Any:
     agent.extract_text = AsyncMock(  # type: ignore[method-assign]
         return_value=BrowserResult(success=True, action="extract_text", output="page text")
     )
+
+    async def _capture(url: str, **_kw: Any) -> Any:  # one page load (PERC-01)
+        return await agent.take_screenshot(url), await agent.extract_text(url)
+
+    agent.capture = _capture  # type: ignore[method-assign]
     return agent
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -80,8 +81,14 @@ class PageAnalyzer:
         analysis = PageAnalysis(url=url)
         vision_error = ""
 
-        if take_screenshot:
+        capture = getattr(self._browser, "capture", None)
+        text_result: Any = None
+        if take_screenshot and extract_text and inspect.iscoroutinefunction(capture):
+            # One page load for both (it used to be two Chromium launches per URL).
+            ss_result, text_result = await capture(url, screenshot=True, text=True)
+        elif take_screenshot:
             ss_result = await self._browser.take_screenshot(url)
+        if take_screenshot:
             if not ss_result.success:
                 vision_error = f"Screenshot failed: {ss_result.error or 'unknown error'}"
             else:
@@ -100,7 +107,8 @@ class PageAnalyzer:
                         vision_error = f"Vision analysis failed: {exc}"
 
         if extract_text:
-            text_result = await self._browser.extract_text(url)
+            if text_result is None:
+                text_result = await self._browser.extract_text(url)
             if text_result.success:
                 analysis.text_content = text_result.output
 

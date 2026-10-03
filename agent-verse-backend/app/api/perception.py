@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
+import uuid
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -18,6 +21,77 @@ def _require_tenant(request: Request) -> Any:
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return ctx
+
+
+# A page's lease on one of the tenant's slots (longer than any page action).
+_PAGE_LEASE_S = 180.0
+
+
+@contextlib.asynccontextmanager
+async def _tenant_pages(request: Request, tenant: Any, n: int = 1) -> AsyncIterator[None]:
+    """Hold *n* of the tenant's concurrent-page slots, or answer 429.
+
+    The cap (``perception_max_pages_per_tenant``) is shared by every replica via
+    a Redis lease set; while Redis is unreachable it degrades to this
+    process's count. All-or-nothing: a batch takes one slot per URL.
+    """
+    from app.core.config import get_settings
+    from app.reliability.bulkhead import RedisLeaseLimiter
+
+    limit = max(1, int(get_settings().perception_max_pages_per_tenant))
+    if n > limit:
+        raise HTTPException(status_code=429, detail=f"At most {limit} concurrent pages per tenant")
+    key = f"perception:leases:{tenant.tenant_id}"
+    members = [f"{uuid.uuid4().hex}:{i}" for i in range(n)]
+    redis = getattr(request.app.state, "_redis", None)
+    limiter = RedisLeaseLimiter(redis) if redis is not None else None
+    held: list[str] = []
+    local = False
+    try:
+        if limiter is not None:
+            try:
+                for m in members:
+                    if not await limiter.try_acquire(key, m, limit=limit, lease_s=_PAGE_LEASE_S):
+                        raise HTTPException(
+                            status_code=429,
+                            detail=f"Too many concurrent perception pages (tenant limit {limit})",
+                            headers={"Retry-After": "5"},
+                        )
+                    held.append(m)
+            except HTTPException:
+                raise
+            except Exception as exc:
+                _log.warning("perception_tenant_lease_unavailable", error=str(exc)[:200])
+                limiter = None
+                held = []
+        if limiter is None:
+            for _ in range(n):
+                if not _LOCAL_PAGES.try_acquire(key, limit):
+                    raise HTTPException(
+                        status_code=429,
+                        detail=f"Too many concurrent perception pages (tenant limit {limit})",
+                        headers={"Retry-After": "5"},
+                    )
+                held.append("local")
+            local = True
+        yield
+    finally:
+        if local:
+            for _ in held:
+                _LOCAL_PAGES.release(key)
+        elif limiter is not None:
+            for m in held:
+                with contextlib.suppress(Exception):
+                    await limiter.release(key, m)
+
+
+def _local_pages() -> Any:
+    from app.reliability.bulkhead import LocalSlotCounter
+
+    return LocalSlotCounter()
+
+
+_LOCAL_PAGES = _local_pages()
 
 
 async def _require_public_url(url: str, field: str = "URL") -> None:
@@ -83,11 +157,12 @@ class ScreenshotRequest(BaseModel):
 @router.post("/screenshot")
 async def capture_screenshot(request: Request, body: ScreenshotRequest) -> dict[str, Any]:
     """Capture a headless browser screenshot of a URL."""
-    _require_tenant(request)
+    tenant = _require_tenant(request)
     await _require_public_url(body.url)
 
     agent = _browser_agent(request)
-    result = await agent.take_screenshot(body.url)
+    async with _tenant_pages(request, tenant):
+        result = await agent.take_screenshot(body.url)
     return {
         "success": result.success,
         "url": body.url,
@@ -105,7 +180,7 @@ class AnalyzeRequest(BaseModel):
 @router.post("/analyze")
 async def analyze_page(request: Request, body: AnalyzeRequest) -> dict[str, Any]:
     """Analyze a screenshot or URL with the vision LLM."""
-    _require_tenant(request)
+    tenant = _require_tenant(request)
 
     agent = _browser_agent(request)
     if not body.screenshot_b64 and not body.url:
@@ -119,7 +194,8 @@ async def analyze_page(request: Request, body: AnalyzeRequest) -> dict[str, Any]
     screenshot_b64 = body.screenshot_b64
     if not screenshot_b64 and body.url:
         await _require_public_url(body.url)
-        ss_result = await agent.take_screenshot(body.url)
+        async with _tenant_pages(request, tenant):
+            ss_result = await agent.take_screenshot(body.url)
         if not ss_result.success:
             raise HTTPException(status_code=502, detail=f"Screenshot failed: {ss_result.error}")
         screenshot_b64 = ss_result.screenshot_b64
@@ -148,11 +224,12 @@ class ExtractRequest(BaseModel):
 @router.post("/extract")
 async def extract_text(request: Request, body: ExtractRequest) -> dict[str, Any]:
     """Extract visible text content from a URL."""
-    _require_tenant(request)
+    tenant = _require_tenant(request)
     await _require_public_url(body.url)
 
     agent = _browser_agent(request)
-    result = await agent.extract_text(body.url, body.selector)
+    async with _tenant_pages(request, tenant):
+        result = await agent.extract_text(body.url, body.selector)
     return {
         "success": result.success,
         "url": body.url,
@@ -191,7 +268,7 @@ async def batch_analyze(request: Request, body: BatchAnalyzeRequest) -> dict[str
     """
     from app.perception.page_analyzer import VisionUnavailableError
 
-    _require_tenant(request)
+    tenant = _require_tenant(request)
 
     if not body.urls:
         raise HTTPException(status_code=400, detail="urls list must not be empty")
@@ -203,9 +280,12 @@ async def batch_analyze(request: Request, body: BatchAnalyzeRequest) -> dict[str
 
     analyzer = _page_analyzer(request)
     try:
-        analyses = await analyzer.analyze_multiple(
-            body.urls, question=body.question, require_vision=True
-        )
+        if not getattr(analyzer, "vision_available", True):
+            raise VisionUnavailableError("No vision-capable provider is configured")
+        async with _tenant_pages(request, tenant, len(body.urls)):
+            analyses = await analyzer.analyze_multiple(
+                body.urls, question=body.question, require_vision=True
+            )
     except VisionUnavailableError as exc:
         raise HTTPException(
             status_code=501, detail="NOT IMPLEMENTED: no vision-capable provider is configured"
@@ -241,7 +321,8 @@ async def submit_goal_with_image(request: Request, body: GoalWithImageRequest) -
         await _require_public_url(body.image_url, field="image_url")
         # Capture screenshot of the URL
         agent = _browser_agent(request)
-        ss_result = await agent.take_screenshot(body.image_url)
+        async with _tenant_pages(request, tenant):
+            ss_result = await agent.take_screenshot(body.image_url)
         if ss_result.success:
             image_context = f"\n[Visual context: screenshot of {body.image_url}]"
             if ss_result.screenshot_b64 and agent.has_vision:
