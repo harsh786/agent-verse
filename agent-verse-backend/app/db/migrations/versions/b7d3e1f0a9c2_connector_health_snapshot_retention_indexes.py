@@ -6,7 +6,7 @@ index on it), and the history endpoint reads one connector's latest rows
 (``tenant_id, server_id, checked_at DESC``).
 
 Revision ID: b7d3e1f0a9c2
-Revises: f1e790b4050a
+Revises: c087b9d58f6f
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "b7d3e1f0a9c2"
-down_revision = "f1e790b4050a"
+down_revision = "c087b9d58f6f"
 branch_labels = None
 depends_on = None
 
