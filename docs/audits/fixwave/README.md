@@ -52,3 +52,49 @@ The user stopped the "hadrensing audit" session; THIS session owns every fix, me
   (progress/integration-suite.progress.json), g04gov, g03mcp, g07evals (MEM-53 wip), highs (GDPR, org roles,
   get_metrics RLS, lifecycle fail-open), a08 services/frontend/org, a09 enterprise (worktree fix-a09).
 - Not yet started: a10 critic backlog (95 open) — see reverify-2026-10-05.json.
+
+## integrate/2026-10-05 suite result (NOT green — do not push as-is)
+```
+## 00 8 failed, 9182 passed, 161 skipped, 178 deselected in 1460.50s (0:24:20)
+FAILED tests/knowledge/test_ingestors_coverage.py::TestConfluenceIngestor::test_ingest_space_empty_returns_no_chunks
+FAILED tests/knowledge/test_ingestors_coverage.py::TestConfluenceIngestor::test_ingest_space_with_page_content
+FAILED tests/knowledge/test_ingestors_coverage.py::TestConfluenceIngestor::test_ingest_space_skips_short_content
+FAILED tests/knowledge/test_ingestors_coverage.py::TestJiraIngestor::test_ingest_project_empty
+FAILED tests/knowledge/test_ingestors_coverage.py::TestJiraIngestor::test_ingest_project_with_issues
+FAILED tests/knowledge/test_ingestors_coverage.py::TestJiraIngestor::test_ingest_project_adf_description
+FAILED tests/knowledge/test_ingestors_coverage.py::TestJiraIngestor::test_ingest_project_includes_comments
+FAILED tests/knowledge/test_ingestors_coverage.py::TestJiraIngestor::test_ingest_project_with_jql_extra
+## 01 13 failed, 8260 passed, 115 skipped, 211 deselected in 1546.88s (0:25:46)
+FAILED tests/api/test_enterprise_coverage_boost.py::test_run_eval_suite_success
+FAILED tests/api/test_enterprise_coverage_boost.py::test_run_eval_suite_failure_is_recorded
+FAILED tests/e2e/test_governance_e2e.py::test_audit_trail_records_all_tool_calls
+FAILED tests/infra/test_docker_compose.py::test_dev_worker_concurrency_fits_its_memory_limit
+FAILED tests/ingestion/test_repository_security.py::test_repository_source_resolves_once_and_pins_validated_ip
+FAILED tests/intelligence/test_golden_dataset_versions.py::test_a_run_records_the_dataset_version_and_runs_that_versions_tasks
+FAILED tests/knowledge/test_ingestors_extra2.py::TestConfluenceIngestor::test_fetch_pages_makes_request
+FAILED tests/knowledge/test_ingestors_extra2.py::TestConfluenceIngestor::test_ingest_space_happy_path
+FAILED tests/knowledge/test_ingestors_extra2.py::TestConfluenceIngestor::test_ingest_space_skips_short_pages
+FAILED tests/knowledge/test_ingestors_extra2.py::TestJiraIngestor::test_ingest_project_happy_path
+FAILED tests/knowledge/test_ingestors_extra2.py::TestJiraIngestor::test_ingest_project_with_adf_description
+FAILED tests/knowledge/test_ingestors_extra2.py::TestJiraIngestor::test_ingest_project_with_adf_comment
+FAILED tests/scaling/test_worker_rpa_executor.py::test_worker_goal_rpa_open_url_dispatches_to_the_rpa_executor
+## 02 1 failed, 6998 passed, 79 skipped, 179 deselected, 8 errors in 1392.56s (0:23:12)
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_no_platform_credential_leaves_on_a_tenant_call[tenant-creds]
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_no_platform_credential_leaves_on_a_tenant_call[no-creds]
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_tenant_credentials_reach_the_vendor_request
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_aws_builtin_refuses_without_tenant_keys
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_client_dispatches_tenant_dsn_host_checked[postgresql://tenant:pw@8.8.8.8:5432/tenant_db-True]
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_client_dispatches_tenant_dsn_host_checked[postgresql://tenant:pw@10.0.0.5:5432/platform_db-False]
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_client_dispatches_tenant_dsn_host_checked[postgresql://tenant:pw@8.8.8.8:5432,127.0.0.1:5432/db-False]
+ERROR tests/mcp/test_builtin_credentials_guard.py::test_client_refuses_connector_without_credentials
+FAILED tests/enterprise/test_eval_suite_run_binding.py::test_run_against_an_unknown_agent_is_404
+## 03 1 failed, 6618 passed, 83 skipped, 230 deselected, 2 errors in 1326.26s (0:22:06)
+ERROR tests/rag/test_rag_e2e.py::test_retrieve_colbert_reranks_by_query_relevance
+ERROR tests/rag/test_rag_e2e.py::test_retrieve_raptor_returns_summary_plus_detail
+FAILED tests/enterprise/test_enterprise_intelligence_gaps.py::test_get_suite_results_returns_persisted_runs
+EXIT 0
+ Test Files  1 failed | 436 passed (437)
+      Tests  1 failed | 5032 passed (5033)
+ FAIL  src/features/org/OrgPage.test.tsx > OrgPage — no organization selected > renders a placeholder when orgId is missing
+
+```
