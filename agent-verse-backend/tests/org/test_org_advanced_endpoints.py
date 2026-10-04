@@ -81,6 +81,7 @@ def _make_app(mock_service: Any) -> FastAPI:
     async def _inject_tenant(request: Any, call_next: Any) -> Any:
         tenant = MagicMock()
         tenant.tenant_id = TENANT_ID
+        tenant.org_role = "org_admin"  # owner key; mutating org routes enforce a role
         request.state.tenant = tenant
         return await call_next(request)
 

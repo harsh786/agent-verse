@@ -32,7 +32,8 @@ def _app(svc: Any) -> FastAPI:
 
     @app.middleware("http")
     async def _tenant(request: Any, call_next: Any) -> Any:
-        request.state.tenant = SimpleNamespace(tenant_id=TENANT)
+        # Owner key (org_admin): the test is about org scoping, not role checks.
+        request.state.tenant = SimpleNamespace(tenant_id=TENANT, roles=("admin",))
         return await call_next(request)
 
     async def _svc() -> Any:

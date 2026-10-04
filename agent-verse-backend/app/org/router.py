@@ -264,6 +264,7 @@ async def create_organization(
     body: CreateOrganizationRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> OrganizationResponse:
     org = await service.create_organization(
         name=body.name,
@@ -453,6 +454,7 @@ async def create_department(
     body: CreateDepartmentRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
 ) -> DepartmentResponse:
     dept = await service.create_department(
         org_id=org_id,
@@ -507,6 +509,7 @@ async def update_department(
     body: UpdateDepartmentRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
 ) -> DepartmentResponse:
     dept = await service.update_department(dept_id, body.model_dump(exclude_none=True))
     if not dept:
@@ -610,6 +613,7 @@ async def update_mission(
     body: UpdateMissionRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> MissionResponse:
     existing = await service.get_mission(mission_id)
     if not existing:
@@ -639,6 +643,7 @@ async def update_mission_status(
     body: MissionStatusUpdate,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> MissionResponse:
     existing = await service.get_mission(mission_id)
     if not existing:
@@ -770,6 +775,7 @@ async def create_task(
     body: CreateTaskRequest,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> TaskResponse:
     try:
         task = await service.create_task(
@@ -851,6 +857,7 @@ async def update_task_status(
     body: TaskStatusUpdate,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> TaskResponse:
     existing = await service.get_task(task_id)
     if not existing:
@@ -1107,6 +1114,7 @@ async def create_team(
     org_id: str,
     body: CreateTeamRequest,
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
 ) -> TeamResponse:
     team = await service.create_team(
         org_id=org_id,
@@ -1671,6 +1679,7 @@ async def org_graphify_start(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, str]:
     """Launch an async Graphify job that extracts entities + relationships from
     the org's knowledge base and returns a streaming job ID.
@@ -1970,6 +1979,7 @@ async def org_create_role(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> _OrgRoleResponse:
     """Create a new custom role with granular permissions."""
     from opentelemetry import trace as _trace
@@ -1995,6 +2005,7 @@ async def org_update_role(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> _OrgRoleResponse:
     """Update permissions on a custom role."""
     updated = _OrgRoleResponse(id=role_id, is_built_in=False, **body.model_dump())
@@ -2017,6 +2028,7 @@ async def org_delete_role(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> None:
     """Delete a custom role (built-in roles cannot be deleted)."""
     if not await _role_store(request, org_id).delete(role_id):
@@ -2332,6 +2344,7 @@ async def org_universal_command(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, object]:
     """Universal Command Gateway — accepts any natural-language command
     directed at the organisation from any channel (REST, Telegram, Slack…).
@@ -2520,6 +2533,7 @@ async def org_compose(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> dict[str, object]:
     """Organisation Composer — accepts a natural-language description and
     autonomously creates an organisation with appropriate departments,
@@ -2595,6 +2609,7 @@ async def org_team_lifecycle_transition(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
 ) -> dict[str, object]:
     """Advance a team to its next lifecycle state (CREATE → STAFF → BRIEF →
     EXECUTE → REVIEW → COMPLETE → ARCHIVE).
@@ -3130,6 +3145,7 @@ async def org_batch_create_missions(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, object]:
     """Create up to 20 missions atomically. All succeed or all fail.
     Ideal for initialising orgs from templates or importing existing plans.
@@ -3187,6 +3203,7 @@ async def org_graph_snapshot(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, object]:
     """Save a point-in-time snapshot of the org knowledge graph.
     Supports rollback and time-travel queries via version history.
@@ -3307,6 +3324,7 @@ async def org_dept_memory_add(
     body: _DeptMemoryAdd,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, object]:
     """Add new persistent knowledge to a department's memory store."""
     from opentelemetry import trace as _trace
@@ -3543,6 +3561,7 @@ async def org_upload_attachment(
     file: UploadFile = File(...),
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, Any]:
     """Accept one mission attachment, validate its type/size, and store it durably.
 
@@ -3662,6 +3681,7 @@ async def org_create_mission_execute(
     org_id: str,
     body: _MissionExecuteRequest,
     request: Request,
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, Any]:
     """Create an OrgMission and return immediately; a Celery worker forms the
     team (LLM, 30-90s) and dispatches the goal.
@@ -3948,6 +3968,7 @@ async def org_create_schedule(
     body: _MissionScheduleRequest,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, Any]:
     _require_tenant(request)
     _validate_cron(body.cron_expression)
@@ -3998,6 +4019,7 @@ async def org_toggle_schedule(
     body: _ScheduleToggleRequest,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, Any]:
     _require_tenant(request)
     schedule_id = _schedule_id_or_404(schedule_id)
@@ -4017,6 +4039,7 @@ async def org_delete_schedule(
     schedule_id: str,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> None:
     _require_tenant(request)
     schedule_id = _schedule_id_or_404(schedule_id)
@@ -4035,6 +4058,7 @@ async def org_approve_schedule_publishing(
     body: _SchedulePublishApproval,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
 ) -> dict[str, Any]:
     """One-time gate: approve a schedule so its runs publish autonomously.
 
@@ -4080,6 +4104,7 @@ async def org_finalize_mission(
     request: Request,
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.TEAM_LEAD),
 ) -> dict[str, Any]:
     """Pull the dispatched goal's terminal status, mark subtasks to match, and —
     when terminal — aggregate a real deliverable/report onto the mission and emit
