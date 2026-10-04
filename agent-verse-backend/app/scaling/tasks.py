@@ -1472,21 +1472,39 @@ class _WorkerWorkflowRunner:
 
 
 def _worker_tool_gate(policy: Any, hitl: Any, cost: Any, agent_id: str) -> Any:
-    """The governed tool gate for worker workflow runs (same services as the graph)."""
+    """The governed tool gate for worker workflow runs (same services as the graph).
+
+    RV-05: wired with the same durable, tenant-scoped (RLS) ``PostgresGrantStore``
+    and default-deny permission matrix as the API's ``app.state``. Without them
+    every tool call of a queued multi_agent goal was denied under the default
+    grant enforcement (``grant_store_unavailable``). With no DB factory the store
+    stays unset and enforcement still denies — it never fails open.
+    """
     import types as _types
 
     from app.agent.tool_gate import gate_from_app_state
+    from app.governance.permissions import build_default_permission_matrix
 
     db_factory: Any = None
     with contextlib.suppress(Exception):
         from app.db.session import get_session_factory
 
         db_factory = get_session_factory()
+    grant_store: Any = None
+    if db_factory is not None:
+        try:
+            from app.governance.grants.postgres_store import PostgresGrantStore
+
+            grant_store = PostgresGrantStore(db_factory)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("worker_grant_store_wire_failed: %s", exc)
     return gate_from_app_state(
         _types.SimpleNamespace(
             policy_engine=policy,
             hitl_gateway=hitl,
             cost_controller=cost,
+            grant_store=grant_store,
+            permission_matrix=build_default_permission_matrix(),
             # PERM-01: per-agent permission rules + the shared daily counter.
             db_session_factory=db_factory,
             _redis=_worker_async_redis(),

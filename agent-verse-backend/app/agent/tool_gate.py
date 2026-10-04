@@ -28,6 +28,9 @@ from app.governance.grants import enforce_tool_call
 from app.governance.hitl import ApprovalStatus
 from app.governance.permissions import ActionLevel
 from app.governance.policies import PolicyResult
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -159,14 +162,19 @@ class GovernedToolGate:
             if policy == PolicyResult.REQUIRE_APPROVAL:
                 requires_approval = True
 
-        # 4. Grants.
-        grant = await enforce_tool_call(
-            self._grant_store,
-            tenant_id=tenant_ctx.tenant_id,
-            agent_id=self._agent_id,
-            tool_name=tool_name,
-            enabled=self._enforce_grants,
-        )
+        # 4. Grants. An unreachable grant store denies (fail closed) instead of
+        # escaping as an exception the caller might not treat as a denial.
+        try:
+            grant = await enforce_tool_call(
+                self._grant_store,
+                tenant_id=tenant_ctx.tenant_id,
+                agent_id=self._agent_id,
+                tool_name=tool_name,
+                enabled=self._enforce_grants,
+            )
+        except Exception as exc:
+            logger.warning("grant_check_failed tool=%s: %s", tool_name, exc)
+            return GateDecision(False, f"'{tool_name}' not granted (grant_store_unavailable)")
         if not grant.allowed:
             return GateDecision(False, f"'{tool_name}' not granted ({grant.reason})")
 
