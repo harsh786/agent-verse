@@ -32,6 +32,7 @@ spec:
             - "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,triggers.poll,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
             - "--concurrency=4"
             - "--max-tasks-per-child=100"
+            - "--max-memory-per-child=700000"
           envFrom:
             - configMapRef:
                 name: agentverse-config
@@ -45,7 +46,8 @@ spec:
               memory: "256Mi"
               cpu: "250m"
             limits:
-              memory: "1Gi"
+              # L-03 budget: parent ~300 MB + 4 children x (700 MB cap + ~100 MB growth).
+              memory: "3584Mi"
               cpu: "1000m"
           livenessProbe:
             exec:
@@ -94,6 +96,7 @@ spec:
             - "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"
             - "--concurrency=4"
             - "--max-tasks-per-child=100"
+            - "--max-memory-per-child=700000"
           envFrom:
             - configMapRef:
                 name: agentverse-config
@@ -104,7 +107,8 @@ spec:
               memory: "256Mi"
               cpu: "250m"
             limits:
-              memory: "1Gi"
+              # L-03 budget: parent ~300 MB + 4 children x (700 MB cap + ~100 MB growth).
+              memory: "3584Mi"
               cpu: "1000m"
           livenessProbe:
             exec:

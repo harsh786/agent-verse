@@ -140,7 +140,7 @@ services:
     command: ["celery", "-A", "app.scaling.celery_app", "worker",
               "--loglevel=info", "-Q",
               "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,triggers.poll,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance",
-              "--concurrency=4", "--max-tasks-per-child=100"]
+              "--concurrency=4", "--max-tasks-per-child=100", "--max-memory-per-child=700000"]
     environment:
       <<: *common-env
     healthcheck:
@@ -158,7 +158,8 @@ services:
       replicas: 2
       resources:
         limits:
-          memory: 1G
+          # L-03 budget: parent ~300 MB + 4 children x (700 MB cap + ~100 MB growth).
+          memory: 3584M
 
   # Dedicated pool for supervisor sub-goals (CORE-09): a supervisor parent holds
   # its `worker` slot while it waits, so its sub-goals (goals.subgoals.{plan})
@@ -172,7 +173,7 @@ services:
     command: ["celery", "-A", "app.scaling.celery_app", "worker",
               "--loglevel=info", "-Q",
               "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise",
-              "--concurrency=4", "--max-tasks-per-child=100"]
+              "--concurrency=4", "--max-tasks-per-child=100", "--max-memory-per-child=700000"]
     environment:
       <<: *common-env
     healthcheck:
@@ -190,7 +191,8 @@ services:
       replicas: 1
       resources:
         limits:
-          memory: 1G
+          # L-03 budget: parent ~300 MB + 4 children x (700 MB cap + ~100 MB growth).
+          memory: 3584M
 
   beat:
     build:

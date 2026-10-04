@@ -335,7 +335,7 @@ services:
     env_file:
       - ../.env
     restart: unless-stopped
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,triggers.poll,maintenance,governance,ingestion,goals_dlq"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=100", "--max-memory-per-child=700000", "-Q", "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,schedules,triggers.poll,maintenance,governance,ingestion,goals_dlq"]
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
@@ -348,6 +348,9 @@ services:
       SMTP_PORT: "1025"
       SMTP_TLS: "false"
       SEARXNG_URL: http://searxng:8080
+      # L-03: this pool runs goals' knowledge searches, so its children warm the
+      # reranker at start; workflow-worker / subgoal-worker load it lazily.
+      WORKER_PRELOAD_RETRIEVAL_MODELS: "true"
       # ── LLM providers — set at least one for real goal execution ──
       # ANTHROPIC_API_KEY: sk-ant-...
       # OPENAI_API_KEY: sk-...
@@ -368,7 +371,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB one-task
+          # growth) = 1.9 GB. The old 1G did not fit two children holding the reranker.
+          memory: 2G
     depends_on:
       redis:
         condition: service_healthy
@@ -396,7 +401,7 @@ services:
     env_file:
       - ../.env
     restart: unless-stopped
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=100", "--max-memory-per-child=700000", "-Q", "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"]
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
@@ -424,7 +429,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB one-task
+          # growth) = 1.9 GB. The old 1G did not fit two children holding the reranker.
+          memory: 2G
     depends_on:
       redis:
         condition: service_healthy
@@ -495,7 +502,7 @@ services:
     env_file:
       - ../.env
     restart: unless-stopped
-    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "-Q", "workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"]
+    command: ["celery", "-A", "app.scaling.celery_app", "worker", "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=100", "--max-memory-per-child=700000", "-Q", "workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"]
     environment:
       # Least-privilege application role; agentverse only for cross-tenant system jobs.
       DATABASE_URL: postgresql+asyncpg://${APP_DB_USER:-agentverse_app}:${APP_DB_PASSWORD:-agentverse_app}@pgbouncer:6432/agentverse
@@ -523,7 +530,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB one-task
+          # growth) = 1.9 GB. The old 1G did not fit two children holding the reranker.
+          memory: 2G
     depends_on:
       redis:
         condition: service_healthy

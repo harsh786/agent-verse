@@ -109,7 +109,11 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     worker_max_tasks_per_child=100,
-    worker_max_memory_per_child=500_000,  # 500 MB in KB
+    # L-03: a child that has loaded the reranker (torch + sentence-transformers +
+    # model) sits at ~600 MB; a 500 MB cap recycled it after every search. Size
+    # each pool's memory limit as parent + concurrency x (cap + one task's
+    # growth) — tests/scaling/test_worker_memory_budget.py checks the manifests.
+    worker_max_memory_per_child=700_000,  # 700 MB in KB
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_default_retry_delay=30,
@@ -499,11 +503,14 @@ if _SENTINEL_URLS:
 app = celery_app
 
 
-# ── Retrieval model warm-up (RERANK-PRELOAD) ─────────────────────────────────
-# Each prefork child process warms the cross-encoder on a background thread so
-# the first knowledge search a worker runs does not pay the model load inside
-# its retrieval deadline. worker_process_init must return quickly (Celery gives
-# it a few seconds), hence the background load.
+# ── Retrieval model warm-up (RERANK-PRELOAD, L-03) ───────────────────────────
+# A pool that opts in (WORKER_PRELOAD_RETRIEVAL_MODELS=true) warms the
+# cross-encoder in each prefork child on a background thread, so the first
+# knowledge search does not pay the model load inside its retrieval deadline.
+# worker_process_init must return quickly, hence the background load. Off by
+# default: every warm child holds ~450 MB of torch + model, and the workflow /
+# sub-goal pools were OOM-killed by it. They load lazily on first use (a search
+# meanwhile skips the cross-encoder after rag_rerank_warmup_wait_seconds).
 
 
 def _preload_retrieval_models() -> None:
@@ -520,4 +527,7 @@ def _preload_retrieval_models() -> None:
 
 @worker_process_init.connect  # type: ignore[untyped-decorator]
 def _on_worker_process_init(**_kwargs: object) -> None:
-    _preload_retrieval_models()
+    from app.core.config import get_settings
+
+    if bool(getattr(get_settings(), "worker_preload_retrieval_models", False)):
+        _preload_retrieval_models()

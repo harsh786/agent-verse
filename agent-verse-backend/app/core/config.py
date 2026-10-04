@@ -230,6 +230,11 @@ class Settings(BaseSettings):
     # then skips the cross-encoder and flags ``rerank_skipped`` on each citation.
     rag_rerank_preload: bool = True
     rag_rerank_warmup_wait_seconds: float = 2.0
+    # L-03: Celery prefork children warm the retrieval models (cross-encoder,
+    # ColBERT checkpoint download) at start only when their pool opts in. Warm
+    # children cost ~450 MB each (torch + sentence-transformers + model); pools
+    # that rarely rerank (workflow, sub-goal) load lazily on first use instead.
+    worker_preload_retrieval_models: bool = False
     # --- Hosted reranker (first-class managed reranking provider) --------------
     # A managed cross-encoder rerank API (Cohere-compatible ``/v1/rerank`` shape:
     # Cohere, Voyage, Jina, or a self-hosted equivalent). When a URL is set the
