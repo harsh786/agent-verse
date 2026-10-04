@@ -39,9 +39,12 @@ class MCPWebSocketClient:
         auth_token: str | None = None,
         reconnect: bool = True,
         max_reconnects: int = 10,
+        headers: dict[str, str] | None = None,
     ) -> None:
         self._ws_url = ws_url
         self._auth_token = auth_token
+        # Handshake headers built from the connector's auth config (MCPCLI-03).
+        self._headers: dict[str, str] = dict(headers or {})
         self._reconnect = reconnect
         self._max_reconnects = max_reconnects
         self._ws: Any | None = None
@@ -60,7 +63,7 @@ class MCPWebSocketClient:
             raise RuntimeError("websockets is not installed. Install with: pip install websockets") from _b904_exc  # noqa: E501
         from app.net.ssrf_guard import connect_public_websocket
 
-        headers = {}
+        headers = dict(self._headers)
         if self._auth_token:
             headers["Authorization"] = f"Bearer {self._auth_token}"
 

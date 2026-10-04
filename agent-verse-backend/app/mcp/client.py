@@ -1177,27 +1177,35 @@ class MCPClient:
             return await self._dispatch_builtin_tool(cfg, tool_name, arguments, tenant_ctx)
 
         # 1.5. WebSocket transport — route to MCPWebSocketClient when transport="ws"/"websocket"
+        # The connector's credentials go on the handshake, and a WS failure is
+        # the call's failure: it used to fall through to HTTP dispatch against
+        # ``url`` unauthenticated, masking every WS error (MCPCLI-03).
         if _transport in ("ws", "websocket") and cfg.ws_url:
-            try:
-                from app.mcp.ws_client import MCPWebSocketClient
+            from app.mcp import ws_client as _ws_mod
 
-                async with MCPWebSocketClient(ws_url=cfg.ws_url) as _ws_client:
+            _ws_headers = await self._build_auth_headers(
+                cfg, tenant_ctx=tenant_ctx, server_id=server_id
+            )
+            try:
+                async with _ws_mod.MCPWebSocketClient(
+                    ws_url=cfg.ws_url, headers=_ws_headers
+                ) as _ws_client:
                     _ws_result = await _ws_client.call_tool(
                         tool_name=tool_name, arguments=arguments
                     )
-                return ToolCallResult(
-                    tool_name=tool_name,
-                    success=True,
-                    output=_ws_result,
-                    server_id=server_id,
-                )
             except Exception as _ws_exc:
                 logger.warning(
                     "ws_mcp_call_failed tool=%s error=%s",
                     tool_name,
                     str(_ws_exc)[:80],
                 )
-                # Fall through to HTTP dispatch
+                raise
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=True,
+                output=_ws_result,
+                server_id=server_id,
+            )
 
         # 2. OpenAPI-imported tool stored in tool_definitions
         if cfg.tool_definitions:

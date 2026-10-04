@@ -724,26 +724,24 @@ async def test_call_tool_impl_websocket_transport_success():
 
 
 @pytest.mark.asyncio
-async def test_call_tool_impl_websocket_transport_failure_falls_back_to_http():
+async def test_call_tool_impl_websocket_transport_failure_raises_not_http():
+    """MCPCLI-03: a WS failure is the call's failure, never a silent HTTP retry."""
     cfg = MCPServerConfig(
         server_id="ws-srv2", name="WS Srv2", url="http://fallback.example.com",
         transport="websocket", ws_url="wss://ws2.example.com/mcp",
     )
     mock_ws_ctx = MagicMock(side_effect=RuntimeError("ws handshake failed"))
-
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"output": "fallback ok"}
-    http_ctx = _http_ctx(post=AsyncMock(return_value=mock_resp))
+    http_post = AsyncMock()
+    http_ctx = _http_ctx(post=http_post)
 
     client = _make_client()
     with (
         patch("app.mcp.ws_client.MCPWebSocketClient", mock_ws_ctx),
         patch("httpx.AsyncClient", return_value=http_ctx),
+        pytest.raises(RuntimeError, match="ws handshake failed"),
     ):
-        result = await client._call_tool_impl(cfg, "ws-srv2", "compute", {}, _ctx())
-    assert result.success is True
-    assert result.output == {"output": "fallback ok"}
+        await client._call_tool_impl(cfg, "ws-srv2", "compute", {}, _ctx())
+    http_post.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
