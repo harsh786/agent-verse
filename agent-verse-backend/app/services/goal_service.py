@@ -141,13 +141,17 @@ _NOT_RECOVERABLE_STATUSES = {*_TERMINAL_STATUSES, GoalStatus.WAITING_HUMAN}
 
 
 def _agent_grants_enforced() -> bool:
-    """Whether Grantex tool-grant enforcement is on (opt-in, default off)."""
+    """Whether Grantex tool-grant enforcement is on (default ON).
+
+    An unreadable setting enforces (GRANT-07: it answered False, so a settings
+    or import error silently turned enforcement off on the API and the worker).
+    """
     try:
         from app.core.config import get_settings
 
-        return bool(getattr(get_settings(), "enforce_agent_grants", False))
+        return bool(getattr(get_settings(), "enforce_agent_grants", True))
     except Exception:
-        return False
+        return True
 
 # TTL for completed/failed/cancelled goals in the in-memory cache.
 # They are safe to evict because they are already persisted in the DB.

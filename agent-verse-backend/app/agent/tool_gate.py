@@ -350,9 +350,9 @@ def gate_from_app_state(app_state: Any, *, agent_id: str | None = None) -> Gover
         return getattr(app_state, name, None) if app_state is not None else None
 
     try:
-        enforce = bool(getattr(get_settings(), "enforce_agent_grants", False))
+        enforce = bool(getattr(get_settings(), "enforce_agent_grants", True))
     except Exception:
-        enforce = False
+        enforce = True  # unreadable flag: enforce (GRANT-07, fail closed)
     return GovernedToolGate(
         policy_engine=_get("policy_engine"),
         permission_matrix=_get("permission_matrix"),
