@@ -29,9 +29,12 @@ class _MockSession:
 
     def __init__(self, rows=None):
         self._rows = rows or []
+        self.executed: list[tuple[str, dict]] = []
 
     async def execute(self, *args, **kwargs):
         rows = self._rows
+        if args:
+            self.executed.append((str(args[0]), args[1] if len(args) > 1 else {}))
 
         class _Result:
             def fetchall(self): return rows
@@ -113,8 +116,14 @@ class TestExecutionMemoryDBPaths:
             for i in range(10)
         ])
         mem = ExecutionMemory()
-        results = await mem.recall_async("task number", tenant_id="t1", db=db, limit=2)
-        assert len(results) <= 2
+        await mem.recall_async("task number", tenant_id="t1", db=db, limit=2)
+        # MEM-36: relevance + the bound are applied in SQL (this fake ignores
+        # LIMIT), so the limit must reach the query as its LIMIT bind.
+        recall_sql = [(sql, params) for sql, params in db._session.executed if "LIMIT" in sql]
+        assert recall_sql, "recall_async must bound its read with LIMIT"
+        sql, params = recall_sql[-1]
+        assert "LIMIT :lim" in sql
+        assert params["lim"] == 2
 
     @pytest.mark.asyncio
     async def test_record_async_db_success_writes_to_db(self):
@@ -241,7 +250,11 @@ class TestToolReliabilityDBPaths:
         """Lines 74-81: DB returns a row → parse it."""
         from app.memory.tool_reliability import ToolReliabilityStore
 
-        row = (8, 2, 500.0, datetime.now(UTC), None, None)  # +blacklisted_at, blacklist_reason
+        now = datetime.now(UTC)
+        # _SELECT_COLS: tool_name, success, failure, total_latency_ms, last_used_at,
+        # blacklisted_at, blacklist_reason, blacklist_expires_at, recent_success,
+        # recent_failure, decayed_at (MEM-45 decayed counters + blacklist expiry)
+        row = ("api_tool", 8, 2, 500.0, now, None, None, None, 8.0, 2.0, now)
         db = _MockDB(rows=[row])
         store = ToolReliabilityStore(db_session_factory=db)
         result = await store.get_reliability(tenant_id="t1", tool_name="api_tool")
@@ -273,9 +286,10 @@ class TestToolReliabilityDBPaths:
         """Lines 113-123: get_unreliable_tools with DB returning results."""
         from app.memory.tool_reliability import ToolReliabilityStore
 
-        rows = [
-            ("flaky_webhook", 3, 7, 300.0, datetime.now(UTC), None, None),  # 30% success
-            ("slow_api", 4, 6, 400.0, datetime.now(UTC), None, None),  # 40% success
+        now = datetime.now(UTC)
+        rows = [  # _SELECT_COLS shape (see test_get_reliability_db_row_found)
+            ("flaky_webhook", 3, 7, 300.0, now, None, None, None, 3.0, 7.0, now),  # 30%
+            ("slow_api", 4, 6, 400.0, now, None, None, None, 4.0, 6.0, now),  # 40%
         ]
         db = _MockDB(rows=rows)
         store = ToolReliabilityStore(db_session_factory=db)
