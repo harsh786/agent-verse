@@ -36,6 +36,85 @@ MIN_CONFIDENCE_FOR_PROMOTION = 0.70
 # Keywords of a retrieval query that take part in the SQL ranking.
 _MAX_QUERY_KEYWORDS = 32
 
+# MEM-42: semantic recall. Entries are embedded on add into a vector(2048)
+# column (halfvec HNSW index); the rank blends cosine similarity (same
+# embedding model only) with the keyword share, times confidence.
+_EMBED_DIM = 2048
+_SEMANTIC_WEIGHT = 0.7
+_LEXICAL_WEIGHT = 0.3
+# Candidates each side (semantic / lexical) contributes before blending.
+_CANDIDATES = 50
+# A department this small is searched exactly (no ANN), like canonical memory.
+_EXACT_SEARCH_MAX_ROWS = 5_000
+_HNSW_EF_SEARCH = 200
+
+_COLS = (
+    "entry_id, dept_id, org_id, tenant_id, content, source, confidence, tags, "
+    "is_active, corrections, created_at, updated_at"
+)
+_DIST = f"(embedding::halfvec({_EMBED_DIM}) <=> CAST(:qvec AS halfvec({_EMBED_DIM})))"
+
+
+def _lexical_expr(n_keywords: int) -> str:
+    if n_keywords <= 0:
+        return "0.0"
+    hits = " + ".join(
+        f"(CASE WHEN strpos(lower(content), :kw{i}) > 0 THEN 1 ELSE 0 END)"
+        for i in range(n_keywords)
+    )
+    return f"(({hits})::float / {n_keywords})"
+
+
+def _ranked_select_sql(
+    *, scope: str, clause: str, n_keywords: int, semantic: bool, exact: bool
+) -> str:
+    """The department-memory recall query (always tenant- and scope-filtered).
+
+    Without a query vector: keyword share x confidence over the scope. With
+    one: the nearest same-model vectors (exact for a small department, the
+    halfvec HNSW index otherwise) and the best lexical matches are the
+    candidates, ranked by the blended score; only ``:lim`` rows return.
+    """
+    where = f"tenant_id = :tid AND {scope}{clause}"
+    lexical = _lexical_expr(n_keywords)
+    if not semantic:
+        order = (
+            f"{lexical} * confidence DESC, created_at DESC" if n_keywords else "created_at DESC"
+        )
+        return (
+            f"SELECT {_COLS} FROM department_memory_entries WHERE {where} "
+            f"ORDER BY {order} LIMIT :lim"
+        )
+    similarity = (
+        f"(CASE WHEN embedding IS NOT NULL AND embedding_model = :qmodel "
+        f"THEN GREATEST(0.0, 1 - {_DIST}) ELSE 0.0 END)"
+    )
+    score = f"({_SEMANTIC_WEIGHT} * {similarity} + {_LEXICAL_WEIGHT} * {lexical}) * confidence"
+    nearest = f"{_DIST}{' + 0' if exact else ''}"
+    return (
+        "WITH sem AS ("
+        f"SELECT entry_id FROM department_memory_entries WHERE {where} "
+        "AND embedding IS NOT NULL AND embedding_model = :qmodel "
+        f"ORDER BY {nearest} LIMIT :cand), "
+        "lex AS ("
+        f"SELECT entry_id FROM department_memory_entries WHERE {where} "
+        f"ORDER BY {lexical} * confidence DESC, created_at DESC LIMIT :cand) "
+        f"SELECT {_COLS} FROM department_memory_entries WHERE tenant_id = :tid "
+        "AND entry_id IN (SELECT entry_id FROM sem UNION SELECT entry_id FROM lex) "
+        f"ORDER BY {score} DESC, created_at DESC LIMIT :lim"
+    )
+
+
+def _cosine(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return max(0.0, dot / (na * nb)) if na and nb else 0.0
+
+
+def _vector_literal(vec: tuple[float, ...]) -> str:
+    return "[" + ",".join(repr(float(v)) for v in vec) + "]"
+
 
 class DepartmentMemoryBlockedError(ValueError):
     """The memory-write gate refused the content (guardrail block or injection)."""
@@ -83,6 +162,9 @@ class MemoryEntry:
     corrections: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
+    # MEM-42: the content's vector and the model that produced it.
+    embedding: tuple[float, ...] | None = None
+    embedding_model: str | None = None
 
     def __post_init__(self) -> None:
         now = datetime.now(UTC).isoformat()
@@ -109,9 +191,72 @@ class DepartmentMemory:
         # Wired by the app lifespan; when set, entries persist to Postgres
         # (durable + cross-pod) instead of only this process's dict.
         self._db_factory: Any = None
+        # ``(text) -> 2048-d tuple | None`` with a ``model_id`` (see
+        # app.memory.embedding.memory_embedder_from_provider); None = lexical.
+        self._embedder: Any = None
+        self._iterative_scan: bool | None = None
 
     def set_db(self, db_factory: Any) -> None:
         self._db_factory = db_factory
+
+    def set_embedder(self, embedder: Any) -> None:
+        self._embedder = embedder
+
+    @staticmethod
+    async def _embed(
+        embedder: Any, text: str, *, tenant_id: str
+    ) -> tuple[tuple[float, ...] | None, str | None]:
+        """``(vector, model)``; ``(None, None)`` without a usable vector.
+
+        Non-fatal (the entry is still found lexically) but never silent.
+        """
+        if embedder is None:
+            return None, None
+        from app.memory.embedding import fit_memory_vector
+
+        try:
+            raw = await embedder(text)
+        except Exception as exc:
+            _log.warning(
+                "dept_memory.embedding_failed", tenant_id=tenant_id, error=str(exc)[:200]
+            )
+            return None, None
+        fitted = fit_memory_vector(raw) if raw else None
+        model = str(getattr(embedder, "model_id", "") or "")[:128]
+        if fitted is None or not model:
+            return None, None
+        return fitted, model
+
+    async def _small_scope(self, session: Any, where: str, params: dict[str, Any]) -> bool:
+        from sqlalchemy import text as _t
+
+        count = (
+            await session.execute(
+                _t(
+                    "SELECT count(*) FROM (SELECT 1 FROM department_memory_entries "
+                    f"WHERE {where} LIMIT :cap) s"
+                ),
+                {**params, "cap": _EXACT_SEARCH_MAX_ROWS + 1},
+            )
+        ).scalar()
+        return int(count or 0) <= _EXACT_SEARCH_MAX_ROWS
+
+    async def _iterative_scan_supported(self, session: Any) -> bool:
+        """pgvector >= 0.8 (hnsw.iterative_scan); probed once per store."""
+        if self._iterative_scan is None:
+            from sqlalchemy import text as _t
+
+            version = (
+                await session.execute(
+                    _t("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+                )
+            ).scalar()
+            try:
+                parts = tuple(int(p) for p in str(version or "0").split(".")[:2])
+            except ValueError:
+                parts = (0, 0)
+            self._iterative_scan = parts >= (0, 8)
+        return self._iterative_scan
 
     async def _db_rows(
         self,
@@ -122,15 +267,16 @@ class DepartmentMemory:
         keywords: list[str] | None = None,
         limit: int = 1000,
         org_id: str | None = None,
+        query_vec: tuple[float, ...] | None = None,
+        query_model: str | None = None,
     ) -> list[MemoryEntry]:
         """A department's entries from Postgres (RLS-scoped), best matches first.
 
-        With ``keywords`` the ranking happens in SQL: the score is the share of
-        query keywords the content contains (case-insensitive substring, the
-        same rule as the in-memory path) times the entry's confidence, ties
-        newest first, and only ``limit`` rows leave the database. It used to
-        load the newest 1000 rows and score them in Python, so an older SOP in
-        a busy department could never be found.
+        With ``keywords`` the ranking happens in SQL: the share of query keywords
+        the content contains (case-insensitive substring, the same rule as the
+        in-memory path) times the entry's confidence, ties newest first, and
+        only ``limit`` rows leave the database (MEM-15). With a query vector the
+        rank also blends cosine similarity to same-model entry vectors (MEM-42).
         """
         import json as _json
 
@@ -145,29 +291,37 @@ class DepartmentMemory:
         else:
             scope = "dept_id = :did"
             params["did"] = dept_id
-        order = "created_at DESC"
-        if keywords:
-            hits = " + ".join(
-                f"(CASE WHEN strpos(lower(content), :kw{i}) > 0 THEN 1 ELSE 0 END)"
-                for i in range(len(keywords))
+        keywords = keywords or []
+        params.update({f"kw{i}": kw for i, kw in enumerate(keywords)})
+        semantic = query_vec is not None and bool(query_model)
+        if semantic and query_vec is not None:
+            params.update(
+                {
+                    "qvec": _vector_literal(query_vec),
+                    "qmodel": query_model,
+                    "cand": max(_CANDIDATES, limit * 4),
+                }
             )
-            params.update({f"kw{i}": kw for i, kw in enumerate(keywords)})
-            order = f"(({hits})::float / {len(keywords)}) * confidence DESC, created_at DESC"
         async with self._db_factory() as s, s.begin():
             await s.execute(
                 _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
-            rows = (
-                await s.execute(
-                    _t(
-                        "SELECT entry_id, dept_id, org_id, tenant_id, content, source, "
-                        "confidence, tags, is_active, corrections, created_at, updated_at "
-                        f"FROM department_memory_entries WHERE tenant_id = :tid "
-                        f"AND {scope}{clause} ORDER BY {order} LIMIT :lim"
-                    ),
-                    params,
+            exact = True
+            if semantic:
+                exact = await self._small_scope(
+                    s, f"tenant_id = :tid AND {scope}{clause}", params
                 )
-            ).mappings().all()
+                if not exact and await self._iterative_scan_supported(s):
+                    await s.execute(_t("SET LOCAL hnsw.iterative_scan = relaxed_order"))
+                    await s.execute(_t(f"SET LOCAL hnsw.ef_search = {_HNSW_EF_SEARCH}"))
+            sql = _ranked_select_sql(
+                scope=scope,
+                clause=clause,
+                n_keywords=len(keywords),
+                semantic=semantic,
+                exact=exact,
+            )
+            rows = (await s.execute(_t(sql), params)).mappings().all()
 
         def _load(v: Any) -> Any:
             return _json.loads(v) if isinstance(v, str) else (v or [])
@@ -192,25 +346,34 @@ class DepartmentMemory:
         active_only: bool = True,
         *,
         tenant_id: str,
+        embedder: Any = None,
     ) -> list[MemoryEntry]:
         """Retrieve relevant department memories for a query (tenant required).
 
-        Lexical ranking (not semantic): the share of query keywords an entry
-        contains, weighted by its confidence. With Postgres the ranking runs in
-        SQL over every entry of the department and returns ``top_k`` rows.
+        Semantic + lexical (MEM-42): cosine similarity to entries embedded by
+        the same model, blended with the share of query keywords an entry
+        contains, weighted by its confidence. Without an embedder (the store's,
+        or ``embedder`` for this call) the ranking is lexical. With Postgres the
+        ranking runs in SQL and returns ``top_k`` rows.
         """
         with _tracer.start_as_current_span("dept_memory.retrieve") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("query_len", len(query))
             span.set_attribute("top_k", top_k)
+            qvec, qmodel = await self._embed(
+                self._embedder or embedder, query, tenant_id=tenant_id
+            )
+            span.set_attribute("semantic", qvec is not None)
             if self._db_factory is not None:
                 keywords = query.lower().split()[:_MAX_QUERY_KEYWORDS]
                 results = await self._db_rows(
-                    dept_id, tenant_id, active_only, keywords=keywords, limit=top_k
+                    dept_id, tenant_id, active_only, keywords=keywords, limit=top_k,
+                    query_vec=qvec, query_model=qmodel,
                 )
             else:
                 results = self._rank(
-                    self._store.get((tenant_id, dept_id), []), query, top_k, active_only
+                    self._store.get((tenant_id, dept_id), []), query, top_k, active_only,
+                    query_vec=qvec, query_model=qmodel,
                 )
             span.set_attribute("results_count", len(results))
             return results
@@ -223,14 +386,19 @@ class DepartmentMemory:
         active_only: bool = True,
         *,
         tenant_id: str,
+        embedder: Any = None,
     ) -> list[MemoryEntry]:
         """Retrieve relevant memories across every department of one org."""
         with _tracer.start_as_current_span("dept_memory.retrieve_for_org") as span:
             span.set_attribute("org_id", org_id)
+            qvec, qmodel = await self._embed(
+                self._embedder or embedder, query, tenant_id=tenant_id
+            )
             if self._db_factory is not None:
                 keywords = query.lower().split()[:_MAX_QUERY_KEYWORDS]
                 results = await self._db_rows(
-                    "", tenant_id, active_only, keywords=keywords, limit=top_k, org_id=org_id
+                    "", tenant_id, active_only, keywords=keywords, limit=top_k, org_id=org_id,
+                    query_vec=qvec, query_model=qmodel,
                 )
             else:
                 entries = [
@@ -240,15 +408,24 @@ class DepartmentMemory:
                     for e in rows
                     if e.org_id == org_id
                 ]
-                results = self._rank(entries, query, top_k, active_only)
+                results = self._rank(
+                    entries, query, top_k, active_only, query_vec=qvec, query_model=qmodel
+                )
             span.set_attribute("results_count", len(results))
             return results
 
     @staticmethod
     def _rank(
-        entries: list[MemoryEntry], query: str, top_k: int, active_only: bool
+        entries: list[MemoryEntry],
+        query: str,
+        top_k: int,
+        active_only: bool,
+        *,
+        query_vec: tuple[float, ...] | None = None,
+        query_model: str | None = None,
     ) -> list[MemoryEntry]:
-        """Keyword-overlap x confidence ranking (the SQL path's rule, in memory)."""
+        """The SQL path's rule, in memory: keyword overlap x confidence, blended
+        with cosine similarity to same-model vectors when there is a query vector."""
         if active_only:
             entries = [e for e in entries if e.is_active]
         keywords = query.lower().split()[:_MAX_QUERY_KEYWORDS]
@@ -257,6 +434,13 @@ class DepartmentMemory:
             content_lower = entry.content.lower()
             overlap = sum(1 for kw in keywords if kw in content_lower)
             score = overlap / max(1, len(keywords))
+            if query_vec is not None and query_model:
+                similarity = (
+                    _cosine(query_vec, entry.embedding)
+                    if entry.embedding is not None and entry.embedding_model == query_model
+                    else 0.0
+                )
+                score = _SEMANTIC_WEIGHT * similarity + _LEXICAL_WEIGHT * score
             scored.append((score * entry.confidence, entry))
         return [e for _, e in sorted(scored, key=lambda x: x[0], reverse=True)[:top_k]]
 
@@ -284,6 +468,9 @@ class DepartmentMemory:
                 f"of {MIN_CONFIDENCE_FOR_PROMOTION:.2f}"
             )
         content = await _screen_dept_text(content, tenant_id=tenant_id)
+        embedding, embedding_model = await self._embed(
+            self._embedder, content, tenant_id=tenant_id
+        )
         with _tracer.start_as_current_span("dept_memory.add") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("source", source)
@@ -297,6 +484,8 @@ class DepartmentMemory:
                 source=source,
                 confidence=confidence,
                 tags=tags or [],
+                embedding=embedding,
+                embedding_model=embedding_model,
             )
             if self._db_factory is not None:
                 import json as _json
@@ -311,13 +500,17 @@ class DepartmentMemory:
                     await s.execute(
                         _t(
                             "INSERT INTO department_memory_entries (entry_id, dept_id, "
-                            "org_id, tenant_id, content, source, confidence, tags) VALUES "
-                            "(:eid, :did, :oid, :tid, :c, :src, :conf, CAST(:tags AS jsonb))"
+                            "org_id, tenant_id, content, source, confidence, tags, "
+                            "embedding, embedding_model) VALUES "
+                            "(:eid, :did, :oid, :tid, :c, :src, :conf, CAST(:tags AS jsonb), "
+                            "CAST(:emb AS vector), :emodel)"
                         ),
                         {
                             "eid": entry.entry_id, "did": dept_id, "oid": org_id,
                             "tid": tenant_id, "c": content, "src": source,
                             "conf": confidence, "tags": _json.dumps(tags or []),
+                            "emb": _vector_literal(embedding) if embedding else None,
+                            "emodel": embedding_model,
                         },
                     )
             else:

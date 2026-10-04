@@ -739,8 +739,15 @@ class AgentGraph(
                             if _dept_mem._db_factory is None and _graph_db is not None:
                                 _dept_mem = DepartmentMemory()
                                 _dept_mem.set_db(_graph_db)
+                            from app.memory.embedding import memory_embedder_from_provider
+
+                            # MEM-42: semantic recall with the graph's embedder
+                            # when the store has none (worker processes).
                             _mem_entries = await _dept_mem.retrieve(
-                                dept_id, goal, top_k=6, tenant_id=tenant_ctx.tenant_id
+                                dept_id, goal, top_k=6, tenant_id=tenant_ctx.tenant_id,
+                                embedder=memory_embedder_from_provider(
+                                    getattr(self, "_embedder", None)
+                                ),
                             )
                             if _mem_entries:
                                 # MemoryEntry has no `category`; `tags` is the

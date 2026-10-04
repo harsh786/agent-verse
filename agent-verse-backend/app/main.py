@@ -1928,6 +1928,10 @@ def create_app(
                 from app.memory.dept_memory import get_dept_memory
 
                 get_dept_memory().set_db(db_factory)
+                # MEM-42: entries are embedded on add; recall is semantic.
+                from app.memory.embedding import memory_embedder_from_provider as _dm_emb
+
+                get_dept_memory().set_embedder(_dm_emb(getattr(app.state, "embedder", None)))
                 logger.info("dept_memory_db_wired")
                 # MEM-26: v1 optimizer suggestions live in Postgres (RLS),
                 # shared across replicas instead of per-process lists.
