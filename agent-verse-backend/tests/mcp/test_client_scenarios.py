@@ -431,9 +431,9 @@ async def test_call_tool_circuit_open_stale_cache_lookup_errors_still_raises():
 
 
 @pytest.mark.asyncio
-async def test_call_tool_circuit_breaker_check_raises_generic_exception_is_ignored():
-    """A bug in the circuit breaker's own bookkeeping must never block a
-    tool call — only an explicit CircuitBreakerOpenError should."""
+async def test_call_tool_circuit_breaker_check_raises_generic_exception_fails_closed():
+    """MCPCLI-04: a breaker whose state cannot be evaluated refuses the call
+    (Redis outages are absorbed by RedisCircuitBreaker's local fallback)."""
     cfg = MCPServerConfig(name="Srv", url="http://api.example.com")
     registry = MCPRegistry(redis=None)
     client = _make_client(registry)
@@ -451,7 +451,8 @@ async def test_call_tool_circuit_breaker_check_raises_generic_exception_is_ignor
         result = await client.call_tool(
             server_id="srv-1", tool_name="search", arguments={}, tenant_ctx=_ctx()
         )
-    assert result.success is True
+    assert result.success is False
+    assert "circuit breaker" in result.error
 
 
 # ---------------------------------------------------------------------------

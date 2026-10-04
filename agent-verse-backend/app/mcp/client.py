@@ -83,6 +83,16 @@ class ToolCallResult:
     output: Any = None
     error: str = ""
     server_id: str = ""
+    # True when ``output`` is a cached result served because the connector's
+    # circuit is open — not a live call (MCPCLI-05).
+    stale: bool = False
+
+
+def _is_caller_argument_error(error: str | None) -> bool:
+    """True when a failed result was caused by the caller's arguments."""
+    from app.mcp.tool_intelligence import SelfHealingToolCaller
+
+    return SelfHealingToolCaller.is_argument_error(error)
 
 
 def _is_mcp_endpoint(url: str) -> bool:
@@ -368,8 +378,19 @@ class MCPClient:
                         failure_threshold=5,
                         cooldown_seconds=60.0,
                     )
-                except Exception:
-                    return None
+                except Exception as exc:
+                    # A process-local breaker, never none at all (MCPCLI-04).
+                    logger.error(
+                        "circuit_breaker_redis_init_failed server_id=%s error=%s",
+                        server_id,
+                        exc,
+                    )
+                    from app.reliability.circuit_breaker import CircuitBreaker
+
+                    self._circuit_breakers[cb_key] = CircuitBreaker(
+                        failure_threshold=5,
+                        cooldown_seconds=60.0,
+                    )
             else:
                 from app.reliability.circuit_breaker import CircuitBreaker
 
@@ -1366,16 +1387,36 @@ class MCPClient:
                                     success=True,
                                     output=_stale,
                                     server_id=server_id,
+                                    stale=True,
                                 )
-                        except Exception:
-                            pass
+                        except Exception as _stale_exc:
+                            logger.warning(
+                                "circuit_breaker_stale_cache_failed server=%s error=%s",
+                                server_id,
+                                _stale_exc,
+                            )
                     raise CircuitBreakerOpenError(
                         f"Circuit breaker open for {server_id}. Retrying after cooldown."
                     )
             except CircuitBreakerOpenError:
                 raise
-            except Exception:
-                pass  # CB check failure must never block tool calls
+            except Exception as _cb_exc:
+                # Fail closed (MCPCLI-04): an unguarded call to a connector whose
+                # breaker state is unknown is exactly what the breaker prevents.
+                # (Redis outages are handled inside RedisCircuitBreaker by its
+                # local fallback; this is an unexpected breaker error.)
+                logger.error(
+                    "circuit_breaker_check_failed server=%s error=%s", server_id, _cb_exc
+                )
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error=(
+                        f"Tool call refused: the circuit breaker for {server_id} could "
+                        "not be evaluated"
+                    ),
+                    server_id=server_id,
+                )
 
         cfg = await self._registry.get(server_id, tenant_ctx=tenant_ctx)
         if cfg is None:
@@ -1556,8 +1597,14 @@ class MCPClient:
                     logger.warning("self_heal_error: %s", _heal_exc)
             _latency_ms = (_time.monotonic() - _t0) * 1000
             if cb is not None:
+                # A failed result counts against the connector (MCPCLI-06) —
+                # the OpenAPI / builtin / Jira paths return failures instead of
+                # raising — unless the caller's own arguments were the problem.
                 with suppress(Exception):
-                    await cb.record_success_async()
+                    if result.success:
+                        await cb.record_success_async()
+                    elif not _is_caller_argument_error(result.error):
+                        await cb.record_failure_async()
             # Update tool capability stats
             try:
                 await self._record_goal_usage(server_id, _tenant_id)
