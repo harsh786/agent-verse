@@ -138,9 +138,13 @@ async def _provision(admin_url: str, app_pw: str, maint_pw: str) -> None:
                     f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tbl} TO {APP_ROLE}"
                 )
             await conn.exec_driver_sql(f"GRANT SELECT ON tenants TO {APP_ROLE}")
-            await conn.exec_driver_sql(
-                f"GRANT SELECT, INSERT, UPDATE, DELETE ON vault_key_versions TO {MAINT_ROLE}"
-            )
+            # The maintenance role runs the vault key rotation (rotate_all_stores):
+            # it lists tenants, checkpoints the run and records the key version.
+            for tbl in ("vault_key_versions", "vault_rotation_checkpoints"):
+                await conn.exec_driver_sql(
+                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tbl} TO {MAINT_ROLE}"
+                )
+            await conn.exec_driver_sql(f"GRANT SELECT ON tenants TO {MAINT_ROLE}")
             await conn.exec_driver_sql(
                 "GRANT EXECUTE ON FUNCTION app_whitelabel_branding_for_host(text) "
                 f"TO {APP_ROLE}"
@@ -449,7 +453,11 @@ async def test_mfa_state_persists_and_is_enforceable_across_replicas(dbs: dict[s
 
 
 async def test_vault_key_versions_is_maintenance_only(dbs: dict[str, Any]) -> None:
+    # PROV-13 replaced CredentialVault.rotate_key with the offline rotation
+    # (rotate_master_key -> rotate_all_stores), which records the new key version
+    # through the maintenance role once every store is re-encrypted.
     from app.providers.vault import CredentialVault
+    from app.providers.vault_rotation import _record_key_version, rotate_all_stores
 
     admin, app, maint = dbs["admin"], dbs["app"], dbs["maint"]
 
@@ -458,15 +466,19 @@ async def test_vault_key_versions_is_maintenance_only(dbs: dict[str, Any]) -> No
             return int((await s.execute(text("SELECT count(*) FROM vault_key_versions"))).scalar())
 
     before = await _count()
-    vault = CredentialVault(master_key="k" * 32)
-    await vault.rotate_key(b"r" * 32, db=maint)
+    old, new = CredentialVault(master_key="k" * 32), CredentialVault(master_key="r" * 32)
+    result = await rotate_all_stores(
+        old=old, new=new, rotation_id=new.fingerprint(), system_db=maint, pg_stores=()
+    )
+    assert result["status"] == "complete", result
     assert await _count() == before + 1
 
     # The API role can neither see nor write it, even with a tenant GUC set.
     async with app() as s, s.begin():
         await _set_tenant(s, "global")
         assert (await s.execute(text("SELECT count(*) FROM vault_key_versions"))).scalar() == 0
-    await vault.rotate_key(b"s" * 32, db=app)  # logged failure, no row
+    with pytest.raises(Exception, match="row-level security"):
+        await _record_key_version(app, "app-role-rotation")
     assert await _count() == before + 1
 
 
