@@ -1003,6 +1003,16 @@ class _ListOnceGrantStore:
             self._cache[key] = await active_grants(self.inner, tenant_id, agent_id, now)
         return self._cache[key]
 
+    async def ancestor_budget_exhausted(
+        self, tenant_id: str, grant_id: str, cost_usd: float = 0.0
+    ) -> bool:
+        from app.governance.grants.enforcer import _ancestor_exhausted
+
+        key = ("anc", tenant_id, grant_id)
+        if key not in self._cache:
+            self._cache[key] = await _ancestor_exhausted(self.inner, tenant_id, grant_id, cost_usd)
+        return bool(self._cache[key])
+
     async def has_any_for_agent(self, tenant_id: str, agent_id: str) -> bool:
         from app.governance.grants.enforcer import _has_any_grant
 

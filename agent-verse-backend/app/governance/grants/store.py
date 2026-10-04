@@ -92,7 +92,37 @@ class InMemoryGrantStore:
                 return 0.0
             total = float(grant.spent_usd) + float(cost_usd)
             self._grants[key] = Grant(**{**grant.__dict__, "spent_usd": total})
+            # Delegated spend also counts against every ancestor's budget.
+            seen = {grant_id}
+            parent_id = grant.parent_grant_id
+            while parent_id and parent_id not in seen:
+                seen.add(parent_id)
+                pkey = (tenant_id, parent_id)
+                parent = self._grants.get(pkey)
+                if parent is None:
+                    break
+                self._grants[pkey] = Grant(
+                    **{**parent.__dict__, "spent_usd": float(parent.spent_usd) + float(cost_usd)}
+                )
+                parent_id = parent.parent_grant_id
             return total
+
+    async def ancestor_budget_exhausted(
+        self, tenant_id: str, grant_id: str, cost_usd: float = 0.0
+    ) -> bool:
+        """True when any ancestor of a delegated grant has no budget left."""
+        grant = self._grants.get((tenant_id, grant_id))
+        seen = {grant_id}
+        parent_id = grant.parent_grant_id if grant is not None else None
+        while parent_id and parent_id not in seen:
+            seen.add(parent_id)
+            parent = self._grants.get((tenant_id, parent_id))
+            if parent is None:
+                return False
+            if parent.budget_exhausted(cost_usd):
+                return True
+            parent_id = parent.parent_grant_id
+        return False
 
     async def list_for_agent(self, tenant_id: str, agent_id: str) -> tuple[Grant, ...]:
         return tuple(

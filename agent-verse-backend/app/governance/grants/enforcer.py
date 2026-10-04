@@ -31,6 +31,13 @@ async def active_grants(
     return tuple(g for g in grants if g.is_active(now))
 
 
+async def _ancestor_exhausted(store: Any, tenant_id: str, grant_id: str, cost: float) -> bool:
+    probe = getattr(store, "ancestor_budget_exhausted", None)
+    if probe is None:
+        return False  # a store without delegation chains
+    return bool(await probe(tenant_id, grant_id, cost))
+
+
 async def _has_any_grant(store: Any, tenant_id: str, agent_id: str) -> bool:
     probe = getattr(store, "has_any_for_agent", None)
     if probe is not None:
@@ -74,12 +81,20 @@ async def check_grant(
             return GrantDecision(True, "no_grants_issued")
         return GrantDecision(False, "all_grants_expired_or_revoked")
 
+    ancestor_exhausted = False
     for grant in active:
         if grant.covers(tool_name, _now, cost_usd=cost_usd):
+            # A delegated grant spends its ancestors' budget too: it covers
+            # nothing once any ancestor's budget is consumed.
+            if grant.parent_grant_id and await _ancestor_exhausted(
+                store, tenant_id, grant.grant_id, cost_usd
+            ):
+                ancestor_exhausted = True
+                continue
             return GrantDecision(True, "covered", grant_id=grant.grant_id)
 
     # A grant exists and is active but none covers this tool/cost.
-    over_cost = any(g.budget_exhausted(cost_usd) for g in active)
+    over_cost = ancestor_exhausted or any(g.budget_exhausted(cost_usd) for g in active)
     reason = "cost_cap_exceeded" if over_cost else "tool_out_of_scope"
     return GrantDecision(False, reason)
 

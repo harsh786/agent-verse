@@ -24,6 +24,8 @@ _COLS = (
 
 # Upper bound on the active grants one agent's tool call evaluates.
 _ACTIVE_LIMIT = 500
+# Delegation chains deeper than this are not walked (cycle / runaway guard).
+_MAX_CHAIN_DEPTH = 32
 
 
 def _row_to_grant(row: Any) -> Grant:
@@ -143,18 +145,67 @@ class PostgresGrantStore:
         async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
             session, tenant_id
         ):
-            total = (
+            # The grant and every ancestor (delegated spend shares the parent's
+            # budget), in one atomic UPDATE.
+            rows = (
                 await session.execute(
                     text(
-                        "UPDATE agent_grants "
-                        "SET spent_usd = spent_usd + :cost "
-                        "WHERE grant_id = :gid AND tenant_id = :tid "
-                        "RETURNING spent_usd"
+                        "WITH RECURSIVE chain(grant_id, parent_grant_id, depth) AS ("
+                        " SELECT grant_id, parent_grant_id, 0 FROM agent_grants"
+                        " WHERE grant_id = :gid AND tenant_id = :tid"
+                        " UNION ALL"
+                        " SELECT g.grant_id, g.parent_grant_id, c.depth + 1"
+                        " FROM agent_grants g JOIN chain c ON g.grant_id = c.parent_grant_id"
+                        " WHERE g.tenant_id = :tid AND c.depth < :max_depth) "
+                        "UPDATE agent_grants SET spent_usd = spent_usd + :cost "
+                        "WHERE tenant_id = :tid AND grant_id IN (SELECT grant_id FROM chain) "
+                        "RETURNING grant_id, spent_usd"
                     ),
-                    {"cost": cost_usd, "gid": grant_id, "tid": tenant_id},
+                    {
+                        "cost": cost_usd,
+                        "gid": grant_id,
+                        "tid": tenant_id,
+                        "max_depth": _MAX_CHAIN_DEPTH,
+                    },
                 )
-            ).scalar_one_or_none()
+            ).all()
+        total = next((r[1] for r in rows if str(r[0]) == grant_id), None)
         return float(total or 0.0)
+
+    async def ancestor_budget_exhausted(
+        self, tenant_id: str, grant_id: str, cost_usd: float = 0.0
+    ) -> bool:
+        """True when any ancestor of a delegated grant has no budget left."""
+        async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
+            session, tenant_id
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "WITH RECURSIVE anc(grant_id, parent_grant_id, max_cost_usd, "
+                        "spent_usd, depth) AS ("
+                        " SELECT p.grant_id, p.parent_grant_id, p.max_cost_usd, p.spent_usd, 1"
+                        " FROM agent_grants c JOIN agent_grants p"
+                        " ON p.grant_id = c.parent_grant_id AND p.tenant_id = :tid"
+                        " WHERE c.grant_id = :gid AND c.tenant_id = :tid"
+                        " UNION ALL"
+                        " SELECT g.grant_id, g.parent_grant_id, g.max_cost_usd, g.spent_usd,"
+                        " a.depth + 1 FROM agent_grants g JOIN anc a"
+                        " ON g.grant_id = a.parent_grant_id"
+                        " WHERE g.tenant_id = :tid AND a.depth < :max_depth) "
+                        "SELECT 1 FROM anc WHERE max_cost_usd IS NOT NULL AND "
+                        "(spent_usd >= max_cost_usd OR spent_usd + :cost > max_cost_usd) "
+                        "LIMIT 1"
+                    ),
+                    {
+                        "gid": grant_id,
+                        "tid": tenant_id,
+                        "cost": cost_usd,
+                        "max_depth": _MAX_CHAIN_DEPTH,
+                    },
+                )
+            ).first()
+        return row is not None
 
     async def list_for_agent(self, tenant_id: str, agent_id: str) -> tuple[Grant, ...]:
         async with self._sf() as session, session.begin(), sqlalchemy_rls_context(

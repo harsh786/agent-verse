@@ -98,7 +98,14 @@ async def delegate_active_grants(
             grantee_agent_id=child_agent_id,
             scopes=parent.scopes,
             expires_at=parent.expires_at,
-            max_cost_usd=parent.max_cost_usd,
+            # The parent's REMAINING budget, not its full cap: N children used
+            # to get N x the cap. Spend is also charged up the chain
+            # (record_spend), so siblings share it.
+            max_cost_usd=(
+                None
+                if parent.max_cost_usd is None
+                else max(0.0, parent.max_cost_usd - parent.spent_usd)
+            ),
             now=now,
         )
         await store.issue(child)
