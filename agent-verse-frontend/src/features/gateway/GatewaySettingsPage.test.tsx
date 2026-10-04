@@ -120,6 +120,34 @@ describe('GatewaySettingsPage', () => {
     );
   });
 
+  test('a08-F206-05: the banner shows the server stop state after a reload', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith('/v1/org/org-7/emergency-stop') && method === 'GET')
+        return new Response(JSON.stringify({ org_id: 'org-7', stopped: true, scope: 'org', activated_at: '2026-10-05T00:00:00Z' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify(/\/config$/.test(url) ? CONFIG : { ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    renderPage('org-7');
+    expect(await screen.findByText(/Org PAUSED/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Resume autonomous work/i })).toBeInTheDocument();
+  });
+
+  test('a08-F206-05: an unverifiable stop state is shown as unknown, never as running', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.endsWith('/v1/org/org-7/emergency-stop') && method === 'GET')
+        return new Response(JSON.stringify({ detail: 'Emergency stop state could not be verified' }), { status: 503, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify(/\/config$/.test(url) ? CONFIG : { ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    renderPage('org-7');
+    expect(await screen.findByText(/stop state unknown/i)).toBeInTheDocument();
+    // Stopping is always allowed; resuming an unknown state is not offered.
+    expect(screen.getByRole('button', { name: /Emergency stop/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Resume autonomous work/i })).not.toBeInTheDocument();
+  });
+
   test('an unavailable config is shown as unknown, not as an invented one', async () => {
     // Regression: the query's catch fabricated a config (REST "connected",
     // 100/hour limit) whenever /v1/gateway/config failed — which is always.

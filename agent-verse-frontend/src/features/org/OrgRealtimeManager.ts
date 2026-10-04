@@ -299,6 +299,13 @@ export class OrgRealtimeManager {
         qc.invalidateQueries({ queryKey: ['digest', orgId] });
         break;
 
+      // ── Emergency stop (server-held flag; the banner re-reads it) ────────────
+      case ORG_EVENTS.EMERGENCY_STOP:
+      case ORG_EVENTS.EMERGENCY_RESUMED:
+        qc.invalidateQueries({ queryKey: ['orgs', orgId, 'emergency-stop'] });
+        qc.invalidateQueries({ queryKey: orgKeys.health(orgId) });
+        break;
+
       // ── All other events — refresh health ────────────────────────────────────
       default:
         qc.invalidateQueries({ queryKey: orgKeys.events(orgId) });

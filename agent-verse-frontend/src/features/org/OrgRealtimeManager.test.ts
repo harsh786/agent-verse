@@ -204,6 +204,24 @@ describe('OrgRealtimeManager', () => {
     mgr.disconnect();
   });
 
+  test('a08-F206-05: emergency stop/resume events refresh the org stop state', async () => {
+    stubTokenFetch(true);
+    const qc = fakeQueryClient();
+    const mgr = new OrgRealtimeManager('org-1');
+    mgr.connect({ queryClient: qc });
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const invalidate = qc.invalidateQueries as unknown as ReturnType<typeof vi.fn>;
+    for (const type of [ORG_EVENTS.EMERGENCY_STOP, ORG_EVENTS.EMERGENCY_RESUMED]) {
+      invalidate.mockClear();
+      FakeEventSource.latest().emitMessage(baseEvent({ event_type: type }));
+      expect(
+        invalidate.mock.calls.some(([arg]) =>
+          JSON.stringify((arg as { queryKey: unknown[] }).queryKey) === JSON.stringify(['orgs', 'org-1', 'emergency-stop'])),
+      ).toBe(true);
+    }
+    mgr.disconnect();
+  });
+
   test('ignores a malformed (non-JSON) message without throwing or calling onEvent', async () => {
     stubTokenFetch(true);
     const onEvent = vi.fn();

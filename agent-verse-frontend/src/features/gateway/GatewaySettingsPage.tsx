@@ -20,7 +20,7 @@ import {
   Plus, Settings, Loader2, ExternalLink,
   Key, Shield, Clock, Zap,
 } from 'lucide-react';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router-dom';
 import { apiRequest } from '@/lib/api/client';
 import { ChannelBindings } from './ChannelBindings';
@@ -248,25 +248,55 @@ function ConnectModal({ channelId, onClose }: { channelId: string; onClose: () =
 
 // ── Emergency Stop Banner ─────────────────────────────────────────────────────
 
+interface EmergencyStopStatus {
+  org_id: string;
+  stopped: boolean;
+  scope: 'org' | 'tenant' | null;
+  activated_at?: string | null;
+}
+
 export function EmergencyStopBanner({ orgId }: { orgId: string }) {
   const reduce  = useReducedMotion();
-  const [stopped, setStopped] = useState(false);
+  const qc      = useQueryClient();
+  // The stop lives server-side (shared Redis flag); the org event stream
+  // invalidates this query on org.emergency_stop.triggered/resumed, so a reload
+  // or another tab shows the real state (a08-F206-05).
+  const statusKey = ['orgs', orgId, 'emergency-stop'];
+  const status  = useQuery({
+    queryKey: statusKey,
+    queryFn: () => apiRequest<EmergencyStopStatus>('GET', `/v1/org/${orgId}/emergency-stop`),
+    retry: false,
+    refetchInterval: 30_000,
+  });
+  const stopped = status.data?.stopped === true;
+  const unknown = status.isError;
+  const refresh = () => qc.invalidateQueries({ queryKey: statusKey });
   const stop    = useMutation({
     mutationFn: () => apiRequest<{ status: string }>('POST', `/v1/org/${orgId}/emergency-stop`),
-    onSuccess: () => setStopped(true),
+    onSuccess: refresh,
   });
   const resume  = useMutation({
     mutationFn: () => apiRequest<{ status: string }>('POST', `/v1/org/${orgId}/emergency-stop/resume`),
-    onSuccess: () => setStopped(false),
+    onSuccess: refresh,
   });
+  const label = unknown
+    ? 'Emergency stop state unknown — the server could not verify it'
+    : stopped
+      ? status.data?.scope === 'tenant'
+        ? 'Tenant PAUSED — every organisation is stopped'
+        : 'Org PAUSED — no new autonomous work'
+      : 'Emergency stop pauses all autonomous work instantly';
+  // A tenant-wide stop cannot be lifted from an org page.
+  const canResume = stopped && status.data?.scope === 'org';
 
   return (
     <div
       role="status"
-      className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border text-[13px] font-medium ${stopped ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-red-500/5 border-red-500/20 text-[#94A3B8]'}`}
+      className={`flex items-center gap-3 px-4 py-2.5 rounded-xl border text-[13px] font-medium ${stopped || unknown ? 'bg-amber-500/10 border-amber-500/30 text-amber-400' : 'bg-red-500/5 border-red-500/20 text-[#94A3B8]'}`}
     >
       <Zap className="h-4 w-4 flex-shrink-0" aria-hidden />
-      <span className="flex-1">{stopped ? 'Org PAUSED — no new autonomous work' : 'Emergency stop pauses all autonomous work instantly'}</span>
+      <span className="flex-1">{label}</span>
+      {(!stopped || canResume) && (
       <motion.button
         whileTap={reduce ? {} : { scale: 0.97 }}
         transition={SPRING_FAST}
@@ -280,6 +310,7 @@ export function EmergencyStopBanner({ orgId }: { orgId: string }) {
           ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
           : stopped ? 'Resume' : '⏸ Emergency Stop'}
       </motion.button>
+      )}
     </div>
   );
 }
