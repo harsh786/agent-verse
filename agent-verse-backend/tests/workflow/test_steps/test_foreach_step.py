@@ -10,6 +10,16 @@ from app.workflow.state import WorkflowRunStatus
 from app.workflow.steps.foreach_step import ForeachStepNode
 
 
+@pytest.fixture(autouse=True)
+def _in_memory_code_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Code bodies go through the governed sandbox entrypoint, which durably
+    audits every execution and fails the step when the audit row cannot be
+    written. Unit tests have no Postgres: use the in-memory (development) log."""
+    from app.governance.audit import AuditLog
+
+    monkeypatch.setattr("app.tools.code_execution._default_audit_log", AuditLog())
+
+
 def _ctx() -> ContextResolver:
     return ContextResolver()
 
