@@ -15,7 +15,7 @@ from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
-from app.governance.hitl import HITLGateway, HITLResolutionUnavailableError
+from app.governance.hitl import ApprovalStatus, HITLGateway, HITLResolutionUnavailableError
 from app.governance.policies import Policy, PolicyEngine
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
@@ -727,25 +727,33 @@ async def _drop_terminal_owner_approvals(
                 {"t": str(tenant_ctx.tenant_id)},
             )
             m = (
-                await sess.execute(
-                    text(
-                        "SELECT id::text FROM org_missions WHERE id::text = ANY(:ids) "
-                        # Explicit tenant predicate as well as RLS (BYPASSRLS roles).
-                        "AND tenant_id::text = :t "
-                        "AND status IN ('completed','failed','cancelled','archived')"
-                    ),
-                    {"ids": goal_ids, "t": str(tenant_ctx.tenant_id)},
+                (
+                    await sess.execute(
+                        text(
+                            "SELECT id::text FROM org_missions WHERE id::text = ANY(:ids) "
+                            # Explicit tenant predicate as well as RLS (BYPASSRLS roles).
+                            "AND tenant_id::text = :t "
+                            "AND status IN ('completed','failed','cancelled','archived')"
+                        ),
+                        {"ids": goal_ids, "t": str(tenant_ctx.tenant_id)},
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             g = (
-                await sess.execute(
-                    text(
-                        "SELECT id FROM goals WHERE id = ANY(:ids) AND tenant_id = :t "
-                        "AND status IN ('complete','failed','cancelled')"
-                    ),
-                    {"ids": goal_ids, "t": str(tenant_ctx.tenant_id)},
+                (
+                    await sess.execute(
+                        text(
+                            "SELECT id FROM goals WHERE id = ANY(:ids) AND tenant_id = :t "
+                            "AND status IN ('complete','failed','cancelled')"
+                        ),
+                        {"ids": goal_ids, "t": str(tenant_ctx.tenant_id)},
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             terminal = {str(x) for x in [*m, *g]}
     except Exception:
         return approvals  # never let the filter break the inbox
@@ -874,10 +882,28 @@ async def approve_request(
         request, tenant_ctx, request_id, "approve", approver, body.note
     ):
         raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Approval request {request_id} not found",
-            )
-    return {"request_id": request_id, "status": "approved", "approver": approver}
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Approval request {request_id} not found",
+        )
+    return {
+        "request_id": request_id,
+        "approver": approver,
+        **_vote_outcome(gateway, request_id, tenant_ctx),
+    }
+
+
+def _vote_outcome(gateway: Any, request_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
+    """'approved', or — for a multi-approver gate still short of quorum — the vote
+    count (HITL-07: a below-quorum vote used to be answered 'approved' while the
+    gate stayed closed)."""
+    req = gateway.get_request(request_id, tenant_ctx=tenant_ctx) if gateway else None
+    if req is not None and getattr(req, "status", None) == ApprovalStatus.PENDING:
+        return {
+            "status": "vote_recorded",
+            "approvals_received": int(getattr(req, "approvals_received", 0) or 0),
+            "required_approvers": int(getattr(req, "required_approvers", 1) or 1),
+        }
+    return {"status": "approved"}
 
 
 @router.post("/approvals/{request_id}/reject")
@@ -1074,9 +1100,7 @@ async def query_audit(
         )
     except AuditQueryUnavailableError as exc:
         # 503, not a partial per-replica answer presented as the full trail.
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE, "Audit store unavailable"
-        ) from exc
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Audit store unavailable") from exc
 
     return [
         {
@@ -1575,11 +1599,16 @@ async def email_approve_link(
     if not ok:
         raise HTTPException(status_code=409, detail="Approval request is no longer pending")
 
+    outcome = _vote_outcome(gateway, request_id, tenant_ctx)
     return {
         "request_id": request_id,
-        "status": "approved",
         "approver": approver,
-        "message": "Action approved via email link.",
+        **outcome,
+        "message": (
+            "Action approved via email link."
+            if outcome["status"] == "approved"
+            else "Your approval was recorded; more approvals are required."
+        ),
     }
 
 
@@ -1673,9 +1702,7 @@ async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
             expires_at=expires_at,
         )
     except Exception as exc:
-        raise HTTPException(
-            503, "Legal hold could not be persisted; no hold is in place"
-        ) from exc
+        raise HTTPException(503, "Legal hold could not be persisted; no hold is in place") from exc
     return {
         "status": "legal_hold_placed",
         "id": hold["id"],
