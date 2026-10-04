@@ -119,6 +119,15 @@ def neo4j_port() -> Iterator[int]:
 
 
 @pytest.fixture(autouse=True)
+def _allow_connector_test_hosts() -> None:
+    """Opt out of the connector-unit-test placeholder allowlist (tests/ingestion/
+    conftest.py). It answers every ``*.test`` name with a fixed private address
+    straight from the SSRF guard's resolver (SSRF-02), which would bypass
+    ``stub_dns`` below, so the driver dialled 10.255.0.1 instead of the proxy.
+    Each test here sets exactly the operator allowlist it means (``allowlist``)."""
+
+
+@pytest.fixture(autouse=True)
 def stub_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve ``*.neo4j-egress.test`` to the proxy on the loopback."""
     real = socket.getaddrinfo
