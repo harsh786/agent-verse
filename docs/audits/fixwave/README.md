@@ -26,3 +26,15 @@ Progress (rewritten after every item): `progress/<pkg>.progress.json`.
 2. Resume each in-flight package from its worktree: commit/finish uncommitted work, rebase on main,
    continue remaining items of its scope, update its progress file.
 3. Merge finished packages in batches; full suite green; push; redeploy; live baseline.
+
+## Update 2026-10-05 (ownership)
+The user stopped the "hadrensing audit" session; THIS session owns every fix, merge and push.
+- 10 reverify highs: wf-hooks RateLimiter → stabilizer (fixed on its branch); connector secrets + health → g03mcp;
+  worker tool gate → g04gov; prospective scope → g07mem; AgentRouter, repo guardrail, GDPR export (+ org roles,
+  get_metrics RLS, goal_lifecycle fail-open) → highs agent (`progress/highs-2026-10-05.progress.json`).
+- a08 services/frontend/org backlog → own agent (`progress/a08.progress.json`).
+- Integration + e2e_full tiers never ran after batch 8 (known: tenant_vault_keys not granted to app role) →
+  integration stabilizer (`progress/integration-suite.progress.json`).
+- Finished, waiting for the merge batch: g04net (SSRF-04, A2A-01; migration c8e41a2d9f37), livefix (L-02 c4e1a7b9d2f3, L-03).
+  Both migrations chain after f1e790b4050a, so add a merge revision when merging both.
+- Owner decisions open: A2A per-agent public directory exposure rule (A2A-03); Helm worker memory (8 children in 2Gi).
