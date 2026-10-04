@@ -38,3 +38,17 @@ The user stopped the "hadrensing audit" session; THIS session owns every fix, me
 - Finished, waiting for the merge batch: g04net (SSRF-04, A2A-01; migration c8e41a2d9f37), livefix (L-02 c4e1a7b9d2f3, L-03).
   Both migrations chain after f1e790b4050a, so add a merge revision when merging both.
 - Owner decisions open: A2A per-agent public directory exposure rule (A2A-03); Helm worker memory (8 children in 2Gi).
+
+## Handoff 2026-10-05 ~01:30 (usage limit reached)
+- Integration branch `integrate/2026-10-05` (worktree .claude/worktrees/integrate): main@9015740e8 + 31 picks
+  (SECRET-01 000951fbb, SSRF-04, A2A-01, L-01..03, stabilizer fixes, NATIVE-01/04, RPA-07, OAUTH-04/06, MCPCLI-*,
+  HITL-07/08/09, TRUST-02, INC-07, MEM-38/39/47) + alembic merge 1d53d25e0ea7. ruff/mypy clean; migrations from
+  scratch OK; 27 real-PG tests pass. Full unit suite results: /private/tmp/claude-501/intsuite/out0{0..3}.txt (+fe_*).
+- main moved to 6488dd528 (RV-02/05/06/09 by the "hadrensing audit" session). That session, on the user's direct
+  instruction, is rebasing integrate onto main and pushing — check origin/main before pushing anything.
+- Finished, not yet on main: g07mem branch worktree-agent-adae33c84289bd073 (7 commits incl. MEM-42, a05-F084-N1
+  prospective scope; head b42d6e1f8a37). Owner decisions in progress/g07mem.progress.json.
+- Still running when cut off (resume from their worktrees + progress files): stabilizer (unit), integration stabilizer
+  (progress/integration-suite.progress.json), g04gov, g03mcp, g07evals (MEM-53 wip), highs (GDPR, org roles,
+  get_metrics RLS, lifecycle fail-open), a08 services/frontend/org, a09 enterprise (worktree fix-a09).
+- Not yet started: a10 critic backlog (95 open) — see reverify-2026-10-05.json.
