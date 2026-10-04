@@ -77,6 +77,11 @@ def worker(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             return _State()
 
     monkeypatch.setattr(graph_mod, "AgentGraph", _Graph)
+    # POL-01: every tool call evaluates the tenant's policy-as-code rules, and an
+    # unloadable rule set (no DB here) fails closed. This tenant has no rules.
+    monkeypatch.setattr(
+        "app.governance.policy_rules.load_active_policy_rules", AsyncMock(return_value=[])
+    )
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
     monkeypatch.setattr(tasks.celery_app.conf, "broker_url", "")
     monkeypatch.setattr(tasks, "_get_sync_redis", lambda: None)
