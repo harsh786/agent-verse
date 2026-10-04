@@ -1100,6 +1100,55 @@ class TestEmergencyStop:
         assert r.status_code == 200
         redis.delete.assert_awaited()
 
+    # ── a08-F180-03: readable status + realtime events ───────────────────────
+
+    async def test_emergency_status_reads_the_shared_flag(
+        self, client: AsyncClient, test_app: FastAPI
+    ) -> None:
+        import fakeredis
+
+        redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+        test_app.state._redis = redis
+        r = await client.get(f"/v1/org/{ORG_ID}/emergency-stop")
+        assert r.status_code == 200
+        assert r.json()["stopped"] is False
+
+        with patch("app.scaling.tasks.cancel_goals_for_emergency_stop.apply_async"):
+            assert (await client.post(f"/v1/org/{ORG_ID}/emergency-stop")).status_code == 200
+        body = (await client.get(f"/v1/org/{ORG_ID}/emergency-stop")).json()
+        assert body["stopped"] is True
+        assert body["scope"] == "org"
+        assert body["activated_at"]
+
+        # A tenant-wide stop also stops this org.
+        await client.post(f"/v1/org/{ORG_ID}/emergency-stop/resume")
+        await redis.set(f"emergency_stop:{TENANT_ID}", "1")
+        body = (await client.get(f"/v1/org/{ORG_ID}/emergency-stop")).json()
+        assert body["stopped"] is True
+        assert body["scope"] == "tenant"
+
+    async def test_emergency_status_unverifiable_is_503(self, client: AsyncClient) -> None:
+        r = await client.get(f"/v1/org/{ORG_ID}/emergency-stop")
+        assert r.status_code == 503
+
+    async def test_stop_and_resume_publish_org_events(
+        self, client: AsyncClient, test_app: FastAPI
+    ) -> None:
+        import fakeredis
+
+        test_app.state._redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+        publisher = MagicMock()
+        publisher.publish = AsyncMock()
+        with (
+            patch("app.org.events.get_org_event_publisher", return_value=publisher),
+            patch("app.scaling.tasks.cancel_goals_for_emergency_stop.apply_async"),
+        ):
+            await client.post(f"/v1/org/{ORG_ID}/emergency-stop")
+            await client.post(f"/v1/org/{ORG_ID}/emergency-stop/resume")
+        types = [c.kwargs["event_type"] for c in publisher.publish.await_args_list]
+        assert types == ["org.emergency_stop.triggered", "org.emergency_stop.resumed"]
+        assert all(c.kwargs["tenant_id"] == TENANT_ID for c in publisher.publish.await_args_list)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Morning brief / universal command

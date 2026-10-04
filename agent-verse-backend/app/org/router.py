@@ -2026,6 +2026,66 @@ async def org_delete_role(
 # ── Emergency Stop / Pause (QA10) ────────────────────────────────────────────
 
 
+async def _publish_stop_event(event_type: str, tenant_id: str, org_id: str, **payload: Any) -> None:
+    """Announce a stop/resume on the org event stream (a08-F180-03).
+
+    Best effort by design: the persisted flag is the source of truth and the UI
+    re-reads it via GET /emergency-stop; a lost event only delays the banner.
+    """
+    try:
+        from app.org.events import get_org_event_publisher
+
+        await get_org_event_publisher().publish(
+            event_type=event_type, org_id=org_id, tenant_id=tenant_id, payload=payload
+        )
+    except Exception as exc:
+        import structlog as _slog
+
+        _slog.get_logger(__name__).warning(
+            "org.emergency_stop_event_failed", event_type=event_type, error=str(exc)[:200]
+        )
+
+
+@router.get(
+    "/{org_id}/emergency-stop",
+    operation_id="org_emergency_stop_status",
+    summary="Whether this organisation's autonomous work is emergency-stopped",
+)
+async def org_emergency_stop_status(org_id: str, request: Request) -> dict[str, Any]:
+    """Read the shared stop flags (org, then tenant-wide) from Redis.
+
+    Fails closed with 503 when the flags cannot be read: "not stopped" is never
+    reported for a state nobody could verify.
+    """
+    ctx = _require_tenant(request)
+    tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
+    redis = getattr(request.app.state, "_redis", None)
+    from app.governance.emergency_stop import (
+        EmergencyStopUnavailableError,
+        org_stop_key,
+        read_stop,
+        tenant_stop_key,
+    )
+
+    try:
+        org_rec = await read_stop(redis, org_stop_key(tenant_id, org_id))
+        tenant_rec = None if org_rec else await read_stop(redis, tenant_stop_key(tenant_id))
+    except EmergencyStopUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Emergency stop state could not be verified",
+        ) from exc
+    rec = org_rec or tenant_rec
+    return {
+        "org_id": org_id,
+        "stopped": rec is not None,
+        "scope": "org" if org_rec else ("tenant" if tenant_rec else None),
+        "activated_at": (rec or {}).get("activated_at"),
+        "activated_by": (rec or {}).get("activated_by"),
+        "reason": (rec or {}).get("reason"),
+    }
+
+
 @router.post(
     "/{org_id}/emergency-stop",
     operation_id="org_emergency_stop",
@@ -2065,7 +2125,7 @@ async def org_emergency_stop(
 
         try:
             # Read by app.governance.emergency_stop at submit, start and each step.
-            await activate_org_stop(
+            stop_record = await activate_org_stop(
                 redis, tenant_id, org_id, activated_by=str(getattr(ctx, "api_key_id", "") or "")
             )
         except EmergencyStopUnavailableError as exc:
@@ -2076,6 +2136,13 @@ async def org_emergency_stop(
                 detail="Emergency stop unavailable: the flag could not be persisted; "
                 "nothing was stopped",
             ) from exc
+        await _publish_stop_event(
+            "org.emergency_stop.triggered",
+            tenant_id,
+            org_id,
+            activated_at=stop_record.get("activated_at"),
+            activated_by=stop_record.get("activated_by"),
+        )
 
         # Mark the org's non-terminal goals cancelled off the request path (keyset
         # batches on a worker). The flag above already halts them at their next
@@ -2163,6 +2230,7 @@ async def org_emergency_resume(
             ) from exc
 
         _log.info("org.emergency_stop_cleared", tenant_id=tenant_id, org_id=org_id)
+        await _publish_stop_event("org.emergency_stop.resumed", tenant_id, org_id)
         return {
             "status": "resumed",
             "org_id": org_id,
