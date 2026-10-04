@@ -38,6 +38,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 _APP_ROLE = "test_app_chat_artifacts_rls"
+_CHAT_ARTIFACTS_REVISION = "c7fbea9807c1"  # app/db/migrations/versions/c7fbea9807c1_chat_artifacts.py
 
 
 def _alembic(url: str, *args: str) -> None:
@@ -221,7 +222,10 @@ async def test_downgrade_then_upgrade(urls: dict[str, str]) -> None:
         "SELECT count(*) FROM information_schema.columns "
         "WHERE table_name = 'chat_artifacts' AND column_name IN ('kind', 'expires_at')"
     )
-    _alembic(urls["admin"], "downgrade", "-1")
+    # Downgrade THIS migration (and whatever sits on top of it), not "head -1":
+    # head is a merge revision once other branches land, and "-1" from a merge
+    # is ambiguous to alembic.
+    _alembic(urls["admin"], "downgrade", f"{_CHAT_ARTIFACTS_REVISION}-1")
     assert await _scalar(urls["admin"], has_kind) == 0
     _alembic(urls["admin"], "upgrade", "head")
     assert await _scalar(urls["admin"], has_kind) == 2
