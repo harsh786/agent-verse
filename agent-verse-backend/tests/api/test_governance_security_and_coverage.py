@@ -1379,7 +1379,7 @@ def test_emergency_stop_pending_approvals_enumeration_exception_is_swallowed() -
 
 def test_emergency_stop_audit_log_exception_is_swallowed() -> None:
     audit = AuditLog()
-    audit.record = MagicMock(side_effect=RuntimeError("audit sink down"))
+    audit.record_async = AsyncMock(side_effect=RuntimeError("audit sink down"))
 
     client = TestClient(
         _make_app(audit=audit, ctx=_ADMIN_CTX, redis=_fake_redis()),

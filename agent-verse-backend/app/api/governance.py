@@ -1445,9 +1445,7 @@ async def emergency_stop(
     needs_batch_cancel = False
     if goal_service is not None:
         try:
-            running = await goal_service.active_goal_ids(
-                ctx, limit=_ESTOP_INLINE_CANCEL_LIMIT
-            )
+            running = await goal_service.active_goal_ids(ctx, limit=_ESTOP_INLINE_CANCEL_LIMIT)
         except Exception as exc:
             _log.warning("emergency_stop_enumerate_failed: %s", exc)
             running = []
@@ -1522,22 +1520,25 @@ async def emergency_stop(
                 plan=PlanTier.FREE,
                 api_key_id=getattr(ctx, "api_key_id", ""),
             )
-            audit_log.record(
-                AuditEvent(
-                    goal_id="emergency_stop",
-                    tool_name="emergency_stop",
-                    action_level=ActionLevel.DENY,
-                    outcome="stop_activated",
-                    api_key_id=getattr(ctx, "api_key_id", ""),
-                    note=(
-                        f"cancelled_goals={len(cancelled_goals)},"
-                        f"rejected_approvals={len(rejected_approvals)},"
-                        f"failed_goals={len(failed_goals)},"
-                        f"failed_approvals={len(failed_approvals)}"
-                    ),
+            # INC-01: awaited, so audit_recorded means the row is stored (the
+            # fire-and-forget record() made it mean "queued").
+            _event = AuditEvent(
+                goal_id="emergency_stop",
+                tool_name="emergency_stop",
+                action_level=ActionLevel.DENY,
+                outcome="stop_activated",
+                api_key_id=getattr(ctx, "api_key_id", ""),
+                note=(
+                    f"cancelled_goals={len(cancelled_goals)},"
+                    f"rejected_approvals={len(rejected_approvals)},"
+                    f"failed_goals={len(failed_goals)},"
+                    f"failed_approvals={len(failed_approvals)}"
                 ),
-                tenant_ctx=_audit_ctx,
             )
+            if hasattr(audit_log, "record_async"):
+                await audit_log.record_async(_event, tenant_ctx=_audit_ctx)
+            else:
+                audit_log.record(_event, tenant_ctx=_audit_ctx)
             audit_recorded = True
         except Exception as exc:
             _log.warning("emergency_stop_audit_failed: %s", exc)
