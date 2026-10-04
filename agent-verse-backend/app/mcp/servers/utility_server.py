@@ -47,6 +47,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
+                "attachment_id": {
+                    "type": "string",
+                    "description": (
+                        "Id of a file attached to the mission (listed in the mission "
+                        "objective). The file is read for the calling tenant only."
+                    ),
+                },
                 "image_base64": {
                     "type": "string",
                     "description": "Base64-encoded image bytes.",
@@ -157,10 +164,37 @@ def set_tools(tools: dict[str, Any] | None) -> None:
     _tools = tools
 
 
+async def _resolve_attachment(args: dict[str, Any], tenant_ctx: Any) -> dict[str, Any]:
+    """Swap ``attachment_id`` for the attachment's bytes, for the calling tenant only.
+
+    Mission attachments live in ``org_attachments`` (a08-F177-01). Without a
+    tenant there is no safe owner to resolve against, so the call is refused.
+    """
+    import base64
+
+    tenant_id = str(getattr(tenant_ctx, "tenant_id", "") or "")
+    if not tenant_id:
+        return {"error": "attachment_id requires a tenant-bound tool call"}
+    from app.org import attachments as _attachments
+
+    attachment_id = str(args.pop("attachment_id"))
+    blob = await _attachments.load_attachment(tenant_id, attachment_id)
+    if blob is None:
+        return {"error": f"attachment {attachment_id!r} not found (or expired)"}
+    args.pop("file_path", None)
+    args.pop("image_base64", None)
+    args.pop("pdf_base64", None)
+    args["document_base64"] = base64.b64encode(blob.content).decode("ascii")
+    args["content_type"] = blob.content_type
+    args["filename"] = blob.filename
+    return args
+
+
 async def call_tool(
     tool_name: str,
     arguments: dict[str, Any],
     credentials: dict[str, Any] | None = None,
+    tenant_ctx: Any = None,
 ) -> dict[str, Any]:
     """Dispatch an agent tool call to the matching local utility tool class.
 
@@ -185,8 +219,14 @@ async def call_tool(
     else:
         return {"error": f"Unknown utility tool: {tool_name!r}"}
 
+    args = dict(arguments or {})
     try:
-        return await tool.execute(**(arguments or {}))
+        if tool_name == "extract_document" and args.get("attachment_id"):
+            resolved = await _resolve_attachment(args, tenant_ctx)
+            if "error" in resolved:
+                return resolved
+            args = resolved
+        return await tool.execute(**args)
     except Exception as exc:
         # Surface failures as data, never raise to the caller (builtin contract).
         return {"error": f"{tool_name} failed: {exc}"}

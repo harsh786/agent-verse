@@ -248,4 +248,28 @@ describe('CreateMissionDrawer', () => {
     expect(await screen.findByText(/Mission service unavailable/i)).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  test('the mission objective references uploaded files by attachment_id, never a host path', async () => {
+    const bodies: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/attachments') && method === 'POST')
+        return new Response(JSON.stringify({ attachment_id: 'abc123', ref: 'org-attachment:abc123', filename: 'report.txt', content_type: 'text/plain', size: 12, expires_at: '2026-11-04T00:00:00Z' }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/missions/execute') && method === 'POST') {
+        bodies.push(String(init?.body ?? ''));
+        return new Response(JSON.stringify({ mission_id: 'm-new', title: 'Research trends', status: 'active', goal_id: 'g1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderDrawer({ open: true });
+    fireEvent.change(screen.getByLabelText(/Mission title/i), { target: { value: 'Research trends' } });
+    fireEvent.change(screen.getByLabelText(/Add attachments/i), { target: { files: [makeFile('report.txt')] } });
+    fireEvent.click(screen.getByRole('button', { name: /Create mission/i }));
+
+    await waitFor(() => expect(bodies.length).toBe(1));
+    const objective = String(JSON.parse(bodies[0]).objective ?? '');
+    expect(objective).toContain('attachment_id: abc123');
+    expect(objective).not.toContain('undefined');
+  });
 });

@@ -7458,6 +7458,22 @@ def purge_expired_chat_artifacts() -> dict:
     return _run_async(_run())
 
 
+@celery_app.task(name="agentverse.maintenance.purge_expired_org_attachments")
+def purge_expired_org_attachments() -> dict:
+    """Delete mission attachments past retention (a08-F177-01), in bounded batches.
+
+    Cross-tenant, so it runs on the BYPASSRLS maintenance factory; failures raise.
+    """
+
+    async def _run() -> dict:
+        from app.db.session import get_system_session_factory
+        from app.org.attachments import purge_expired_org_attachments as _purge
+
+        return {"purged_count": await _purge(get_system_session_factory())}
+
+    return _run_async(_run())
+
+
 @celery_app.task(name="agentverse.compliance.run_gdpr_export", bind=True, max_retries=1)
 def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
     """Async GDPR data export job — runs in background worker.

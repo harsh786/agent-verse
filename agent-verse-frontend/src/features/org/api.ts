@@ -91,10 +91,11 @@ export const orgApi = {
     file: File,
   ): Promise<{
     attachment_id: string;
-    path: string;
+    ref: string;
     filename: string;
     content_type: string;
     size: number;
+    expires_at: string;
   }> {
     const fd = new FormData();
     fd.append('file', file);

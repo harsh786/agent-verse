@@ -361,6 +361,28 @@ class OrgService:
         )
         return result.scalar_one_or_none()
 
+    async def add_attachment(
+        self,
+        *,
+        org_id: uuid.UUID,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        uploaded_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist a mission attachment in ``org_attachments`` (a08-F177-01)."""
+        from app.org.attachments import store_attachment
+
+        return await store_attachment(
+            self._session,
+            tenant_id=str(self._tenant_id),
+            org_id=org_id,
+            filename=filename,
+            content_type=content_type,
+            content=content,
+            uploaded_by=uploaded_by,
+        )
+
     async def list_organizations(
         self,
         *,

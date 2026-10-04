@@ -57,14 +57,17 @@ export function CreateMissionDrawer({ orgId, open, onClose }: CreateMissionDrawe
     setBusy(true);
     try {
       // Upload any attachments first, then tell the agent where to find them.
-      // The extract_document OCR/vision tool reads these server paths at run time.
+      // Attachments are stored server-side (tenant-scoped); the extract_document
+      // OCR/vision tool reads one by its attachment_id at run time.
       let objective = data.objective ?? '';
       if (files.length > 0) {
         const uploaded = await Promise.all(files.map((f) => orgApi.uploadAttachment(orgId, f)));
-        const lines = uploaded.map((u) => `- ${u.filename} → ${u.path}`).join('\n');
+        const lines = uploaded
+          .map((u) => `- ${u.filename} (attachment_id: ${u.attachment_id})`)
+          .join('\n');
         objective =
-          `${objective}\n\nAttached files (use the extract_document tool to read them ` +
-          `when the task needs their contents):\n${lines}`.trim();
+          `${objective}\n\nAttached files (call the extract_document tool with the ` +
+          `attachment_id when the task needs their contents):\n${lines}`.trim();
       }
       // The backend now returns in ~0.2s (it persists the mission and hands
       // team-formation to a Celery worker), so we can await it for proper error

@@ -3390,25 +3390,11 @@ _ATTACHMENT_TYPES = {
 _ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
-def _attachments_dir(tenant_id: str) -> str:
-    import os
-    import tempfile
-
-    base = os.getenv("ORG_ATTACHMENTS_DIR") or os.path.join(
-        tempfile.gettempdir(), "av-attachments"
-    )
-    # Tenant-scoped subdir; tenant_id is a server-issued UUID, safe as a path part.
-    safe_tenant = "".join(c for c in tenant_id if c.isalnum() or c in "-_")
-    path = os.path.join(base, safe_tenant or "unknown")
-    os.makedirs(path, exist_ok=True)
-    return path
-
-
 @router.post(
     "/{org_id}/attachments",
     operation_id="org_upload_attachment",
     summary="Upload a file (image/PDF/doc) a mission's agent can read via its OCR/"
-    "vision tools; returns a server path to reference in the mission objective",
+    "vision tools; returns an attachment_id to reference in the mission objective",
     status_code=status.HTTP_201_CREATED,
 )
 async def org_upload_attachment(
@@ -3418,13 +3404,17 @@ async def org_upload_attachment(
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
 ) -> dict[str, Any]:
-    """Accept one mission attachment, validate its type/size, and store it under a
-    tenant-scoped directory the worker can read. The returned ``path`` is what the
-    agent's ``extract_document`` tool reads (referenced from the mission objective)."""
+    """Accept one mission attachment, validate its type/size, and store it durably.
+
+    The bytes go to ``org_attachments`` (Postgres, RLS-forced, retention purge) in
+    the request's tenant-scoped transaction, so any replica or worker can read
+    them. The agent reads the file with ``extract_document(attachment_id=...)``;
+    no host filesystem path is written or returned (a08-F177-01). A failed write
+    is an error, never a 201.
+    """
     import os
 
     ctx = _require_tenant(request)
-    tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
 
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     ext = _ATTACHMENT_TYPES.get(content_type)
@@ -3446,24 +3436,24 @@ async def org_upload_attachment(
     if not data:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty file.")
 
-    attachment_id = uuid4().hex
-    dest = os.path.join(_attachments_dir(tenant_id), f"{attachment_id}{ext}")
-    with open(dest, "wb") as fh:
-        fh.write(data)
-
     # Preserve a display name (sanitized) without trusting it as a path.
     raw_name = os.path.basename(file.filename or "").strip()
     display_name = "".join(
         c for c in raw_name if c.isalnum() or c in " ._-()"
     ).strip() or f"attachment{ext}"
 
-    return {
-        "attachment_id": attachment_id,
-        "path": dest,
-        "filename": display_name,
-        "content_type": content_type,
-        "size": len(data),
-    }
+    try:
+        org_uuid = uuid_mod.UUID(org_id)
+    except ValueError as exc:
+        raise _not_found("Organization", org_id) from exc
+    record = await service.add_attachment(
+        org_id=org_uuid,
+        filename=display_name,
+        content_type=content_type,
+        content=data,
+        uploaded_by=getattr(ctx, "api_key_id", None),
+    )
+    return {**record, "ref": f"org-attachment:{record['attachment_id']}"}
 
 
 # ── create_mission_and_execute REST endpoint ─────────────────────────────────

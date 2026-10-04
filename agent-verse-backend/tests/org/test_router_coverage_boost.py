@@ -1304,12 +1304,20 @@ class TestUploadAttachment:
             )
         assert r.status_code == 413
 
-    async def test_upload_ok(self, client: AsyncClient, tmp_path) -> None:
-        with patch.dict("os.environ", {"ORG_ATTACHMENTS_DIR": str(tmp_path)}):
-            r = await client.post(
-                f"/v1/org/{ORG_ID}/attachments",
-                files={"file": ("notes.txt", b"hello world", "text/plain")},
-            )
+    async def test_upload_ok(self, client: AsyncClient, mock_service: MagicMock) -> None:
+        mock_service.add_attachment = AsyncMock(
+            return_value={
+                "attachment_id": "a" * 32,
+                "filename": "notes.txt",
+                "content_type": "text/plain",
+                "size": len(b"hello world"),
+                "expires_at": NOW.isoformat(),
+            }
+        )
+        r = await client.post(
+            f"/v1/org/{ORG_ID}/attachments",
+            files={"file": ("notes.txt", b"hello world", "text/plain")},
+        )
         assert r.status_code == 201
         data = r.json()
         assert data["filename"] == "notes.txt"
