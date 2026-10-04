@@ -108,5 +108,7 @@ async def test_tenant_scan_does_not_read_every_memory() -> None:
     await ltm.consolidate_long_term_memory(system_db=system_db, app_db=_Db({}))
     scans = [s for s, _ in system_db.log if "long_term_memory" in s]
     assert scans and all("DISTINCT tenant_id FROM long_term_memory" not in s for s in scans)
-    assert any("EXISTS (SELECT 1 FROM long_term_memory m WHERE m.tenant_id = t.id)" in s
-               for s in scans)
+    assert any(
+        "LATERAL (SELECT 1 FROM long_term_memory m WHERE m.tenant_id = t.id LIMIT 1)" in s
+        for s in scans
+    )

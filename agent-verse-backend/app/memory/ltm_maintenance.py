@@ -103,9 +103,9 @@ async def _scan(system_db: Any) -> tuple[list[str], set[str], dict[str, int]]:
                 # every memory (MEM-47).
                 await session.execute(
                     text(
-                        "SELECT t.id FROM tenants t WHERE EXISTS "
-                        "(SELECT 1 FROM long_term_memory m WHERE m.tenant_id = t.id) "
-                        "ORDER BY t.id"
+                        "SELECT t.id FROM tenants t CROSS JOIN LATERAL "
+                        "(SELECT 1 FROM long_term_memory m WHERE m.tenant_id = t.id "
+                        "LIMIT 1) has_memory ORDER BY t.id"
                     )
                 )
             ).fetchall()
