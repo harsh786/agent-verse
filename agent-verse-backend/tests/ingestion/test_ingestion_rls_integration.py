@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from app.api.ingestion import _run_sync
+from app.db.app_role import AppRoleSpec, ensure_app_role
 from app.ingestion.job_tracker import IngestionJobTracker
 from app.ingestion.scheduler import _retry_dlq_async, _sync_source_async
 from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfig, SourceFamily
@@ -51,7 +52,6 @@ pytestmark = pytest.mark.integration
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 TENANT_A = "tenant-ing-a"
 TENANT_B = "tenant-ing-b"
-_TABLES = ("source_configs", "ingestion_jobs", "ingestion_dlq")
 
 
 @pytest.fixture(scope="module")
@@ -69,18 +69,20 @@ def postgres_url() -> Iterator[str]:
         yield admin_url
 
 
-async def _create_role(conn: Any, role: str, password: str, *, bypass_rls: bool) -> None:
+async def _create_maint_role(conn: Any, role: str, password: str) -> None:
+    """The BYPASSRLS maintenance role (non-superuser): DML on every table, like the
+    role behind ``MAINTENANCE_DATABASE_URL``."""
     quoted = (await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})).scalar_one()
     await conn.execute(
         text(
-            f"CREATE ROLE {role} LOGIN PASSWORD {quoted} NOSUPERUSER NOCREATEDB NOCREATEROLE "
-            + ("BYPASSRLS" if bypass_rls else "NOBYPASSRLS")
+            f"CREATE ROLE {role} LOGIN PASSWORD {quoted} "
+            "NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS"
         )
     )
     await conn.execute(text(f"GRANT CONNECT ON DATABASE test TO {role}"))
     await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
     await conn.execute(
-        text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {', '.join(_TABLES)} TO {role}")
+        text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}")
     )
 
 
@@ -93,8 +95,12 @@ async def dbs(postgres_url: str) -> AsyncIterator[SimpleNamespace]:
     app_pw, maint_pw = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
     admin_engine = create_async_engine(postgres_url)
     async with admin_engine.begin() as conn:
-        await _create_role(conn, app_role, app_pw, bypass_rls=False)
-        await _create_role(conn, maint_role, maint_pw, bypass_rls=True)
+        # The application role comes from the SAME bootstrap production runs after
+        # every migration (app/db/app_role.py), not a hand-picked table list: the
+        # ingestion paths also read other tenant-scoped tables (e.g. the per-tenant
+        # envelope key in tenant_vault_keys), exactly as they do in production.
+        await conn.run_sync(ensure_app_role, AppRoleSpec(role=app_role, password=app_pw))
+        await _create_maint_role(conn, maint_role, maint_pw)
         for table in ("ingestion_dlq", "ingestion_jobs", "source_configs"):
             await conn.execute(text(f"DELETE FROM {table}"))
 

@@ -159,6 +159,47 @@ async def test_bootstrap_creates_a_least_privilege_role_that_rls_binds(pg_url: s
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_bootstrap_grants_dml_on_every_migrated_table(pg_url: str) -> None:
+    """Every table the migrations create is usable by the app role — including
+    tables added after the role model was written (e.g. ``tenant_vault_keys``,
+    which every per-tenant secret read/write goes through). A table it cannot
+    touch fails the request at runtime with "permission denied", not at deploy."""
+    spec = AppRoleSpec(role=f"app_{uuid.uuid4().hex[:8]}", password="pw-dml")
+    await _ensure(pg_url, spec)
+
+    owner = create_async_engine(pg_url)
+    try:
+        async with owner.connect() as conn:
+            rows = (
+                await conn.execute(
+                    text(
+                        "SELECT c.relname FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') "
+                        "AND NOT c.relispartition"
+                    )
+                )
+            ).all()
+            tables = {r[0] for r in rows}
+            assert "tenant_vault_keys" in tables
+            missing = [
+                f"{table}:{priv}"
+                for table in sorted(tables)
+                for priv in ("SELECT", "INSERT", "UPDATE", "DELETE")
+                if not (
+                    await conn.execute(
+                        text("SELECT has_table_privilege(:r, quote_ident(:t), :p)"),
+                        {"r": spec.role, "t": table, "p": priv},
+                    )
+                ).scalar_one()
+            ]
+    finally:
+        await owner.dispose()
+    assert missing == []
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_bootstrap_repairs_an_existing_privileged_role(pg_url: str) -> None:
     spec = AppRoleSpec(role=f"app_{uuid.uuid4().hex[:8]}", password="new-pw")
     owner = create_async_engine(pg_url)
