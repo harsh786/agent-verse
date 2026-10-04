@@ -24,9 +24,12 @@ TENANT = TenantContext(
 
 async def test_audit_trail_records_all_tool_calls() -> None:
     """Audit log should record every tool call passed through the pipeline."""
+    # Not a high-risk goal: "create ... repos" reads as a change to infrastructure
+    # (risk classifier), and a high-risk mutating step in bounded-autonomous mode
+    # is refused before it runs — that gate is covered by the HITL tests.
     provider = FakeProvider(responses=[
-        '{"steps": ["call github to list repos", "call jira to create ticket"]}',
-        "repos listed",
+        '{"steps": ["call github to list open issues", "call jira to create ticket"]}',
+        "issues listed",
         "ticket created",
         '{"success": true, "reason": "done"}',
     ])
@@ -38,7 +41,7 @@ async def test_audit_trail_records_all_tool_calls() -> None:
         audit_log=audit,
     )
     state = await graph.run(
-        goal="list repos and create ticket", tenant_ctx=TENANT
+        goal="list open issues and file a ticket", tenant_ctx=TENANT
     )
     # Two steps → two audit entries recorded by the loop
     entries = audit.query(tenant_ctx=TENANT)
