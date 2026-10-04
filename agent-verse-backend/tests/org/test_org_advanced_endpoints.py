@@ -384,6 +384,11 @@ async def test_morning_brief_returns_brief(client: AsyncClient) -> None:
 @pytest.mark.anyio
 async def test_ucg_command_accepted(client: AsyncClient) -> None:
     """POST /v1/org/{id}/command returns command_id."""
+    from types import SimpleNamespace
+
+    client._transport.app.state.goal_service = SimpleNamespace(  # type: ignore[attr-defined]
+        submit_goal=AsyncMock(return_value={"goal_id": "g-1"})
+    )
     resp = await client.post(f"/v1/org/{ORG_ID}/command", json={
         "command": "Generate weekly market intelligence report",
         "channel": "rest",

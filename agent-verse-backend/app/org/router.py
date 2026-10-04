@@ -2314,14 +2314,26 @@ async def org_universal_command(
         # keeps the newest COMMAND_HISTORY_CAP per org.
         await _command_store(request.app.state, tenant_id, org_id).add(record)
 
-        # Route to agent loop (fire-and-forget) when not high-risk. Pass the full
-        # TenantContext (not just the id) — GoalService.submit_goal requires it.
+        # Route to the agent loop before answering (a08-F180-01). This used to be
+        # a fire-and-forget task: a replica crash between the 202 and submit_goal
+        # left the persisted command 'queued' forever. submit_goal only persists
+        # and enqueues the goal (durable from then on), so awaiting it is cheap.
+        # Pass the full TenantContext — GoalService.submit_goal requires it.
+        goal_id: str | None = None
         if not high_risk:
-            asyncio.get_event_loop().create_task(
-                _route_command_to_agent(
-                    command_id, org_id, ctx, body.command, request.app.state
-                )
+            routed_ok, goal_id, route_error = await _route_command_to_agent(
+                command_id, org_id, ctx, body.command, request.app.state
             )
+            if not routed_ok:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "command_id": command_id,
+                        "status": "routing_failed",
+                        "message": "The command was not started: " + (route_error or "")[:200],
+                    },
+                )
+            record["status"] = "routed"
 
         _log.info(
             "org.command_received",
@@ -2337,29 +2349,32 @@ async def org_universal_command(
         return {
             "command_id": command_id,
             "status": record["status"],
+            "goal_id": goal_id,
             "requires_2fa": high_risk,
             "org_id": org_id,
             "channel": body.channel,
             "message": (
                 "Command queued for 2FA confirmation before execution."
                 if high_risk
-                else "Command accepted and routing to agent loop."
+                else "Command accepted and submitted to the agent loop."
             ),
         }
 
 
 async def _route_command_to_agent(
     command_id: str, org_id: str, tenant_ctx: Any, command: str, app_state: Any = None
-) -> None:
+) -> tuple[bool, str | None, str | None]:
     """Route an accepted UCG command to the agent goal loop.
 
     ``app_state`` is the request's ``app.state`` (threaded by the caller) so this
-    fire-and-forget task uses the lifespan-wired, DB/Redis-backed GoalService
-    instead of the module-level app.main.app singleton (whose state carries
-    unwired in-memory fallbacks). ``tenant_ctx`` is the request's TenantContext,
-    which ``GoalService.submit_goal`` requires (a bare tenant_id string is not
+    uses the lifespan-wired, DB/Redis-backed GoalService instead of the
+    module-level app.main.app singleton (whose state carries unwired in-memory
+    fallbacks). ``tenant_ctx`` is the request's TenantContext, which
+    ``GoalService.submit_goal`` requires (a bare tenant_id string is not
     accepted — passing one previously raised TypeError and every command
     silently became ``routing_failed``).
+
+    Returns ``(submitted, goal_id, error)``. Awaited by the endpoint (a08-F180-01).
     """
     import structlog as _sl
 
@@ -2377,17 +2392,6 @@ async def _route_command_to_agent(
             execution_context={"source": "ucg", "org_id": org_id, "command_id": command_id},
         )
         goal_id = result.get("goal_id") if isinstance(result, dict) else None
-        # Update command status + surface the created goal id for polling/SSE.
-        await _command_store(app_state, tenant_id, org_id).update(
-            command_id, status="routed", goal_id=goal_id
-        )
-        _log.info(
-            "org.command_routed",
-            command_id=command_id,
-            tenant_id=tenant_id,
-            org_id=org_id,
-            goal_id=goal_id,
-        )
     except Exception as exc:
         _log.warning(
             "org.command_route_failed",
@@ -2404,6 +2408,25 @@ async def _route_command_to_agent(
             _log.warning(
                 "org.command_status_write_failed", command_id=command_id, error=str(store_exc)
             )
+        return False, None, str(exc)
+    # The goal is durable from here; a failed status write must not report it
+    # as not started.
+    try:
+        await _command_store(app_state, tenant_id, org_id).update(
+            command_id, status="routed", goal_id=goal_id
+        )
+    except Exception as store_exc:
+        _log.warning(
+            "org.command_status_write_failed", command_id=command_id, error=str(store_exc)
+        )
+    _log.info(
+        "org.command_routed",
+        command_id=command_id,
+        tenant_id=tenant_id,
+        org_id=org_id,
+        goal_id=goal_id,
+    )
+    return True, goal_id, None
 
 
 # ── N2: Org Composer — NL to Organisation ────────────────────────────────────

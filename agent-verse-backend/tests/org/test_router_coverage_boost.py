@@ -1162,6 +1162,27 @@ class TestMorningBriefAndCommand:
         )
         assert r.status_code == 202
         assert r.json()["requires_2fa"] is False
+        # a08-F180-01: routed before the response (no fire-and-forget task a
+        # replica crash could lose), and the response says so.
+        goal_service.submit_goal.assert_awaited_once()
+        assert r.json()["status"] == "routed"
+        assert r.json()["goal_id"] == "g-42"
+
+    async def test_universal_command_routing_failure_is_an_error(
+        self, client: AsyncClient, test_app: FastAPI
+    ) -> None:
+        from app.org import runtime_store
+
+        goal_service = MagicMock()
+        goal_service.submit_goal = AsyncMock(side_effect=RuntimeError("queue down"))
+        test_app.state.goal_service = goal_service
+        r = await client.post(
+            f"/v1/org/{ORG_ID}/command", json={"command": "summarize this week"}
+        )
+        assert r.status_code == 503
+        cmd_id = r.json()["detail"]["command_id"]
+        rows = runtime_store._MEM_COMMANDS[(TENANT_ID, ORG_ID)]
+        assert next(c for c in rows if c["command_id"] == cmd_id)["status"] == "routing_failed"
 
     async def test_list_commands_and_get_command(
         self, client: AsyncClient, test_app: FastAPI
