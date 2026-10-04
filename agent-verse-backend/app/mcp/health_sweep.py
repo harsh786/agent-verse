@@ -217,11 +217,66 @@ async def run_health_sweep(
     }
 
 
+DEFAULT_RETENTION_DAYS = 7
+
+
+def snapshot_retention_days() -> int:
+    """``CONNECTOR_HEALTH_RETENTION_DAYS`` (default 7, at least 1)."""
+    import os
+
+    raw = os.getenv("CONNECTOR_HEALTH_RETENTION_DAYS", "")
+    try:
+        days = int(raw) if raw.strip() else DEFAULT_RETENTION_DAYS
+    except ValueError:
+        logger.warning("connector_health_retention_days_invalid value=%r", raw)
+        days = DEFAULT_RETENTION_DAYS
+    return max(1, days)
+
+
+async def prune_health_snapshots(
+    factory: Any,
+    *,
+    retention_days: int,
+    batch_size: int = 5000,
+    max_batches: int = 200,
+) -> int:
+    """Delete ``connector_health_snapshots`` older than the retention window (HEALTH-06).
+
+    One row per connector per sweep had no retention at all. Cross-tenant, so it
+    runs on the maintenance (BYPASSRLS) session; each batch is its own short
+    transaction driven by the ``checked_at`` index, and a run is capped at
+    ``max_batches`` so a large backlog drains over several runs.
+    """
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+
+    deleted = 0
+    for _ in range(max_batches):
+        async with factory() as session, session.begin(), system_session(session):
+            result = await session.execute(
+                text(
+                    "DELETE FROM connector_health_snapshots WHERE id IN ("
+                    "SELECT id FROM connector_health_snapshots "
+                    "WHERE checked_at < NOW() - make_interval(days => :d) "
+                    "ORDER BY checked_at LIMIT :n)"
+                ),
+                {"d": retention_days, "n": batch_size},
+            )
+        count = int(getattr(result, "rowcount", 0) or 0)
+        deleted += count
+        if count < batch_size:
+            break
+    return deleted
+
+
 __all__ = [
     "CURSOR_KEY",
     "LOCK_KEY",
     "classify_health",
     "fetch_connector_page",
     "probe_connector",
+    "prune_health_snapshots",
     "run_health_sweep",
+    "snapshot_retention_days",
 ]

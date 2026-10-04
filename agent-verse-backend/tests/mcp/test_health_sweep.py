@@ -164,3 +164,25 @@ async def test_builtin_and_invalid_configs() -> None:
     )
     assert probed == []
     assert [s["status"] for s in persist.snapshots] == ["invalid_config"]
+
+
+def test_snapshot_prune_is_scheduled_on_the_maintenance_queue() -> None:
+    """HEALTH-06: connector_health_snapshots has a retention job."""
+    from app.scaling import tasks
+    from app.scaling.celery_app import celery_app
+
+    name = "agentverse.maintenance.prune_connector_health_snapshots"
+    assert hasattr(tasks, "prune_connector_health_snapshots")
+    entries = [e for e in celery_app.conf.beat_schedule.values() if e["task"] == name]
+    assert entries and entries[0]["options"]["queue"] == "maintenance"
+
+
+def test_retention_days_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.mcp.health_sweep import snapshot_retention_days
+
+    monkeypatch.setenv("CONNECTOR_HEALTH_RETENTION_DAYS", "0")
+    assert snapshot_retention_days() == 1
+    monkeypatch.setenv("CONNECTOR_HEALTH_RETENTION_DAYS", "garbage")
+    assert snapshot_retention_days() == 7
+    monkeypatch.delenv("CONNECTOR_HEALTH_RETENTION_DAYS")
+    assert snapshot_retention_days() == 7

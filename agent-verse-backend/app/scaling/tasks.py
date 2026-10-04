@@ -5492,6 +5492,28 @@ def check_mcp_health() -> dict[str, Any]:
 health_check_mcp = check_mcp_health
 
 
+@celery_app.task(name="agentverse.maintenance.prune_connector_health_snapshots")  # type: ignore[untyped-decorator]
+def prune_connector_health_snapshots() -> dict[str, Any]:
+    """Delete connector health snapshots past retention (HEALTH-06), in batches.
+
+    Cross-tenant, so it runs on the BYPASSRLS maintenance factory; a failure
+    raises so Celery records it instead of reporting zero rows pruned.
+    """
+
+    async def _run() -> dict[str, Any]:
+        from app.db.session import get_system_session_factory
+        from app.mcp.health_sweep import prune_health_snapshots, snapshot_retention_days
+
+        days = snapshot_retention_days()
+        pruned = await prune_health_snapshots(
+            get_system_session_factory(), retention_days=days
+        )
+        return {"pruned_count": pruned, "retention_days": days}
+
+    result: dict[str, Any] = _run_async(_run())
+    return result
+
+
 def _run_poll_trigger(
     key: str, sched: dict[str, Any], r: Any, now: datetime.datetime
 ) -> int:

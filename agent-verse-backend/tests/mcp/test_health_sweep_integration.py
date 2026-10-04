@@ -154,3 +154,71 @@ async def test_without_bypassrls_the_read_fails_loudly(dbs: tuple[Any, Any], red
     await _seed(app_db, redis)
     with pytest.raises(Exception, match="row-level security"):
         await fetch_connector_page(app_db, None, 10)
+
+
+# ── HEALTH-06: connector_health_snapshots retention ──────────────────────────
+
+
+async def test_prune_deletes_only_expired_snapshots_in_batches(pg_url: str) -> None:
+    from app.mcp.health_sweep import prune_health_snapshots
+
+    admin = create_async_engine(pg_url)
+    async with admin.begin() as conn:
+        await conn.execute(text("DELETE FROM connector_health_snapshots"))
+        for i in range(7):
+            await conn.execute(
+                text(
+                    "INSERT INTO connector_health_snapshots "
+                    "(id, server_id, tenant_id, status, checked_at) VALUES "
+                    "(:id, 's', :t, 'healthy', NOW() - make_interval(days => :d))"
+                ),
+                {"id": f"old{i}", "t": f"t{i % 2}", "d": 30},
+            )
+        for i in range(3):
+            await conn.execute(
+                text(
+                    "INSERT INTO connector_health_snapshots "
+                    "(id, server_id, tenant_id, status) VALUES (:id, 's', 't0', 'healthy')"
+                ),
+                {"id": f"new{i}"},
+            )
+        indexes = {
+            r[0]
+            for r in await conn.execute(
+                text(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE tablename = 'connector_health_snapshots'"
+                )
+            )
+        }
+    mnt_db, mnt_engine = await _role_factory_snapshots(pg_url)
+    try:
+        deleted = await prune_health_snapshots(mnt_db, retention_days=7, batch_size=3)
+    finally:
+        await mnt_engine.dispose()
+    async with admin.begin() as conn:
+        left = sorted(
+            r[0] for r in await conn.execute(text("SELECT id FROM connector_health_snapshots"))
+        )
+    await admin.dispose()
+    assert deleted == 7
+    assert left == ["new0", "new1", "new2"]
+    assert "ix_ch_snapshots_checked_at" in indexes
+    assert "ix_ch_snapshots_tenant_server_checked" in indexes
+
+
+async def _role_factory_snapshots(pg_url: str) -> tuple[Any, Any]:
+    password = secrets.token_urlsafe(24)
+    role = f"test_hs_prune_{secrets.token_hex(4)}"
+    admin = create_async_engine(pg_url)
+    async with admin.begin() as conn:
+        quoted = (await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})).scalar()
+        await conn.execute(text(f"CREATE ROLE {role} LOGIN PASSWORD {quoted} BYPASSRLS"))
+        await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+        await conn.execute(
+            text(f"GRANT SELECT, DELETE ON connector_health_snapshots TO {role}")
+        )
+    await admin.dispose()
+    url = make_url(pg_url).set(username=role, password=password)
+    engine = create_async_engine(url.render_as_string(hide_password=False))
+    return async_sessionmaker(engine, expire_on_commit=False), engine

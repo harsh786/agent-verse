@@ -118,4 +118,14 @@ class ConnectorHealthSnapshot(Base):
     checked_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    __table_args__ = (Index("ix_ch_snapshots_server_tenant", "server_id", "tenant_id"),)
+    __table_args__ = (
+        Index("ix_ch_snapshots_server_tenant", "server_id", "tenant_id"),
+        # HEALTH-06 (migration b7d3e1f0a9c2): retention prune + history reads.
+        Index("ix_ch_snapshots_checked_at", "checked_at"),
+        Index(
+            "ix_ch_snapshots_tenant_server_checked",
+            "tenant_id",
+            "server_id",
+            checked_at.desc(),
+        ),
+    )

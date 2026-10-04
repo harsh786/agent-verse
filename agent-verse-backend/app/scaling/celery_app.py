@@ -331,6 +331,12 @@ celery_app.conf.update(
             "schedule": 86400,  # daily
             "options": {"queue": "maintenance"},
         },
+        # HEALTH-06: connector health snapshots past CONNECTOR_HEALTH_RETENTION_DAYS.
+        "prune-connector-health-snapshots-hourly": {
+            "task": "agentverse.maintenance.prune_connector_health_snapshots",
+            "schedule": 3600,
+            "options": {"queue": "maintenance"},
+        },
         # ORG-42: generated chat documents past their retention window.
         "purge-expired-chat-artifacts-hourly": {
             "task": "agentverse.maintenance.purge_expired_chat_artifacts",
