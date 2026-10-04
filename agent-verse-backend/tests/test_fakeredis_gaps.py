@@ -139,7 +139,9 @@ async def test_lua_2key_success(fake_redis):
         keys=["goal:g1", "daily:t1"],
         args=["0.5", "10.0", "100.0", str(future_ts), str(future_ts)],
     )
-    assert result == "0.5:0.5"
+    # goal:daily:agent, like _LUA_CHECK_AND_INCREMENT (the per-agent total is 0
+    # when the 2-key form tracks no agent).
+    assert result == "0.5:0.5:0.0"
     assert float(fake_redis._d["goal:g1"]) == pytest.approx(0.5)
     assert float(fake_redis._d["daily:t1"]) == pytest.approx(0.5)
 
@@ -157,7 +159,7 @@ async def test_lua_2key_accumulates(fake_redis):
         keys=["goal:g2", "daily:t2"],
         args=["2.0", "100.0", "100.0", str(future_ts), str(future_ts)],
     )
-    assert result == "3.0:3.0"
+    assert result == "3.0:3.0:0.0"
 
 
 @pytest.mark.asyncio
