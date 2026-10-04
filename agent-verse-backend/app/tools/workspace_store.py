@@ -43,6 +43,59 @@ class WorkspaceUnavailableError(Exception):
     """The workspace store could not be reached (503); nothing was changed."""
 
 
+class WorkspaceFileTooLargeError(Exception):
+    """One file is larger than ``max_file_bytes`` (413)."""
+
+
+class WorkspaceQuotaExceededError(Exception):
+    """The write would take the tenant past its byte or entry quota (507)."""
+
+
+@dataclass(frozen=True)
+class WorkspaceLimits:
+    """Per-file and per-tenant bounds (NATIVE-04): one tenant cannot fill the store."""
+
+    max_file_bytes: int
+    max_tenant_bytes: int
+    max_entries: int
+
+    @classmethod
+    def from_settings(cls) -> WorkspaceLimits:
+        from app.core.config import get_settings
+
+        s = get_settings()
+        return cls(
+            max_file_bytes=int(s.workspace_max_file_bytes),
+            max_tenant_bytes=int(s.workspace_max_tenant_bytes),
+            max_entries=int(s.workspace_max_entries),
+        )
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "max_file_bytes": self.max_file_bytes,
+            "max_tenant_bytes": self.max_tenant_bytes,
+            "max_entries": self.max_entries,
+        }
+
+    def check_file(self, size: int) -> None:
+        if size > self.max_file_bytes:
+            raise WorkspaceFileTooLargeError(
+                f"file is {size} bytes; the limit is {self.max_file_bytes} bytes"
+            )
+
+    def check_totals(self, bytes_used: int, entries: int, d_bytes: int, d_entries: int) -> None:
+        if d_bytes > 0 and bytes_used + d_bytes > self.max_tenant_bytes:
+            raise WorkspaceQuotaExceededError(
+                f"workspace quota exceeded: {bytes_used} of {self.max_tenant_bytes} bytes "
+                f"used, this write needs {d_bytes} more"
+            )
+        if d_entries > 0 and entries + d_entries > self.max_entries:
+            raise WorkspaceQuotaExceededError(
+                f"workspace quota exceeded: {entries} of {self.max_entries} files and "
+                f"directories used, this write needs {d_entries} more"
+            )
+
+
 @dataclass(frozen=True)
 class _Entry:
     dir: str
@@ -116,9 +169,22 @@ class InMemoryWorkspaceStore:
 
     durable = False
 
-    def __init__(self) -> None:
+    def __init__(self, *, limits: WorkspaceLimits | None = None) -> None:
         self._data: dict[str, dict[tuple[str, str], _Entry]] = {}
         self._lock = asyncio.Lock()
+        self._limits = limits
+
+    @property
+    def limits(self) -> WorkspaceLimits:
+        return self._limits or WorkspaceLimits.from_settings()
+
+    async def usage(self, tenant_id: str) -> dict[str, int]:
+        entries = self._data.get(tenant_id, {})
+        return {
+            "bytes_used": sum(e.size_bytes for e in entries.values()),
+            "entries": len(entries),
+            **self.limits.as_dict(),
+        }
 
     async def read(self, tenant_id: str, path: str) -> str:
         dir_, name = split_path(path)
@@ -132,6 +198,8 @@ class InMemoryWorkspaceStore:
     async def write(self, tenant_id: str, path: str, content: str) -> int:
         dir_, name = split_path(path)
         data = _validate_content(content)
+        limits = self.limits
+        limits.check_file(len(data))
         async with self._lock:
             entries = self._data.setdefault(tenant_id, {})
             now = datetime.now(UTC)
@@ -142,6 +210,13 @@ class InMemoryWorkspaceStore:
             target = entries.get((dir_, name))
             if target is not None and target.kind != "file":
                 raise WorkspaceConflictError(f"{path!r} is a directory")
+            new_entries = sum(1 for a in _ancestors(dir_) if a not in entries)
+            limits.check_totals(
+                sum(e.size_bytes for e in entries.values()),
+                len(entries),
+                len(data) - (target.size_bytes if target else 0),
+                new_entries + (0 if target else 1),
+            )
             for a_dir, a_name in _ancestors(dir_):
                 entries.setdefault(
                     (a_dir, a_name), _Entry(a_dir, a_name, "directory", None, 0, now)
@@ -197,8 +272,71 @@ class PostgresWorkspaceStore:
 
     durable = True
 
-    def __init__(self, db_session_factory: Any) -> None:
+    def __init__(self, db_session_factory: Any, *, limits: WorkspaceLimits | None = None) -> None:
         self._db = db_session_factory
+        self._limits = limits
+
+    @property
+    def limits(self) -> WorkspaceLimits:
+        return self._limits or WorkspaceLimits.from_settings()
+
+    @staticmethod
+    async def _lock_usage(s: Any, tenant_id: str) -> tuple[int, int]:
+        """Lock the tenant's usage row: writes/deletes of one tenant serialise here,
+        so the running totals stay exact without ever summing the table."""
+        from sqlalchemy import text
+
+        await s.execute(
+            text(
+                "INSERT INTO workspace_usage (tenant_id) VALUES (:t) "
+                "ON CONFLICT (tenant_id) DO NOTHING"
+            ),
+            {"t": tenant_id},
+        )
+        row = (
+            await s.execute(
+                text(
+                    "SELECT bytes_used, entries FROM workspace_usage "
+                    "WHERE tenant_id = :t FOR UPDATE"
+                ),
+                {"t": tenant_id},
+            )
+        ).one()
+        return int(row[0]), int(row[1])
+
+    @staticmethod
+    async def _add_usage(s: Any, tenant_id: str, d_bytes: int, d_entries: int) -> None:
+        from sqlalchemy import text
+
+        await s.execute(
+            text(
+                "UPDATE workspace_usage SET bytes_used = GREATEST(bytes_used + :b, 0), "
+                "entries = GREATEST(entries + :e, 0), updated_at = NOW() "
+                "WHERE tenant_id = :t"
+            ),
+            {"t": tenant_id, "b": d_bytes, "e": d_entries},
+        )
+
+    async def usage(self, tenant_id: str) -> dict[str, int]:
+        from sqlalchemy import text
+
+        try:
+            async with self._db() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+                row = (
+                    await s.execute(
+                        text(
+                            "SELECT bytes_used, entries FROM workspace_usage WHERE tenant_id = :t"
+                        ),
+                        {"t": tenant_id},
+                    )
+                ).first()
+        except Exception as exc:
+            raise WorkspaceUnavailableError(str(exc)[:200]) from exc
+        return {
+            "bytes_used": int(row[0]) if row else 0,
+            "entries": int(row[1]) if row else 0,
+            **self.limits.as_dict(),
+        }
 
     async def read(self, tenant_id: str, path: str) -> str:
         from sqlalchemy import text
@@ -228,22 +366,28 @@ class PostgresWorkspaceStore:
 
         dir_, name = split_path(path)
         data = _validate_content(content)
+        limits = self.limits
+        limits.check_file(len(data))
         ancestors = _ancestors(dir_)
         params: dict[str, Any] = {"t": tenant_id}
         try:
             async with self._db() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+                bytes_used, entries = await self._lock_usage(s, tenant_id)
+                new_dirs = 0
                 if ancestors:
                     params["dirs"] = [a[0] for a in ancestors]
                     params["names"] = [a[1] for a in ancestors]
-                    await s.execute(
+                    inserted = await s.execute(
                         text(
                             "INSERT INTO workspace_files (tenant_id, dir, name, kind) "
                             "SELECT :t, d, n, 'directory' "
                             "FROM unnest(CAST(:dirs AS varchar[]), CAST(:names AS varchar[])) "
-                            "AS a(d, n) ON CONFLICT (tenant_id, dir, name) DO NOTHING"
+                            "AS a(d, n) ON CONFLICT (tenant_id, dir, name) DO NOTHING "
+                            "RETURNING 1"
                         ),
                         params,
                     )
+                    new_dirs = len(inserted.fetchall())
                     # Re-read the ancestors (locked) AFTER the insert: a concurrent
                     # writer may have committed a FILE at one of these names.
                     clash = (
@@ -261,6 +405,19 @@ class PostgresWorkspaceStore:
                     ).first()
                     if clash is not None:
                         raise WorkspaceConflictError(f"{_join(clash[0], clash[1])!r} is a file")
+                old = (
+                    await s.execute(
+                        text(
+                            "SELECT size_bytes FROM workspace_files "
+                            "WHERE tenant_id = :t AND dir = :d AND name = :n"
+                        ),
+                        {"t": tenant_id, "d": dir_, "n": name},
+                    )
+                ).first()
+                d_bytes = len(data) - (int(old[0]) if old else 0)
+                d_entries = new_dirs + (0 if old else 1)
+                # Raising here rolls the whole transaction back (ancestors too).
+                limits.check_totals(bytes_used, entries, d_bytes, d_entries)
                 written = (
                     await s.execute(
                         text(
@@ -284,7 +441,8 @@ class PostgresWorkspaceStore:
                 ).first()
                 if written is None:
                     raise WorkspaceConflictError(f"{path!r} is a directory")
-        except (WorkspaceConflictError, WorkspacePathError):
+                await self._add_usage(s, tenant_id, d_bytes, d_entries)
+        except (WorkspaceConflictError, WorkspacePathError, WorkspaceQuotaExceededError):
             raise
         except Exception as exc:
             raise WorkspaceUnavailableError(str(exc)[:200]) from exc
@@ -347,12 +505,13 @@ class PostgresWorkspaceStore:
         full = _join(dir_, name)
         try:
             async with self._db() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+                await self._lock_usage(s, tenant_id)
                 removed = (
                     await s.execute(
                         text(
                             "DELETE FROM workspace_files WHERE tenant_id = :t AND ("
                             "(dir = :d AND name = :n) OR dir = :full "
-                            "OR dir LIKE :prefix ESCAPE '\\') RETURNING 1"
+                            "OR dir LIKE :prefix ESCAPE '\\') RETURNING size_bytes"
                         ),
                         {
                             "t": tenant_id,
@@ -363,6 +522,10 @@ class PostgresWorkspaceStore:
                         },
                     )
                 ).fetchall()
+                if removed:
+                    await self._add_usage(
+                        s, tenant_id, -sum(int(r[0] or 0) for r in removed), -len(removed)
+                    )
         except Exception as exc:
             raise WorkspaceUnavailableError(str(exc)[:200]) from exc
         return bool(removed)
@@ -374,7 +537,10 @@ __all__ = [
     "InMemoryWorkspaceStore",
     "PostgresWorkspaceStore",
     "WorkspaceConflictError",
+    "WorkspaceFileTooLargeError",
+    "WorkspaceLimits",
     "WorkspacePathError",
+    "WorkspaceQuotaExceededError",
     "WorkspaceStore",
     "WorkspaceUnavailableError",
     "split_path",

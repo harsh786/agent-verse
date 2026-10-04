@@ -1752,6 +1752,15 @@ export interface WorkspaceFile {
   [key: string]: unknown;
 }
 
+/** Tenant workspace totals and limits (GET /tools/workspace/usage). */
+export interface WorkspaceUsage {
+  bytes_used: number;
+  entries: number;
+  max_file_bytes: number;
+  max_tenant_bytes: number;
+  max_entries: number;
+}
+
 export const toolsApi = {
   executeCode: (
     code: string,
@@ -1773,6 +1782,7 @@ export const toolsApi = {
     ),
   deleteFile: (path: string) =>
     request<void>(`/tools/files/${encodePath(path)}`, { method: "DELETE" }),
+  workspaceUsage: () => request<WorkspaceUsage>("/tools/workspace/usage"),
   sendEmail: (body: {
     to: string | string[];
     subject: string;

@@ -166,7 +166,9 @@ def _workspace(request: Request) -> tuple[Any, Any]:
 def _workspace_http_error(exc: Exception) -> HTTPException | None:
     from app.tools.workspace_store import (
         WorkspaceConflictError,
+        WorkspaceFileTooLargeError,
         WorkspacePathError,
+        WorkspaceQuotaExceededError,
         WorkspaceUnavailableError,
     )
 
@@ -178,6 +180,10 @@ def _workspace_http_error(exc: Exception) -> HTTPException | None:
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, WorkspaceConflictError):
         return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, WorkspaceFileTooLargeError):
+        return HTTPException(status_code=413, detail=str(exc))
+    if isinstance(exc, WorkspaceQuotaExceededError):
+        return HTTPException(status_code=507, detail=str(exc))
     if isinstance(exc, WorkspaceUnavailableError):
         import logging
 
@@ -187,6 +193,20 @@ def _workspace_http_error(exc: Exception) -> HTTPException | None:
             detail="Workspace storage is unavailable; nothing was changed.",
         )
     return None
+
+
+@router.get("/workspace/usage")
+async def workspace_usage(request: Request) -> dict[str, int]:
+    """The tenant's workspace totals and limits (bytes, entries, per-file cap)."""
+    ctx, store = _workspace(request)
+    try:
+        usage: dict[str, int] = await store.usage(ctx.tenant_id)
+        return usage
+    except Exception as exc:
+        err = _workspace_http_error(exc)
+        if err is None:
+            raise
+        raise err from exc
 
 
 @router.get("/files")
@@ -231,7 +251,10 @@ async def write_file(request: Request, path: str, body: FileWriteRequest) -> dic
 
     ctx, store = _workspace(request)
     try:
-        split_path(path)  # malformed / escaping paths are refused before the audit row
+        # Malformed/escaping paths and oversized files are refused before the
+        # audit row: nothing is attempted.
+        split_path(path)
+        store.limits.check_file(len(body.content.encode("utf-8")))
     except Exception as exc:
         err = _workspace_http_error(exc)
         if err is None:

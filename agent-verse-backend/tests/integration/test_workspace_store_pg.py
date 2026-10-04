@@ -16,7 +16,13 @@ from typing import Any
 import asyncpg
 import pytest
 
-from app.tools.workspace_store import PostgresWorkspaceStore, WorkspaceConflictError
+from app.tools.workspace_store import (
+    PostgresWorkspaceStore,
+    WorkspaceConflictError,
+    WorkspaceFileTooLargeError,
+    WorkspaceLimits,
+    WorkspaceQuotaExceededError,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -41,12 +47,17 @@ def app_role_url(pg_url: str) -> Iterator[str]:
     asyncio.run(
         _run(
             f"CREATE ROLE {role} LOGIN PASSWORD '{password}' NOSUPERUSER NOBYPASSRLS",
-            f"GRANT SELECT, INSERT, UPDATE, DELETE ON workspace_files TO {role}",
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON workspace_files, workspace_usage TO {role}",
         )
     )
     head, tail = pg_url.split("://", 1)
     yield f"{head}://{role}:{password}@{tail.split('@', 1)[1]}"
-    asyncio.run(_run(f"REVOKE ALL ON workspace_files FROM {role}", f"DROP ROLE IF EXISTS {role}"))
+    asyncio.run(
+        _run(
+            f"REVOKE ALL ON workspace_files, workspace_usage FROM {role}",
+            f"DROP ROLE IF EXISTS {role}",
+        )
+    )
 
 
 def _factory(url: str) -> Any:
@@ -108,5 +119,38 @@ def test_workspace_is_shared_durable_and_tenant_scoped(app_role_url: str, pg_url
         # A "restart": brand-new store objects still see the data.
         fresh = PostgresWorkspaceStore(_factory(app_role_url))
         assert await fresh.read(tid, "bulk/f3.txt") == "3"
+
+    asyncio.run(_scenario())
+
+
+def test_quota_is_exact_under_concurrent_replicas(app_role_url: str, pg_url: str) -> None:
+    """NATIVE-04: concurrent writers through two replicas never overshoot the quota."""
+    tid = f"q-{secrets.token_hex(4)}"
+    limits = WorkspaceLimits(max_file_bytes=10, max_tenant_bytes=50, max_entries=100)
+
+    async def _scenario() -> None:
+        a = PostgresWorkspaceStore(_factory(app_role_url), limits=limits)
+        b = PostgresWorkspaceStore(_factory(app_role_url), limits=limits)
+        with pytest.raises(WorkspaceFileTooLargeError):
+            await a.write(tid, "big.txt", "x" * 11)
+        results = await asyncio.gather(
+            *(a.write(tid, f"f{i}.txt", "x" * 10) for i in range(8)),
+            *(b.write(tid, f"g{i}.txt", "x" * 10) for i in range(8)),
+            return_exceptions=True,
+        )
+        ok = [r for r in results if r == 10]
+        refused = [r for r in results if isinstance(r, WorkspaceQuotaExceededError)]
+        assert len(ok) == 5 and len(refused) == 11, results
+        usage = await b.usage(tid)
+        assert usage["bytes_used"] == 50 and usage["entries"] == 5
+        assert len(await a.list(tid, ".")) == 5
+        # Overwrite counts only the delta; deleting gives the space back.
+        name = (await a.list(tid, "."))[0]["name"]
+        await a.write(tid, name, "x")
+        assert (await a.usage(tid))["bytes_used"] == 41
+        await a.write(tid, "d/e.txt", "x" * 9)
+        assert (await a.usage(tid))["entries"] == 7
+        assert await b.delete(tid, "d") is True
+        assert await b.usage(tid) == {"bytes_used": 41, "entries": 5, **limits.as_dict()}
 
     asyncio.run(_scenario())

@@ -29,6 +29,13 @@ beforeEach(() => {
   sessionStorage.setItem('av_api_key', 'test-key');
   useAuthStore.setState({ apiKey: 'test-key', tenantId: 't', plan: 'free', isAuthenticated: true });
   useToastStore.setState({ toasts: [] });
+  vi.spyOn(toolsApi, 'workspaceUsage').mockResolvedValue({
+    bytes_used: 2048,
+    entries: 2,
+    max_file_bytes: 1048576,
+    max_tenant_bytes: 104857600,
+    max_entries: 10000,
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -422,6 +429,31 @@ describe('ToolsPage', () => {
     await userEvent.type(screen.getByLabelText(/file content/i), 'abc');
     await userEvent.click(screen.getByRole('button', { name: /save file/i }));
     await waitFor(() => expect(writeSpy).toHaveBeenCalledWith('new.txt', 'abc'));
+  });
+
+  test('shows workspace usage against the tenant quota (NATIVE-04)', async () => {
+    vi.spyOn(toolsApi, 'listFiles').mockResolvedValue([]);
+    renderPage();
+    await userEvent.click(screen.getByRole('tab', { name: /file manager/i }));
+    expect(await screen.findByTestId('workspace-usage')).toHaveTextContent('2.0 KB of 100.0 MB used');
+  });
+
+  test.each([
+    [413, 'file is 2000000 bytes; the limit is 1048576 bytes', /file too large/i],
+    [507, 'workspace quota exceeded', /workspace full/i],
+  ])('a %i on save explains the limit', async (code, detail, expected) => {
+    vi.spyOn(toolsApi, 'listFiles').mockResolvedValue([]);
+    vi.spyOn(toolsApi, 'writeFile').mockRejectedValue(new ApiError(code, detail));
+    renderPage();
+    await userEvent.click(screen.getByRole('tab', { name: /file manager/i }));
+    await screen.findByText(/no files yet/i);
+    await userEvent.click(screen.getByLabelText(/^new file$/i));
+    await userEvent.type(screen.getByLabelText(/file path/i), 'big.txt');
+    await userEvent.type(screen.getByLabelText(/file content/i), 'abc');
+    await userEvent.click(screen.getByRole('button', { name: /save file/i }));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some(t => expected.test(t.message))).toBe(true)
+    );
   });
 
   test('refresh button re-fetches the file list', async () => {

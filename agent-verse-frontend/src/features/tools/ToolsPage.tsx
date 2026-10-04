@@ -391,6 +391,10 @@ function FileManager() {
     queryKey: ['workspace-files', directory],
     queryFn: () => toolsApi.listFiles(directory),
   });
+  const { data: usage } = useQuery({
+    queryKey: ['workspace-files', 'usage'],
+    queryFn: () => toolsApi.workspaceUsage(),
+  });
 
   const navigateTo = (path: string) => {
     setDirectory(path);
@@ -424,7 +428,16 @@ function FileManager() {
       setIsNewFile(false);
       qc.invalidateQueries({ queryKey: ['workspace-files'] });
     },
-    onError: (e) => toast({ kind: 'error', message: `Save failed: ${String(e)}` }),
+    onError: (e) =>
+      toast({
+        kind: 'error',
+        message:
+          e instanceof ApiError && e.status === 413
+            ? `File too large: ${e.message}`
+            : e instanceof ApiError && e.status === 507
+              ? `Workspace full: ${e.message}. Delete files to free space.`
+              : `Save failed: ${String(e)}`,
+      }),
   });
 
   const deleteMutation = useMutation({
@@ -458,6 +471,15 @@ function FileManager() {
             {files.length > 0 && (
               <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">
                 {files.length} file{files.length !== 1 ? 's' : ''}
+              </span>
+            )}
+            {usage && (
+              <span
+                data-testid="workspace-usage"
+                title={`${usage.entries} of ${usage.max_entries} entries; max ${formatBytes(usage.max_file_bytes)} per file`}
+                className="text-[10px] text-muted-foreground"
+              >
+                {formatBytes(usage.bytes_used)} of {formatBytes(usage.max_tenant_bytes)} used
               </span>
             )}
           </div>

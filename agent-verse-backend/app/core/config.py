@@ -413,6 +413,13 @@ class Settings(BaseSettings):
     # Pages one tenant may have loading at once across all replicas (Redis leases).
     perception_max_pages_per_tenant: int = 10
 
+    # --- tenant file workspace (/tools/files, app/tools/workspace_store.py) ---
+    # Largest single file (UTF-8 bytes); larger writes are 413.
+    workspace_max_file_bytes: int = 1024 * 1024
+    # Per-tenant totals across all files/directories; past them writes are 507.
+    workspace_max_tenant_bytes: int = 100 * 1024 * 1024
+    workspace_max_entries: int = 10_000
+
     # --- platform email relay (POST /tools/email/send) ---
     email_max_recipients: int = 50
     # Recipients per tenant per UTC day; 0 = the plan default (app/tools/email_quota.py).
