@@ -26,6 +26,7 @@ from app.coordination.pattern_runs.goal_bridge import (
     build_pattern_state,
     build_worker_distributed_loop,
 )
+from app.governance.cost import CostController
 from app.tenancy.context import PlanTier, TenantContext
 from tests.coordination.goal_strategy_support import goal_profile, run_goal
 from tests.coordination.pattern_run_support import ScriptedProvider
@@ -140,10 +141,16 @@ async def test_goal_runs_camel_on_a_goal_linked_postgres_session(factories: Any)
 async def test_worker_builds_a_pattern_loop_against_postgres(factories: Any) -> None:
     app_factory, _ = factories
     provider = ScriptedProvider()
+    # The worker reserves budget before a distributed run and refuses one it cannot
+    # verify (HITL-DISTRIBUTED-GATES / CORE-37), so it gets the cost controller the
+    # Celery task passes: budgets resolved from budget_configs through the app role.
+    cost = CostController()
+    cost.set_budget_db(app_factory)
     loop = build_worker_distributed_loop(
         goal_profile("decentralized_swarm", "goal-pg-worker"),
         db_factory=app_factory,
         provider=provider,
+        cost_controller=cost,
     )
     assert loop is not None
     events: list[dict[str, Any]] = []
@@ -159,9 +166,11 @@ async def test_worker_builds_a_pattern_loop_against_postgres(factories: Any) -> 
     )
     assert result["terminal_state"] == "succeeded", events[-1]
     assert result["answer"] == "SWARM ANSWER"
+    # supervisor/goal_tree/debate/voyager now also run on the worker's StrategyRunner
+    # (HITL-DISTRIBUTED-GATES); a strategy outside it (react) still gets no loop.
     assert (
         build_worker_distributed_loop(
-            goal_profile("supervisor", "g"), db_factory=app_factory, provider=provider
+            goal_profile("react", "g"), db_factory=app_factory, provider=provider
         )
         is None
     )
