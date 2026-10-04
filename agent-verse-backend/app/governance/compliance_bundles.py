@@ -119,6 +119,7 @@ class ComplianceBundleManager:
         if bundle_id not in COMPLIANCE_BUNDLES:
             raise ValueError(f"Unknown compliance bundle: {bundle_id}")
         self._tenant_bundles.setdefault(tenant_id, set()).add(bundle_id)
+        invalidate_active_bundles(tenant_id)
         logger.info("compliance_bundle_enabled", tenant=tenant_id, bundle=bundle_id)
 
     def disable(self, tenant_id: str, bundle_id: str) -> None:
@@ -204,6 +205,7 @@ class PostgresComplianceBundleStore:
                 ),
                 {"tid": tenant_id, "bid": bundle_id, "actor": actor},
             )
+        invalidate_active_bundles(tenant_id)
         logger.info("compliance_bundle_enabled", tenant=tenant_id, bundle=bundle_id)
 
     async def disable(self, tenant_id: str, bundle_id: str) -> None:
@@ -223,6 +225,7 @@ class PostgresComplianceBundleStore:
                 ),
                 {"tid": tenant_id, "bid": bundle_id},
             )
+        invalidate_active_bundles(tenant_id)
         logger.info("compliance_bundle_disabled", tenant=tenant_id, bundle=bundle_id)
 
     async def active_bundle_ids(self, tenant_id: str) -> tuple[str, ...]:
@@ -309,6 +312,57 @@ async def effective_max_autonomy_for(store: Any, tenant_id: str) -> str:
         return "fully-autonomous"
     getter = getattr(store, "effective_max_autonomy", None) or store.get_effective_max_autonomy
     return str(await _maybe_await(getter(tenant_id)))
+
+
+# tenant_id → (monotonic loaded_at, active bundle ids): the per-tool-call bundle
+# check must not be a DB round trip; a change binds fleet-wide within the TTL.
+_ACTIVE_BUNDLES_TTL_S = 15.0
+_ACTIVE_BUNDLES_CACHE: dict[str, tuple[float, tuple[str, ...]]] = {}
+
+
+def invalidate_active_bundles(tenant_id: str | None = None) -> None:
+    if tenant_id is None:
+        _ACTIVE_BUNDLES_CACHE.clear()
+    else:
+        _ACTIVE_BUNDLES_CACHE.pop(tenant_id, None)
+
+
+def _tool_matches(patterns: list[str], tool_name: str) -> bool:
+    return any(
+        (p.endswith("*") and tool_name.startswith(p[:-1])) or tool_name == p for p in patterns
+    )
+
+
+async def bundle_hitl_requirement(db_factory: Any, tenant_id: str, tool_name: str) -> str | None:
+    """Which enabled compliance bundle requires a human approval for *tool_name*.
+
+    Returns the bundle id, or ``None``. ``required_hitl_for`` used to have no
+    caller at all (TRUST-02). Raises when the tenant's bundles cannot be read and
+    nothing is cached — the caller must then require approval (fail closed).
+    """
+    import time
+
+    if db_factory is None or not tenant_id or not tool_name:
+        return None
+    now = time.monotonic()
+    hit = _ACTIVE_BUNDLES_CACHE.get(tenant_id)
+    if hit is not None and now - hit[0] < _ACTIVE_BUNDLES_TTL_S:
+        bundle_ids = hit[1]
+    else:
+        try:
+            bundle_ids = await PostgresComplianceBundleStore(db_factory).active_bundle_ids(
+                tenant_id
+            )
+        except Exception:
+            if hit is None:
+                raise
+            bundle_ids = hit[1]  # stale but real
+        else:
+            _ACTIVE_BUNDLES_CACHE[tenant_id] = (now, bundle_ids)
+    for bid in bundle_ids:
+        if _tool_matches(COMPLIANCE_BUNDLES[bid].required_hitl_for, tool_name):
+            return bid
+    return None
 
 
 async def requires_hitl_for_tool_on(store: Any, tenant_id: str, tool_name: str) -> bool:

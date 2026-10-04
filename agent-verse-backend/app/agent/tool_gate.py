@@ -153,6 +153,18 @@ class GovernedToolGate:
             )
             if rule_denial is not None:
                 return GateDecision(False, rule_denial)
+            # Compliance bundle required_hitl_for (TRUST-02).
+            from app.governance.compliance_bundles import bundle_hitl_requirement
+
+            try:
+                bundle = await bundle_hitl_requirement(self._db, tenant_ctx.tenant_id, tool_name)
+            except Exception as exc:
+                return GateDecision(
+                    False,
+                    f"compliance bundles could not be read ({type(exc).__name__}); failing closed",
+                )
+            if bundle:
+                requires_approval = True
 
         # 3. Policy engine.
         if self._policy_engine is not None:

@@ -39,6 +39,16 @@ def rules(monkeypatch: pytest.MonkeyPatch) -> list[AgentPermissionRule]:
     from app.governance import policy_rules
 
     monkeypatch.setattr(policy_rules, "load_active_policy_rules", _no_policy_rules)
+
+    async def _no_bundles(self: Any, tenant_id: str) -> tuple[str, ...]:
+        return ()  # nor compliance bundles (TRUST-02)
+
+    from app.governance import compliance_bundles
+
+    compliance_bundles.invalidate_active_bundles()
+    monkeypatch.setattr(
+        compliance_bundles.PostgresComplianceBundleStore, "active_bundle_ids", _no_bundles
+    )
     return current
 
 

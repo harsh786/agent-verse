@@ -746,6 +746,32 @@ class ExecutorMixin:
             if _rule_denial is not None:
                 record_tool_call(tool_name, "policy_rule", "denied", 0.0)
                 return _rule_denial
+            # Compliance bundle required_hitl_for (TRUST-02: it had no caller).
+            from app.governance.compliance_bundles import bundle_hitl_requirement
+
+            try:
+                _bundle = await bundle_hitl_requirement(
+                    getattr(self, "_db_session_factory", None), tenant_ctx.tenant_id, tool_name
+                )
+            except Exception as exc:
+                record_tool_call(tool_name, "compliance_bundle", "denied", 0.0)
+                return (
+                    f"compliance bundles could not be read ({type(exc).__name__}); "
+                    "failing closed"
+                )
+            if _bundle:
+                _what = f"compliance bundle '{_bundle}' on tool '{tool_name}'"
+                _b_denial = self._approval_unawaitable_error(step, _what)
+                if _b_denial is not None or self._hitl_gateway is None:
+                    record_tool_call(tool_name, "compliance_bundle", "approval_required", 0.0)
+                    return str(_b_denial or f"{_what} requires a human approval")
+                await self._await_tool_approval(
+                    tool_name=tool_name,
+                    action=f"{tool_name}: {step}"[:500],
+                    risk_level="high",
+                    state=state,
+                    tenant_ctx=tenant_ctx,
+                )
         if self._policy_engine is None or not tool_name or tool_name == already_checked:
             return None
         try:

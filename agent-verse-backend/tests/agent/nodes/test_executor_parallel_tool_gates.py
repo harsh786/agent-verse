@@ -121,6 +121,10 @@ async def test_second_call_denied_by_agent_permission_does_not_run() -> None:
         patch(
             "app.governance.policy_rules.load_active_policy_rules", AsyncMock(return_value=[])
         ),
+        patch(
+            "app.governance.compliance_bundles.bundle_hitl_requirement",
+            AsyncMock(return_value=None),
+        ),
     ):
         out = await graph._execute_step("gather data", state, T)
 
