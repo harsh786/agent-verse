@@ -3514,10 +3514,21 @@ def run_goal(
             except Exception as _wm_exc:
                 logger.warning("worker_memory_services_wire_failed: %s", _wm_exc)
 
+            # RV-09: the same default-deny permission matrix as the API path
+            # (goal_service wires app.state.permission_matrix), so destructive
+            # tool globs are DENIED unless the tenant has an explicit ALLOW rule.
+            # Built outside any suppress: if it cannot be built, AgentGraph
+            # assembly fails and the goal fails closed instead of running
+            # without the executor's per-tool permission check.
+            from app.governance import permissions as _permissions_mod
+
+            _worker_permission_matrix = _permissions_mod.build_default_permission_matrix()
+
             _worker_graph_services: dict[str, Any] = dict(
                 **_worker_memory_services,
                 planner=provider,
                 executor=provider,
+                permission_matrix=_worker_permission_matrix,
                 verifier=_verifier_for_graph,
                 model_router=_model_router,
                 autonomy_mode=_agent_autonomy_mode,
