@@ -36,6 +36,7 @@ def _make_config(**overrides) -> SourceConfig:
         family=SourceFamily.WEB,
         source_type="web_crawl",
         connection_config={"seed_urls": ["https://example.com"]},
+        collection_id="col-1",
     )
     base.update(overrides)
     return SourceConfig(**base)

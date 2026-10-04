@@ -252,6 +252,22 @@ describe('SourceCard', () => {
     expect(screen.getByRole('button', { name: /enable source/i })).toBeInTheDocument();
   });
 
+  test('L-02: a parked source shows why it needs configuration and cannot be synced', async () => {
+    const { SourceCard } = await import('../components/SourceCard');
+    const parked = {
+      ...SOURCE,
+      collection_id: null,
+      config_status: 'needs_configuration' as const,
+      config_status_reason: 'no target knowledge collection (collection_id) is set',
+      needs_configuration: true,
+    };
+    wrap(<SourceCard source={parked} />);
+    expect(screen.getByLabelText(/status: needs_configuration/i)).toBeInTheDocument();
+    expect(screen.getByText('Needs configuration')).toBeInTheDocument();
+    expect(screen.getByText(/no target knowledge collection/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sync source now/i })).toBeDisabled();
+  });
+
   test('does not show last_synced_at row when absent', async () => {
     const { SourceCard } = await import('../components/SourceCard');
     const noSync = { ...SOURCE, last_synced_at: null as unknown as string };

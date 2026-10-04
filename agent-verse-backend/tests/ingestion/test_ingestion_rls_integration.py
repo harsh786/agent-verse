@@ -124,6 +124,7 @@ def _source(tenant_id: str, source_id: str, **overrides: Any) -> SourceConfig:
         name=f"src {source_id}",
         family=SourceFamily.WEB,
         source_type="http",
+        collection_id="col-int",
     )
     fields.update(overrides)
     return SourceConfig(**fields)
@@ -253,6 +254,72 @@ async def test_due_scan_needs_the_maintenance_role(dbs: SimpleNamespace) -> None
     # The tracker's own due-scan delegates to the same maintenance-role scan.
     tracker = IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
     assert set(await tracker.get_due_sources()) == set(due)
+
+
+@pytest.mark.asyncio
+async def test_parked_sources_leave_the_due_and_dlq_scans_until_fixed(
+    dbs: SimpleNamespace,
+) -> None:
+    """L-02: a Source that cannot index is parked once, skipped, and revived by a fix."""
+    store = SourceConfigStore(db=dbs.app)
+    tracker = IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
+    await store.create(_source(TENANT_A, "ok-a"))
+    await store.create(_source(TENANT_A, "legacy-a"))
+    # A legacy row from before config_status existed: no collection, status 'ok'.
+    async with dbs.admin() as s, s.begin():
+        await s.execute(
+            text("UPDATE source_configs SET collection_id = NULL WHERE id = 'legacy-a'")
+        )
+    for sid in ("ok-a", "legacy-a"):
+        await tracker.add_to_dlq(
+            source_id=sid, tenant_id=TENANT_A, doc_id=f"doc-{sid}", error="e",
+            raw_doc=_raw(f"doc-{sid}", sid, TENANT_A),
+        )
+    maint_store = SourceConfigStore(system_db=dbs.maint)
+    assert set(await maint_store.list_due()) == {("ok-a", TENANT_A), ("legacy-a", TENANT_A)}
+
+    pipeline = MagicMock()
+    with (
+        patch(
+            "app.ingestion.scheduler._build_worker_ingestion",
+            return_value=(tracker, pipeline, store),
+        ),
+        patch("app.ingestion.connector_registry.load_all_connectors"),
+        patch("app.ingestion.connector_registry.get_connector") as get_connector,
+    ):
+        result = await _sync_source_async(
+            task=MagicMock(), source_id="legacy-a", tenant_id=TENANT_A, triggered_by="scheduler"
+        )
+
+    assert result["reason"] == "needs_configuration", result
+    get_connector.assert_not_called()
+    row = await _row(
+        dbs.admin,
+        "SELECT config_status, config_status_reason, consecutive_failures "
+        "FROM source_configs WHERE id = 'legacy-a'",
+    )
+    assert row["config_status"] == "needs_configuration"
+    assert "collection" in row["config_status_reason"]
+    assert row["consecutive_failures"] == 0
+    jobs = await _row(
+        dbs.admin, "SELECT count(*) AS n FROM ingestion_jobs WHERE source_id = 'legacy-a'"
+    )
+    assert jobs["n"] == 0
+    assert await maint_store.list_due() == [("ok-a", TENANT_A)]
+    retryable = await tracker.get_retryable_dlq_entries()
+    assert [e["source_id"] for e in retryable] == ["ok-a"]
+
+    # A Source created without a collection is parked from the start.
+    created = await store.create(_source(TENANT_A, "new-a", collection_id=""))
+    assert created.config_status == "needs_configuration"
+    assert await maint_store.list_due() == [("ok-a", TENANT_A)]
+
+    # Setting a collection revives it: due again, its DLQ entries retryable again.
+    fixed = await store.update("legacy-a", TENANT_A, collection_id="col-fixed")
+    assert fixed is not None and fixed.config_status == "ok"
+    assert set(await maint_store.list_due()) == {("ok-a", TENANT_A), ("legacy-a", TENANT_A)}
+    retryable = await tracker.get_retryable_dlq_entries()
+    assert {e["source_id"] for e in retryable} == {"ok-a", "legacy-a"}
 
 
 # ── scheduled sync worker: per-tenant RLS ────────────────────────────────────

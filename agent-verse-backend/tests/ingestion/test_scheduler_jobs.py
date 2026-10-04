@@ -44,6 +44,7 @@ def _config(**overrides) -> SourceConfig:
         cursor_value="",
         consecutive_failures=0,
         last_synced_at=None,
+        collection_id="col-1",
     )
     base.update(overrides)
     return SourceConfig(**base)

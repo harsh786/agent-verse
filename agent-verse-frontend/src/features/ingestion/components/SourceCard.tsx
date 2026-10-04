@@ -12,6 +12,7 @@ const STATUS_COLORS = {
   error:     'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
   healthy:   'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
   disabled:  'bg-muted text-muted-foreground',
+  needs_configuration: 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300',
   checking:  'bg-muted text-muted-foreground',
 };
 
@@ -25,7 +26,10 @@ export function SourceCard({ source }: SourceCardProps) {
   const update = useUpdateSource();
 
   const familyCfg = FAMILY_CONFIG[source.family];
+  // L-02: a parked Source is not scheduled and refuses a manual sync until fixed.
+  const needsConfiguration = source.needs_configuration ?? (source.config_status === 'needs_configuration');
   const statusKey = !source.enabled ? 'disabled'
+    : needsConfiguration ? 'needs_configuration'
     : (healthErrored || health?.ok === false) ? 'error'
     : healthLoading ? 'checking'
     : 'healthy';
@@ -79,11 +83,14 @@ export function SourceCard({ source }: SourceCardProps) {
             <span>{source.total_docs_indexed.toLocaleString()} docs</span>
             <span>{source.total_chunks.toLocaleString()} chunks</span>
           </div>
+          {needsConfiguration && source.config_status_reason && (
+            <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">{source.config_status_reason}</p>
+          )}
         </div>
 
         {/* Actions */}
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={e => e.stopPropagation()}>
-          <ActionBtn onClick={handleSync} disabled={sync.isPending || !source.enabled} title="Sync now" aria-label="Sync source now">
+          <ActionBtn onClick={handleSync} disabled={sync.isPending || !source.enabled || needsConfiguration} title={needsConfiguration ? 'Needs configuration' : 'Sync now'} aria-label="Sync source now">
             <RefreshCw className={`h-3.5 w-3.5 ${sync.isPending ? 'animate-spin' : ''}`} />
           </ActionBtn>
           <ActionBtn onClick={handleToggleEnabled} disabled={update.isPending} title={source.enabled ? 'Disable' : 'Enable'} aria-label={source.enabled ? 'Disable source' : 'Enable source'}>
@@ -113,6 +120,7 @@ function HealthBadge({ statusKey, health }: { statusKey: string; health?: { ok: 
   const label = statusKey === 'healthy'  ? `Connected (${Math.round(health?.latency_ms ?? 0)}ms)` :
                 statusKey === 'checking' ? 'Checking…' :
                 statusKey === 'error'    ? 'Connection error' :
+                statusKey === 'needs_configuration' ? 'Needs configuration' :
                 statusKey === 'syncing'  ? 'Syncing…' : 'Disabled';
   return (
     <span

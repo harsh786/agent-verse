@@ -48,6 +48,7 @@ class SourcesHarness:
                 "family": self.family,
                 "source_type": self.source_type,
                 "connection_config": connection_config,
+                "collection_id": "col-harness",
                 **extra,
             },
         )

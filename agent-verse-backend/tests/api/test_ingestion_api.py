@@ -64,6 +64,8 @@ def _make_source(**overrides: Any) -> SourceConfig:
         name="test-src",
         family=SourceFamily.CODE_REPOSITORY,
         source_type="github",
+        # A syncable Source has a target collection (L-02 parks one without).
+        collection_id="col-test",
     )
     defaults.update(overrides)
     return SourceConfig(**defaults)

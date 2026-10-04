@@ -28,7 +28,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
-from app.ingestion.source_config import SourceConfig, SourceFamily
+from app.ingestion.source_config import (
+    CONFIG_STATUS_OK,
+    SourceConfig,
+    SourceFamily,
+    apply_configuration_health,
+    configuration_problem,
+)
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
@@ -175,7 +181,18 @@ def _serialize_source(s: SourceConfig) -> dict:
     d["connection_config"], d["has_credentials"] = mask_connection_config(
         d.get("connection_config") or {}
     )
+    # L-02: a parked Source shows why it is not syncing.
+    d["needs_configuration"] = s.config_status != CONFIG_STATUS_OK
     return d
+
+
+def _refuse_unconfigured_source(source: SourceConfig) -> None:
+    """422 with the reason when the Source cannot index anything as configured."""
+    problem = configuration_problem(source)
+    if problem is None and source.config_status != CONFIG_STATUS_OK:
+        problem = source.config_status_reason or "source needs configuration"
+    if problem is not None:
+        raise HTTPException(status_code=422, detail=f"Source needs configuration: {problem}")
 
 
 # ── Source catalogue ──────────────────────────────────────────────────────────
@@ -307,6 +324,7 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
     if store is not None:
         await store.create(config)
     else:
+        apply_configuration_health(config)
         _SOURCES[source_id] = config
     return _serialize_source(config)
 
@@ -341,6 +359,8 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
     for key, val in update_data.items():
         if hasattr(source, key):
             setattr(source, key, val)
+    if "collection_id" in update_data:
+        apply_configuration_health(source)
     return _serialize_source(source)
 
 
@@ -412,6 +432,7 @@ async def trigger_sync(source_id: str, request: Request) -> dict:
 
     # Refuse up front when the connector cannot run here: queuing the job would
     # only fail later in the worker, where the UI could not see why.
+    _refuse_unconfigured_source(source)
     from app.ingestion.connector_registry import connector_error_message
 
     try:
@@ -548,6 +569,7 @@ async def reindex_source(source_id: str, request: Request) -> dict:
     source = await _load_source(request, source_id, tenant.tenant_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
+    _refuse_unconfigured_source(source)
     tracker = _get_tracker(request)
     if tracker is None:
         raise HTTPException(status_code=503, detail="Ingestion framework not configured")

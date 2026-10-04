@@ -118,6 +118,13 @@ class SourceConfig:
     collection_id: str = ""  # target knowledge collection
     tags: list[str] = field(default_factory=list)
 
+    # ── Configuration health (L-02) ───────────────────────────────────────────
+    # ``needs_configuration`` parks the Source: the beat due-scan and the DLQ
+    # retry skip it and a manual sync is refused with ``config_status_reason``
+    # until an update fixes it (see :func:`configuration_problem`).
+    config_status: str = "ok"  # ok | needs_configuration
+    config_status_reason: str = ""
+
     # ── Stats (read-only, managed by IngestionJobTracker) ─────────────────────
     last_synced_at: str | None = None
     total_docs_indexed: int = 0
@@ -126,6 +133,36 @@ class SourceConfig:
     version: int = 1
     created_at: str = ""
     updated_at: str = ""
+
+
+CONFIG_STATUS_OK = "ok"
+CONFIG_STATUS_NEEDS_CONFIGURATION = "needs_configuration"
+
+
+def configuration_problem(config: SourceConfig) -> str | None:
+    """Why this Source can never index anything as configured, or None.
+
+    Checked before a sync runs: a Source without a target collection made every
+    document fail the pipeline's index stage (and land in the DLQ) on every
+    scheduled run, forever.
+    """
+    if not (config.collection_id or "").strip():
+        return (
+            "no target knowledge collection (collection_id) is set; "
+            "choose a collection for this source to resume syncing"
+        )
+    return None
+
+
+def apply_configuration_health(config: SourceConfig) -> None:
+    """Set ``config_status`` / ``config_status_reason`` from the config itself."""
+    problem = configuration_problem(config)
+    if problem is None:
+        config.config_status = CONFIG_STATUS_OK
+        config.config_status_reason = ""
+    else:
+        config.config_status = CONFIG_STATUS_NEEDS_CONFIGURATION
+        config.config_status_reason = problem
 
 
 @dataclass

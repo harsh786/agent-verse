@@ -34,6 +34,10 @@ export interface SourceConfig {
   freshness_ttl_seconds: number;
   collection_id:        string | null;
   tags:                 string[];
+  /** L-02: a Source that cannot index as configured is parked (not scheduled). */
+  config_status?:       "ok" | "needs_configuration";
+  config_status_reason?: string;
+  needs_configuration?: boolean;
   last_synced_at:       string | null;
   total_docs_indexed:   number;
   total_chunks:         number;

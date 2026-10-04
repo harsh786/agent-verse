@@ -275,6 +275,29 @@ async def _sync_source_async(
         await tracker.release_lock(source_id, tenant_id)
         return {"skipped": True, "reason": "source_disabled"}
 
+    # ── Configuration health (L-02) ──────────────────────────────────────────
+    # A Source that can never index (no target collection) failed every
+    # document into the DLQ on every scheduled run, forever. Detect it once:
+    # park it (the due-scan and DLQ retry skip it, the API shows the reason)
+    # and run nothing until an update fixes it.
+    from app.ingestion.source_config import CONFIG_STATUS_OK, configuration_problem
+
+    problem = configuration_problem(config)
+    if problem is not None or config.config_status != CONFIG_STATUS_OK:
+        reason = problem or config.config_status_reason or "source needs configuration"
+        try:
+            if config.config_status == CONFIG_STATUS_OK:
+                _log.warning(
+                    "source=%s tenant=%s needs configuration; parked: %s",
+                    source_id,
+                    tenant_id,
+                    reason,
+                )
+                await source_store.mark_needs_configuration(source_id, tenant_id, reason=reason)
+        finally:
+            await tracker.release_lock(source_id, tenant_id)
+        return {"skipped": True, "reason": "needs_configuration", "detail": reason}
+
     # ── Backoff check (LAW-09) ───────────────────────────────────────────────
     if config.consecutive_failures and config.consecutive_failures > 0:
         backoff = _backoff_seconds(config.consecutive_failures)
@@ -641,6 +664,12 @@ async def _retry_one_dlq_entry(
             # The Source was deleted: nothing can ever replay this entry.
             await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
             return "still_failed"
+        from app.ingestion.source_config import CONFIG_STATUS_OK
+
+        if config.config_status != CONFIG_STATUS_OK:
+            # Parked Source (L-02): no replay can succeed until it is fixed, and
+            # the entry keeps its retries for after the fix.
+            return "skipped"
         from app.ingestion.source_config import CONNECTOR_REPLAY_KEY
 
         reference = (raw_doc.metadata or {}).get(CONNECTOR_REPLAY_KEY)

@@ -26,7 +26,13 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from app.ingestion.source_config import SourceConfig, SourceFamily
+from app.ingestion.source_config import (
+    CONFIG_STATUS_NEEDS_CONFIGURATION,
+    CONFIG_STATUS_OK,
+    SourceConfig,
+    SourceFamily,
+    apply_configuration_health,
+)
 from app.observability.logging import get_logger
 
 # Bounded batch for the due-source beat scan, most-overdue first. An unbounded
@@ -71,6 +77,8 @@ _SCALAR_FIELDS = (
     "total_chunks",
     "consecutive_failures",
     "version",
+    "config_status",
+    "config_status_reason",
 )
 
 
@@ -196,6 +204,9 @@ class SourceConfigStore:
     # ── writes ────────────────────────────────────────────────────────────────
 
     async def create(self, config: SourceConfig) -> SourceConfig:
+        # A Source that can never index is parked from the start (L-02), so the
+        # scheduler never dispatches it and the API shows why.
+        apply_configuration_health(config)
         if self._db is None:
             self._mem[config.source_id] = config
             return config
@@ -244,9 +255,26 @@ class SourceConfigStore:
             for k, v in fields.items():
                 if hasattr(cfg, k):
                     setattr(cfg, k, v)
+            if self._affects_configuration_health(fields):
+                apply_configuration_health(cfg)
             return cfg
         if not fields:
             return await self.get(source_id, tenant_id)
+        if self._affects_configuration_health(fields):
+            # Re-derive the status from the merged config: fixing the problem
+            # makes the Source schedulable again, breaking it parks it.
+            current = await self.get(source_id, tenant_id)
+            if current is None:
+                return None
+            for k, v in fields.items():
+                if hasattr(current, k):
+                    setattr(current, k, v)
+            apply_configuration_health(current)
+            fields = {
+                **fields,
+                "config_status": current.config_status,
+                "config_status_reason": current.config_status_reason,
+            }
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
@@ -280,6 +308,48 @@ class SourceConfigStore:
                 params,
             )
         return await self.get(source_id, tenant_id)
+
+    @staticmethod
+    def _affects_configuration_health(fields: dict[str, Any]) -> bool:
+        return "collection_id" in fields and "config_status" not in fields
+
+    async def mark_needs_configuration(
+        self, source_id: str, tenant_id: str, *, reason: str
+    ) -> None:
+        """Park a Source that cannot sync as configured (L-02).
+
+        The beat due-scan and the DLQ retry skip it and a manual sync is refused
+        with ``reason`` until an update fixes the configuration. Not a failure:
+        ``consecutive_failures`` (backoff) is left alone.
+        """
+        if self._db is None:
+            cfg = self._mem.get(source_id)
+            if cfg is not None and cfg.tenant_id == tenant_id:
+                cfg.config_status = CONFIG_STATUS_NEEDS_CONFIGURATION
+                cfg.config_status_reason = reason
+            return
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            await session.execute(
+                text(
+                    "UPDATE source_configs SET config_status = :status, "
+                    "config_status_reason = :reason, updated_at = now() "
+                    "WHERE id = :id AND tenant_id = :tid"
+                ),
+                {
+                    "status": CONFIG_STATUS_NEEDS_CONFIGURATION,
+                    "reason": reason[:1000],
+                    "id": source_id,
+                    "tid": tenant_id,
+                },
+            )
 
     async def delete(self, source_id: str, tenant_id: str) -> bool:
         if self._db is None:
@@ -415,7 +485,11 @@ class SourceConfigStore:
             now = datetime.now(UTC)
             due: list[tuple[str, str]] = []
             for c in self._mem.values():
-                if not c.enabled or c.sync_mode == "streaming":
+                if (
+                    not c.enabled
+                    or c.sync_mode == "streaming"
+                    or c.config_status != CONFIG_STATUS_OK
+                ):
                     continue
                 if not c.last_synced_at:
                     due.append((c.source_id, c.tenant_id))
@@ -441,7 +515,9 @@ class SourceConfigStore:
             rows = await session.execute(
                 text(
                     "SELECT id AS source_id, tenant_id FROM source_configs "
-                    "WHERE enabled IS TRUE AND sync_mode <> 'streaming' AND ("
+                    "WHERE enabled IS TRUE AND sync_mode <> 'streaming' "
+                    # Parked Sources (L-02) wait for a configuration fix.
+                    "AND config_status = 'ok' AND ("
                     "  last_synced_at IS NULL OR "
                     "  last_synced_at + (sync_interval_seconds || ' seconds')::interval <= now()"
                     ") "

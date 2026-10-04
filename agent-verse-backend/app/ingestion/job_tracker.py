@@ -747,6 +747,14 @@ class IngestionJobTracker:
                          WHERE permanent_failure IS NOT TRUE
                            AND resolved_at IS NULL
                            AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+                           -- Entries of a parked Source (L-02) wait for its fix
+                           -- instead of filling every batch.
+                           AND NOT EXISTS (
+                               SELECT 1 FROM source_configs sc
+                                WHERE sc.id = ingestion_dlq.source_id
+                                  AND sc.tenant_id = ingestion_dlq.tenant_id
+                                  AND sc.config_status <> 'ok'
+                           )
                          ORDER BY created_at ASC
                          LIMIT :limit
                     """),
