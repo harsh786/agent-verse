@@ -51,7 +51,6 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState<string>('all');
   const [formConnector, setFormConnector] = useState<CatalogConnector | null>(null);
-  const [oauthBusy, setOauthBusy] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, ConnectorTestResult>>({});
   const [testingId, setTestingId] = useState<string | null>(null);
 
@@ -107,22 +106,9 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
   });
 
   const handleConnect = useCallback((c: CatalogConnector) => {
-    if (c.auth_type === 'oauth_ac') {
-      // Try real server-side OAuth: get the provider authorize URL + open a
-      // popup. If the server has no OAuth app configured for this connector,
-      // the endpoint 400s — fall back to the credential form so the user can
-      // enter their own OAuth app's client id/secret.
-      setOauthBusy(c.name);
-      connectorsApi.oauthStart(c.name)
-        .then(({ auth_url }) => {
-          window.open(auth_url, `oauth_${c.name}`, 'width=560,height=720,menubar=no,toolbar=no');
-        })
-        .catch(() => {
-          setFormConnector(c);
-        })
-        .finally(() => setOauthBusy(null));
-      return;
-    }
+    // Every connector — OAuth ones included — is added through the credential
+    // form; an OAuth connector then connects via the PKCE flow on its detail
+    // page. (The connector_name popup flow could never complete and was removed.)
     setFormConnector(c);
   }, []);
 
@@ -309,7 +295,6 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
                     ) : (
                       <button
                         onClick={() => handleConnect(connector)}
-                        disabled={oauthBusy === connector.name}
                         aria-label={`Connect ${connector.display_name}`}
                         style={{ touchAction: 'manipulation' }}
                         className={cn(
@@ -318,9 +303,7 @@ export function ConnectorMarketplace({ orgId: _orgId, onClose, className }: Conn
                           'transition-colors disabled:opacity-50 flex items-center gap-1',
                         )}
                       >
-                        {oauthBusy === connector.name
-                          ? <><Loader2 className="h-3 w-3 animate-spin" aria-hidden />Opening…</>
-                          : 'Connect'}
+                        Connect
                       </button>
                     )}
                   </div>

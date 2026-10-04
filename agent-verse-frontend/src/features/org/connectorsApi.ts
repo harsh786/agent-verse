@@ -92,22 +92,6 @@ export const connectorsApi = {
   remove(serverId: string): Promise<void> {
     return apiFetch<void>(`${BASE}/${encodeURIComponent(serverId)}`, { method: 'DELETE' });
   },
-
-  /** Begin an OAuth popup flow — returns the provider authorize URL + CSRF state. */
-  oauthStart(connectorName: string): Promise<{ auth_url: string; state: string }> {
-    return apiFetch<{ auth_url: string; state: string }>(`${BASE}/oauth/start`, {
-      method: 'POST',
-      body: JSON.stringify({ connector_name: connectorName }),
-    });
-  },
-
-  /** Complete an OAuth popup flow with the code the provider returned. */
-  oauthCallback(body: { code: string; state: string; connector_name: string }): Promise<unknown> {
-    return apiFetch<unknown>(`${BASE}/oauth/callback`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-  },
 };
 
 /** True when a test result indicates the credentials are valid. */

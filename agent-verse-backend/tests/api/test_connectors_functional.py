@@ -5,9 +5,8 @@ Focus areas (per coverage gap analysis — file was at 67-72% before this file):
     _test_gitlab): success, auth failure (401/403), generic HTTP error, timeout,
     and network-connect-error paths — these are the *real* contract the "test
     connector" button relies on, bypassing the generic HTTP fallback.
-  - OAuth popup flow (start_oauth_popup / complete_oauth_popup): not-configured
-    connector, unknown connector, configured-without-secret ("pending_oauth"),
-    configured-with-secret ("pending_token_exchange"), and reused/invalid state.
+  - (The connector_name OAuth popup flow was removed in OAUTH-06; see
+    tests/api/test_oauth_popup_flow_removed.py.)
   - Tenant scoping: a connector registered by tenant A must be invisible (404)
     to tenant B for get/update/delete/test.
   - Malformed connector config on create → 422 validation error.
@@ -16,7 +15,6 @@ Focus areas (per coverage gap analysis — file was at 67-72% before this file):
 """
 from __future__ import annotations
 
-import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -632,156 +630,6 @@ def test_test_connector_resolves_vault_secret_before_dispatch(monkeypatch: pytes
 
 
 # ---------------------------------------------------------------------------
-# OAuth popup flow — /connectors/oauth/start (POST) and /oauth/callback (POST)
-# ---------------------------------------------------------------------------
-
-
-class _Settings:
-    def __init__(self, **kwargs: Any) -> None:
-        self.frontend_url = "https://app.example.com"
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-
-def test_start_oauth_popup_unconfigured_connector_returns_400() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/connectors/oauth/start",
-        json={"connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert detail["type"] == "oauth-not-configured"
-    assert "GITHUB_CLIENT_ID" in detail["detail"]
-
-
-def test_start_oauth_popup_unknown_connector_returns_400() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/connectors/oauth/start",
-        json={"connector_name": "totally-unknown-service"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    assert resp.status_code == 400
-
-
-def test_start_oauth_popup_configured_returns_auth_url_and_state() -> None:
-    settings = _Settings(GITHUB_CLIENT_ID="gh-client-id")
-    client = TestClient(_make_app(settings=settings), raise_server_exceptions=False)
-    resp = client.post(
-        "/connectors/oauth/start",
-        json={"connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "github.com/login/oauth/authorize" in body["auth_url"]
-    assert "gh-client-id" in body["auth_url"]
-    assert body["state"]
-
-
-def test_complete_oauth_popup_invalid_state_returns_400() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/connectors/oauth/callback",
-        json={"code": "somecode", "state": "never-issued", "connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    assert resp.status_code == 400
-    assert "Invalid or expired" in resp.json()["detail"]
-
-
-def test_complete_oauth_popup_state_from_other_tenant_rejected() -> None:
-    """A state token minted for tenant A must not be redeemable by tenant B."""
-    settings = _Settings(GITHUB_CLIENT_ID="gh-client-id")
-    client = TestClient(_make_app(settings=settings), raise_server_exceptions=False)
-
-    started = client.post(
-        "/connectors/oauth/start",
-        json={"connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    state = started.json()["state"]
-
-    resp = client.post(
-        "/connectors/oauth/callback",
-        json={"code": "somecode", "state": state, "connector_name": "github"},
-        headers={"X-API-Key": _KEY_B},
-    )
-    assert resp.status_code == 400
-    assert "Invalid or expired" in resp.json()["detail"]
-
-
-def test_complete_oauth_popup_expired_state_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    settings = _Settings(GITHUB_CLIENT_ID="gh-client-id")
-    client = TestClient(_make_app(settings=settings), raise_server_exceptions=False)
-
-    started = client.post(
-        "/connectors/oauth/start",
-        json={"connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    state = started.json()["state"]
-
-    # Advance the clock past the 10-minute state TTL before completing.
-    real_time = time.time
-    monkeypatch.setattr(connectors_module.time, "time", lambda: real_time() + 700)
-
-    resp = client.post(
-        "/connectors/oauth/callback",
-        json={"code": "somecode", "state": state, "connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    assert resp.status_code == 400
-    assert "Invalid or expired" in resp.json()["detail"]
-
-
-@pytest.mark.parametrize(
-    "extra", [{}, {"GITHUB_CLIENT_SECRET": "gh-secret"}], ids=["no-secret", "with-secret"]
-)
-def test_complete_oauth_popup_never_reports_connected_without_tokens(extra: dict) -> None:
-    """Regression: the popup callback never exchanged the code, registered a
-    token-less placeholder connector and answered status "connected"."""
-    settings = _Settings(GITHUB_CLIENT_ID="gh-client-id", **extra)
-    registry = _make_registry()
-    app = _make_app(registry, settings=settings)
-    app.state.mcp_registry = registry
-    client = TestClient(app, raise_server_exceptions=False)
-
-    started = client.post(
-        "/connectors/oauth/start",
-        json={"connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    state = started.json()["state"]
-
-    resp = client.post(
-        "/connectors/oauth/callback",
-        json={"code": "auth-code-123", "state": state, "connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    assert resp.status_code == 501
-    assert resp.json()["detail"]["connected"] is False
-    assert resp.json().get("status") != "connected"
-    assert await_list_servers(registry) == []  # no placeholder connector
-
-    # The state was consumed: it cannot be replayed.
-    again = client.post(
-        "/connectors/oauth/callback",
-        json={"code": "auth-code-123", "state": state, "connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    assert again.status_code == 400
-
-
-def await_list_servers(registry: MCPRegistry) -> list[MCPServerConfig]:
-    import asyncio
-
-    return asyncio.run(registry.list_servers(tenant_ctx=_CTX_A))
-
-
-# ---------------------------------------------------------------------------
 # Tenant scoping — a connector registered by tenant A is invisible to tenant B
 # ---------------------------------------------------------------------------
 
@@ -1032,7 +880,7 @@ def test_get_connector_usage_db_error_is_503() -> None:
 
 @pytest.mark.asyncio
 async def test_build_auth_headers_bearer() -> None:
-    from app.mcp.registry import AuthType, MCPServerConfig
+    from app.mcp.registry import AuthType
 
     cfg = MCPServerConfig(
         name="x", url="https://x.example.com", auth_type=AuthType.BEARER,
@@ -1044,7 +892,7 @@ async def test_build_auth_headers_bearer() -> None:
 
 @pytest.mark.asyncio
 async def test_build_auth_headers_api_key_custom_header_name() -> None:
-    from app.mcp.registry import AuthType, MCPServerConfig
+    from app.mcp.registry import AuthType
 
     cfg = MCPServerConfig(
         name="x", url="https://x.example.com", auth_type=AuthType.API_KEY,
@@ -1058,7 +906,7 @@ async def test_build_auth_headers_api_key_custom_header_name() -> None:
 async def test_build_auth_headers_basic() -> None:
     import base64
 
-    from app.mcp.registry import AuthType, MCPServerConfig
+    from app.mcp.registry import AuthType
 
     cfg = MCPServerConfig(
         name="x", url="https://x.example.com", auth_type=AuthType.BASIC,
@@ -1071,7 +919,7 @@ async def test_build_auth_headers_basic() -> None:
 
 @pytest.mark.asyncio
 async def test_build_auth_headers_custom_header_multiple_keys() -> None:
-    from app.mcp.registry import AuthType, MCPServerConfig
+    from app.mcp.registry import AuthType
 
     cfg = MCPServerConfig(
         name="x", url="https://x.example.com", auth_type=AuthType.CUSTOM_HEADER,
@@ -1083,7 +931,7 @@ async def test_build_auth_headers_custom_header_multiple_keys() -> None:
 
 @pytest.mark.asyncio
 async def test_build_auth_headers_none_type_returns_empty() -> None:
-    from app.mcp.registry import AuthType, MCPServerConfig
+    from app.mcp.registry import AuthType
 
     cfg = MCPServerConfig(name="x", url="https://x.example.com", auth_type=AuthType.NONE)
     headers = await connectors_module._build_auth_headers(cfg)

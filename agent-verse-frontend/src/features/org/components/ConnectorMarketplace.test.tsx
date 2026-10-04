@@ -167,24 +167,23 @@ describe('ConnectorMarketplace', () => {
     expect(await screen.findByRole('dialog', { name: 'Connect Notion' })).toBeInTheDocument();
   });
 
-  test('an OAuth connect opens a popup on success', async () => {
+  test('an OAuth connect opens the credential form, never a popup (OAUTH-06)', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       const method = (init?.method ?? 'GET').toUpperCase();
       if (url.includes('/connectors/catalog'))
         return new Response(JSON.stringify(CATALOG), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (/\/connectors$/.test(url) && method === 'GET')
         return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.includes('/connectors/oauth/start'))
-        return new Response(JSON.stringify({ auth_url: 'https://slack.test/oauth/authorize', state: 's1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
     renderMarket();
     await screen.findByText('Slack');
     fireEvent.click(screen.getByRole('button', { name: 'Connect Slack' }));
-    await waitFor(() => expect(openSpy).toHaveBeenCalled());
-    expect(openSpy.mock.calls[0][0]).toBe('https://slack.test/oauth/authorize');
+    expect(await screen.findByRole('dialog', { name: 'Connect Slack' })).toBeInTheDocument();
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(fetchSpy.mock.calls.some(([u]) => String(u).includes('/connectors/oauth/start'))).toBe(false);
     openSpy.mockRestore();
   });
 

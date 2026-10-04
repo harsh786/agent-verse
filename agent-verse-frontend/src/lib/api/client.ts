@@ -790,25 +790,6 @@ export const connectorsApi = {
   test: (id: string) =>
     request<ConnectorTestResult>(`/connectors/${encodeURIComponent(id)}/test`, { method: "POST" }),
   /**
-   * Legacy popup flow start (POST). Its completion, POST /connectors/oauth/callback,
-   * now always answers 501 `oauth-token-exchange-unavailable` (it never exchanged
-   * the code) — use {@link startPkceOAuth} / {@link completePkceOAuth} instead.
-   */
-  startOAuth: (connectorName: string) =>
-    request<{ auth_url: string; state: string }>(`/connectors/oauth/start`, {
-      method: "POST",
-      body: JSON.stringify({ connector_name: connectorName }),
-    }),
-  /**
-   * @deprecated Always 501 `{code: "oauth-token-exchange-unavailable", connected: false}`
-   * on the current backend: nothing is exchanged or registered.
-   */
-  completeOAuth: (code: string, state: string, connectorName: string) =>
-    request<{ server_id: string; name: string; status: string }>(`/connectors/oauth/callback`, {
-      method: "POST",
-      body: JSON.stringify({ code, state, connector_name: connectorName }),
-    }),
-  /**
    * Start the real OAuth (PKCE) flow for a REGISTERED connector whose auth_type is
    * pkce / oauth_ac / oauth_cc. `auth_url` is only a URL when the connector's
    * auth_config has authorize_url + client_id; otherwise it is an instruction string.

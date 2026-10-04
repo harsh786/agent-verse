@@ -54,9 +54,9 @@ describe('errorMessageFromBody', () => {
 
   test('an object detail from a real request becomes a readable ApiError message', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      json({ detail: { type: 'oauth-token-exchange-unavailable', detail: 'Not exchanged.', connected: false } }, 501),
+      json({ detail: { type: 'connector-test-unavailable', detail: 'Not exchanged.', reachable: false } }, 501),
     );
-    const err = await connectorsApi.completeOAuth('c', 's', 'github').catch((e: unknown) => e);
+    const err = await connectorsApi.test('c').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(501);
     expect((err as ApiError).message).toBe('Not exchanged.');
