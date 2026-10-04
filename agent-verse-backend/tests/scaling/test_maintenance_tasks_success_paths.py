@@ -176,7 +176,7 @@ class TestRunGdprExport:
             execute_side_effect=[
                 MagicMock(),
                 MagicMock(fetchall=MagicMock(return_value=[(1, "goal text", "completed", None)])),
-                MagicMock(fetchall=MagicMock(return_value=[(1, 1, "tool_x", "ok")])),
+                MagicMock(fetchall=MagicMock(return_value=[(1, 1, "tool_x", "ok", "low", None)])),
                 MagicMock(),
                 MagicMock(),
                 MagicMock(),
@@ -206,30 +206,29 @@ class TestRunGdprExport:
         assert "tenant_id = :tid" in str(calls[update_idx].args[0])
         assert calls[update_idx].args[1]["tid"] == "t1"
 
-    def test_audit_query_failure_is_tolerated(self):
+    def test_audit_query_failure_fails_the_job(self):
+        """a09-F212-03: an unreadable audit_log is a failed export, not a
+        'complete' one with an empty audit trail."""
         from app.scaling.tasks import run_gdpr_export
 
-        # See test_success_marks_job_complete for the full 8-call sequence;
-        # here call 3 (SELECT audit_log) raises and is swallowed by the
-        # production code's own try/except, so audit falls back to [].
         session = _session_with_begin(
             execute_side_effect=[
                 MagicMock(),
                 MagicMock(fetchall=MagicMock(return_value=[])),
                 RuntimeError("audit_log missing"),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
-                MagicMock(),
+                MagicMock(),  # reset app.tenant_id
+                MagicMock(),  # failure path: set app.tenant_id
+                MagicMock(),  # failure-path UPDATE gdpr_export_jobs
+                MagicMock(),  # failure path: reset app.tenant_id
             ]
         )
         db_factory = _db_factory(session)
         with patch("app.db.session.get_session_factory", return_value=db_factory):
-            result = run_gdpr_export.run(job_id="job-2", tenant_id="t1")
-        assert result["status"] == "complete"
+            with pytest.raises(RuntimeError, match="audit_log missing"):
+                run_gdpr_export.run(job_id="job-2", tenant_id="t1")
+        sqls = [str(c.args[0]) for c in session.execute.call_args_list]
+        assert not any("INSERT INTO compliance_requests" in s for s in sqls)
+        assert any("UPDATE gdpr_export_jobs SET status = 'failed'" in s for s in sqls)
 
     def test_failure_marks_job_failed_and_reraises(self):
         from app.scaling.tasks import run_gdpr_export

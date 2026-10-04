@@ -7366,6 +7366,56 @@ def purge_expired_org_attachments() -> dict:
     return _run_async(_run())
 
 
+# a09-F212-03: the async GDPR export reads every row in keyset pages over the
+# indexed (tenant_id, created_at) — never a silently truncating LIMIT — and a
+# section larger than the ceiling fails the job ("too_large") instead of
+# shipping part of the tenant's data as a complete export.
+GDPR_EXPORT_PAGE_SIZE = 2_000
+GDPR_EXPORT_MAX_ROWS = 100_000
+
+
+class GdprExportTooLargeError(RuntimeError):
+    """A GDPR export section exceeds :data:`GDPR_EXPORT_MAX_ROWS`."""
+
+
+async def _gdpr_export_section(
+    session: Any, *, table: str, columns: tuple[str, ...], tenant_id: str
+) -> list[Any]:
+    """Every row of *table* for *tenant_id*, keyset-paged on ``(created_at, id)``.
+
+    *columns* must start with ``id`` and end with ``created_at`` (the cursor).
+    Raises :class:`GdprExportTooLargeError` past the ceiling; read errors propagate.
+    """
+    from sqlalchemy import text
+
+    cols = ", ".join(columns)
+    rows: list[Any] = []
+    cursor: tuple[Any, Any] | None = None
+    while True:
+        params: dict[str, Any] = {"tid": tenant_id, "lim": GDPR_EXPORT_PAGE_SIZE}
+        where = "tenant_id = :tid"
+        if cursor is not None:
+            where += " AND (created_at, id) > (:c_at, :c_id)"
+            params["c_at"], params["c_id"] = cursor
+        page = (
+            await session.execute(
+                text(
+                    f"SELECT {cols} FROM {table} WHERE {where} "
+                    "ORDER BY created_at, id LIMIT :lim"
+                ),
+                params,
+            )
+        ).fetchall()
+        rows.extend(page)
+        if len(rows) > GDPR_EXPORT_MAX_ROWS:
+            raise GdprExportTooLargeError(
+                f"too_large: {table} has more than {GDPR_EXPORT_MAX_ROWS} rows for this tenant"
+            )
+        if len(page) < GDPR_EXPORT_PAGE_SIZE:
+            return rows
+        cursor = (page[-1][-1], page[-1][0])
+
+
 @celery_app.task(name="agentverse.compliance.run_gdpr_export", bind=True, max_retries=1)
 def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
     """Async GDPR data export job — runs in background worker.
@@ -7388,38 +7438,51 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
             # "export" would always be empty regardless of the persistence fix below.
             from app.db.rls import sqlalchemy_rls_context
 
+            # Every row, keyset-paged; an audit read error or an over-ceiling
+            # section fails the job (a09-F212-03) — never a partial "complete".
             async with db() as session, sqlalchemy_rls_context(session, tenant_id):
-                goals = (
-                    await session.execute(
-                        text(
-                            "SELECT id, goal_text, status, created_at FROM goals "
-                            "WHERE tenant_id = :tid LIMIT 10000"
-                        ),
-                        {"tid": tenant_id},
-                    )
-                ).fetchall()
-                try:
-                    audit = (
-                        await session.execute(
-                            text(
-                                "SELECT event_id, goal_id, tool_name, outcome FROM audit_log "
-                                "WHERE tenant_id = :tid LIMIT 10000"
-                            ),
-                            {"tid": tenant_id},
-                        )
-                    ).fetchall()
-                except Exception:
-                    audit = []
+                goals = await _gdpr_export_section(
+                    session,
+                    table="goals",
+                    columns=("id", "goal_text", "status", "created_at"),
+                    tenant_id=tenant_id,
+                )
+                audit = await _gdpr_export_section(
+                    session,
+                    table="audit_log",
+                    columns=("id", "goal_id", "tool_name", "outcome", "action_level", "created_at"),
+                    tenant_id=tenant_id,
+                )
 
             import json
             from datetime import datetime
 
+            def _iso(value: Any) -> str | None:
+                return value.isoformat() if hasattr(value, "isoformat") else None
+
             export_data = {
                 "tenant_id": tenant_id,
                 "exported_at": datetime.now(UTC).isoformat(),
-                "goals": [{"id": str(r[0]), "text": str(r[1]), "status": str(r[2])} for r in goals],
+                "complete": True,
+                "goals": [
+                    {
+                        "id": str(r[0]),
+                        "text": str(r[1]),
+                        "status": str(r[2]),
+                        "created_at": _iso(r[3]),
+                    }
+                    for r in goals
+                ],
                 "audit_entries": [
-                    {"id": str(r[0]), "goal_id": str(r[1]), "tool": str(r[2])} for r in audit
+                    {
+                        "id": str(r[0]),
+                        "goal_id": str(r[1]),
+                        "tool": str(r[2]),
+                        "outcome": str(r[3]),
+                        "action_level": str(r[4]),
+                        "created_at": _iso(r[5]),
+                    }
+                    for r in audit
                 ],
             }
 
