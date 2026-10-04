@@ -71,10 +71,12 @@ def test_repository_source_resolves_once_and_pins_validated_ip(
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
 
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
-    source = resolve_repository_source("https://example.com/repository")
+    # Not one of tests/ingestion/conftest.py's placeholder hosts (those resolve
+    # to a fixed test address without reaching getaddrinfo).
+    source = resolve_repository_source("https://git.example.org/repository")
 
     assert calls == 1
-    assert source.curl_resolve == "example.com:443:93.184.216.34"
+    assert source.curl_resolve == "git.example.org:443:93.184.216.34"
 
 
 @pytest.mark.parametrize("branch", ["", "--upload-pack=evil", "main\nnext"])
