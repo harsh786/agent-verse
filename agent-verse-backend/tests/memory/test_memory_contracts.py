@@ -23,12 +23,12 @@ def test_memory_record_pins_embedding_profile_and_dimension() -> None:
         "lifecycle_state": "active",
         "version": 1,
         "embedding_model": "memory-embedding-v1",
-        "embedding_dimension": 1536,
+        "embedding_dimension": 2048,
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
         "idempotency_key": "one",
     }
-    assert MemoryRecord(**common).embedding_dimension == 1536
+    assert MemoryRecord(**common).embedding_dimension == 2048
     with pytest.raises(ValidationError):
         MemoryRecord(**{**common, "embedding_dimension": 768})
 

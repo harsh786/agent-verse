@@ -44,7 +44,7 @@ def _record(mid: str, summary: str) -> MemoryRecord:
         lifecycle_state="active",
         version=1,
         embedding_model="memory-embedding-v1",
-        embedding_dimension=1536,
+        embedding_dimension=2048,
         embedding=None,
         created_at=now,
         updated_at=now,

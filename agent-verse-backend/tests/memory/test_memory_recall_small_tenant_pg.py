@@ -27,8 +27,8 @@ from tests.memory._pg import alembic_upgrade, app_role_engine, sessionmaker_for
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 SMALL, BIG = "mem09-small", "mem09-big"
-DIM = 1536
-MODEL = "test-embed-1536"
+DIM = 2048
+MODEL = "test-embed-2048"
 
 
 def _vec(head: list[float]) -> str:
@@ -64,7 +64,7 @@ async def _seed(admin_url: str) -> None:
             )
         common = (
             "'reflexion', 'memory://x', {summary}, 'g', 'e', '[\"goal://g\"]', 'internal', 9000, "
-            "'active', 1, 'memory-embedding-v1', 1536, {vec}, :model, 0, 0, 0, 0, 0, 'default', {idem}, "
+            "'active', 1, 'memory-embedding-v1', 2048, {vec}, :model, 0, 0, 0, 0, 0, 'default', {idem}, "
             "{ts}, {ts}"
         )
         # 10k other-tenant records right next to the query vector.

@@ -18,6 +18,7 @@ from app.memory.contracts import (
     MemoryRecord,
     MemoryWriteRequest,
 )
+from app.memory.embedding import MEMORY_EMBEDDING_DIM
 from app.memory.retention import resolve_expires_at
 
 # May return None: no usable vector (e.g. the provider failed or its vectors are
@@ -109,8 +110,13 @@ class InMemoryMemoryRepository:
                 if self._embedder and not sensitive
                 else None
             )
-            if embedding is not None and len(embedding) != 1536:
-                raise ValueError("memory embedder returned incompatible dimension")
+            if embedding is not None:
+                from app.memory.embedding import fit_memory_vector
+
+                fitted = fit_memory_vector(embedding)
+                if fitted is None:
+                    raise ValueError("memory embedder returned incompatible dimension")
+                embedding = fitted
             now = datetime.now(UTC)
             identifier = uuid.uuid5(
                 uuid.NAMESPACE_URL,
@@ -146,7 +152,7 @@ class InMemoryMemoryRepository:
                 else "active",
                 version=1,
                 embedding_model="memory-embedding-v1",
-                embedding_dimension=1536,
+                embedding_dimension=MEMORY_EMBEDDING_DIM,
                 embedding=embedding,
                 created_at=now,
                 updated_at=now,

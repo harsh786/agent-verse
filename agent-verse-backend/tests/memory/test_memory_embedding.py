@@ -31,15 +31,16 @@ class _Provider:
 
 
 def test_exact_width_is_kept_narrower_is_zero_padded_wider_is_dropped() -> None:
-    assert fit_memory_vector([1.0] * MEMORY_EMBEDDING_DIM) == tuple([1.0] * 1536)
+    assert MEMORY_EMBEDDING_DIM == 2048  # MEM-38: the default embedder is 2048-d
+    assert fit_memory_vector([1.0] * MEMORY_EMBEDDING_DIM) == tuple([1.0] * 2048)
     padded = fit_memory_vector([1.0] * 1024)
-    assert padded is not None and len(padded) == 1536
+    assert padded is not None and len(padded) == 2048
     assert padded[:1024] == tuple([1.0] * 1024) and set(padded[1024:]) == {0.0}
     assert fit_memory_vector([1.0] * 3072) is None
 
 
 @pytest.mark.parametrize(
-    ("dim", "expected_len"), [(1536, 1536), (1024, 1536), (3072, None)]
+    ("dim", "expected_len"), [(2048, 2048), (1536, 2048), (1024, 2048), (3072, None)]
 )
 async def test_adapter_fits_provider_vectors(dim: int, expected_len: int | None) -> None:
     embedder = memory_embedder_from_provider(_Provider(dim))
@@ -93,3 +94,22 @@ def test_api_and_worker_repositories_are_built_with_the_app_embedder() -> None:
     assert "db_factory, _embedder_for_graph" in worker_src
     helper_src = inspect.getsource(tasks._worker_reflexion_service)
     assert "embedder=memory_embedder_from_provider(embedder_provider)" in helper_src
+
+
+@pytest.mark.parametrize(
+    ("provider", "reason"),
+    [
+        (_Provider(2048), "ok"),
+        (_Provider(3072), "too_wide"),
+        (_Provider(), "empty"),
+        (_Provider(error=RuntimeError("503")), "failed"),
+    ],
+)
+async def test_embed_checked_names_why_there_is_no_vector(provider: _Provider, reason: str) -> None:
+    """MEM-38: the re-embed sweep marks only a permanent 'too_wide' record and
+    stops on a transient provider failure."""
+    embedder = memory_embedder_from_provider(provider)
+    assert embedder is not None
+    vector, got = await embedder.embed_checked("hello")
+    assert got == reason
+    assert (vector is not None) == (reason == "ok")

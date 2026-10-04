@@ -68,7 +68,7 @@ def _make_memory_record(
         lifecycle_state="active",
         version=1,
         embedding_model="memory-embedding-v1",
-        embedding_dimension=1536,
+        embedding_dimension=2048,
         embedding=None,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),

@@ -1503,7 +1503,7 @@ def create_app(
             from app.memory.embedding import memory_embedder_from_provider
             from app.memory.postgres_repository import PostgresMemoryRepository
 
-            # The app's embedder (dimension-fitted to the 1536-d memory column)
+            # The app's embedder (dimension-fitted to the 2048-d memory column)
             # gives canonical memory vector recall; without one it is lexical.
             app.state.memory_repository = PostgresMemoryRepository(
                 db_factory,

@@ -1,11 +1,12 @@
 """Adapter from the app's embedding provider to the canonical memory embedder.
 
-``memory_records.embedding`` is a fixed ``vector(1536)`` column (the
-``memory-embedding-v1`` profile). Deployments embed with whatever provider is
-configured — 1024-d Voyage/Qwen, 1536-d OpenAI small, 3072-d OpenAI large — so
-the adapter fits vectors the same way long-term memory does:
+``memory_records.embedding`` is a fixed ``vector(2048)`` column behind a
+``halfvec(2048)`` HNSW index (MEM-38: it was 1536, so the default 2048-d
+embedder never produced a vector). Deployments embed with whatever provider is
+configured — 1024-d Voyage/Qwen, 1536-d OpenAI small, 2048-d NVIDIA, 3072-d
+OpenAI large — so the adapter fits vectors the same way long-term memory does:
 
-* exactly 1536-d → stored as is;
+* exactly 2048-d → stored as is;
 * narrower → zero-padded (padding changes neither dot products nor norms, so
   cosine similarity ranks exactly as in a column of the native width);
 * wider → cannot be shrunk without changing its geometry, so no vector is
@@ -22,7 +23,7 @@ from typing import Any
 
 from app.observability.logging import get_logger
 
-MEMORY_EMBEDDING_DIM = 1536
+MEMORY_EMBEDDING_DIM = 2048
 
 _log = get_logger(__name__)
 
@@ -56,13 +57,19 @@ def _provider_model_id(provider: Any) -> str:
 
 
 class ProviderMemoryEmbedder:
-    """Callable ``(text) -> 1536-d tuple | None`` over an ``LLMProvider.embed``."""
+    """Callable ``(text) -> 2048-d tuple | None`` over an ``LLMProvider.embed``."""
 
     def __init__(self, provider: Any) -> None:
         self._provider = provider
         self.model_id = _provider_model_id(provider)
 
     async def __call__(self, text: str) -> tuple[float, ...] | None:
+        vector, _reason = await self.embed_checked(text)
+        return vector
+
+    async def embed_checked(self, text: str) -> tuple[tuple[float, ...] | None, str]:
+        """``(vector, reason)``: reason is ``ok``, ``too_wide`` (permanent for
+        this model — the sweep marks the record), ``empty`` or ``failed``."""
         from app.providers.base import EmbedRequest
 
         try:
@@ -71,11 +78,11 @@ class ProviderMemoryEmbedder:
             _log.warning(
                 "memory_embedding_failed", model=self.model_id, error=str(exc)[:200]
             )
-            return None
+            return None, "failed"
         embeddings = getattr(response, "embeddings", None) or []
         if not embeddings:
             _log.warning("memory_embedding_empty", model=self.model_id)
-            return None
+            return None, "empty"
         fitted = fit_memory_vector(embeddings[0])
         if fitted is None:
             _log.info(
@@ -83,7 +90,8 @@ class ProviderMemoryEmbedder:
                 model=self.model_id,
                 dimension=len(embeddings[0]),
             )
-        return fitted
+            return None, "too_wide"
+        return fitted, "ok"
 
 
 def memory_embedder_from_provider(provider: Any) -> ProviderMemoryEmbedder | None:

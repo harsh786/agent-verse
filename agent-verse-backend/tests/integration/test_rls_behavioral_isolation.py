@@ -110,7 +110,7 @@ def _memory_values(tenant: str, seed: str) -> list[Any]:
         5000,  # confidence (0..10000)
         "active",  # lifecycle_state
         "test-embedder",  # embedding_model
-        1536,  # embedding_dimension (== 1536 check)
+        2048,  # embedding_dimension (== 2048 check, MEM-38)
         "retention-default",  # retention_policy_id
         f"idem-{tenant}-{seed}",  # idempotency_key
     ]

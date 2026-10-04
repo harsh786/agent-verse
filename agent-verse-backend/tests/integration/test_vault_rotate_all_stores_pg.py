@@ -119,7 +119,7 @@ async def env(pg_url: str, redis_url: str) -> Any:
             )
             await _insert(
                 conn, "memory_records",
-                {"id": f"mem{i}-{t}", "tenant_id": t, "embedding_dimension": 1536,
+                {"id": f"mem{i}-{t}", "tenant_id": t, "embedding_dimension": 2048,
                  "classification": "confidential", "idempotency_key": f"idem-{i}-{t}",
                  "sealed_content": "enc:v1:" + old.encrypt(json.dumps({"content": t}))},
             )

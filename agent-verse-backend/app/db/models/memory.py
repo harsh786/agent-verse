@@ -106,7 +106,7 @@ class CanonicalMemoryRecord(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(2048), nullable=True)
     # The embedding model that actually produced ``embedding`` (recall compares
     # vectors of the same model only).
     embedding_source_model: Mapped[str | None] = mapped_column(String(128), nullable=True)

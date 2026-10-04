@@ -43,7 +43,7 @@ def _row(**overrides):
         lifecycle_state="active",
         version=1,
         embedding_model="memory-embedding-v1",
-        embedding_dimension=1536,
+        embedding_dimension=2048,
         embedding=None,
         embedding_source_model=None,
         outcome_score=0,
@@ -177,7 +177,9 @@ def _write_request(**overrides) -> MemoryWriteRequest:
 class TestWrite:
     async def test_embedder_dimension_mismatch_raises_before_db(self):
         async def bad_embedder(_content):
-            return [0.1, 0.2]
+            # Wider than the 2048-d column: cannot be fitted (narrower ones are
+            # zero-padded, MEM-38).
+            return [0.1] * 3072
 
         session = _FakeSession()
         repo = _repo(session, embedder=bad_embedder)
@@ -301,7 +303,7 @@ class TestWrite:
             model_id = "VoyageProvider:voyage-3"
 
             async def __call__(self, _content):
-                return tuple([0.25] * 1536)
+                return tuple([0.25] * 2048)
 
         session = _FakeSession(results=[_FakeResult(scalar=None)])
         await _repo(session, embedder=_Embedder()).write(_write_request())
@@ -322,13 +324,13 @@ class TestWrite:
 
     async def test_embedding_is_stored_when_embedder_configured(self):
         async def embedder(_content):
-            return [0.5] * 1536
+            return [0.5] * 2048
 
         session = _FakeSession(results=[_FakeResult(scalar=None)])
         repo = _repo(session, embedder=embedder)
         record = await repo.write(_write_request())
         assert record.embedding is not None
-        assert len(record.embedding) == 1536
+        assert len(record.embedding) == 2048
 
     async def test_permanent_retention_policy_has_no_expiry(self):
         session = _FakeSession(results=[_FakeResult(scalar=None)])
@@ -406,24 +408,24 @@ class TestRecall:
 
     async def test_uses_query_embedder_when_configured(self):
         async def embedder(_query):
-            return [1.0] * 1536
+            return [1.0] * 2048
 
-        row = _row(embedding=[1.0] * 1536)
+        row = _row(embedding=[1.0] * 2048)
         session = _FakeSession(results=[_FakeResult(scalars_seq=[row])])
         repo = _repo(session, embedder=embedder)
         hits = await repo.recall(self._request())
         assert len(hits) == 1
-        assert hits[0].semantic_score == 10_000
+        assert hits[0].semantic_score >= 9_999  # identical vectors (float rounding)
 
     async def test_vectors_of_another_model_are_not_compared(self):
         class _Embedder:
             model_id = "model-a"
 
             async def __call__(self, _query):
-                return tuple([1.0] * 1536)
+                return tuple([1.0] * 2048)
 
         row = _row(
-            embedding=[1.0] * 1536,
+            embedding=[1.0] * 2048,
             embedding_source_model="model-b",
             safe_summary="unrelated words",
         )
@@ -449,7 +451,7 @@ class TestRecall:
             model_id = "model-a"
 
             async def __call__(self, _query):
-                return tuple([1.0] * 1536)
+                return tuple([1.0] * 2048)
 
         await _repo(session, embedder=_Embedder()).recall(self._request())
         from sqlalchemy.dialects import postgresql
@@ -516,11 +518,12 @@ class TestRecallCandidateQueries:
         from app.memory.postgres_repository import recall_candidate_queries
 
         relevance, recency = recall_candidate_queries(
-            self._request(), query_embedding=tuple([0.1] * 1536), embedding_model="m1"
+            self._request(), query_embedding=tuple([0.1] * 2048), embedding_model="m1"
         )
         sql = self._sql(relevance)
         order = sql.split("ORDER BY", 1)[1]
-        assert order.strip().startswith("(memory_records.embedding <=>")
+        # The halfvec expression the HNSW index is built on (MEM-38).
+        assert order.strip().startswith("(CAST(memory_records.embedding AS HALFVEC(2048)) <=>")
         assert "memory_records.embedding IS NOT NULL" in sql
         assert "memory_records.embedding_source_model =" in sql
         assert "LIMIT" in sql
@@ -704,10 +707,10 @@ class TestRecordMapping:
         assert records[0].source is None
 
     async def test_record_converts_embedding_to_float_tuple(self):
-        values = [0.1, 0.2, 0.3] + [0.0] * 1533
+        values = [0.1, 0.2, 0.3] + [0.0] * 2045
         row = _row(embedding=values)
         session = _FakeSession(results=[_FakeResult(scalars_seq=[row])])
         repo = _repo(session)
         records = await repo.list_records("tenant")
         assert records[0].embedding[:3] == (0.1, 0.2, 0.3)
-        assert len(records[0].embedding) == 1536
+        assert len(records[0].embedding) == 2048

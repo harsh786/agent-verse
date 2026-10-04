@@ -176,7 +176,7 @@ async def _seed_subject(
                 " outcome_score, effectiveness_score, recall_count, helpful_count, "
                 " harmful_count, retention_policy_id, idempotency_key, created_at, updated_at) "
                 "VALUES (:id, :tid, 'episodic', 'ref', 'summary', :gid, 'exec-1', "
-                " CAST('[]' AS JSONB), 'internal', 80, 'active', 1, 'voyage', 1536, "
+                " CAST('[]' AS JSONB), 'internal', 80, 'active', 1, 'voyage', 2048, "
                 " 0, 0, 0, 0, 0, 'default', :idem, now(), now())"
             ),
             {

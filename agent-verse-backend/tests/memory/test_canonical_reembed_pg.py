@@ -89,7 +89,7 @@ async def test_reembed_fills_null_and_stale_vectors_but_never_sensitive(admin_ur
                 "recall_count, helpful_count, harmful_count, retention_policy_id, "
                 "idempotency_key, created_at, updated_at) VALUES ('sealed1', :t, 'reflexion', "
                 "'memory://encrypted/sealed1', '[REDACTED]', 'g', 'e', '[\"goal://g\"]', "
-                "'confidential', 'ciphertext', 7000, 'active', 1, 'memory-embedding-v1', 1536, "
+                "'confidential', 'ciphertext', 7000, 'active', 1, 'memory-embedding-v1', 2048, "
                 "0, 0, 0, 0, 0, 'default', 'ks', :now, :now)"
             ),
             {"t": TENANT, "now": now},

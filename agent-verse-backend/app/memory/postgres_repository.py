@@ -6,7 +6,19 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, delete, func, insert, literal, or_, select, text, update
+from pgvector.sqlalchemy import HALFVEC
+from sqlalchemy import (
+    Select,
+    cast,
+    delete,
+    func,
+    insert,
+    literal,
+    or_,
+    select,
+    text,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.coordination.store import OptimisticConflictError
@@ -20,6 +32,7 @@ from app.memory.contracts import (
     MemoryRecord,
     MemoryWriteRequest,
 )
+from app.memory.embedding import MEMORY_EMBEDDING_DIM, fit_memory_vector
 from app.memory.repository import Embedder, _has_evidence, _matches_scope, _similarity
 from app.memory.retention import resolve_expires_at
 from app.memory.sealing import (
@@ -63,7 +76,7 @@ def recall_candidate_queries(
     candidates that the blended score then ranks:
 
     * relevance — cosine distance to the query vector over rows embedded by the
-      same model (``ix_memory_records_embedding_hnsw``), or pg_trgm similarity
+      same model (``ix_memory_records_embedding_halfvec``), or pg_trgm similarity
       of the safe summary when no query vector is available;
     * recency — newest first (``ix_memory_records_recall_scope`` /
       ``idx_memory_tenant_kind_lifecycle_updated``).
@@ -92,7 +105,11 @@ def recall_candidate_queries(
             if embedding_model is not None
             else model.embedding_source_model.is_(None)
         )
-        distance = model.embedding.cosine_distance(list(query_embedding))
+        # The halfvec expression the HNSW index is built on (MEM-38: plain
+        # vector HNSW caps at 2000 dims; the column is 2048).
+        distance = cast(model.embedding, HALFVEC(MEMORY_EMBEDDING_DIM)).cosine_distance(
+            list(query_embedding)
+        )
         if exact_vector:
             # ``+ 0`` keeps the ordering exact but makes it unusable by the HNSW
             # index, so the planner filters by tenant first (MEM-09).
@@ -151,9 +168,10 @@ class PostgresMemoryRepository:
         embedding = await self._embedder(text)
         if embedding is None:
             return None
-        if len(embedding) != 1536:
+        fitted = fit_memory_vector(embedding)
+        if fitted is None:
             raise ValueError("memory embedder returned incompatible dimension")
-        return tuple(embedding)
+        return fitted
 
     async def write(self, request: MemoryWriteRequest) -> MemoryRecord:
         sensitive = request.classification in _SENSITIVE
@@ -235,7 +253,7 @@ class PostgresMemoryRepository:
                 else "active",
                 "version": 1,
                 "embedding_model": "memory-embedding-v1",
-                "embedding_dimension": 1536,
+                "embedding_dimension": MEMORY_EMBEDDING_DIM,
                 "embedding": list(embedding) if embedding is not None else None,
                 "outcome_score": 0,
                 "effectiveness_score": 0,
@@ -275,6 +293,9 @@ class PostgresMemoryRepository:
         if self._embedder is None or model_id is None:
             return 0
         rec = CanonicalMemoryRecord
+        # MEM-38: a record this model cannot embed (too wide) is marked so the
+        # sweep skips it and advances; it used to retry the same rows forever.
+        unembeddable = f"unembeddable:{model_id}"[:128]
         async with (
             self._sessions() as db,
             db.begin(),
@@ -292,16 +313,39 @@ class PostgresMemoryRepository:
                             rec.embedding_source_model.is_(None),
                             rec.embedding_source_model != model_id,
                         ),
+                        or_(
+                            rec.embedding_source_model.is_(None),
+                            rec.embedding_source_model != unembeddable,
+                        ),
                     )
-                    .order_by(rec.updated_at.desc(), rec.id)
+                    .order_by(rec.id)
                     .limit(max(1, limit))
                 )
             ).all()
         done = 0
+        checked = getattr(self._embedder, "embed_checked", None)
         for memory_id, summary in pending:
-            vector = await self._embed(str(summary or ""))
-            if vector is None:
-                continue
+            if checked is not None:
+                raw, reason = await checked(str(summary or ""))
+                vector = fit_memory_vector(raw) if raw is not None else None
+            else:
+                try:
+                    vector, reason = await self._embed(str(summary or "")), "ok"
+                except ValueError:
+                    vector, reason = None, "too_wide"
+                if vector is None and reason == "ok":
+                    reason = "failed"
+            if vector is None and reason != "too_wide":
+                # Provider outage: stop this tenant's sweep (the next run
+                # retries) instead of hammering a failing provider.
+                break
+            values: dict[str, Any] = (
+                {"embedding": list(vector), "embedding_source_model": model_id}
+                if vector is not None
+                # A stale vector of an older model is dropped with it: nothing
+                # can compare against it once the label no longer names it.
+                else {"embedding": None, "embedding_source_model": unembeddable}
+            )
             async with (
                 self._sessions() as db,
                 db.begin(),
@@ -310,9 +354,10 @@ class PostgresMemoryRepository:
                 await db.execute(
                     update(rec)
                     .where(rec.tenant_id == tenant_id, rec.id == memory_id)
-                    .values(embedding=list(vector), embedding_source_model=model_id)
+                    .values(**values)
                 )
-            done += 1
+            if vector is not None:
+                done += 1
         return done
 
     async def read_sensitive_content(self, tenant_id: str, memory_id: str) -> str:

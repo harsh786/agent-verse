@@ -55,8 +55,10 @@ class MemoryRecord(BaseModel):
 
     @model_validator(mode="after")
     def embedding_matches_profile(self) -> MemoryRecord:
-        if self.embedding_dimension != 1536 or self.embedding_model != "memory-embedding-v1":
-            raise ValueError("memory embedding profile must be memory-embedding-v1/1536")
+        # 2048 is the column width since MEM-38 (migration e47c1d3f5a96
+        # rewrote every row and the CHECK constraint).
+        if self.embedding_dimension != 2048 or self.embedding_model != "memory-embedding-v1":
+            raise ValueError("memory embedding profile must be memory-embedding-v1/2048")
         if self.embedding is not None and len(self.embedding) != self.embedding_dimension:
             raise ValueError("memory embedding dimension mismatch")
         return self
