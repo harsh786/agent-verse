@@ -1,0 +1,687 @@
+diff --git a/agent-verse-backend/app/api/a2a.py b/agent-verse-backend/app/api/a2a.py
+index bd8a2c5b2..94c95edf0 100644
+--- a/agent-verse-backend/app/api/a2a.py
++++ b/agent-verse-backend/app/api/a2a.py
+@@ -27,6 +27,8 @@ router = APIRouter(tags=["a2a"])
+ 
+ # In-memory fallback (used when DB not available)
+ _tasks: dict[str, dict[str, Any]] = {}
++# Strong refs to the in-process outcome watchers (latency fast path only).
++_FAST_PATHS: set[Any] = set()
+ 
+ _A2A_GOAL_TIMEOUT_S = 300.0
+ _TERMINAL_EVENT_STATUS = {
+@@ -205,8 +207,9 @@ async def _persist_task(task_id: str, data: dict[str, Any], db: Any) -> None:
+     async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+         await session.execute(
+             text("""INSERT INTO a2a_tasks
+-                (id, tenant_id, goal_text, status, callback_url, requester_id, created_at)
+-                VALUES (:id, :tid, :goal, :status, :cb, :req, NOW())
++                (id, tenant_id, goal_text, status, callback_url, requester_id, goal_id,
++                 created_at, updated_at)
++                VALUES (:id, :tid, :goal, :status, :cb, :req, :gid, NOW(), NOW())
+                 ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status"""),
+             {
+                 "id": task_id,
+@@ -215,10 +218,88 @@ async def _persist_task(task_id: str, data: dict[str, Any], db: Any) -> None:
+                 "status": data.get("status", "pending"),
+                 "cb": data.get("callback_url", ""),
+                 "req": data.get("requester_agent_id", ""),
++                "gid": data.get("goal_id") or None,
+             },
+         )
+ 
+ 
++# Statuses from which a task can still move; everything else is terminal.
++_OPEN_STATUSES = ("accepted", "working")
++
++
++async def _set_task_goal(task_id: str, tenant_id: str, goal_id: str, db: Any) -> None:
++    """Record the goal running the task (status ``working``)."""
++    if db is None:
++        task = _tasks.get(task_id)
++        if task is not None and task.get("tenant_id") == tenant_id:
++            task.update(goal_id=goal_id, status="working")
++        return
++    from sqlalchemy import text
++
++    from app.db.rls import sqlalchemy_rls_context
++
++    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++        await session.execute(
++            text(
++                "UPDATE a2a_tasks SET goal_id=:gid, status='working', updated_at=NOW() "
++                "WHERE id=:id AND tenant_id=:tid AND status IN ('accepted', 'working')"
++            ),
++            {"id": task_id, "tid": tenant_id, "gid": goal_id},
++        )
++
++
++async def _finalize_task(
++    task_id: str, tenant_id: str, status: str, result: str, db: Any
++) -> tuple[bool, str]:
++    """Move an OPEN task to its terminal *status*; ``(transitioned, callback_url)``.
++
++    Conditional (``WHERE status IN open``) so the in-process fast path and the
++    reconciliation beat — on any replica — finalize a task exactly once, and
++    only the one that did sends the callback.
++    """
++    if db is None:
++        task = _tasks.get(task_id)
++        if task is None or task.get("tenant_id") != tenant_id:
++            return False, ""
++        if task.get("status") not in _OPEN_STATUSES:
++            return False, ""
++        task.update(status=status, result=result)
++        return True, str(task.get("callback_url") or "")
++    from sqlalchemy import text
++
++    from app.db.rls import sqlalchemy_rls_context
++
++    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++        row = (
++            await session.execute(
++                text(
++                    "UPDATE a2a_tasks SET status=:status, result=:result, updated_at=NOW() "
++                    "WHERE id=:id AND tenant_id=:tid AND status IN ('accepted', 'working') "
++                    "RETURNING callback_url"
++                ),
++                {
++                    "id": task_id,
++                    "tid": tenant_id,
++                    "status": status,
++                    "result": result[:10000] if result else "",
++                },
++            )
++        ).fetchone()
++    if row is None:
++        return False, ""
++    return True, str(row[0] or "")
++
++
++async def finalize_and_notify(
++    task_id: str, tenant_id: str, status: str, result: str, db: Any
++) -> bool:
++    """Finalize the task once and, if this call did, send the signed callback."""
++    transitioned, callback_url = await _finalize_task(task_id, tenant_id, status, result, db)
++    if transitioned and callback_url:
++        await _send_callback(callback_url, task_id, status, result)
++    return transitioned
++
++
+ async def _update_task_status(
+     task_id: str, tenant_id: str, status: str, result: str, db: Any
+ ) -> None:
+@@ -263,7 +344,7 @@ async def _get_task(task_id: str, db: Any, tenant_id: str) -> dict[str, Any] | N
+         row = (
+             await session.execute(
+                 text(
+-                    "SELECT id, goal_text, status, result, callback_url, created_at "
++                    "SELECT id, goal_text, status, result, callback_url, created_at, goal_id "
+                     "FROM a2a_tasks WHERE id=:id AND tenant_id=:tid"
+                 ),
+                 {"id": task_id, "tid": tenant_id},
+@@ -278,6 +359,7 @@ async def _get_task(task_id: str, db: Any, tenant_id: str) -> dict[str, Any] | N
+         "result": row[3],
+         "callback_url": row[4],
+         "created_at": row[5].isoformat() if row[5] else "",
++        "goal_id": row[6],
+     }
+ 
+ 
+@@ -447,33 +529,49 @@ async def receive_a2a_task(
+ 
+     await _persist_task(task_id, task_data, db)
+ 
+-    # Execute goal asynchronously
+-    if goal_service:  # always set (checked above)
+-        import asyncio
++    # Submit the goal now (it is queued durably by the goal service) and record
++    # its id on the task: the outcome is then reconciled from the goal's
++    # persisted status by the a2a reconciliation beat on any replica, so a
++    # restart or deploy can no longer strand the task. The in-process watcher
++    # below is only a latency fast path and never writes a fake "timeout".
++    try:
++        submitted = await goal_service.submit_goal(
++            goal=body.goal,
++            priority=body.priority,
++            dry_run=False,
++            tenant_ctx=tenant_ctx,
++        )
++        goal_id = str(submitted["goal_id"])
++    except HTTPException:
++        await _finalize_task(task_id, a2a_tenant_id, "failed", "goal was refused", db)
++        raise
++    except Exception as exc:
++        await _finalize_task(task_id, a2a_tenant_id, "failed", f"goal submit failed: {exc}", db)
++        raise HTTPException(502, "The goal could not be submitted; the task failed") from exc
++    await _set_task_goal(task_id, a2a_tenant_id, goal_id, db)
+ 
+-        async def execute_and_callback() -> None:
+-            try:
+-                result = await goal_service.submit_goal(
+-                    goal=body.goal,
+-                    priority=body.priority,
+-                    dry_run=False,
+-                    tenant_ctx=tenant_ctx,
+-                )
+-                final_status, final_result = await _await_goal_outcome(
+-                    goal_service, str(result["goal_id"]), tenant_ctx
+-                )
+-            except Exception as exc:
+-                final_status = "error"
+-                final_result = str(exc)
++    import asyncio
+ 
+-            await _update_task_status(task_id, a2a_tenant_id, final_status, final_result, db)
+-            await _send_callback(body.callback_url or "", task_id, final_status, final_result)
++    async def _fast_path() -> None:
++        try:
++            final_status, final_result = await _await_goal_outcome(
++                goal_service, goal_id, tenant_ctx
++            )
++        except Exception as exc:
++            logger.info("a2a_fast_path_ended", task_id=task_id, error=str(exc)[:200])
++            return
++        if final_status in ("timeout", "error"):
++            return  # not an outcome: the reconciliation beat decides from the goal row
++        await finalize_and_notify(task_id, a2a_tenant_id, final_status, final_result, db)
+ 
+-        asyncio.create_task(execute_and_callback())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
++    task = asyncio.get_running_loop().create_task(_fast_path())
++    _FAST_PATHS.add(task)
++    task.add_done_callback(_FAST_PATHS.discard)
+ 
+     return {
+         "task_id": task_id,
+-        "status": "accepted",
++        "goal_id": goal_id,
++        "status": "working",
+         "message": f"Task accepted. Track at /a2a/tasks/{task_id}",
+     }
+ 
+@@ -535,3 +633,83 @@ async def get_a2a_task(request: Request, task_id: str) -> dict[str, Any]:
+     if task is None:
+         raise HTTPException(404, f"Task {task_id} not found")
+     return task
++
++
++# ── Reconciliation (beat: reconcile-a2a-tasks) ────────────────────────────────
++
++_GOAL_TERMINAL_TO_A2A = {
++    "complete": "complete",
++    "failed": "failed",
++    "cancelled": "canceled",
++    "canceled": "canceled",
++}
++
++
++async def _reconciled_result(tenant_db: Any, goal_id: str, tenant_id: str, status: str) -> str:
++    """The completed goal's output (result artifact summary) from its event history."""
++    from app.services.event_store import EventStore
++    from app.services.result_artifacts import build_result_artifact
++    from app.tenancy.context import PlanTier, TenantContext
++
++    # Only the tenant id is used (RLS scope + predicate).
++    ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="a2a-reconcile")
++    try:
++        events = await EventStore(tenant_db).list_events(goal_id, tenant_ctx=ctx)
++    except Exception as exc:
++        logger.warning("a2a_reconcile_result_unavailable", goal_id=goal_id, error=str(exc)[:200])
++        return ""
++    artifact = build_result_artifact(goal="", status=status, events=events)
++    return str(artifact.get("summary") or "")
++
++
++async def reconcile_open_tasks(
++    system_db: Any,
++    tenant_db: Any,
++    *,
++    unstarted_after_s: float = 600.0,
++    batch: int = 500,
++) -> dict[str, int]:
++    """Finalize open A2A tasks whose goal reached a terminal state.
++
++    Reads open tasks with their goal's persisted status across tenants (system
++    session), then finalizes each under its tenant's RLS context (exactly once,
++    with the signed callback). A task whose goal was never recorded (the API
++    died between accepting and submitting) or no longer exists is failed after
++    ``unstarted_after_s``.
++    """
++    from sqlalchemy import text
++
++    from app.db.rls import system_session
++
++    async with system_db() as session, session.begin(), system_session(session):
++        rows = (
++            await session.execute(
++                text(
++                    "SELECT t.id, t.tenant_id, t.goal_id, g.status, g.error_message, "
++                    "EXTRACT(EPOCH FROM (NOW() - t.updated_at)) "
++                    "FROM a2a_tasks t LEFT JOIN goals g "
++                    "ON g.id = t.goal_id AND g.tenant_id = t.tenant_id "
++                    "WHERE t.status IN ('accepted', 'working') "
++                    "ORDER BY t.updated_at LIMIT :n"
++                ),
++                {"n": batch},
++            )
++        ).fetchall()
++    finalized = expired = 0
++    for task_id, tenant_id, goal_id, goal_status, goal_error, age in rows:
++        if goal_id is None or goal_status is None:
++            if float(age or 0) > unstarted_after_s:
++                reason = "goal was never started" if goal_id is None else "goal no longer exists"
++                if await finalize_and_notify(task_id, tenant_id, "failed", reason, tenant_db):
++                    expired += 1
++            continue
++        mapped = _GOAL_TERMINAL_TO_A2A.get(str(goal_status).lower())
++        if mapped is None:
++            continue  # still running (or waiting on a human): leave it open
++        if mapped == "complete":
++            result = await _reconciled_result(tenant_db, goal_id, tenant_id, str(goal_status))
++        else:
++            result = str(goal_error or f"Goal {goal_id} {goal_status}")
++        if await finalize_and_notify(task_id, tenant_id, mapped, result, tenant_db):
++            finalized += 1
++    return {"open": len(rows), "finalized": finalized, "expired": expired}
+diff --git a/agent-verse-backend/app/db/migrations/versions/f3a2c1d4e5b6_a2a_tasks_goal_id.py b/agent-verse-backend/app/db/migrations/versions/f3a2c1d4e5b6_a2a_tasks_goal_id.py
+new file mode 100644
+index 000000000..26b4cee86
+--- /dev/null
++++ b/agent-verse-backend/app/db/migrations/versions/f3a2c1d4e5b6_a2a_tasks_goal_id.py
+@@ -0,0 +1,35 @@
++"""a2a_tasks.goal_id + an index on open tasks (A2A-01 durable execution).
++
++Inbound A2A tasks ran in an in-process ``create_task`` watcher: a restart left
++the row "accepted" forever and the goal id was never stored, so nothing could
++reconcile it. The task now records its goal and a beat reconciles open tasks
++against the goal's persisted status.
++
++Revision ID: f3a2c1d4e5b6
++Revises: a4d51be05bf1
++Create Date: 2026-10-03 12:00:00.000000
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++
++from alembic import op
++
++revision: str = "f3a2c1d4e5b6"
++down_revision: str | None = "a4d51be05bf1"
++branch_labels: str | Sequence[str] | None = None
++depends_on: str | Sequence[str] | None = None
++
++
++def upgrade() -> None:
++    op.execute("ALTER TABLE a2a_tasks ADD COLUMN IF NOT EXISTS goal_id VARCHAR(32)")
++    op.execute(
++        "CREATE INDEX IF NOT EXISTS ix_a2a_tasks_open ON a2a_tasks (updated_at) "
++        "WHERE status IN ('accepted', 'working')"
++    )
++
++
++def downgrade() -> None:
++    op.execute("DROP INDEX IF EXISTS ix_a2a_tasks_open")
++    op.execute("ALTER TABLE a2a_tasks DROP COLUMN IF EXISTS goal_id")
+diff --git a/agent-verse-backend/app/scaling/a2a_tasks.py b/agent-verse-backend/app/scaling/a2a_tasks.py
+new file mode 100644
+index 000000000..e2f889a8a
+--- /dev/null
++++ b/agent-verse-backend/app/scaling/a2a_tasks.py
+@@ -0,0 +1,37 @@
++"""Celery beat task reconciling open inbound A2A tasks with their goals (A2A-01).
++
++Inbound A2A tasks record the goal that runs them; this beat (``reconcile-a2a-
++tasks``, celery_app.py) finalizes every open task whose goal reached a terminal
++state and sends its signed callback, so a restart, deploy or a goal that runs
++for hours never strands a task as "accepted".
++"""
++
++from __future__ import annotations
++
++from typing import Any, cast
++
++from app.scaling.beat_guard import beat_task_guard
++from app.scaling.celery_app import celery_app
++
++
++async def _reconcile_once() -> dict[str, int]:
++    from app.api.a2a import reconcile_open_tasks
++    from app.db.session import get_session_factory, get_system_session_factory
++
++    return await reconcile_open_tasks(get_system_session_factory(), get_session_factory())
++
++
++@celery_app.task(
++    name="app.scaling.a2a_tasks.reconcile_a2a_tasks",
++    bind=True,
++    max_retries=0,
++    queue="maintenance",
++)
++@beat_task_guard(lock_ttl_seconds=120)
++def reconcile_a2a_tasks(self: Any) -> dict[str, Any]:
++    from app.scaling.tasks import _run_async
++
++    return cast(dict[str, Any], _run_async(_reconcile_once()))
++
++
++__all__ = ["reconcile_a2a_tasks"]
+diff --git a/agent-verse-backend/app/scaling/celery_app.py b/agent-verse-backend/app/scaling/celery_app.py
+index 044fb15f8..c15175aa0 100644
+--- a/agent-verse-backend/app/scaling/celery_app.py
++++ b/agent-verse-backend/app/scaling/celery_app.py
+@@ -91,6 +91,8 @@ celery_app = Celery(
+         # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
+         "app.scaling.raft_tasks",
+         "app.scaling.event_outbox_tasks",
++        # Inbound A2A task reconciliation (beat: reconcile-a2a-tasks).
++        "app.scaling.a2a_tasks",
+         # Expired strategy-evidence purge (beat: purge-expired-strategy-evidence).
+         "app.orchestration.evidence_maintenance",
+         # Coordination outbox delivery (beat: dispatch-coordination-outbox).
+@@ -137,6 +139,7 @@ celery_app.conf.update(
+         "app.scaling.tasks.run_ai_ops_dataset": {"queue": "maintenance"},
+         "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
+         "app.scaling.event_outbox_tasks.drain_goal_event_outbox": {"queue": "maintenance"},
++        "app.scaling.a2a_tasks.reconcile_a2a_tasks": {"queue": "maintenance"},
+         # GDPR export — runs in background, long-running
+         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
+         # Per-plan routing aliases (workers can subscribe to these specific queues)
+@@ -265,6 +268,13 @@ celery_app.conf.update(
+         # so a finished model becomes deployable without a manual refresh.
+         # Goal events whose durable append failed are parked in a Redis outbox
+         # (SVC-08); replay them so the event history has no holes.
++        # Inbound A2A tasks: finalize those whose goal finished (and send the
++        # signed callback) from the persisted goal status, on any replica.
++        "reconcile-a2a-tasks": {
++            "task": "app.scaling.a2a_tasks.reconcile_a2a_tasks",
++            "schedule": 60.0,
++            "options": {"queue": "maintenance"},
++        },
+         "drain-goal-event-outbox": {
+             "task": "app.scaling.event_outbox_tasks.drain_goal_event_outbox",
+             "schedule": 30.0,
+diff --git a/agent-verse-backend/tests/api/test_a2a.py b/agent-verse-backend/tests/api/test_a2a.py
+index d9176e51a..5fed82d3f 100644
+--- a/agent-verse-backend/tests/api/test_a2a.py
++++ b/agent-verse-backend/tests/api/test_a2a.py
+@@ -66,7 +66,7 @@ def test_receive_task_returns_accepted() -> None:
+     assert resp.status_code in (200, 202)
+     data = resp.json()
+     assert "task_id" in data
+-    assert data["status"] == "accepted"
++    assert data["status"] == "working"  # goal submitted and recorded (A2A-01)
+ 
+ 
+ def test_get_task_status() -> None:
+diff --git a/agent-verse-backend/tests/api/test_a2a_comprehensive.py b/agent-verse-backend/tests/api/test_a2a_comprehensive.py
+index 500fffbbb..fbbc59794 100644
+--- a/agent-verse-backend/tests/api/test_a2a_comprehensive.py
++++ b/agent-verse-backend/tests/api/test_a2a_comprehensive.py
+@@ -157,7 +157,7 @@ def test_receive_task_no_hmac_secret_accepted(monkeypatch) -> None:
+     client = TestClient(_make_app())
+     resp = client.post("/a2a/tasks", json={"goal": "Do X"})
+     assert resp.status_code == 202
+-    assert resp.json()["status"] == "accepted"
++    assert resp.json()["status"] == "working"
+ 
+ 
+ def test_receive_task_no_longer_depends_on_a2a_tenant_id(monkeypatch) -> None:
+diff --git a/agent-verse-backend/tests/api/test_a2a_durable.py b/agent-verse-backend/tests/api/test_a2a_durable.py
+new file mode 100644
+index 000000000..317940c02
+--- /dev/null
++++ b/agent-verse-backend/tests/api/test_a2a_durable.py
+@@ -0,0 +1,114 @@
++"""A2A-01: inbound tasks record their goal and are finalized exactly once.
++
++Tasks ran in an in-process create_task watcher with a 300 s timeout: a restart
++stranded them as "accepted", long goals were recorded as "timeout" (while the
++goal kept running) and no goal id was stored.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import os
++from typing import Any
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++
++import app.api.a2a as a2a
++from app.tenancy.context import PlanTier, TenantContext
++
++CTX = TenantContext(tenant_id="t-a2a-d", plan=PlanTier.PROFESSIONAL, api_key_id="k")
++
++
++@pytest.fixture(autouse=True)
++def _clean() -> Any:
++    a2a._tasks.clear()
++    yield
++    a2a._tasks.clear()
++
++
++def _app(goal_service: Any) -> TestClient:
++    app = FastAPI()
++
++    @app.middleware("http")
++    async def _inject(request: Any, call_next: Any) -> Any:
++        request.state.tenant = CTX
++        return await call_next(request)
++
++    app.include_router(a2a.router)
++    app.state.goal_service = goal_service
++    return TestClient(app)
++
++
++def _goal_service(*, events: list[dict[str, Any]] | None = None) -> MagicMock:
++    svc = MagicMock()
++    svc.submit_goal = AsyncMock(return_value={"goal_id": "goal-77"})
++
++    async def _subscribe(**_kw: Any) -> Any:
++        for evt in events or []:
++            yield evt
++        # The stream ends with the goal still running (persisted status below):
++        # not an outcome, so the task must stay open.
++
++    svc.subscribe_events = _subscribe
++    svc.get_goal = AsyncMock(return_value={"status": "running"})
++    return svc
++
++
++def test_task_records_its_goal_and_is_working() -> None:
++    with patch.dict(os.environ, {"A2A_SHARED_SECRET": ""}):
++        resp = _app(_goal_service()).post("/a2a/tasks", json={"goal": "do it"})
++    assert resp.status_code == 202, resp.text
++    body = resp.json()
++    assert body["status"] == "working" and body["goal_id"] == "goal-77"
++    stored = a2a._tasks[body["task_id"]]
++    assert stored["goal_id"] == "goal-77"
++    # The stream ended while the goal is still running: no outcome is invented.
++    assert stored["status"] == "working"
++
++
++async def test_fast_path_timeout_never_writes_a_fake_outcome() -> None:
++    svc = _goal_service()
++
++    async def _slow(**_kw: Any) -> Any:
++        await asyncio.sleep(10)
++        yield {}
++
++    svc.subscribe_events = _slow
++    status, _ = await a2a._await_goal_outcome(svc, "goal-77", CTX, timeout_s=0.05)
++    assert status == "timeout"
++    a2a._tasks["tk"] = {"tenant_id": CTX.tenant_id, "status": "working", "callback_url": ""}
++    # The receive handler's fast path ignores "timeout": the task stays open.
++    assert a2a._tasks["tk"]["status"] == "working"
++
++
++async def test_finalize_is_exactly_once_and_only_the_winner_calls_back() -> None:
++    a2a._tasks["tk"] = {
++        "tenant_id": CTX.tenant_id,
++        "status": "working",
++        "callback_url": "https://peer.example/cb",
++    }
++    sent: list[tuple[str, str]] = []
++
++    async def _cb(url: str, task_id: str, status: str, result: str) -> bool:
++        sent.append((task_id, status))
++        return True
++
++    with patch.object(a2a, "_send_callback", _cb):
++        first = await a2a.finalize_and_notify("tk", CTX.tenant_id, "complete", "done", None)
++        second = await a2a.finalize_and_notify("tk", CTX.tenant_id, "failed", "late", None)
++    assert (first, second) == (True, False)
++    assert sent == [("tk", "complete")]
++    assert a2a._tasks["tk"]["status"] == "complete"
++
++
++def test_submit_failure_fails_the_task() -> None:
++    svc = _goal_service()
++    svc.submit_goal = AsyncMock(side_effect=RuntimeError("queue down"))
++    with patch.dict(os.environ, {"A2A_SHARED_SECRET": ""}):
++        resp = _app(svc).post("/a2a/tasks", json={"goal": "do it"})
++    assert resp.status_code == 502
++    [task] = a2a._tasks.values()
++    assert task["status"] == "failed"
+diff --git a/agent-verse-backend/tests/api/test_a2a_extra2.py b/agent-verse-backend/tests/api/test_a2a_extra2.py
+index f3e550a69..21128b9bb 100644
+--- a/agent-verse-backend/tests/api/test_a2a_extra2.py
++++ b/agent-verse-backend/tests/api/test_a2a_extra2.py
+@@ -168,7 +168,7 @@ class TestGetTaskWithDb:
+         from datetime import UTC, datetime
+ 
+         row = ("task-db-get", "Fix the bug", "complete", "result text", "http://cb.url",
+-               datetime.now(UTC))
++               datetime.now(UTC), "goal-1")
+         db, session = _db_returning(row=row)
+         result = await _get_task("task-db-get", db=db, tenant_id=_A2A_TID)
+         assert result is not None
+@@ -205,7 +205,7 @@ class TestGetTaskWithDb:
+ 
+     @pytest.mark.asyncio
+     async def test_get_task_created_at_none_handled(self):
+-        db, _ = _db_returning(row=("task-no-ts", "goal", "pending", None, None, None))
++        db, _ = _db_returning(row=("task-no-ts", "goal", "pending", None, None, None, None))
+         result = await _get_task("task-no-ts", db=db, tenant_id=_A2A_TID)
+         assert result is not None
+         assert result["created_at"] == ""
+@@ -307,7 +307,8 @@ class TestExecuteAndCallback:
+                 json={"goal": "Fail goal"},
+                 headers={"X-API-Key": _VALID_KEY},
+             )
+-        assert resp.status_code in (202, 200, 401, 500)
++        # A goal that cannot be submitted fails the task now (A2A-01), not later.
++        assert resp.status_code == 502
+ 
+ 
+ # ── _persist_task with DB success path ───────────────────────────────────────
+diff --git a/agent-verse-backend/tests/integration/test_a2a_reconcile_pg.py b/agent-verse-backend/tests/integration/test_a2a_reconcile_pg.py
+new file mode 100644
+index 000000000..187bc10a9
+--- /dev/null
++++ b/agent-verse-backend/tests/integration/test_a2a_reconcile_pg.py
+@@ -0,0 +1,98 @@
++"""A2A-01 against real Postgres: after a restart (no in-process watcher), the
++reconciliation beat finalizes open tasks from their goals' persisted status,
++exactly once, with the callback; a goal that outlives any watcher still ends
++"complete"; a task whose goal was never recorded is failed."""
++
++from __future__ import annotations
++
++import uuid
++from typing import Any
++from unittest.mock import patch
++
++import pytest
++
++pytestmark = pytest.mark.integration
++
++
++async def test_reconcile_finalizes_from_goal_status(pg_url: str) -> None:
++    from sqlalchemy import text
++    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++    from sqlalchemy.pool import NullPool
++
++    import app.api.a2a as a2a
++
++    engine = create_async_engine(pg_url, poolclass=NullPool)
++    factory = async_sessionmaker(engine, expire_on_commit=False)
++    tenant = uuid.uuid4().hex[:16]
++    g_done, g_failed, g_running = (uuid.uuid4().hex for _ in range(3))
++    try:
++        async with factory() as s, s.begin():
++            await s.execute(
++                text(
++                    "INSERT INTO tenants (id, name, email, plan_tier) "
++                    "VALUES (:id, 'A2A', :email, 'professional')"
++                ),
++                {"id": tenant, "email": f"{tenant}@example.com"},
++            )
++            for gid, status, err in (
++                (g_done, "complete", None),
++                (g_failed, "failed", "tool exploded"),
++                (g_running, "executing", None),
++            ):
++                await s.execute(
++                    text(
++                        "INSERT INTO goals (id, tenant_id, goal_text, status, error_message) "
++                        "VALUES (:id, :t, 'g', :st, :err)"
++                    ),
++                    {"id": gid, "t": tenant, "st": status, "err": err},
++                )
++            for tid, gid, age in (
++                ("t-done", g_done, 0),
++                ("t-failed", g_failed, 0),
++                ("t-running", g_running, 0),
++                ("t-lost", None, 3600),  # API died between accept and submit
++            ):
++                await s.execute(
++                    text(
++                        "INSERT INTO a2a_tasks (id, tenant_id, goal_text, status, callback_url, "
++                        "goal_id, created_at, updated_at) VALUES (:id, :t, 'g', "
++                        "CASE WHEN :gid IS NULL THEN 'accepted' ELSE 'working' END, "
++                        "'https://peer.example/cb', :gid, NOW(), "
++                        "NOW() - make_interval(secs => :age))"
++                    ),
++                    {"id": f"{tenant}-{tid}", "t": tenant, "gid": gid, "age": age},
++                )
++
++        sent: list[tuple[str, str]] = []
++
++        async def _cb(url: str, task_id: str, status: str, result: str) -> bool:
++            sent.append((task_id.split("-", 1)[1], status))
++            return True
++
++        with patch.object(a2a, "_send_callback", _cb):
++            first = await a2a.reconcile_open_tasks(factory, factory)
++            second = await a2a.reconcile_open_tasks(factory, factory)
++
++        assert first["finalized"] == 2 and first["expired"] == 1
++        assert second["finalized"] == 0 and second["expired"] == 0
++        assert sorted(sent) == [
++            ("t-done", "complete"),
++            ("t-failed", "failed"),
++            ("t-lost", "failed"),
++        ]
++        async with factory() as s:
++            rows: dict[str, Any] = {
++                r[0].split("-", 1)[1]: (r[1], r[2])
++                for r in (
++                    await s.execute(
++                        text("SELECT id, status, result FROM a2a_tasks WHERE tenant_id = :t"),
++                        {"t": tenant},
++                    )
++                ).fetchall()
++            }
++        assert rows["t-done"][0] == "complete"
++        assert rows["t-failed"] == ("failed", "tool exploded")
++        assert rows["t-running"][0] == "working"
++        assert rows["t-lost"][0] == "failed"
++    finally:
++        await engine.dispose()
