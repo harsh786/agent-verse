@@ -1483,35 +1483,33 @@ def _eval_runs_on_workers(request: Request, store: Any) -> bool:
     )
 
 
-def _start_in_process_workers(
-    request: Request, ctx: Any, store: Any, run_id: str, workers: int
-) -> None:
-    """Without Celery (dev / single process): the same claim loop, in this process."""
+def _start_in_process_run(request: Request, ctx: Any, store: Any, run_id: str) -> None:
+    """Without Celery (dev / single process): the same steps, looped in this process."""
     from app.api._deps import get_agent_store
     from app.intelligence.eval_suite import platform_judge
-    from app.intelligence.eval_suite_jobs import run_suite_worker
+    from app.intelligence.eval_suite_jobs import run_until_done
     from app.intelligence.eval_suite_post_run import on_run_completed
 
     goal_service = request.app.state.goal_service
-    agent_store = get_agent_store(request)
     judge = platform_judge(getattr(request.app.state, "_app_provider", None))
 
     async def _load_agent(agent_id: str) -> dict[str, Any] | None:
-        found: dict[str, Any] | None = await agent_store.get_async(agent_id, tenant_ctx=ctx)
+        found: dict[str, Any] | None = await get_agent_store(request).get_async(
+            agent_id, tenant_ctx=ctx
+        )
         return found
 
     running: set[asyncio.Task[Any]] = request.app.state.__dict__.setdefault(
         "_eval_run_tasks", set()
     )
-    for _ in range(workers):
-        task = asyncio.create_task(
-            run_suite_worker(
-                store=store, run_id=run_id, goal_service=goal_service, tenant_ctx=ctx,
-                judge=judge, agent_loader=_load_agent, on_completed=on_run_completed,
-            )
+    task = asyncio.create_task(
+        run_until_done(
+            store=store, run_id=run_id, goal_service=goal_service, tenant_ctx=ctx,
+            judge=judge, agent_loader=_load_agent, on_completed=on_run_completed,
         )
-        running.add(task)  # keep a strong reference until it finishes
-        task.add_done_callback(running.discard)
+    )
+    running.add(task)  # keep a strong reference until it finishes
+    task.add_done_callback(running.discard)
 
 
 @intelligence_router.post("/eval-suites/{suite_id}/run", status_code=202)
@@ -1522,8 +1520,9 @@ async def run_eval_suite(
 
     Returns 202 with a ``run_id``; poll ``GET .../results`` for progress and the
     outcome. Every golden task of the current dataset version is enqueued as a
-    result row and executed by up to ``eval_suite_run_concurrency`` workers
-    (Celery when goals run on Celery), which survive restarts (MEM-53). With
+    result row and advanced by non-blocking worker steps (Celery when goals run
+    on Celery) with at most ``eval_suite_run_concurrency`` golden goals in
+    flight; the run survives restarts (MEM-53). With
     ``agent_id`` every goal runs on that agent, pinned to its current config.
     """
     import uuid as _uuid
@@ -1562,20 +1561,19 @@ async def run_eval_suite(
         try:
             from app.scaling.tasks import run_eval_suite_worker
 
-            for i in range(concurrency):
-                run_eval_suite_worker.apply_async(
-                    args=[ctx.tenant_id, plan, run_id, i], queue="maintenance"
-                )
+            run_eval_suite_worker.apply_async(
+                args=[ctx.tenant_id, plan, run_id, 0], queue="maintenance"
+            )
         except Exception as exc:
             await store.fail_run(run_id, f"could not enqueue the run's workers: {exc}")
             raise HTTPException(503, "Could not enqueue the eval run; try again") from exc
         executor = "celery"
     else:
-        _start_in_process_workers(request, ctx, store, run_id, concurrency)
+        _start_in_process_run(request, ctx, store, run_id)
         executor = "in_process"
     return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": total,
             "dataset_version": version, "agent_id": agent_id, "agent_config_hash": config_hash,
-            "workers": concurrency, "executor": executor}
+            "concurrency": concurrency, "executor": executor}
 
 
 @intelligence_router.get("/eval-suites/{suite_id}/results")

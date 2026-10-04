@@ -454,17 +454,32 @@ def test_benchmarks_db_query_exceptions_are_503_not_nulls() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_eval_suite_success() -> None:
-    """POST /run answers 202 at once; the outcome is recorded by the background run."""
-    from app.intelligence.eval_suite import EvalSuiteResult, GoldenTaskResult
+async def _run_to_end(app: FastAPI, suite_id: str) -> tuple[dict[str, Any], list[Any]]:
+    import asyncio
 
-    result = EvalSuiteResult(suite_id="suite-1", total_tasks=1, passed_tasks=1)
-    result.task_results = [
-        GoldenTaskResult(task_id="task-1", goal="g", passed=True, duration_seconds=1.2345)
-    ]
-    runner = MagicMock()
-    runner.run_suite = AsyncMock(return_value=result)
-    app = _make_app(eval_suite_runner=runner, goal_service=MagicMock())
+    from httpx import ASGITransport, AsyncClient
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        resp = await c.post(f"/intelligence/eval-suites/{suite_id}/run", headers=_headers())
+        assert resp.status_code == 202, resp.text
+        for _ in range(300):
+            runs = (await c.get(f"/intelligence/eval-suites/{suite_id}/results",
+                                headers=_headers())).json()
+            if runs[0]["status"] != "running":
+                break
+            await asyncio.sleep(0.02)
+        return resp.json(), runs
+
+
+@pytest.mark.asyncio
+async def test_run_eval_suite_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /run answers 202 at once; the run's steps execute and record every task."""
+    from app.core.config import get_settings
+    from tests.intelligence._eval_fakes import FakeGoals
+
+    monkeypatch.setattr(get_settings(), "eval_suite_goal_poll_seconds", 0.01)
+    goals = FakeGoals()
+    app = _make_app(eval_suite_runner=MagicMock(), goal_service=goals)
     client = TestClient(app, raise_server_exceptions=False)
     assert client.post(
         "/intelligence/eval-suites", json={"suite_id": "suite-1"}, headers=_headers()
@@ -474,33 +489,31 @@ def test_run_eval_suite_success() -> None:
         json={"goal": "g", "expected_tools": ["t"]},
         headers=_headers(),
     )
-
-    resp = client.post("/intelligence/eval-suites/suite-1/run", headers=_headers())
-    assert resp.status_code == 202
-    body = resp.json()
+    body, runs = await _run_to_end(app, "suite-1")
     assert body["status"] == "running" and body["total"] == 1
-    runner.run_suite.assert_awaited_once()
-    kwargs = runner.run_suite.await_args.kwargs
-    assert kwargs["run_id"] == body["run_id"]
-    assert [t.goal for t in kwargs["tasks"]] == ["g"]
-
-    runs = client.get("/intelligence/eval-suites/suite-1/results", headers=_headers()).json()
+    assert [s["goal"] for s in goals.submits] == ["g"]
     assert runs[0]["run_id"] == body["run_id"]
     assert runs[0]["status"] == "completed" and runs[0]["passed"] == 1
-    assert runs[0]["task_results"][0]["duration_seconds"] == 1.23
+    assert runs[0]["task_results"][0]["terminal_event"] == "goal_complete"
 
 
-def test_run_eval_suite_failure_is_recorded() -> None:
-    runner = MagicMock()
-    runner.run_suite = AsyncMock(side_effect=RuntimeError("provider down"))
-    client = TestClient(
-        _make_app(eval_suite_runner=runner, goal_service=MagicMock()),
-        raise_server_exceptions=False,
-    )
+@pytest.mark.asyncio
+async def test_run_eval_suite_failure_is_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A goal that cannot be submitted is a recorded, unscored task — never a pass."""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "eval_suite_goal_poll_seconds", 0.01)
+    goals = MagicMock()
+    goals.submit_goal = AsyncMock(side_effect=RuntimeError("provider down"))
+    app = _make_app(eval_suite_runner=MagicMock(), goal_service=goals)
+    client = TestClient(app, raise_server_exceptions=False)
     client.post("/intelligence/eval-suites", json={"suite_id": "s-f"}, headers=_headers())
-    assert client.post("/intelligence/eval-suites/s-f/run", headers=_headers()).status_code == 202
-    runs = client.get("/intelligence/eval-suites/s-f/results", headers=_headers()).json()
-    assert runs[0]["status"] == "failed" and "provider down" in runs[0]["error"]
+    client.post("/intelligence/eval-suites/s-f/tasks",
+                json={"goal": "g", "expected_tools": ["t"]}, headers=_headers())
+    _body, runs = await _run_to_end(app, "s-f")
+    assert runs[0]["status"] == "completed" and runs[0]["passed"] == 0
+    (task,) = runs[0]["task_results"]
+    assert task["status"] == "error" and "provider down" in task["failure_reasons"][0]
 
 
 def test_run_unknown_eval_suite_is_404() -> None:

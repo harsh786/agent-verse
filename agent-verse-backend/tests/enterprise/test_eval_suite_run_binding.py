@@ -65,9 +65,13 @@ async def test_a_changed_agent_config_stops_the_remaining_tasks() -> None:
 
 
 @pytest.fixture
-async def client() -> Any:
+async def client(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from app.core.config import get_settings
+    from tests.intelligence._eval_fakes import FakeGoals
+
+    monkeypatch.setattr(get_settings(), "eval_suite_goal_poll_seconds", 0.01)
     app = create_app()
-    svc = _Svc()
+    svc = FakeGoals()
     app.state.goal_service = svc
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "T", "email": "bind@t.com"})
@@ -89,7 +93,7 @@ async def test_run_against_an_agent_records_it_and_its_config(client: AsyncClien
 
     import asyncio
 
-    for _ in range(50):
+    for _ in range(300):
         runs = (await client.get(f"/intelligence/eval-suites/{sid}/results")).json()
         if runs and runs[0]["status"] != "running":
             break
@@ -101,6 +105,8 @@ async def test_run_against_an_agent_records_it_and_its_config(client: AsyncClien
 
 async def test_run_against_an_unknown_agent_is_404(client: AsyncClient) -> None:
     sid = (await client.post("/intelligence/eval-suites", json={})).json()["suite_id"]
+    await client.post(f"/intelligence/eval-suites/{sid}/tasks",
+                      json={"goal": "g", "expected_tools": ["t"]})
     r = await client.post(f"/intelligence/eval-suites/{sid}/run", json={"agent_id": "nope"})
     assert r.status_code == 404
 

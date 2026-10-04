@@ -6,17 +6,19 @@ the whole run, large datasets could not complete, and a run older than an hour
 was reported "abandoned" while it was still executing.
 
 * ``eval_suite_task_results`` — one row per (run, task), enqueued when the run
-  starts (``INSERT ... SELECT`` from the dataset version). Celery workers claim
-  rows with ``FOR UPDATE SKIP LOCKED`` under a renewable lease, record the
-  goal id before waiting on it, and write the outcome; a worker that dies
-  leaves a lease that expires and the row is claimed again (resuming the same
-  goal, never resubmitting it).
+  starts (``INSERT ... SELECT`` from the dataset version), moving
+  ``pending -> submitting -> waiting -> done``. Short, non-blocking worker
+  steps claim rows with ``FOR UPDATE SKIP LOCKED`` under a lease, record the
+  goal id (with a ``deadline_at``) once the golden goal is submitted, and poll
+  due ``waiting`` rows (``next_check_at``) until their goal is terminal. A step
+  that dies leaves a lease that expires; the row is claimed again and a
+  recorded goal is polled, never resubmitted.
 * ``eval_suite_results.last_progress_at`` — heartbeat; "abandoned" is derived
   from it, not from ``run_at``. ``tenant_plan`` lets the stalled-run sweeper
   rebuild the tenant context; ``concurrency`` is the run's worker count.
 
 Revision ID: e7a1c4d2b9f2
-Revises: 7cd9f383c99a
+Revises: a4d51be05bf1
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "e7a1c4d2b9f2"
-down_revision = "7cd9f383c99a"
+down_revision = "a4d51be05bf1"
 branch_labels = None
 depends_on = None
 
@@ -51,6 +53,8 @@ def upgrade() -> None:
             lease_owner      TEXT,
             lease_expires_at TIMESTAMPTZ,
             goal_id          VARCHAR(64),
+            deadline_at      TIMESTAMPTZ,
+            next_check_at    TIMESTAMPTZ,
             status           VARCHAR(16),
             passed           BOOLEAN,
             score            DOUBLE PRECISION,
@@ -67,6 +71,10 @@ def upgrade() -> None:
     op.execute(
         "CREATE INDEX IF NOT EXISTS ix_eval_suite_task_results_claim "
         "ON eval_suite_task_results (tenant_id, run_id, state, ordinal)"
+    )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_eval_suite_task_results_due "
+        "ON eval_suite_task_results (tenant_id, run_id, next_check_at) WHERE state = 'waiting'"
     )
     op.execute("ALTER TABLE eval_suite_task_results ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE eval_suite_task_results FORCE ROW LEVEL SECURITY")

@@ -68,8 +68,51 @@ async def provision_app_role(admin_url: str) -> str:
 
 
 @contextmanager
+def _external_postgres(server_url: str, upgrade_to: str) -> Iterator[str]:
+    """A fresh database on a disposable server (``EVAL_TEST_PG_SERVER_URL``)."""
+    import asyncio
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+
+    import asyncpg
+
+    name = f"evaltest_{uuid.uuid4().hex[:12]}"
+    raw = server_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    async def _exec(sql: str) -> None:
+        conn = await asyncpg.connect(raw)
+        try:
+            await conn.execute(sql)
+        finally:
+            await conn.close()
+
+    def _admin(sql: str) -> None:
+        # Callers may already be inside an event loop: run on a fresh one in a thread.
+        with ThreadPoolExecutor(1) as pool:
+            pool.submit(asyncio.run, _exec(sql)).result()
+
+    _admin(f'CREATE DATABASE "{name}"')
+    base, _, _db = server_url.rpartition("/")
+    url = f"{base}/{name}"
+    try:
+        alembic(url, upgrade_to)
+        yield url
+    finally:
+        _admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+@contextmanager
 def eval_postgres(upgrade_to: str = "head") -> Iterator[str]:
-    """A fresh pgvector container migrated to ``upgrade_to``; yields the admin DSN."""
+    """A fresh pgvector container migrated to ``upgrade_to``; yields the admin DSN.
+
+    ``EVAL_TEST_PG_SERVER_URL`` (a DISPOSABLE pgvector server's superuser DSN, never
+    the dev stack) uses a fresh database on that server instead of a container.
+    """
+    server = os.getenv("EVAL_TEST_PG_SERVER_URL")
+    if server:
+        with _external_postgres(server, upgrade_to) as url:
+            yield url
+        return
     try:
         from testcontainers.postgres import PostgresContainer
     except ImportError as exc:  # pragma: no cover

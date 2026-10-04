@@ -9421,7 +9421,7 @@ async def _run_eval_suite_worker_async(
 ) -> dict[str, Any]:
     from app.api.agents import AgentStore
     from app.intelligence.eval_suite import platform_judge
-    from app.intelligence.eval_suite_jobs import run_suite_worker
+    from app.intelligence.eval_suite_jobs import run_step
     from app.intelligence.eval_suite_post_run import on_run_completed
     from app.intelligence.eval_suite_store import EvalSuiteStore
     from app.tenancy.context import PlanTier, TenantContext
@@ -9448,7 +9448,7 @@ async def _run_eval_suite_worker_async(
         return found
 
     try:
-        return await run_suite_worker(
+        return await run_step(
             store=EvalSuiteStore(db_factory, tenant_id),
             run_id=run_id,
             goal_service=goal_service,
@@ -9470,9 +9470,9 @@ async def _run_eval_suite_worker_async(
     name="app.scaling.tasks.run_eval_suite_worker",
     bind=True,
     max_retries=0,
-    # At-least-once: a worker lost mid-task has the message redelivered; the run
+    # At-least-once: a worker lost mid-step has the message redelivered; the run
     # resumes from its persisted per-task rows (expired leases are re-claimed and
-    # a recorded goal is waited on, never resubmitted). The stalled-run sweeper
+    # a recorded goal is polled, never resubmitted). The stalled-run sweeper
     # re-dispatches if the message itself is lost.
     acks_late=True,
     reject_on_worker_lost=True,
@@ -9480,10 +9480,23 @@ async def _run_eval_suite_worker_async(
 def run_eval_suite_worker(
     self: Any, tenant_id: str, plan: str, run_id: str, worker_no: int = 0
 ) -> dict[str, Any]:
-    """One worker of a durable eval-suite run: claim and execute golden tasks."""
+    """One non-blocking step of a durable eval-suite run; re-enqueues the next step.
+
+    A step never waits on a golden goal (the goals need worker slots themselves):
+    it polls the due goals, submits up to the run's concurrency, and schedules
+    the next step after ``eval_suite_goal_poll_seconds``.
+    """
+    from app.core.config import get_settings
+
     result: dict[str, Any] = _run_async(
         _run_eval_suite_worker_async(tenant_id, plan, run_id, worker_no)
     )
+    if result.get("status") == "running":
+        run_eval_suite_worker.apply_async(
+            args=[tenant_id, plan, run_id, worker_no],
+            countdown=float(get_settings().eval_suite_goal_poll_seconds),
+            queue="maintenance",
+        )
     return result
 
 
@@ -9518,19 +9531,18 @@ async def _resume_stalled_eval_suite_runs_async(
                     "      ORDER BY COALESCE(last_progress_at, run_at) LIMIT 100 "
                     "      FOR UPDATE SKIP LOCKED) s "
                     "WHERE r.tenant_id = s.tenant_id AND r.id = s.id "
-                    "RETURNING r.tenant_id, r.id, COALESCE(r.tenant_plan, 'free'), "
-                    " COALESCE(r.concurrency, 1)"
+                    "RETURNING r.tenant_id, r.id, COALESCE(r.tenant_plan, 'free')"
                 ),
                 {"after": after},
             )
         ).all()
     dispatched = 0
-    for tenant_id, run_id, plan, concurrency in rows:
-        for i in range(max(1, int(concurrency))):
-            run_eval_suite_worker.apply_async(
-                args=[str(tenant_id), str(plan), str(run_id), i], queue="maintenance"
-            )
-            dispatched += 1
+    for tenant_id, run_id, plan in rows:
+        # One step chain per run; the step itself bounds the in-flight goals.
+        run_eval_suite_worker.apply_async(
+            args=[str(tenant_id), str(plan), str(run_id), 0], queue="maintenance"
+        )
+        dispatched += 1
         logger.warning("eval_suite_run_resumed", tenant_id=tenant_id, run_id=run_id)
     return {"resumed_runs": len(rows), "workers_dispatched": dispatched}
 

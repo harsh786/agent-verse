@@ -67,6 +67,10 @@ def _stalled_after_seconds() -> float:
     return float(getattr(get_settings(), "eval_suite_stalled_after_seconds", 1800))
 
 
+def _expired(row: dict[str, Any], now: datetime) -> bool:
+    return row.get("lease_expires_at") is not None and row["lease_expires_at"] < now
+
+
 def _run_task_public(row: dict[str, Any]) -> dict[str, Any]:
     task = row.get("task") or {}
     return {
@@ -677,6 +681,7 @@ class EvalSuiteStore:
                         "task_id": t["task_id"], "ordinal": i, "task": task,
                         "state": "pending", "attempts": 0, "lease_owner": None,
                         "lease_expires_at": None, "goal_id": None, "status": None,
+                        "deadline_at": None, "next_check_at": None,
                         "passed": None, "score": None, "terminal_event": None,
                         "failure_reasons": [], "judge": None, "duration_seconds": None,
                     })
@@ -710,7 +715,8 @@ class EvalSuiteStore:
                     sa_text(
                         "INSERT INTO eval_suite_task_results "
                         " (tenant_id, run_id, task_id, suite_id, ordinal, task) "
-                        "SELECT :tid, :rid, task_id, :sid, "
+                        "SELECT CAST(:tid AS text), CAST(:rid AS text), task_id, "
+                        " CAST(:sid AS text), "
                         " row_number() OVER (ORDER BY position, task_id), "
                         " jsonb_build_object('task_id', task_id, 'goal', goal, "
                         "  'expected_tools', expected_tool_calls, "
@@ -718,7 +724,8 @@ class EvalSuiteStore:
                         "  'expected_output_contains', expected_phrases, "
                         "  'expected_output', expected_output, 'min_score', min_score, "
                         "  'max_iterations', max_iterations, 'tags', tags) "
-                        "FROM golden_tasks WHERE tenant_id = :tid AND eval_suite_id = :sid "
+                        "FROM golden_tasks WHERE tenant_id = CAST(:tid AS text) "
+                        "AND eval_suite_id = CAST(:sid AS text) "
                         "AND valid_from <= :v AND (valid_to IS NULL OR valid_to > :v)"
                     ),
                     {"tid": self._tenant_id, "rid": run_id, "sid": suite_id,
@@ -766,21 +773,17 @@ class EvalSuiteStore:
                 "agent_version": r[7], "tenant_plan": r[8], "concurrency": r[9],
                 "run_at": _iso(r[10]), "last_progress_at": _iso(r[11])}
 
-    async def claim_next(
+    async def claim_pending(
         self, run_id: str, owner: str, lease_seconds: float
     ) -> dict[str, Any] | None:
-        """Lease the next unfinished task of the run (pending, or running with an
-        expired lease — its worker died). ``None`` when nothing is claimable."""
+        """Lease the next task to submit: ``pending``, or ``submitting`` whose step died
+        (expired lease). ``None`` when there is none."""
         if self._db is None:
             now = datetime.now(UTC)
             for row in _MEM_TASKS.get((self._tenant_id, run_id), []):
-                expired = (
-                    row["state"] == "running"
-                    and row["lease_expires_at"] is not None
-                    and row["lease_expires_at"] < now
-                )
+                expired = row["state"] == "submitting" and _expired(row, now)
                 if row["state"] == "pending" or expired:
-                    row.update(state="running", attempts=row["attempts"] + 1,
+                    row.update(state="submitting", attempts=row["attempts"] + 1,
                                lease_owner=owner,
                                lease_expires_at=now + timedelta(seconds=lease_seconds))
                     self._mem_touch(run_id)
@@ -791,13 +794,13 @@ class EvalSuiteStore:
             r = (
                 await s.execute(
                     sa_text(
-                        "UPDATE eval_suite_task_results t SET state = 'running', "
+                        "UPDATE eval_suite_task_results t SET state = 'submitting', "
                         " attempts = t.attempts + 1, lease_owner = :owner, "
                         " lease_expires_at = now() + make_interval(secs => :lease), "
                         " started_at = COALESCE(t.started_at, now()) "
                         "FROM (SELECT task_id FROM eval_suite_task_results "
                         "      WHERE tenant_id = :tid AND run_id = :rid AND (state = 'pending' "
-                        "        OR (state = 'running' AND lease_expires_at < now())) "
+                        "        OR (state = 'submitting' AND lease_expires_at < now())) "
                         "      ORDER BY ordinal LIMIT 1 FOR UPDATE SKIP LOCKED) c "
                         "WHERE t.tenant_id = :tid AND t.run_id = :rid AND t.task_id = c.task_id "
                         "RETURNING t.task_id, t.task, t.goal_id, t.attempts"
@@ -813,53 +816,131 @@ class EvalSuiteStore:
         return {"task_id": r[0], "task": dict(_loads(r[1]) or {}), "goal_id": r[2],
                 "attempts": int(r[3])}
 
-    async def set_task_goal(self, run_id: str, task_id: str, owner: str, goal_id: str) -> bool:
-        """Record the submitted goal BEFORE waiting on it, so a resumed task waits on
-        the same goal instead of submitting another. False: the lease was lost."""
-        if self._db is None:
-            row = self._mem_row(run_id, task_id)
-            if row is None or row["lease_owner"] != owner or row["state"] != "running":
-                return False
-            row["goal_id"] = goal_id
-            return True
-        async with _scoped(self._db, self._tenant_id) as s:
-            res = await s.execute(
-                sa_text(
-                    "UPDATE eval_suite_task_results SET goal_id = :gid "
-                    "WHERE tenant_id = :tid AND run_id = :rid AND task_id = :task "
-                    "AND lease_owner = :owner AND state = 'running'"
-                ),
-                {"gid": goal_id, "tid": self._tenant_id, "rid": run_id, "task": task_id,
-                 "owner": owner},
-            )
-        return bool(getattr(res, "rowcount", 0))
-
-    async def renew_lease(
-        self, run_id: str, task_id: str, owner: str, lease_seconds: float
+    async def mark_waiting(
+        self, run_id: str, task_id: str, owner: str, goal_id: str, deadline_seconds: float
     ) -> bool:
-        """Extend the lease (and heartbeat the run); False when the lease was lost."""
+        """The task's goal was submitted: record it (before anyone waits on it) with
+        its deadline. False when the lease was lost."""
         if self._db is None:
             row = self._mem_row(run_id, task_id)
-            if row is None or row["lease_owner"] != owner or row["state"] != "running":
+            if row is None or row["lease_owner"] != owner or row["state"] != "submitting":
                 return False
-            row["lease_expires_at"] = datetime.now(UTC) + timedelta(seconds=lease_seconds)
+            now = datetime.now(UTC)
+            row.update(state="waiting", goal_id=goal_id, lease_owner=None,
+                       lease_expires_at=None, next_check_at=now,
+                       deadline_at=now + timedelta(seconds=deadline_seconds))
             self._mem_touch(run_id)
             return True
         async with _scoped(self._db, self._tenant_id) as s:
             res = await s.execute(
                 sa_text(
-                    "UPDATE eval_suite_task_results "
-                    "SET lease_expires_at = now() + make_interval(secs => :lease) "
+                    "UPDATE eval_suite_task_results SET state = 'waiting', goal_id = :gid, "
+                    " lease_owner = NULL, lease_expires_at = NULL, next_check_at = now(), "
+                    " deadline_at = now() + make_interval(secs => :deadline) "
                     "WHERE tenant_id = :tid AND run_id = :rid AND task_id = :task "
-                    "AND lease_owner = :owner AND state = 'running'"
+                    "AND lease_owner = :owner AND state = 'submitting'"
                 ),
-                {"lease": float(lease_seconds), "tid": self._tenant_id, "rid": run_id,
+                {"gid": goal_id, "deadline": float(deadline_seconds), "tid": self._tenant_id,
+                 "rid": run_id, "task": task_id, "owner": owner},
+            )
+            ok = bool(getattr(res, "rowcount", 0))
+            if ok:
+                await self._touch(s, run_id)
+        return ok
+
+    async def claim_due(
+        self, run_id: str, owner: str, lease_seconds: float, limit: int
+    ) -> list[dict[str, Any]]:
+        """Lease ``waiting`` tasks whose goal is due for a status check."""
+        if self._db is None:
+            now = datetime.now(UTC)
+            out: list[dict[str, Any]] = []
+            for row in _MEM_TASKS.get((self._tenant_id, run_id), []):
+                if len(out) >= limit:
+                    break
+                free = row["lease_owner"] is None or _expired(row, now)
+                if row["state"] == "waiting" and row["next_check_at"] <= now and free:
+                    row.update(lease_owner=owner,
+                               lease_expires_at=now + timedelta(seconds=lease_seconds))
+                    out.append({"task_id": row["task_id"], "task": dict(row["task"]),
+                                "goal_id": row["goal_id"], "attempts": row["attempts"],
+                                "overdue": row["deadline_at"] <= now})
+            return out
+        async with _scoped(self._db, self._tenant_id) as s:
+            rows = (
+                await s.execute(
+                    sa_text(
+                        "UPDATE eval_suite_task_results t SET lease_owner = :owner, "
+                        " lease_expires_at = now() + make_interval(secs => :lease) "
+                        "FROM (SELECT task_id FROM eval_suite_task_results "
+                        "      WHERE tenant_id = :tid AND run_id = :rid AND state = 'waiting' "
+                        "        AND next_check_at <= now() "
+                        "        AND (lease_owner IS NULL OR lease_expires_at < now()) "
+                        "      ORDER BY next_check_at LIMIT :lim FOR UPDATE SKIP LOCKED) c "
+                        "WHERE t.tenant_id = :tid AND t.run_id = :rid AND t.task_id = c.task_id "
+                        "RETURNING t.task_id, t.task, t.goal_id, t.attempts, "
+                        " t.deadline_at <= now()"
+                    ),
+                    {"tid": self._tenant_id, "rid": run_id, "owner": owner,
+                     "lease": float(lease_seconds), "lim": int(limit)},
+                )
+            ).all()
+        return [{"task_id": r[0], "task": dict(_loads(r[1]) or {}), "goal_id": r[2],
+                 "attempts": int(r[3]), "overdue": bool(r[4])} for r in rows]
+
+    async def defer_check(self, run_id: str, task_id: str, owner: str, seconds: float) -> bool:
+        """The goal is still running: check it again in ``seconds`` (lease released)."""
+        if self._db is None:
+            row = self._mem_row(run_id, task_id)
+            if row is None or row["lease_owner"] != owner or row["state"] != "waiting":
+                return False
+            row.update(lease_owner=None, lease_expires_at=None,
+                       next_check_at=datetime.now(UTC) + timedelta(seconds=seconds))
+            self._mem_touch(run_id)
+            return True
+        async with _scoped(self._db, self._tenant_id) as s:
+            res = await s.execute(
+                sa_text(
+                    "UPDATE eval_suite_task_results SET lease_owner = NULL, "
+                    " lease_expires_at = NULL, "
+                    " next_check_at = now() + make_interval(secs => :secs) "
+                    "WHERE tenant_id = :tid AND run_id = :rid AND task_id = :task "
+                    "AND lease_owner = :owner AND state = 'waiting'"
+                ),
+                {"secs": float(seconds), "tid": self._tenant_id, "rid": run_id,
                  "task": task_id, "owner": owner},
             )
             ok = bool(getattr(res, "rowcount", 0))
             if ok:
                 await self._touch(s, run_id)
         return ok
+
+    async def count_inflight(self, run_id: str) -> int:
+        """Tasks whose golden goal is being submitted or is running."""
+        if self._db is None:
+            return sum(
+                1 for r in _MEM_TASKS.get((self._tenant_id, run_id), [])
+                if r["state"] in ("submitting", "waiting")
+            )
+        async with _scoped(self._db, self._tenant_id) as s:
+            n = (
+                await s.execute(
+                    sa_text(
+                        "SELECT count(*) FROM eval_suite_task_results WHERE tenant_id = :tid "
+                        "AND run_id = :rid AND state IN ('submitting', 'waiting')"
+                    ),
+                    {"tid": self._tenant_id, "rid": run_id},
+                )
+            ).scalar()
+        return int(n or 0)
+
+    async def heartbeat(self, run_id: str) -> None:
+        """A worker step ran for this run (keeps it from looking stalled)."""
+        if self._db is None:
+            self._mem_touch(run_id)
+            return
+        async with _scoped(self._db, self._tenant_id) as s:
+            await self._touch(s, run_id)
 
     async def record_task_result(
         self, run_id: str, owner: str, result: GoldenTaskResult
@@ -873,11 +954,15 @@ class EvalSuiteStore:
         }
         if self._db is None:
             row = self._mem_row(run_id, result.task_id)
-            if row is None or row["lease_owner"] != owner or row["state"] != "running":
+            if (
+                row is None or row["lease_owner"] != owner
+                or row["state"] not in ("submitting", "waiting")
+            ):
                 return False
-            row.update(values, state="done", lease_expires_at=None)
+            keep_goal = row.get("goal_id")
+            row.update(values, state="done", lease_owner=None, lease_expires_at=None)
             if result.goal_id is None:
-                row["goal_id"] = row.get("goal_id")
+                row["goal_id"] = keep_goal
             self._mem_touch(run_id)
             return True
         async with _scoped(self._db, self._tenant_id) as s:
@@ -888,9 +973,9 @@ class EvalSuiteStore:
                     " goal_id = COALESCE(:goal_id, goal_id), "
                     " failure_reasons = CAST(:failure_reasons AS jsonb), "
                     " judge = CAST(:judge AS jsonb), duration_seconds = :duration_seconds, "
-                    " lease_expires_at = NULL, finished_at = now() "
+                    " lease_owner = NULL, lease_expires_at = NULL, finished_at = now() "
                     "WHERE tenant_id = :tid AND run_id = :rid AND task_id = :task "
-                    "AND lease_owner = :owner AND state = 'running'"
+                    "AND lease_owner = :owner AND state IN ('submitting', 'waiting')"
                 ),
                 {**values, "failure_reasons": json.dumps(values["failure_reasons"]),
                  "judge": json.dumps(values["judge"]) if values["judge"] is not None else None,
@@ -912,7 +997,7 @@ class EvalSuiteStore:
                 "passed": sum(1 for r in done if r["passed"]),
                 "failed": sum(1 for r in done if not r["passed"]),
                 "unscored": sum(1 for r in done if r["status"] != "scored"),
-                "running": sum(1 for r in rows if r["state"] == "running"),
+                "running": sum(1 for r in rows if r["state"] in ("submitting", "waiting")),
                 "pending": sum(1 for r in rows if r["state"] == "pending"),
             }
         async with _scoped(self._db, self._tenant_id) as s:
@@ -923,7 +1008,7 @@ class EvalSuiteStore:
                         " count(*) FILTER (WHERE state = 'done' AND passed), "
                         " count(*) FILTER (WHERE state = 'done' AND NOT passed), "
                         " count(*) FILTER (WHERE state = 'done' AND status <> 'scored'), "
-                        " count(*) FILTER (WHERE state = 'running'), "
+                        " count(*) FILTER (WHERE state IN ('submitting', 'waiting')), "
                         " count(*) FILTER (WHERE state = 'pending') "
                         "FROM eval_suite_task_results WHERE tenant_id = :tid AND run_id = :rid"
                     ),

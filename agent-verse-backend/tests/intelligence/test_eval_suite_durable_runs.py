@@ -1,4 +1,4 @@
-"""MEM-53: eval-suite runs are durable — leased per-task rows, resumable, heartbeated.
+"""MEM-53: eval-suite runs are durable — leased per-task rows, non-blocking steps.
 
 A run was one asyncio task on the API replica with results written only at the
 end: a restart lost it, large datasets could not complete, and a long run was
@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from app.intelligence.eval_suite import GoldenTaskResult
-from app.intelligence.eval_suite_jobs import RunSettings, run_suite_worker
+from app.intelligence.eval_suite_jobs import RunSettings, run_step, run_until_done
 from app.intelligence.eval_suite_store import _MEM_RUNS, _MEM_TASKS, EvalSuiteStore
 from app.tenancy.context import PlanTier, TenantContext
 from tests.intelligence._eval_fakes import FakeGoals, FastSettings
@@ -47,7 +47,7 @@ def _cfg(**over: Any) -> RunSettings:
     return RunSettings(s)
 
 
-async def test_concurrent_workers_run_every_task_exactly_once_and_finalize_once() -> None:
+async def test_concurrent_steps_run_every_task_exactly_once_and_finalize_once() -> None:
     ctx = _ctx()
     store, run_id = await _seed(ctx, 40)
     goals = FakeGoals(running_polls=2)
@@ -56,12 +56,13 @@ async def test_concurrent_workers_run_every_task_exactly_once_and_finalize_once(
     async def hook(_s: Any, run: dict[str, Any], _c: Any) -> None:
         completions.append(run["run_id"])
 
+    # Duplicate step chains (redelivery, sweeper) are harmless.
     outs = await asyncio.gather(*(
-        run_suite_worker(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
-                         on_completed=hook, cfg=_cfg())
-        for _ in range(6)
+        run_until_done(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
+                       on_completed=hook, cfg=_cfg())
+        for _ in range(3)
     ))
-    assert sum(o["processed"] for o in outs) == 40
+    assert {o["status"] for o in outs} == {"completed"}
     assert len(goals.submits) == 40
     assert len({s["goal"] for s in goals.submits}) == 40
     assert completions == [run_id]
@@ -71,36 +72,51 @@ async def test_concurrent_workers_run_every_task_exactly_once_and_finalize_once(
     assert all(s["execution_context"]["eval_suite_run_id"] == run_id for s in goals.submits)
 
 
-async def test_a_redelivered_worker_resumes_the_same_goal_and_never_resubmits() -> None:
+async def test_a_step_never_blocks_on_a_running_goal_and_bounds_inflight() -> None:
+    ctx = _ctx()
+    store, run_id = await _seed(ctx, 6)
+    goals = FakeGoals(running_polls=10_000)
+    out = await run_step(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
+                         cfg=_cfg())
+    assert out["status"] == "running"
+    progress = await store.run_progress(run_id)
+    assert progress["running"] == 4 and progress["pending"] == 2  # concurrency 4
+    assert len(goals.submits) == 4
+
+
+async def test_a_restarted_worker_polls_the_recorded_goal_and_never_resubmits() -> None:
     ctx = _ctx()
     store, run_id = await _seed(ctx, 3)
-    goals = FakeGoals()
-    # Worker A claims the first task, submits its goal, records it — and dies.
-    claim = await store.claim_next(run_id, "worker-a", 30)
+    goals = FakeGoals(running_polls=3)
+    # A step submits the first task's goal, records it — then the worker dies.
+    claim = await store.claim_pending(run_id, "worker-a", 30)
     assert claim is not None
     sub = await goals.submit_goal(goal=claim["task"]["goal"], tenant_ctx=ctx)
-    assert await store.set_task_goal(run_id, claim["task_id"], "worker-a", sub["goal_id"])
-    # Its lease expires (no renewals from a dead worker).
+    assert await store.mark_waiting(run_id, claim["task_id"], "worker-a", sub["goal_id"], 600)
+    # Another step died between claiming a task and submitting it: lease expires.
+    claim2 = await store.claim_pending(run_id, "worker-a", 30)
+    assert claim2 is not None
     for row in _MEM_TASKS[(ctx.tenant_id, run_id)]:
-        if row["task_id"] == claim["task_id"]:
+        if row["task_id"] == claim2["task_id"]:
             row["lease_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
 
-    out = await run_suite_worker(store=store, run_id=run_id, goal_service=goals,
-                                 tenant_ctx=ctx, cfg=_cfg())
-    assert out["status"] == "completed" and out["processed"] == 3
-    assert len(goals.submits) == 3  # 1 by the dead worker + 2 new; the first was resumed
-    tasks = await store.list_run_tasks(run_id)
-    first = next(t for t in tasks if t["task_id"] == claim["task_id"])
-    assert first["goal_id"] == sub["goal_id"] and first["attempts"] == 2 and first["passed"]
+    out = await run_until_done(store=store, run_id=run_id, goal_service=goals,
+                               tenant_ctx=ctx, cfg=_cfg())
+    assert out["status"] == "completed"
+    assert len(goals.submits) == 3  # the recorded goal was polled, not resubmitted
+    tasks = {t["task_id"]: t for t in await store.list_run_tasks(run_id)}
+    assert tasks[claim["task_id"]]["goal_id"] == sub["goal_id"]
+    assert tasks[claim["task_id"]]["passed"]
+    assert tasks[claim2["task_id"]]["attempts"] == 2 and tasks[claim2["task_id"]]["passed"]
 
 
 async def test_a_task_whose_workers_keep_dying_gives_up_unscored() -> None:
     ctx = _ctx()
     store, run_id = await _seed(ctx, 1)
     for row in _MEM_TASKS[(ctx.tenant_id, run_id)]:
-        row["attempts"] = 3  # three workers already died on it
-    out = await run_suite_worker(store=store, run_id=run_id, goal_service=FakeGoals(),
-                                 tenant_ctx=ctx, cfg=_cfg())
+        row["attempts"] = 3  # three steps already died on it
+    out = await run_until_done(store=store, run_id=run_id, goal_service=FakeGoals(),
+                               tenant_ctx=ctx, cfg=_cfg())
     assert out["status"] == "completed"
     (task,) = await store.list_run_tasks(run_id)
     assert task["status"] == "error" and not task["passed"]
@@ -110,21 +126,20 @@ async def test_a_task_whose_workers_keep_dying_gives_up_unscored() -> None:
 async def test_failed_and_timed_out_goals_fail_their_tasks() -> None:
     ctx = _ctx()
     store, run_id = await _seed(ctx, 2)
-    goals = FakeGoals(outcome=lambda goal, _a: "failed" if goal == "goal 0" else "complete",
-                      running_polls=0)
-    await run_suite_worker(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
-                           cfg=_cfg())
+    goals = FakeGoals(outcome=lambda goal, _a: "failed" if goal == "goal 0" else "complete")
+    await run_until_done(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
+                         cfg=_cfg())
     by_goal = {t["goal"]: t for t in await store.list_run_tasks(run_id)}
     assert not by_goal["goal 0"]["passed"]
     assert by_goal["goal 0"]["terminal_event"] == "goal_failed"
     assert by_goal["goal 1"]["passed"]
 
-    store2, run2 = await _seed(_ctx(), 1, max_iterations=1)
+    ctx2 = _ctx()
+    store2, run2 = await _seed(ctx2, 1, max_iterations=1)
     slow = FakeGoals(running_polls=10_000)
     cfg = _cfg()
     cfg.timeout_max = 0.05  # a task's goal may run at most 50 ms here
-    await run_suite_worker(store=store2, run_id=run2, goal_service=slow,
-                           tenant_ctx=store2._tenant_id, cfg=cfg)
+    await run_until_done(store=store2, run_id=run2, goal_service=slow, tenant_ctx=ctx2, cfg=cfg)
     (task,) = await store2.list_run_tasks(run2)
     assert task["status"] == "timeout" and slow.cancelled == [task["goal_id"]]
 
@@ -140,7 +155,7 @@ async def test_agent_pinning_stops_tasks_after_a_config_change() -> None:
     agent = {"agent_id": "a1", "system_prompt": "v1"}
     run_id = uuid.uuid4().hex
     await store.start_run("s", run_id, dataset_version=1, enqueue=True, agent_id="a1",
-                          agent_config_hash=agent_config_hash(agent))
+                          agent_config_hash=agent_config_hash(agent), concurrency=1)
     goals = FakeGoals()
     loads = {"n": 0}
 
@@ -148,8 +163,8 @@ async def test_agent_pinning_stops_tasks_after_a_config_change() -> None:
         loads["n"] += 1
         return agent if loads["n"] == 1 else {**agent, "system_prompt": "v2"}
 
-    await run_suite_worker(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
-                           agent_loader=loader, cfg=_cfg())
+    await run_until_done(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
+                         agent_loader=loader, cfg=_cfg())
     assert [s["agent_id"] for s in goals.submits] == ["a1"]
     tasks = await store.list_run_tasks(run_id)
     assert sum(t["passed"] for t in tasks) == 1
@@ -159,7 +174,7 @@ async def test_agent_pinning_stops_tasks_after_a_config_change() -> None:
 async def test_the_lease_fences_results_and_finalization_happens_once() -> None:
     ctx = _ctx()
     store, run_id = await _seed(ctx, 1)
-    claim = await store.claim_next(run_id, "owner-1", 30)
+    claim = await store.claim_pending(run_id, "owner-1", 30)
     assert claim is not None
     stray = GoldenTaskResult(task_id=claim["task_id"], goal="g", passed=True)
     assert await store.record_task_result(run_id, "someone-else", stray) is False
@@ -183,11 +198,13 @@ async def test_abandoned_is_derived_from_the_heartbeat_not_the_run_age() -> None
     assert listed["status"] == "abandoned"
 
 
-async def test_api_run_is_executed_by_in_process_workers_with_progress() -> None:
+async def test_api_run_is_executed_in_process_with_progress(monkeypatch: Any) -> None:
     from httpx import ASGITransport, AsyncClient
 
+    from app.core.config import get_settings
     from app.main import create_app
 
+    monkeypatch.setattr(get_settings(), "eval_suite_goal_poll_seconds", 0.01)
     app = create_app()
     goals = FakeGoals()
     app.state.goal_service = goals
@@ -201,8 +218,8 @@ async def test_api_run_is_executed_by_in_process_workers_with_progress() -> None
         assert r.status_code == 202, r.text
         body = r.json()
         assert body["total"] == 7 and body["executor"] == "in_process"
-        assert body["workers"] == 4
-        for _ in range(200):
+        assert body["concurrency"] == 4
+        for _ in range(300):
             runs = (await c.get(f"/intelligence/eval-suites/{sid}/results")).json()
             if runs[0]["status"] == "completed":
                 break
@@ -231,10 +248,11 @@ async def test_large_runs_complete(n: int) -> None:
     ctx = _ctx()
     store, run_id = await _seed(ctx, n)
     goals = FakeGoals()
+    cfg = _cfg()
+    cfg.concurrency = 32
     await asyncio.gather(*(
-        run_suite_worker(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
-                         cfg=_cfg())
-        for _ in range(8)
+        run_until_done(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx, cfg=cfg)
+        for _ in range(2)
     ))
     assert len(goals.submits) == n
     assert (await store.run_progress(run_id))["done"] == n

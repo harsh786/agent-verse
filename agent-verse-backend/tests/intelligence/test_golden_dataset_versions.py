@@ -7,28 +7,26 @@ dataset version, and runs did not record which tasks they executed.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from app.intelligence.eval_suite import EvalSuiteResult
 from app.intelligence.eval_suite_store import EvalSuiteStore
 from app.main import create_app
 
 
 @pytest.fixture
-async def client() -> Any:
+async def client(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from app.core.config import get_settings
+    from tests.intelligence._eval_fakes import FakeGoals
+
+    monkeypatch.setattr(get_settings(), "eval_suite_goal_poll_seconds", 0.01)
     app = create_app()
-    runner = MagicMock()
-    runner.run_suite = AsyncMock(
-        side_effect=lambda **kw: EvalSuiteResult(suite_id=kw["suite_id"], run_id=kw["run_id"])
-    )
-    app.state.eval_suite_runner = runner
+    goals = FakeGoals()
+    app.state.goal_service = goals
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.post("/tenants/signup", json={"name": "T", "email": "ds@t.com"})
         c.headers["X-API-Key"] = r.json()["api_key"]
-        c.runner = runner  # type: ignore[attr-defined]
+        c.goals = goals  # type: ignore[attr-defined]
         yield c
 
 
@@ -113,10 +111,16 @@ async def test_a_run_records_the_dataset_version_and_runs_that_versions_tasks(
     await _add(client, sid, "two")
     r = await client.post(f"/intelligence/eval-suites/{sid}/run")
     assert r.status_code == 202 and r.json()["dataset_version"] == 2
-    kwargs = client.runner.run_suite.await_args.kwargs  # type: ignore[attr-defined]
-    assert [t.goal for t in kwargs["tasks"]] == ["one", "two"]
-    runs = (await client.get(f"/intelligence/eval-suites/{sid}/results")).json()
-    assert runs[0]["dataset_version"] == 2
+    import asyncio
+
+    for _ in range(300):
+        runs = (await client.get(f"/intelligence/eval-suites/{sid}/results")).json()
+        if runs[0]["status"] == "completed":
+            break
+        await asyncio.sleep(0.02)
+    assert runs[0]["dataset_version"] == 2 and runs[0]["status"] == "completed"
+    goals = client.goals  # type: ignore[attr-defined]
+    assert sorted(s["goal"] for s in goals.submits) == ["one", "two"]
 
 
 async def test_export_then_import_round_trips_a_dataset(client: AsyncClient) -> None:
