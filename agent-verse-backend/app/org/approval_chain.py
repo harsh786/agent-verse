@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -250,8 +251,10 @@ class ApprovalChainEngine:
     """Runtime engine for approval chain matching and request management.
 
     G-20: Requests are persisted in Redis (cross-replica, restart-safe) when a
-    Redis client is wired via ``set_redis()``. Tests can pass an explicit in-memory
-    ``store`` to operate entirely without Redis.
+    Redis client is wired via ``set_redis()``; Redis is then the only source of
+    truth (errors raise, no process-local fallback) and listing reads a bounded
+    per-tenant index (a08-F178-02). Without Redis (tests) requests live in the
+    in-memory ``store``.
     """
 
     _REDIS_PREFIX = "approval_chain:req:"
@@ -285,41 +288,68 @@ class ApprovalChainEngine:
         allowed = {k: v for k, v in data.items() if k in ApprovalRequest.__dataclass_fields__}
         return ApprovalRequest(**allowed)
 
+    # a08-F178-02: with Redis wired, Redis is the only source of truth. Errors
+    # raise (no per-process fallback that other replicas cannot see), records
+    # carry a TTL, and listing reads a bounded per-tenant index instead of a
+    # fleet-wide ``KEYS approval_chain:req:*`` scan.
+    _INDEX_PREFIX = "approval_chain:idx:"
+    # Resolved/expired requests stay readable this long past their expiry.
+    _RETENTION = timedelta(days=7)
+    # Upper bound on one tenant's listing (newest first).
+    LIST_LIMIT = 500
+
+    def _index_key(self, tenant_id: str) -> str:
+        return f"{self._INDEX_PREFIX}{tenant_id}"
+
     async def _persist(self, req: ApprovalRequest) -> None:
         if self._redis is None:
             return
-        try:
-            key = f"{self._REDIS_PREFIX}{req.request_id}"
-            await self._redis.set(key, self._serialize(req))
-        except Exception as exc:
-            _log.warning("approval_chain.persist_failed", request_id=req.request_id, error=str(exc))
+        now = datetime.now(UTC)
+        ttl = max(int((req.expires_at - now + self._RETENTION).total_seconds()), 60)
+        key = f"{self._REDIS_PREFIX}{req.request_id}"
+        idx = self._index_key(req.tenant_id)
+        await self._redis.set(key, self._serialize(req), ex=ttl)
+        await self._redis.zadd(idx, {req.request_id: req.created_at.timestamp()})
+        # The index outlives its newest member by the same retention; members
+        # older than that are trimmed so the set stays bounded.
+        await self._redis.zremrangebyscore(
+            idx, "-inf", (now - self._RETENTION - timedelta(days=30)).timestamp()
+        )
+        await self._redis.expire(idx, ttl)
 
     async def _load(self, request_id: str) -> ApprovalRequest | None:
         if self._redis is None:
             return None
-        try:
-            raw = await self._redis.get(f"{self._REDIS_PREFIX}{request_id}")
-            if raw is None:
-                return None
-            return self._deserialize(raw)
-        except Exception as exc:
-            _log.warning("approval_chain.load_failed", request_id=request_id, error=str(exc))
+        raw = await self._redis.get(f"{self._REDIS_PREFIX}{request_id}")
+        if raw is None:
             return None
+        return self._deserialize(raw)
 
-    async def _load_all(self) -> list[ApprovalRequest]:
-        if self._redis is None:
-            return list(self._store.values())
-        try:
-            keys = await self._redis.keys(f"{self._REDIS_PREFIX}*")
-            results: list[ApprovalRequest] = []
-            for k in keys:
-                raw = await self._redis.get(k)
-                if raw:
-                    results.append(self._deserialize(raw))
-            return results
-        except Exception as exc:
-            _log.warning("approval_chain.load_all_failed", error=str(exc))
-            return list(self._store.values())
+    async def _get(self, request_id: str) -> ApprovalRequest | None:
+        """Current state: Redis when wired (never a stale local copy), else memory."""
+        if self._redis is not None:
+            return await self._load(request_id)
+        return self._store.get(request_id)
+
+    async def _load_tenant(self, redis: Any, tenant_id: str, limit: int) -> list[ApprovalRequest]:
+        idx = self._index_key(tenant_id)
+        raw_ids = await redis.zrevrange(idx, 0, max(limit, 1) - 1)
+        if not raw_ids:
+            return []
+        ids = [i.decode() if isinstance(i, bytes) else str(i) for i in raw_ids]
+        raws = await redis.mget([f"{self._REDIS_PREFIX}{i}" for i in ids])
+        out: list[ApprovalRequest] = []
+        gone: list[str] = []
+        for rid, raw in zip(ids, raws, strict=True):
+            if raw is None:
+                gone.append(rid)
+                continue
+            req = self._deserialize(raw)
+            if req.tenant_id == tenant_id:
+                out.append(req)
+        if gone:
+            await redis.zrem(idx, *gone)
+        return out
 
     async def check_requires_approval(
         self,
@@ -380,8 +410,12 @@ class ApprovalChainEngine:
                 expires_at=now + timedelta(hours=chain.timeout_hours),
                 status="pending",
             )
-            self._store[req.request_id] = req
-            await self._persist(req)
+            if self._redis is None:
+                self._store[req.request_id] = req
+            else:
+                # Raises on a Redis error: a request other replicas cannot see
+                # is not created (a08-F178-02).
+                await self._persist(req)
             span.set_attribute("request_id", req.request_id)
             span.set_attribute("chain_id", chain.id)
             _log.info(
@@ -396,44 +430,77 @@ class ApprovalChainEngine:
         self, request_id: str, approver_role: str, approved: bool, notes: str = ""
     ) -> ApprovalRequest:
         with _tracer.start_as_current_span("approval_chain.record") as span:
+
+            def _apply(req: ApprovalRequest) -> bool:
+                if req.is_resolved:
+                    return False
+                req.approvers_responded.append(approver_role)
+                if approved:
+                    req.approved_by.append(approver_role)
+                    if self._complete(req, req.approved_by):
+                        req.status = "approved"
+                        req.resolved_at = datetime.now(UTC)
+                        span.set_attribute("outcome", "approved")
+                else:
+                    req.rejected_by.append(approver_role)
+                    req.notes = notes
+                    req.status = "rejected"
+                    req.resolved_at = datetime.now(UTC)
+                    span.set_attribute("outcome", "rejected")
+                return True
+
+            req, _changed = await self._mutate(request_id, _apply)
+            return req
+
+    async def _mutate(
+        self, request_id: str, apply: Callable[[ApprovalRequest], bool]
+    ) -> tuple[ApprovalRequest, bool]:
+        """Read-modify-write one request atomically across replicas.
+
+        With Redis wired this is a WATCH/MULTI optimistic transaction (retried
+        on a concurrent write), so two approvers on different replicas cannot
+        overwrite each other's vote. ``apply`` returns False to skip the write;
+        the result says whether this call's write landed. Missing → KeyError.
+        """
+        if self._redis is None:
             req = self._store.get(request_id)
-            if req is None and self._redis is not None:
-                req = await self._load(request_id)
-                if req is not None:
-                    self._store[request_id] = req
             if req is None:
                 raise KeyError(f"Approval request {request_id!r} not found")
-            if req.is_resolved:
-                return req
+            return req, apply(req)
+        from redis.exceptions import WatchError
 
-            req.approvers_responded.append(approver_role)
-            if approved:
-                req.approved_by.append(approver_role)
-            else:
-                req.rejected_by.append(approver_role)
-                req.notes = notes
-                req.status = "rejected"
-                req.resolved_at = datetime.now(UTC)
-                span.set_attribute("outcome", "rejected")
-                await self._persist(req)
-                return req
-
-            chain = CHAINS_BY_ID.get(req.chain_id)
-            if chain and await self.check_approval_complete(request_id, req.approved_by):
-                req.status = "approved"
-                req.resolved_at = datetime.now(UTC)
-                span.set_attribute("outcome", "approved")
-            await self._persist(req)
-            return req
+        key = f"{self._REDIS_PREFIX}{request_id}"
+        for _ in range(10):
+            async with self._redis.pipeline(transaction=True) as pipe:
+                try:
+                    await pipe.watch(key)
+                    raw = await pipe.get(key)
+                    if raw is None:
+                        raise KeyError(f"Approval request {request_id!r} not found")
+                    req = self._deserialize(raw)
+                    if not apply(req):
+                        return req, False
+                    ttl = await pipe.ttl(key)
+                    pipe.multi()
+                    pipe.set(key, self._serialize(req), ex=ttl if ttl and ttl > 0 else 60)
+                    await pipe.execute()
+                    return req, True
+                except WatchError:
+                    continue
+        raise RuntimeError(f"approval request {request_id!r}: too much write contention")
 
     async def check_approval_complete(
         self,
         request_id: str,
         approvals: list[str],
     ) -> bool:
-        req = self._store.get(request_id)
+        req = await self._get(request_id)
         if req is None:
             return False
+        return self._complete(req, approvals)
+
+    @staticmethod
+    def _complete(req: ApprovalRequest, approvals: list[str]) -> bool:
         chain = CHAINS_BY_ID.get(req.chain_id)
         if chain is None:
             return bool(approvals)
@@ -450,21 +517,24 @@ class ApprovalChainEngine:
 
     async def escalate_timeout(self, request_id: str) -> None:
         with _tracer.start_as_current_span("approval_chain.escalate") as span:
-            req = self._store.get(request_id)
-            if req is None and self._redis is not None:
-                req = await self._load(request_id)
-                if req is not None:
-                    self._store[request_id] = req
-            if req is None or req.is_resolved:
+
+            def _apply(r: ApprovalRequest) -> bool:
+                if r.is_resolved or not r.is_expired or r.status == "escalated":
+                    return False
+                r.status = "escalated"
+                r.escalated_at = datetime.now(UTC)
+                return True
+
+            try:
+                req, changed = await self._mutate(request_id, _apply)
+            except KeyError:
                 return
-            if not req.is_expired:
+            # Only the replica whose write flipped it to escalated acts on it.
+            if not changed:
                 return
-            req.status = "escalated"
-            req.escalated_at = datetime.now(UTC)
             chain = CHAINS_BY_ID.get(req.chain_id)
             escalation_targets = chain.escalation_path if chain else []
             span.set_attribute("escalation_targets", ",".join(escalation_targets))
-            await self._persist(req)
             _log.warning(
                 "approval_chain.timeout_escalated",
                 request_id=request_id,
@@ -537,26 +607,19 @@ class ApprovalChainEngine:
                     )
 
     async def get_request(self, request_id: str) -> ApprovalRequest | None:
-        req = self._store.get(request_id)
-        if req is None and self._redis is not None:
-            req = await self._load(request_id)
-            if req is not None:
-                self._store[request_id] = req
-        return req
+        return await self._get(request_id)
 
     async def list_pending(
         self,
         tenant_id: str,
         org_id: str | None = None,
+        limit: int = LIST_LIMIT,
     ) -> list[ApprovalRequest]:
-        # G-20: merge in-memory + Redis-backed requests
-        all_reqs: list[ApprovalRequest] = list(self._store.values())
+        # a08-F178-02: one tenant's bounded index, newest first; never a KEYS scan.
         if self._redis is not None:
-            redis_reqs = await self._load_all()
-            seen_ids = {r.request_id for r in all_reqs}
-            for r in redis_reqs:
-                if r.request_id not in seen_ids:
-                    all_reqs.append(r)
+            all_reqs = await self._load_tenant(self._redis, tenant_id, limit)
+        else:
+            all_reqs = list(self._store.values())
         return [
             r
             for r in all_reqs

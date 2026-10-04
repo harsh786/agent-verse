@@ -9,6 +9,7 @@ Covers gaps from docs/superpowers/specs/2026-08-20-hitl-gap-analysis.md:
   G-16: beat_schedule registered for expire_hitl_approvals
   G-10: /governance/approvals supports org_id query param
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -28,23 +29,18 @@ from app.org.approval_chain import (
 
 
 class _FakeRedis:
-    """Minimal async Redis-compatible dict store for tests."""
+    """fakeredis with a ``_data`` view and a guard: KEYS is never allowed
+    (a08-F178-02 — a fleet-wide scan across every tenant)."""
 
     def __init__(self) -> None:
-        self._data: dict[str, str] = {}
+        import fakeredis
 
-    async def set(self, key: str, value: str) -> None:
-        self._data[key] = value
+        self._r = fakeredis.FakeAsyncRedis(decode_responses=True)
 
-    async def get(self, key: str) -> str | None:
-        return self._data.get(key)
-
-    async def keys(self, pattern: str) -> list[str]:
-        prefix = pattern.rstrip("*")
-        return [k for k in self._data if k.startswith(prefix)]
-
-    async def publish(self, channel: str, message: str) -> int:
-        return 1
+    def __getattr__(self, name: str) -> Any:
+        if name in ("keys", "scan_iter"):
+            raise AssertionError(f"approval engine must not call {name}")
+        return getattr(self._r, name)
 
 
 class _FakeOrg:
@@ -90,7 +86,9 @@ async def test_g20_set_redis_then_persist_round_trip(fake_redis, prod_chain):
 
     # The request should be serialised into Redis under the prefixed key.
     expected_key = f"{engine._REDIS_PREFIX}{req.request_id}"
-    assert expected_key in fake_redis._data
+    assert await fake_redis.get(expected_key) is not None
+    # Records expire (no unbounded growth).
+    assert await fake_redis.ttl(expected_key) > 0
 
     # Loading from Redis reconstructs the ApprovalRequest.
     loaded = await engine._load(req.request_id)
@@ -175,6 +173,80 @@ async def test_g20_record_approval_persists(fake_redis, prod_chain):
     assert "qa_lead" in loaded.approved_by
 
 
+# ─── a08-F178-02: Redis is the only truth, per-tenant bounded index ──────────
+
+
+@pytest.mark.asyncio
+async def test_f178_02_list_pending_is_tenant_scoped_without_keys(fake_redis, prod_chain):
+    engine = ApprovalChainEngine()
+    engine.set_redis(fake_redis)
+    for tid in ("t1", "t1", "t2"):
+        await engine.create_approval_request(
+            chain=prod_chain,
+            action_detail="d",
+            mission_id=None,
+            agent_id=None,
+            tenant_id=tid,
+            org_id="o",
+        )
+    # _FakeRedis raises on KEYS, so this proves no fleet-wide scan.
+    assert len(await engine.list_pending(tenant_id="t1")) == 2
+    assert len(await engine.list_pending(tenant_id="t2")) == 1
+    assert len(await engine.list_pending(tenant_id="t1", limit=1)) == 1
+
+
+@pytest.mark.asyncio
+async def test_f178_02_votes_on_two_replicas_are_both_kept(fake_redis, prod_chain):
+    a, b = ApprovalChainEngine(), ApprovalChainEngine()
+    a.set_redis(fake_redis)
+    b.set_redis(fake_redis)
+    req = await a.create_approval_request(
+        chain=prod_chain,
+        action_detail="d",
+        mission_id=None,
+        agent_id=None,
+        tenant_id="t1",
+        org_id="o",
+    )
+    await a.record_approval(req.request_id, "qa_lead", approved=True)
+    await b.record_approval(req.request_id, "sre_lead", approved=True)
+    # Replica A must see B's vote (no stale local copy) and complete the chain.
+    final = await a.record_approval(req.request_id, "security_engineer", approved=True)
+    assert set(final.approved_by) == {"qa_lead", "sre_lead", "security_engineer"}
+    assert final.status == "approved"
+
+
+class _BrokenRedis:
+    async def set(self, *a: Any, **k: Any) -> None:
+        raise ConnectionError("redis down")
+
+    async def get(self, *a: Any, **k: Any) -> None:
+        raise ConnectionError("redis down")
+
+    async def zrevrange(self, *a: Any, **k: Any) -> None:
+        raise ConnectionError("redis down")
+
+
+@pytest.mark.asyncio
+async def test_f178_02_redis_errors_raise_instead_of_process_local_fallback(prod_chain):
+    engine = ApprovalChainEngine()
+    engine.set_redis(_BrokenRedis())
+    with pytest.raises(ConnectionError):
+        await engine.create_approval_request(
+            chain=prod_chain,
+            action_detail="d",
+            mission_id=None,
+            agent_id=None,
+            tenant_id="t1",
+            org_id="o",
+        )
+    assert engine._store == {}
+    with pytest.raises(ConnectionError):
+        await engine.get_request("x")
+    with pytest.raises(ConnectionError):
+        await engine.list_pending(tenant_id="t1")
+
+
 # ─── G-06: ApprovalChainEngine wired into OrgService execution ──────────────
 
 
@@ -245,9 +317,7 @@ async def test_g26_escalate_timeout_publishes_and_creates_escalation(prod_chain,
     create_calls: list[str] = []
 
     _fake_pub = MagicMock()
-    _fake_pub.publish = AsyncMock(
-        side_effect=lambda **kw: publish_calls.append(kw)
-    )
+    _fake_pub.publish = AsyncMock(side_effect=lambda **kw: publish_calls.append(kw))
     _fake_state = MagicMock()
     _fake_state.notification_service = MagicMock()
     _fake_state.notification_service.notify_approval_timeout = AsyncMock(
@@ -265,9 +335,11 @@ async def test_g26_escalate_timeout_publishes_and_creates_escalation(prod_chain,
 
     # Track new requests created via create_approval_request inside escalate
     original_create = engine.create_approval_request
+
     async def _spy_create(**kw):
         create_calls.append(kw.get("chain").id if kw.get("chain") else "?")
         return await original_create(**kw)
+
     engine.create_approval_request = _spy_create  # type: ignore[method-assign]
 
     import sys
