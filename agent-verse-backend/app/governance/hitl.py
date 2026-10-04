@@ -947,6 +947,18 @@ class HITLGateway:
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
+                # HITL-08: serialise the votes on this request. Under READ
+                # COMMITTED two concurrent final votes could each INSERT and then
+                # COUNT before seeing the other's row — both below quorum, nobody
+                # resolved, and the gate expired. The row lock makes the second
+                # voter count after the first commits.
+                await session.execute(
+                    text(
+                        "SELECT 1 FROM approval_requests "
+                        "WHERE id = :rid AND tenant_id = :tid FOR UPDATE"
+                    ),
+                    {"tid": tenant_id, "rid": request_id},
+                )
                 await session.execute(
                     text(
                         "INSERT INTO approval_votes (tenant_id, request_id, approver, note) "
