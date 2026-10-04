@@ -19,6 +19,25 @@ class GrantDecision:
     grant_id: str | None = None
 
 
+async def active_grants(
+    store: Any, tenant_id: str, agent_id: str, now: datetime
+) -> tuple[Any, ...]:
+    """The agent's currently active grants — the store's bounded lookup when it
+    has one, else its full list filtered here."""
+    getter = getattr(store, "active_for_agent", None)
+    if getter is not None:
+        return tuple(await getter(tenant_id, agent_id, now=now))
+    grants = await store.list_for_agent(tenant_id, agent_id)
+    return tuple(g for g in grants if g.is_active(now))
+
+
+async def _has_any_grant(store: Any, tenant_id: str, agent_id: str) -> bool:
+    probe = getattr(store, "has_any_for_agent", None)
+    if probe is not None:
+        return bool(await probe(tenant_id, agent_id))
+    return bool(await store.list_for_agent(tenant_id, agent_id))
+
+
 async def check_grant(
     store: Any,
     *,
@@ -45,14 +64,14 @@ async def check_grant(
             return GrantDecision(False, "grant_store_unavailable")
         return GrantDecision(True, "grants_not_configured")
 
-    grants = await store.list_for_agent(tenant_id, agent_id)
-    if not grants:
-        if require_grant:
-            return GrantDecision(False, "no_grant_for_agent")
-        return GrantDecision(True, "no_grants_issued")
-
-    active = [g for g in grants if g.is_active(_now)]
+    # Hot path (every tool call): only the agent's usable grants, filtered and
+    # bounded by the store (GRANT-08: it loaded every grant ever issued).
+    active = list(await active_grants(store, tenant_id, agent_id, _now))
     if not active:
+        if not await _has_any_grant(store, tenant_id, agent_id):
+            if require_grant:
+                return GrantDecision(False, "no_grant_for_agent")
+            return GrantDecision(True, "no_grants_issued")
         return GrantDecision(False, "all_grants_expired_or_revoked")
 
     for grant in active:
@@ -96,4 +115,4 @@ async def enforce_tool_call(
     )
 
 
-__all__ = ["GrantDecision", "check_grant", "enforce_tool_call"]
+__all__ = ["GrantDecision", "active_grants", "check_grant", "enforce_tool_call"]

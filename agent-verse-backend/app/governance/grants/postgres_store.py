@@ -22,6 +22,10 @@ _COLS = (
 )
 
 
+# Upper bound on the active grants one agent's tool call evaluates.
+_ACTIVE_LIMIT = 500
+
+
 def _row_to_grant(row: Any) -> Grant:
     scopes = row["scopes"]
     if isinstance(scopes, str):
@@ -170,8 +174,42 @@ class PostgresGrantStore:
     async def active_for_agent(
         self, tenant_id: str, agent_id: str, *, now: datetime
     ) -> tuple[Grant, ...]:
-        grants = await self.list_for_agent(tenant_id, agent_id)
-        return tuple(g for g in grants if g.is_active(now))
+        """The agent's usable grants, filtered and bounded in SQL (GRANT-08).
+
+        Called on every tool call: revoked and expired grants — which delegation
+        accumulates, one per spawn — are never loaded.
+        """
+        async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
+            session, tenant_id
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        f"SELECT {_COLS} FROM agent_grants "
+                        "WHERE tenant_id = :tid AND grantee_agent_id = :aid "
+                        "AND revoked = false AND not_before <= :now AND expires_at > :now "
+                        "ORDER BY expires_at DESC, grant_id LIMIT :lim"
+                    ),
+                    {"aid": agent_id, "tid": tenant_id, "now": now, "lim": _ACTIVE_LIMIT},
+                )
+            ).mappings().all()
+        # Re-checked in Python too (clock skew between app and DB is irrelevant).
+        return tuple(g for g in (_row_to_grant(r) for r in rows) if g.is_active(now))
+
+    async def has_any_for_agent(self, tenant_id: str, agent_id: str) -> bool:
+        async with self._sf() as session, session.begin(), sqlalchemy_rls_context(
+            session, tenant_id
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT 1 FROM agent_grants "
+                        "WHERE tenant_id = :tid AND grantee_agent_id = :aid LIMIT 1"
+                    ),
+                    {"aid": agent_id, "tid": tenant_id},
+                )
+            ).first()
+        return row is not None
 
 
 __all__ = ["PostgresGrantStore"]

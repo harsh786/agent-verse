@@ -457,11 +457,13 @@ class ExecutorMixin:
             from datetime import UTC as _UTC
             from datetime import datetime as _dt
 
-            grants = await self._grant_store.list_for_agent(
-                tenant_ctx.tenant_id, self._agent_id or ""
-            )
+            from app.governance.grants.enforcer import active_grants
+
             now = _dt.now(_UTC)
-            capped = [g for g in grants if g.is_active(now) and g.max_cost_usd is not None]
+            grants = await active_grants(
+                self._grant_store, tenant_ctx.tenant_id, self._agent_id or "", now
+            )
+            capped = [g for g in grants if g.max_cost_usd is not None]
             authorising = state.context.get("_authorizing_grant_id")
             target = next(
                 (g for g in capped if g.grant_id == authorising),

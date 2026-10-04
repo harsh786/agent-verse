@@ -84,6 +84,11 @@ async def test_delegation_failure_is_logged_and_grants_nothing() -> None:
         async def list_for_agent(self, tenant_id: str, agent_id: str) -> tuple[Grant, ...]:
             raise RuntimeError("store down")
 
+        async def active_for_agent(
+            self, tenant_id: str, agent_id: str, *, now: Any
+        ) -> tuple[Grant, ...]:
+            raise RuntimeError("store down")
+
     ex = _executor(_Broken(), "agent-parent")
     assert await ex._delegate_grants_to_child(SimpleNamespace(context={}), TENANT, "c") == []
     assert "grant_delegation_failed" in ex._logger.events

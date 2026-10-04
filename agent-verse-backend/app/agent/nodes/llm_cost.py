@@ -104,12 +104,14 @@ async def charge_llm_call(
         with contextlib.suppress(Exception):
             from datetime import UTC, datetime
 
-            covering = await grant_store.list_for_agent(
-                tenant_ctx.tenant_id, getattr(graph, "_agent_id", None) or ""
-            )
+            from app.governance.grants.enforcer import active_grants
+
             now = datetime.now(UTC)
+            covering = await active_grants(
+                grant_store, tenant_ctx.tenant_id, getattr(graph, "_agent_id", None) or "", now
+            )
             for grant in covering:
-                if grant.is_active(now) and grant.max_cost_usd is not None:
+                if grant.max_cost_usd is not None:
                     await grant_store.record_spend(tenant_ctx.tenant_id, grant.grant_id, cost)
                     break
 

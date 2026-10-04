@@ -987,10 +987,26 @@ class _ListOnceGrantStore:
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
-        self._cache: dict[tuple[str, str], Any] = {}
+        self._cache: dict[tuple[str, ...], Any] = {}
 
     async def list_for_agent(self, tenant_id: str, agent_id: str) -> Any:
         key = (tenant_id, agent_id)
         if key not in self._cache:
             self._cache[key] = await self.inner.list_for_agent(tenant_id, agent_id)
         return self._cache[key]
+
+    async def active_for_agent(self, tenant_id: str, agent_id: str, *, now: Any) -> Any:
+        from app.governance.grants.enforcer import active_grants
+
+        key = ("active", tenant_id, agent_id)
+        if key not in self._cache:
+            self._cache[key] = await active_grants(self.inner, tenant_id, agent_id, now)
+        return self._cache[key]
+
+    async def has_any_for_agent(self, tenant_id: str, agent_id: str) -> bool:
+        from app.governance.grants.enforcer import _has_any_grant
+
+        key = ("any", tenant_id, agent_id)
+        if key not in self._cache:
+            self._cache[key] = await _has_any_grant(self.inner, tenant_id, agent_id)
+        return bool(self._cache[key])

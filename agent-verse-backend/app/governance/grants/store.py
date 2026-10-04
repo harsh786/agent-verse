@@ -104,8 +104,17 @@ class InMemoryGrantStore:
     async def active_for_agent(
         self, tenant_id: str, agent_id: str, *, now: datetime
     ) -> tuple[Grant, ...]:
-        grants = await self.list_for_agent(tenant_id, agent_id)
-        return tuple(g for g in grants if g.is_active(now))
+        return tuple(
+            g
+            for (t, _gid), g in self._grants.items()
+            if t == tenant_id and g.grantee_agent_id == agent_id and g.is_active(now)
+        )
+
+    async def has_any_for_agent(self, tenant_id: str, agent_id: str) -> bool:
+        return any(
+            t == tenant_id and g.grantee_agent_id == agent_id
+            for (t, _gid), g in self._grants.items()
+        )
 
 
 __all__ = ["GrantStore", "InMemoryGrantStore"]

@@ -87,11 +87,11 @@ async def delegate_active_grants(
     """
     if store is None or not parent_agent_id or not child_agent_id:
         return []
-    parent_grants = await store.list_for_agent(tenant_id, parent_agent_id)
+    from app.governance.grants.enforcer import active_grants
+
+    parent_grants = await active_grants(store, tenant_id, parent_agent_id, now)
     minted: list[Grant] = []
     for parent in parent_grants:
-        if not parent.is_active(now):
-            continue
         child = mint_delegation(
             parent,
             grant_id=uuid.uuid4().hex,
