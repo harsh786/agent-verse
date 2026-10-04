@@ -608,7 +608,10 @@ class TestEmailSendModuleFunction:
 
         assert result["success"] is False
         assert "error" in result
-        assert "SMTP down" in result["error"]
+        # NATIVE-05: the platform relay's failure text is logged, never returned;
+        # the caller gets a generic error carrying a correlation id.
+        assert "SMTP down" not in result["error"]
+        assert result["error_id"] in result["error"]
 
     @pytest.mark.asyncio
     async def test_email_send_never_uses_caller_from_addr(self):
