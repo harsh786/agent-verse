@@ -9,7 +9,6 @@ The token both identifies the workflow and proves the caller holds the URL that
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -33,7 +32,6 @@ _DELIVERY_ID_HEADERS = (
     "x-github-delivery",
     "x-webhook-id",
 )
-_limiters: dict[int, Any] = {}
 
 
 async def _read_capped_body(request: Request, cap: int) -> bytes:
@@ -65,10 +63,16 @@ async def _enforce_rate_limit(
 ) -> None:
     """429 once this workflow's webhook exceeds its plan's per-minute limit.
 
-    Shared across replicas through Redis (the app's rate-limit client); a leaked
-    URL can no longer launch unlimited billed runs."""
+    One sliding window per (tenant, workflow) in the app's rate-limit Redis,
+    shared by every replica (``SlidingWindowRateLimiter``); a leaked URL can no
+    longer launch unlimited billed runs. While Redis is unreachable each replica
+    enforces its share of the limit (the tenancy middleware's degraded budget)
+    — never fail open. (This imported the per-process ``RateLimiter`` that
+    RATE-02 deleted, so every delivery answered 500.)"""
     from app.tenancy.context import PLAN_LIMITS, PlanTier
-    from app.tenancy.rate_limiter import RateLimiter
+    from app.tenancy.middleware import _check_rate_limit_with_fallback
+    from app.tenancy.rate_limiter import SlidingWindowRateLimiter
+    from app.tenancy.store import TenantScopedStore
 
     plan = "free"
     tier_of = getattr(runner, "_get_plan_tier", None)
@@ -82,12 +86,20 @@ async def _enforce_rate_limit(
     except (KeyError, ValueError):
         limit = PLAN_LIMITS[PlanTier.FREE].requests_per_minute
     redis = getattr(request.app.state, "_rate_limiter_redis", None)
-    limiter = _limiters.get(limit)
-    if limiter is None or getattr(limiter, "_redis", None) is not redis:
-        limiter = RateLimiter(redis, limit=limit, window_seconds=60)
-        _limiters[limit] = limiter
-    key = SimpleNamespace(tenant_id=f"wfhook:{tenant_id}:{workflow_id}")
-    if not await limiter.check(tenant_ctx=key):
+    allowed: bool | None = None
+    if redis is not None:
+        try:
+            limiter = SlidingWindowRateLimiter(
+                store=TenantScopedStore(redis=redis, tenant_id=tenant_id)
+            )
+            allowed, _, _ = await limiter.check_and_record(f"wfhook:{workflow_id}", limit=limit)
+        except Exception as exc:
+            _log.warning("webhook_rate_limit_redis_unavailable", error=str(exc)[:200])
+    if allowed is None:
+        allowed = await _check_rate_limit_with_fallback(
+            f"wfhook:{tenant_id}:{workflow_id}", None, rpm_limit=limit
+        )
+    if not allowed:
         raise HTTPException(
             status_code=429,
             detail=f"Webhook rate limit exceeded ({limit} deliveries per minute)",
