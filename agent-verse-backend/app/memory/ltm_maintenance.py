@@ -40,16 +40,32 @@ _NOT_HELD = (
     "OR lh.resource_ids @> jsonb_build_array(CAST(m.id AS text))))"
 )
 
+# MEM-47: duplicate groups are found ONCE per tenant over the
+# ix_long_term_memory_tenant_content_md5 expression index; the old dedup re-ran
+# a window sort over every memory of the tenant in each of up to 50 batches.
+_DUP_GROUPS_SQL = """
+SELECT md5(m.content) AS h
+  FROM long_term_memory m
+ WHERE m.tenant_id = :tid
+ GROUP BY md5(m.content)
+HAVING count(*) > 1
+ ORDER BY 1
+ LIMIT :max_groups
+"""
+
+# Deletes all but the newest copy within the given duplicate groups only (the
+# window spans just those rows, found through the md5 index). Content is part
+# of the partition so an md5 collision never merges different memories.
 _DEDUP_SQL = f"""
 DELETE FROM long_term_memory
  WHERE tenant_id = :tid
    AND id IN (
      SELECT id FROM (
        SELECT m.id, row_number() OVER (
-                PARTITION BY m.content ORDER BY m.created_at DESC, m.id
+                PARTITION BY md5(m.content), m.content ORDER BY m.created_at DESC, m.id
               ) AS rn
          FROM long_term_memory m
-        WHERE m.tenant_id = :tid
+        WHERE m.tenant_id = :tid AND md5(m.content) = ANY(CAST(:hashes AS text[]))
      ) ranked
      JOIN long_term_memory m USING (id)
     WHERE ranked.rn > 1 AND {_NOT_HELD}
@@ -83,7 +99,15 @@ async def _scan(system_db: Any) -> tuple[list[str], set[str], dict[str, int]]:
         tenants = [
             str(r[0])
             for r in (
-                await session.execute(text("SELECT DISTINCT tenant_id FROM long_term_memory"))
+                # Tenants (PK) probed by the tenant_id index, not a scan of
+                # every memory (MEM-47).
+                await session.execute(
+                    text(
+                        "SELECT t.id FROM tenants t WHERE EXISTS "
+                        "(SELECT 1 FROM long_term_memory m WHERE m.tenant_id = t.id) "
+                        "ORDER BY t.id"
+                    )
+                )
             ).fetchall()
         ]
         held = {
@@ -133,6 +157,50 @@ async def _batched(app_db: Any, sql: str, params: dict[str, Any], max_batches: i
     return total
 
 
+async def _dedup_tenant(app_db: Any, tid: str, batch_size: int, max_batches: int) -> int:
+    """One grouping query, then DELETEs over chunks of duplicate groups. At most
+    ``max_batches`` DELETE transactions of at most ``batch_size`` rows each."""
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with app_db() as session, session.begin(), sqlalchemy_rls_context(session, tid):
+        hashes = [
+            str(r[0])
+            for r in (
+                await session.execute(
+                    text(_DUP_GROUPS_SQL),
+                    {"tid": tid, "max_groups": batch_size * max_batches},
+                )
+            ).fetchall()
+        ]
+    total = 0
+    batches = 0
+    for start in range(0, len(hashes), batch_size):
+        chunk = hashes[start : start + batch_size]
+        while batches < max_batches:
+            batches += 1
+            async with (
+                app_db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tid),
+            ):
+                deleted = int(
+                    (
+                        await session.execute(
+                            text(_DEDUP_SQL), {"tid": tid, "hashes": chunk, "lim": batch_size}
+                        )
+                    ).rowcount
+                    or 0
+                )
+            total += deleted
+            if deleted < batch_size:
+                break
+        if batches >= max_batches:
+            break
+    return total
+
+
 async def consolidate_long_term_memory(
     *,
     system_db: Any,
@@ -153,8 +221,11 @@ async def consolidate_long_term_memory(
         if tid in held:
             totals["tenants_skipped_legal_hold"] += 1
             continue
-        params: dict[str, Any] = {"tid": tid, "lim": max(1, int(batch_size))}
-        totals["duplicates_removed"] += await _batched(app_db, _DEDUP_SQL, params, max_batches)
+        lim = max(1, int(batch_size))
+        totals["duplicates_removed"] += await _dedup_tenant(
+            app_db, tid, lim, max(1, int(max_batches))
+        )
+        params: dict[str, Any] = {"tid": tid, "lim": lim}
         params["days"] = retention.get(tid, default_days)
         totals["expired_removed"] += await _batched(app_db, _EXPIRE_SQL, params, max_batches)
     _log.info("ltm_consolidation_done", **totals)
