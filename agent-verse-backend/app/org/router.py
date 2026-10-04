@@ -3007,16 +3007,40 @@ async def org_capability_graph(
     ),
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, object]:
-    """Return the org capability graph and optional gap analysis."""
+    """Return the org capability graph and optional gap analysis.
+
+    Built per request from this org's durable rows (a08-F181-01): its
+    ``org_capabilities`` plus each active department's ``capability_domains``.
+    The old process-global graph was never written and not tenant-keyed.
+    """
     from opentelemetry import trace as _trace
 
     with _trace.get_tracer(__name__).start_as_current_span("org.capability_graph") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
 
-        from app.org.intelligence import get_capability_graph
+        from app.org.intelligence import CapabilityGraph, CapabilityNode
 
-        graph = get_capability_graph()
+        graph = CapabilityGraph()
+        for cap in await service.list_capabilities(org_id):
+            graph.add_capability(
+                CapabilityNode(
+                    capability_id=str(cap.id),
+                    name=str(cap.name),
+                    domain=str(cap.domain or ""),
+                )
+            )
+        for dept in await service.list_departments(org_id):
+            domains = getattr(dept, "capability_domains", None)
+            for domain in domains if isinstance(domains, list) else []:
+                graph.add_capability(
+                    CapabilityNode(
+                        capability_id=f"dept:{dept.id}:{domain}",
+                        name=str(domain),
+                        domain=str(domain),
+                        agent_count=0,
+                    )
+                )
         caps = graph.all_capabilities()
 
         result: dict[str, object] = {
@@ -3044,21 +3068,46 @@ async def org_decision_history(
     limit: int = Query(default=20, ge=1, le=100),
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, object]:
-    """Return recent autonomous decisions with quality scores and
-    overall calibration metrics for the organisation."""
+    """Return the organisation's most recent recorded decisions.
+
+    Reads ``org_decisions`` (tenant + org scoped, newest first, bounded by
+    ``limit``) instead of a process-global recorder nothing wrote
+    (a08-F181-01). The report summarises the returned window by approval status.
+    """
+    from collections import Counter
+
     from opentelemetry import trace as _trace
 
     with _trace.get_tracer(__name__).start_as_current_span("org.decision_history") as span:
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
 
-        from app.org.decision_intelligence import get_decision_intelligence
-
-        intel = get_decision_intelligence()
+        rows = await service.list_decisions(org_id, limit=limit)
+        decisions = [
+            {
+                "decision_id": str(d.id),
+                "decision_type": d.decision_type,
+                "description": d.description or "",
+                "why": d.why or "",
+                "entity_type": d.entity_type,
+                "entity_id": d.entity_id,
+                "risk_level": d.risk_level,
+                "autonomy_level": d.autonomy_level,
+                "outcome": d.approval_status,
+                "actor_agent_id": d.actor_agent_id,
+                "made_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            for d in rows
+        ]
+        by_status = Counter(str(d["outcome"]) for d in decisions)
         return {
             "org_id": org_id,
-            "decisions": intel.list_decisions(org_id, limit=limit),
-            "quality_report": intel.decision_quality_report(org_id),
+            "decisions": decisions,
+            "quality_report": {
+                "total": len(decisions),
+                "window": limit,
+                "by_status": dict(by_status),
+            },
         }
 
 
