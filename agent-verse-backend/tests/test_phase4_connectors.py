@@ -175,57 +175,6 @@ def test_code_result_to_dict():
     assert d["execution_time_ms"] == 42.5
 
 
-# ── Task 4.3: File operations tests ──────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_file_ops_write_and_read():
-    """FileOps must write and read files in tenant workspace."""
-    from app.tools.file_ops import FileOps
-
-    ops = FileOps(tenant_id="test-tenant-123")
-    await ops.write("test_phase4.txt", "hello world")
-    content = await ops.read("test_phase4.txt")
-    assert content == "hello world"
-    # Cleanup
-    await ops.delete("test_phase4.txt")
-
-
-@pytest.mark.asyncio
-async def test_file_ops_list_directory():
-    """FileOps.list() must return files in workspace."""
-    from app.tools.file_ops import FileOps
-
-    ops = FileOps(tenant_id="test-tenant-list4")
-    await ops.write("a.txt", "aaa")
-    await ops.write("b.txt", "bbb")
-    files = await ops.list(".")
-    names = [f["name"] for f in files]
-    assert "a.txt" in names
-    assert "b.txt" in names
-    await ops.delete("a.txt")
-    await ops.delete("b.txt")
-
-
-@pytest.mark.asyncio
-async def test_file_ops_path_traversal_blocked():
-    """FileOps must reject path traversal attempts."""
-    from app.tools.file_ops import FileOps
-
-    ops = FileOps(tenant_id="tenant-sec4")
-    with pytest.raises(PermissionError, match="outside workspace"):
-        await ops.read("../../etc/passwd")
-
-
-@pytest.mark.asyncio
-async def test_file_ops_delete_nonexistent_returns_false():
-    """FileOps.delete() must return False for non-existent files."""
-    from app.tools.file_ops import FileOps
-
-    ops = FileOps(tenant_id="tenant-del4")
-    result = await ops.delete("no-such-file.txt")
-    assert result is False
-
-
 # ── Task 4.4: Email tool tests ────────────────────────────────────────────────
 
 @pytest.mark.asyncio

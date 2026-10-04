@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.tenancy.rbac import require_role
@@ -138,51 +138,105 @@ def _sha256(value: str) -> str:
 
 
 # ── File Operations ───────────────────────────────────────────────────────────
+# The workspace is durable in Postgres (app/tools/workspace_store.py, NATIVE-01):
+# shared by every replica and worker, kept across restarts. It used to be the
+# pod-local /tmp, invisible to other replicas and lost on restart.
 
 
 class FileWriteRequest(BaseModel):
     content: str = ""
 
 
-@router.get("/files")
-async def list_files(request: Request, directory: str = ".") -> list[dict[str, Any]]:
-    """List files in the tenant's workspace directory."""
+def _workspace(request: Request) -> tuple[Any, Any]:
+    """(tenant ctx, workspace store) or 401/503 — never a pod-local fallback."""
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    from app.tools.file_ops import FileOps
+    from app.governance.audit import _durable_audit_required
 
-    ops = FileOps(tenant_id=ctx.tenant_id)
-    return await ops.list(directory)
+    store = getattr(request.app.state, "workspace_store", None)
+    if store is None or (not getattr(store, "durable", False) and _durable_audit_required()):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workspace storage is unavailable.",
+        )
+    return ctx, store
+
+
+def _workspace_http_error(exc: Exception) -> HTTPException | None:
+    from app.tools.workspace_store import (
+        WorkspaceConflictError,
+        WorkspacePathError,
+        WorkspaceUnavailableError,
+    )
+
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(status_code=404, detail=str(exc))
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, WorkspacePathError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, WorkspaceConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, WorkspaceUnavailableError):
+        import logging
+
+        logging.getLogger(__name__).error("workspace_store_unavailable: %s", exc)
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Workspace storage is unavailable; nothing was changed.",
+        )
+    return None
+
+
+@router.get("/files")
+async def list_files(
+    request: Request,
+    directory: str = ".",
+    limit: int = Query(500, ge=1, le=1000),
+    after: str | None = Query(None, max_length=255),
+) -> list[dict[str, Any]]:
+    """List one directory of the tenant's workspace (keyset page by name)."""
+    ctx, store = _workspace(request)
+    try:
+        entries: list[dict[str, Any]] = await store.list(
+            ctx.tenant_id, directory, limit=limit, after=after
+        )
+        return entries
+    except Exception as exc:
+        err = _workspace_http_error(exc)
+        if err is None:
+            raise
+        raise err from exc
 
 
 @router.get("/files/{path:path}")
 async def read_file(request: Request, path: str) -> dict[str, Any]:
     """Read a file from the tenant's workspace."""
-    ctx = getattr(request.state, "tenant", None)
-    if ctx is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    from app.tools.file_ops import FileOps
-
-    ops = FileOps(tenant_id=ctx.tenant_id)
+    ctx, store = _workspace(request)
     try:
-        content = await ops.read(path)
+        content = await store.read(ctx.tenant_id, path)
         return {"path": path, "content": content, "success": True}
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except Exception as exc:
+        err = _workspace_http_error(exc)
+        if err is None:
+            raise
+        raise err from exc
 
 
 @router.post("/files/{path:path}", status_code=201)
 async def write_file(request: Request, path: str, body: FileWriteRequest) -> dict[str, Any]:
     """Write a file to the tenant's workspace."""
-    ctx = getattr(request.state, "tenant", None)
-    if ctx is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    from app.tools.file_ops import FileOps
+    from app.tools.workspace_store import split_path
 
-    ops = FileOps(tenant_id=ctx.tenant_id)
+    ctx, store = _workspace(request)
+    try:
+        split_path(path)  # malformed / escaping paths are refused before the audit row
+    except Exception as exc:
+        err = _workspace_http_error(exc)
+        if err is None:
+            raise
+        raise err from exc
     size = len(body.content.encode("utf-8"))
     await _audit_native(
         request,
@@ -192,11 +246,10 @@ async def write_file(request: Request, path: str, body: FileWriteRequest) -> dic
         note=f"path={path} bytes={size} sha256={_sha256(body.content)}",
     )
     try:
-        bytes_written = await ops.write(path, body.content)
+        bytes_written = await store.write(ctx.tenant_id, path, body.content)
         return {"path": path, "bytes_written": bytes_written, "success": True}
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except OSError as exc:
+    except Exception as exc:
+        err = _workspace_http_error(exc)
         await _audit_native(
             request,
             ctx,
@@ -205,22 +258,42 @@ async def write_file(request: Request, path: str, body: FileWriteRequest) -> dic
             note=f"path={path} error={type(exc).__name__}",
             durable=False,
         )
-        raise HTTPException(status_code=500, detail="Workspace write failed") from exc
+        if err is None:
+            raise HTTPException(status_code=500, detail="Workspace write failed") from exc
+        raise err from exc
 
 
 @router.delete("/files/{path:path}", status_code=204)
 async def delete_file(request: Request, path: str) -> None:
-    """Delete a file from the tenant's workspace."""
-    ctx = getattr(request.state, "tenant", None)
-    if ctx is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    from app.tools.file_ops import FileOps
+    """Delete a file (or a directory and everything under it) from the workspace."""
+    from app.tools.workspace_store import split_path
 
-    ops = FileOps(tenant_id=ctx.tenant_id)
+    ctx, store = _workspace(request)
+    try:
+        split_path(path)
+    except Exception as exc:
+        err = _workspace_http_error(exc)
+        if err is None:
+            raise
+        raise err from exc
     await _audit_native(
         request, ctx, tool="workspace.delete", outcome="requested", note=f"path={path}"
     )
-    deleted = await ops.delete(path)
+    try:
+        deleted = await store.delete(ctx.tenant_id, path)
+    except Exception as exc:
+        err = _workspace_http_error(exc)
+        await _audit_native(
+            request,
+            ctx,
+            tool="workspace.delete",
+            outcome="failed",
+            note=f"path={path} error={type(exc).__name__}",
+            durable=False,
+        )
+        if err is None:
+            raise
+        raise err from exc
     if not deleted:
         raise HTTPException(status_code=404, detail=f"File not found: {path!r}")
 

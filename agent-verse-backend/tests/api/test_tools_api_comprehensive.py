@@ -176,70 +176,46 @@ def test_delete_file_requires_auth() -> None:
     assert resp.status_code == 401
 
 
-def test_list_files_success(monkeypatch) -> None:
-    class MockFileOps:
-        def __init__(self, tenant_id):
-            pass
-        async def list(self, directory):
-            return [{"name": "script.py", "size": 100}]
+def _ws_client(store=None):
+    from app.tools.workspace_store import InMemoryWorkspaceStore
 
-    monkeypatch.setattr("app.tools.file_ops.FileOps", MockFileOps)
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    app = _make_app()
+    app.state.workspace_store = store or InMemoryWorkspaceStore()
+    return TestClient(app, raise_server_exceptions=False)
+
+
+def test_list_files_success() -> None:
+    client = _ws_client()
+    client.post("/tools/files/script.py", json={"content": "x"}, headers={"X-API-Key": _VALID_KEY})
     resp = client.get("/tools/files", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert [e["name"] for e in resp.json()] == ["script.py"]
 
 
-def test_read_file_success(monkeypatch) -> None:
-    class MockFileOps:
-        def __init__(self, tenant_id):
-            pass
-        async def read(self, path):
-            return "print('hello')"
-
-    monkeypatch.setattr("app.tools.file_ops.FileOps", MockFileOps)
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+def test_read_file_success() -> None:
+    client = _ws_client()
+    client.post(
+        "/tools/files/script.py",
+        json={"content": "print('hello')"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
     resp = client.get("/tools/files/script.py", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     assert resp.json()["content"] == "print('hello')"
 
 
-def test_read_file_not_found(monkeypatch) -> None:
-    class MockFileOps:
-        def __init__(self, tenant_id):
-            pass
-        async def read(self, path):
-            raise FileNotFoundError(f"{path} not found")
-
-    monkeypatch.setattr("app.tools.file_ops.FileOps", MockFileOps)
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/tools/files/nonexistent.py", headers={"X-API-Key": _VALID_KEY})
+def test_read_file_not_found() -> None:
+    resp = _ws_client().get("/tools/files/nonexistent.py", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 404
 
 
-def test_read_file_permission_denied(monkeypatch) -> None:
-    class MockFileOps:
-        def __init__(self, tenant_id):
-            pass
-        async def read(self, path):
-            raise PermissionError("Access denied")
-
-    monkeypatch.setattr("app.tools.file_ops.FileOps", MockFileOps)
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/tools/files/secret.txt", headers={"X-API-Key": _VALID_KEY})
+def test_read_file_permission_denied() -> None:
+    resp = _ws_client().get("/tools/files/..%2Fsecret.txt", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 403
 
 
-def test_write_file_success(monkeypatch) -> None:
-    class MockFileOps:
-        def __init__(self, tenant_id):
-            pass
-        async def write(self, path, content):
-            return len(content)
-
-    monkeypatch.setattr("app.tools.file_ops.FileOps", MockFileOps)
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
+def test_write_file_success() -> None:
+    resp = _ws_client().post(
         "/tools/files/output.txt",
         json={"content": "Hello from agent"},
         headers={"X-API-Key": _VALID_KEY},
@@ -249,29 +225,15 @@ def test_write_file_success(monkeypatch) -> None:
     assert resp.json()["bytes_written"] == len("Hello from agent")
 
 
-def test_delete_file_success(monkeypatch) -> None:
-    class MockFileOps:
-        def __init__(self, tenant_id):
-            pass
-        async def delete(self, path):
-            return True
-
-    monkeypatch.setattr("app.tools.file_ops.FileOps", MockFileOps)
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+def test_delete_file_success() -> None:
+    client = _ws_client()
+    client.post("/tools/files/old.txt", json={"content": "x"}, headers={"X-API-Key": _VALID_KEY})
     resp = client.delete("/tools/files/old.txt", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 204
 
 
-def test_delete_file_not_found(monkeypatch) -> None:
-    class MockFileOps:
-        def __init__(self, tenant_id):
-            pass
-        async def delete(self, path):
-            return False
-
-    monkeypatch.setattr("app.tools.file_ops.FileOps", MockFileOps)
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.delete("/tools/files/nonexistent.txt", headers={"X-API-Key": _VALID_KEY})
+def test_delete_file_not_found() -> None:
+    resp = _ws_client().delete("/tools/files/nonexistent.txt", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 404
 
 

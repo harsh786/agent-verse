@@ -1759,6 +1759,10 @@ def create_app(
             _knowledge_store_db.add_change_listener(app.state.semantic_cache.invalidate_tenant)
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
+            # Durable tenant file workspace shared by every replica (NATIVE-01).
+            from app.tools.workspace_store import PostgresWorkspaceStore
+
+            app.state.workspace_store = PostgresWorkspaceStore(db_factory)
 
             # Bug fix: IngestionPipeline captured the pre-lifespan in-memory
             # KnowledgeStore at construction time (app.state.knowledge_store
@@ -3127,6 +3131,11 @@ def create_app(
     app.state.marketplace = _marketplace
     app.state.marketplace_v2 = _marketplace_v2
     app.state.collab_store = CollaborationStore()
+    # Per-process workspace for tests/dev; the lifespan swaps in Postgres and the
+    # API refuses this one outside development.
+    from app.tools.workspace_store import InMemoryWorkspaceStore
+
+    app.state.workspace_store = InMemoryWorkspaceStore()
     # RPA
     app.state.rpa_executor = _rpa_executor
     # vault:// refs in RPA arguments resolve through the tenant-aware connector

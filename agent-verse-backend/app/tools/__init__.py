@@ -7,7 +7,6 @@ Each tool is tenant-scoped for isolation.
 from app.tools.code_interpreter import CodeInterpreter, CodeResult, get_interpreter
 from app.tools.document_parser import DocumentParserTool, ParsedDocument
 from app.tools.email_tool import EmailTool, IMAPConfig, SMTPConfig
-from app.tools.file_ops import FileOps
 from app.tools.http_tool import HttpRequestTool
 from app.tools.ocr_tool import OcrDocumentTool
 from app.tools.shell_tool import ShellTool
@@ -21,8 +20,6 @@ __all__ = [
     "DocumentParserTool",
     # email
     "EmailTool",
-    # file ops
-    "FileOps",
     # http
     "HttpRequestTool",
     "IMAPConfig",

@@ -538,6 +538,7 @@ class ComplianceController:
             "documents",
             "knowledge_collections",
             "goal_connector_usage",
+            "workspace_files",
             "mcp_builtin_provisioning",
             "mcp_credentials",
             "oauth_tokens",

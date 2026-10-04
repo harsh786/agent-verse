@@ -17,6 +17,10 @@ from fastapi.testclient import TestClient
 
 from app.governance.audit import AuditLog
 from app.tenancy.context import PlanTier, TenantContext
+from app.tools.workspace_store import InMemoryWorkspaceStore
+
+# One store shared by every client in this module (stands in for Postgres).
+_STORE = InMemoryWorkspaceStore()
 
 
 class _FailingDb:
@@ -42,6 +46,7 @@ def _app(audit: AuditLog, tenant: str) -> TestClient:
 
     app.include_router(router)
     app.state.audit_log = audit
+    app.state.workspace_store = _STORE
     return TestClient(app)
 
 
