@@ -714,9 +714,29 @@ class HITLGateway:
                         await t
 
         if req.status == ApprovalStatus.PENDING:
-            # Timeout (or an undecided wait) -- CAS guard: only PENDING becomes
-            # TIMED_OUT, so a concurrent APPROVED is never overwritten (H17).
-            req.status = ApprovalStatus.TIMED_OUT
+            # Timeout (or an undecided wait). HITL-09: the expiry is written to
+            # the DB row with the same pending-only compare-and-swap, so an
+            # approver can no longer "approve" (and be told approved) an action
+            # the agent has abandoned. A decision that won the race first is
+            # honoured instead.
+            final = ApprovalStatus.TIMED_OUT
+            try:
+                won = await self._db_update_resolution(
+                    request_id, tenant_ctx.tenant_id, "expired", "system:timeout"
+                )
+                if not won:
+                    db_status = await self._db_read_status(request_id, tenant_ctx.tenant_id)
+                    mapped = _STATUS_BY_DB_VALUE.get(str(db_status or ""))
+                    if mapped is not None and mapped != ApprovalStatus.PENDING:
+                        final = mapped
+            except Exception as exc:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).error(
+                    "hitl_timeout_not_persisted", request_id=request_id, error=str(exc)[:200]
+                )
+            if req.status == ApprovalStatus.PENDING:  # CAS guard (H17)
+                req.status = final
             req._event.set()  # Unblock any other waiters on this request
         return req.status
 
