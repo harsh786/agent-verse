@@ -16,6 +16,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -101,28 +103,41 @@ def test_get_suite_results_unknown_suite_is_404() -> None:
     assert resp.status_code == 404
 
 
-def test_get_suite_results_returns_persisted_runs() -> None:
-    """A finished run is read back from the store with its outcome."""
-    from app.intelligence.eval_suite import EvalSuiteResult
+def test_get_suite_results_returns_persisted_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A finished durable run (MEM-53) is read back from the store with its outcome."""
+    import time
 
-    runner = MagicMock()
-    runner.run_suite = AsyncMock(
-        return_value=EvalSuiteResult(suite_id="suite-xyz", total_tasks=0)
-    )
-    app = _make_app(eval_suite_runner=runner)
-    app.state.goal_service = MagicMock()
-    client = TestClient(app, raise_server_exceptions=False)
-    assert client.post(
-        "/intelligence/eval-suites", json={"suite_id": "suite-xyz"}, headers=_HDR
-    ).status_code == 201
-    started = client.post("/intelligence/eval-suites/suite-xyz/run", headers=_HDR)
-    assert started.status_code == 202
-    run_id = started.json()["run_id"]
+    from app.core.config import get_settings
+    from tests.intelligence._eval_fakes import FakeGoals
 
-    body = client.get("/intelligence/eval-suites/suite-xyz/results", headers=_HDR).json()
+    # Run steps poll their golden goals every eval_suite_goal_poll_seconds (5 s default).
+    monkeypatch.setattr(get_settings(), "eval_suite_goal_poll_seconds", 0.01)
+
+    app = _make_app(eval_suite_runner=MagicMock())
+    app.state.goal_service = FakeGoals()
+    app.state.agent_store = MagicMock()
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert client.post(
+            "/intelligence/eval-suites", json={"suite_id": "suite-xyz"}, headers=_HDR
+        ).status_code == 201
+        client.post(
+            "/intelligence/eval-suites/suite-xyz/tasks",
+            json={"goal": "g", "expected_tools": ["t"]},
+            headers=_HDR,
+        )
+        started = client.post("/intelligence/eval-suites/suite-xyz/run", headers=_HDR)
+        assert started.status_code == 202, started.text
+        run_id = started.json()["run_id"]
+
+        body: list[dict[str, Any]] = []
+        for _ in range(250):
+            body = client.get("/intelligence/eval-suites/suite-xyz/results", headers=_HDR).json()
+            if body and body[0]["status"] != "running":
+                break
+            time.sleep(0.02)
     assert [r["run_id"] for r in body] == [run_id]
     assert body[0]["status"] == "completed"
-    assert body[0]["total"] == 0
+    assert body[0]["total"] == 1 and body[0]["passed"] == 1
 
 
 # ── GET /intelligence/experiments ────────────────────────────────────────────
@@ -151,7 +166,6 @@ def test_get_experiments_success() -> None:
 
 def test_get_suggestions_success() -> None:
     """GET /intelligence/suggestions returns suggestions from self_optimizer."""
-    from unittest.mock import AsyncMock
 
     mock_opt = MagicMock()
     mock_opt.alist_suggestions = AsyncMock(return_value=[])
@@ -165,7 +179,6 @@ def test_get_suggestions_success() -> None:
 
 def test_get_suggestions_store_outage_is_503() -> None:
     """MEM-26: the DB is authoritative; an outage is 503, not a partial list."""
-    from unittest.mock import AsyncMock
 
     mock_opt = MagicMock()
     mock_opt.alist_suggestions = AsyncMock(side_effect=RuntimeError("db down"))
