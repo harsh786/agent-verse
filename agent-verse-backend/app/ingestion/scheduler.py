@@ -112,27 +112,13 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     from app.ingestion.pipeline import IngestionPipeline
     from app.ingestion.quota import IngestionQuotaEnforcer
     from app.ingestion.source_store import SourceConfigStore
-    from app.providers.embedder_factory import resolve_embedder
-    from app.rag.store import KnowledgeStore
+    from app.ingestion.worker_services import build_worker_knowledge_services
 
     db_factory = get_session_factory()
-    # The SAME embedder the API's retrieval embeds queries with — not the chat
-    # LLM provider (resolve_provider()), whose vectors live in a different
-    # model/space, so scheduled documents were unretrievable by similarity.
-    # resolve_embedder applies the NVIDIA / on-prem embedding endpoint itself
-    # (create_app never runs in a worker) and logs any load failure loudly.
-    resolution = resolve_embedder()
-    embedder = resolution.embedder
-    knowledge_store = KnowledgeStore(db_factory, embedding_dim=resolution.dimension)
-    # Documents indexed here must invalidate answers the API replicas cached
-    # from the tenant's old knowledge (shared Redis generation).
-    from app.rag.semantic_cache import bump_knowledge_generation
-
-    knowledge_store.add_change_listener(bump_knowledge_generation)
-    # Worker embeds count into the tenant's shared usage counters too.
-    from app.embedding.usage import configure_usage_redis_from_env
-
-    configure_usage_redis_from_env()
+    # The shared worker builder: the API's query embedder (not the chat
+    # provider), the knowledge-generation listener, shared usage counters and
+    # the tenant guardrail rule repository — the same for every ingestion task.
+    knowledge_store, embedder = build_worker_knowledge_services(db_factory)
     # Stage 1 (quota) and Stage 6 (PII) were never wired here, so every
     # scheduled/DLQ-retried document skipped both.
     pipeline = IngestionPipeline(
@@ -142,7 +128,6 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
         quota_enforcer=IngestionQuotaEnforcer(db_factory),
         kg_hook=_build_worker_kg_hook(db_factory),
     )
-    _bind_worker_guardrail_rules(db_factory)
     tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
     source_store = SourceConfigStore(db=db_factory)
     return tracker, pipeline, source_store
@@ -162,27 +147,6 @@ def _build_worker_kg_hook(db_factory: object) -> object:
     store = KnowledgeGraphStore()
     store.set_db(db_factory)
     return KGIngestionHook(store=store)
-
-
-def _bind_worker_guardrail_rules(db_factory: object) -> None:
-    """Bind the RAG_INGEST guardrail engine to the tenant's persisted rules.
-
-    ``app.main``'s lifespan does this for the API; it never runs in a worker, so
-    ``ensure_tenant_loaded`` was a no-op here and scheduled / DLQ-retried syncs
-    were screened against the baseline defaults only — a tenant's own block
-    rules never applied. Each tenant's rules load under that tenant's RLS
-    context on its first evaluation. The worker writes no rules, so nothing is
-    auto-persisted. A failure here propagates: the sync must not run unscreened
-    (and ``screen_text`` refuses to screen in production without a repository).
-    """
-    from app.guardrails_v2.engine import guardrails_engine
-    from app.guardrails_v2.repository import PostgresGuardrailRuleRepository
-
-    if not guardrails_engine.has_repository:
-        guardrails_engine.bind_repository(
-            PostgresGuardrailRuleRepository(db_factory),  # type: ignore[arg-type]
-            auto_persist=False,
-        )
 
 
 def _build_worker_legal_holds() -> object | None:

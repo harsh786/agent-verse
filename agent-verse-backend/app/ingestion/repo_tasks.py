@@ -36,19 +36,21 @@ def _run_task_loop(coro: Any) -> Any:
 
 
 def _worker_services() -> tuple[Any, Any, Any]:
-    """(DB-backed KnowledgeStore, query embedder, DB-backed job tracker) for a worker."""
+    """(DB-backed KnowledgeStore, query embedder, DB-backed job tracker) for a worker.
+
+    Built by the shared worker builder, which also binds the guardrail engine to
+    the tenant's persisted rules (RV-06): without it, a fresh worker refused to
+    screen repository files in production and ignored tenant block rules
+    elsewhere.
+    """
     from app.db.session import get_session_factory, get_system_session_factory
     from app.ingestion.job_tracker import IngestionJobTracker
-    from app.providers.embedder_factory import resolve_embedder
-    from app.rag.semantic_cache import bump_knowledge_generation
-    from app.rag.store import KnowledgeStore
+    from app.ingestion.worker_services import build_worker_knowledge_services
 
     db_factory = get_session_factory()
-    resolution = resolve_embedder()
-    store = KnowledgeStore(db_factory, embedding_dim=resolution.dimension)
-    store.add_change_listener(bump_knowledge_generation)
+    store, embedder = build_worker_knowledge_services(db_factory)
     tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
-    return store, resolution.embedder, tracker
+    return store, embedder, tracker
 
 
 def _tenant_context(tenant_id: str) -> Any:
