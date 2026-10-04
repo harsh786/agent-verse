@@ -99,10 +99,15 @@ async def run_pattern_once(
 def run_pattern(
     tenant: dict[str, Any], session_id: str, pattern: str, execution_id: str
 ) -> dict[str, Any]:
-    """Execute one admitted pattern run; failures raise so Celery records them."""
-    import asyncio
+    """Execute one admitted pattern run; failures raise so Celery records them.
 
-    result = asyncio.run(run_pattern_once(tenant, session_id, pattern, execution_id))
+    Runs on ``run_in_fresh_loop`` (L-01): ``asyncio.run`` left pooled asyncpg
+    connections on a dead loop and broke the next task on the worker."""
+    from app.db import session as db_session
+
+    result = db_session.run_in_fresh_loop(
+        run_pattern_once(tenant, session_id, pattern, execution_id)
+    )
     _log.info(
         "coordination_pattern_run_finished",
         pattern=pattern,

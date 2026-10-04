@@ -624,7 +624,7 @@ def connectors_backfill(
     present in Postgres. The API also runs this automatically on startup while
     it is not recorded. Exits 1 unless the copy completed.
     """
-    import asyncio
+    from app.db.session import run_in_fresh_loop
 
     async def _run() -> dict:  # type: ignore[type-arg]
         import redis.asyncio as aioredis
@@ -643,7 +643,7 @@ def connectors_backfill(
         finally:
             await redis_client.aclose()
 
-    result = asyncio.run(_run())
+    result = run_in_fresh_loop(_run())
     typer.echo(json.dumps(result, indent=2))
     if result.get("status") != "complete":
         raise typer.Exit(1)

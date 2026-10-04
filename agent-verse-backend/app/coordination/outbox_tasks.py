@@ -92,12 +92,12 @@ def sweep_handoffs() -> dict[str, int]:
     """Beat: a crashed handoff target must not leave its parent paused forever.
 
     Failures raise so Celery records them (the next tick retries; every step is
-    idempotent per handoff)."""
-    import asyncio
-
+    idempotent per handoff). Runs on ``run_in_fresh_loop`` (L-01), like the
+    outbox dispatcher."""
     import redis.asyncio as aioredis
 
     from app.core.config import get_settings
+    from app.db import session as db_session
 
     async def _run() -> dict[str, int]:
         redis_url = (get_settings().redis_url or "").strip()
@@ -108,7 +108,7 @@ def sweep_handoffs() -> dict[str, int]:
             if client is not None:
                 await client.aclose()
 
-    result = asyncio.run(_run())
+    result = db_session.run_in_fresh_loop(_run())
     if result.get("expired") or result.get("resumed") or result.get("errors"):
         _log.info("coordination_handoffs_swept", **result)
     return result
