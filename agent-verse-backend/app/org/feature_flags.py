@@ -17,6 +17,7 @@ Cron Tasks (PART 43):
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import structlog
@@ -185,7 +186,52 @@ def is_feature_enabled(flag: str, tenant_id: str | None = None) -> bool:
 # These are registered in app/scaling/tasks.py beat_schedule
 
 
-async def _scan_active_orgs(cron: str, *, limit: int) -> list[tuple[Any, Any]]:
+_CRON_PAGE_SIZE = 200
+
+
+def _cron_max_orgs(env: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(env, "") or default))
+    except ValueError:
+        return default
+
+
+async def _iter_active_orgs(
+    cron: str,
+    *,
+    page_size: int = _CRON_PAGE_SIZE,
+    max_orgs: int,
+    start_after: Any = None,
+) -> AsyncIterator[tuple[Any, Any]]:
+    """Every active org once per pass, in bounded keyset pages (a08-F181-02).
+
+    The scans used to take ``LIMIT 50``/``100`` with no ORDER BY or cursor, so
+    each run processed the same arbitrary subset and the rest never ran. This
+    walks ``ORDER BY id`` pages starting after ``start_after`` (a random UUID by
+    default, so successive runs rotate fairly without shared cursor state), then
+    wraps to the head, stopping after ``max_orgs`` (a per-run work bound).
+    """
+    import uuid as _uuid
+
+    start = start_after if start_after is not None else _uuid.uuid4()
+    yielded = 0
+    # Phase 1: (start, end]; phase 2 (wrap): [head, start].
+    for after, upto in ((start, None), (None, start)):
+        cursor = after
+        while yielded < max_orgs:
+            requested = min(page_size, max_orgs - yielded)
+            page = await _scan_active_orgs(cron, limit=requested, after=cursor, upto=upto)
+            for org_id, tenant_id in page:
+                yield org_id, tenant_id
+                yielded += 1
+            if len(page) < requested:
+                break
+            cursor = page[-1][0]
+
+
+async def _scan_active_orgs(
+    cron: str, *, limit: int, after: Any = None, upto: Any = None
+) -> list[tuple[Any, Any]]:
     """Cross-tenant scan of active orgs, as the maintenance (BYPASSRLS) role.
 
     ``organizations`` is FORCE-RLS: a plain app-role session with no
@@ -206,11 +252,14 @@ async def _scan_active_orgs(cron: str, *, limit: int) -> list[tuple[Any, Any]]:
     try:
         system_db = get_system_session_factory()
         async with system_db() as session, session.begin(), system_session(session):
-            result = await session.execute(
-                select(Organization.id, Organization.tenant_id)
-                .where(Organization.status == "active")
-                .limit(limit)
+            q = select(Organization.id, Organization.tenant_id).where(
+                Organization.status == "active"
             )
+            if after is not None:
+                q = q.where(Organization.id > after)
+            if upto is not None:
+                q = q.where(Organization.id <= upto)
+            result = await session.execute(q.order_by(Organization.id).limit(limit))
             return [(row[0], row[1]) for row in result.all()]
     except Exception as exc:
         _log.error(f"{cron}.scan_failed", error=str(exc))
@@ -235,25 +284,32 @@ async def _run_org_intelligence_cron() -> dict[str, Any]:
     insights_generated = 0
     failed = 0
 
-    orgs = await _scan_active_orgs("org_intelligence_cron", limit=50)
-    if orgs:
-        db_factory = get_session_factory()
-        for org_id, tenant_id in orgs:
-            try:
-                async with (
-                    db_factory() as s2,
-                    s2.begin(),
-                    sqlalchemy_rls_context(s2, str(tenant_id)),
-                ):
-                    svc = OrgAnalyticsService(s2, str(tenant_id))
-                    await svc.get_org_health_score(str(org_id))
-                    bottlenecks = await svc.get_bottlenecks(str(org_id))
-                    if bottlenecks:
-                        insights_generated += len(bottlenecks)
-                processed += 1
-            except Exception as exc:
-                failed += 1
-                _log.warning("org_intelligence_cron.org_failed", org_id=str(org_id), error=str(exc))
+    db_factory: Any = None
+    seen: set[Any] = set()  # bounded by max_orgs
+    async for org_id, tenant_id in _iter_active_orgs(
+        "org_intelligence_cron",
+        max_orgs=_cron_max_orgs("ORG_INTELLIGENCE_CRON_MAX_ORGS", 2000),
+    ):
+        if org_id in seen:
+            continue
+        seen.add(org_id)
+        if db_factory is None:
+            db_factory = get_session_factory()
+        try:
+            async with (
+                db_factory() as s2,
+                s2.begin(),
+                sqlalchemy_rls_context(s2, str(tenant_id)),
+            ):
+                svc = OrgAnalyticsService(s2, str(tenant_id))
+                await svc.get_org_health_score(str(org_id))
+                bottlenecks = await svc.get_bottlenecks(str(org_id))
+                if bottlenecks:
+                    insights_generated += len(bottlenecks)
+            processed += 1
+        except Exception as exc:
+            failed += 1
+            _log.warning("org_intelligence_cron.org_failed", org_id=str(org_id), error=str(exc))
 
     _log.info(
         "org_intelligence_cron.done",
@@ -279,23 +335,30 @@ async def _run_org_digest_cron() -> dict[str, Any]:
     digests_generated = 0
     failed = 0
 
-    orgs = await _scan_active_orgs("org_digest_cron", limit=100)
-    if orgs:
-        db_factory = get_session_factory()
-        for org_id, tenant_id in orgs:
-            try:
-                async with (
-                    db_factory() as s2,
-                    s2.begin(),
-                    sqlalchemy_rls_context(s2, str(tenant_id)),
-                ):
-                    digest_svc = DigestGenerator(s2)
-                    await digest_svc.generate(str(org_id), str(tenant_id))
-                    digests_generated += 1
-                processed += 1
-            except Exception as exc:
-                failed += 1
-                _log.warning("org_digest_cron.org_failed", org_id=str(org_id), error=str(exc))
+    db_factory: Any = None
+    seen: set[Any] = set()  # bounded by max_orgs
+    async for org_id, tenant_id in _iter_active_orgs(
+        "org_digest_cron",
+        max_orgs=_cron_max_orgs("ORG_DIGEST_CRON_MAX_ORGS", 20000),
+    ):
+        if org_id in seen:
+            continue
+        seen.add(org_id)
+        if db_factory is None:
+            db_factory = get_session_factory()
+        try:
+            async with (
+                db_factory() as s2,
+                s2.begin(),
+                sqlalchemy_rls_context(s2, str(tenant_id)),
+            ):
+                digest_svc = DigestGenerator(s2)
+                await digest_svc.generate(str(org_id), str(tenant_id))
+                digests_generated += 1
+            processed += 1
+        except Exception as exc:
+            failed += 1
+            _log.warning("org_digest_cron.org_failed", org_id=str(org_id), error=str(exc))
 
     _log.info(
         "org_digest_cron.done",

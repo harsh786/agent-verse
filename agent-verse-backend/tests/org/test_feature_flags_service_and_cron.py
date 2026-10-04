@@ -253,9 +253,11 @@ class TestOrgCronOrgScan:
         ):
             result = await getattr(ff, cron_name)()
 
-        system_factory.assert_called_once()
-        assert system_ctx_calls == [scan_session]  # row security off for the scan
-        assert scan_session.begun == 1  # SET LOCAL needs an explicit transaction
+        # Two keyset passes (from a random start, then the wrapped head), each a
+        # system-session transaction with row security off.
+        assert system_factory.call_count == 2
+        assert system_ctx_calls == [scan_session, scan_session]
+        assert scan_session.begun == 2  # SET LOCAL needs an explicit transaction
         # The scan's rows were iterated: the org was processed on the tenant factory.
         assert result["processed"] == 1
         assert result["failed"] == 0
@@ -439,6 +441,66 @@ class TestRunOrgTwinSync:
             result = await _run_org_twin_sync({"org_id": "org-123", "event_type": "x"})
 
         assert result is None
+
+
+class TestOrgCronCoversEveryOrg:
+    """a08-F181-02: the scans were capped at 50/100 orgs with no ORDER BY or
+    cursor, so the same arbitrary subset was processed every run and the rest
+    never were. They now walk keyset pages (ORDER BY id) from a random start,
+    wrapping around, up to a per-run bound."""
+
+    @staticmethod
+    def _fake_scan(ids):
+        async def _scan(cron, *, limit, after=None, upto=None):
+            sel = [i for i in ids if (after is None or i > after) and (upto is None or i <= upto)]
+            return [(i, "t") for i in sel[:limit]]
+
+        return _scan
+
+    @pytest.mark.asyncio
+    async def test_iter_active_orgs_pages_and_wraps_from_a_start(self):
+        import app.org.feature_flags as ff
+
+        ids = sorted(uuid.UUID(int=i * 1000) for i in range(1, 8))
+        with patch.object(ff, "_scan_active_orgs", side_effect=self._fake_scan(ids)) as scan:
+            got = [
+                o
+                async for o, _t in ff._iter_active_orgs(
+                    "c", page_size=2, max_orgs=100, start_after=ids[3]
+                )
+            ]
+        # Everything after the start first, then the wrapped head; each org once.
+        assert got == ids[4:] + ids[:4]
+        assert all(c.kwargs["limit"] <= 2 for c in scan.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_iter_active_orgs_stops_at_the_per_run_bound(self):
+        import app.org.feature_flags as ff
+
+        ids = sorted(uuid.UUID(int=i) for i in range(1, 50))
+        with patch.object(ff, "_scan_active_orgs", side_effect=self._fake_scan(ids)):
+            got = [
+                o
+                async for o, _t in ff._iter_active_orgs(
+                    "c", page_size=7, max_orgs=10, start_after=None
+                )
+            ]
+        assert len(got) == 10
+        assert len(set(got)) == 10
+
+    @pytest.mark.asyncio
+    async def test_scan_is_keyset_ordered(self):
+        import app.org.feature_flags as ff
+
+        scan_session = _FakeSession(rows=[])
+        a, b, c, d = _cron_patches(system_factory=_factory(scan_session), tenant_factory=MagicMock())
+        with a, b, c, d:
+            await ff._scan_active_orgs("c", limit=5, after=uuid.UUID(int=1))
+        sql = str(
+            scan_session.execute.await_args.args[0].compile(compile_kwargs={"literal_binds": True})
+        )
+        assert "ORDER BY organizations.id" in sql
+        assert "organizations.id >" in sql
 
 
 class TestCronDbFactoryImportRegression:
