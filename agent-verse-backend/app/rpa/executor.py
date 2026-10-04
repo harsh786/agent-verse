@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import inspect
 import os
 import time
 import uuid
@@ -144,6 +145,11 @@ def build_rpa_executor(
     )
 
 
+# Longest a relayed tool call may take on the owning replica (navigation is 15 s,
+# waits up to 30 s) before this replica answers with an honest relay error.
+_RELAY_EXECUTE_TIMEOUT_S = 60.0
+
+
 class RPAExecutor:
     """Executes RPA tool calls via Playwright; without a browser it fails closed."""
 
@@ -174,6 +180,72 @@ class RPAExecutor:
         # an ``open_url`` → ``extract_text`` sequence sharing a session id returns
         # the page it actually fetched (mirrors Playwright session page state).
         self._http_pages: dict[str, str] = {}
+        # RPA-07: this process runs tool calls other replicas relay for sessions
+        # whose browser lives here.
+        set_relay_handler = getattr(session_manager, "set_relay_handler", None)
+        if callable(set_relay_handler):
+            set_relay_handler(self._serve_relayed_call)
+
+    async def _serve_relayed_call(self, msg: dict[str, Any]) -> dict[str, Any]:
+        """Run a tool call another replica relayed here (the session is live here).
+
+        The ORIGINAL arguments travel: vault:// references are resolved here, so
+        secrets never cross Redis.
+        """
+        from dataclasses import asdict
+
+        result = await self.execute(
+            tool_name=str(msg.get("tool_name", "")),
+            arguments=dict(msg.get("arguments") or {}),
+            session_id=str(msg.get("session_id", "")),
+            tenant_id=str(msg.get("tenant_id", "")),
+            goal_id=str(msg.get("goal_id", "")),
+        )
+        return asdict(result)
+
+    async def _relay_to_owner(
+        self,
+        owner: str,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        session_id: str,
+        tenant_id: str,
+        goal_id: str,
+    ) -> RPAResult:
+        """Run the call on the replica that holds the session's live browser."""
+        from app.rpa.session_manager import SessionRelayError
+
+        try:
+            reply = await self._session_manager.forward(
+                owner,
+                "execute",
+                {
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "session_id": session_id,
+                    "tenant_id": tenant_id,
+                    "goal_id": goal_id,
+                },
+                timeout_s=_RELAY_EXECUTE_TIMEOUT_S,
+            )
+        except SessionRelayError as exc:
+            return RPAResult(
+                success=False,
+                error=str(exc),
+                error_code="session_relay_failed",
+                error_detail={"owner_replica": owner, "session_id": session_id},
+            )
+        if not reply.get("ok"):
+            return RPAResult(
+                success=False,
+                error=str(reply.get("error") or "relayed call failed"),
+                error_code=str(reply.get("error_code") or "session_relay_failed"),
+                error_detail={"owner_replica": owner, "session_id": session_id},
+            )
+        data = reply.get("result") or {}
+        fields = set(RPAResult.__dataclass_fields__)
+        return RPAResult(**{k: v for k, v in data.items() if k in fields})
 
     async def aclose(self) -> None:
         """Close every browser session this executor opened and drop page caches.
@@ -216,6 +288,24 @@ class RPAExecutor:
         start = time.monotonic()
         sid = session_id or uuid.uuid4().hex
         ephemeral = session_id is None
+
+        # RPA-07: the session's browser lives in another replica/worker — run the
+        # call there (before credential injection, so no secret crosses Redis).
+        live_elsewhere = getattr(self._session_manager, "live_elsewhere", None)
+        if session_id and self._playwright_available and live_elsewhere is not None:
+            pending = live_elsewhere(session_id, tenant_id)
+            owner = await pending if inspect.isawaitable(pending) else None
+            if isinstance(owner, str) and owner:
+                relayed = await self._relay_to_owner(
+                    owner,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    session_id=session_id,
+                    tenant_id=tenant_id,
+                    goal_id=goal_id,
+                )
+                relayed.duration_ms = (time.monotonic() - start) * 1000
+                return relayed
 
         # P1.2: Resolve vault:// credential references before dispatching to Playwright.
         # A per-call, tenant-scoped injector is built from the app's connector

@@ -29,24 +29,44 @@ def _session_store(request: Request) -> Any:
     return getattr(request.app.state, "rpa_session_store", None)
 
 
-async def _refuse_if_on_another_replica(request: Request, session_id: str, tenant_id: str) -> None:
-    """409 when the session's live browser is held by a different API replica.
+_RELAY_VIEW_TIMEOUT_S = 20.0
 
-    Browser pages are per-process; the shared registry says where one lives.
-    Pretending it exists here (a fresh blank browser, or a vague 404) is worse.
+
+async def _view_on_owner_replica(
+    request: Request, session_id: str, tenant_id: str
+) -> dict[str, Any] | None:
+    """Viewport snapshot from the replica holding the session's live browser.
+
+    Browser pages are per-process; the shared registry says where one lives and
+    the owner takes the screenshot (RPA-07). ``None`` when no other replica holds
+    it. 504 when the owner does not answer, 404 when it no longer has the page.
     """
     manager = getattr(request.app.state, "rpa_session_manager", None)
     live_elsewhere = getattr(manager, "live_elsewhere", None)
     if live_elsewhere is None:
-        return
+        return None
     owner = await live_elsewhere(session_id, tenant_id)
-    if owner:
-        from app.rpa.session_manager import SessionOnAnotherReplicaError
+    if not owner:
+        return None
+    from app.rpa.session_manager import SessionRelayError
 
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(SessionOnAnotherReplicaError(session_id, owner)),
+    try:
+        reply: dict[str, Any] = await manager.forward(  # type: ignore[union-attr]
+            owner,
+            "view",
+            {"session_id": session_id, "tenant_id": tenant_id},
+            timeout_s=_RELAY_VIEW_TIMEOUT_S,
         )
+    except SessionRelayError as exc:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)) from exc
+    if not reply.get("ok"):
+        raise HTTPException(404, "Session not found or browser not active")
+    return {
+        "session_id": session_id,
+        "screenshot_data_uri": f"data:image/jpeg;base64,{reply.get('screenshot_b64', '')}",
+        "url": reply.get("url", ""),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
 
 
 @router.get("/tools")
@@ -79,9 +99,6 @@ async def execute_rpa_tool(request: Request, body: RPAExecuteRequest) -> dict[st
             detail=f"Unknown RPA tool: {body.tool_name}. Valid: {sorted(valid_tools)}",
         )
 
-    if body.session_id:
-        await _refuse_if_on_another_replica(request, body.session_id, tenant.tenant_id)
-
     executor = _executor(request)
     if executor is None:
         # Late import to avoid circular deps at startup
@@ -98,7 +115,16 @@ async def execute_rpa_tool(request: Request, body: RPAExecuteRequest) -> dict[st
         tenant_id=tenant.tenant_id,
     )
 
-    if getattr(result, "error_code", None) == "browser_session_limit":
+    error_code = getattr(result, "error_code", None)
+    if error_code == "session_relay_failed":
+        # The session's browser lives on another replica that did not answer.
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail={"code": error_code, "message": result.error, **(result.error_detail or {})},
+        )
+    if error_code == "session_not_found":
+        raise HTTPException(status_code=404, detail="Session not found or browser not active")
+    if error_code == "browser_session_limit":
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
@@ -260,7 +286,9 @@ async def get_session_screenshot(request: Request, session_id: str) -> dict[str,
         else None
     )
     if page is None:
-        await _refuse_if_on_another_replica(request, session_id, tenant.tenant_id)
+        remote = await _view_on_owner_replica(request, session_id, tenant.tenant_id)
+        if remote is not None:
+            return remote
         raise HTTPException(404, "Session not found or browser not active")
     try:
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
@@ -287,7 +315,9 @@ async def get_current_view(request: Request, session_id: str) -> dict[str, Any]:
         else None
     )
     if page is None:
-        await _refuse_if_on_another_replica(request, session_id, tenant.tenant_id)
+        remote = await _view_on_owner_replica(request, session_id, tenant.tenant_id)
+        if remote is not None:
+            return remote
         raise HTTPException(404, "Session not found or browser not active")
     try:
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)

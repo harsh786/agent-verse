@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import math
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,6 +81,18 @@ class SessionOnAnotherReplicaError(RuntimeError):
         )
 
 
+class SessionRelayError(RuntimeError):
+    """The replica holding the session's browser could not be reached in time."""
+
+    def __init__(self, session_id: str, owner_replica: str, reason: str) -> None:
+        self.session_id = session_id
+        self.owner_replica = owner_replica
+        super().__init__(
+            f"RPA session {session_id} lives on replica {owner_replica}, which did not "
+            f"answer: {reason}"
+        )
+
+
 class BrowserSessionCapError(RuntimeError):
     """The tenant's (global) or this host's browser-session cap is full (API: 429).
 
@@ -104,6 +119,22 @@ _REGISTRY_TTL_S = 120
 # is gone and its sessions may be reopened elsewhere (no hour-long 409s).
 _REPLICA_ALIVE_TTL_S = 90
 _HEARTBEAT_INTERVAL_S = 30.0
+# Cross-replica relay (RPA-07): a request for a session whose browser lives in
+# another process is queued on the owner's Redis list and answered on a per-request
+# reply key. Pages cannot move between processes, so the owner does the work.
+_RELAY_POLL_S = 2
+_RELAY_REPLY_TTL_S = 60
+_RELAY_MAX_INFLIGHT = 16
+
+RelayHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+def _relay_queue(replica_id: str) -> str:
+    return f"rpa_relay:{replica_id}"
+
+
+def _text(value: Any) -> str:
+    return value.decode() if isinstance(value, bytes | bytearray) else str(value)
 
 
 def _replica_identity() -> str:
@@ -159,6 +190,13 @@ class BrowserSessionManager:
         # Identifies this process's live browsers in the shared Redis registry.
         self.replica_id = _replica_identity()
         self._heartbeat_task: asyncio.Task[None] | None = None
+        # Serves other replicas' requests for sessions live here (RPA-07).
+        self._relay_task: asyncio.Task[None] | None = None
+        self._relay_handler: RelayHandler | None = None
+        self._relay_slots = asyncio.Semaphore(_RELAY_MAX_INFLIGHT)
+        # Each waiting forward holds one pooled Redis connection (BLPOP): bounded.
+        self._forward_slots = asyncio.Semaphore(_RELAY_MAX_INFLIGHT)
+        self._relay_inflight: set[asyncio.Task[None]] = set()
 
     async def get_or_create(
         self,
@@ -388,11 +426,13 @@ class BrowserSessionManager:
 
     async def close_all(self) -> int:
         """Close every session this manager holds (owner shutdown)."""
-        task, self._heartbeat_task = self._heartbeat_task, None
-        if task is not None and not task.done():
-            task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
+        for attr in ("_heartbeat_task", "_relay_task"):
+            task = getattr(self, attr)
+            setattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
         async with self._lock:
             sessions = list(self._sessions.items())
             self._sessions.clear()
@@ -418,17 +458,136 @@ class BrowserSessionManager:
                 await self._refresh_slot(sid, tid)
 
     def _ensure_heartbeat(self) -> None:
-        """Start the periodic heartbeat + idle cleanup in the running loop (once)."""
-        if self._redis is None or (
-            self._heartbeat_task is not None and not self._heartbeat_task.done()
-        ):
+        """Start the periodic heartbeat + idle cleanup and the cross-replica relay
+        server in the running loop (once each, while this process holds sessions)."""
+        if self._redis is None:
             return
         try:
-            self._heartbeat_task = asyncio.get_running_loop().create_task(
-                self._heartbeat_loop()
-            )
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._heartbeat_task = None
+            return
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = loop.create_task(self._heartbeat_loop())
+        if self._relay_task is None or self._relay_task.done():
+            self._relay_task = loop.create_task(self._relay_loop())
+
+    # ── Cross-replica relay (RPA-07) ───────────────────────────────────────────
+
+    def set_relay_handler(self, handler: RelayHandler) -> None:
+        """How this process runs a relayed tool call (the RPA executor registers it)."""
+        self._relay_handler = handler
+
+    async def forward(
+        self,
+        owner_replica: str,
+        op: str,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float,
+    ) -> dict[str, Any]:
+        """Run *op* on the replica holding the session's browser and return its reply.
+
+        Raises SessionRelayError when there is no shared Redis or the owner does
+        not answer within *timeout_s* (never a silent fresh browser here).
+        """
+        session_id = str(payload.get("session_id", ""))
+        if self._redis is None:
+            raise SessionRelayError(session_id, owner_replica, "no shared Redis")
+        req_id = uuid.uuid4().hex
+        reply_key = f"rpa_relay_reply:{req_id}"
+        message = json.dumps(
+            {
+                **payload,
+                "id": req_id,
+                "op": op,
+                "reply": reply_key,
+                "deadline": time.time() + timeout_s,
+                "from": self.replica_id,
+            }
+        )
+        try:
+            async with self._forward_slots:
+                queue = _relay_queue(owner_replica)
+                await self._redis.rpush(queue, message)
+                await self._redis.expire(queue, int(timeout_s) + _RELAY_REPLY_TTL_S)
+                item = await self._redis.blpop(
+                    [reply_key], timeout=max(1, math.ceil(timeout_s))
+                )
+        except Exception as exc:
+            raise SessionRelayError(session_id, owner_replica, f"Redis error: {exc}") from exc
+        if item is None:
+            raise SessionRelayError(session_id, owner_replica, f"no reply in {timeout_s:.0f}s")
+        reply = json.loads(_text(item[1]))
+        if not isinstance(reply, dict):
+            raise SessionRelayError(session_id, owner_replica, "malformed reply")
+        return reply
+
+    async def _relay_loop(self) -> None:
+        queue = _relay_queue(self.replica_id)
+        while self._sessions:
+            try:
+                item = await self._redis.blpop([queue], timeout=_RELAY_POLL_S)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("rpa_relay_poll_failed", error=str(exc)[:200])
+                await asyncio.sleep(1.0)
+                continue
+            if item is None:
+                continue
+            await self._relay_slots.acquire()
+            task = asyncio.get_running_loop().create_task(self._serve_relay(_text(item[1])))
+            self._relay_inflight.add(task)
+            task.add_done_callback(self._relay_done)
+
+    def _relay_done(self, task: asyncio.Task[None]) -> None:
+        self._relay_inflight.discard(task)
+        self._relay_slots.release()
+
+    async def _serve_relay(self, raw: str) -> None:
+        try:
+            msg = json.loads(raw)
+            reply_key = str(msg["reply"])
+        except Exception:
+            logger.warning("rpa_relay_bad_message")
+            return
+        if float(msg.get("deadline") or 0) < time.time():
+            return  # the caller has already given up
+        try:
+            reply = await self._relay_dispatch(msg)
+        except Exception as exc:
+            logger.warning("rpa_relay_failed", op=msg.get("op"), error=str(exc)[:200])
+            reply = {"ok": False, "error": f"relayed call failed: {exc}"}
+        try:
+            await self._redis.rpush(reply_key, json.dumps(reply))
+            await self._redis.expire(reply_key, _RELAY_REPLY_TTL_S)
+        except Exception as exc:
+            logger.warning("rpa_relay_reply_failed", error=str(exc)[:200])
+
+    async def _relay_dispatch(self, msg: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(msg.get("session_id", ""))
+        tenant_id = str(msg.get("tenant_id", ""))
+        session = self._sessions.get((session_id, tenant_id))
+        if session is None or not session.is_alive:
+            # Never open a fresh browser for a relayed request: the caller wants
+            # THIS session's page state, which no longer exists.
+            return {"ok": False, "error_code": "session_not_found", "error": "session not live"}
+        op = msg.get("op")
+        if op == "view":
+            page = self.get_page(session_id, tenant_id=tenant_id)
+            if page is None:
+                return {"ok": False, "error_code": "session_not_found", "error": "no page"}
+            import base64
+
+            shot = await page.screenshot(type="jpeg", quality=60, full_page=False)
+            session.touch()
+            return {"ok": True, "screenshot_b64": base64.b64encode(shot).decode(), "url": page.url}
+        if op == "execute":
+            if self._relay_handler is None:
+                return {"ok": False, "error": "this replica cannot run relayed tool calls"}
+            result = await self._relay_handler(msg)
+            return {"ok": True, "result": result}
+        return {"ok": False, "error": f"unknown relay op {op!r}"}
 
     async def _heartbeat_loop(self) -> None:
         while self._sessions:

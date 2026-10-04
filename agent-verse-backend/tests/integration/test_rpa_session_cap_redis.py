@@ -71,3 +71,36 @@ async def test_dead_owner_is_reclaimed_after_its_liveness_key_expires(redis_url:
     finally:
         await ra.aclose()
         await rb.aclose()
+
+
+async def test_relay_runs_the_call_on_the_owner_over_real_redis(redis_url: str) -> None:
+    """RPA-07: B relays a tool call for A's session; A runs it on its live page."""
+    import redis.asyncio as aioredis
+
+    from app.rpa.executor import RPAExecutor
+
+    ra, rb = aioredis.from_url(redis_url), aioredis.from_url(redis_url)
+    try:
+        a, b = _manager(ra), _manager(rb)
+        session = await a.get_or_create("s1", "tenant-relay")
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.title = AsyncMock(return_value="Owner page")
+        session._page = page
+        session.ssrf_guarded = True
+        owner, other = RPAExecutor(session_manager=a), RPAExecutor(session_manager=b)
+        owner._playwright_available = other._playwright_available = True
+        res = await other.execute(
+            tool_name="rpa_open_url",
+            arguments={"url": "https://93.184.215.14/"},
+            session_id="s1",
+            tenant_id="tenant-relay",
+        )
+        assert res.success, res.error
+        assert "Owner page" in res.output
+        assert b.list_active() == []
+        await a.close_all()
+        await b.close_all()
+    finally:
+        await ra.aclose()
+        await rb.aclose()

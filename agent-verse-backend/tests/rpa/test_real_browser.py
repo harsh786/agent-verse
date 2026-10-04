@@ -161,3 +161,41 @@ async def test_subresource_to_a_non_allowlisted_private_host_is_aborted(
         assert loaded == [False]
     finally:
         await ex.aclose()
+
+
+async def test_session_opened_on_one_replica_is_driven_from_another(
+    site: str, tmp_path: Path
+) -> None:
+    """RPA-07: replica B relays to replica A's real Chromium page (shared Redis)."""
+    import fakeredis
+
+    from app.rpa.artifacts import RPAArtifactStore
+    from app.rpa.executor import RPAExecutor
+    from app.rpa.session_manager import BrowserSessionManager
+
+    server = fakeredis.FakeServer()
+
+    def _replica() -> RPAExecutor:
+        return RPAExecutor(
+            session_manager=BrowserSessionManager(redis=fakeredis.FakeAsyncRedis(server=server)),
+            artifact_store=RPAArtifactStore(base_dir=tmp_path),
+            allowed_domains=["localhost"],
+        )
+
+    a, b = _replica(), _replica()
+    try:
+        opened = await a.execute(
+            tool_name="rpa_open_url", arguments={"url": site + "/"},
+            session_id="shared", tenant_id="t1",
+        )
+        assert opened.success, opened.error
+        text = await b.execute(
+            tool_name="rpa_extract_text", arguments={"selector": "#greet"},
+            session_id="shared", tenant_id="t1",
+        )
+        assert text.success, text.error
+        assert "Hello from the local site" in text.output
+        assert b._session_manager.list_active() == []  # no second Chromium on B
+    finally:
+        await a.aclose()
+        await b.aclose()
