@@ -588,6 +588,19 @@ def _chat_byok_resolver(app_state: Any) -> Any:
     return _resolve
 
 
+def _bind_agent_router(app_state: Any, agent_store: Any, db_factory: Any) -> None:
+    """Point the auto-router at the lifespan's durable agent store (RV-02).
+
+    create_app builds the router over the in-memory AgentStore; without this
+    the swap to the DB-backed store left it routing over an empty cache, so
+    POST /goals without agent_id answered ``no_agents`` on every replica.
+    """
+    router = getattr(app_state, "agent_router", None)
+    if router is not None:
+        router.bind_store(agent_store=agent_store, db_session_factory=db_factory)
+        logger.info("agent_router_store_rewired")
+
+
 def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def _validation_error_handler(
@@ -1699,10 +1712,9 @@ def create_app(
             # H-4: Wire agent store directly into goal_service for agent config loading
             _goal_svc_with_db._agent_store = _agent_store_with_db
 
-            # Wire DB session factory into AgentRouter for history scoring
-            _agent_router_state = getattr(app.state, "agent_router", None)
-            if _agent_router_state is not None:
-                _agent_router_state._db = db_factory
+            # The AgentRouter routes over the durable store (bounded candidates
+            # under the tenant's RLS) and scores history from the DB.
+            _bind_agent_router(app.state, _agent_store_with_db, db_factory)
 
             # Wire DB persistence into AuditLog, ScheduleStore, KnowledgeStore
             from app.governance.audit import AuditLog as AuditLogClass

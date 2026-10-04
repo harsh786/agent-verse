@@ -341,6 +341,10 @@ class AgentStore:
         ``ix_agents_routing_fts``), ranked, and tops up with the newest agents
         only when fewer than *limit* match. Without a DB the same ranking runs
         over the in-memory cache.
+
+        With a DB configured, a failed query raises (RV-02): routing over this
+        replica's stale cache instead would pick agents another replica deleted
+        and miss ones it created, while reporting a normal decision.
         """
         limit = max(1, int(limit))
         tokens = _routing_tokens(goal)
@@ -351,8 +355,11 @@ class AgentStore:
                 from app.observability.logging import get_logger
 
                 get_logger(__name__).warning(
-                    "agent_routing_candidates_db_failed", error=type(exc).__name__
+                    "agent_routing_candidates_db_failed",
+                    tenant_id=tenant_ctx.tenant_id,
+                    error=type(exc).__name__,
                 )
+                raise
         rows = self.list_all(tenant_ctx=tenant_ctx)
 
         def _hits(rec: dict[str, Any]) -> int:

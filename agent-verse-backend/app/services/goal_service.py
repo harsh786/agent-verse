@@ -672,6 +672,27 @@ def _downgrade_fields(execution_context: dict[str, Any] | None) -> dict[str, Any
         "strategy_downgrade": ctx.get("strategy_downgrade") if downgraded else None,
     }
 
+
+def _routing_outcome(decision: Any) -> dict[str, Any]:
+    """A router decision as the JSON-safe dict recorded on the goal."""
+    to_dict = getattr(decision, "to_dict", None)
+    out = to_dict() if callable(to_dict) else None
+    if isinstance(out, dict):
+        return out
+    try:
+        confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    agent_id = getattr(decision, "agent_id", None)
+    return {
+        "agent_id": str(agent_id) if agent_id else None,
+        "reason": str(getattr(decision, "reason", "") or ""),
+        "confidence": round(confidence, 3),
+        "mode": str(getattr(decision, "mode", "single_agent") or "single_agent"),
+        "candidate_agents": list(getattr(decision, "candidate_agents", None) or []),
+    }
+
+
 class GoalService:
     """In-memory goal service.
 
@@ -2330,6 +2351,147 @@ class GoalService:
             tenant_ctx=tenant_ctx,
             agent_id=agent_id,
         )
+
+    def _routing_agent_store(self) -> Any:
+        """The durable, tenant-scoped agent source auto-routing reads (RV-02).
+
+        The wired store when it is DB-backed; otherwise, with a database (the
+        Celery worker's GoalService has no app state), a DB-backed AgentStore
+        whose bounded candidate query runs under the tenant's RLS. Without a
+        database, the wired (in-memory) store.
+        """
+        store = self._get_agent_store()
+        if store is not None and getattr(store, "_db", None) is not None:
+            return store
+        if self._db is not None:
+            from app.api.agents import AgentStore
+
+            return AgentStore(db_session_factory=self._db)
+        return store
+
+    async def _auto_route_goal(
+        self, goal: str, tenant_ctx: TenantContext
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """``(agent_id, routing outcome)`` for a goal submitted without an agent.
+
+        ``(None, None)`` when there is nothing to route over. A router error is
+        logged and retried once with keyword scoring over the same bounded
+        candidates; when that fails too the outcome says ``routing_failed``
+        with both errors -- never a silent "no agent".
+        """
+        from app.agent.router import AgentRouter
+
+        store = self._routing_agent_store()
+        router = (
+            getattr(self._app_state, "agent_router", None)
+            if self._app_state is not None
+            else None
+        )
+        if router is None:
+            if store is None:
+                return None, None
+            router = AgentRouter(agent_store=store, db_session_factory=self._db)
+        try:
+            decision = await router.route(goal=goal, tenant_ctx=tenant_ctx)
+        except Exception as exc:
+            router_error = f"{type(exc).__name__}: {str(exc)[:160]}"
+            _svc_logger.warning(
+                "agent_router_failed", tenant_id=tenant_ctx.tenant_id, error=router_error
+            )
+            return await self._fallback_route(goal, tenant_ctx, store, router_error)
+        outcome = _routing_outcome(decision)
+        agent_id = outcome.get("agent_id") or None
+        if agent_id:
+            _svc_logger.info(
+                "auto_routed_goal",
+                tenant_id=tenant_ctx.tenant_id,
+                agent_id=agent_id,
+                confidence=outcome.get("confidence"),
+            )
+        else:
+            _svc_logger.info(
+                "auto_route_no_agent",
+                tenant_id=tenant_ctx.tenant_id,
+                reason=outcome.get("reason"),
+            )
+        return (str(agent_id) if agent_id else None), outcome
+
+    async def _fallback_route(
+        self, goal: str, tenant_ctx: TenantContext, store: Any, router_error: str
+    ) -> tuple[str | None, dict[str, Any]]:
+        """Keyword/connector scoring over the store's bounded candidates."""
+        from app.agent.router import AgentRouter
+
+        failed: dict[str, Any] = {
+            "agent_id": None,
+            "reason": "routing_failed",
+            "confidence": 0.0,
+            "mode": "single_agent",
+            "candidate_agents": [],
+            "router_error": router_error,
+        }
+        if store is None:
+            return None, failed
+        fallback = AgentRouter(agent_store=store)
+        try:
+            agents = await fallback.candidates(goal, tenant_ctx)
+        except Exception as exc:
+            failed["fallback_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            _svc_logger.warning(
+                "agent_routing_fallback_failed",
+                tenant_id=tenant_ctx.tenant_id,
+                error=failed["fallback_error"],
+            )
+            return None, failed
+        decision = fallback.keyword_decision(goal, agents)
+        outcome = decision.to_dict()
+        outcome["router_error"] = router_error
+        if decision.agent_id:
+            outcome["reason"] = "routed_fallback"
+            _svc_logger.info(
+                "auto_routed_fallback",
+                tenant_id=tenant_ctx.tenant_id,
+                agent_id=decision.agent_id,
+                score=round(decision.confidence, 3),
+            )
+        return decision.agent_id, outcome
+
+    async def _submit_multi_agent_routing(
+        self,
+        goal: str,
+        routing: dict[str, Any],
+        tenant_ctx: TenantContext,
+        *,
+        priority: str,
+        dry_run: bool,
+    ) -> dict[str, Any] | None:
+        """Fan a ``multi_agent`` routing decision out to up to 3 agents, else None."""
+        if routing.get("mode") != "multi_agent":
+            return None
+        tasks = [
+            self._submit_single_goal(
+                goal=goal,
+                agent_id=str(cand["agent_id"]),
+                tenant_ctx=tenant_ctx,
+                priority=priority,
+                dry_run=dry_run,
+            )
+            for cand in (routing.get("candidate_agents") or [])[:3]
+            if isinstance(cand, dict) and cand.get("agent_id")
+        ]
+        if len(tasks) < 2:
+            return None
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid = [r for r in results if isinstance(r, dict) and "goal_id" in r]
+        if not valid:
+            return None
+        return {
+            "mode": "multi_agent",
+            "goal_ids": [r["goal_id"] for r in valid],
+            "primary_goal_id": valid[0]["goal_id"],
+            "goal_id": valid[0]["goal_id"],
+            "agents": [r.get("agent_id") for r in valid],
+        }
 
     def _get_record(self, goal_id: str, tenant_ctx: TenantContext) -> GoalRecord:
         """Fetch and tenant-validate a :class:`GoalRecord`."""
@@ -4155,6 +4317,19 @@ class GoalService:
             agent_id, execution_context = bind_goal_to_agent_key(
                 tenant_ctx, agent_id, execution_context
             )
+            # Auto-route when no agent was named (RV-02). Before validation so the
+            # routed agent is validated and its pattern flags travel with the
+            # goal; skipped when POST /goals already routed (its decision is in
+            # the context), so a goal is never routed twice.
+            if agent_id is None and "routing_decision" not in (execution_context or {}):
+                agent_id, _routing = await self._auto_route_goal(goal, tenant_ctx)
+                if _routing is not None:
+                    execution_context = {**(execution_context or {}), "routing_decision": _routing}
+                    _fanout = await self._submit_multi_agent_routing(
+                        goal, _routing, tenant_ctx, priority=priority, dry_run=dry_run
+                    )
+                    if _fanout is not None:
+                        return _fanout
             await self._refresh_agent_record(agent_id, tenant_ctx)
             _agent_record = await self._validate_agent_id(agent_id, tenant_ctx)
 
@@ -4247,108 +4422,6 @@ class GoalService:
                     # goal that never existed.
                     await _goal_dedup.release_goal(goal_id)
                     raise
-
-            # Auto-route to best agent when agent_id not specified
-            if agent_id is None and self._app_state is not None:
-                agent_store = self._get_agent_store()
-                if agent_store is not None:
-                    # H-6: Use pre-wired router from app.state (has DB history scoring)
-                    agent_router = getattr(self._app_state, "agent_router", None)
-                    try:
-                        if agent_router is not None:
-                            decision = await agent_router.route(goal=goal, tenant_ctx=tenant_ctx)
-                        else:
-                            # Fallback: create fresh router (no DB history scoring)
-                            from app.agent.router import AgentRouter
-
-                            router = AgentRouter(agent_store=agent_store)
-                            decision = await router.route(goal, tenant_ctx)
-                        if decision.agent_id and decision.confidence >= 0.3:
-                            agent_id = decision.agent_id
-                            _svc_logger.info(
-                                "auto_routed_goal",
-                                goal_id=goal_id,
-                                agent_id=agent_id,
-                                confidence=decision.confidence,
-                            )
-                        # Phase 2: Multi-agent goal spawning — parallel independent executions
-                        if decision.mode == "multi_agent" and decision.candidate_agents:
-                            _ma_tasks = []
-                            for _cand in decision.candidate_agents[:3]:
-                                _cand_agent_id = _cand.get("agent_id")
-                                if not _cand_agent_id:
-                                    continue
-                                _ma_tasks.append(
-                                    self._submit_single_goal(
-                                        goal=goal,
-                                        agent_id=_cand_agent_id,
-                                        tenant_ctx=tenant_ctx,
-                                        priority=priority,
-                                        dry_run=dry_run,
-                                    )
-                                )
-                            if len(_ma_tasks) > 1:
-                                _ma_results = await asyncio.gather(
-                                    *_ma_tasks, return_exceptions=True
-                                )
-                                _ma_valid = [
-                                    r for r in _ma_results if isinstance(r, dict) and "goal_id" in r
-                                ]
-                                if _ma_valid:
-                                    # This submission's own goal_id is never
-                                    # created: drop its dedup claim.
-                                    await _goal_dedup.release_goal(goal_id)
-                                    return {
-                                        "mode": "multi_agent",
-                                        "goal_ids": [r["goal_id"] for r in _ma_valid],
-                                        "primary_goal_id": _ma_valid[0]["goal_id"],
-                                        "goal_id": _ma_valid[0]["goal_id"],
-                                        "agents": [r.get("agent_id") for r in _ma_valid],
-                                    }
-                    except Exception as exc:
-                        _svc_logger.warning("agent_router_failed", error=str(exc))
-
-                    # ── Fallback: pick BEST-SCORED agent using router's scoring
-                    # (not just first created) — prevents wrong agent selection
-                    # when the main route() call fails or returns low confidence.
-                    if agent_id is None:
-                        try:
-                            _all_agents = agent_store.list(tenant_ctx=tenant_ctx)
-                            if asyncio.iscoroutine(_all_agents):
-                                _all_agents = await _all_agents
-                            if _all_agents:
-                                # Use router scoring to pick the best agent
-                                from app.agent.router import AgentRouter
-
-                                _fallback_router = AgentRouter(agent_store=agent_store)
-                                _fallback_agents = [
-                                    a if isinstance(a, dict) else a.__dict__ for a in _all_agents
-                                ]
-                                # Score each agent and pick highest
-                                _best_id = None
-                                _best_score = -1.0
-                                for _fa in _fallback_agents:
-                                    _kw = _fallback_router._score_by_keywords(goal, _fa)
-                                    _cn = _fallback_router._score_by_connector_match(goal, _fa)
-                                    _score = _kw * 0.5 + _cn * 0.5
-                                    if _score > _best_score:
-                                        _best_score = _score
-                                        _best_id = _fa.get("agent_id")
-                                # Use best if it has any score; otherwise first
-                                agent_id = _best_id or (
-                                    _fallback_agents[0].get("agent_id")
-                                    if _fallback_agents
-                                    else None
-                                )
-                                if agent_id:
-                                    _svc_logger.info(
-                                        "auto_routed_fallback",
-                                        goal_id=goal_id,
-                                        agent_id=agent_id,
-                                        score=round(_best_score, 3),
-                                    )
-                        except Exception as _fb_exc:
-                            _svc_logger.debug("agent_fallback_failed: %s", _fb_exc)
 
             record = GoalRecord(
                 goal_id=goal_id,

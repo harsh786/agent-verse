@@ -494,13 +494,16 @@ class TestSubmitGoalAutoRouting:
         svc = _svc()
         ctx = _ctx("cb-router-3")
         app_state = MagicMock(redis_cost_controller=None, cost_controller=None)
-        agent_store = MagicMock()
-        agent_store.list = MagicMock(
+        agent_store = MagicMock(spec=["_db", "routing_candidates", "get_async"])
+        # RV-02: the fallback reads the store's real, bounded candidate query
+        # (it called a non-existent ``list`` and the error was dropped).
+        agent_store.routing_candidates = AsyncMock(
             return_value=[
                 {"agent_id": "low", "name": "low", "goal_template": "unrelated"},
                 {"agent_id": "hi", "name": "hi", "goal_template": "fan out please"},
             ]
         )
+        agent_store.get_async = AsyncMock(return_value={"agent_id": "hi", "name": "hi"})
         app_state.agent_store = agent_store
         app_state.agent_router = None
         svc._app_state = app_state
@@ -516,7 +519,8 @@ class TestSubmitGoalAutoRouting:
                 tenant_ctx=ctx,
             )
 
-        assert result["agent_id"] in {"low", "hi"}
+        assert result["agent_id"] == "hi"
+        agent_store.routing_candidates.assert_awaited_once()
 
     async def test_dedup_returns_existing_goal_id(self):
         svc = _svc()

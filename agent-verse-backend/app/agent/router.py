@@ -12,6 +12,8 @@ from app.tenancy.context import TenantContext
 
 # Auto-routing scores at most this many (newest, active) agents per tenant.
 MAX_ROUTING_CANDIDATES = 50
+# A routing decision binds an agent only at or above this composite score.
+MIN_ROUTING_CONFIDENCE = 0.3
 
 
 @dataclass
@@ -82,6 +84,60 @@ class AgentRouter:
         self._llm_provider = llm_provider
         self._db = db_session_factory
         self._app_state = app_state
+
+    def bind_store(self, *, agent_store: Any, db_session_factory: Any) -> None:
+        """Route over *agent_store* (the durable, tenant-scoped one) from now on.
+
+        RV-02: create_app builds the router before the lifespan has a database,
+        over the in-memory store; the lifespan swaps ``app.state.agent_store``
+        to the DB-backed store and must move the router with it, or every
+        replica routes over an empty cache and answers ``no_agents``.
+        """
+        self._agent_store = agent_store
+        self._db = db_session_factory
+
+    async def candidates(self, goal: str, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
+        """At most MAX_ROUTING_CANDIDATES agents of the tenant, best match first.
+
+        CORE-33: a bounded, relevance-ranked pre-filter (SQL full-text match,
+        index-backed) -- never the tenant's whole agents table, and an older
+        agent that matches the goal is a candidate (truncating to the 50
+        newest used to drop it). Store errors propagate to the caller.
+        """
+        store = self._agent_store
+        candidates = getattr(store, "routing_candidates", None)
+        lister = getattr(store, "list_async", None)
+        if candidates is not None and inspect.iscoroutinefunction(candidates):
+            agents = await candidates(
+                tenant_ctx=tenant_ctx, goal=goal, limit=MAX_ROUTING_CANDIDATES
+            )
+        elif lister is not None and inspect.iscoroutinefunction(lister):
+            # DB-backed per-tenant read (active agents, newest first).
+            agents = await lister(tenant_ctx=tenant_ctx, limit=MAX_ROUTING_CANDIDATES)
+        else:
+            agents = store.list_all(tenant_ctx=tenant_ctx)
+        return list(agents)[:MAX_ROUTING_CANDIDATES]
+
+    def keyword_decision(self, goal: str, agents: list[dict[str, Any]]) -> RoutingDecision:
+        """Keyword + connector scores only (no history, no LLM): the degraded path.
+
+        Binds the best agent only when it clears MIN_ROUTING_CONFIDENCE; never
+        an arbitrary agent.
+        """
+        best_id: str | None = None
+        best_score = 0.0
+        for agent in agents:
+            score = (
+                self._score_by_keywords(goal, agent) * 0.5
+                + self._score_by_connector_match(goal, agent) * 0.5
+            )
+            if score > best_score:
+                best_id, best_score = str(agent.get("agent_id") or "") or None, score
+        if not agents:
+            return RoutingDecision(agent_id=None, reason="no_agents")
+        if best_id is None or best_score < MIN_ROUTING_CONFIDENCE:
+            return RoutingDecision(agent_id=None, reason="low_confidence", confidence=best_score)
+        return RoutingDecision(agent_id=best_id, reason="routed", confidence=best_score)
 
     async def _llm_provider_for(self, tenant_ctx: TenantContext) -> tuple[Any, str]:
         """``(provider, skip_reason)`` for LLM scoring of *tenant_ctx*'s goal.
@@ -465,30 +521,15 @@ class AgentRouter:
             Tenant context used for scoping agent lookup and history.
         available_agents:
             Pre-fetched list of agent dicts.  When *None* the router falls
-            back to ``self._agent_store.list_all()``.
+            back to the store's bounded candidates (see :meth:`candidates`).
 
         Returns a :class:`RoutingDecision` with ``agent_id=None`` when no
         agent achieves a composite score ≥ 0.3.
         """
         if available_agents is None:
-            # CORE-33: a bounded, relevance-ranked pre-filter (SQL full-text match,
-            # index-backed) — never the tenant's whole agents table, and an older
-            # agent that matches the goal is a candidate (truncating to the 50
-            # newest used to drop it).
-            candidates = getattr(self._agent_store, "routing_candidates", None)
-            lister = getattr(self._agent_store, "list_async", None)
-            if candidates is not None and inspect.iscoroutinefunction(candidates):
-                agents = await candidates(
-                    tenant_ctx=tenant_ctx, goal=goal, limit=MAX_ROUTING_CANDIDATES
-                )
-            elif lister is not None and inspect.iscoroutinefunction(lister):
-                # DB-backed per-tenant read (active agents, newest first).
-                agents = await lister(tenant_ctx=tenant_ctx, limit=MAX_ROUTING_CANDIDATES)
-            else:
-                agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
+            agents = await self.candidates(goal, tenant_ctx)
         else:
-            agents = available_agents
-        agents = list(agents)[:MAX_ROUTING_CANDIDATES]
+            agents = list(available_agents)[:MAX_ROUTING_CANDIDATES]
 
         if not agents:
             return RoutingDecision(
@@ -553,7 +594,7 @@ class AgentRouter:
         scores.sort(key=lambda s: s.score, reverse=True)
         best = scores[0]
 
-        if best.score < 0.3:
+        if best.score < MIN_ROUTING_CONFIDENCE:
             return RoutingDecision(
                 agent_id=None,
                 reason="low_confidence",
