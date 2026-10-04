@@ -172,9 +172,10 @@ class TestRequestDataExport:
         mock_audit = MagicMock()
         mock_audit.query.side_effect = RuntimeError("db error")
         ctrl.configure_services(audit_log=mock_audit)
-        # Must not raise
+        # Must not raise; a09-F212-01: the export is failed, never 'ready'.
         req = await ctrl.request_data_export(tenant_ctx=_CTX)
-        assert req.status == "ready"
+        assert req.status == "failed"
+        assert "audit_entries" in req.payload["failed_sections"]
 
     @pytest.mark.asyncio
     async def test_export_agent_store_exception_swallowed(self):
@@ -183,7 +184,8 @@ class TestRequestDataExport:
         mock_store.list_all.side_effect = RuntimeError("oops")
         ctrl.configure_services(agent_store=mock_store)
         req = await ctrl.request_data_export(tenant_ctx=_CTX)
-        assert req.status == "ready"
+        assert req.status == "failed"
+        assert "agents" in req.payload["failed_sections"]
 
     @pytest.mark.asyncio
     async def test_export_saved_to_memory(self):

@@ -157,7 +157,7 @@ class TestRequestDataExportDbPath:
 
     @pytest.mark.asyncio
     async def test_export_with_goal_service_db_exception(self):
-        """Lines 194-197: DB query fails → logs, continues."""
+        """a09-F212-01: a goals DB failure fails the export (was: 'ready', goals=[])."""
         ctrl = ComplianceController()
 
         mock_db = _make_mock_db(raise_on_execute=True)
@@ -166,9 +166,9 @@ class TestRequestDataExportDbPath:
         ctrl.configure_services(goal_service=mock_goal_service)
 
         req = await ctrl.request_data_export(tenant_ctx=_CTX)
-        # Should still return a request, just with empty goals
-        assert req.status == "ready"
-        assert req.payload["data"]["goals"] == []
+        assert req.status == "failed"
+        assert "goals" in req.payload["failed_sections"]
+        assert "data" not in req.payload
 
     @pytest.mark.asyncio
     async def test_export_with_goal_service_memory_exception(self):
@@ -194,8 +194,9 @@ class TestRequestDataExportDbPath:
         mock_agent_store.list_all = MagicMock(side_effect=RuntimeError("boom"))
         ctrl.configure_services(agent_store=mock_agent_store)
         req = await ctrl.request_data_export(tenant_ctx=_CTX)
-        assert req.status == "ready"
-        assert req.payload["data"]["agents"] == []
+        # a09-F212-01: a section that could not be read fails the export.
+        assert req.status == "failed"
+        assert "agents" in req.payload["failed_sections"]
 
     @pytest.mark.asyncio
     async def test_export_schedule_store_exception_silenced(self):
@@ -205,8 +206,9 @@ class TestRequestDataExportDbPath:
         mock_schedule_store.list_all = MagicMock(side_effect=RuntimeError("boom"))
         ctrl.configure_services(schedule_store=mock_schedule_store)
         req = await ctrl.request_data_export(tenant_ctx=_CTX)
-        assert req.status == "ready"
-        assert req.payload["data"]["schedules"] == []
+        # a09-F212-01: a section that could not be read fails the export.
+        assert req.status == "failed"
+        assert "schedules" in req.payload["failed_sections"]
 
 
 # ── get_export_status — DB path ───────────────────────────────────────────────

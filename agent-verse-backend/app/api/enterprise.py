@@ -130,11 +130,16 @@ def _get_db(request: Request) -> Any:
 async def request_data_export(request: Request) -> dict[str, Any]:
     ctx = _require_tenant(request)
     req = await _compliance(request).request_data_export(tenant_ctx=ctx)
-    return {
+    out: dict[str, Any] = {
         "request_id": req.request_id,
         "status": req.status,
         "download_url": req.download_url,
     }
+    if req.status == "failed":
+        # a09-F212-01: an incomplete export says why; it is never "ready".
+        out["error"] = req.payload.get("error", "export failed")
+        out["failed_sections"] = req.payload.get("failed_sections", {})
+    return out
 
 
 @router.get("/compliance/export/{request_id}/download")
@@ -144,6 +149,11 @@ async def download_export(request: Request, request_id: str) -> Response:
     req = await _compliance(request).get_export_status(request_id=request_id, tenant_ctx=ctx)
     if req is None:
         raise HTTPException(status_code=404, detail="Export request not found")
+    if req.status == "failed":
+        raise HTTPException(
+            status_code=409,
+            detail={"status": "failed", "error": req.payload.get("error", "export failed")},
+        )
     if req.status != "ready":
         raise HTTPException(status_code=202, detail="Export not ready yet")
     content = json.dumps(req.payload, indent=2, default=str)

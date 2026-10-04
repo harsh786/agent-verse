@@ -32,6 +32,11 @@ warnings.warn(
 # is one month); the beat task only executes jobs whose scheduled_for has passed.
 ERASURE_GRACE_DAYS = 30
 
+# The synchronous export collects each section in one bounded query: a
+# section with more rows than this fails the export (with a reason) instead
+# of loading the whole table or truncating silently.
+SYNC_EXPORT_MAX_ROWS = 10_000
+
 # Postgres SQLSTATEs meaning "this table/column does not exist in this schema"
 # (the ordered table list is a superset across deployments) — not a failure.
 _NOT_APPLICABLE_SQLSTATES = frozenset({"42P01", "42703"})
@@ -260,133 +265,252 @@ class ComplianceController:
     # ── public API ─────────────────────────────────────────────────────────────
 
     async def request_data_export(self, *, tenant_ctx: TenantContext) -> DataExportRequest:
-        """GDPR right-of-access — collect and return all tenant data."""
-        req = DataExportRequest(tenant_id=tenant_ctx.tenant_id)
-        req.status = "ready"
+        """GDPR right-of-access — collect every section, then report honestly.
 
-        # Collect data from injected services
-        goals_data: list[dict[str, Any]] = []
-        if self._goal_service is not None:
-            db = getattr(self._goal_service, "_db_session_factory", None)
-            if db is not None:
-                try:
-                    from sqlalchemy import text as _text
-
-                    from app.db.rls import sqlalchemy_rls_context
-
-                    # `goals` is FORCE ROW LEVEL SECURITY: without the tenant GUC
-                    # this read matched zero rows under the API's NOBYPASSRLS role
-                    # and the GDPR export silently contained no goals at all.
-                    async with (
-                        db() as _sess,
-                        _sess.begin(),
-                        sqlalchemy_rls_context(_sess, tenant_ctx.tenant_id),
-                    ):
-                        # FIX: The previous cap has been removed.
-                        # GDPR Art. 20 right to portability requires exporting ALL data.
-                        # Large tenants use async Celery export (compliance_router).
-                        _rows = (
-                            await _sess.execute(
-                                _text(
-                                    "SELECT id, goal_text, status, created_at "
-                                    "FROM goals WHERE tenant_id = :tid "
-                                    "ORDER BY created_at DESC"
-                                ),
-                                {"tid": tenant_ctx.tenant_id},
-                            )
-                        ).fetchall()
-                    goals_data = [
-                        {
-                            "goal_id": r[0],
-                            "goal_text": r[1],
-                            "status": r[2],
-                            "created_at": r[3].isoformat() if r[3] else "",
-                        }
-                        for r in _rows
-                    ]
-                except Exception as exc:
-                    logging.getLogger(__name__).warning(
-                        "compliance_goals_db_export_failed: %s", exc
-                    )
-            else:
-                try:
-                    goal_records: dict[str, Any] = getattr(self._goal_service, "_goals", {})
-                    for gid, record in goal_records.items():
-                        if getattr(record, "tenant_id", "") == tenant_ctx.tenant_id:
-                            goals_data.append(
-                                {
-                                    "goal_id": gid,
-                                    "goal_text": getattr(record, "goal_text", ""),
-                                    "status": str(getattr(record, "status", "")),
-                                    "created_at": getattr(record, "created_at", ""),
-                                }
-                            )
-                except Exception as exc:
-                    logging.getLogger(__name__).warning(
-                        "compliance_goals_memory_export_failed: %s", exc
-                    )
-
-        audit_data: list[dict[str, Any]] = []
-        if self._audit_log is not None:
+        a09-F212-01: the request used to be ``ready`` before anything was
+        collected; a goals DB error was only logged (export still ``ready`` with
+        ``goals=[]``), audit entries were capped at 100, agents/schedules came
+        from this replica's in-memory cache and ``knowledge_collections`` was
+        always ``[]``. Now each section is read from Postgres when configured
+        (tenant GUC + explicit ``tenant_id`` predicate, ``LIMIT`` one past
+        :data:`SYNC_EXPORT_MAX_ROWS`), and the export is ``ready`` only when
+        every section was collected in full. A failed or over-limit section makes
+        it ``failed`` with the reason and no partial data.
+        """
+        tid = tenant_ctx.tenant_id
+        req = DataExportRequest(tenant_id=tid, status="processing")
+        sections: dict[str, list[dict[str, Any]]] = {}
+        failures: dict[str, str] = {}
+        collectors = (
+            ("goals", self._export_goals),
+            ("audit_entries", self._export_audit),
+            ("agents", self._export_agents),
+            ("schedules", self._export_schedules),
+            ("knowledge_collections", self._export_knowledge_collections),
+        )
+        for name, collect in collectors:
             try:
-                entries = self._audit_log.query(tenant_ctx=tenant_ctx)
-                audit_data = [
-                    {
-                        "event_id": e.event_id,
-                        "goal_id": e.goal_id,
-                        "tool_name": e.tool_name,
-                        "outcome": e.outcome,
-                    }
-                    for e in entries[:100]  # Cap at 100 for export
-                ]
+                rows = await collect(tenant_ctx, SYNC_EXPORT_MAX_ROWS + 1)
             except Exception as exc:
-                logging.getLogger(__name__).warning("compliance_audit_export_failed: %s", exc)
+                failures[name] = f"unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+                logging.getLogger(__name__).warning(
+                    "compliance_export_section_failed: %s %s", name, failures[name]
+                )
+                continue
+            if len(rows) > SYNC_EXPORT_MAX_ROWS:
+                failures[name] = (
+                    f"too_large: more than {SYNC_EXPORT_MAX_ROWS} rows; "
+                    "use the asynchronous GDPR export"
+                )
+                continue
+            sections[name] = rows
 
-        agents_data: list[dict[str, Any]] = []
-        if self._agent_store is not None:
-            try:
-                agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
-                agents_data = [
-                    {"agent_id": a.get("agent_id"), "name": a.get("name")} for a in agents
-                ]
-            except Exception as exc:
-                logging.getLogger(__name__).warning("compliance_agents_export_failed: %s", exc)
-
-        schedules_data: list[dict[str, Any]] = []
-        if self._schedule_store is not None:
-            try:
-                schedules = self._schedule_store.list_all(tenant_ctx=tenant_ctx)
-                schedules_data = [
-                    {"schedule_id": s.get("schedule_id"), "goal_id": s.get("goal_id")}
-                    for s in schedules
-                ]
-            except Exception as exc:
-                logging.getLogger(__name__).warning("compliance_schedules_export_failed: %s", exc)
-
-        req.payload = {
-            "tenant_id": tenant_ctx.tenant_id,
-            "plan": tenant_ctx.plan.value,
-            "export_timestamp": datetime.now(UTC).isoformat(),
-            "export_format_version": "1.0",
-            "data": {
-                "tenant_profile": {
-                    "tenant_id": tenant_ctx.tenant_id,
-                    "plan": tenant_ctx.plan.value,
+        exported_at = datetime.now(UTC).isoformat()
+        if failures:
+            req.status = "failed"
+            req.payload = {
+                "tenant_id": tid,
+                "export_timestamp": exported_at,
+                "error": "export incomplete: "
+                + "; ".join(f"{k}: {v}" for k, v in failures.items()),
+                "failed_sections": failures,
+            }
+        else:
+            req.status = "ready"
+            req.payload = {
+                "tenant_id": tid,
+                "plan": tenant_ctx.plan.value,
+                "export_timestamp": exported_at,
+                "export_format_version": "1.0",
+                "data": {
+                    "tenant_profile": {"tenant_id": tid, "plan": tenant_ctx.plan.value},
+                    "api_keys": [],  # Never export raw keys
+                    **sections,
                 },
-                "goals": goals_data,
-                "audit_entries": audit_data,
-                "api_keys": [],  # Never export raw keys
-                "agents": agents_data,
-                "schedules": schedules_data,
-                "knowledge_collections": [],
-            },
-        }
-        req.download_url = f"/compliance/export/{req.request_id}/download"
+            }
+            req.download_url = f"/compliance/export/{req.request_id}/download"
 
         # Persist to DB (best-effort); also keep in memory as fallback
         await self._db_save_request(req)
         self._export_requests[req.request_id] = req
         return req
+
+    async def _export_select(
+        self, db: Any, tenant_id: str, sql: str, limit: int
+    ) -> list[Any]:
+        """Run one tenant-scoped, bounded export SELECT. Raises on any DB error."""
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+            result = await session.execute(text(sql), {"tid": tenant_id, "lim": limit})
+            return list(result.fetchall())
+
+    @staticmethod
+    def _iso(value: Any) -> str:
+        return value.isoformat() if hasattr(value, "isoformat") else str(value or "")
+
+    async def _export_goals(self, tenant_ctx: TenantContext, limit: int) -> list[dict[str, Any]]:
+        svc = self._goal_service
+        db = getattr(svc, "_db_session_factory", None) if svc is not None else None
+        db = db or self._db
+        if db is not None:
+            rows = await self._export_select(
+                db,
+                tenant_ctx.tenant_id,
+                "SELECT id, goal_text, status, created_at FROM goals "
+                "WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT :lim",
+                limit,
+            )
+            return [
+                {
+                    "goal_id": r[0],
+                    "goal_text": r[1],
+                    "status": r[2],
+                    "created_at": self._iso(r[3]),
+                }
+                for r in rows
+            ]
+        if svc is None:
+            return []
+        out: list[dict[str, Any]] = []
+        records: dict[str, Any] = getattr(svc, "_goals", {})
+        for gid, record in records.items():
+            if getattr(record, "tenant_id", "") != tenant_ctx.tenant_id:
+                continue
+            out.append(
+                {
+                    "goal_id": gid,
+                    "goal_text": getattr(record, "goal_text", ""),
+                    "status": str(getattr(record, "status", "")),
+                    "created_at": getattr(record, "created_at", ""),
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    async def _export_audit(self, tenant_ctx: TenantContext, limit: int) -> list[dict[str, Any]]:
+        if self._db is not None:
+            rows = await self._export_select(
+                self._db,
+                tenant_ctx.tenant_id,
+                "SELECT id, goal_id, tool_name, outcome, created_at FROM audit_log "
+                "WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT :lim",
+                limit,
+            )
+            return [
+                {
+                    "event_id": r[0],
+                    "goal_id": r[1],
+                    "tool_name": r[2],
+                    "outcome": r[3],
+                    "created_at": self._iso(r[4]),
+                }
+                for r in rows
+            ]
+        if self._audit_log is None:
+            return []
+        entries = self._audit_log.query(tenant_ctx=tenant_ctx, limit=limit)
+        return [
+            {
+                "event_id": e.event_id,
+                "goal_id": e.goal_id,
+                "tool_name": e.tool_name,
+                "outcome": e.outcome,
+            }
+            for e in entries
+        ]
+
+    async def _export_agents(self, tenant_ctx: TenantContext, limit: int) -> list[dict[str, Any]]:
+        if self._db is not None:
+            # Soft-deleted (inactive) agents still hold the tenant's data.
+            rows = await self._export_select(
+                self._db,
+                tenant_ctx.tenant_id,
+                "SELECT id, name, is_active, created_at FROM agents "
+                "WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT :lim",
+                limit,
+            )
+            return [
+                {
+                    "agent_id": r[0],
+                    "name": r[1],
+                    "is_active": bool(r[2]),
+                    "created_at": self._iso(r[3]),
+                }
+                for r in rows
+            ]
+        if self._agent_store is None:
+            return []
+        agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
+        return [{"agent_id": a.get("agent_id"), "name": a.get("name")} for a in agents[:limit]]
+
+    async def _export_schedules(
+        self, tenant_ctx: TenantContext, limit: int
+    ) -> list[dict[str, Any]]:
+        if self._db is not None:
+            rows = await self._export_select(
+                self._db,
+                tenant_ctx.tenant_id,
+                "SELECT id, agent_id, trigger_type, cron_expression, description, created_at "
+                "FROM schedules WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT :lim",
+                limit,
+            )
+            return [
+                {
+                    "schedule_id": r[0],
+                    "agent_id": r[1],
+                    "trigger_type": r[2],
+                    "cron_expression": r[3],
+                    "description": r[4],
+                    "created_at": self._iso(r[5]),
+                }
+                for r in rows
+            ]
+        if self._schedule_store is None:
+            return []
+        schedules = self._schedule_store.list_all(tenant_ctx=tenant_ctx)
+        return [
+            {"schedule_id": s.get("schedule_id"), "goal_id": s.get("goal_id")}
+            for s in schedules[:limit]
+        ]
+
+    async def _export_knowledge_collections(
+        self, tenant_ctx: TenantContext, limit: int
+    ) -> list[dict[str, Any]]:
+        if self._db is not None:
+            rows = await self._export_select(
+                self._db,
+                tenant_ctx.tenant_id,
+                "SELECT id, name, description, document_count, created_at "
+                "FROM knowledge_collections WHERE tenant_id = :tid "
+                "ORDER BY created_at DESC LIMIT :lim",
+                limit,
+            )
+            return [
+                {
+                    "collection_id": r[0],
+                    "name": r[1],
+                    "description": r[2] or "",
+                    "document_count": int(r[3] or 0),
+                    "created_at": self._iso(r[4]),
+                }
+                for r in rows
+            ]
+        if self._knowledge_store is None:
+            return []
+        collections = self._knowledge_store.list_collections(tenant_ctx=tenant_ctx)
+        return [
+            {
+                "collection_id": c.collection_id,
+                "name": c.name,
+                "description": getattr(c, "description", "") or "",
+                "document_count": int(getattr(c, "document_count", 0) or 0),
+            }
+            for c in list(collections)[:limit]
+        ]
 
     async def get_export_status(
         self, *, request_id: str, tenant_ctx: TenantContext

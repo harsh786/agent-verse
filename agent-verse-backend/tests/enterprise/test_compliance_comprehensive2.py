@@ -196,9 +196,9 @@ async def test_request_data_export_service_failure_does_not_raise() -> None:
     bad_agent_store.list_all = MagicMock(side_effect=RuntimeError("DB down"))
     ctrl.configure_services(agent_store=bad_agent_store)
 
-    # Must not raise
+    # Must not raise; a09-F212-01: the incomplete export is 'failed', not 'ready'.
     req = await ctrl.request_data_export(tenant_ctx=T)
-    assert req.status == "ready"
+    assert req.status == "failed"
 
 
 # ---------------------------------------------------------------------------

@@ -50,7 +50,15 @@ pytestmark = pytest.mark.integration
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROLE = "test_app"
-GRANT_TABLES = ("compliance_requests",)
+# The export reads every data section (a09-F212-01) under the same role.
+GRANT_TABLES = (
+    "compliance_requests",
+    "goals",
+    "audit_log",
+    "agents",
+    "schedules",
+    "knowledge_collections",
+)
 
 
 @pytest.fixture(scope="function")

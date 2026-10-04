@@ -179,15 +179,15 @@ async def test_request_data_export_with_goal_service_wrong_tenant_excluded() -> 
 
 
 async def test_request_data_export_audit_exception_continues() -> None:
-    """If audit_log.query raises, export should still succeed."""
+    """If audit_log.query raises, the export is 'failed' with a reason (a09-F212-01)."""
     cc = ComplianceController()
     mock_audit = MagicMock()
     mock_audit.query = MagicMock(side_effect=RuntimeError("audit store down"))
     cc.configure_services(audit_log=mock_audit)
 
     req = await cc.request_data_export(tenant_ctx=T)
-    # Export still completes
-    assert req.status == "ready"
+    assert req.status == "failed"
+    assert "audit store down" in req.payload["error"]
 
 
 # ── ComplianceController.get_export_status ────────────────────────────────────
