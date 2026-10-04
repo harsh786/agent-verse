@@ -1,0 +1,1 @@
+{"L-01": {"status": "done", "commit": "981eb83ed", "note": "dispatch_outbox used asyncio.run (no engine dispose); all sync->async bridges via run_in_fresh_loop, system engine tracked, per-loop usage Redis client, AST guard + PG/Redis integration test"}}

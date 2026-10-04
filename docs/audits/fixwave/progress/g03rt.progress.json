@@ -1,0 +1,111 @@
+{
+ "_branch": "worktree-agent-a204a38e448c1e743",
+ "_new_findings": [
+  "tests/governance/test_hitl_multi_replica.py::test_slack_button_approval_goes_through_the_db_first_path and tests/governance/test_hitl_trigger_events.py::test_published_payload_drives_the_hitl_consumer fail on main b37941155 (approve_async not awaited; publish called with strict=True) - not touched by this branch"
+ ],
+ "AGID-01": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "Superseded on main by 232994e10 (AGKEY-01: av_agent_* keys authenticate + enforced); my removal commit dropped during rebase"
+ },
+ "AGID-03": {
+  "status": "done",
+  "commit": "45328c5bc",
+  "note": "Exchange requires RFC 7523 private_key_jwt (kid/agent-bound, aud=endpoint, <=5min, Redis single-use jti, 503 without replay store); merged on main"
+ },
+ "AGID-02": {
+  "status": "done",
+  "commit": "90785bdfb",
+  "note": "FE uses key_id/private_key_pem/revoked_at (PEM once + download), JWT preview replaced by exchange help; backend 422s non-agent scopes/key_type; merged on main"
+ },
+ "AGID-04": {
+  "status": "done",
+  "commit": "7dfc300fc",
+  "note": "revoke UPDATE adds agent_id=:aid; GET credentials 503 without identity service; merged on main"
+ },
+ "CODE-01": {
+  "status": "done",
+  "commit": "0e21b5cd2",
+  "note": "Output read live off the attach socket, capped per stream, drained+killed past cap; log driver none; real-Docker 50MB test; merged on main"
+ },
+ "CODE-02": {
+  "status": "done",
+  "commit": "70a4b274c",
+  "note": "execute_governed(): sandbox + awaited AuditLog.record_durable (on main's record_async; 503/step-fail when not committed) for tools, chat, workflow code steps; testcontainers RLS test (workflow code_step.py touched minimally)"
+ },
+ "CODE-03": {
+  "status": "done",
+  "commit": "91c662f92",
+  "note": "Redis lease-set per-tenant cap (global, self-expiring) + per-host counter, 429 never queue; dedicated sandbox thread pool; Settings; FE 429 toast; Redis testcontainer test"
+ },
+ "CODE-04": {
+  "status": "done",
+  "commit": "dd7da84cc",
+  "note": "Normalised allow-list {development,test} for the subprocess opt-in; Production/staging/unknown raise"
+ },
+ "CODE-05": {
+  "status": "done",
+  "commit": "150c5a705",
+  "note": "code 1..50k chars, language Literal -> 422"
+ },
+ "CODE-06": {
+  "status": "done",
+  "commit": "90ce5d364",
+  "note": "All live callers use execute_governed; dead app/mcp/code_interpreter.py deleted; guard test. No per-execution cost charge (no sandbox pricing)"
+ },
+ "NATIVE-03": {
+  "status": "done",
+  "commit": "218a37f31",
+  "note": "Durable pre-op audit row (503, no side effect when not committed) for email send + workspace write/delete; outcome row on failure; hashed recipients/subject; pg RLS integration test"
+ },
+ "NATIVE-02": {
+  "status": "done",
+  "commit": "1a4c4ff18",
+  "note": "operator/admin only, <=50 recipients (422), Redis per-tenant daily recipient quota by plan (429; 503 when store down outside dev), FE quota display + 429 toast; per-tenant domain allowlist NOT done (no tenant settings store - owner decision)"
+ },
+ "NATIVE-05": {
+  "status": "done",
+  "commit": "f19a9be3d",
+  "note": "Relay exception logged with error id; tenant gets generic 'email delivery failed (error id)' 502"
+ },
+ "RPA-06": {
+  "status": "done",
+  "commit": "8625f1d7c",
+  "note": "browser extra in dev group (lock, CPU torch index kept), chromium installed, 'browser' marker real-Chromium lane (open/extract/screenshot, metadata redirect + private subresource blocked), rpa_browser readiness check outside development"
+ },
+ "RPA-02": {
+  "status": "done",
+  "commit": "04c1fb4e2",
+  "note": "Redis lease-set per-tenant slot (global, self-expiring, refreshed on use) + per-host cap; BrowserSessionCapError -> 429 with active sessions (FE toast); worker manager gets run Redis (minimal tasks.py edit); Redis integration test"
+ },
+ "RPA-03": {
+  "status": "done",
+  "commit": "18178ca3a",
+  "note": "At cap only sessions idle > rpa_session_evict_idle_s are evicted (awaited close + registry delete + slot release); otherwise 429"
+ },
+ "RPA-04": {
+  "status": "done",
+  "commit": "0f68af7a4",
+  "note": "Registry TTL 120s refreshed on use + heartbeat loop; host-named replica id + liveness key; dead owner reclaimed instead of 409; Redis integration test"
+ },
+ "RPA-01": {
+  "status": "done",
+  "commit": "c2c3961e7",
+  "note": "Shared rpa_tool_refs() for in-process and worker ToolContext (minimal tasks.py edit); entitlement gating NOT added - has_feature('rpa') unenforced anywhere (owner decision)"
+ },
+ "RPA-05": {
+  "status": "done",
+  "commit": "ecdea30b0",
+  "note": "Guard streams with rpa_max_response_bytes cap (abort past it), hop bodies closed unread; WS DNS pin already on main via SSRF-03 0599e6fcf"
+ },
+ "PERC-01": {
+  "status": "done",
+  "commit": "bded6a8ae",
+  "note": "One shared Chromium per process w/ bounded page semaphore, capture() single load per URL, Redis per-tenant page slots (429); shared browser not closed on app shutdown (process exit only)"
+ },
+ "PERC-02": {
+  "status": "done",
+  "commit": "3cd7b9517",
+  "note": "Browser extra installed via RPA-06; 'browser'-marked real-Chromium perception tests + vision charge/budget-refusal unit tests"
+ }
+}

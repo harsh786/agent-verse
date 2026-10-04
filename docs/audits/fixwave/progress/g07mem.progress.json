@@ -1,0 +1,72 @@
+{
+ "MEM-68": {
+  "status": "done",
+  "commit": "500f84900",
+  "note": "shared memory-write gate (injection screen + MEMORY_WRITE rules, fail closed) on episodic/procedural/execution/department/canonical/LTM/reflexion lessons; org dept API 422/503; real-PG test. Small edits in agent-core verifier_mixin/reflexion_wirer/patterns. FE: no dept-memory editor exists."
+ },
+ "MEM-68-PROMPT": {
+  "status": "done",
+  "commit": "9f25976e3",
+  "note": "priority directive: memory blocks framed as untrusted data in the planner prompt, injected legacy memories dropped at recall, delimiter spoofing defanged (planner_mixin is agent-core; minimal edit)"
+ },
+ "MEM-41": {
+  "status": "done",
+  "commit": "f7b5fa282",
+  "note": "episode write awaited (10 s bound) in verifier; lost write -> memory_degraded episodic_record (agent-core file, minimal edit)"
+ },
+ "MEM-37": {
+  "status": "done",
+  "commit": "cce7abe55",
+  "note": "RPA failure write awaited via ExecutorMixin._record_rpa_failure; lost write -> memory_degraded (agent-core file, minimal edit)"
+ },
+ "MEM-48": {
+  "status": "done",
+  "commit": "1752275a6",
+  "note": "graph prefetch failure -> memory_degraded graph_facts (agent-core file, minimal edit)"
+ },
+ "MEM-34": {
+  "status": "done",
+  "commit": "0c27f3850",
+  "note": "LTM process cache bounded: 200/tenant, 1000 tenants LRU, dedup by id"
+ },
+ "MEM-36": {
+  "status": "done",
+  "commit": "874853070",
+  "note": "execution recall (plans + failures) ranked by pg_trgm relevance in SQL + GIN trgm and (tenant,success,created_at) indexes (migration e36a1c7b2d40); real-PG test"
+ },
+ "MEM-35": {
+  "status": "done",
+  "commit": "cbb6d31c1",
+  "note": "halfvec HNSW already existed (d26899b0a1e8); added GIN trgm on content + (tenant_id, created_at DESC) (f35b2d8c4e61); EXPLAIN test for all three read paths"
+ },
+ "MEM-43": {
+  "status": "done",
+  "commit": "bc5c6ea5f",
+  "note": "fire looks up the goal already produced (goals.execution_context prospective_memory_id, partial index a43d7e9f1c52) instead of resubmitting; complete errors never escape; failed after 5 attempts; API include_failed + attempts; FE panel shows failed/attempts; real-PG race test"
+ },
+ "MEM-44": {
+  "status": "done",
+  "commit": "7aa16b5e7",
+  "note": "lease_due LIMIT via MATERIALIZED CTE (IN-subquery form over-leased on real PG); batched 90-day terminal purge in the daily memory purge task + partial index b44e8f0a2d63"
+ },
+ "_new_findings": [
+  "agent-verse-frontend/src/features/org/MemoryBrowser.tsx:62 calls /v1/org/{org}/memory/departments/{dept}, a route the backend does not have (the list route is /v1/org/{org}/departments/{dept}/memory)",
+  "main is red: tests/agent/test_verifier_grounding_wiring.py::test_transient_grounding_check_error_fails_open_and_skips_retry and ::test_grounding_check_timeout_during_verification_does_not_crash fail on main itself (CORE-29 made grounding errors fail closed on high-risk goals; the tests use a 'deploy ... production' goal and still expect fail-open)"
+ ],
+ "MEM-45": {
+  "status": "done",
+  "commit": "1752bbdf8",
+  "note": "blacklist_expires_at (7d) + admin audited DELETE /memory/tool-reliability/{tool}/blacklist (audit first, fail closed) + 7-day-half-life decayed counters drive the verdict (c45f9a1b3e74); FE expiry + Clear blacklist; real-PG test"
+ },
+ "MEM-46": {
+  "status": "done",
+  "commit": "fcecbfdd2",
+  "note": "verdict in SQL: ORDER BY before LIMIT, unreliable threshold in WHERE; real-PG 300+1 tools test"
+ },
+ "MEM-40": {
+  "status": "done",
+  "commit": "a7ebe5007",
+  "note": "embedding_vec vector(2048) + batched backfill + HNSW halfvec, GIN trgm, quality-window indexes (d46b0c2e4f85); exact search for small tenants, iterative HNSW for large; real-PG 10k test"
+ },
+ "_note_shas": "SHAs for MEM-34..46 changed when main was re-merged; look up by commit subject on main"
+}

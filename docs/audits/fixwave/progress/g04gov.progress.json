@@ -1,0 +1,156 @@
+{
+ "AUDIT-01": {
+  "status": "done",
+  "commit": "e74f5335d",
+  "note": "on main: record_async awaited+retried+idempotent INSERT; record() tasks tracked + flush(); worker flushes before loop close; API flush on shutdown"
+ },
+ "AUDIT-05": {
+  "status": "done",
+  "commit": "e74f5335d",
+  "note": "covered by AUDIT-01: run_goal wraps the run in _await_then_flush_audit"
+ },
+ "INC-04": {
+  "status": "done",
+  "commit": "5c4d80463",
+  "note": "worker gate/poll get the goal's org (+fail-closed unverified org), pub/sub interrupt, org endpoint enqueues keyset-batched cancel task; PG+Redis integration test; merged with WF-16/17"
+ },
+ "INC-05": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "main's WF-17 (10f3834fd) added the per-tenant org-stop index; my equivalent index was dropped in the rebase"
+ },
+ "INC-02": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "main's WF-16: goal-start stop check fails closed and retries the task"
+ },
+ "CHAIN-01": {
+  "status": "done",
+  "commit": "d9473271d",
+  "note": "AuditV3 appends via PersistentAuditChain (existing audit_chain schema) and raises; averify_chain verifies the stored chain"
+ },
+ "CHAIN-04": {
+  "status": "done",
+  "commit": "d9473271d",
+  "note": "testcontainers test (NOBYPASSRLS) for AuditV3 append/verify/tamper"
+ },
+ "CHAIN-03": {
+  "status": "done",
+  "commit": "5494ba151",
+  "note": "intent audit before destroying data (fail -> nothing deleted), completion audit raises DeletionAuditError (503/retry); integration asserts audit_chain rows"
+ },
+ "AUDIT-04": {
+  "status": "done",
+  "commit": "fef8f26ef",
+  "note": "per-tenant deque(maxlen) + LRU over tenants; DB remains the trail"
+ },
+ "AUDIT-06": {
+  "status": "done",
+  "commit": "0547b74b3",
+  "note": "audit_siem_outbox written in the audit_log txn (API+worker); beat drainer SKIP LOCKED, backoff, dead-letter; migration e5a1c7d93b20"
+ },
+ "COST-02": {
+  "status": "done",
+  "commit": "5b900bb7b",
+  "note": "per-agent daily cap: third atomic Lua counter; agent bound by GoalService/worker run; in-memory + dev emulator too"
+ },
+ "GRANT-01": {
+  "status": "done",
+  "commit": "730d1b873",
+  "note": "delegation parent = enforced agent (self._agent_id / context agent_id), failures logged; small executor_mixin edit (agent-core)"
+ },
+ "GRANT-05": {
+  "status": "done",
+  "commit": "730d1b873",
+  "note": "tests exercise the executor delegation method"
+ },
+ "GRANT-03": {
+  "status": "done",
+  "commit": "e789a6f25",
+  "note": "ambiguous step-start spend held in goal state and charged when either tool gate names the authorising grant"
+ },
+ "GRD-05": {
+  "status": "done",
+  "commit": "732c36e37",
+  "note": "require_role('admin') on rule + bundle writes"
+ },
+ "GRD-02": {
+  "status": "done",
+  "commit": "968f27e81",
+  "note": "create persists before answering; failed write 503; durable flag (shared commit with GRD-01, same files)"
+ },
+ "GRD-01": {
+  "status": "done",
+  "commit": "968f27e81",
+  "note": "PATCH/DELETE rules (admin, persisted first), seeded rules disable-only, cross-replica delete pruning; PG integration test"
+ },
+ "GRD-04": {
+  "status": "done",
+  "commit": "f5c76b358",
+  "note": "violations written to guardrail_violations per evaluation, listing reads PG (503 if unreadable), bounded cache; PG integration test"
+ },
+ "HITL-01": {
+  "status": "done",
+  "commit": "5635995e9",
+  "note": "executor gates were already durable on main; pipeline hitl_gate, org gate registration, civ governor now use file_persisted_approval"
+ },
+ "HITL-02": {
+  "status": "done",
+  "commit": "d6b8f0128",
+  "note": "Slack handlers report per-request outcome (ephemeral); principal binding done by TRG-36; small edit in triggers-owned app/api/integrations.py"
+ },
+ "HITL-03": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "TRG-02 (37ec2e637) routes /agentverse and HITL by the verified workspace binding with the tenant's real plan"
+ },
+ "HITL-04": {
+  "status": "done",
+  "commit": "605ff6c49",
+  "note": "TEAM_LEAD on task approve/reject; paired gate must take (409 not pending, 503 unavailable) before flipping task"
+ },
+ "HITL-10": {
+  "status": "done",
+  "commit": "79113eb1a",
+  "note": "signed-link decisions are POST-only (GET -> 405)"
+ },
+ "HITL-05": {
+  "status": "done",
+  "commit": "588b4e13e",
+  "note": "frontend /hitl/:id/:decision confirmation page POSTs the signed decision (vitest); backend POST in HITL-10"
+ },
+ "PERM-01": {
+  "status": "done",
+  "commit": "e55f7b362",
+  "note": "GovernedToolGate enforces agent_permissions (deny/approval/per-goal/daily via shared Redis); API+worker gates wired"
+ },
+ "PERM-02": {
+  "status": "done",
+  "commit": "e55f7b362",
+  "note": "tests for gate per-agent rules + worker gate wiring (redis/db)"
+ },
+ "_new_findings": [
+  "main (WF-16) regression: ~19 tests in tests/scaling (test_celery_agentgraph, test_priority_queue, test_run_goal_lock_release, test_run_goal_retry_bookkeeping, test_worker_onprem_provider, ...) fail identically on main - run_goal's fail-closed e-stop start check hits real Redis (_get_sync_redis never None) and retries; the tests need _get_sync_redis stubbed",
+  "main: tests/workflow/test_steps/test_foreach_step.py (code step 'execution could not be audited' in unit env) and webhook tests importing app.tenancy.rate_limiter.RateLimiter fail on main, unrelated to governance changes"
+ ],
+ "POL-04": {
+  "status": "done",
+  "commit": "62922dcd2",
+  "note": "RLS-blind startup load removed; ensure_tenant_loaded strict per-tenant reload per in-process run, deny-all on failed first load; PG integration test"
+ },
+ "POL-05": {
+  "status": "done",
+  "commit": "62922dcd2",
+  "note": "age-based (30 s) strict reload per run resyncs replicas that missed pub/sub; worker already reloads per goal"
+ },
+ "POL-01": {
+  "status": "done",
+  "commit": "88a3d3e6a",
+  "note": "policy_rules evaluated on every tool call (executor + GovernedToolGate), 15 s cache, fail closed; PG integration test"
+ },
+ "TRUST-05": {
+  "status": "done",
+  "commit": "080c0b1c9",
+  "note": "worker ceiling: supervised on no DB / lookup error / unknown value"
+ }
+}

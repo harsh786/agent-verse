@@ -1,0 +1,72 @@
+{
+ "SSRF-01": {
+  "status": "done",
+  "commit": "eac113d29",
+  "note": "check_mcp_health (+fallback) use public_async_client; AST-guard allowlist emptied (minimal edit in scaling/tasks.py check_mcp_health only)"
+ },
+ "SSRF-05": {
+  "status": "done",
+  "commit": "822e3d4c2",
+  "note": "ssrf_guard.connect_public_websocket (pinned host=ip, proxy=None); MCPWebSocketClient uses it; AST guard covers websockets.connect"
+ },
+ "SSRF-06": {
+  "status": "done",
+  "commit": "f3c9e3544",
+  "note": "tenant base_url -> AsyncOpenAI(http_client=public_async_client), allowlisted private host still pinned"
+ },
+ "SSRF-03": {
+  "status": "done",
+  "commit": "0599e6fcf",
+  "note": "route_web_socket no longer connect_to_server; server relays frames over connect_public_websocket (pinned), cookies forwarded; playwright not installed locally, verified with a WebSocketRoute double"
+ },
+ "RATE-04": {
+  "status": "done",
+  "commit": "b58c23b6a",
+  "note": "ZSET concurrent_goal_leases:{tenant} goal_id->expiry (Redis TIME), atomic Lua acquire, lease=plan timeout+headroom renewed at worker start; real-Redis tests; follow-up bb415d2c3 (stale-runner reaper releases by goal id); rebased onto SVC-01 keeping atomic dedup claim"
+ },
+ "RATE-05": {
+  "status": "done",
+  "commit": "b58c23b6a",
+  "note": "release is ZREM goal_id (no GET/DECR race), failures logged; same commit as RATE-04 (dependent design)"
+ },
+ "RATE-06": {
+  "status": "done",
+  "commit": "b58c23b6a",
+  "note": "double release (API cancel + worker) is a no-op per goal id; same commit as RATE-04"
+ },
+ "RATE-01": {
+  "status": "done",
+  "commit": "b2fd8a4bf",
+  "note": "KnowledgeStore create: advisory-lock+COUNT+INSERT in one txn (Postgres integration: concurrent creates == limit); API 429; KnowledgePage plan-limit toast; minimal edits in knowledge-owned rag/store.py + api/knowledge.py"
+ },
+ "A2A-04": {
+  "status": "done",
+  "commit": "be3bbb689",
+  "note": "callback signed X-A2A-Timestamp + X-A2A-Signature (inbound scheme), 2xx-only success, prod refuses unsigned"
+ },
+ "A2A-05": {
+  "status": "done",
+  "commit": "af09966a4",
+  "note": "503 before storing when goal_service missing"
+ },
+ "A2A-02": {
+  "status": "done",
+  "commit": "12c0b183d",
+  "note": "card authentication: timestamp header, signed string, format, skew, replay, callbacks signed"
+ },
+ "RATE-02": {
+  "status": "done",
+  "commit": "a372ca85d",
+  "note": "deleted RateLimiter + export + tests; SlidingWindowRateLimiter is the single implementation"
+ },
+ "RATE-03": {
+  "status": "done",
+  "commit": "4c123ba63",
+  "note": "fallback budget = min(plan,120)/RATE_LIMIT_REPLICA_COUNT, degraded metric for alerting, bounded fallback table"
+ },
+ "SSRF-02": {
+  "status": "done",
+  "commit": "2c1ee0234",
+  "note": "unresolvable allowlisted host -> SSRFError; pinned backends raise SSRFError on empty list; ingestion test conftest resolves placeholders"
+ }
+}

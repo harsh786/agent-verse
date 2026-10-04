@@ -1,0 +1,95 @@
+{
+ "MCPREG-01": {
+  "status": "done",
+  "commit": "e4f52ef64",
+  "note": "mcp_servers is source of truth (RLS, unique tenant+name_key), Redis 60s cache invalidated on write, backfill CLI connectors-backfill + automatic on startup (advisory lock) + read-repair until recorded; never deletes Redis; real-PG+Redis FLUSHALL tests"
+ },
+ "SECRET-01": {
+  "status": "done",
+  "commit": "707d12246",
+  "note": "mcp_credentials source of truth; sealed with tenant envelope key via main's ensure_tenant_vault/seal/open/needs_rewrap (CAS re-wrap); Redis ciphertext cache; legacy read-repair + backfill; vault_rotation PG_STORES covers it, caches purged"
+ },
+ "MCPREG-02": {
+  "status": "done",
+  "commit": "428a9ec85",
+  "note": "503 on no DB / DB error (logged), limit 1..200; frontend never calls this endpoint so no UI change"
+ },
+ "MCPREG-03": {
+  "status": "done",
+  "commit": "e9891a744",
+  "note": "goal_connector_usage table (exact, indexed, RLS) written by MCPClient per goal; endpoint 503 on no DB/error; old query used a nonexistent goals.cost_usd column"
+ },
+ "MCPREG-04": {
+  "status": "done",
+  "commit": "503ca5ec8",
+  "note": "generic probe uses async SSRF check outside the probe try (refusal 400, was 200 failed); sync import removed"
+ },
+ "MCPREG-05": {
+  "status": "done",
+  "commit": "b2eb0d0f0",
+  "note": "secrets (PG rows, cache, legacy keys), oauth_tokens, tool_capabilities and cached token erased before the config; failure keeps connector + 503"
+ },
+ "MCPREG-06": {
+  "status": "done",
+  "commit": "46935eada",
+  "note": "Redis-only listing is one MGET; durable mode is one keyset query (MCPREG-01)"
+ },
+ "MCPREG-07": {
+  "status": "done",
+  "commit": "bac385620",
+  "note": "create() = INSERT (unique tenant+name_key / PK) or SET NX; API 409 on name race, id race retried with suffix; real-PG concurrent test in durable integration file"
+ },
+ "_new_findings": [
+  "tests/e2e/test_governance_e2e.py::test_audit_trail_records_all_tool_calls fails on main (agent-core): 'call jira to create ticket' is now gated as high-risk in bounded-autonomous mode, so only 1 audit entry; not connector-related"
+ ],
+ "MCPCLI-02": {
+  "status": "done",
+  "commit": "027ebcfde",
+  "note": "unknown server_id -> not found; no scan/dispatch of another connector's same-named tool"
+ },
+ "OAPI-01": {
+  "status": "done",
+  "commit": "021583841",
+  "note": "tools_saved counted after commit; persist failure or no DB -> 503; frontend does not call /discover"
+ },
+ "OAUTH-01": {
+  "status": "done",
+  "commit": "329ecedc8",
+  "note": "persist raises OAuthTokenPersistError; exchange persists before caching; callback 503 with retry hint; refresh logs error; UI already shows non-connected as failure"
+ },
+ "OAUTH-02": {
+  "status": "done",
+  "commit": "929ca3663",
+  "note": "Redis SET NX PX lock around refresh+persist, re-read row after acquire; timeout -> no racing request; worker manager gets shared Redis"
+ },
+ "OAUTH-03": {
+  "status": "done",
+  "commit": "fd12f2b35",
+  "note": "lifespan no longer bulk-loads tokens (read-through); token cache LRU 10k in durable mode; refresh locks bounded, held locks never evicted"
+ },
+ "SECRET-05": {
+  "status": "done",
+  "commit": "f94f4482a",
+  "note": "dev key only for ENVIRONMENT in {development,dev,local,test,testing}; staging/prod-eu/typos raise (staging helm must set a real key)"
+ },
+ "SECRET-04": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "on main _decrypt_token raises OAuthReauthorizationRequiredError on undecryptable tokens (no ciphertext served); tv1 values fail closed via open_for_tenant"
+ },
+ "SECRET-06": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "main's ROTATE-ALL-STORES (vault_rotation.py) re-encrypts oauth_tokens, source creds, trigger secrets, sealed memories etc.; SECRET-01 added mcp_credentials to its PG_STORES and purges the durable caches"
+ },
+ "SECRET-03": {
+  "status": "done",
+  "commit": "69662165b",
+  "note": "callback no longer writes _encrypted_* token copies into auth_config; legacy copies stripped on reconnect"
+ },
+ "OAUTH-05": {
+  "status": "done",
+  "commit": "ce5ac3335",
+  "note": "typed exchange errors -> 400/400/502/504/502 with stable codes and safe messages; unexpected 502 not 'invalid state'; UI maps codes"
+ }
+}
