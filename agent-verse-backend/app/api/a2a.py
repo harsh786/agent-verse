@@ -13,12 +13,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.core.errors import PlatformError
 from app.net.ssrf_guard import (
     SSRFError,
     assert_public_url_async,
     public_async_client,
 )
 from app.observability.logging import get_logger
+from app.services.a2a_tasks import OPEN_STATUSES
 
 logger = get_logger(__name__)
 
@@ -26,6 +28,8 @@ router = APIRouter(tags=["a2a"])
 
 # In-memory fallback (used when DB not available)
 _tasks: dict[str, dict[str, Any]] = {}
+# Strong refs to the no-DB outcome watchers (dev only; see receive_a2a_task).
+_WATCHERS: set[Any] = set()
 
 _A2A_GOAL_TIMEOUT_S = 300.0
 _TERMINAL_EVENT_STATUS = {
@@ -262,7 +266,7 @@ async def _get_task(task_id: str, db: Any, tenant_id: str) -> dict[str, Any] | N
         row = (
             await session.execute(
                 text(
-                    "SELECT id, goal_text, status, result, callback_url, created_at "
+                    "SELECT id, goal_text, status, result, callback_url, created_at, goal_id "
                     "FROM a2a_tasks WHERE id=:id AND tenant_id=:tid"
                 ),
                 {"id": task_id, "tid": tenant_id},
@@ -277,7 +281,34 @@ async def _get_task(task_id: str, db: Any, tenant_id: str) -> dict[str, Any] | N
         "result": row[3],
         "callback_url": row[4],
         "created_at": row[5].isoformat() if row[5] else "",
+        "goal_id": row[6],
     }
+
+
+async def _bind_task_goal(task_id: str, tenant_id: str, goal_id: str, db: Any) -> None:
+    """Record the goal running the task (status ``working``) — A2A-01.
+
+    From here on the outcome is reconciled from the goal's persisted status by
+    the ``reconcile-a2a-tasks`` beat on any replica, so a restart can no longer
+    strand the task.
+    """
+    if db is None:
+        task = _tasks.get(task_id)
+        if task is not None and task.get("tenant_id") == tenant_id:
+            task.update(goal_id=goal_id, status="working")
+        return
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        await session.execute(
+            text(
+                "UPDATE a2a_tasks SET goal_id=:gid, status='working', updated_at=NOW() "
+                "WHERE id=:id AND tenant_id=:tid AND status='accepted'"
+            ),
+            {"id": task_id, "tid": tenant_id, "gid": goal_id},
+        )
 
 
 def sign_a2a_payload(raw_body: bytes, secret: str, timestamp: int | None = None) -> dict[str, str]:
@@ -446,33 +477,48 @@ async def receive_a2a_task(
 
     await _persist_task(task_id, task_data, db)
 
-    # Execute goal asynchronously
-    if goal_service:  # always set (checked above)
+    # A2A-01: submit the goal BEFORE answering (it used to be submitted by an
+    # untracked asyncio task after the 202, so a restart stranded the task as
+    # "accepted" with no goal, and a refused submission was invisible to the
+    # caller). The goal service queues it durably; the task records its id.
+    try:
+        submitted = await goal_service.submit_goal(
+            goal=body.goal,
+            priority=body.priority,
+            dry_run=False,
+            tenant_ctx=tenant_ctx,
+        )
+        goal_id = str(submitted["goal_id"])
+    except (HTTPException, PlatformError) as exc:
+        detail = getattr(exc, "detail", None) or getattr(exc, "message", None) or str(exc)
+        await _update_task_status(task_id, a2a_tenant_id, "error", str(detail)[:500], db)
+        raise
+    except Exception as exc:
+        logger.warning("a2a_goal_submit_failed", task_id=task_id, error=str(exc)[:200])
+        await _update_task_status(task_id, a2a_tenant_id, "error", "goal submission failed", db)
+        raise HTTPException(503, "The goal could not be submitted; the task failed") from exc
+    await _bind_task_goal(task_id, a2a_tenant_id, goal_id, db)
+
+    if db is None:
+        # Dev/no-DB only: there is no table for the reconciler to drive, so this
+        # process watches the goal. With a database nothing runs in-process.
         import asyncio
 
-        async def execute_and_callback() -> None:
-            try:
-                result = await goal_service.submit_goal(
-                    goal=body.goal,
-                    priority=body.priority,
-                    dry_run=False,
-                    tenant_ctx=tenant_ctx,
-                )
-                final_status, final_result = await _await_goal_outcome(
-                    goal_service, str(result["goal_id"]), tenant_ctx
-                )
-            except Exception as exc:
-                final_status = "error"
-                final_result = str(exc)
-
+        async def _watch_outcome() -> None:
+            final_status, final_result = await _await_goal_outcome(
+                goal_service, goal_id, tenant_ctx
+            )
             await _update_task_status(task_id, a2a_tenant_id, final_status, final_result, db)
             await _send_callback(body.callback_url or "", task_id, final_status, final_result)
 
-        asyncio.create_task(execute_and_callback())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
+        watcher = asyncio.get_running_loop().create_task(_watch_outcome())
+        _WATCHERS.add(watcher)
+        watcher.add_done_callback(_WATCHERS.discard)
 
     return {
         "task_id": task_id,
-        "status": "accepted",
+        "goal_id": goal_id,
+        "status": "working",
         "message": f"Task accepted. Track at /a2a/tasks/{task_id}",
     }
 
@@ -530,7 +576,18 @@ async def get_a2a_task(request: Request, task_id: str) -> dict[str, Any]:
     if caller is None:
         raise HTTPException(401, "Not authenticated")
     db = getattr(request.app.state, "db_session_factory", None)
-    task = await _get_task(task_id, db, tenant_id=str(caller.tenant_id))
+    tid = str(caller.tenant_id)
+    task = await _get_task(task_id, db, tenant_id=tid)
     if task is None:
         raise HTTPException(404, f"Task {task_id} not found")
+    if db is not None and task.get("goal_id") and task.get("status") in OPEN_STATUSES:
+        # A polling peer sees the outcome as soon as the goal ends, not at the
+        # next reconcile beat (same conditional transition; the beat then
+        # delivers the callback).
+        from app.services.a2a_tasks import event_result_text, reconcile_task
+
+        if await reconcile_task(
+            db, task_id=task_id, tenant_id=tid, result_text=event_result_text(db)
+        ):
+            task = await _get_task(task_id, db, tenant_id=tid) or task
     return task

@@ -168,7 +168,7 @@ class TestGetTaskWithDb:
         from datetime import UTC, datetime
 
         row = ("task-db-get", "Fix the bug", "complete", "result text", "http://cb.url",
-               datetime.now(UTC))
+               datetime.now(UTC), "goal-1")
         db, session = _db_returning(row=row)
         result = await _get_task("task-db-get", db=db, tenant_id=_A2A_TID)
         assert result is not None
@@ -205,7 +205,7 @@ class TestGetTaskWithDb:
 
     @pytest.mark.asyncio
     async def test_get_task_created_at_none_handled(self):
-        db, _ = _db_returning(row=("task-no-ts", "goal", "pending", None, None, None))
+        db, _ = _db_returning(row=("task-no-ts", "goal", "pending", None, None, None, None))
         result = await _get_task("task-no-ts", db=db, tenant_id=_A2A_TID)
         assert result is not None
         assert result["created_at"] == ""
@@ -307,7 +307,8 @@ class TestExecuteAndCallback:
                 json={"goal": "Fail goal"},
                 headers={"X-API-Key": _VALID_KEY},
             )
-        assert resp.status_code in (202, 200, 401, 500)
+        # A goal that cannot be submitted fails the task now, not later (A2A-01).
+        assert resp.status_code == 503
 
 
 # ── _persist_task with DB success path ───────────────────────────────────────

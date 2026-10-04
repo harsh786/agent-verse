@@ -62,11 +62,11 @@ def test_receive_task_returns_accepted() -> None:
             "context": {"tenant": "acme"},
         },
     )
-    # New implementation returns 202 "accepted"
+    # 202 once the goal is submitted and bound to the task (A2A-01)
     assert resp.status_code in (200, 202)
     data = resp.json()
     assert "task_id" in data
-    assert data["status"] == "accepted"
+    assert data["status"] == "working"
 
 
 def test_get_task_status() -> None:

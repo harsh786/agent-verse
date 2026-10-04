@@ -91,6 +91,8 @@ celery_app = Celery(
         # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
         "app.scaling.raft_tasks",
         "app.scaling.event_outbox_tasks",
+        # Inbound A2A task outcomes + callbacks (beat: reconcile-a2a-tasks, A2A-01).
+        "app.scaling.a2a_tasks",
         # Expired strategy-evidence purge (beat: purge-expired-strategy-evidence).
         "app.orchestration.evidence_maintenance",
         # Coordination outbox delivery (beat: dispatch-coordination-outbox).
@@ -132,6 +134,8 @@ celery_app.conf.update(
         "app.scaling.tasks.record_queue_depths": {"queue": "maintenance"},
         "app.scaling.tasks.detect_stuck_goals": {"queue": "maintenance"},
         "app.scaling.tasks.reap_stale_goal_runners": {"queue": "maintenance"},
+        "app.scaling.a2a_tasks.reconcile_a2a_tasks": {"queue": "maintenance"},
+        "app.scaling.a2a_tasks.deliver_a2a_callback": {"queue": "maintenance"},
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
         "app.scaling.tasks.expire_hitl_approvals": {"queue": "maintenance"},
         "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
@@ -217,6 +221,12 @@ celery_app.conf.update(
         "reap-stale-goal-runners": {
             "task": "app.scaling.tasks.reap_stale_goal_runners",
             "schedule": 60.0,
+            "options": {"queue": "maintenance"},
+        },
+        # A2A-01: A2A task outcomes + callback delivery/retries (durable).
+        "reconcile-a2a-tasks": {
+            "task": "app.scaling.a2a_tasks.reconcile_a2a_tasks",
+            "schedule": 30.0,
             "options": {"queue": "maintenance"},
         },
         "resweep-stuck-missions": {
@@ -429,6 +439,7 @@ celery_app.conf.update(
         },
     },
 )
+
 
 # ── Redelivery window for long goals ───────────────────────────────────────────
 # Tasks are acks_late (a crashed worker's goal is redelivered, not lost). On the

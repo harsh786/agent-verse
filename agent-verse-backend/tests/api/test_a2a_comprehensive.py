@@ -157,7 +157,7 @@ def test_receive_task_no_hmac_secret_accepted(monkeypatch) -> None:
     client = TestClient(_make_app())
     resp = client.post("/a2a/tasks", json={"goal": "Do X"})
     assert resp.status_code == 202
-    assert resp.json()["status"] == "accepted"
+    assert resp.json()["status"] == "working"
 
 
 def test_receive_task_no_longer_depends_on_a2a_tenant_id(monkeypatch) -> None:
@@ -285,7 +285,7 @@ def test_get_task_returns_status() -> None:
     task_id = create.json()["task_id"]
     resp = client.get(f"/a2a/tasks/{task_id}")
     assert resp.status_code == 200
-    assert resp.json()["status"] in ("accepted", "complete")
+    assert resp.json()["status"] in ("working", "complete")
 
 
 def test_get_task_not_found_returns_404() -> None:
