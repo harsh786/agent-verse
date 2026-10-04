@@ -53,17 +53,23 @@ class BackfillRunResult:
 
 
 # MEM-39: tenants come from the tenants primary key (keyset), and each one is
-# probed with index-backed EXISTS (memory_records / reflexion_lessons both lead
+# probed by index (memory_records / reflexion_lessons both lead
 # with tenant_id). The previous ``SELECT tenant_id FROM memory_records UNION ...``
 # read every canonical record of every tenant each night.
+# The probes are LATERAL ... LIMIT 1 so every tenant costs one index probe; a
+# plain ``EXISTS ... OR EXISTS ...`` let the planner pick a hashed subplan that
+# read the whole of memory_records once per page.
 _MAINTENANCE_TENANT_PAGE_SQL = text(
     "SELECT t.id FROM tenants t "
-    "WHERE t.id > :after AND ("
-    "EXISTS (SELECT 1 FROM memory_records m WHERE m.tenant_id = t.id) "
-    "OR (EXISTS (SELECT 1 FROM reflexion_lessons l WHERE l.tenant_id = t.id) "
-    "AND NOT EXISTS (SELECT 1 FROM memory_backfill_checkpoints c "
-    "WHERE c.tenant_id = t.id AND c.source_table = 'reflexion_lessons' AND c.completed))"
-    ") ORDER BY t.id LIMIT :lim"
+    "LEFT JOIN LATERAL (SELECT 1 AS hit FROM memory_records m "
+    "WHERE m.tenant_id = t.id LIMIT 1) rec ON true "
+    "LEFT JOIN LATERAL (SELECT 1 AS hit FROM reflexion_lessons l "
+    "WHERE l.tenant_id = t.id LIMIT 1) legacy ON true "
+    "LEFT JOIN memory_backfill_checkpoints c ON c.tenant_id = t.id "
+    "AND c.source_table = 'reflexion_lessons' AND c.completed "
+    "WHERE t.id > :after "
+    "AND (rec.hit IS NOT NULL OR (legacy.hit IS NOT NULL AND c.tenant_id IS NULL)) "
+    "ORDER BY t.id LIMIT :lim"
 )
 
 

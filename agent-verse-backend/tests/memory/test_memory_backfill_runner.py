@@ -192,7 +192,7 @@ async def test_maintenance_tenants_are_keyset_paged_over_tenants() -> None:
     assert [p["after"] for _, p in queries] == ["", "t002", "t005"]
     sql = " ".join(queries[0][0].split())
     assert "ORDER BY t.id" in sql and "LIMIT :lim" in sql
-    assert "EXISTS (SELECT 1 FROM memory_records m WHERE m.tenant_id = t.id)" in sql
+    assert "LATERAL (SELECT 1 AS hit FROM memory_records m WHERE m.tenant_id = t.id LIMIT 1)" in sql
     assert "UNION" not in sql and "DISTINCT" not in sql
     # every page runs under the maintenance (BYPASSRLS) session context
     assert sum("row_security" in s for s, _ in log) == len(queries)
