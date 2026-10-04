@@ -375,7 +375,11 @@ class TestGetVault:
         try:
             os.environ["ENVIRONMENT"] = "production"
             os.environ["AGENTVERSE_VAULT_KEY"] = _DEV_INSECURE_MASTER_KEY
-            with pytest.raises(RuntimeError, match="not allowed in production"):
+            # SECRET-05: the dev key is refused in every environment other than
+            # development/test, and the error names the environment.
+            with pytest.raises(
+                RuntimeError, match=r"only allowed in development/test.*'production'"
+            ):
                 from app.providers.vault import get_vault
 
                 get_vault()
