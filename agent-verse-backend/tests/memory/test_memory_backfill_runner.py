@@ -144,4 +144,63 @@ def test_canonical_memory_maintenance_is_scheduled_daily() -> None:
     entry = celery_app.conf.beat_schedule["canonical-memory-maintenance-daily"]
     assert entry["task"] == "agentverse.maintenance.canonical_memory_maintenance"
     src = inspect.getsource(tasks.canonical_memory_maintenance)
-    assert "reembed_pending" in src and "system_session" in src
+    assert "reembed_pending" in src and "get_system_session_factory" in src
+    assert "system_session" in inspect.getsource(runner.canonical_maintenance_tenant_pages)
+
+
+class _PageSession:
+    """Fake system session: answers the tenant-page query from a sorted list."""
+
+    def __init__(self, tenants: list[str], log: list[tuple[str, dict[str, Any]]]) -> None:
+        self._tenants = tenants
+        self._log = log
+
+    async def __aenter__(self) -> _PageSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    def begin(self) -> _PageSession:
+        return self
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> Any:
+        from types import SimpleNamespace
+
+        sql = str(stmt)
+        self._log.append((sql, dict(params or {})))
+        if "FROM tenants" not in sql:  # SET LOCAL row_security = off
+            return SimpleNamespace(fetchall=list)
+        assert params is not None
+        rows = [(t,) for t in self._tenants if t > params["after"]][: params["lim"]]
+        return SimpleNamespace(fetchall=lambda: rows)
+
+
+async def test_maintenance_tenants_are_keyset_paged_over_tenants() -> None:
+    """MEM-39: tenant discovery pages the tenants table (PK keyset) and probes
+    memory_records per tenant with EXISTS; it never reads every record."""
+    tenants = [f"t{i:03d}" for i in range(7)]
+    log: list[tuple[str, dict[str, Any]]] = []
+    pages = [
+        page
+        async for page in runner.canonical_maintenance_tenant_pages(
+            lambda: _PageSession(tenants, log), page_size=3
+        )
+    ]
+    assert pages == [tenants[:3], tenants[3:6], tenants[6:]]
+    queries = [(sql, p) for sql, p in log if "FROM tenants" in sql]
+    assert [p["after"] for _, p in queries] == ["", "t002", "t005"]
+    sql = " ".join(queries[0][0].split())
+    assert "ORDER BY t.id" in sql and "LIMIT :lim" in sql
+    assert "EXISTS (SELECT 1 FROM memory_records m WHERE m.tenant_id = t.id)" in sql
+    assert "UNION" not in sql and "DISTINCT" not in sql
+    # every page runs under the maintenance (BYPASSRLS) session context
+    assert sum("row_security" in s for s, _ in log) == len(queries)
+
+
+def test_maintenance_task_iterates_tenant_pages() -> None:
+    from app.scaling import tasks
+
+    src = inspect.getsource(tasks.canonical_memory_maintenance)
+    assert "canonical_maintenance_tenant_pages" in src
+    assert "SELECT tenant_id FROM memory_records" not in src

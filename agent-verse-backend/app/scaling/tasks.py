@@ -7198,41 +7198,32 @@ def canonical_memory_maintenance(max_rows: int = 1_000, reembed_limit: int = 200
     """
 
     async def _run() -> dict:
-        from sqlalchemy import text
-
-        from app.db.rls import system_session
         from app.db.session import get_session_factory, get_system_session_factory
-        from app.memory.backfill_runner import run_reflexion_lessons_backfill
+        from app.memory.backfill_runner import (
+            canonical_maintenance_tenant_pages,
+            run_reflexion_lessons_backfill,
+        )
 
-        system_db = get_system_session_factory()
-        async with system_db() as session, session.begin(), system_session(session):
-            tenants = [
-                str(r[0])
-                for r in (
-                    await session.execute(
-                        text(
-                            "SELECT tenant_id FROM memory_records "
-                            "UNION SELECT l.tenant_id FROM reflexion_lessons l "
-                            "WHERE NOT EXISTS (SELECT 1 FROM memory_backfill_checkpoints c "
-                            "WHERE c.tenant_id = l.tenant_id "
-                            "AND c.source_table = 'reflexion_lessons' AND c.completed)"
-                        )
-                    )
-                ).fetchall()
-            ]
         db = get_session_factory()
         repo = _canonical_memory_repository(db)
-        totals = {"tenants": len(tenants), "backfilled": 0, "reembedded": 0, "failed": 0}
-        for tid in tenants:
-            try:
-                result = await run_reflexion_lessons_backfill(
-                    db, repo, tenant_id=tid, max_rows=max_rows
-                )
-                totals["backfilled"] += result.written
-                totals["reembedded"] += await repo.reembed_pending(tid, limit=reembed_limit)
-            except Exception as exc:
-                totals["failed"] += 1
-                logger.warning("canonical_memory_maintenance_failed tenant=%s: %s", tid, exc)
+        totals = {"tenants": 0, "backfilled": 0, "reembedded": 0, "failed": 0}
+        # MEM-39: keyset pages over tenants, not a scan of every memory record.
+        async for page in canonical_maintenance_tenant_pages(get_system_session_factory()):
+            totals["tenants"] += len(page)
+            for tid in page:
+                try:
+                    result = await run_reflexion_lessons_backfill(
+                        db, repo, tenant_id=tid, max_rows=max_rows
+                    )
+                    totals["backfilled"] += result.written
+                    totals["reembedded"] += await repo.reembed_pending(
+                        tid, limit=reembed_limit
+                    )
+                except Exception as exc:
+                    totals["failed"] += 1
+                    logger.warning(
+                        "canonical_memory_maintenance_failed tenant=%s: %s", tid, exc
+                    )
         if totals["failed"]:
             raise RuntimeError(
                 f"canonical memory maintenance failed for {totals['failed']} tenants"

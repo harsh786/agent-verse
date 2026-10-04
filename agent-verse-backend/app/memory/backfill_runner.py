@@ -22,13 +22,14 @@ quarantine rules like every other memory.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
 
-from app.db.rls import sqlalchemy_rls_context
+from app.db.rls import sqlalchemy_rls_context, system_session
 from app.memory.backfill import BackfillCheckpoint, LegacyMemoryRow, backfill_memory_rows
 from app.memory.screening import screen_memory_content
 from app.observability.logging import get_logger
@@ -49,6 +50,45 @@ class BackfillRunResult:
     skipped: int
     completed: bool
     last_source_id: str | None
+
+
+# MEM-39: tenants come from the tenants primary key (keyset), and each one is
+# probed with index-backed EXISTS (memory_records / reflexion_lessons both lead
+# with tenant_id). The previous ``SELECT tenant_id FROM memory_records UNION ...``
+# read every canonical record of every tenant each night.
+_MAINTENANCE_TENANT_PAGE_SQL = text(
+    "SELECT t.id FROM tenants t "
+    "WHERE t.id > :after AND ("
+    "EXISTS (SELECT 1 FROM memory_records m WHERE m.tenant_id = t.id) "
+    "OR (EXISTS (SELECT 1 FROM reflexion_lessons l WHERE l.tenant_id = t.id) "
+    "AND NOT EXISTS (SELECT 1 FROM memory_backfill_checkpoints c "
+    "WHERE c.tenant_id = t.id AND c.source_table = 'reflexion_lessons' AND c.completed))"
+    ") ORDER BY t.id LIMIT :lim"
+)
+
+
+async def canonical_maintenance_tenant_pages(
+    system_factory: Any, *, page_size: int = MAX_BATCH_SIZE
+) -> AsyncIterator[list[str]]:
+    """Yield pages of tenant ids that have canonical records or an unfinished
+    legacy backfill. Each page is one short maintenance-session query, so the
+    caller works through a page before the next is read."""
+    after = ""
+    limit = max(1, min(page_size, MAX_BATCH_SIZE))
+    while True:
+        async with system_factory() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    _MAINTENANCE_TENANT_PAGE_SQL, {"after": after, "lim": limit}
+                )
+            ).fetchall()
+        page = [str(r[0]) for r in rows]
+        if not page:
+            return
+        yield page
+        if len(page) < limit:
+            return
+        after = page[-1]
 
 
 async def _load_checkpoint(db_factory: Any, tenant_id: str) -> tuple[str | None, int]:
