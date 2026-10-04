@@ -794,14 +794,18 @@ class EvalSuiteStore:
             r = (
                 await s.execute(
                     sa_text(
+                        # MATERIALIZED: as a plain FROM/IN subquery the planner may
+                        # rescan it per joined row, and every rescan SKIP LOCKs a
+                        # different row, so one claim leased many tasks.
+                        "WITH c AS MATERIALIZED (SELECT task_id FROM eval_suite_task_results "
+                        "      WHERE tenant_id = :tid AND run_id = :rid AND (state = 'pending' "
+                        "        OR (state = 'submitting' AND lease_expires_at < now())) "
+                        "      ORDER BY ordinal LIMIT 1 FOR UPDATE SKIP LOCKED) "
                         "UPDATE eval_suite_task_results t SET state = 'submitting', "
                         " attempts = t.attempts + 1, lease_owner = :owner, "
                         " lease_expires_at = now() + make_interval(secs => :lease), "
                         " started_at = COALESCE(t.started_at, now()) "
-                        "FROM (SELECT task_id FROM eval_suite_task_results "
-                        "      WHERE tenant_id = :tid AND run_id = :rid AND (state = 'pending' "
-                        "        OR (state = 'submitting' AND lease_expires_at < now())) "
-                        "      ORDER BY ordinal LIMIT 1 FOR UPDATE SKIP LOCKED) c "
+                        "FROM c "
                         "WHERE t.tenant_id = :tid AND t.run_id = :rid AND t.task_id = c.task_id "
                         "RETURNING t.task_id, t.task, t.goal_id, t.attempts"
                     ),
@@ -870,13 +874,14 @@ class EvalSuiteStore:
             rows = (
                 await s.execute(
                     sa_text(
-                        "UPDATE eval_suite_task_results t SET lease_owner = :owner, "
-                        " lease_expires_at = now() + make_interval(secs => :lease) "
-                        "FROM (SELECT task_id FROM eval_suite_task_results "
+                        "WITH c AS MATERIALIZED (SELECT task_id FROM eval_suite_task_results "
                         "      WHERE tenant_id = :tid AND run_id = :rid AND state = 'waiting' "
                         "        AND next_check_at <= now() "
                         "        AND (lease_owner IS NULL OR lease_expires_at < now()) "
-                        "      ORDER BY next_check_at LIMIT :lim FOR UPDATE SKIP LOCKED) c "
+                        "      ORDER BY next_check_at LIMIT :lim FOR UPDATE SKIP LOCKED) "
+                        "UPDATE eval_suite_task_results t SET lease_owner = :owner, "
+                        " lease_expires_at = now() + make_interval(secs => :lease) "
+                        "FROM c "
                         "WHERE t.tenant_id = :tid AND t.run_id = :rid AND t.task_id = c.task_id "
                         "RETURNING t.task_id, t.task, t.goal_id, t.attempts, "
                         " t.deadline_at <= now()"
@@ -916,18 +921,25 @@ class EvalSuiteStore:
         return ok
 
     async def count_inflight(self, run_id: str) -> int:
-        """Tasks whose golden goal is being submitted or is running."""
+        """Tasks whose golden goal is being submitted or is running.
+
+        A ``submitting`` row whose lease expired belongs to a dead step and is
+        re-claimable, so it does not hold a slot (with concurrency 1 it would
+        otherwise block the very claim that recovers it)."""
         if self._db is None:
+            now = datetime.now(UTC)
             return sum(
                 1 for r in _MEM_TASKS.get((self._tenant_id, run_id), [])
-                if r["state"] in ("submitting", "waiting")
+                if r["state"] == "waiting"
+                or (r["state"] == "submitting" and not _expired(r, now))
             )
         async with _scoped(self._db, self._tenant_id) as s:
             n = (
                 await s.execute(
                     sa_text(
                         "SELECT count(*) FROM eval_suite_task_results WHERE tenant_id = :tid "
-                        "AND run_id = :rid AND state IN ('submitting', 'waiting')"
+                        "AND run_id = :rid AND (state = 'waiting' OR (state = 'submitting' "
+                        " AND lease_expires_at >= now()))"
                     ),
                     {"tid": self._tenant_id, "rid": run_id},
                 )

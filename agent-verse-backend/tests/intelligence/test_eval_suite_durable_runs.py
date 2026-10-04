@@ -110,6 +110,28 @@ async def test_a_restarted_worker_polls_the_recorded_goal_and_never_resubmits() 
     assert tasks[claim2["task_id"]]["attempts"] == 2 and tasks[claim2["task_id"]]["passed"]
 
 
+async def test_a_step_that_died_while_submitting_does_not_hold_the_only_slot() -> None:
+    """With concurrency 1, a dead step's expired ``submitting`` row must not count as
+    in flight forever — it is the very row the next step has to re-claim."""
+    ctx = _ctx()
+    store = EvalSuiteStore(None, ctx.tenant_id)
+    await store.create("s", name="s", description="")
+    await store.import_tasks("s", [{"goal": f"g{i}", "expected_tools": ["t"]} for i in range(2)],
+                             replace=False)
+    run_id = uuid.uuid4().hex
+    await store.start_run("s", run_id, dataset_version=1, enqueue=True, concurrency=1)
+    claim = await store.claim_pending(run_id, "dead-step", 30)
+    assert claim is not None
+    for row in _MEM_TASKS[(ctx.tenant_id, run_id)]:
+        if row["task_id"] == claim["task_id"]:
+            row["lease_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+    goals = FakeGoals()
+    out = await run_until_done(store=store, run_id=run_id, goal_service=goals, tenant_ctx=ctx,
+                               cfg=_cfg(), max_steps=50)
+    assert out["status"] == "completed"
+    assert len(goals.submits) == 2
+
+
 async def test_a_task_whose_workers_keep_dying_gives_up_unscored() -> None:
     ctx = _ctx()
     store, run_id = await _seed(ctx, 1)
@@ -256,3 +278,25 @@ async def test_large_runs_complete(n: int) -> None:
     ))
     assert len(goals.submits) == n
     assert (await store.run_progress(run_id))["done"] == n
+
+
+@pytest.mark.parametrize(("status", "rescheduled"), [("running", True), ("completed", False),
+                                                     ("missing", False)])
+def test_the_celery_step_reschedules_itself_only_while_running(
+    monkeypatch: Any, status: str, rescheduled: bool
+) -> None:
+    from app.scaling import tasks as scaling_tasks
+
+    async def _step(*_a: Any) -> dict[str, Any]:
+        return {"status": status}
+
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(scaling_tasks, "_run_eval_suite_worker_async", _step)
+    monkeypatch.setattr(scaling_tasks.run_eval_suite_worker, "apply_async",
+                        lambda **kw: sent.append(kw))
+    out = scaling_tasks.run_eval_suite_worker.run("t1", "free", "r1", 0)
+    assert out["status"] == status
+    assert bool(sent) is rescheduled
+    if rescheduled:
+        assert sent[0]["args"] == ["t1", "free", "r1", 0]
+        assert sent[0]["queue"] == "maintenance" and sent[0]["countdown"] > 0

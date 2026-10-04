@@ -9494,13 +9494,16 @@ async def _resume_stalled_eval_suite_runs_async(
         rows = (
             await session.execute(
                 text(
-                    "UPDATE eval_suite_results r SET last_progress_at = now() "
-                    "FROM (SELECT tenant_id, id FROM eval_suite_results "
+                    # MATERIALIZED keeps the LIMIT/SKIP LOCKED scan from being
+                    # re-run per joined row (which over-claims).
+                    "WITH s AS MATERIALIZED (SELECT tenant_id, id FROM eval_suite_results "
                     "      WHERE status = 'running' "
                     "        AND COALESCE(last_progress_at, run_at) "
                     "            < now() - make_interval(secs => :after) "
                     "      ORDER BY COALESCE(last_progress_at, run_at) LIMIT 100 "
-                    "      FOR UPDATE SKIP LOCKED) s "
+                    "      FOR UPDATE SKIP LOCKED) "
+                    "UPDATE eval_suite_results r SET last_progress_at = now() "
+                    "FROM s "
                     "WHERE r.tenant_id = s.tenant_id AND r.id = s.id "
                     "RETURNING r.tenant_id, r.id, COALESCE(r.tenant_plan, 'free')"
                 ),

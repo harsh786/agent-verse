@@ -51,6 +51,19 @@ async def test_durable_runs_on_postgres(monkeypatch: Any) -> None:
             total = await store.start_run("big", run_id, dataset_version=1, enqueue=True,
                                           tenant_plan="professional", concurrency=50)
             assert total == 2000
+            # One claim leases exactly one task. (As an UPDATE ... FROM (SELECT ...
+            # LIMIT 1 FOR UPDATE SKIP LOCKED) the planner rescanned the subquery per
+            # joined row and one claim leased dozens of tasks that never ran.)
+            probe = await store.claim_pending(run_id, "probe", 30)
+            assert probe is not None
+            assert (await store.run_progress(run_id))["running"] == 1
+            assert len(await store.claim_due(run_id, "probe", 30, 10)) == 0
+            async with admin() as s, s.begin():
+                await s.execute(
+                    text("UPDATE eval_suite_task_results SET state = 'pending', attempts = 0, "
+                         "lease_owner = NULL, lease_expires_at = NULL WHERE run_id = :r"),
+                    {"r": run_id},
+                )
             goals = FakeGoals(running_polls=1)
             cfg = RunSettings(FastSettings())
             completions: list[str] = []
