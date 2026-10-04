@@ -207,12 +207,15 @@ async def test_build_auth_headers_custom_header() -> None:
 
 
 @pytest.mark.asyncio
-async def test_build_auth_headers_oauth_without_manager_returns_empty() -> None:
+async def test_build_auth_headers_oauth_without_manager_refuses() -> None:
+    """OAUTH-04: no token source -> refuse, never an unauthenticated request."""
+    from app.mcp.oauth import OAuthReauthorizationRequiredError
+
     cfg = _make_cfg(auth_type="oauth_ac", auth_config={})
     client = MCPClient(registry=_make_registry())
     client._oauth_manager = None
-    headers = await client._build_auth_headers(cfg, tenant_ctx=T)
-    assert "Authorization" not in headers
+    with pytest.raises(OAuthReauthorizationRequiredError):
+        await client._build_auth_headers(cfg, tenant_ctx=T)
 
 
 @pytest.mark.asyncio

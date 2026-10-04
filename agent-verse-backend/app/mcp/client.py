@@ -1803,8 +1803,18 @@ class MCPClient:
             access_token = await self._oauth_access_token(
                 cfg, tenant_ctx=tenant_ctx, server_id=server_id
             )
-            if access_token:
-                headers["Authorization"] = f"Bearer {access_token}"
+            if not access_token:
+                # Never call an OAuth connector unauthenticated (OAUTH-04): the
+                # request used to go out with no Authorization header at all.
+                from app.mcp.oauth import OAuthReauthorizationRequiredError
+
+                raise OAuthReauthorizationRequiredError(
+                    f"Connector '{cfg.name}' has no valid OAuth token for this tenant; "
+                    "authorize (reconnect) the connector again.",
+                    server_id=server_id or cfg.server_id,
+                    tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                )
+            headers["Authorization"] = f"Bearer {access_token}"
 
         return headers
 
@@ -1832,13 +1842,22 @@ class MCPClient:
             else:
                 token = self._oauth_manager.get_token(tenant_id, server_id)
             if token is not None and token.is_expired():
-                with suppress(Exception):
+                try:
                     token = await self._oauth_manager.refresh_token(
                         tenant_id=tenant_id,
                         server_id=server_id,
                         token=token,
                         auth_config=cfg.auth_config,
                     )
+                except Exception as refresh_exc:
+                    # Logged, never swallowed: the caller refuses the call
+                    # instead of sending it without a bearer (OAUTH-04).
+                    logger.warning(
+                        "oauth_token_refresh_failed server_id=%s error=%s",
+                        server_id,
+                        refresh_exc,
+                    )
+                    token = None
             if token is not None and not token.is_expired() and token.access_token:
                 return str(token.access_token)
         except Exception as exc:

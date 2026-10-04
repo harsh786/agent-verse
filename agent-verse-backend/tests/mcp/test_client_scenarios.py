@@ -328,10 +328,12 @@ async def test_build_auth_headers_oauth_refreshes_expired_token_mid_flight():
 
 
 @pytest.mark.asyncio
-async def test_build_auth_headers_oauth_refresh_failure_omits_auth_header():
+async def test_build_auth_headers_oauth_refresh_failure_refuses():
     """If the refresh call itself fails (revoked refresh token, network
-    error), the client must degrade gracefully — no Authorization header,
-    not an unhandled exception surfacing from a header-builder."""
+    error), the request is refused with a re-authorization error — never sent
+    without an Authorization header (OAUTH-04)."""
+    from app.mcp.oauth import OAuthReauthorizationRequiredError
+
     cfg = MCPServerConfig(name="OAuthSrv", url="http://api.example.com",
                           auth_type="oauth_cc", auth_config={})
 
@@ -344,12 +346,14 @@ async def test_build_auth_headers_oauth_refresh_failure_omits_auth_header():
 
     client = _make_client()
     client._oauth_manager = mock_oauth
-    headers = await client._build_auth_headers(cfg, tenant_ctx=_ctx(), server_id="srv-oauth2")
-    assert "Authorization" not in headers
+    with pytest.raises(OAuthReauthorizationRequiredError):
+        await client._build_auth_headers(cfg, tenant_ctx=_ctx(), server_id="srv-oauth2")
 
 
 @pytest.mark.asyncio
-async def test_build_auth_headers_oauth_get_token_raises_is_swallowed():
+async def test_build_auth_headers_oauth_get_token_raises_refuses():
+    from app.mcp.oauth import OAuthReauthorizationRequiredError
+
     cfg = MCPServerConfig(name="OAuthSrv", url="http://api.example.com",
                           auth_type="pkce", auth_config={})
     mock_oauth = MagicMock()
@@ -357,8 +361,8 @@ async def test_build_auth_headers_oauth_get_token_raises_is_swallowed():
 
     client = _make_client()
     client._oauth_manager = mock_oauth
-    headers = await client._build_auth_headers(cfg, tenant_ctx=_ctx(), server_id="srv-oauth3")
-    assert headers == {}
+    with pytest.raises(OAuthReauthorizationRequiredError):
+        await client._build_auth_headers(cfg, tenant_ctx=_ctx(), server_id="srv-oauth3")
 
 
 # ---------------------------------------------------------------------------

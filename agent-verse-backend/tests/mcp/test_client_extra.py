@@ -263,9 +263,11 @@ async def test_build_auth_headers_oauth_no_manager():
     cfg = MCPServerConfig(name="OAuthSrv", url="http://api.example.com", auth_type="oauth_ac",
                           auth_config={})
     client = _make_client()
-    # No oauth_manager set → should produce empty headers
-    headers = await client._build_auth_headers(cfg, tenant_ctx=_ctx())
-    assert "Authorization" not in headers
+    # No oauth_manager set -> refused, never an unauthenticated request (OAUTH-04)
+    from app.mcp.oauth import OAuthReauthorizationRequiredError
+
+    with pytest.raises(OAuthReauthorizationRequiredError):
+        await client._build_auth_headers(cfg, tenant_ctx=_ctx())
 
 
 @pytest.mark.asyncio
