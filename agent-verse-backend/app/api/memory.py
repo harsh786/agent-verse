@@ -464,6 +464,56 @@ def _prospective_service(request: Request) -> Any:
     return svc
 
 
+async def _authorize_goal_submission(
+    request: Request, tenant: Any, agent_id: str | None
+) -> tuple[Any, str | None]:
+    """RV-07: an intention runs as a goal, so creating one needs goal-submit rights.
+
+    The route itself is gated by ``memory:write`` only; here the caller must
+    also hold ``goals:write`` (key scopes AND role/assignment scopes, as the
+    scope middleware evaluates POST /goals), be an active API key that can be
+    re-verified when the intention fires, and — with an ``agent_id`` — that
+    agent must exist in this tenant (what POST /goals checks). Returns the
+    principal to store and the agent id to run.
+    """
+    from app.memory import prospective_auth
+    from app.memory.prospective_auth import IntentionNotAuthorizedError, IntentionPrincipal
+
+    try:
+        principal = await prospective_auth.authorize_intention_principal(
+            _get_db(request), tenant.tenant_id, IntentionPrincipal.from_context(tenant)
+        )
+    except IntentionNotAuthorizedError as exc:
+        raise HTTPException(
+            403,
+            {
+                "error": "INSUFFICIENT_SCOPE",
+                "required_scope": prospective_auth.GOAL_SUBMIT_SCOPE,
+                "detail": f"A deferred intention runs as a goal: {exc.reason}",
+            },
+        ) from exc
+    except prospective_auth.PrincipalCheckUnavailableError as exc:
+        raise HTTPException(503, "Could not verify goal-submit permission; nothing stored") from exc
+
+    # Agent-scoped keys (``agentkey:`` / ``agent:``) are not api_keys rows, so
+    # the principal check above already refused them.
+    if agent_id:
+        store = getattr(request.app.state, "agent_store", None)
+        if store is None:
+            raise HTTPException(503, "Agent registry unavailable; nothing stored")
+        try:
+            getter = getattr(store, "get_async", None)
+            if getter is not None:
+                record = await getter(agent_id, tenant_ctx=tenant)
+            else:
+                record = store.get(agent_id, tenant_ctx=tenant)
+        except Exception as exc:
+            raise _db_unavailable("create_prospective_intention_agent", exc) from exc
+        if record is None:
+            raise HTTPException(404, f"Agent not found: {agent_id}")
+    return principal, agent_id
+
+
 @router.post("/prospective", status_code=201)
 async def create_prospective_intention(request: Request, body: CreateIntentionRequest) -> dict:
     """Schedule a deferred intention; it runs as a goal for this tenant when due (MEM-16)."""
@@ -475,15 +525,18 @@ async def create_prospective_intention(request: Request, body: CreateIntentionRe
     )
 
     tenant = _require_tenant(request)
+    service = _prospective_service(request)
+    principal, agent_id = await _authorize_goal_submission(request, tenant, body.agent_id)
     try:
         item = await create_intention(
-            _prospective_service(request),
+            service,
             tenant_id=tenant.tenant_id,
             intention=body.intention,
             due_at=body.due_at,
             expires_at=body.expires_at,
-            agent_id=body.agent_id,
+            agent_id=agent_id,
             idempotency_key=body.idempotency_key,
+            principal=principal,
         )
     except ProspectiveIntentionError as exc:
         raise HTTPException(422, str(exc)) from exc

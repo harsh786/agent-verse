@@ -7249,9 +7249,35 @@ except Exception as _cm_sched_exc:  # pragma: no cover - defensive
 
 
 async def _submit_intention_as_goal(item: Any, plan: str) -> dict[str, Any]:
-    """Run a due prospective intention as a goal for its tenant (MEM-16)."""
+    """Run a due prospective intention as a goal for its tenant (MEM-16).
+
+    RV-07: the goal runs as the API key that scheduled the intention, re-checked
+    NOW against Postgres (tenant RLS): the key must still be active/unexpired
+    and still hold goals:write. A denial is audited and raised as
+    ``IntentionNotAuthorizedError`` (the intention is marked failed, never
+    retried); an unverifiable principal raises and is retried — nothing runs
+    under a synthetic context any more.
+    """
+    from app.db.session import get_session_factory
+    from app.memory import prospective_auth
+    from app.memory.prospective_auth import IntentionNotAuthorizedError, IntentionPrincipal
     from app.tenancy.context import PlanTier, TenantContext
 
+    db_factory = get_session_factory()
+    stored = IntentionPrincipal.from_snapshot(item.policy_snapshot)
+    try:
+        principal = await prospective_auth.authorize_intention_principal(
+            db_factory, item.tenant_id, stored
+        )
+    except IntentionNotAuthorizedError as exc:
+        await prospective_auth.audit_intention_denied(
+            db_factory,
+            tenant_id=item.tenant_id,
+            memory_id=item.memory_id,
+            api_key_id=stored.api_key_id if stored else None,
+            reason=exc.reason,
+        )
+        raise
     goal_service, _ = _build_worker_goal_service()
     if goal_service is None:
         raise RuntimeError("goal service unavailable on this worker")
@@ -7259,7 +7285,13 @@ async def _submit_intention_as_goal(item: Any, plan: str) -> dict[str, Any]:
         tier = PlanTier(plan)
     except ValueError:
         tier = PlanTier.FREE  # least privilege for an unknown plan value
-    ctx = TenantContext(tenant_id=item.tenant_id, plan=tier, api_key_id="prospective-memory")
+    ctx = TenantContext(
+        tenant_id=item.tenant_id,
+        plan=tier,
+        api_key_id=principal.api_key_id,
+        roles=principal.roles,
+        scopes=principal.scopes,
+    )
     result = await goal_service.submit_goal(
         goal=f"Deferred intention: {item.intention}",
         priority="normal",
@@ -7270,6 +7302,7 @@ async def _submit_intention_as_goal(item: Any, plan: str) -> dict[str, Any]:
             "source": "prospective_memory",
             "prospective_memory_id": item.memory_id,
             "source_goal_id": item.source_goal_id,
+            "submitted_by_api_key_id": principal.api_key_id,
         },
     )
     return {"goal_id": str((result or {}).get("goal_id") or "")}

@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.memory.prospective import ProspectiveMemory, prospective_id
+from app.memory.prospective_auth import IntentionNotAuthorizedError, IntentionPrincipal
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
@@ -53,8 +54,13 @@ async def create_intention(
     agent_id: str | None = None,
     idempotency_key: str | None = None,
     now: datetime | None = None,
+    principal: IntentionPrincipal | None = None,
 ) -> ProspectiveMemory:
     """Screen and store one deferred intention for *tenant_id*.
+
+    *principal* is the (already authorized) API key the intention was
+    scheduled by; it is stored so the fire-time check can re-verify it and run
+    the goal as it (RV-07). An intention stored without one never runs.
 
     Raises :class:`ProspectiveIntentionError` for invalid input,
     ``LongTermMemoryBlockedError`` when the guardrail blocks the text and
@@ -88,11 +94,20 @@ async def create_intention(
         state="pending",
         source_goal_id=source_goal_id or "",
         source_execution_id=source_execution_id or "",
-        policy_snapshot={"agent_id": agent_id} if agent_id else {},
+        policy_snapshot=_policy_snapshot(agent_id, principal),
         classification="internal",
         idempotency_key=key,
     )
     return await service.create(item)
+
+
+def _policy_snapshot(agent_id: str | None, principal: IntentionPrincipal | None) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {}
+    if agent_id:
+        snapshot["agent_id"] = agent_id
+    if principal is not None:
+        snapshot["principal"] = principal.to_snapshot()
+    return snapshot
 
 
 def intention_json(item: ProspectiveMemory) -> dict[str, Any]:
@@ -127,6 +142,10 @@ async def fire_due_intentions(
     A submission failure leaves the item leased for a later retry until it has
     been attempted ``MAX_FIRE_ATTEMPTS`` times, then it is marked ``failed``.
     A lost fencing race (another worker re-leased it) is skipped.
+
+    RV-07: a submitter that raises :class:`IntentionNotAuthorizedError` (the
+    creating principal may no longer run goals) is terminal at once — the item
+    is marked ``failed`` and never retried.
     """
     when = now or datetime.now(UTC)
     # MEM-44: lease only what this run processes (the rest stay pending).
@@ -142,6 +161,15 @@ async def fire_due_intentions(
         else:
             try:
                 result = await submit(item)
+            except IntentionNotAuthorizedError as exc:
+                _log.warning(
+                    "prospective_fire_denied",
+                    tenant_id=tenant_id,
+                    memory_id=item.memory_id,
+                    reason=exc.reason,
+                )
+                await _mark_failed(service, item, f"not authorized: {exc.reason}"[:300])
+                continue
             except Exception as exc:
                 error = f"{type(exc).__name__}: {str(exc)[:200]}"
                 _log.warning(
@@ -250,6 +278,12 @@ def resolve_prospective_service() -> Any:
     return PostgresProspectiveMemoryService(get_session_factory())
 
 
+def _principal_db_factory() -> Any:
+    from app.db.session import get_session_factory
+
+    return get_session_factory()
+
+
 async def call_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -264,6 +298,20 @@ async def call_tool(
     args = arguments or {}
     try:
         if tool_name == "defer_intention":
+            # RV-07: the deferred goal runs as the calling goal's principal,
+            # which must be an active API key holding goals:write (fail closed).
+            from app.memory import prospective_auth
+
+            try:
+                principal = await prospective_auth.authorize_intention_principal(
+                    _principal_db_factory(),
+                    tenant_id,
+                    IntentionPrincipal.from_context(tenant_ctx),
+                )
+            except IntentionNotAuthorizedError as exc:
+                return {"error": f"defer_intention not permitted: {exc.reason}"}
+            except prospective_auth.PrincipalCheckUnavailableError:
+                return {"error": "defer_intention unavailable: could not verify the caller"}
             now = datetime.now(UTC)
             due = now + timedelta(minutes=max(1, int(args.get("due_in_minutes") or 60)))
             expires = due + timedelta(days=max(1, int(args.get("expires_in_days") or 30)))
@@ -275,6 +323,7 @@ async def call_tool(
                 expires_at=expires,
                 source_goal_id=str(args.get("_goal_id") or ""),
                 now=now,
+                principal=principal,
             )
             return {"deferred": intention_json(item)}
         if tool_name == "list_intentions":

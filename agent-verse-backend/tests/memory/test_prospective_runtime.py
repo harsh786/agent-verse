@@ -27,9 +27,20 @@ async def _allow(*, content: str, **_kw: Any) -> dict[str, Any]:
     return {"blocked": "FORBIDDEN" in content}
 
 
+async def _authorized(db_factory: Any, tenant_id: str, principal: Any, **_kw: Any) -> Any:
+    # Goal-submit authorization (RV-07) is covered by test_prospective_principal.
+    return principal
+
+
 @pytest.fixture(autouse=True)
 def _guardrail() -> Any:
-    with patch("app.guardrails_v2.engine.guardrails_engine.evaluate", side_effect=_allow):
+    with (
+        patch("app.guardrails_v2.engine.guardrails_engine.evaluate", side_effect=_allow),
+        patch(
+            "app.memory.prospective_auth.authorize_intention_principal",
+            side_effect=_authorized,
+        ),
+    ):
         yield
 
 
