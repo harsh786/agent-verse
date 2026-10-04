@@ -141,10 +141,10 @@ async def generate_rpa_report(request: Request, body: RPAReportRequest) -> dict[
 
     # SSRF guard: the URL is fetched server-side by the RPA executor, so reject
     # internal/private/link-local/metadata targets before any navigation.
-    from app.net.ssrf_guard import SSRFError, assert_public_url
+    from app.net.ssrf_guard import SSRFError, assert_public_url_async
 
     try:
-        assert_public_url(body.url, context="rpa_report")
+        await assert_public_url_async(body.url, context="rpa_report")
     except SSRFError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Blocked URL: {exc}"

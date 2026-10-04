@@ -15,7 +15,6 @@ from pydantic import BaseModel
 
 from app.net.ssrf_guard import (
     SSRFError,
-    assert_public_url,
     assert_public_url_async,
     public_async_client,
 )
@@ -419,7 +418,7 @@ async def receive_a2a_task(
     # SSRF guard — validate callback URL before accepting the task
     if body.callback_url:
         try:
-            assert_public_url(body.callback_url, context="A2A callback")
+            await assert_public_url_async(body.callback_url, context="A2A callback")
         except SSRFError as exc:
             raise HTTPException(status_code=400, detail="Callback URL is not permitted") from exc
 

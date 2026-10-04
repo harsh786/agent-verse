@@ -138,6 +138,20 @@ def _assert_egress_allowed(url: str, *, context: str) -> None:
     assert_public_url(url, context=context)
 
 
+async def _assert_public_url_async(url: str, *, context: str) -> None:
+    """:func:`assert_public_url` off the event loop (SSRF-04; blocking DNS)."""
+    import asyncio
+
+    await asyncio.to_thread(assert_public_url, url, context=context)
+
+
+async def _assert_egress_allowed_async(url: str, *, context: str) -> None:
+    """:func:`_assert_egress_allowed` without blocking the event loop on DNS (SSRF-04)."""
+    import asyncio
+
+    await asyncio.to_thread(_assert_egress_allowed, url, context=context)
+
+
 def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     """Extract credentials dict from an MCPServerConfig for passing to builtin handlers.
 
@@ -582,7 +596,7 @@ class MCPClient:
         _disc_url = _absolute_http_url(cfg.url or cfg.base_url or "")
         if _disc_url and not _disc_url.startswith("builtin://"):
             try:
-                assert_public_url(_disc_url, context=f"MCP discover_tools {server_id}")
+                await _assert_public_url_async(_disc_url, context=f"MCP discover_tools {server_id}")
             except SSRFError as exc:
                 logger.warning(
                     "ssrf_guard_blocked_discover: server_id=%s, error=%s", server_id, str(exc)
@@ -779,7 +793,7 @@ class MCPClient:
             if not isinstance(_ep, str) or not _ep.strip() or _ep.startswith("builtin://"):
                 continue
             try:
-                _assert_egress_allowed(
+                await _assert_egress_allowed_async(
                     _absolute_http_url(_ep), context=f"MCP built-in {server.server_id}"
                 )
             except SSRFError as exc:
@@ -884,7 +898,7 @@ class MCPClient:
         url = effective_base.rstrip("/") + "/" + http_path.lstrip("/")
 
         try:
-            assert_public_url(url, context=f"OpenAPI tool {tool_name}")
+            await _assert_public_url_async(url, context=f"OpenAPI tool {tool_name}")
         except SSRFError as exc:
             logger.warning("ssrf_guard_blocked_openapi: server_id=%s", server.server_id)
             return ToolCallResult(
@@ -1147,7 +1161,7 @@ class MCPClient:
             _guard_urls.append(_ws_to_http_url(cfg.ws_url))
         for _guard_url in _guard_urls:
             try:
-                _assert_egress_allowed(_guard_url, context=f"MCP server {server_id}")
+                await _assert_egress_allowed_async(_guard_url, context=f"MCP server {server_id}")
             except SSRFError as exc:
                 logger.warning(
                     "ssrf_guard_blocked_mcp: server_id=%s, error=%s", server_id, str(exc)

@@ -58,7 +58,7 @@ from app.knowledge.ingestors.limits import (
 )
 from app.net.ssrf_guard import (
     SSRFError,
-    assert_public_url,
+    assert_public_url_async,
     public_async_client,
     request_public,
 )
@@ -1826,7 +1826,7 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
 
     # SSRF guard — reject internal/metadata URLs before fetching
     try:
-        assert_public_url(url, context="/ingest/url")
+        await assert_public_url_async(url, context="/ingest/url")
     except SSRFError as exc:
         raise HTTPException(
             status_code=400,
@@ -2635,7 +2635,7 @@ async def ingest_from_rpa_url(
     for url in body.urls:
         # SSRF guard — reject internal/metadata URLs before fetching.
         try:
-            assert_public_url(url, context="/ingest/rpa-url")
+            await assert_public_url_async(url, context="/ingest/rpa-url")
         except SSRFError as exc:
             results.append(
                 {

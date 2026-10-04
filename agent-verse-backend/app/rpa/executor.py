@@ -255,10 +255,10 @@ class RPAExecutor:
         )
         _target_url = arguments.get("url", "")
         if _will_fetch and _target_url:
-            from app.net.ssrf_guard import SSRFError, assert_public_url
+            from app.net.ssrf_guard import SSRFError, assert_public_url_async
 
             try:
-                assert_public_url(
+                await assert_public_url_async(
                     _target_url,
                     allowed_domains=self._allowed_domains,
                     context="rpa_navigate",
