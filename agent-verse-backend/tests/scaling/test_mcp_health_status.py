@@ -1,5 +1,7 @@
 """check_mcp_health: real status classification, snapshots persisted, no 50-key cap.
 
+(The connectors now come from the Postgres registry, a02-F034-N1.)
+
 Regressions: any HTTP response (including 5xx) was reported ``status: ok``;
 results were never written to ``connector_health_snapshots`` (so the health
 history API was always empty); and the scan stopped after 50 keys across all
@@ -18,26 +20,21 @@ from app.mcp.registry import MCPServerConfig
 
 def _install(monkeypatch: pytest.MonkeyPatch, n: int, code_for: Any) -> list[dict[str, Any]]:
     from app.scaling import tasks
+    from tests.scaling._mcp_health_fakes import install_registry
 
-    cfgs = {
-        f"mcp:servers:tenant-{i % 3}:srv-{i}": MCPServerConfig(
-            server_id=f"srv-{i}", name=f"c{i}", url=f"https://93.184.216.{i % 250 + 1}"
-        )
-        for i in range(n)
-    }
-
-    class _R:
-        async def scan_iter(self, **kw: Any) -> Any:
-            for k in cfgs:
-                yield k
-
-        async def get(self, key: str) -> str:
-            return cfgs[key].model_dump_json()
-
-        async def aclose(self) -> None:
-            return None
-
-    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: _R())
+    install_registry(
+        monkeypatch,
+        [
+            (
+                f"tenant-{i % 3}",
+                f"srv-{i}",
+                MCPServerConfig(
+                    server_id=f"srv-{i}", name=f"c{i}", url=f"https://93.184.216.{i % 250 + 1}"
+                ),
+            )
+            for i in range(n)
+        ],
+    )
 
     def _handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(code_for(str(req.url)))
@@ -65,8 +62,8 @@ def test_5xx_is_unhealthy_not_ok_and_snapshots_are_persisted(
     codes = {0: 200, 1: 503, 2: 401}
     written = _install(monkeypatch, 3, lambda url: codes[int(url.split(".")[-1].split("/")[0]) - 1])
     out = tasks.check_mcp_health.run()
-    statuses = {r["server"]: r["status"] for r in out["results"]}
-    assert statuses == {"c0": "healthy", "c1": "unhealthy", "c2": "degraded"}
+    statuses = {r["server_id"]: r["status"] for r in out["results"]}
+    assert statuses == {"srv-0": "healthy", "srv-1": "unhealthy", "srv-2": "degraded"}
     assert {(s["tenant_id"], s["server_id"], s["status"]) for s in written} == {
         ("tenant-0", "srv-0", "healthy"),
         ("tenant-1", "srv-1", "unhealthy"),

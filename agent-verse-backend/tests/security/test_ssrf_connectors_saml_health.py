@@ -148,19 +148,15 @@ def test_mcp_health_check_never_requests_internal_connector(
     from app.mcp.registry import MCPServerConfig
     from app.scaling import tasks
 
+    from tests.scaling._mcp_health_fakes import install_registry
+
     cfg = MCPServerConfig(server_id="s1", name="evil", url=_META, base_url=_META)
+    install_registry(monkeypatch, [("t1", "s1", cfg)])
 
-    class _R:
-        async def scan_iter(self, **kw: Any) -> Any:
-            yield "mcp:servers:t1:s1"
+    async def _persist(snaps: list[dict[str, Any]]) -> int:
+        return len(snaps)
 
-        async def get(self, key: str) -> str:
-            return cfg.model_dump_json()
-
-        async def aclose(self) -> None:
-            return None
-
-    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: _R())
+    monkeypatch.setattr(tasks, "_persist_health_snapshots", _persist)
     sent: list[str] = []
 
     def _handler(req: httpx.Request) -> httpx.Response:

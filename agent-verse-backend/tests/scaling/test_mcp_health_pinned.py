@@ -10,7 +10,6 @@ checked at connect time.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import httpcore
@@ -45,19 +44,10 @@ def _record_dials(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 def test_run_probe_refuses_a_rebinding_host_at_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.scaling import tasks
 
+    from tests.scaling._mcp_health_fakes import install_registry
+
     cfg = MCPServerConfig(server_id="s1", name="rebind", url="http://rebind.example")
-
-    class _R:
-        async def scan_iter(self, **kw: Any) -> Any:
-            yield "mcp:servers:t1:s1"
-
-        async def get(self, key: str) -> str:
-            return cfg.model_dump_json()
-
-        async def aclose(self) -> None:
-            return None
-
-    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: _R())
+    install_registry(monkeypatch, [("t1", "s1", cfg)])
     monkeypatch.setattr(g, "_resolve_host", _rebinding_resolver())
     dialled = _record_dials(monkeypatch)
 
@@ -70,35 +60,20 @@ def test_run_probe_refuses_a_rebinding_host_at_connect(monkeypatch: pytest.Monke
     assert out["results"][0]["status"] == "unreachable"
 
 
-def test_fallback_probe_refuses_a_rebinding_host_at_connect(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_legacy_redis_keys_are_never_scanned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """a02-F034-N1: the old mcp:servers:* scan (and its 50-key fallback) is gone."""
     from app.scaling import tasks
+    from tests.scaling._mcp_health_fakes import install_registry
 
-    calls = [0]
+    install_registry(monkeypatch, [])
 
-    class _R:
-        def __init__(self, first: bool) -> None:
-            self._first = first
+    async def _scan(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("legacy mcp:servers:* keys scanned")
+        yield  # pragma: no cover
 
-        async def scan_iter(self, **kw: Any) -> Any:
-            if self._first:
-                raise RuntimeError("force fallback")
-            yield "mcp:servers:t1"
+    import redis.asyncio as aioredis
 
-        async def get(self, key: str) -> str:
-            return json.dumps({"s1": {"url": "http://rebind.example"}})
-
-        async def aclose(self) -> None:
-            return None
-
-    def _from_url(*a: Any, **k: Any) -> _R:
-        calls[0] += 1
-        return _R(first=calls[0] == 1)
-
-    monkeypatch.setattr("redis.asyncio.from_url", _from_url)
-    monkeypatch.setattr(g, "_resolve_host", _rebinding_resolver())
-    dialled = _record_dials(monkeypatch)
+    fake = aioredis.from_url("redis://fake/0")
+    monkeypatch.setattr(fake, "scan_iter", _scan)
     out = tasks.check_mcp_health.run()
-    assert dialled == []
-    assert out["results"][0]["status"] == "unreachable"
+    assert out["status"] == "ok" and out["servers_checked"] == 0

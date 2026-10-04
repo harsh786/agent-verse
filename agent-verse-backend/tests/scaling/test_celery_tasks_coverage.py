@@ -619,139 +619,58 @@ async def test_decrement_after_completion_swallows_exception() -> None:
 
 
 # ===========================================================================
-# check_mcp_health task — covers lines 1032-1161
+# check_mcp_health task (connectors from the Postgres registry, a02-F034-N1)
 # ===========================================================================
 
-def test_check_mcp_health_no_redis_scan_results(monkeypatch: pytest.MonkeyPatch) -> None:
-    """check_mcp_health with empty Redis scan returns ok with 0 servers."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+def test_check_mcp_health_empty_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty registry is ok with 0 servers."""
     from app.scaling.tasks import check_mcp_health
+    from tests.scaling._mcp_health_fakes import install_registry
 
-    async def _empty_scan(*a: object, **kw: object):
-        return
-        yield  # Make it an async generator
-
-    mock_r = MagicMock()
-    mock_r.scan_iter = _empty_scan
-    mock_r.aclose = AsyncMock()
-
-    with patch("redis.asyncio.from_url", return_value=mock_r):
-        result = check_mcp_health.run()
+    install_registry(monkeypatch, [])
+    result = check_mcp_health.run()
 
     assert result["status"] == "ok"
     assert result["servers_checked"] == 0
 
 
-def test_check_mcp_health_with_parse_error_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """check_mcp_health with a key that fails MCPServerConfig parsing uses parse_error path."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from collections.abc import AsyncIterator
+def test_check_mcp_health_invalid_config_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stored config that does not validate is recorded as invalid_config."""
+    from app.scaling import tasks
+    from tests.scaling._mcp_health_fakes import install_registry
 
-    from app.scaling.tasks import check_mcp_health
+    install_registry(monkeypatch, [("t1", "srv1", {"url": 12})])
+    written: list[dict] = []
 
-    async def _scan_one_key(match: str, count: int) -> AsyncIterator[str]:
-        yield "mcp:servers:t1:srv1"
+    async def _persist(snaps: list[dict]) -> int:
+        written.extend(snaps)
+        return len(snaps)
 
-    mock_r = MagicMock()
-    mock_r.scan_iter = _scan_one_key
-    mock_r.get = AsyncMock(return_value='{"invalid": true}')  # Can't parse as MCPServerConfig
-    mock_r.aclose = AsyncMock()
-
-    with patch("redis.asyncio.from_url", return_value=mock_r):
-        result = check_mcp_health.run()
+    monkeypatch.setattr(tasks, "_persist_health_snapshots", _persist)
+    result = tasks.check_mcp_health.run()
 
     assert result["status"] == "ok"
+    assert [s["status"] for s in written] == ["invalid_config"]
 
 
-def test_check_mcp_health_fallback_on_run_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When _run() raises, _fallback() is executed."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+def test_check_mcp_health_registry_failure_is_an_honest_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry that cannot be read is status=error, never ok with 0 servers."""
     from app.scaling.tasks import check_mcp_health
+    from tests.scaling._mcp_health_fakes import install_registry
 
-    call_log: list[str] = []
+    install_registry(monkeypatch, [])
 
-    async def _fail_scan(match: str, count: int):
-        raise RuntimeError("scan failed")
-        yield  # make it generator
+    async def _boom(*_a: object, **_k: object) -> list:
+        raise RuntimeError("query would be affected by row-level security")
 
-    async def _empty_scan(match: str, count: int):
-        return
-        yield
+    monkeypatch.setattr("app.mcp.health_sweep.fetch_connector_page", _boom)
+    result = check_mcp_health.run()
 
-    mock_r_fail = MagicMock()
-    mock_r_fail.scan_iter = _fail_scan
-    mock_r_fail.aclose = AsyncMock()
-
-    mock_r_fallback = MagicMock()
-    mock_r_fallback.scan_iter = _empty_scan
-    mock_r_fallback.aclose = AsyncMock()
-
-    from_url_calls: list = []
-
-    def _from_url(url: str, **kw: object) -> MagicMock:
-        from_url_calls.append(url)
-        if len(from_url_calls) == 1:
-            return mock_r_fail
-        return mock_r_fallback
-
-    with patch("redis.asyncio.from_url", side_effect=_from_url):
-        result = check_mcp_health.run()
-
-    assert result["status"] == "ok"
-    # _fallback was called (second redis connection)
-    assert len(from_url_calls) >= 2
-
-
-def test_check_mcp_health_fallback_with_valid_server(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_fallback parses flat-dict server structure and tries health check."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    import json
-    from collections.abc import AsyncIterator
-
-    from app.scaling.tasks import check_mcp_health
-
-    # _run() will fail because MCPServerConfig is hard to mock in async context
-    # We'll force _fallback by making the main run raise
-    server_data = {"srv1": {"url": "http://server1.example.com"}}
-
-    async def _scan_keys_run(match: str, count: int):
-        # _run uses mcp:servers:*:* pattern — just raise immediately
-        raise RuntimeError("force fallback")
-        yield
-
-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
-        yield "mcp:servers:t1"
-
-    call_count = [0]
-
-    def _from_url(url: str, **kw: object) -> MagicMock:
-        call_count[0] += 1
-        mock_r = MagicMock()
-        if call_count[0] == 1:
-            mock_r.scan_iter = _scan_keys_run
-        else:
-            mock_r.scan_iter = _scan_keys_fallback
-            mock_r.get = AsyncMock(return_value=json.dumps(server_data))
-        mock_r.aclose = AsyncMock()
-        return mock_r
-
-
-    with (
-        patch("redis.asyncio.from_url", side_effect=_from_url),
-        patch("httpx.AsyncClient") as mock_httpx,
-    ):
-        # Mock httpx to avoid real network calls
-        mock_ctx = MagicMock()
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-        mock_ctx.get = AsyncMock(return_value=mock_response)
-        mock_httpx.return_value = mock_ctx
-
-        result = check_mcp_health.run()
-
-    assert result["status"] == "ok"
+    assert result["status"] == "error"
+    assert "row-level security" in result["reason"]
+    assert result["servers_checked"] == 0
 
 
 # ===========================================================================
@@ -918,82 +837,6 @@ async def test_update_db_schedule_last_fired_at_raises_on_db_error() -> None:
 # ===========================================================================
 # Additional check_mcp_health coverage
 # ===========================================================================
-
-def test_check_mcp_health_httpx_health_check_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Covers the MCPServerConfig parsing + httpx health check path."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from collections.abc import AsyncIterator
-
-    from app.scaling.tasks import check_mcp_health
-
-    async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
-        yield "mcp:servers:t1:srv1"
-
-    mock_r = MagicMock()
-    mock_r.scan_iter = _scan_keys
-    mock_r.aclose = AsyncMock()
-
-    raw_config = '{"id": "srv1", "name": "TestServer", "base_url": "http://test.example", "tenant_id": "t1"}'
-    mock_r.get = AsyncMock(return_value=raw_config)
-
-    mock_cfg = MagicMock()
-    mock_cfg.name = "TestServer"
-    mock_cfg.base_url = "http://test.example"
-
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-
-    with (
-        patch("redis.asyncio.from_url", return_value=mock_r),
-        patch("app.mcp.registry.MCPServerConfig.model_validate_json", return_value=mock_cfg),
-        patch("httpx.AsyncClient") as mock_httpx,
-    ):
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-        mock_ctx.get = AsyncMock(return_value=mock_response)
-        mock_httpx.return_value = mock_ctx
-
-        result = check_mcp_health.run()
-
-    assert result["status"] == "ok"
-    assert result["servers_checked"] >= 1
-
-
-def test_check_mcp_health_httpx_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Covers the httpx error handling path in check_mcp_health."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from collections.abc import AsyncIterator
-
-    from app.scaling.tasks import check_mcp_health
-
-    async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
-        yield "mcp:servers:t1:srv2"
-
-    mock_r = MagicMock()
-    mock_r.scan_iter = _scan_keys
-    mock_r.aclose = AsyncMock()
-    mock_r.get = AsyncMock(return_value='{"id": "srv2", "name": "BrokenServer", "base_url": "http://broken", "tenant_id": "t1"}')
-
-    mock_cfg = MagicMock()
-    mock_cfg.name = "BrokenServer"
-    mock_cfg.base_url = "http://broken"
-
-    with (
-        patch("redis.asyncio.from_url", return_value=mock_r),
-        patch("app.mcp.registry.MCPServerConfig.model_validate_json", return_value=mock_cfg),
-        patch("httpx.AsyncClient") as mock_httpx,
-    ):
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-        mock_ctx.get = AsyncMock(side_effect=OSError("connection refused"))
-        mock_httpx.return_value = mock_ctx
-
-        result = check_mcp_health.run()
-
-    assert result["status"] == "ok"
-
 
 # ===========================================================================
 # record_queue_depths retry path
@@ -1630,170 +1473,6 @@ async def test_run_with_signals_raises_goal_cancelled_error_on_cancel() -> None:
 # ===========================================================================
 # check_mcp_health — per-key error path + fallback paths
 # ===========================================================================
-
-def test_check_mcp_health_per_key_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When r.get() raises per-key, the error is logged and skipped."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from collections.abc import AsyncIterator
-
-    from app.scaling.tasks import check_mcp_health
-
-    async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
-        yield "mcp:servers:t1:srv1"
-
-    mock_r = MagicMock()
-    mock_r.scan_iter = _scan_keys
-    mock_r.get = AsyncMock(side_effect=RuntimeError("redis error"))  # Per-key failure
-    mock_r.aclose = AsyncMock()
-
-    with patch("redis.asyncio.from_url", return_value=mock_r):
-        result = check_mcp_health.run()
-
-    # Error should be swallowed, result still ok
-    assert result["status"] == "ok"
-
-
-def test_check_mcp_health_fallback_no_redis_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_fallback returns skipped when no REDIS_URL."""
-    monkeypatch.delenv("REDIS_URL", raising=False)
-    monkeypatch.setenv("REDIS_URL", "")  # empty
-    from app.scaling.tasks import check_mcp_health
-
-    # Force fallback by making _run() fail due to no redis URL
-    # When REDIS_URL is empty, _fallback checks os.getenv("REDIS_URL") too
-    # _run() will skip because redis_url is empty
-    result = check_mcp_health.run()
-    # Should succeed with 0 servers
-    assert result["status"] == "ok"
-    assert result["servers_checked"] == 0
-
-
-def test_check_mcp_health_fallback_json_parse_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_fallback skips keys with invalid JSON."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    from collections.abc import AsyncIterator
-
-    from app.scaling.tasks import check_mcp_health
-
-    # Force fallback by raising in _run()
-    async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
-        raise RuntimeError("force fallback")
-        yield
-
-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
-        yield "mcp:servers:t1"
-
-    call_count = [0]
-
-    def _from_url(url: str, **kw: object) -> MagicMock:
-        call_count[0] += 1
-        mock_r = MagicMock()
-        if call_count[0] == 1:
-            mock_r.scan_iter = _scan_keys_run
-        else:
-            mock_r.scan_iter = _scan_keys_fallback
-            mock_r.get = AsyncMock(return_value="not-valid-json!!!")  # Invalid JSON
-        mock_r.aclose = AsyncMock()
-        return mock_r
-
-    with patch("redis.asyncio.from_url", side_effect=_from_url):
-        result = check_mcp_health.run()
-
-    assert result["status"] == "ok"
-
-
-def test_check_mcp_health_fallback_various_data_types(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_fallback skips keys with None, non-dict data, and empty URL."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    import json
-    from collections.abc import AsyncIterator
-
-    from app.scaling.tasks import check_mcp_health
-
-    async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
-        raise RuntimeError("force fallback")
-        yield
-
-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
-        for k in ["mcp:servers:t1:a", "mcp:servers:t1:b", "mcp:servers:t1:c"]:
-            yield k
-
-    get_responses = [
-        None,                               # None raw → line 1115 continue
-        json.dumps([1, 2, 3]),              # non-dict data → line 1121 continue
-        json.dumps({"srv": {"no_url": 1}}), # dict with no URL → line 1125 continue
-    ]
-    get_call_count = [0]
-
-    async def _multi_get(key: str) -> str | None:
-        idx = get_call_count[0] % len(get_responses)
-        get_call_count[0] += 1
-        return get_responses[idx]
-
-    call_count = [0]
-
-    def _from_url(url: str, **kw: object) -> MagicMock:
-        call_count[0] += 1
-        mock_r = MagicMock()
-        if call_count[0] == 1:
-            mock_r.scan_iter = _scan_keys_run
-        else:
-            mock_r.scan_iter = _scan_keys_fallback
-            mock_r.get = _multi_get
-        mock_r.aclose = AsyncMock()
-        return mock_r
-
-    with patch("redis.asyncio.from_url", side_effect=_from_url):
-        result = check_mcp_health.run()
-
-    assert result["status"] == "ok"
-
-
-def test_check_mcp_health_fallback_httpx_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_fallback handles httpx connection errors per-server (lines 1138-1139)."""
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    import json
-    from collections.abc import AsyncIterator
-
-    from app.scaling.tasks import check_mcp_health
-
-    async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
-        raise RuntimeError("force fallback")
-        yield
-
-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
-        yield "mcp:servers:t1"
-
-    server_data = {"srv1": {"url": "http://unreachable.example.com"}}
-    call_count = [0]
-
-    def _from_url(url: str, **kw: object) -> MagicMock:
-        call_count[0] += 1
-        mock_r = MagicMock()
-        if call_count[0] == 1:
-            mock_r.scan_iter = _scan_keys_run
-        else:
-            mock_r.scan_iter = _scan_keys_fallback
-            mock_r.get = AsyncMock(return_value=json.dumps(server_data))
-        mock_r.aclose = AsyncMock()
-        return mock_r
-
-    with (
-        patch("redis.asyncio.from_url", side_effect=_from_url),
-        patch("httpx.AsyncClient") as mock_httpx,
-    ):
-        mock_ctx = AsyncMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-        mock_ctx.get = AsyncMock(side_effect=OSError("connection refused"))
-        mock_httpx.return_value = mock_ctx
-
-        result = check_mcp_health.run()
-
-    assert result["status"] == "ok"
-    # Result should include unreachable server
-    assert any(r.get("status") == "unreachable" for r in result["results"])
-
 
 # ===========================================================================
 # _expire_db_approvals async function

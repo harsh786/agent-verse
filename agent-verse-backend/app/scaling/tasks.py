@@ -5378,16 +5378,11 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
         raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
 
 
-_MCP_HEALTH_SCAN_LIMIT = 5000
-
-
 def _classify_health(status_code: int) -> str:
     """HTTP status → connector health. Any response used to count as 'ok' (even 5xx)."""
-    if status_code < 400:
-        return "healthy"
-    if status_code < 500:
-        return "degraded"
-    return "unhealthy"
+    from app.mcp.health_sweep import classify_health
+
+    return classify_health(status_code)
 
 
 async def _persist_health_snapshots(snapshots: list[dict[str, Any]]) -> int:
@@ -5436,195 +5431,59 @@ async def _persist_health_snapshots(snapshots: list[dict[str, Any]]) -> int:
 
 @celery_app.task(name="app.scaling.tasks.check_mcp_health")  # type: ignore[untyped-decorator]
 def check_mcp_health() -> dict[str, Any]:
-    """Periodic MCP server health check — pings /health on all active servers."""
+    """Periodic connector health sweep over the durable registry (a02-F034-N1).
+
+    Connectors are read from Postgres ``mcp_servers`` (keyset pages, maintenance
+    session) — the legacy ``mcp:servers:*`` Redis keys this used to scan are no
+    longer written since MCPREG-01. Probes run with bounded concurrency and
+    timeouts inside a budget shorter than the beat interval; a shared Redis
+    cursor lets consecutive runs continue where the last stopped and a Redis
+    lock keeps runs from overlapping. See ``app.mcp.health_sweep``.
+    """
 
     async def _run() -> dict[str, Any]:
-        results: list[dict[str, Any]] = []
-        snapshots: list[dict[str, Any]] = []
-        checked = 0
+        from app.db.session import get_system_session_factory
+        from app.mcp import health_sweep
 
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        if not redis_url:
-            return {"servers_checked": 0, "results": [], "status": "skipped", "reason": "no_redis"}
-
-        import redis.asyncio as aioredis
-
-        r = aioredis.from_url(redis_url, decode_responses=True)
-
-        try:
-            # Scan for all MCP server keys written by MCPRegistry:
-            # key pattern: mcp:servers:{tenant_id}:{server_id}
-            # The scan used to stop after 50 keys across ALL tenants, so on any
-            # real deployment most connectors were never checked.
-            async for key in r.scan_iter(match="mcp:servers:*:*", count=500):
-                if checked >= _MCP_HEALTH_SCAN_LIMIT:
-                    logger.warning("mcp_health_scan_limit_reached limit=%d", checked)
-                    break
-                checked += 1
-                _key_parts = str(key).split(":")
-                _tenant_id = _key_parts[2] if len(_key_parts) >= 4 else ""
-                _server_id = ":".join(_key_parts[3:]) if len(_key_parts) >= 4 else ""
-                try:
-                    raw = await r.get(key)
-                    if not raw:
-                        continue
-                    try:
-                        from app.mcp.registry import MCPServerConfig
-
-                        cfg = MCPServerConfig.model_validate_json(raw)
-                    except Exception as parse_exc:
-                        results.append(
-                            {"key": key, "status": "parse_error", "error": str(parse_exc)}
-                        )
-                        continue
-                    # Simple health check: GET {base_url}/health
-                    from app.net.ssrf_guard import public_async_client, request_public
-
-                    _base = (cfg.base_url or cfg.url or "").rstrip("/")
-                    if not _base or _base.startswith("builtin://"):
-                        continue
-                    # Was client.get(..., follow_redirects=True) on the tenant's
-                    # URL with no SSRF guard: a connector pointed at (or 302-ing
-                    # to) an internal host made the worker probe it. Every hop is
-                    # now re-validated, and the pinned client dials only the
-                    # address checked at connect time (no DNS-rebinding window).
-                    import time as _t
-
-                    _t0 = _t.monotonic()
-                    async with public_async_client(timeout=5.0) as client:
-                        try:
-                            resp = await request_public(
-                                client, "GET", f"{_base}/health", context="mcp health check"
-                            )
-                            _health = _classify_health(resp.status_code)
-                            _latency = round((_t.monotonic() - _t0) * 1000)
-                            results.append(
-                                {
-                                    "server": cfg.name,
-                                    "status": _health,
-                                    "code": resp.status_code,
-                                    "latency_ms": _latency,
-                                }
-                            )
-                            _err = None if _health == "healthy" else f"HTTP {resp.status_code}"
-                        except Exception as http_exc:
-                            _health, _latency, _err = "unreachable", None, str(http_exc)[:200]
-                            results.append(
-                                {
-                                    "server": cfg.name,
-                                    "status": "unreachable",
-                                    "error": _err,
-                                }
-                            )
-                    if _tenant_id and _server_id:
-                        snapshots.append(
-                            {
-                                "tenant_id": _tenant_id,
-                                "server_id": _server_id,
-                                "status": _health,
-                                "latency_ms": _latency,
-                                "error": _err,
-                            }
-                        )
-                except Exception as exc:
-                    results.append({"key": key, "status": "error", "error": str(exc)[:200]})
-        finally:
-            await r.aclose()
-
-        persisted = await _persist_health_snapshots(snapshots)
-        return {
-            "servers_checked": checked,
-            "results": results[:20],
-            "snapshots_persisted": persisted,
-        }
-
-    async def _fallback() -> dict[str, Any]:
-        """Fallback: scan the old flat-dict key structure for backward compatibility."""
-        results: list[dict[str, Any]] = []
-        try:
-            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-            if not redis_url:
-                return {"servers_checked": 0, "results": [], "status": "skipped"}
-
-            import time as _time
-
+        redis_url = os.getenv("REDIS_URL", "")
+        r: Any = None
+        if redis_url:
             import redis.asyncio as aioredis
 
             r = aioredis.from_url(redis_url, decode_responses=True)
-            try:
-                keys = []
-                async for k in r.scan_iter(match="mcp:servers:*", count=100):
-                    keys.append(k)
-                    if len(keys) >= 50:
-                        break
-
-                import json as _json
-
-                for key in keys:
-                    raw = await r.get(key)
-                    if not raw:
-                        continue
-                    try:
-                        data = _json.loads(raw)
-                    except Exception:
-                        continue
-                    if not isinstance(data, dict):
-                        continue
-                    for server_id, sdata in data.items():
-                        url = sdata.get("url", "") if isinstance(sdata, dict) else ""
-                        if not url:
-                            continue
-                        t0 = _time.monotonic()
-                        try:
-                            from app.net.ssrf_guard import (
-                                public_async_client,
-                                request_public,
-                            )
-
-                            # SSRF: tenant URL was probed unchecked; the pinned
-                            # client also closes the DNS-rebinding window.
-                            async with public_async_client(timeout=3.0) as http:
-                                resp = await request_public(
-                                    http,
-                                    "GET",
-                                    f"{url.rstrip('/')}/health",
-                                    context="mcp health check",
-                                )
-                            latency_ms = round((_time.monotonic() - t0) * 1000)
-                            status = "healthy" if resp.status_code < 400 else "degraded"
-                            results.append(
-                                {
-                                    "server_id": server_id,
-                                    "url": url,
-                                    "status": status,
-                                    "latency_ms": latency_ms,
-                                }
-                            )
-                        except Exception as exc:
-                            results.append(
-                                {
-                                    "server_id": server_id,
-                                    "url": url,
-                                    "status": "unreachable",
-                                    "error": str(exc)[:200],
-                                }
-                            )
-            finally:
+        try:
+            return await health_sweep.run_health_sweep(
+                factory=get_system_session_factory(),
+                redis=r,
+                persist=_persist_health_snapshots,
+                probe=health_sweep.probe_connector,
+                fetch=health_sweep.fetch_connector_page,
+            )
+        finally:
+            if r is not None:
                 await r.aclose()
-        except Exception as exc:
-            results.append({"status": "error", "reason": str(exc)})
-        return {"servers_checked": len(results), "results": results[:20]}
 
+    checked_at = datetime.datetime.now(datetime.UTC).isoformat()
     try:
         result = _run_async(_run())
-    except Exception:
-        # MCPServerConfig import may fail (e.g. mcp module not available)
-        result = _run_async(_fallback())
+    except Exception as exc:
+        # Honest failure: the registry could not be read (no DB, RLS role
+        # misconfigured, Redis down) — never "ok" with zero servers.
+        logger.error("mcp_health_sweep_failed error=%s", exc)
+        return {
+            "status": "error",
+            "reason": str(exc)[:200],
+            "checked_at": checked_at,
+            "servers_checked": 0,
+            "results": [],
+        }
 
     return {
-        "status": "ok",
-        "checked_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "status": result.get("status", "ok"),
+        "checked_at": checked_at,
         "servers_checked": result.get("servers_checked", 0),
+        "snapshots_persisted": result.get("snapshots_persisted", 0),
+        "completed_pass": result.get("completed_pass", False),
         "results": result.get("results", []),
     }
 

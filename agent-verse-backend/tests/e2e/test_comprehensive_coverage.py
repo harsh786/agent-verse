@@ -188,10 +188,12 @@ def test_run_goal_task_executes_with_fake_provider(
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_health_check_mcp_task_returns_status():
+def test_health_check_mcp_task_returns_status(monkeypatch: pytest.MonkeyPatch):
     """health_check_mcp returns a dict with status and checked_at keys."""
     from app.scaling.tasks import health_check_mcp
+    from tests.scaling._mcp_health_fakes import install_registry
 
+    install_registry(monkeypatch, [])
     result = health_check_mcp()
     assert isinstance(result, dict)
     assert "status" in result
