@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio  # noqa: F401  (used in SSE generators)
+import asyncio
 import json as _json
 import uuid
 from collections.abc import AsyncGenerator
@@ -1358,6 +1358,35 @@ async def get_emergency_stop(request: Request) -> dict[str, Any]:
     }
 
 
+# Goals the tenant stop cancels inside the request; the rest are cancelled by
+# the keyset-batched ``cancel_goals_for_emergency_stop`` worker task.
+_ESTOP_INLINE_CANCEL_LIMIT = 200
+
+
+async def _enqueue_estop_cancel(tenant_id: str, org_id: str | None = None) -> bool:
+    """Enqueue the batched e-stop cancel task; False when the broker refused it."""
+    import logging
+
+    try:
+        from app.scaling.tasks import cancel_goals_for_emergency_stop
+
+        # Bounded: an unreachable broker must not hold the stop response.
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                cancel_goals_for_emergency_stop.apply_async,
+                kwargs={"tenant_id": tenant_id, "org_id": org_id},
+                retry=False,
+            ),
+            timeout=5.0,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "emergency_stop_cancel_enqueue_failed: %s", type(exc).__name__
+        )
+        return False
+    return True
+
+
 @router.post("/emergency-stop")
 async def emergency_stop(
     request: Request,
@@ -1405,24 +1434,42 @@ async def emergency_stop(
         _log.error("emergency_stop_not_persisted: %s", exc)
         raise _stop_unenforceable(exc) from exc
 
-    # 2. Cancel every non-terminal goal of the tenant, on any replica/worker.
+    # 2. Cancel the tenant's non-terminal goals, on any replica/worker. At most
+    #    one bounded page inline (INC-07: an unbounded loop inside the request
+    #    timed out for a large backlog); anything beyond it — or a page that
+    #    could not be listed or cancelled — goes to the keyset-batched worker
+    #    task. The persisted flag already halts every one of them meanwhile.
     goal_service = getattr(request.app.state, "goal_service", None)
     cancelled_goals: list[str] = []
     failed_goals: list[dict[str, str]] = []
+    needs_batch_cancel = False
     if goal_service is not None:
         try:
-            running = await goal_service.active_goal_ids(ctx)
+            running = await goal_service.active_goal_ids(
+                ctx, limit=_ESTOP_INLINE_CANCEL_LIMIT
+            )
         except Exception as exc:
             _log.warning("emergency_stop_enumerate_failed: %s", exc)
             running = []
+            needs_batch_cancel = True
             errors.append(f"goal_enumeration_failed: {type(exc).__name__}")
-        for goal_id in running:
+        if len(running) >= _ESTOP_INLINE_CANCEL_LIMIT:
+            needs_batch_cancel = True
+        for goal_id in running[:_ESTOP_INLINE_CANCEL_LIMIT]:
             try:
                 await goal_service.cancel_goal(goal_id=goal_id, tenant_ctx=ctx)
                 cancelled_goals.append(goal_id)
             except Exception as exc:
                 _log.warning("emergency_stop_cancel_failed goal_id=%s: %s", goal_id, exc)
                 failed_goals.append({"goal_id": goal_id, "error": type(exc).__name__})
+                needs_batch_cancel = True
+    goal_cancellation = "inline"
+    cancel_task_enqueued = False
+    if needs_batch_cancel:
+        cancel_task_enqueued = await _enqueue_estop_cancel(ctx.tenant_id)
+        goal_cancellation = "enqueued" if cancel_task_enqueued else "not_enqueued"
+        if not cancel_task_enqueued:
+            errors.append("cancel_task_not_enqueued")
 
     # 3. Reject all pending HITL approvals (DB-backed listing: approvals raised on
     #    other replicas must be rejected too, not just this replica's cache).
@@ -1508,8 +1555,10 @@ async def emergency_stop(
         "failed_goals": failed_goals,
         "rejected_approvals": len(rejected_approvals),
         "failed_approvals": failed_approvals,
-        # Kept for API compatibility: the persisted flag is what workers read.
-        "celery_signal_sent": True,
+        # Whether the batched cancel task was really enqueued (INC-03: this was
+        # a hard-coded True). The persisted flag is what workers read either way.
+        "celery_signal_sent": cancel_task_enqueued,
+        "goal_cancellation": goal_cancellation,
         "audit_recorded": audit_recorded,
         "errors": errors,
         "message": (

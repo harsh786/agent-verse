@@ -382,7 +382,10 @@ def test_emergency_stop_with_redis() -> None:
     resp = client.post("/governance/emergency-stop", headers=_headers())
     assert resp.status_code == 200
     data = resp.json()
-    assert data["celery_signal_sent"] is True
+    # INC-03: no goals to hand off, so no batch task was enqueued (it used to be
+    # a hard-coded True).
+    assert data["celery_signal_sent"] is False
+    assert data["goal_cancellation"] == "inline"
 
 
 def test_clear_emergency_stop() -> None:

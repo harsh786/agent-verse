@@ -23,7 +23,7 @@ class _GoalSvc:
         self._goals = {"g-ok": _Rec("t-gov"), "g-bad": _Rec("t-gov"), "g-other": _Rec("t-x")}
         self.cancelled: list[str] = []
 
-    async def active_goal_ids(self, tenant_ctx: Any) -> list[str]:
+    async def active_goal_ids(self, tenant_ctx: Any, *, limit: int | None = None) -> list[str]:
         # DB-backed fleet-wide listing (stubbed): the tenant's non-terminal goals.
         return [g for g, r in self._goals.items() if r.tenant_id == tenant_ctx.tenant_id]
 

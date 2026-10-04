@@ -2295,8 +2295,13 @@ class GoalService:
             return
         await ensure(self._db, tenant_ctx.tenant_id)
 
-    async def active_goal_ids(self, tenant_ctx: TenantContext) -> list[str]:
+    async def active_goal_ids(
+        self, tenant_ctx: TenantContext, *, limit: int | None = None
+    ) -> list[str]:
         """Every non-terminal goal of the tenant — on ANY replica or worker.
+
+        *limit* bounds the answer (the emergency stop cancels one bounded page
+        inline and hands the rest to a keyset-batched worker task).
 
         The emergency stop used to enumerate this replica's in-memory goals only,
         so goals run by other replicas or Celery workers were never cancelled.
@@ -2323,14 +2328,18 @@ class GoalService:
             ):
                 rows = (
                     await session.execute(
-                        select(Goal.id).where(
+                        select(Goal.id)
+                        .where(
                             Goal.tenant_id == tenant_ctx.tenant_id,
                             Goal.status.notin_(terminal),
                         )
+                        .order_by(Goal.id)
+                        .limit(limit)
                     )
                 ).scalars().all()
             ids.update({str(r): None for r in rows})
-        return list(ids)
+        out = list(ids)
+        return out if limit is None else out[:limit]
 
     # ── private helpers ───────────────────────────────────────────────────────
 

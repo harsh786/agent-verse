@@ -1297,7 +1297,11 @@ def test_emergency_stop_goal_cancel_exception_is_swallowed() -> None:
         _make_app(goal_service=goal_service, ctx=_ADMIN_CTX, redis=_fake_redis()),
         raise_server_exceptions=False,
     )
-    resp = client.post("/governance/emergency-stop", headers=_h())
+    # The leftovers go to the batched cancel task (INC-07).
+    enqueue = AsyncMock(return_value=True)
+    with patch("app.api.governance._enqueue_estop_cancel", enqueue):
+        resp = client.post("/governance/emergency-stop", headers=_h())
+    enqueue.assert_awaited_once()
     assert resp.status_code == 200
     assert resp.json()["cancelled_goals"] == 0
     assert resp.json()["failed_goals"] == [{"goal_id": "goal-1", "error": "RuntimeError"}]
@@ -1319,7 +1323,11 @@ def test_emergency_stop_goal_enumeration_exception_is_reported() -> None:
         _make_app(goal_service=goal_service, ctx=_ADMIN_CTX, redis=_fake_redis()),
         raise_server_exceptions=False,
     )
-    resp = client.post("/governance/emergency-stop", headers=_h())
+    # The leftovers go to the batched cancel task (INC-07).
+    enqueue = AsyncMock(return_value=True)
+    with patch("app.api.governance._enqueue_estop_cancel", enqueue):
+        resp = client.post("/governance/emergency-stop", headers=_h())
+    enqueue.assert_awaited_once()
     assert resp.status_code == 200
     assert resp.json()["cancelled_goals"] == 0
     assert resp.json()["partial"] is True

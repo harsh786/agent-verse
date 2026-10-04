@@ -47,7 +47,9 @@ class _GoalServiceStub:
         self.cancelled: list[str] = []
         self._goals: dict[str, Any] = {}  # this replica runs nothing
 
-    async def active_goal_ids(self, tenant_ctx: TenantContext) -> list[str]:
+    async def active_goal_ids(
+        self, tenant_ctx: TenantContext, *, limit: int | None = None
+    ) -> list[str]:
         return list(self.ids)
 
     async def cancel_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
