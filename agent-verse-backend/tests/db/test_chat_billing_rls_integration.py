@@ -51,6 +51,13 @@ TENANT_B = "tenant-rls-cb-b"
 
 _TEXT_GUC = "current_setting('app.tenant_id', true)"
 
+# A minimal valid row: since ORG-42 (c7fbea9807c1) content is BYTEA with no
+# default and kind is required ('snippet' rows belong to a session).
+_CHAT_ARTIFACT_INSERT = (
+    "INSERT INTO chat_artifacts (id, session_id, tenant_id, kind, content) "
+    "VALUES (:id, :sid, :t, 'snippet', convert_to('x', 'UTF8'))"
+)
+
 _TENANT_TABLES = (
     "chat_artifacts",
     "chat_message_usage",
@@ -363,9 +370,7 @@ async def test_chat_side_tables_and_audit_wal_are_isolated(factories: tuple) -> 
             {"id": secrets.token_hex(16), "sid": sid, "t": TENANT_A},
         )
         await s.execute(
-            text(
-                "INSERT INTO chat_artifacts (id, session_id, tenant_id) VALUES (:id, :sid, :t)"
-            ),
+            text(_CHAT_ARTIFACT_INSERT),
             {"id": secrets.token_hex(16), "sid": sid, "t": TENANT_A},
         )
         await s.execute(
@@ -381,9 +386,7 @@ async def test_chat_side_tables_and_audit_wal_are_isolated(factories: tuple) -> 
             "INSERT INTO chat_message_usage (id, message_id, session_id, tenant_id) "
             "VALUES (:id, 'm2', :sid, :t)"
         ),
-        "chat_artifacts": (
-            "INSERT INTO chat_artifacts (id, session_id, tenant_id) VALUES (:id, :sid, :t)"
-        ),
+        "chat_artifacts": _CHAT_ARTIFACT_INSERT,
         "audit_wal_queue": (
             "INSERT INTO audit_wal_queue (tenant_id, payload) VALUES (:t, '{}'::jsonb)"
         ),
