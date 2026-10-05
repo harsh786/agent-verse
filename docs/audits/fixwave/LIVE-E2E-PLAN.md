@@ -41,3 +41,9 @@ Mechanics per phase (one agent, in its own worktree off `main`):
 - **Parked by owner:** B9 data/polling, B10 conditional/composite, B11 not-implemented (incl. kafka trigger,
   s3_event, google_sheets, sharepoint, log_pattern, graphql_subscription, websocket_message, price_threshold);
   sources A4, A8, A9, A11; B4–B6; channels C1–C5 unless the owner re-enables them.
+
+## Execution rule (owner, 2026-10-05)
+Strictly sequential, one item at a time, in the priority order above. For each item: verify end-to-end on the
+live stack first; if it already passes every scenario, mark it **COMPLETE** (evidence: scenario names + run
+date) and move on without code changes; otherwise fix at the root, re-run live, then mark COMPLETE.
+Per-item status is tracked in `docs/audits/fixwave/live/STATUS.md`.
