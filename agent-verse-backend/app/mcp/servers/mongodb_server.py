@@ -299,6 +299,14 @@ async def call_tool(
     arguments: dict[str, Any],
     credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from app.net.mongodb_policy import MongoOperatorError, assert_safe_mongo_arguments
+
+    try:
+        # MDB-03: write stages / server-side JavaScript anywhere in the call are
+        # refused before any connection exists.
+        assert_safe_mongo_arguments(arguments or {})
+    except MongoOperatorError as exc:
+        return {"error": str(exc), "tool": tool_name, "status": "operator_refused"}
     try:
         uri = _connection_uri(credentials)
         _check_uri_options(uri)
