@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
 from app.orchestration.strategy_registry import get_strategy_registry
@@ -188,13 +188,33 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
 
 
 @router.get("/strategies")
-async def list_strategies(request: Request) -> dict[str, Any]:
-    """List available RAG strategies."""
+async def list_strategies(
+    request: Request,
+    collection_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Evaluate collection-specific readiness (RAPTOR / agentic-chunking "
+            "need that collection's precomputed index). Without it those "
+            "strategies report unavailable_reason=collection_index_required."
+        ),
+    ),
+) -> dict[str, Any]:
+    """List RAG strategies and whether each can really run now.
+
+    ``available`` reflects real capability: dependencies, the tenant's web
+    policy and the web search backend's health, and, per collection, a
+    strategy's precomputed index.
+    """
     tenant = _require_tenant(request)
     registry = get_strategy_registry()
     gateway = getattr(request.app.state, "retrieval_gateway", None)
+    readiness_kwargs: dict[str, Any] = (
+        {"collection_id": collection_id} if isinstance(collection_id, str) else {}
+    )
     readiness_by_strategy = (
-        await gateway.readiness_all(tenant)
+        await gateway.readiness_all(tenant, **readiness_kwargs)
         if gateway is not None and hasattr(gateway, "readiness_all")
         else {}
     )
@@ -231,6 +251,7 @@ async def list_strategies(request: Request) -> dict[str, Any]:
             }
         )
     return {
+        "collection_id": collection_id if isinstance(collection_id, str) else None,
         "strategies": strategies,
     }
 

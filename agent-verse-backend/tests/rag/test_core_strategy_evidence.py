@@ -613,12 +613,18 @@ async def test_readiness_reflects_core_dependencies() -> None:
     )
     gateway = RetrievalGateway(dependencies)
 
+    # RAPTOR / agentic chunking need a collection's precomputed index (P2-6),
+    # so without a collection they are never ready.
+    collection_bound = {RAGStrategy.RAPTOR, RAGStrategy.AGENTIC_CHUNKING}
     ready = {
         strategy: await gateway.readiness(tenant, strategy_id=strategy)
         for strategy in RAG_RUNTIME_CAPABILITIES
-        if strategy not in {RAGStrategy.COLBERT, RAGStrategy.RAFT}
+        if strategy not in {RAGStrategy.COLBERT, RAGStrategy.RAFT, *collection_bound}
     }
     assert all(status.available for status in ready.values())
+    for strategy in collection_bound:
+        status = await gateway.readiness(tenant, strategy_id=strategy)
+        assert (status.available, status.reason) == (False, "collection_index_required")
 
     unavailable = RetrievalGateway(
         RetrievalDependencies(
@@ -929,8 +935,16 @@ async def test_api_discovery_exposes_exactly_ready_core_capabilities(
     assert available == {
         strategy.value
         for strategy in RAG_RUNTIME_CAPABILITIES
-        if strategy not in {RAGStrategy.COLBERT, RAGStrategy.RAFT}
+        if strategy
+        not in {
+            RAGStrategy.COLBERT,
+            RAGStrategy.RAFT,
+            RAGStrategy.RAPTOR,
+            RAGStrategy.AGENTIC_CHUNKING,
+        }
     }
+    reasons = {item["id"]: item["unavailable_reason"] for item in payload["strategies"]}
+    assert reasons["raptor"] == reasons["agentic_chunking"] == "collection_index_required"
 
     unavailable = RetrievalGateway(
         RetrievalDependencies(

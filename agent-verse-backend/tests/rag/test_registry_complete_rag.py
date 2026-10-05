@@ -136,10 +136,15 @@ EXPECTED_DEPENDENCIES = {
         RAGRuntimeDependency.EMBEDDER,
         RAGRuntimeDependency.PROVIDER,
     },
-    RAGStrategy.RAPTOR: {RAGRuntimeDependency.DATABASE, RAGRuntimeDependency.EMBEDDER},
+    RAGStrategy.RAPTOR: {
+        RAGRuntimeDependency.DATABASE,
+        RAGRuntimeDependency.EMBEDDER,
+        RAGRuntimeDependency.PRECOMPUTED_INDEX,
+    },
     RAGStrategy.AGENTIC_CHUNKING: {
         RAGRuntimeDependency.DATABASE,
         RAGRuntimeDependency.EMBEDDER,
+        RAGRuntimeDependency.PRECOMPUTED_INDEX,
     },
     RAGStrategy.COLBERT: {
         RAGRuntimeDependency.DATABASE,

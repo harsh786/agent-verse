@@ -93,6 +93,30 @@ class WebSearchTool:
             raise ValueError("Web search response was not an object")
         return payload
 
+    async def probe(self, *, timeout_seconds: float = 2.0) -> str | None:
+        """Reachability of the SearXNG backend: ``None`` when healthy, else
+        ``backend_timeout`` / ``backend_outage`` / ``backend_error``.
+
+        Uses SearXNG's ``/healthz`` endpoint; never runs a search query.
+        """
+        if not self._searxng_url:
+            return "backend_unconfigured"
+        try:
+            async with httpx.AsyncClient(
+                timeout=max(0.1, min(timeout_seconds, self._timeout)),
+                follow_redirects=False,
+                transport=self._transport,
+                trust_env=False,
+            ) as client:
+                response = await client.get(f"{self._searxng_url}/healthz")
+            return None if response.status_code < 400 else "backend_error"
+        except (httpx.TimeoutException, TimeoutError):
+            return "backend_timeout"
+        except httpx.TransportError:
+            return "backend_outage"
+        except Exception:
+            return "backend_error"
+
     async def search(self, query: str, *, num_results: int = 5) -> WebSearchResult:
         """Search the web. Returns up to num_results results."""
         if self._searxng_url:
