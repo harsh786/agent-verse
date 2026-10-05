@@ -184,6 +184,36 @@ def _document_row(document_id: str, chunks: list[Chunk], source_id: str) -> dict
     }
 
 
+# D1: the "source" of an uploaded file. A same-name re-upload replaces only a
+# document of the same source: uploads match uploads, a connector document matches
+# only documents of its own ``source_id``. Recorded on upload chunks as
+# ``metadata.ingest_source`` (never as ``source_id``, which names a real Source).
+UPLOAD_SOURCE = "upload"
+# Same-name matches considered per replace (a file name is one document per source;
+# more than this many copies only exist after the pre-P1a random-id bug).
+_SAME_NAME_MATCH_CAP = 1000
+
+
+def _is_upload_metadata(meta: dict[str, Any]) -> bool:
+    """True when a chunk was stored by the file-upload path.
+
+    New uploads say so (``ingest_source = "upload"``). Uploads stored before D1
+    carry no marker; they are the only chunks with an ``ext`` key and neither a
+    Source (``source_id``), a page (``source_url``) nor a repository (``repo_url``).
+    Kept in sync with the SQL in :meth:`KnowledgeStore.same_name_document_ids_async`.
+    """
+    if str(meta.get("source_id") or ""):
+        return False
+    marker = meta.get("ingest_source")
+    if marker is not None:
+        return str(marker) == UPLOAD_SOURCE
+    return (
+        "ext" in meta
+        and not str(meta.get("source_url") or "")
+        and not str(meta.get("repo_url") or "")
+    )
+
+
 # Chunk metadata keys a document listing's ``search`` matches (title / file / URL).
 _DOCUMENT_SEARCH_KEYS = ("doc_title", "title", "source_file", "filename", "source_url")
 # Documents counted exactly for a listing's ``total``; past it ``total_capped``.
@@ -668,6 +698,106 @@ class KnowledgeStore:
             ).fetchall()
         dist = {str(r[0]): int(r[1]) for r in rows}
         return dist, sum(dist.values())
+
+    async def same_name_document_ids_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        collection_id: str,
+        name: str,
+        source: str,
+    ) -> list[str]:
+        """Documents of ``source`` in one collection stored under file name ``name``.
+
+        D1: what a same-name re-upload may replace. ``source`` is
+        :data:`UPLOAD_SOURCE` for uploads, else a connector's ``source_id``; a
+        document of another source with the same name is never returned, and a
+        document any of whose chunks belongs to another source is not either
+        (fail closed). ``name`` matches ``source_file`` or ``doc_title`` exactly.
+        Bounded (``_SAME_NAME_MATCH_CAP``) and served by the
+        ``idx_knowledge_chunks_<dim>_source_file`` / ``_doc_title`` expression
+        indexes, so it never scans a large collection. Raises ``KeyError`` for an
+        unknown collection.
+        """
+        name = name.strip()
+        if not name or not source:
+            return []
+        if self._db is None:
+            cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
+            if cstore is None:
+                raise KeyError(f"Collection {collection_id} not found")
+            named: set[str] = set()
+            foreign: set[str] = set()
+            for c in cstore.chunks:
+                meta = c.metadata or {}
+                if name not in (str(meta.get("source_file") or ""),
+                                str(meta.get("doc_title") or "")):
+                    continue
+                named.add(c.document_id)
+                if source == UPLOAD_SOURCE:
+                    ours = _is_upload_metadata(meta)
+                else:
+                    ours = str(meta.get("source_id") or "") == source
+                if not ours:
+                    foreign.add(c.document_id)
+            return sorted(named - foreign)[:_SAME_NAME_MATCH_CAP]
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        params: dict[str, Any] = {
+            "tid": tenant_ctx.tenant_id,
+            "cid": collection_id,
+            "name": name,
+            "cap": _SAME_NAME_MATCH_CAP,
+        }
+        if source == UPLOAD_SOURCE:
+            # Mirrors _is_upload_metadata.
+            params["upload"] = UPLOAD_SOURCE
+            ours = (
+                "(COALESCE(metadata->>'source_id', '') = '' AND ("
+                "metadata->>'ingest_source' = :upload OR ("
+                "NOT (metadata ? 'ingest_source') AND metadata ? 'ext' "
+                "AND COALESCE(metadata->>'source_url', '') = '' "
+                "AND COALESCE(metadata->>'repo_url', '') = '')))"
+            )
+        else:
+            params["source"] = source
+            ours = "(metadata->>'source_id' = :source)"
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dim = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+            if dim is None:
+                raise KeyError(f"Collection {collection_id} not found")
+            table = _chunk_table(int(dim))
+            rows = (
+                await session.execute(
+                    text(f"""
+                        SELECT document_id FROM {table}
+                        WHERE tenant_id = :tid AND collection_id = :cid
+                          AND (metadata->>'source_file' = :name
+                               OR metadata->>'doc_title' = :name)
+                        GROUP BY document_id
+                        HAVING bool_and({ours})
+                        ORDER BY document_id
+                        LIMIT :cap
+                    """),
+                    params,
+                )
+            ).fetchall()
+        return [str(r[0]) for r in rows]
 
     async def list_source_documents_async(
         self,
@@ -1171,6 +1301,49 @@ class KnowledgeStore:
                         "tid": tenant_ctx.tenant_id,
                         "cid": collection_id,
                     },
+                )
+            ).fetchall()
+        return {str(r[0]) for r in rows}
+
+    async def existing_document_ids_async(
+        self, collection_id: str, document_ids: list[str], *, tenant_ctx: TenantContext
+    ) -> set[str]:
+        """The subset of ``document_ids`` that has chunks in ``collection_id``.
+
+        One indexed probe per call (callers pass a bounded batch), served by the
+        ``(collection_id, document_id, chunk_index)`` unique index. Errors
+        propagate. An unknown collection holds nothing.
+        """
+        if not document_ids:
+            return set()
+        wanted = set(document_ids)
+        if self._db is None:
+            cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
+            return {
+                c.document_id
+                for c in (cstore.chunks if cstore is not None else [])
+                if c.document_id in wanted
+            }
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            table = await self._collection_chunk_table(session, collection_id, tenant_ctx)
+            if table is None:
+                return set()
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT d.did FROM unnest(CAST(:ids AS text[])) AS d(did) "
+                        f"WHERE EXISTS (SELECT 1 FROM {table} c WHERE c.collection_id = :cid "
+                        "AND c.tenant_id = :tid AND c.document_id = d.did)"
+                    ),
+                    {"ids": sorted(wanted), "cid": collection_id, "tid": tenant_ctx.tenant_id},
                 )
             ).fetchall()
         return {str(r[0]) for r in rows}
@@ -2712,6 +2885,7 @@ class KnowledgeStore:
         collection_id: str,
         tenant_ctx: TenantContext,
         replace_document: bool = False,
+        supersedes_document_id: str | None = None,
     ) -> list[str]:
         """Persist all chunks for one ingestion unit in a single transaction.
 
@@ -2720,6 +2894,12 @@ class KnowledgeStore:
         stable id replaces its previous version instead of sitting beside it.
         The duplicate-content guard still applies — an unchanged document (same
         ``doc_content_hash``) raises :class:`DuplicateContentError` as before.
+
+        ``supersedes_document_id``: another document this one takes over (D2 —
+        a MongoDB document stored under its pre-v8 id). It is deleted (with its
+        graph rows) in the same transaction BEFORE the duplicate-content guard,
+        so the new id may carry the same content, and there is never a moment
+        with neither copy nor one with both.
         """
         replacement_id: str | None = None
         if replace_document and chunks:
@@ -2748,9 +2928,28 @@ class KnowledgeStore:
                 str(chunk.metadata.get("doc_content_hash") or "") for chunk in chunks
             }
             doc_hashes.discard("")
+            superseded: list[Chunk] = []
+            if supersedes_document_id is not None:
+                cached = self._data.get((tenant_ctx.tenant_id, collection_id))
+                if cached is not None:
+                    superseded = [
+                        c for c in cached.chunks if c.document_id == supersedes_document_id
+                    ]
+                    cached.chunks = [
+                        c for c in cached.chunks if c.document_id != supersedes_document_id
+                    ]
+                    cached.collection.document_count = len(
+                        {c.document_id for c in cached.chunks}
+                    )
             if doc_hashes and self._exists_by_hash_memory(
                 next(iter(doc_hashes)), tenant_ctx.tenant_id, collection_id
             ):
+                if superseded:  # all or nothing: put the superseded copy back
+                    cached = self._data[(tenant_ctx.tenant_id, collection_id)]
+                    cached.chunks.extend(superseded)
+                    cached.collection.document_count = len(
+                        {c.document_id for c in cached.chunks}
+                    )
                 raise DuplicateContentError(
                     f"Content already indexed in collection {collection_id}"
                 )
@@ -2793,6 +2992,7 @@ class KnowledgeStore:
             tenant_id=tenant_ctx.tenant_id,
             replacement_document_id=replacement_id,
             check_duplicates_on_replace=True,
+            superseded_document_id=supersedes_document_id,
         )
 
         # In-memory mirror only when there is no database. With a DB the chunk
@@ -3009,6 +3209,7 @@ class KnowledgeStore:
         completion_lease_owner: str | None = None,
         replacement_document_id: str | None = None,
         check_duplicates_on_replace: bool = False,
+        superseded_document_id: str | None = None,
     ) -> None:
         if self._db is None:
             return
@@ -3105,6 +3306,35 @@ class KnowledgeStore:
 
             removed_chunks = 0
             removed_bytes = 0
+            superseded_chunks = 0
+            superseded_bytes = 0
+            if superseded_document_id is not None:
+                # D2: the document this one takes over goes first, inside this
+                # transaction (and so before the duplicate guard below).
+                gone = (
+                    await session.execute(
+                        text(f"""
+                            DELETE FROM {table}
+                            WHERE collection_id = :collection_id
+                              AND tenant_id = :tenant_id
+                              AND document_id = :document_id
+                            RETURNING octet_length(content), chunk_index, id
+                        """),
+                        {
+                            "collection_id": collection_id,
+                            "tenant_id": tenant_id,
+                            "document_id": superseded_document_id,
+                        },
+                    )
+                ).fetchall()
+                if gone:
+                    from app.rag.retention import delete_document_graph
+
+                    await delete_document_graph(
+                        session, tenant_id, superseded_document_id, [tuple(r) for r in gone]
+                    )
+                superseded_chunks = len(gone)
+                superseded_bytes = sum(int(r[0] or 0) for r in gone)
             if replacement_document_id is not None and check_duplicates_on_replace:
                 # A replacement whose content is already indexed (this document
                 # unchanged, or the same content under another id) is a duplicate,
@@ -3214,14 +3444,16 @@ class KnowledgeStore:
                 {
                     "id": collection_id,
                     "tid": tenant_id,
-                    "d_chunks": added_chunks - removed_chunks,
+                    "d_chunks": added_chunks - removed_chunks - superseded_chunks,
                     # A replaced document was deleted just above, so the probe
                     # counted it as new again; it is the same document, so net 0.
                     # Only discount it when the delete actually removed rows —
                     # replacing a document the collection never had really is an
-                    # addition.
-                    "d_documents": added_documents - (1 if removed_chunks else 0),
-                    "d_bytes": added_bytes - removed_bytes,
+                    # addition. A superseded document (D2) is one document fewer.
+                    "d_documents": added_documents
+                    - (1 if removed_chunks else 0)
+                    - (1 if superseded_chunks else 0),
+                    "d_bytes": added_bytes - removed_bytes - superseded_bytes,
                 },
             )
             if completion_job_id is not None:

@@ -185,11 +185,22 @@ async def _previous_upload_document_ids(
     collection_id: str,
     tenant_ctx: TenantContext,
 ) -> list[str]:
-    """Documents a new upload of ``filename`` replaces: its stable id when indexed,
-    plus copies of the same file stored under random ids by older versions."""
+    """Documents a new upload of ``filename`` replaces: earlier uploads of that
+    file name in the same collection — its stable id when indexed, plus copies
+    stored under random ids by older versions.
+
+    D1: scoped to the ``upload`` source. A connector's, a repository's or a
+    scraped page's document with the same name is a different source and is
+    never replaced (nor does its legal hold block the upload).
+    """
+    from app.rag.store import UPLOAD_SOURCE
+
     try:
-        page = await store.list_collection_documents_async(
-            tenant_ctx=tenant_ctx, collection_id=collection_id, limit=100, search=filename
+        found = await store.same_name_document_ids_async(
+            tenant_ctx=tenant_ctx,
+            collection_id=collection_id,
+            name=filename,
+            source=UPLOAD_SOURCE,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
@@ -197,12 +208,6 @@ async def _previous_upload_document_ids(
         raise HTTPException(
             status_code=503, detail="Knowledge persistence is unavailable"
         ) from exc
-    found: list[str] = []
-    for doc in page.get("documents") or []:
-        doc_id = str(doc.get("document_id") or doc.get("id") or "")
-        names = {str(doc.get("source_file") or ""), str(doc.get("title") or "")}
-        if doc_id and (doc_id == document_id or filename in names):
-            found.append(doc_id)
     return sorted(set(found), key=lambda d: (d != document_id, d))
 
 
@@ -1172,10 +1177,12 @@ async def ingest_file(
 ) -> dict[str, Any]:
     """Ingest a file into a knowledge collection.
 
-    A file is one document per (collection, file name): uploading a new
-    version under the same name replaces the previous one in the same
+    A file is one document per (collection, source, file name): uploading a
+    new version under the same name replaces the previous upload in the same
     transaction (unchanged chunks keep their ids; a document under legal hold is
-    refused with 409). ``replace_existing=false`` stores it as another document.
+    refused with 409). Only uploads are replaced (D1) — a connector's document
+    with the same name is another source and stays. ``replace_existing=false``
+    stores it as another document.
 
     PDF (chunked per page, page citations), DOCX (paragraphs and tables), XLSX,
     PPTX (slide text, tables and speaker notes), images (PNG/JPEG/WebP, via OCR),
@@ -1188,6 +1195,7 @@ async def ingest_file(
     vision-capable provider configured is a 503 (never a placeholder text).
     """
     from app.ingestion.archive import ARCHIVE_EXTS
+    from app.rag.store import UPLOAD_SOURCE
 
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
@@ -1226,7 +1234,19 @@ async def ingest_file(
             collection_id=collection_id, tenant_ctx=tenant,
         )
         if previous:
-            await _refuse_if_under_legal_hold(request, tenant, collection_id, *previous)
+            try:
+                await _refuse_if_under_legal_hold(request, tenant, collection_id, *previous)
+            except HTTPException as exc:
+                if exc.status_code != status.HTTP_409_CONFLICT:
+                    raise
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        f"'{filename}' is under legal hold and cannot be replaced. "
+                        "Upload it with replace_existing=false to store the new "
+                        "version next to the held one."
+                    ),
+                ) from exc
 
     archive_report: dict[str, Any] | None = None
     if ext in ARCHIVE_EXTS:
@@ -1271,6 +1291,8 @@ async def ingest_file(
     ):
         metadata = {
             "doc_title": filename,
+            # D1: the upload source — a same-name re-upload replaces only uploads.
+            "ingest_source": UPLOAD_SOURCE,
             "source_file": unit.source_file,
             "ext": unit.ext,
             "char_offset": str(offset),

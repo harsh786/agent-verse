@@ -76,6 +76,17 @@ frontend:
       cpu: 250m
       memory: 256Mi
 
+# Worker memory budget (owner decision D4, same numbers as L-03 in
+# infra/docker-compose.prod.yml and infra/k8s/worker-deployment.yaml):
+#   concurrency 4 processes per pod; scale throughput with replicas (pods), not
+#   with concurrency.
+#   maxMemoryPerChildKb 700000 (700 MB) -- Celery recycles a child after a task
+#   once its RSS passes this; a child that has reranked needs ~600 MB, so it is
+#   not recycled after every search.
+#   limit 3.5Gi (3584 Mi) >= parent ~300 MB + 4 x (700 MB cap + ~100 MB one-task
+#   overshoot) = 3500 MB. Enforced by tests/scaling/test_worker_memory_budget.py.
+#   preloadRetrievalModels false -- children load torch/the cross-encoder lazily
+#   on first use instead of every child paying ~450 MB at start (L-03).
 worker:
   enabled: true
   replicaCount: 1
@@ -83,18 +94,22 @@ worker:
     repository: agentverse/backend
     tag: local
   concurrency: 4
+  maxTasksPerChild: 100
+  maxMemoryPerChildKb: 700000
+  preloadRetrievalModels: false
   queues: celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,triggers.poll,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance
   resources:
     requests:
       cpu: 500m
-      memory: 768Mi
+      memory: 1Gi
     limits:
       cpu: "2"
-      memory: 2Gi
+      memory: 3.5Gi  # D4 / L-03 budget, see the comment above `worker:`
 
 # Dedicated pool for supervisor sub-goals (CORE-09). `worker.queues` must NOT
 # list these queues: a supervisor parent holds its worker slot while it waits, so
-# its sub-goals need slots the parents can never occupy.
+# its sub-goals need slots the parents can never occupy. Same D4 / L-03 memory
+# budget as `worker` (4 processes, 700 MB per child, 3.5Gi per pod).
 subgoalWorker:
   enabled: true
   replicaCount: 1
@@ -102,14 +117,17 @@ subgoalWorker:
     repository: agentverse/backend
     tag: local
   concurrency: 4
+  maxTasksPerChild: 100
+  maxMemoryPerChildKb: 700000
+  preloadRetrievalModels: false
   queues: goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise
   resources:
     requests:
       cpu: 250m
-      memory: 512Mi
+      memory: 1Gi
     limits:
       cpu: "1"
-      memory: 1Gi
+      memory: 3.5Gi  # D4 / L-03 budget
 
 beat:
   enabled: true

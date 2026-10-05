@@ -525,6 +525,18 @@ export interface AgentResponse {
   description?: string;
   /** Reasoning-pattern opt-ins (enable_cot, enable_debate, ...), also flattened. */
   pattern_flags?: Record<string, boolean>;
+  /** D3: listed in the public A2A directory (when the tenant's directory is on). */
+  a2a_public?: boolean;
+  /** Public card text shown in the A2A directory (never the prompt or tools). */
+  a2a_description?: string;
+  a2a_skills?: string[];
+}
+
+/** D3: the per-agent public A2A directory opt-in and its card text. */
+export interface AgentA2AUpdate {
+  a2a_public?: boolean;
+  a2a_description?: string;
+  a2a_skills?: string[];
 }
 
 // ── Agent extended types ──────────────────────────────────────────────────────
@@ -645,6 +657,9 @@ export const agentsApi = {
       },
       { silenceServerErrorToast: true },
     ),
+  /** D3: opt the agent in/out of the public A2A directory and set its card text. */
+  updateA2A: (id: string, data: AgentA2AUpdate) =>
+    request<AgentResponse>(`/agents/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   update: (id: string, data: Partial<CreateAgentRequest>) =>
     request<AgentResponse>(`/agents/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/agents/${id}`, { method: "DELETE" }),
@@ -908,6 +923,14 @@ export interface ApiKeyResponse {
 }
 
 export const tenantsApi = {
+  /** D3: whether this tenant's opted-in agents are listed at /.well-known/agents. */
+  getA2ADirectory: () => request<{ enabled: boolean }>("/tenants/me/a2a-directory"),
+  /** D3: turn the public A2A directory listing on or off (admin only). */
+  setA2ADirectory: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/tenants/me/a2a-directory", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
   signup: (body: SignupRequest) =>
     request<TenantResponse>("/tenants/signup", { method: "POST", body: JSON.stringify(body) }),
   me: () => request<TenantResponse>("/tenants/me"),

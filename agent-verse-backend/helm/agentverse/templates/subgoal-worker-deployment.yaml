@@ -33,6 +33,8 @@ spec:
             - worker
             - --loglevel=info
             - --concurrency={{ .Values.subgoalWorker.concurrency }}
+            - --max-tasks-per-child={{ .Values.subgoalWorker.maxTasksPerChild }}
+            - --max-memory-per-child={{ .Values.subgoalWorker.maxMemoryPerChildKb }}
             - -Q
             - {{ .Values.subgoalWorker.queues }}
           envFrom:
@@ -49,5 +51,7 @@ spec:
                 secretKeyRef:
                   name: agentverse-secrets
                   key: redis-url
+            - name: WORKER_PRELOAD_RETRIEVAL_MODELS
+              value: {{ .Values.subgoalWorker.preloadRetrievalModels | quote }}
           resources:
             {{- toYaml .Values.subgoalWorker.resources | nindent 12 }}

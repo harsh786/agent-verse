@@ -13,14 +13,14 @@ class TestHasFeature:
     def test_free_has_goals(self):
         assert has_feature(_ctx(PlanTier.FREE), "goals") is True
 
-    def test_free_lacks_rpa(self):
-        assert has_feature(_ctx(PlanTier.FREE), "rpa") is False
+    def test_free_lacks_simulations(self):
+        assert has_feature(_ctx(PlanTier.FREE), "simulations") is False
 
     def test_starter_has_marketplace(self):
         assert has_feature(_ctx(PlanTier.STARTER), "marketplace") is True
 
-    def test_professional_has_rpa(self):
-        assert has_feature(_ctx(PlanTier.PROFESSIONAL), "rpa") is True
+    def test_professional_has_simulations(self):
+        assert has_feature(_ctx(PlanTier.PROFESSIONAL), "simulations") is True
 
     def test_enterprise_has_all(self):
         assert has_feature(_ctx(PlanTier.ENTERPRISE), "sso") is True
@@ -48,11 +48,11 @@ class TestCheckLimit:
 
 class TestAssertFeature:
     def test_passes_for_available_feature(self):
-        assert_feature(_ctx(PlanTier.PROFESSIONAL), "rpa")  # no exception
+        assert_feature(_ctx(PlanTier.PROFESSIONAL), "simulations")  # no exception
 
     def test_raises_for_unavailable_feature(self):
-        with pytest.raises(PermissionError, match="rpa"):
-            assert_feature(_ctx(PlanTier.FREE), "rpa")
+        with pytest.raises(PermissionError, match="simulations"):
+            assert_feature(_ctx(PlanTier.FREE), "simulations")
 
 
 class TestAssertLimit:
