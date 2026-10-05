@@ -1,0 +1,342 @@
+{
+  "_generated_by": "agent-verse-backend/tests/api/test_connectors_fe_fixtures.py (AGENTVERSE_WRITE_FE_FIXTURES=1 to regenerate)",
+  "catalog_entry": {
+    "auth_fields": [
+      {
+        "field_type": "password",
+        "hint": "mongodb:// or mongodb+srv://. Stored encrypted, never shown again. Options that weaken TLS or read files on the server are refused.",
+        "key": "url",
+        "label": "Connection string",
+        "placeholder": "mongodb+srv://user:password@cluster0.example.mongodb.net/mydb",
+        "required": true
+      },
+      {
+        "field_type": "text",
+        "hint": "",
+        "key": "database",
+        "label": "Default database",
+        "placeholder": "mydb",
+        "required": false
+      },
+      {
+        "field_type": "text",
+        "hint": "",
+        "key": "username",
+        "label": "Username",
+        "placeholder": "app_user",
+        "required": false
+      },
+      {
+        "field_type": "password",
+        "hint": "",
+        "key": "password",
+        "label": "Password",
+        "placeholder": "",
+        "required": false
+      },
+      {
+        "field_type": "text",
+        "hint": "",
+        "key": "auth_source",
+        "label": "Auth source",
+        "placeholder": "admin",
+        "required": false
+      },
+      {
+        "field_type": "text",
+        "hint": "SCRAM-SHA-256, SCRAM-SHA-1, PLAIN, or MONGODB-X509 (needs a client certificate).",
+        "key": "auth_mechanism",
+        "label": "Auth mechanism",
+        "placeholder": "SCRAM-SHA-256",
+        "required": false
+      },
+      {
+        "field_type": "checkbox",
+        "hint": "",
+        "key": "tls",
+        "label": "Require TLS",
+        "placeholder": "",
+        "required": false
+      },
+      {
+        "field_type": "textarea",
+        "hint": "The CA that signed the server certificate, if not a public CA.",
+        "key": "tls_ca_pem",
+        "label": "CA certificate (PEM)",
+        "placeholder": "-----BEGIN CERTIFICATE-----",
+        "required": false
+      },
+      {
+        "field_type": "textarea",
+        "hint": "For mutual TLS or MONGODB-X509.",
+        "key": "tls_client_cert",
+        "label": "Client certificate (PEM)",
+        "placeholder": "-----BEGIN CERTIFICATE-----",
+        "required": false
+      },
+      {
+        "field_type": "textarea",
+        "hint": "",
+        "key": "tls_client_private_key",
+        "label": "Client private key (PEM)",
+        "placeholder": "-----BEGIN PRIVATE KEY-----",
+        "required": false
+      },
+      {
+        "field_type": "password",
+        "hint": "",
+        "key": "tls_client_key_password",
+        "label": "Client key passphrase",
+        "placeholder": "",
+        "required": false
+      }
+    ],
+    "auth_type": "connection_string",
+    "builtin_server_id": "builtin-mongodb",
+    "category": "database",
+    "connector_type": "mongodb",
+    "default_url": "mongodb://localhost:27017",
+    "description": "MongoDB \u2014 documents CRUD, aggregations, index management",
+    "display_name": "MongoDB",
+    "has_builtin": true,
+    "icon": "mongodb",
+    "is_configured": false,
+    "name": "mongodb"
+  },
+  "register_response": {
+    "builtin_type": "builtin-mongodb",
+    "display_name": "orders-db",
+    "display_url": "mongodb://8.8.8.8:27017/shop",
+    "name": "orders-db",
+    "server_id": "builtin-mongodb:orders-db",
+    "url": "builtin://"
+  },
+  "registered_row": {
+    "auth_config": {
+      "auth_mechanism": "SCRAM-SHA-256",
+      "auth_source": "admin",
+      "database": "shop",
+      "password": "<redacted>",
+      "url": "<redacted>",
+      "username": "alice"
+    },
+    "auth_type": "connection_string",
+    "auto_approve": false,
+    "base_url": "builtin://",
+    "builtin_type": "builtin-mongodb",
+    "builtin_type_name": "MongoDB",
+    "capabilities": [],
+    "connector_type": "mongodb",
+    "description": "",
+    "display_name": "orders-db",
+    "display_url": "mongodb://8.8.8.8:27017/shop",
+    "enabled": true,
+    "has_builtin": true,
+    "name": "orders-db",
+    "priority": 0,
+    "server_id": "builtin-mongodb:orders-db",
+    "status": "active",
+    "tool_definitions": [
+      {
+        "description": "Find documents in a MongoDB collection with optional query and projection",
+        "name": "mongodb_find",
+        "parameters": {
+          "properties": {
+            "collection": {
+              "description": "Collection name",
+              "type": "string"
+            },
+            "database": {
+              "description": "Database name (overrides URI default)",
+              "type": "string"
+            },
+            "limit": {
+              "default": 100,
+              "type": "integer"
+            },
+            "projection": {
+              "description": "Fields to include/exclude",
+              "type": "object"
+            },
+            "query": {
+              "default": {},
+              "description": "MongoDB query filter",
+              "type": "object"
+            }
+          },
+          "required": [
+            "collection"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "Find a single document in a MongoDB collection",
+        "name": "mongodb_find_one",
+        "parameters": {
+          "properties": {
+            "collection": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "projection": {
+              "type": "object"
+            },
+            "query": {
+              "default": {},
+              "type": "object"
+            }
+          },
+          "required": [
+            "collection"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "Insert a single document into a MongoDB collection",
+        "name": "mongodb_insert_one",
+        "parameters": {
+          "properties": {
+            "collection": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "document": {
+              "description": "Document to insert",
+              "type": "object"
+            }
+          },
+          "required": [
+            "collection",
+            "document"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "Update a single document in a MongoDB collection",
+        "name": "mongodb_update_one",
+        "parameters": {
+          "properties": {
+            "collection": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "filter": {
+              "description": "Filter to match the document",
+              "type": "object"
+            },
+            "update": {
+              "description": "Fields to set (passed as $set)",
+              "type": "object"
+            },
+            "upsert": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "collection",
+            "filter",
+            "update"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "Delete a single document from a MongoDB collection",
+        "name": "mongodb_delete_one",
+        "parameters": {
+          "properties": {
+            "collection": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "filter": {
+              "description": "Filter to match the document",
+              "type": "object"
+            }
+          },
+          "required": [
+            "collection",
+            "filter"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "Run an aggregation pipeline on a MongoDB collection",
+        "name": "mongodb_aggregate",
+        "parameters": {
+          "properties": {
+            "collection": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "pipeline": {
+              "description": "Aggregation pipeline stages",
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "collection",
+            "pipeline"
+          ],
+          "type": "object"
+        }
+      },
+      {
+        "description": "List all collections in a MongoDB database",
+        "name": "mongodb_list_collections",
+        "parameters": {
+          "properties": {
+            "database": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      {
+        "description": "Count documents in a MongoDB collection matching a filter",
+        "name": "mongodb_count",
+        "parameters": {
+          "properties": {
+            "collection": {
+              "type": "string"
+            },
+            "database": {
+              "type": "string"
+            },
+            "query": {
+              "default": {},
+              "type": "object"
+            }
+          },
+          "required": [
+            "collection"
+          ],
+          "type": "object"
+        }
+      }
+    ],
+    "transport": "http",
+    "upstream_url": "mongodb://8.8.8.8:27017/shop",
+    "url": "builtin://",
+    "ws_url": null
+  }
+}

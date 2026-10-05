@@ -1,0 +1,15 @@
+{
+  "name": "orders-db",
+  "url": "builtin://",
+  "auth_type": "connection_string",
+  "auth_config": {
+    "url": "mongodb://8.8.8.8:27017/shop",
+    "database": "shop",
+    "username": "alice",
+    "password": "S3cretPw",
+    "auth_source": "admin",
+    "auth_mechanism": "SCRAM-SHA-256"
+  },
+  "auto_approve": false,
+  "type": "builtin-mongodb"
+}

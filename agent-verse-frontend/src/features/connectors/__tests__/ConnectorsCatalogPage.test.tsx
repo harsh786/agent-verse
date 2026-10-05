@@ -157,13 +157,13 @@ describe('ConnectorsCatalogPage', () => {
       return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
     renderPage();
-    await screen.findByText('Mongodb');
+    await screen.findByText('MongoDB');
     expect(await screen.findByRole('link', { name: /manage \(2\)/i })).toHaveAttribute('href', '/connectors');
     await userEvent.click(screen.getByRole('button', { name: /add another/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/connectors', expect.objectContaining({
       state: expect.objectContaining({
         prefill: expect.objectContaining({
-          type: 'builtin-mongodb', type_name: 'Mongodb', name: '', auth_type: 'connection_string',
+          type: 'builtin-mongodb', type_name: 'MongoDB', name: '', auth_type: 'connection_string',
         }),
       }),
     }));

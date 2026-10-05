@@ -12,6 +12,9 @@ import { useAuthStore } from '@/stores/auth';
 import { ConnectorsCatalogPage } from '../ConnectorsCatalogPage';
 import { ConnectorsRegisteredPage } from '../ConnectorsRegisteredPage';
 import { MONGODB_CATALOG_ENTRY, MONGODB_REGISTERED_ROW } from './fixtures/mongodbCatalog';
+// Shared with agent-verse-backend/tests/api/test_connectors_fe_fixtures.py, which
+// POSTs this exact body and asserts a working built-in MongoDB connection.
+import sharedRequest from '@/test/fixtures/mongo_register_request.json';
 
 function renderApp(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -55,7 +58,7 @@ describe('MongoDB from the real catalog payload (A10 / TG-06)', () => {
   it('registers: connection_string type, masked single URI, builtin type, no plaintext url', async () => {
     const spy = mockBackend([]);
     renderApp('/connectors/catalog');
-    await screen.findByText('Mongodb');
+    await screen.findByText('MongoDB');
     await userEvent.click(screen.getByRole('button', { name: /^configure$/i }));
 
     const modal = await screen.findByTestId('register-modal');
@@ -87,14 +90,14 @@ describe('MongoDB from the real catalog payload (A10 / TG-06)', () => {
     renderApp('/connectors');
     await screen.findByRole('link', { name: 'orders-db' });
     const row = screen.getByRole('link', { name: 'orders-db' }).closest('tr') as HTMLElement;
-    expect(row).toHaveTextContent('cluster0.example.mongodb.net');
+    expect(row).toHaveTextContent('mongodb://8.8.8.8:27017/shop'); // display_url
     expect(row).toHaveTextContent('Connection String');
     await userEvent.click(within(row).getByRole('button', { name: /^edit$/i }));
 
     const modal = screen.getByTestId('register-modal');
     expect((within(modal).getByRole('combobox', { name: /auth type/i }) as HTMLSelectElement).value).toBe('connection_string');
     expect(within(modal).getByLabelText(/connection uri/i)).toHaveAttribute('type', 'password');
-    expect(within(modal).getByLabelText(/^database/i)).toHaveValue('orders');
+    expect(within(modal).getByLabelText(/^database/i)).toHaveValue('shop');
     const user = within(modal).getByLabelText(/^username/i);
     await userEvent.clear(user);
     await userEvent.type(user, 'bob');
@@ -105,8 +108,31 @@ describe('MongoDB from the real catalog payload (A10 / TG-06)', () => {
     expect(body).toMatchObject({
       auth_type: 'connection_string',
       url: 'builtin://',
-      auth_config: { uri: '<redacted>', username: 'bob', password: '<redacted>', database: 'orders' },
+      auth_config: { url: '<redacted>', username: 'bob', password: '<redacted>', database: 'shop', auth_source: 'admin', auth_mechanism: 'SCRAM-SHA-256' },
     });
     expect(body).not.toHaveProperty('type');
+  });
+});
+
+describe('NF-3 the register form produces exactly the shared backend-tested body', () => {
+  it('mongo_register_request.json — the body agent-verse-backend POSTs and proves working', async () => {
+    const spy = mockBackend([]);
+    renderApp('/connectors/catalog');
+    await screen.findByText('MongoDB');
+    await userEvent.click(screen.getByRole('button', { name: /^configure$/i }));
+    const modal = await screen.findByTestId('register-modal');
+    const cfg = sharedRequest.auth_config;
+    const name = within(modal).getByLabelText(/^name/i);
+    await userEvent.clear(name);
+    await userEvent.type(name, sharedRequest.name);
+    await userEvent.type(within(modal).getByLabelText(/connection uri/i), cfg.url);
+    await userEvent.type(within(modal).getByLabelText(/^database/i), cfg.database);
+    await userEvent.type(within(modal).getByLabelText(/^username/i), cfg.username);
+    await userEvent.type(within(modal).getByLabelText(/^password/i), cfg.password);
+    await userEvent.type(within(modal).getByLabelText(/auth source/i), cfg.auth_source);
+    await userEvent.selectOptions(within(modal).getByLabelText(/auth mechanism/i), cfg.auth_mechanism);
+    await userEvent.click(within(modal).getByRole('button', { name: /^register$/i }));
+    await waitFor(() => expect(bodyOf(spy, 'POST')).toBeTruthy());
+    expect(bodyOf(spy, 'POST')).toEqual(sharedRequest);
   });
 });
