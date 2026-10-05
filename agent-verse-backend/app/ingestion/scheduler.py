@@ -14,6 +14,7 @@ LAW-17: No silent data loss — all failures land in DLQ.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import random
@@ -149,90 +150,332 @@ def _build_worker_kg_hook(db_factory: object) -> object:
     return KGIngestionHook(store=store)
 
 
-def _build_worker_legal_holds() -> object | None:
-    """The legal-hold checker for the worker (the API wires its own in lifespan)."""
-    from app.db.session import get_session_factory
-    from app.governance.legal_holds import LegalHoldManager
+# ── Upstream-deletion reconciliation (KB-44) ─────────────────────────────────
+# Runs as its OWN task, at most once per ``ingestion_reconcile_interval_seconds``
+# per Source (it used to run after every delta sync, listing the whole bucket
+# into a Python set each time). The upstream listing is streamed into Postgres
+# in bounded batches and diffed there, so memory stays bounded at any bucket
+# size; legal holds are checked one query per page, and deletes are capped per
+# run (a truncated run immediately queues its continuation).
 
-    return LegalHoldManager(redis=None, db_factory=get_session_factory())
+_RECONCILE_PAGE = 1000  # indexed documents compared per query
+_RECONCILE_STAGE_BATCH = 1000  # upstream ids staged per INSERT
+_RECONCILE_MAX_DELETES = 10_000  # documents deleted per run at most
+_RECONCILE_GATE = "ingestion:reconcile:due:{tenant}:{source}"
+_RECONCILE_QUEUED = "ingestion:reconcile:queued:{tenant}:{source}"
+# The queued marker outlives the task's whole retry window (12 x 300 s) plus a run.
+_RECONCILE_QUEUED_TTL = 3 * 3600
+_RECONCILE_AFTER_SYNC_DELAY = 30  # let the scheduling sync release its lock first
+_RECONCILE_CONTINUE_DELAY = 10
 
 
-_RECONCILE_PAGE = 500
+class ReconcileUnavailableError(RuntimeError):
+    """Reconciliation cannot be queued (no shared Redis, or the broker refused)."""
 
 
-async def _reconcile_upstream_deletions(connector: Any, config: Any, pipeline: Any) -> int:
+def _reconcile_interval() -> int:
+    from app.core.config import get_settings
+
+    return int(get_settings().ingestion_reconcile_interval_seconds)
+
+
+def _reconcile_redis() -> Any:
+    """The shared Redis holding the reconcile gate/queue markers, or None if unset."""
+    import os
+
+    if not any(
+        os.getenv(name) for name in ("REDIS_URL", "REDIS_SENTINEL_URLS", "REDIS_CLUSTER_NODES")
+    ):
+        return None
+    from app.net.redis_factory import get_redis_kwargs, make_async_redis
+
+    return make_async_redis(**get_redis_kwargs(), socket_timeout=5)
+
+
+async def _close(client: Any) -> None:
+    close = getattr(client, "aclose", None)
+    if close is not None:
+        with contextlib.suppress(Exception):
+            await close()
+
+
+async def _enqueue_reconcile(
+    client: Any, source_id: str, tenant_id: str, *, countdown: int = 0
+) -> bool:
+    """Queue ``ingestion.reconcile_source`` unless one is already queued for the Source.
+
+    A shared ``SET NX`` marker keeps at most one queued run per Source (cleared
+    when the run ends). Returns False when one is already queued. A broker
+    failure clears the marker again and raises.
+    """
+    key = _RECONCILE_QUEUED.format(tenant=tenant_id, source=source_id)
+    if not await client.set(key, "1", nx=True, ex=_RECONCILE_QUEUED_TTL):
+        return False
+    try:
+        reconcile_source_task.apply_async(
+            kwargs={"source_id": source_id, "tenant_id": tenant_id},
+            queue="ingestion",
+            countdown=countdown,
+        )
+    except Exception:
+        with contextlib.suppress(Exception):
+            await client.delete(key)
+        raise
+    return True
+
+
+async def _release_reconcile_queue(source_id: str, tenant_id: str) -> None:
+    """Clear the Source's queued marker (best effort; it expires on its own)."""
+    client = _reconcile_redis()
+    if client is None:
+        return
+    try:
+        await client.delete(_RECONCILE_QUEUED.format(tenant=tenant_id, source=source_id))
+    except Exception as exc:
+        _log.warning("reconcile_queue_release_failed source=%s: %s", source_id, exc)
+    finally:
+        await _close(client)
+
+
+async def _schedule_reconcile_if_due(connector: Any, config: Any) -> bool:
+    """Queue reconciliation when this Source's interval has passed (after a clean sync).
+
+    The due-gate is a shared Redis ``SET NX EX <interval>`` (every worker sees
+    it). No Redis, or a connector that cannot list upstream: nothing is
+    scheduled — and nothing is ever deleted without a reconcile run. A failed
+    enqueue reopens the gate so the next sync tries again.
+    """
+    from app.ingestion.base_connector import lists_upstream
+
+    if not config.collection_id or not lists_upstream(connector):
+        return False
+    client = _reconcile_redis()
+    if client is None:
+        _log.warning("reconcile_not_scheduled source=%s: no shared Redis", config.source_id)
+        return False
+    gate = _RECONCILE_GATE.format(tenant=config.tenant_id, source=config.source_id)
+    try:
+        if not await client.set(gate, "1", nx=True, ex=_reconcile_interval()):
+            return False
+        try:
+            await _enqueue_reconcile(
+                client,
+                config.source_id,
+                config.tenant_id,
+                countdown=_RECONCILE_AFTER_SYNC_DELAY,
+            )
+        except Exception:
+            with contextlib.suppress(Exception):
+                await client.delete(gate)
+            raise
+        return True
+    except Exception as exc:
+        _log.warning("reconcile_not_scheduled source=%s: %s", config.source_id, exc)
+        return False
+    finally:
+        await _close(client)
+
+
+async def request_reconcile(source_id: str, tenant_id: str) -> bool:
+    """Queue reconciliation for one Source now (``POST /sources/{id}/reconcile``).
+
+    Returns False when a run is already queued for it. Raises
+    :class:`ReconcileUnavailableError` when it cannot be queued — never a
+    silent "accepted".
+    """
+    client = _reconcile_redis()
+    if client is None:
+        raise ReconcileUnavailableError("no shared Redis configured")
+    try:
+        return await _enqueue_reconcile(client, source_id, tenant_id)
+    except Exception as exc:
+        raise ReconcileUnavailableError(str(exc)) from exc
+    finally:
+        await _close(client)
+
+
+async def _reconcile_upstream_deletions(
+    connector: Any,
+    config: Any,
+    pipeline: Any,
+    *,
+    max_deletes: int = _RECONCILE_MAX_DELETES,
+    page_size: int = _RECONCILE_PAGE,
+    stage_batch: int = _RECONCILE_STAGE_BATCH,
+) -> dict[str, int]:
     """Delete this Source's indexed documents that no longer exist upstream.
 
-    Runs only for connectors whose ``list_live_doc_ids`` returns an authoritative
-    set (``None`` = cannot know → nothing is deleted). Only documents stamped
-    with this Source's id are candidates; a document (or its collection) under
-    legal hold is kept, and a hold that cannot be verified keeps it too (fail
-    closed). Any listing error skips reconciliation — the sync itself stands.
-    """
-    try:
-        live = await connector.list_live_doc_ids(config)
-    except Exception as exc:
-        _log.warning(
-            "upstream_deletion_listing_failed source=%s: %s", config.source_id, exc
-        )
-        return 0
-    store = getattr(pipeline, "_kb", None)
-    if live is None or store is None or not config.collection_id:
-        return 0
+    1. Stream ``connector.iter_live_doc_ids`` into ``ingestion_live_listings``
+       (``stage_batch`` ids per INSERT). A connector that cannot know, or any
+       listing error, ends the run with nothing deleted.
+    2. Keyset-page the Source's documents indexed BEFORE the run began that are
+       NOT in the staged listing (Postgres anti-join, ``page_size`` per query).
+       Only ids of the connector's current scheme (``manages_doc_id``) are
+       candidates; a document a concurrent sync indexes mid-run is never one.
+    3. Per page, ONE legal-hold query: held documents (document, collection or
+       tenant-wide hold) are kept; a failed check stops the run (fail closed).
+    4. At most ``max_deletes`` deletions per run (``truncated`` = 1: the task
+       queues the continuation).
 
+    Returns ``{"deleted", "kept_held", "stale_seen", "truncated",
+    "listing_failed", "hold_check_failed"}``.
+    """
+    import uuid as _uuid
+
+    from app.ingestion.base_connector import LiveListingUnavailableError
+
+    counts = {
+        "deleted": 0,
+        "kept_held": 0,
+        "stale_seen": 0,
+        "truncated": 0,
+        "listing_failed": 0,
+        "hold_check_failed": 0,
+    }
+    store = getattr(pipeline, "_kb", None)
+    if store is None or not config.collection_id:
+        return counts
     from app.tenancy.context import PlanTier, TenantContext
 
     tenant_ctx = TenantContext(
         tenant_id=config.tenant_id, plan=PlanTier.FREE, api_key_id="ingestion"
     )
-    stale: list[str] = []
-    after: str | None = None
-    while True:
-        rows = await store.list_source_documents_async(
-            tenant_ctx=tenant_ctx,
-            collection_id=config.collection_id,
-            source_id=config.source_id,
-            limit=_RECONCILE_PAGE,
-            after=after,
-        )
-        stale.extend(
-            str(r["id"])
-            for r in rows
-            if str(r["id"]) not in live and connector.manages_doc_id(str(r["id"]))
-        )
-        if len(rows) < _RECONCILE_PAGE:
-            break
-        after = str(rows[-1]["id"])
-    if not stale:
-        return 0
+    run_id = _uuid.uuid4().hex
+    started = await store.begin_live_listing_async(run_id, tenant_ctx=tenant_ctx)
+    try:
+        batch: list[str] = []
+        try:
+            async for doc_id in connector.iter_live_doc_ids(config):
+                batch.append(str(doc_id))
+                if len(batch) >= stage_batch:
+                    await store.stage_live_doc_ids_async(run_id, batch, tenant_ctx=tenant_ctx)
+                    batch = []
+            await store.stage_live_doc_ids_async(run_id, batch, tenant_ctx=tenant_ctx)
+        except LiveListingUnavailableError:
+            return counts
+        except Exception as exc:
+            _log.warning(
+                "upstream_deletion_listing_failed source=%s: %s", config.source_id, exc
+            )
+            counts["listing_failed"] = 1
+            return counts
+        del batch
 
-    holds: Any = _build_worker_legal_holds()
-    deleted = 0
-    for doc_id in stale:
-        if holds is not None:
-            try:
-                held = await holds.is_under_hold(
-                    tenant_id=config.tenant_id, resource_id=doc_id
-                ) or await holds.is_under_hold(
-                    tenant_id=config.tenant_id, resource_id=config.collection_id
-                )
-            except Exception as exc:
-                _log.warning(
-                    "upstream_deletion_hold_unverifiable source=%s doc=%s: %s",
-                    config.source_id, doc_id, exc,
-                )
-                continue
-            if held:
-                continue
-        if await store.delete_document_async(
-            doc_id, collection_id=config.collection_id, tenant_ctx=tenant_ctx
-        ):
-            deleted += 1
+        after: str | None = None
+        while True:
+            page = await store.list_unlisted_source_documents_async(
+                run_id,
+                tenant_ctx=tenant_ctx,
+                collection_id=config.collection_id,
+                source_id=config.source_id,
+                indexed_before=started,
+                after=after,
+                limit=page_size,
+            )
+            if not page:
+                break
+            after = page[-1]
+            candidates = [d for d in page if connector.manages_doc_id(d)]
+            counts["stale_seen"] += len(candidates)
+            if candidates:
+                try:
+                    held = await store.held_document_ids_async(
+                        config.collection_id, candidates, tenant_ctx=tenant_ctx
+                    )
+                except Exception as exc:
+                    _log.warning(
+                        "upstream_deletion_hold_unverifiable source=%s: %s",
+                        config.source_id,
+                        exc,
+                    )
+                    counts["hold_check_failed"] = 1
+                    break
+                for doc_id in candidates:
+                    if doc_id in held:
+                        counts["kept_held"] += 1
+                        continue
+                    if counts["deleted"] >= max_deletes:
+                        counts["truncated"] = 1
+                        break
+                    if await store.delete_document_async(
+                        doc_id, collection_id=config.collection_id, tenant_ctx=tenant_ctx
+                    ):
+                        counts["deleted"] += 1
+            if counts["truncated"] or len(page) < page_size:
+                break
+    finally:
+        try:
+            await store.clear_live_listing_async(run_id, tenant_ctx=tenant_ctx)
+        except Exception as exc:  # leftovers are purged by the tenant's next run
+            _log.warning("upstream_listing_clear_failed source=%s: %s", config.source_id, exc)
     _log.info(
-        "upstream_deletions_applied source=%s deleted=%d stale=%d",
-        config.source_id, deleted, len(stale),
+        "upstream_deletions_applied source=%s deleted=%d kept_held=%d stale=%d truncated=%d "
+        "hold_check_failed=%d",
+        config.source_id,
+        counts["deleted"],
+        counts["kept_held"],
+        counts["stale_seen"],
+        counts["truncated"],
+        counts["hold_check_failed"],
     )
-    return deleted
+    return counts
+
+
+@shared_task(
+    name="ingestion.reconcile_source",
+    bind=True,
+    max_retries=12,
+    default_retry_delay=300,
+)
+def reconcile_source_task(self: Any, *, source_id: str, tenant_id: str) -> dict[str, Any]:
+    """Upstream-deletion reconciliation for one Source (KB-44).
+
+    Queued by a failure-free sync at most once per interval, or on demand by
+    ``POST /sources/{id}/reconcile``. A run that hit the per-run delete cap
+    queues its continuation at once (the Source keeps its queued marker).
+    """
+    result: dict[str, Any] = _run_task_loop(
+        _reconcile_source_async(source_id=source_id, tenant_id=tenant_id)
+    )
+    if result.get("skipped") == "locked" and self.request.retries < self.max_retries:
+        raise self.retry()  # a sync holds the Source: run once it is done
+    if result.get("truncated"):
+        try:
+            reconcile_source_task.apply_async(
+                kwargs={"source_id": source_id, "tenant_id": tenant_id},
+                queue="ingestion",
+                countdown=_RECONCILE_CONTINUE_DELAY,
+            )
+            return result
+        except Exception as exc:
+            _log.warning("reconcile_continuation_not_queued source=%s: %s", source_id, exc)
+    _run_task_loop(_release_reconcile_queue(source_id, tenant_id))
+    return result
+
+
+async def _reconcile_source_async(*, source_id: str, tenant_id: str) -> dict[str, Any]:
+    """Reconcile under the Source's sync lock.
+
+    The lock keeps it from overlapping a sync on the same tracker; correctness
+    does not rest on it — only documents indexed before the run began are
+    candidates, so a document a concurrent sync indexes is never deleted.
+    """
+    from app.ingestion.connector_registry import get_connector, load_all_connectors
+
+    load_all_connectors()
+    tracker: Any
+    tracker, pipeline, source_store = _build_worker_ingestion()
+    token = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
+    if not token:
+        return {"skipped": "locked"}
+    try:
+        config = await source_store.get(source_id, tenant_id)  # type: ignore[attr-defined]
+        if config is None or not config.enabled:
+            return {"skipped": "source_unavailable"}
+        connector = get_connector(config.source_type)()
+        return dict(await _reconcile_upstream_deletions(connector, config, pipeline))
+    finally:
+        await tracker.release_lock(source_id, tenant_id, token)
 
 
 async def _sync_source_async(
@@ -458,18 +701,19 @@ async def _sync_source_async(
         if new_cursor and new_cursor != (config.cursor_value or ""):
             await source_store.update(source_id, tenant_id, cursor_value=new_cursor)
 
-        # Upstream deletions: only after a complete, failure-free run, and only
-        # for connectors that can list what exists upstream.
-        docs_deleted = 0
+        # Upstream deletions: only after a complete, failure-free run, only for
+        # connectors that can list what exists upstream, and at most once per
+        # interval per Source — as its own task (KB-44).
+        reconcile_scheduled = False
         if not docs_failed and not cancelled:
-            docs_deleted = await _reconcile_upstream_deletions(connector, config, pipeline)
+            reconcile_scheduled = await _schedule_reconcile_if_due(connector, config)
 
         return {
             "job_id": job.job_id,
             "docs_indexed": docs_indexed,
             "docs_skipped": docs_skipped,
             "docs_failed": docs_failed,
-            "docs_deleted": docs_deleted,
+            "reconcile_scheduled": reconcile_scheduled,
             "cancelled": cancelled,
         }
 

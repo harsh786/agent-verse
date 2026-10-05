@@ -18,7 +18,8 @@ import json
 import math
 import uuid as _uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
 
 from app.observability.logging import get_logger
 from app.rag.models import Chunk, KnowledgeCollection
@@ -233,6 +234,8 @@ class KnowledgeStore:
         # Key: (tenant_id, collection_id) → _CollectionStore
         self._data: dict[tuple[str, str], _CollectionStore] = {}
         self._index_records: dict[tuple[str, str], list[RAGIndexRecord]] = {}
+        # No-DB (dev/test) staging of reconciliation listings, by (tenant, run).
+        self._live_listings: dict[tuple[str, str], set[str]] = {}
         self._db = db_session_factory
         # Called with the tenant id after the tenant's knowledge changed (chunks
         # written or deleted) — e.g. SemanticCache.invalidate_tenant, so cached
@@ -642,19 +645,20 @@ class KnowledgeStore:
             ids = sorted(d for d in grouped if after is None or d > after)[:limit]
             return [_document_row(d, grouped[d], source_id) for d in ids]
 
-        dim = await self.get_collection_embedding_dim(collection_id, tenant_ctx=tenant_ctx)
-        if dim is None:
-            return []
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
 
-        table = _chunk_table(dim)
         async with (
             self._db() as session,
             session.begin(),
             sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
         ):
+            # The collection's declared dimension (not its chunk counter, which a
+            # drifted count could zero while chunks exist).
+            table = await self._collection_chunk_table(session, collection_id, tenant_ctx)
+            if table is None:
+                return []
             rows = (
                 await session.execute(
                     text(f"""
@@ -920,6 +924,166 @@ class KnowledgeStore:
             )
         return _document_page(documents, limit=limit, counted=min(len(grouped),
                                                                   _DOCUMENT_COUNT_CAP + 1))
+
+    # ── Upstream-deletion reconciliation (KB-44) ─────────────────────────────
+    # The upstream listing is staged in ``ingestion_live_listings`` (one run id
+    # per run) in bounded batches; Postgres then finds the Source's indexed
+    # documents that are NOT listed. Process memory stays bounded at any bucket
+    # size. Without a database the staging lives in this (dev-only) store.
+
+    async def begin_live_listing_async(
+        self, run_id: str, *, tenant_ctx: TenantContext
+    ) -> datetime:
+        """Start reconciliation run ``run_id``; returns the database clock's now.
+
+        Only documents indexed before this instant are deletion candidates: a
+        document a concurrent sync indexes while the run is listing is absent
+        from the listing because it is NEW, not gone. Also purges staged rows a
+        crashed run of this tenant left behind (older than a day).
+        """
+        if self._db is None:
+            return datetime.now(UTC)
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            await session.execute(
+                text(
+                    "DELETE FROM ingestion_live_listings WHERE tenant_id = :tid "
+                    "AND created_at < now() - interval '1 day'"
+                ),
+                {"tid": tenant_ctx.tenant_id},
+            )
+            started = (await session.execute(text("SELECT now()"))).scalar_one()
+        return cast(datetime, started)
+
+    async def stage_live_doc_ids_async(
+        self, run_id: str, doc_ids: list[str], *, tenant_ctx: TenantContext
+    ) -> None:
+        """Stage one batch of upstream ids for reconciliation run ``run_id``."""
+        if not doc_ids:
+            return
+        if self._db is None:
+            self._live_listings.setdefault((tenant_ctx.tenant_id, run_id), set()).update(
+                doc_ids
+            )
+            return
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO ingestion_live_listings (tenant_id, run_id, doc_id) "
+                    "SELECT :tid, :run, unnest(CAST(:ids AS text[])) "
+                    "ON CONFLICT DO NOTHING"
+                ),
+                {"tid": tenant_ctx.tenant_id, "run": run_id, "ids": list(doc_ids)},
+            )
+
+    async def list_unlisted_source_documents_async(
+        self,
+        run_id: str,
+        *,
+        tenant_ctx: TenantContext,
+        collection_id: str,
+        source_id: str,
+        indexed_before: datetime,
+        after: str | None = None,
+        limit: int = 1000,
+    ) -> list[str]:
+        """The Source's indexed document ids NOT staged under ``run_id`` (keyset page).
+
+        Walks ``idx_knowledge_chunks_<dim>_source_doc`` in ``document_id`` order
+        once across all pages, probing the staged listing's primary key per
+        document. A document with any chunk written at or after
+        ``indexed_before`` (re-indexed or new since the run began) is never
+        returned. The no-database store keeps no chunk timestamps (dev only).
+        """
+        if self._db is None:
+            listed = self._live_listings.get((tenant_ctx.tenant_id, run_id), set())
+            cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
+            ids = {
+                c.document_id
+                for c in (cstore.chunks if cstore is not None else [])
+                if str((c.metadata or {}).get("source_id") or "") == source_id
+                and c.document_id not in listed
+                and (after is None or c.document_id > after)
+            }
+            return sorted(ids)[:limit]
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            # The collection's declared dimension (not its chunk counter, which a
+            # drifted count could zero while chunks exist).
+            table = await self._collection_chunk_table(session, collection_id, tenant_ctx)
+            if table is None:
+                return []
+            rows = (
+                await session.execute(
+                    text(
+                        f"SELECT c.document_id FROM {table} c "
+                        "WHERE c.tenant_id = :tid AND c.collection_id = :cid "
+                        "AND c.metadata->>'source_id' = :sid "
+                        "AND (CAST(:after AS text) IS NULL "
+                        "     OR c.document_id > CAST(:after AS text)) "
+                        "AND NOT EXISTS (SELECT 1 FROM ingestion_live_listings l "
+                        "  WHERE l.tenant_id = :tid AND l.run_id = :run "
+                        "  AND l.doc_id = c.document_id) "
+                        "GROUP BY c.document_id "
+                        "HAVING max(c.created_at) < :before "
+                        "ORDER BY c.document_id LIMIT :lim"
+                    ),
+                    {
+                        "tid": tenant_ctx.tenant_id,
+                        "cid": collection_id,
+                        "sid": source_id,
+                        "after": after,
+                        "run": run_id,
+                        "before": indexed_before,
+                        "lim": limit,
+                    },
+                )
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    async def clear_live_listing_async(self, run_id: str, *, tenant_ctx: TenantContext) -> None:
+        """Drop run ``run_id``'s staged listing."""
+        if self._db is None:
+            self._live_listings.pop((tenant_ctx.tenant_id, run_id), None)
+            return
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            await session.execute(
+                text(
+                    "DELETE FROM ingestion_live_listings "
+                    "WHERE tenant_id = :tid AND run_id = :run"
+                ),
+                {"tid": tenant_ctx.tenant_id, "run": run_id},
+            )
 
     async def held_document_ids_async(
         self, collection_id: str, document_ids: list[str], *, tenant_ctx: TenantContext

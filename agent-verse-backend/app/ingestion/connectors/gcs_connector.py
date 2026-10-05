@@ -82,24 +82,26 @@ class GCSConnector(BaseConnector):
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc))
 
-    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
-        """Every blob under the configured prefix/patterns (upstream deletions)."""
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Stream every blob under the configured prefix/patterns (KB-44).
+
+        ``list_blobs`` pages lazily; pages are pulled on the SDK pool and yielded
+        as they arrive, so the bucket is never materialised in memory.
+        """
         from google.cloud import storage
 
         creds_json = config.connection_config.get("service_account_json")
         bucket_name = config.connection_config.get("bucket", "")
         prefix = config.connection_config.get("prefix", "")
+        client = await run_blocking(_make_client, storage, creds_json)
+        blobs = client.list_blobs(bucket_name, prefix=prefix)
+        async for blob in iterate_blocking(blobs, chunk_size=1000):
+            if self._matches(blob.name, config.include_patterns, config.exclude_patterns):
+                yield stable_doc_id(config, f"gs://{bucket_name}/{blob.name}")
 
-        def _names() -> list[str]:
-            client = _make_client(storage, creds_json)
-            return [blob.name for blob in client.list_blobs(bucket_name, prefix=prefix)]
-
-        names = await run_blocking(_names)
-        return {
-            stable_doc_id(config, f"gs://{bucket_name}/{name}")
-            for name in names
-            if self._matches(name, config.include_patterns, config.exclude_patterns)
-        }
+    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+        """The live listing as a set (small buckets / tests; reconciliation streams)."""
+        return {doc_id async for doc_id in self.iter_live_doc_ids(config)}
 
     async def get_delta(
         self, config: SourceConfig, cursor: str | None

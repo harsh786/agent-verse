@@ -574,6 +574,13 @@ class Settings(BaseSettings):
     # Ingestion jobs still running/pending after this long are reaped as failed
     # (orphaned by a lost worker). Must exceed the source lock TTL (3600s).
     ingestion_stale_job_seconds: int = 7200
+    # Upstream-deletion reconciliation (KB-44): a Source whose connector can list
+    # what exists upstream (S3/MinIO, GCS, Azure Blob) has the documents deleted
+    # there removed from its collection by the ``ingestion.reconcile_source``
+    # task. A failure-free sync schedules it at most once per this interval per
+    # Source (it lists the whole bucket, so it no longer runs after every sync);
+    # ``POST /sources/{id}/reconcile`` runs it on demand.
+    ingestion_reconcile_interval_seconds: int = Field(default=86400, ge=300)
 
     # --- owner decisions (defaults = shipped behaviour) ---
     # Shortest gap a plan may schedule between fires (cron, interval, api_poll

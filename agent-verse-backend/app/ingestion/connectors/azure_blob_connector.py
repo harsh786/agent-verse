@@ -23,6 +23,7 @@ from app.ingestion.connector_egress import (
     run_driver_call,
 )
 from app.ingestion.connector_registry import register
+from app.ingestion.sdk_executor import iterate_blocking
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -181,8 +182,12 @@ class AzureBlobConnector(BaseConnector):
             async for item in self._iter_blobs(config, cursor):
                 yield item
 
-    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
-        """Every blob under the configured prefix/patterns (upstream deletions)."""
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Stream every blob under the configured prefix/patterns (KB-44).
+
+        ``list_blobs`` pages lazily; each page is pulled egress-checked on the
+        SDK pool and yielded as it arrives — never the whole container at once.
+        """
         from azure.storage.blob import BlobServiceClient
 
         cc = config.connection_config
@@ -198,15 +203,17 @@ class AzureBlobConnector(BaseConnector):
                 )
             container_client = service.get_container_client(container)
 
-            def _names() -> list[str]:
-                return [b.name for b in container_client.list_blobs(name_starts_with=prefix)]
+            async def _run(func: Any, *args: Any) -> Any:
+                return await run_driver_call(func, *args, context="azure_blob")
 
-            names = await run_driver_call(_names, context="azure_blob")
-        return {
-            stable_doc_id(config, container, name)
-            for name in names
-            if self._matches(name, config.include_patterns, config.exclude_patterns)
-        }
+            blobs = container_client.list_blobs(name_starts_with=prefix)
+            async for blob in iterate_blocking(blobs, chunk_size=1000, runner=_run):
+                if self._matches(blob.name, config.include_patterns, config.exclude_patterns):
+                    yield stable_doc_id(config, container, blob.name)
+
+    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+        """The live listing as a set (small containers / tests; reconciliation streams)."""
+        return {doc_id async for doc_id in self.iter_live_doc_ids(config)}
 
     async def _iter_blobs(
         self, config: SourceConfig, cursor: str | None

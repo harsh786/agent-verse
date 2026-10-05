@@ -51,6 +51,10 @@ def row_identity(row: dict[str, Any], id_column: str | None = None) -> str:
     return f"row-sha256={digest}"
 
 
+class LiveListingUnavailableError(RuntimeError):
+    """The connector cannot list what exists upstream: never delete anything."""
+
+
 class ConnectorUnavailableError(RuntimeError):
     """The connector cannot run at all (e.g. its SDK is not installed).
 
@@ -220,13 +224,29 @@ class BaseConnector(ABC):
         """Every document id that currently exists upstream, or None if unknowable.
 
         Override only where a complete, authoritative listing is cheap (an object
-        store's key listing). After a sync with no failures, the scheduler
-        deletes this Source's indexed documents whose ids are not in the set
-        (upstream deletions), skipping any under legal hold. ``None`` — the
-        default — means "cannot know", and nothing is ever deleted. Must raise
-        rather than return a partial set.
+        store's key listing). ``None`` — the default — means "cannot know", and
+        nothing is ever deleted. Must raise rather than return a partial set.
+        Upstream-deletion reconciliation consumes :meth:`iter_live_doc_ids`
+        (streamed, bounded memory); this set form is for small listings only.
         """
         return None
+
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Stream every document id that currently exists upstream (any order).
+
+        The upstream-deletion reconciler consumes this page by page and stages
+        the ids in Postgres in bounded batches, so a million-object bucket never
+        sits in process memory. Object-store connectors override it to stream
+        their paginated key listing. The default adapts :meth:`list_live_doc_ids`
+        (fine for small listings) and raises :class:`LiveListingUnavailableError`
+        when the connector cannot know. Errors must propagate — a partial
+        listing must never look complete.
+        """
+        live = await self.list_live_doc_ids(config)
+        if live is None:
+            raise LiveListingUnavailableError(type(self).__name__)
+        for doc_id in live:
+            yield doc_id
 
     def manages_doc_id(self, doc_id: str) -> bool:
         """True for ids this connector's *current* id scheme produces.
@@ -336,3 +356,18 @@ def _sdk_guarded_validate(fn: Any) -> Any:
         return result
 
     return guarded
+
+
+def lists_upstream(connector: object) -> bool:
+    """True when ``connector`` (an instance or class) can list what exists upstream.
+
+    KB-44: only such connectors are reconciled for upstream deletions; any
+    other connector never deletes indexed documents.
+    """
+    cls = connector if isinstance(connector, type) else type(connector)
+    streams = getattr(cls, "iter_live_doc_ids", BaseConnector.iter_live_doc_ids)
+    lists = getattr(cls, "list_live_doc_ids", BaseConnector.list_live_doc_ids)
+    return (
+        streams is not BaseConnector.iter_live_doc_ids
+        or lists is not BaseConnector.list_live_doc_ids
+    )

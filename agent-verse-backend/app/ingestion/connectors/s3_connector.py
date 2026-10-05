@@ -319,8 +319,13 @@ class S3Connector(BaseConnector):
 
                 yield raw, new_cursor
 
-    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
-        """Every object key under the configured prefix/patterns (upstream deletions)."""
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Stream every object key under the configured prefix/patterns (KB-44).
+
+        ListObjectsV2 pages (1,000 keys each) are pulled one at a time on the SDK
+        pool and yielded as they arrive — the whole bucket is never held in
+        memory. A listing error propagates (never a partial "complete" set).
+        """
         import boto3
 
         cc = config.connection_config
@@ -328,26 +333,28 @@ class S3Connector(BaseConnector):
         prefix = cc.get("prefix", "")
         credentials = cc.get("credentials", {})
         async with self._pinned_endpoint(config) as endpoint_url:
+            run = self._runner(endpoint_url)
 
-            def _list() -> list[str]:
+            def _client() -> Any:
                 session = boto3.Session(
                     aws_access_key_id=credentials.get("access_key_id"),
                     aws_secret_access_key=credentials.get("secret_access_key"),
                     region_name=cc.get("region", "us-east-1"),
                 )
-                client = session.client("s3", **self._client_kwargs(endpoint_url))
-                keys: list[str] = []
-                paginator = client.get_paginator("list_objects_v2")
-                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-                    keys.extend(obj["Key"] for obj in page.get("Contents", []))
-                return keys
+                return session.client("s3", **self._client_kwargs(endpoint_url))
 
-            keys = await self._runner(endpoint_url)(_list)
-        return {
-            f"s3://{bucket}/{key}"
-            for key in keys
-            if self._matches_patterns(key, config.include_patterns, config.exclude_patterns)
-        }
+            client = await run(_client)
+            pages = client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
+            async for page in iterate_blocking(pages, chunk_size=1, runner=run):
+                include, exclude = config.include_patterns, config.exclude_patterns
+                for obj in page.get("Contents", []):
+                    key = obj["Key"]
+                    if self._matches_patterns(key, include, exclude):
+                        yield f"s3://{bucket}/{key}"
+
+    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+        """The live listing as a set (small buckets / tests; reconciliation streams)."""
+        return {doc_id async for doc_id in self.iter_live_doc_ids(config)}
 
     def manages_doc_id(self, doc_id: str) -> bool:
         return str(doc_id).startswith("s3://")

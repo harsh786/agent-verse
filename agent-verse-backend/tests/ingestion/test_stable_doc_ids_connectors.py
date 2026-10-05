@@ -752,3 +752,46 @@ async def test_connectors_without_a_listing_cannot_delete() -> None:
     from app.ingestion.connectors.jira_connector import JiraConnector
 
     assert await JiraConnector().list_live_doc_ids(_cfg("jira", {}, "s")) is None
+
+
+# ── KB-44: the live listing streams page by page ──────────────────────────────
+
+
+async def test_s3_live_listing_streams_pages_lazily() -> None:
+    """The reconciler stages ids as pages arrive: the S3 listing must never pull
+    the whole bucket before yielding its first id."""
+    from app.ingestion.connectors.s3_connector import S3Connector
+    from tests.ingestion.test_sdk_calls_off_loop import _fake_boto3
+
+    pulled: list[int] = []
+
+    def _pages(**_k: Any) -> Any:
+        for page in range(1000):
+            pulled.append(page)
+            yield {"Contents": [{"Key": f"p{page}-{i}.txt"} for i in range(1000)]}
+
+    modules = _fake_boto3()
+    s3 = modules["boto3"].Session.return_value.client.side_effect(  # type: ignore[attr-defined]
+        "s3"
+    )
+    s3.get_paginator.return_value.paginate.side_effect = _pages
+    cfg = _cfg("s3", {"bucket": "b"}, "src-a")
+    with patch.dict(sys.modules, modules):
+        stream = S3Connector().iter_live_doc_ids(cfg)
+        first = [await stream.__anext__() for _ in range(1500)]
+        await stream.aclose()
+    assert first[0] == "s3://b/p0-0.txt" and first[-1] == "s3://b/p1-499.txt"
+    assert len(pulled) <= 3  # two pages consumed (plus at most one read ahead)
+
+
+async def test_only_connectors_with_an_upstream_listing_can_reconcile() -> None:
+    from app.ingestion.base_connector import lists_upstream
+    from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
+    from app.ingestion.connectors.gcs_connector import GCSConnector
+    from app.ingestion.connectors.jira_connector import JiraConnector
+    from app.ingestion.connectors.s3_connector import S3Connector
+
+    assert lists_upstream(S3Connector())
+    assert lists_upstream(GCSConnector())
+    assert lists_upstream(AzureBlobConnector())
+    assert not lists_upstream(JiraConnector())
