@@ -29,7 +29,8 @@ class _Backend:
 
     def predict(self, pairs: list[tuple[str, str]], *, batch_size: int) -> list[float]:
         del batch_size
-        return [float(sum(w in doc for w in query.split())) for query, doc in pairs]
+        # Logit-like (ms-marco scale): no query word -> -10, each word +10.
+        return [float(10 * sum(w in doc for w in query.split()) - 10) for query, doc in pairs]
 
 
 class _GatedLoader:
@@ -96,7 +97,7 @@ async def test_start_warmup_loads_in_background_once() -> None:
         await asyncio.wait_for(asyncio.wrap_future(future), 5)
         assert reranker.is_ready is True
         assert loader.calls == 1
-        assert await reranker.score("alpha", ["alpha", "zzz"]) == [1.0, 0.0]
+        assert await reranker.score("alpha", ["alpha", "zzz"]) == [0.0, -10.0]
         assert loader.calls == 1  # the warm model is reused
     finally:
         await reranker.aclose()

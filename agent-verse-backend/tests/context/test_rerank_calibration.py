@@ -21,7 +21,9 @@ def test_cross_encoder_reorders_by_ce_score(monkeypatch: pytest.MonkeyPatch) -> 
     """When the cross-encoder is available it reorders by CE relevance."""
 
     def fake_cross_encode(query: str, docs: list[str], batch_size: int = 32) -> list[float]:
-        mapping = {"alpha": 0.0, "beta": 10.0, "gamma": 2.0}
+        # ms-marco logits: beta clearly relevant, alpha / gamma not (OI-5: the
+        # blend reads logits as probabilities, so "irrelevant" is a negative logit).
+        mapping = {"alpha": -10.0, "beta": 10.0, "gamma": -2.0}
         return [mapping[d] for d in docs]
 
     monkeypatch.setattr("app.rag.cross_encoder.cross_encode", fake_cross_encode)
