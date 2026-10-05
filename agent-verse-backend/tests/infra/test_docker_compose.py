@@ -167,13 +167,19 @@ def test_beat_healthcheck_checks_scheduler_process_not_worker_ping():
 
 
 def test_dev_worker_concurrency_fits_its_memory_limit():
-    """Eight prefork children repeatedly exceeded the former 512 MiB limit."""
+    """Eight prefork children repeatedly exceeded the former 512 MiB limit.
+
+    L-03: two children capped at --max-memory-per-child=700000 (KiB) plus the
+    parent need ~1.9 GB, so the limit is 2G (budget checked in
+    tests/scaling/test_worker_memory_budget.py).
+    """
     compose = _load_compose(COMPOSE_PATH)
     worker = compose["services"]["worker"]
     command = " ".join(str(part) for part in worker["command"])
 
     assert "--concurrency=2" in command
-    assert worker["deploy"]["resources"]["limits"]["memory"] == "1G"
+    assert "--max-memory-per-child=700000" in command
+    assert worker["deploy"]["resources"]["limits"]["memory"] == "2G"
 
 
 # ── PITR / backup tests ────────────────────────────────────────────────────────
