@@ -135,25 +135,54 @@ export function useDeleteSource() {
 
 // ── Sync control ──────────────────────────────────────────────────────────────
 
+/** Job id a sync was queued with, per source, until the worker reports it finished. */
+const pendingSyncKey = (sourceId: string) => ['ingestion', 'pending-sync', sourceId] as const;
+const TERMINAL_SYNC = new Set(['completed', 'failed', 'partial', 'cancelled']);
+
+function sameJob(a: unknown, b: unknown): boolean {
+  return String(a ?? '').replace(/-/g, '').toLowerCase() === String(b ?? '').replace(/-/g, '').toLowerCase();
+}
+
 export function useTriggerSync() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sourceId: string) =>
       apiFetch<{ status: string; job_id?: string }>(`/sources/${sourceId}/sync`, { method: 'POST' }),
-    onSuccess: (_d, sourceId) => {
+    onSuccess: (data, sourceId) => {
+      // The API answers before the worker has created the job: follow THIS job
+      // (P1b-9). Invalidating once read the previous job — or "never_synced" —
+      // and polling stopped, so the drawer never showed the sync it started.
+      if (data?.job_id) qc.setQueryData(pendingSyncKey(sourceId), data.job_id);
       qc.invalidateQueries({ queryKey: INGESTION_KEYS.syncStatus(sourceId) });
     },
   });
 }
 
 export function useSyncStatus(sourceId: string) {
+  const qc = useQueryClient();
   return useQuery({
     queryKey: INGESTION_KEYS.syncStatus(sourceId),
-    queryFn: () => apiFetch<IngestionJob>(`/sources/${sourceId}/sync/status`),
+    queryFn: async () => {
+      const job = await apiFetch<IngestionJob>(`/sources/${sourceId}/sync/status`);
+      const pending = qc.getQueryData<string>(pendingSyncKey(sourceId));
+      if (!pending) return job;
+      if (!sameJob(job?.job_id, pending)) {
+        // Not started yet: show the queued job instead of the previous one.
+        return { ...job, job_id: pending, status: 'pending', error_message: '' } as IngestionJob;
+      }
+      if (TERMINAL_SYNC.has(String(job.status))) {
+        qc.removeQueries({ queryKey: pendingSyncKey(sourceId) });
+        // Counts, documents and history changed with the finished run.
+        void qc.invalidateQueries({ queryKey: INGESTION_KEYS.sources() });
+        void qc.invalidateQueries({ queryKey: INGESTION_KEYS.documents(sourceId) });
+        void qc.invalidateQueries({ queryKey: INGESTION_KEYS.dlq() });
+      }
+      return job;
+    },
     enabled: !!sourceId,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return status === 'running' ? 3000 : false; // poll only while running
+      const status = String(query.state.data?.status ?? '');
+      return status === 'running' || status === 'pending' ? 3000 : false; // until it finishes
     },
   });
 }

@@ -142,3 +142,35 @@ describe('ingestion hooks', () => {
     await waitFor(() => expect(result.current.isError).toBe(true));
   });
 });
+
+describe('sync status follows the job it started (P1b-9)', () => {
+  test('shows the queued job, not the previous one, until the worker finishes it', async () => {
+    const { useSyncStatus } = await import('./hooks');
+    let call = 0;
+    const statuses = [
+      { job_id: 'old-1', status: 'completed', sync_mode: 'incremental', docs_indexed: 3 },
+      { job_id: 'old-1', status: 'completed', sync_mode: 'incremental', docs_indexed: 3 },
+      { job_id: 'job-9', status: 'completed', sync_mode: 'incremental', docs_indexed: 1 },
+    ];
+    mockFetch((url, method) => {
+      if (url.endsWith('/sources/src-1/sync/status') && method === 'GET') {
+        return json(statuses[Math.min(call++, statuses.length - 1)]);
+      }
+      return undefined as unknown as Response;
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    );
+    const invalidate = vi.spyOn(qc, 'invalidateQueries');
+    const status = renderHook(() => useSyncStatus('src-1'), { wrapper });
+    await waitFor(() => expect(status.result.current.data?.job_id).toBe('old-1'));
+    const trigger = renderHook(() => useTriggerSync(), { wrapper });
+    trigger.result.current.mutate('src-1');
+    await waitFor(() => expect(status.result.current.data?.status).toBe('pending'));
+    expect(status.result.current.data?.job_id).toBe('job-9');
+    await waitFor(() => expect(status.result.current.data?.status).toBe('completed'), { timeout: 8000 });
+    expect(status.result.current.data?.job_id).toBe('job-9');
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['ingestion', 'sources'] });
+  }, 15000);
+});
