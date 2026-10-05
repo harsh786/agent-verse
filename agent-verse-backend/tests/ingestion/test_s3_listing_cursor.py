@@ -224,3 +224,19 @@ async def test_flat_ui_credentials_are_used() -> None:
     await _run(fake, None, access_key_id="AK", secret_access_key="SK")
     assert fake.session_kwargs[0]["aws_access_key_id"] == "AK"
     assert fake.session_kwargs[0]["aws_secret_access_key"] == "SK"
+
+
+@pytest.mark.asyncio
+async def test_validate_reports_the_s3_error_code() -> None:
+    from botocore.exceptions import ClientError
+
+    fake = FakeS3()
+
+    def _denied(**kw: Any) -> dict[str, Any]:
+        raise ClientError({"Error": {"Code": "SignatureDoesNotMatch", "Message": "bad key"},
+                           "ResponseMetadata": {"HTTPStatusCode": 403}}, "ListObjectsV2")
+
+    fake.list_objects_v2 = _denied  # type: ignore[method-assign]
+    with patch.dict(sys.modules, _boto(fake)):
+        health = await S3Connector().validate_connection(_config())
+    assert not health.ok and "SignatureDoesNotMatch" in str(health.error)

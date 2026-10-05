@@ -329,15 +329,15 @@ class S3Connector(BaseConnector):
 
                 def _probe() -> tuple[float, Any]:
                     s3 = self._make_client(boto3, config, endpoint_url)
-                    # Quick check: head bucket
-                    s3.head_bucket(Bucket=bucket)
-                    latency = (time.perf_counter() - t0) * 1000
-                    # Estimate doc count
+                    # A listing (what a sync needs) — its error carries the S3
+                    # code and message; HEAD Bucket's error has no body, so a bad
+                    # key only ever read "403 Forbidden".
                     resp = s3.list_objects_v2(
                         Bucket=bucket,
                         Prefix=config.connection_config.get("prefix", ""),
                         MaxKeys=1,
                     )
+                    latency = (time.perf_counter() - t0) * 1000
                     return latency, resp
 
                 latency, resp = await self._runner(endpoint_url)(_probe)
