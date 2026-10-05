@@ -312,11 +312,15 @@ async def test_complete_job_update_runs_under_tenant_rls() -> None:
     assert params["status"] == "failed"
 
 
-async def test_create_job_db_persist_error_is_swallowed() -> None:
+async def test_create_job_db_persist_error_raises() -> None:
+    # NF-12: an unrecorded job never looks created.
+    from app.ingestion.job_tracker import IngestionPersistenceError
+
     tracker = IngestionJobTracker(db=_db_raises())
     cfg = _config()
-    job = await tracker.create_job(cfg, job_id="job-3")
-    assert job.status == "running"  # still created in-memory
+    with pytest.raises(IngestionPersistenceError):
+        await tracker.create_job(cfg, job_id="job-3")
+    assert tracker.get_job("job-3") is None
 
 
 async def test_update_cursor_updates_job_and_config() -> None:
@@ -337,11 +341,19 @@ async def test_update_cursor_persists_when_db_present() -> None:
     assert job.cursor_after == "cursor-9"
 
 
-async def test_update_cursor_db_error_is_swallowed() -> None:
-    tracker = IngestionJobTracker(db=_db_raises())
+async def test_update_cursor_db_error_raises_without_advancing() -> None:
+    # NF-12: the cursor never advances past a failed write.
+    from app.ingestion.job_tracker import IngestionPersistenceError
+
+    tracker = IngestionJobTracker()
     cfg = _config()
     job = await tracker.create_job(cfg, job_id="job-1")
-    await tracker.update_cursor(job, "cursor-9", cfg)  # must not raise
+    tracker._db = _db_raises()
+    before = cfg.cursor_value
+    with pytest.raises(IngestionPersistenceError):
+        await tracker.update_cursor(job, "cursor-9", cfg)
+    assert cfg.cursor_value == before
+    assert job.cursor_after != "cursor-9"
 
 
 async def test_increment_counters_accumulates() -> None:
@@ -388,11 +400,17 @@ async def test_complete_job_persists_when_db_present() -> None:
     await tracker.complete_job(job)
 
 
-async def test_complete_job_db_error_is_swallowed() -> None:
-    tracker = IngestionJobTracker(db=_db_raises())
+async def test_complete_job_db_error_raises_and_fails_the_job() -> None:
+    # NF-12: a result that was not recorded is never reported as completed.
+    from app.ingestion.job_tracker import IngestionPersistenceError
+
+    tracker = IngestionJobTracker()
     cfg = _config()
     job = await tracker.create_job(cfg, job_id="job-1")
-    await tracker.complete_job(job)  # must not raise
+    tracker._db = _db_raises()
+    with pytest.raises(IngestionPersistenceError):
+        await tracker.complete_job(job)
+    assert job.status == "failed"
 
 
 def test_get_job_returns_none_when_missing() -> None:
