@@ -78,5 +78,103 @@
     "status": "done",
     "commit": "34cfaff65",
     "note": "unit (stalled fake mongod) + container command-listener test"
+  },
+  "C2": {
+    "status": "done",
+    "commit": "c35928df6",
+    "note": "per-(tenant,connector,fingerprint) LRU+TTL client pool; pins held for client life; evicted on update/delete"
+  },
+  "MDB-10": {
+    "status": "done",
+    "commit": "3cb5aafba",
+    "note": "pymongo<4.19 pinned; hook verified at install (fail closed); real-client canary + control"
+  },
+  "C3": {
+    "status": "done",
+    "commit": "3cb5aafba",
+    "note": "same as MDB-10"
+  },
+  "NF-1": {
+    "status": "done",
+    "commit": "5908b2708",
+    "note": "shared uri_options (&/; + pymongo split_options); file/proxy/ambient-auth refused on MCP + ingestion"
+  },
+  "NF-2": {
+    "status": "done",
+    "commit": "3eb8a1915",
+    "note": "register/update run the shared policy -> 422"
+  },
+  "NF-4": {
+    "status": "done",
+    "commit": "254b4e173",
+    "note": "mask by last '@' before a valid host list; tests for # @ : / ? % passwords"
+  },
+  "MDB-20": {
+    "status": "done",
+    "commit": "c6eda1d56",
+    "note": "classified messages + error id (MCP + ingestion health); detail logged server-side"
+  },
+  "A1": {
+    "status": "done",
+    "commit": "975adfa2f",
+    "note": "AuthType.CONNECTION_STRING; openapi.json regenerated"
+  },
+  "A3": {
+    "status": "done",
+    "commit": "b7bbb99d1",
+    "note": "catalog builtin_server_id + DSN-scheme inference (register + legacy rows); default_url discarded; mongodb catalog fields"
+  },
+  "A10": {
+    "status": "done",
+    "commit": "b7bbb99d1",
+    "note": "backend tests use the real catalog payload (test_connectors_mongodb_catalog_flow.py)"
+  },
+  "TG-11": {
+    "status": "done",
+    "commit": "5ad1afbd1",
+    "note": "404 on /test,/tools,GET,PUT,DELETE + call_tool not found for another tenant"
+  },
+  "A5": {
+    "status": "done",
+    "commit": "3a86d5736",
+    "note": "bool -> 'true'/'false', int/float -> str in _extract_credentials_from_server"
+  },
+  "A6": {
+    "status": "done",
+    "commit": "67dfa1806",
+    "note": "backend: DSN rows resolve to builtin-mongodb (A3), /test runs the handler; tests for new + legacy rows"
+  },
+  "A8": {
+    "status": "done",
+    "commit": "38373bf4a",
+    "note": "upstream_url = display_url (masked); never the catalog default"
+  },
+  "TG-09": {
+    "status": "done",
+    "commit": "e3095b396",
+    "note": "relaxed Extended JSON serialization; unit + container round trip"
+  },
+  "TG-08": {
+    "status": "done",
+    "commit": "52d3d80c8",
+    "note": "MCP path: late-advertised member never dialled via real MongoClient (ingestion half belongs to C4/MDB-11, not in this scope)"
+  },
+  "_new_findings": [
+    "tests/ingestion/test_mongodb_source_integration.py: 6 tests fail on fix/mongo-mcp with 422 'no target knowledge collection (collection_id) is set' from the ingestion sync API (code this branch does not touch; looks pre-existing, the tests do not set collection_id).",
+    "Ingestion sync job error_message (B6) can still carry raw pymongo text; only the health check was sanitized here (app/net/mongodb_errors.public_mongo_error is reusable).",
+    "MDB-11/C4 ingestion: no socket-level member guard (out of scope here); TG-08 ingestion half still open.",
+    "app/mcp/servers/credentials.with_tenant_credentials never forwarded tenant_ctx to wrapped handlers that declare it; now forwards tenant_ctx/server_id only when declared.",
+    "Pre-existing ruff-format drift in app/agent/nodes/executor_mixin.py, app/api/connectors.py, app/ingestion/connectors/mongodb_connector.py (left unformatted to keep diffs small)."
+  ],
+  "_owner_decisions": [
+    "mongodb_delete_one is classified destructive (its tier with no connector name, i.e. denied), not write_high; delete_many/drop also destructive. Switch to write_high in app/agent/tool_risk._MONGODB_TOOL_RISK if single deletes should be approvable.",
+    "pymongo pinned <4.19 (conscious upgrades; the canary tests must pass on the new version)."
+  ],
+  "_fe_contract": {
+    "display_url": "GET/list/PUT/POST responses: masked URI, no userinfo; secret-looking query values -> <redacted>; e.g. mongodb://8.8.8.8:27017,8.8.4.4:27017/shop?replicaSet=rs0&authSource=admin. upstream_url == display_url for MongoDB.",
+    "auth_config": "URI keys (url/uri/connection_string) and every secret return '<redacted>'; send '<redacted>' (or the display_url as top-level url) back unchanged to keep the sealed value; top-level url is 'builtin://'.",
+    "auth_type": "connection_string",
+    "fields": "url, database, username, password, auth_source, auth_mechanism (SCRAM-SHA-256|SCRAM-SHA-1|PLAIN|MONGODB-X509), tls (bool), tls_ca_pem, tls_client_cert, tls_client_private_key, tls_client_key_password (catalog field_type: password|text|checkbox|textarea)",
+    "errors": "422 on save for TLS weakening / file / proxy / ambient-auth options; tool + /test errors are short messages ending '(error id <12 hex>)'"
   }
 }

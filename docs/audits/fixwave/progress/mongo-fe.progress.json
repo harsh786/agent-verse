@@ -72,8 +72,42 @@
   },
   "_new_findings": [
     "ConnectorsRegisteredPage getUrlConfig('') matches the first CONNECTOR_URL_MAP entry (jira) because connKey.includes('') is true: a blank Register form shows 'JIRA Base URL' label/hints.",
-    "Catalog mongodb display_name is 'Mongodb' (spec has no display_name; title-cased name) - backend could set display_name='MongoDB'.",
-    "Catalog connection_string auth_fields are only [url]; the UI supplies the MongoDB field set itself. If the backend adds richer AuthFieldSpecs (checkbox/file/select + options), the renderer already supports them.",
-    "Owner decision: a NON-builtin connection_string connector (e.g. catalog mysql) now sends url='builtin://' with the URI in auth_config; it has no handler on main either way."
-  ]
+    "Owner decision: a NON-builtin connection_string connector (e.g. catalog mysql) now sends url='builtin://' with the URI in auth_config; it has no handler on main either way.",
+    "Catalog field_type for auth_mechanism is text (not select with options); the UI renders its own select."
+  ],
+  "CONTRACT-FIELDS": {
+    "status": "done",
+    "commit": "eca85fe2d",
+    "note": "url key; catalog field set; allow-invalid removed; client cert/key/passphrase; X509 requires cert; masked secrets round-trip"
+  },
+  "A8": {
+    "status": "done",
+    "commit": "8aaea40c2",
+    "note": "display_url shown in table + detail (connectorDisplayUrl)"
+  },
+  "SAVE-422-INLINE": {
+    "status": "done",
+    "commit": "a38dd8e95",
+    "note": "422 save refusals placed on the named field"
+  },
+  "ERROR-ID": {
+    "status": "done",
+    "commit": "57d66cbc4",
+    "note": "(error id <12hex>) kept in every friendly message; classified backend messages shown as-is"
+  },
+  "MDB-07-SOURCES": {
+    "status": "done",
+    "commit": "10370161f",
+    "note": "Mongo source form: no skip-verification checkbox"
+  },
+  "NF-3": {
+    "status": "done",
+    "commit": "88c2bfbf3",
+    "note": "backend-generated mongodb_catalog.json + shared mongo_register_request.json (vitest + pytest)"
+  },
+  "MERGE": {
+    "status": "done",
+    "commit": "795027e47",
+    "note": "merged fix/mongo-mcp (e2fd6c37e) + main; drawer conflict kept USR-1/USR-5; test 75c964234"
+  }
 }

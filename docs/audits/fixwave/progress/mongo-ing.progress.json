@@ -1,7 +1,104 @@
 {
+  "_branch": "fix/mongo-ingestion (merged fix/mongo-mcp at 40d989c45)",
   "TEST-NEEDS-CONFIG": {
     "status": "done",
     "commit": "853fc0491",
     "note": "mongodb source integration (6) + dlq_listing tests create Sources with collection_id; L-02 rule unchanged"
-  }
+  },
+  "C1": {
+    "status": "done",
+    "commit": "783be46f1+cf15463d9",
+    "note": "socketTimeoutMS + maxTimeMS from INGESTION_MONGODB_* settings; tenant URI timeout options (timeoutMS=0 etc., ';'/encoded) stripped and may only lower; stall tests in tests/ingestion/test_mongodb_hostile_server.py"
+  },
+  "MDB-12": {
+    "status": "done",
+    "commit": "783be46f1+cf15463d9",
+    "note": "same as C1"
+  },
+  "TG-10": {
+    "status": "done",
+    "commit": "783be46f1",
+    "note": "same commit as C1 (TG-10: ingestion half only)"
+  },
+  "C4": {
+    "status": "done",
+    "commit": "010bf58e3",
+    "note": "ingestion clients carry the shared _MemberGuard (socket-factory refusal) from app.mcp.servers.mongodb_server"
+  },
+  "MDB-11": {
+    "status": "done",
+    "commit": "010bf58e3",
+    "note": "same as C4 (ingestion half; MCP half was 8d6335c53)"
+  },
+  "TG-08": {
+    "status": "done",
+    "commit": "010bf58e3",
+    "note": "fake RS advertising localhost:victim after discovery; victim hits == [] (tests/ingestion/test_mongodb_hostile_server.py)"
+  },
+  "TG-12": {
+    "status": "done",
+    "commit": "b2ea6dec0",
+    "note": "shared Redis lock (API+worker), CAS Lua adopt/renew/release, TTL 300s renewed, PG sync_fence fencing (migration d9f3b6a1c8e4), fail closed on Redis error; tests/ingestion/test_sync_lock{,_integration}.py"
+  },
+  "NF-5": {
+    "status": "done",
+    "commit": "b2ea6dec0",
+    "note": "same as TG-12; API->worker->API sequence test"
+  },
+  "TG-13": {
+    "status": "done",
+    "commit": "fce566c14+a58e5f4d9",
+    "note": "stable id Source+collection+canonical _id (UUIDv8 since TG-07 so legacy v5 host ids are never reconciled away); URI-change re-read = 0 new docs; no migration"
+  },
+  "TG-15": {
+    "status": "done",
+    "commit": "f202d822c",
+    "note": "Settings.ingestion_connector_mongodb_enabled (default true); ConnectorDisabledError; refused on create/validate/sync/health/worker; MCP builtin has no flag (mongo-mcp scope)"
+  },
+  "C8": {
+    "status": "done",
+    "commit": "a494d92ac",
+    "note": "backend half: ping-only MongoDB health_check + Redis-shared 60s cache (failures too) per source+config; frontend retry/polling is fix/mongo-fe f0ab58fd7"
+  },
+  "TG-07": {
+    "status": "done",
+    "commit": "a58e5f4d9",
+    "note": "change stream (update/replace, resume token in cursor, history-lost -> re-read) + cursor_field timestamps; deletes via iter_live_doc_ids + KB-44 reconcile; ids -> UUIDv8 so legacy v5 ids are never reconciled away"
+  },
+  "TG-09": {
+    "status": "done",
+    "commit": "cc17d0038",
+    "note": "ingestion path: readable BSON rendering, arrays bounded at 100 with marker, deep subtrees kept as JSON, metadata.truncated; container round trip. MCP _serialize half is mongo-mcp scope"
+  },
+  "TG-14": {
+    "status": "done",
+    "commit": "050b53faf",
+    "note": "test only (behaviour already correct): tests/ingestion/test_mongodb_manual_sync_dlq_integration.py (mongo + PG)"
+  },
+  "MDB-20": {
+    "status": "done",
+    "commit": "3de5784a1",
+    "note": "ingestion half: get_delta -> ConnectorFetchError(public_mongo_error) + health_check sanitised; detail logged by error id"
+  },
+  "NF-1": {
+    "status": "done",
+    "commit": "930e0df73",
+    "note": "merged fix/mongo-mcp (40d989c45); ingestion parallel option/mechanism lists removed, shared assert_mongo_connection_allowed only; tests/net/test_mongodb_uri_option_policy.py green"
+  },
+  "TG-05": {
+    "status": "done",
+    "commit": "40d989c45",
+    "note": "provided by fix/mongo-mcp 95708faa8 (tests/net/test_mongodb_tls_policy.py covers ingestion), merged and green"
+  },
+  "C6": {
+    "status": "done",
+    "commit": "40d989c45",
+    "note": "fix/mongo-mcp 95708faa8 (shared TLS policy), merged; ingestion uses it"
+  },
+  "_new_findings": [
+    "IngestionJobTracker._persist_job_created/_persist_cursor_update/_persist_job_completed swallow DB errors at WARNING: a failed job/cursor write still looks successful (fake success)",
+    "MCP builtin-mongodb has no kill-switch feature flag (TG-15 MCP half, mongo-mcp scope)",
+    "MongoDB docs indexed before this branch keep host-based v5 ids: an UPDATED legacy doc is indexed under its v8 id while the stale v5 copy stays until POST /sources/{id}/reindex (an unchanged one is not duplicated: content-hash dedup)",
+    "app/api/ingestion.py _run_sync (in-process sync) appears unused since manual sync moved to Celery; dead code holding a token-less release path"
+  ]
 }
