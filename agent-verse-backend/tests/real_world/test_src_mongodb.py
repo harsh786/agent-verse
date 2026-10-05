@@ -257,9 +257,11 @@ def test_mongo_first_and_incremental_sync(api: LiveAPI, cleanup: Any, evidence: 
         soft.append("second updated document's new status not searchable")
     n2 = _count(api, cid)
     evidence["documents_after_sync2"] = n2
-    if n2 != total + 3:
-        soft.append(f"{n2} documents after sync 2, expected {total + 3} (deletes wait for "
-                    "reconcile)")
+    # total + 3 until reconciled; total + 1 when the automatic post-sync reconcile
+    # (queued 30 s after the clean sync 1, KB-44) already removed the 2 deletes.
+    if n2 not in (total + 3, total + 1):
+        soft.append(f"{n2} documents after sync 2, expected {total + 3} (or {total + 1} "
+                    "once the automatic reconcile ran)")
 
     rec = api.post(f"/sources/{sid}/reconcile")
     evidence["reconcile_http"] = rec.status_code

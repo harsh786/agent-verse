@@ -53,6 +53,8 @@ scoring/report code; `uv run pytest tests/real_world --collect-only` checks coll
 | MCP-MONGO-KILL-SWITCH | `test_mcp_mongodb.py` | `RW_MONGO_MCP_KILL_SWITCH=off` on a stack with `MCP_CONNECTOR_MONGODB_ENABLED=false` (+ `RW_MONGO_KILL_CONNECTOR_ID`) |
 | SRC-REDIS-TYPES (every type incl. RedisJSON, key patterns, caps, types filter), SRC-REDIS-INCREMENTAL-RESUME (keyspace > max_keys_per_sync over several runs; edits, new keys, reconciled deletes), SRC-REDIS-TLS-AUTH (TLS + CA, ACL reader, a user without JSON.GET -> partial, honest failures, save-time refusals) | `test_src_redis.py` | `RW_REDIS_PASSWORD`, `RW_REDIS_ACL_PASSWORD`, `RW_REDIS_NOJSON_PASSWORD`, `RW_TLS_DIR` |
 | SRC-ES-SYNC (index pattern, repeated _ids across indices, PIT paging, incremental + reconciled deletes), SRC-ES-MAPPINGS (explicit mapping, nested, missing sort field), SRC-ES-AUTH-FAILURES (API key, honest failures, refusals) | `test_src_elasticsearch.py` | `RW_ES_PASSWORD`, `RW_ES_READER_PASSWORD` |
+| WEB-URL-BOILERPLATE (help-center page in nav / cookie banner / sidebar / footer / inline JS+CSS → article only, Q→A cites the URL), WEB-URL-FORMATS (PDF from a download link served as octet-stream, DOCX, text, Markdown by URL; page citation), WEB-URL-REDIRECTS (301 / 308 reported as moves, 302 followed; redirects to metadata / postgres / redis / backend / localhost refused 400; loop 422), WEB-URL-FAILURES (404 / 410 / 500 / 503 → 502 naming the status, a page that never answers → 504, a closed port → 502), WEB-URL-LARGE (12 MiB HTML and a 60 MB download → 413 quickly; a 1.5 MB markup-heavy page indexed), WEB-URL-REINGEST-HOLD (re-ingest replaces, unchanged is a no-op, a document legal hold blocks ingest/url and reingest with 409 until released), WEB-URL-CHARSET (windows-1252 / Shift_JIS / KOI8-R / windows-1256 / ISO-8859-7 by meta, header, http-equiv, XML declaration; undeclared UTF-8 Hindi) | `test_src_web.py` | the web fixture container (`RW_WEB_CONTROL_URL`), `rw-web` / `rw-web-b` on the operator ingestion allowlist; `RW_PG_CONTAINER` / `RW_REDIS_CONTAINER` release the hold |
+| WEB-CRAWL-SITE (depth / page limits, same-host scope, robots.txt Disallow + Crawl-delay, sitemap orphan, canonical + duplicate + query-string / fragment variants, link loops, endless calendar, internal links and redirect; Q→A with the page URL), WEB-CRAWL-INCREMENTAL (changed / added / removed pages, unchanged skipped, reconcile removes the 404 page), WEB-CRAWL-RETRY (503 page → DLQ → operator retry indexes it), WEB-CRAWL-SSRF (internal seeds 422 on save, internal links / redirect hops never requested) | `test_src_web.py` | as above |
 | KB-REEMBED-MIGRATION | `test_kb_reembed_scale.py` | – |
 | KB-SCALE-SMOKE (~5,000 docs) | `test_kb_reembed_scale.py` | `RW_SCALE=1` (best with `RW_ENTERPRISE_API_KEY`) |
 | WF-COMPLEX-PIPELINE, WF-FAILURE-RECOVERY | `test_wf_complex.py` | the stack must reach the fixture server (`RW_FIXTURE_PUBLIC_URL`) — skipped when the HTTP step's SSRF guard refuses it |
@@ -78,7 +80,10 @@ deterministically by `corpus.py` (the 60–120 page PDF, 5,000-row CSV, scans, Z
 `corpus_hard.py` (the KB-UPLOAD-* documents, refusals, the at-limit DOCX) and
 `wf_complex.py` (workflow YAML). `fixture_server.py` is the local HTTP server the stack
 calls back into (side-effect counters, a flaky endpoint, a failure switch, publish
-capture, changing RSS feeds).
+capture, changing RSS feeds) and, run standalone in a container
+(`--serve`), the programmable web site of the WEB-* scenarios (`web_site.py`: pages with
+any status / headers / bytes / delay / "fail the first N", robots.txt, redirects, and a
+request log with Host header and timestamps).
 
 ## Environment variables
 
@@ -127,6 +132,7 @@ concurrently running session.
 | `RW_MONGO_ORDERS`, `RW_MONGO_CUSTOMERS`, `RW_MONGO_PRODUCTS`, `RW_MONGO_TOOL_DOCS`, `RW_PROBE_K` | `160`, `30`, `40`, `1500`, `10` | MongoDB fixture sizes; search depth of the "searchable" probes (ranks are recorded) |
 | `RW_REDIS_PASSWORD`, `RW_REDIS_ACL_PASSWORD`, `RW_REDIS_NOJSON_PASSWORD`, `RW_REDIS_SEED_PORT`, `RW_REDIS_TLS_SEED_PORT`, `RW_REDIS_KEYS` | –, –, –, `56379`, `56380`, `600` | SRC-REDIS-*: throwaway `rw-redis` (requirepass + ACL users `rwreader` / `rwnojson`), `rw-redis-tls` |
 | `RW_ES_PASSWORD`, `RW_ES_READER_PASSWORD`, `RW_ES_URL`, `RW_ES_SEED_URL`, `RW_ES_LOGS_PER_MONTH`, `RW_ES_BATCH` | –, –, `http://rw-es:9200`, `http://127.0.0.1:59200`, `350`, `200` | SRC-ES-*: throwaway Elasticsearch 8 (security on); reader `rwreader` (`read` + `view_index_metadata` on `rw-*`) |
+| `RW_WEB_CONTROL_URL`, `RW_WEB_HOST`, `RW_WEB_OTHER_HOST`, `RW_REDIS_CONTAINER` | `http://127.0.0.1:58080`, `rw-web:8080`, `rw-web-b:8080`, `agentverse-backend-redis-1` | WEB-*: control port of the web fixture container (`fixture_server.py --serve`, see `web_site.py`), the names the stack fetches it by (operator-allowlisted), the Redis whose legal-hold cache WEB-URL-REINGEST-HOLD clears |
 | `RW_TLS_DIR` | – | directory with the test CA (`ca.pem`) and an unrelated CA (`other-ca.pem`) for the TLS cases |
 | `RW_REEMBED_TIMEOUT`, `RW_REEMBED_STABILITY_MIN` | `600`/`300`, `0.9` | re-embed wait; share of questions keeping their top document |
 | `RW_SCALE`, `RW_SCALE_DOCS`, `RW_SCALE_CONCURRENCY` | –, `5000`, `8` | scale smoke opt-in, size, parallelism |

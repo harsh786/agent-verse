@@ -16,6 +16,23 @@ Routes (``<key>`` isolates one scenario run from another):
     GET  /feed/<key>.xml           the RSS document set with :meth:`set_feed`
     GET  /health                   200 "ok"
 
+Programmable web site (P1d, URL ingest and web crawl): any path registered through
+the control API is served exactly as registered (status, headers, raw bytes, an
+optional delay, "fail the first N requests"), including ``/robots.txt`` and
+redirects. Every request to a registered path is logged with its time, Host header,
+User-Agent and conditional headers, so a scenario can assert crawl scope, robots.txt,
+politeness gaps and SSRF behaviour from the server's side:
+
+    PUT    /_control/route         {"path", "status", "headers", "body_b64" | "body",
+                                    "repeat", "delay_s", "fail_first", "fail_status"}
+    DELETE /_control/route?path=…  the path answers 404 again
+    GET    /_control/hits?prefix=… the request log of matching paths
+    DELETE /_control/hits          clear the request log
+
+``path`` may carry a query string (``/a?id=1``): an exact path+query match wins over
+the bare path. Run it standalone (the live stack reaches it on the compose network,
+see ``web_site.py``): ``python fixture_server.py --serve --port 8080``.
+
 The stack reaches it at :attr:`FixtureServer.public_base`: ``RW_FIXTURE_PUBLIC_URL``
 when set (e.g. a tunnel — the workflow HTTP step's SSRF guard refuses private
 addresses), else ``http://$RW_FIXTURE_HOST:<port>`` (default host.docker.internal).
@@ -23,11 +40,13 @@ addresses), else ``http://$RW_FIXTURE_HOST:<port>`` (default host.docker.interna
 
 from __future__ import annotations
 
+import base64
 import http.server
 import json
 import os
 import socket
 import threading
+import time
 from collections import Counter
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -58,6 +77,10 @@ class FixtureServer:
         self.switches: dict[str, bool] = {}
         self.feeds: dict[str, str] = {}
         self.requests: list[dict[str, Any]] = []
+        # Programmable site: "path[?query]" -> route spec; and its request log.
+        self.routes: dict[str, dict[str, Any]] = {}
+        self.route_hits: Counter[str] = Counter()
+        self.site_log: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._server: http.server.ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -170,27 +193,125 @@ class FixtureServer:
             return 200, xml, "application/rss+xml"
         return 404, {"error": f"no route {method} {path}"}, "application/json"
 
+    # ── programmable site ───────────────────────────────────────────────────
+    def set_route(self, spec: dict[str, Any]) -> None:
+        path = str(spec["path"])
+        with self._lock:
+            self.routes[path] = dict(spec)
+            self.route_hits.pop(path, None)
+
+    def remove_route(self, path: str) -> None:
+        with self._lock:
+            self.routes.pop(path, None)
+
+    def site_hits(self, prefix: str = "") -> list[dict[str, Any]]:
+        with self._lock:
+            return [h for h in self.site_log if h["path"].startswith(prefix)]
+
+    def _control(self, method: str, raw_path: str, body: bytes) -> tuple[int, Any]:
+        url = urlparse(raw_path)
+        query = parse_qs(url.query)
+        what = url.path.removeprefix("/_control/")
+        if what == "route" and method == "PUT":
+            self.set_route(json.loads(body))
+            return 200, {"ok": True}
+        if what == "route" and method == "DELETE":
+            self.remove_route((query.get("path") or [""])[0])
+            return 200, {"ok": True}
+        if what == "hits" and method == "GET":
+            return 200, self.site_hits((query.get("prefix") or [""])[0])
+        if what == "hits" and method == "DELETE":
+            with self._lock:
+                self.site_log.clear()
+            return 200, {"ok": True}
+        return 404, {"error": f"no control route {method} {url.path}"}
+
+    def _route_for(self, raw_path: str) -> tuple[str, dict[str, Any]] | None:
+        path = urlparse(raw_path).path
+        with self._lock:
+            if raw_path in self.routes:
+                return raw_path, self.routes[raw_path]
+            if path in self.routes:
+                return path, self.routes[path]
+        return None
+
+    def _serve_route(self, method: str, key: str, spec: dict[str, Any],
+                     headers: Any, raw_path: str) -> tuple[int, dict[str, str], bytes, float]:
+        with self._lock:
+            self.route_hits[key] += 1
+            n = self.route_hits[key]
+            self.site_log.append({
+                "method": method, "path": raw_path, "route": key, "n": n,
+                "t": time.time(), "host": headers.get("Host", ""),
+                "ua": headers.get("User-Agent", ""),
+                "if_none_match": headers.get("If-None-Match", ""),
+                "if_modified_since": headers.get("If-Modified-Since", ""),
+            })
+        delay = float(spec.get("delay_s") or 0)
+        if n <= int(spec.get("fail_first") or 0):
+            status = int(spec.get("fail_status") or 503)
+            return status, {"Content-Type": "text/plain", **dict(spec.get("fail_headers") or {})}, \
+                f"temporarily failing ({n})".encode(), delay
+        if "body_b64" in spec:
+            data = base64.b64decode(spec["body_b64"])
+        else:
+            data = str(spec.get("body") or "").encode("utf-8")
+        data = data * max(1, int(spec.get("repeat") or 1))
+        out_headers = {"Content-Type": "text/html; charset=utf-8"}
+        out_headers.update({str(k): str(v) for k, v in dict(spec.get("headers") or {}).items()})
+        return int(spec.get("status") or 200), out_headers, data, delay
+
     def _handler(self) -> type[http.server.BaseHTTPRequestHandler]:
         server = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            def _send(self, status: int, headers: dict[str, str], data: bytes,
+                      method: str) -> None:
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                if method != "HEAD":
+                    try:
+                        self.wfile.write(data)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return  # the client gave up (a size cap or a timeout)
+
             def _serve(self, method: str) -> None:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
+                if self.path.startswith("/_control/"):
+                    status, payload = server._control(method, self.path, body)
+                    self._send(status, {"Content-Type": "application/json"},
+                               json.dumps(payload).encode(), method)
+                    return
+                route = server._route_for(self.path)
+                if route is not None:
+                    status, headers, data, delay = server._serve_route(
+                        method, route[0], route[1], self.headers, self.path)
+                    if delay:
+                        time.sleep(delay)
+                    self._send(status, headers, data, method)
+                    return
                 status, payload, ctype = server._respond(method, self.path, body)
                 raw = payload if isinstance(payload, str) else json.dumps(payload)
-                data = raw.encode()
-                self.send_response(status)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
+                self._send(status, {"Content-Type": ctype}, raw.encode(), method)
 
             def do_GET(self) -> None:
                 self._serve("GET")
 
+            def do_HEAD(self) -> None:
+                self._serve("HEAD")
+
             def do_POST(self) -> None:
                 self._serve("POST")
+
+            def do_PUT(self) -> None:
+                self._serve("PUT")
+
+            def do_DELETE(self) -> None:
+                self._serve("DELETE")
 
             def log_message(self, *args: Any) -> None:
                 return
@@ -209,3 +330,19 @@ def rss_feed(items: list[dict[str, str]], title: str = "Larkspur Ops Bulletin") 
     return ('<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
             f"<title>{title}</title><link>https://bulletin.example/</link>"
             f"<description>Operations bulletin</description>{body}</channel></rss>")
+
+
+if __name__ == "__main__":  # pragma: no cover - the containerised web fixture
+    import argparse
+
+    parser = argparse.ArgumentParser(description="real-world fixture server")
+    parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--port", type=int, default=8080)
+    args = parser.parse_args()
+    srv = FixtureServer(port=args.port).start()
+    print(f"fixture server on :{srv.port}", flush=True)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        srv.stop()
