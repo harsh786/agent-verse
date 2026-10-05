@@ -1,0 +1,25 @@
+...............F.............F......F                                    [100%]
+=================================== FAILURES ===================================
+_________________________ test_hard_upload[pdf-tables] _________________________
+tests/real_world/test_kb_upload_hard.py:188: in test_hard_upload
+    assert not soft, "; ".join(soft)
+E   AssertionError: tariff-oog: not in the top 5 (top: ['heron-tugs-receipt-tj-5531-photo.png', 'terminal-handbook-bundle.zip/handbook/tariff-extract.pdf', 'harbour-services-agreement-hsa-4471.docx'])
+E   assert not ["tariff-oog: not in the top 5 (top: ['heron-tugs-receipt-tj-5531-photo.png', 'terminal-handbook-bundle.zip/handbook/tariff-extract.pdf', 'harbour-services-agreement-hsa-4471.docx'])"]
+_______________________ test_hard_upload[md-mixed-lang] ________________________
+tests/real_world/test_kb_upload_hard.py:139: in test_hard_upload
+    hits = _search(api, cid, q.question, top_k=5)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/real_world/test_kb_upload_hard.py:59: in _search
+    body = api.json_ok("GET", "/knowledge/search", params=params)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/real_world/helpers.py:129: in json_ok
+    assert resp.status_code in expect, (
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: GET /knowledge/search -> 503: {"detail":"RAG strategy execution failed: hybrid (strategy deadline exceeded)"}
+____________________________ test_kb_real_documents ____________________________
+tests/real_world/test_knowledge.py:153: in test_kb_real_documents
+    final = wait_until(lambda: api.json_ok("GET", f"/goals/{goal_id}"), timeout=GOAL_TIMEOUT,
+tests/real_world/helpers.py:163: in wait_until
+    raise AssertionError(
+E   AssertionError: timed out after 480s waiting for KB goal 63e805e1ac8c4070be3e7eefea9d6daa; last={"goal_id": "63e805e1ac8c4070be3e7eefea9d6daa", "status": "planning", "goal": "Using only our knowledge base, answer and cite the source document for each: (1) When is the Project Halcyon database migration window? (2) On what date does the Zephyrine Analytics contract auto-renew? (3) In which city does Quokka Pay launch first?", "priority": "normal", "dry_run": false, "agent_id": "a03fbb22f77046668c1e396427245f0f", "workflow_mode": "single_agent", "created_at": "2026-10-05T12:46:24.962040+00:00", "event_count": 0, "provider_warning": null, "result_artifact": {"version": 1, "kind": "empty", "title": "Using only our knowledge base, answer and cite the source document for each: (1) When is the Project Halcyon database migration window? (2) On what date does the Zephyrine Analytics contract a
+3 failed, 34 passed, 47 deselected in 1556.75s (0:25:56)

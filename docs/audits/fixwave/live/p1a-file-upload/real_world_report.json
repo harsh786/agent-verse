@@ -1,0 +1,2536 @@
+{
+  "generated_at": "2026-10-05T18:24:48+0530",
+  "summary": {
+    "passed": 34,
+    "failed": 3
+  },
+  "scenarios": {
+    "KB-COMPLEX-CORPUS": {
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 10,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-COMPLEX-EMBEDDINGS": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-COMPLEX-LIFECYCLE": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-COMPLEX-CSV-SCALE": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-RETRIEVAL-HARD": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-UPLOAD-HARD": {
+      "passed": 17,
+      "failed": 2,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 19,
+      "skip_reasons": [],
+      "result": "failed"
+    },
+    "KB-UPLOAD-REFUSALS": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-UPLOAD-SIZE-LIMIT": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-UPLOAD-DUPLICATES": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "passed"
+    },
+    "KB-REAL-DOCS": {
+      "passed": 0,
+      "failed": 1,
+      "skipped": 0,
+      "xfail": 0,
+      "tests": 1,
+      "skip_reasons": [],
+      "result": "failed"
+    }
+  },
+  "metrics": {
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[pdf]": {
+      "upload_ms": 6714,
+      "chunks": 72,
+      "facts": 8,
+      "facts_top5": 8,
+      "heading_alignment": 1.0
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[docx]": {
+      "upload_ms": 1341,
+      "chunks": 8,
+      "facts": 5,
+      "facts_top5": 5,
+      "heading_alignment": 1.0
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[pptx]": {
+      "upload_ms": 2911,
+      "chunks": 1,
+      "facts": 3,
+      "facts_top5": 3
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[xlsx]": {
+      "upload_ms": 3255,
+      "chunks": 4,
+      "facts": 2,
+      "facts_top5": 2
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[csv]": {
+      "upload_ms": 30631,
+      "chunks": 624,
+      "facts": 1,
+      "facts_top5": 1
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[html]": {
+      "upload_ms": 612,
+      "chunks": 3,
+      "facts": 2,
+      "facts_top5": 2,
+      "heading_alignment": 1.0
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[md]": {
+      "upload_ms": 298,
+      "chunks": 2,
+      "facts": 2,
+      "facts_top5": 2,
+      "heading_alignment": 1.0
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[scan_pdf]": {
+      "upload_ms": 2767,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[png]": {
+      "upload_ms": 840,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_format[zip]": {
+      "upload_ms": 443,
+      "chunks": 3,
+      "facts": 2,
+      "facts_top5": 2
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_complex_embeddings": {
+      "total_chunks": 719,
+      "coverage_pct": 100.0
+    },
+    "tests/real_world/test_kb_complex.py::test_kb_dedup_update_delete": {
+      "unchanged_chunks_preserved": 1.0
+    },
+    "tests/real_world/test_kb_retrieval.py::test_kb_retrieval_hard": {
+      "questions": 29,
+      "hit_at_1": 0.966,
+      "hit_at_5": 1.0,
+      "mrr": 0.983,
+      "answer_accuracy": 0.931,
+      "answers_produced": 29,
+      "citation_accuracy": 1.0,
+      "search_latency_ms": {
+        "n": 29,
+        "mean": 1977.12,
+        "p50": 1435.919,
+        "p95": 3451.858,
+        "max": 12781.673
+      },
+      "rag_latency_ms": {
+        "n": 29,
+        "mean": 6873.843,
+        "p50": 5368.28,
+        "p95": 14809.384,
+        "max": 18315.988
+      }
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-2col]": {
+      "upload_s": 1.96,
+      "chunks": 4,
+      "facts": 2,
+      "facts_top5": 2,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-tables]": {
+      "upload_s": 0.36,
+      "chunks": 2,
+      "facts": 3,
+      "facts_top5": 2,
+      "rag_answered": 2,
+      "rag_cited": 2,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-owner-encrypted]": {
+      "upload_s": 0.57,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-cjk]": {
+      "upload_s": 0.61,
+      "chunks": 1,
+      "facts": 2,
+      "facts_top5": 2,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-mixed-scan]": {
+      "upload_s": 5.78,
+      "chunks": 2,
+      "facts": 2,
+      "facts_top5": 2,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[scan-3p]": {
+      "upload_s": 7.45,
+      "chunks": 3,
+      "facts": 3,
+      "facts_top5": 3,
+      "rag_answered": 2,
+      "rag_cited": 2,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[docx-redlines]": {
+      "upload_s": 0.75,
+      "chunks": 4,
+      "facts": 4,
+      "facts_top5": 4,
+      "rag_answered": 2,
+      "rag_cited": 2,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[docx-hindi]": {
+      "upload_s": 0.43,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pptx-notes]": {
+      "upload_s": 0.72,
+      "chunks": 1,
+      "facts": 2,
+      "facts_top5": 2,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[xlsx-merged]": {
+      "upload_s": 0.88,
+      "chunks": 1,
+      "facts": 3,
+      "facts_top5": 3,
+      "rag_answered": 2,
+      "rag_cited": 2,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[csv-large]": {
+      "upload_s": 150.72,
+      "chunks": 2857,
+      "facts": 1,
+      "facts_top5": 1,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[csv-cp1252]": {
+      "upload_s": 1.48,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1,
+      "rag_answered": 0,
+      "rag_cited": 0,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[html-boilerplate]": {
+      "upload_s": 1.83,
+      "chunks": 1,
+      "facts": 2,
+      "facts_top5": 2,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[html-arabic]": {
+      "upload_s": 0.4,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[md-code]": {
+      "upload_s": 0.35,
+      "chunks": 3,
+      "facts": 2,
+      "facts_top5": 2,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[md-mixed-lang]": {
+      "upload_s": 0.56,
+      "chunks": 2
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[png-rotated]": {
+      "upload_s": 1.8,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[png-lowq]": {
+      "upload_s": 0.52,
+      "chunks": 1,
+      "facts": 1,
+      "facts_top5": 1,
+      "rag_answered": 1,
+      "rag_cited": 1,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_hard_upload[zip-nested]": {
+      "upload_s": 0.9,
+      "chunks": 5,
+      "facts": 4,
+      "facts_top5": 4,
+      "rag_answered": 2,
+      "rag_cited": 2,
+      "rag_retries": 0
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_upload_refusals": {
+      "refusals": 7,
+      "refused_correctly": 7
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_upload_size_limit": {
+      "at_limit_s": 7.31,
+      "over_limit_s": 0.46
+    },
+    "tests/real_world/test_kb_upload_hard.py::test_upload_duplicates": {
+      "documents": 2
+    }
+  },
+  "results": [
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[pdf]",
+      "result": "passed",
+      "duration_s": 29.3,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "larkspur-ops-policy-manual.pdf",
+        "bytes": 85227,
+        "upload_http": 201,
+        "chunks": 72,
+        "expected_chunks": [
+          50,
+          146
+        ],
+        "metrics": {
+          "upload_ms": 6714,
+          "chunks": 72,
+          "facts": 8,
+          "facts_top5": 8,
+          "heading_alignment": 1.0
+        },
+        "pages_reported": 72,
+        "fact_ranks": {
+          "pdf-cold-chain": 1,
+          "pdf-escalation": 1,
+          "pdf-drones-negation": 1,
+          "pdf-retention": 1,
+          "pdf-hazmat": 1,
+          "pdf-sla-nilgiri-express": 1,
+          "pdf-sla-brahmaputra-penalty": 1,
+          "pdf-konkan-footnote": 1
+        },
+        "page_citations": {
+          "pdf-cold-chain": {
+            "cited": "36",
+            "expected": 36
+          },
+          "pdf-escalation": {
+            "cited": "48",
+            "expected": 48
+          },
+          "pdf-drones-negation": {
+            "cited": "60",
+            "expected": 60
+          },
+          "pdf-retention": {
+            "cited": "66",
+            "expected": 66
+          },
+          "pdf-hazmat": {
+            "cited": "30",
+            "expected": 30
+          },
+          "pdf-sla-nilgiri-express": {
+            "cited": "18",
+            "expected": 18
+          },
+          "pdf-sla-brahmaputra-penalty": {
+            "cited": "18",
+            "expected": 18
+          },
+          "pdf-konkan-footnote": {
+            "cited": "18",
+            "expected": 18
+          }
+        },
+        "table_rows_intact": {
+          "Nilgiri Zone": true,
+          "Deccan Zone": true,
+          "Konkan Zone": true,
+          "Vindhya Zone": true,
+          "Brahmaputra Zone": true
+        },
+        "heading_alignment": {
+          "7. Cold-chain handling": true,
+          "9. Incident management": true,
+          "10. Contractors and exits": true,
+          "11. Last-mile delivery": true,
+          "12. Records retention": true,
+          "6. Hazardous goods": true
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:00:16"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[docx]",
+      "result": "passed",
+      "duration_s": 15.4,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "bramblewood-vendor-master-agreement.docx",
+        "bytes": 39088,
+        "upload_http": 201,
+        "chunks": 8,
+        "expected_chunks": [
+          5,
+          30
+        ],
+        "metrics": {
+          "upload_ms": 1341,
+          "chunks": 8,
+          "facts": 5,
+          "facts_top5": 5,
+          "heading_alignment": 1.0
+        },
+        "fact_ranks": {
+          "docx-termination": 1,
+          "docx-liability": 1,
+          "docx-invoice": 1,
+          "docx-vendor-table-renewal": 1,
+          "docx-vendor-table-value": 1
+        },
+        "table_rows_intact": {
+          "Bramblewood Freight": true,
+          "Corvid Cold Storage": true,
+          "Halyard Customs Brokers": true
+        },
+        "heading_alignment": {
+          "Termination": true,
+          "Liability": true,
+          "Fees and invoicing": true
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:00:31"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[pptx]",
+      "result": "passed",
+      "duration_s": 4.3,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "q3-fy27-operations-review.pptx",
+        "bytes": 43170,
+        "upload_http": 201,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          5
+        ],
+        "metrics": {
+          "upload_ms": 2911,
+          "chunks": 1,
+          "facts": 3,
+          "facts_top5": 3
+        },
+        "fact_ranks": {
+          "pptx-notes-hosur": 1,
+          "pptx-cost": 1,
+          "pptx-vindhya": 2
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:00:36"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[xlsx]",
+      "result": "passed",
+      "duration_s": 16.1,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "fleet-and-fuel-fy27.xlsx",
+        "bytes": 7335,
+        "upload_http": 201,
+        "chunks": 4,
+        "expected_chunks": [
+          1,
+          6
+        ],
+        "metrics": {
+          "upload_ms": 3255,
+          "chunks": 4,
+          "facts": 2,
+          "facts_top5": 2
+        },
+        "truncated": false,
+        "fact_ranks": {
+          "xlsx-vehicle": 1,
+          "xlsx-formula-total": 1
+        },
+        "table_rows_intact": {
+          "KA-51-LX-7719": true
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:00:52"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[csv]",
+      "result": "passed",
+      "duration_s": 4.0,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "shipment-ledger-2026.csv",
+        "bytes": 355913,
+        "upload_http": 201,
+        "chunks": 624,
+        "expected_chunks": [
+          59,
+          798
+        ],
+        "metrics": {
+          "upload_ms": 30631,
+          "chunks": 624,
+          "facts": 1,
+          "facts_top5": 1
+        },
+        "fact_ranks": {
+          "csv-shipment-status": 1
+        },
+        "table_rows_intact": {
+          "SHP-2026-04417": true
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:00:56"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[html]",
+      "result": "passed",
+      "duration_s": 4.5,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "it-disaster-recovery-runbook.html",
+        "bytes": 4567,
+        "upload_http": 201,
+        "chunks": 3,
+        "expected_chunks": [
+          1,
+          11
+        ],
+        "metrics": {
+          "upload_ms": 612,
+          "chunks": 3,
+          "facts": 2,
+          "facts_top5": 2,
+          "heading_alignment": 1.0
+        },
+        "fact_ranks": {
+          "html-tier2-rpo": 1,
+          "html-failover-cmd": 1
+        },
+        "heading_alignment": {
+          "Tier 2 systems": true
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:00"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[md]",
+      "result": "passed",
+      "duration_s": 4.4,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "larkctl-deploy-guide.md",
+        "bytes": 1632,
+        "upload_http": 201,
+        "chunks": 2,
+        "expected_chunks": [
+          1,
+          5
+        ],
+        "metrics": {
+          "upload_ms": 298,
+          "chunks": 2,
+          "facts": 2,
+          "facts_top5": 2,
+          "heading_alignment": 1.0
+        },
+        "fact_ranks": {
+          "md-canary": 1,
+          "md-rollback-logs": 1
+        },
+        "heading_alignment": {
+          "Canary rollout": true
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:05"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[scan_pdf]",
+      "result": "passed",
+      "duration_s": 1.6,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "delivery-note-dn-58213-scan.pdf",
+        "bytes": 138785,
+        "upload_http": 201,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          3
+        ],
+        "metrics": {
+          "upload_ms": 2767,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1
+        },
+        "pages_reported": 1,
+        "fact_ranks": {
+          "scan-received-by": 1
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:06"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[png]",
+      "result": "passed",
+      "duration_s": 1.2,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "wh9-whiteboard-photo.png",
+        "bytes": 30624,
+        "upload_http": 201,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          2
+        ],
+        "metrics": {
+          "upload_ms": 840,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1
+        },
+        "fact_ranks": {
+          "png-fire-drill": 1
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:07"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CORPUS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_format[zip]",
+      "result": "passed",
+      "duration_s": 3.4,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "file": "people-ops-bundle.zip",
+        "bytes": 647,
+        "upload_http": 201,
+        "chunks": 3,
+        "expected_chunks": [
+          3,
+          9
+        ],
+        "metrics": {
+          "upload_ms": 443,
+          "chunks": 3,
+          "facts": 2,
+          "facts_top5": 2
+        },
+        "fact_ranks": {
+          "zip-earned-leave": 1,
+          "zip-laptop-desk": 1
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:11"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-EMBEDDINGS",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_complex_embeddings",
+      "result": "passed",
+      "duration_s": 0.9,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "embedder": {
+          "status": "available",
+          "provider": "dedicated",
+          "model": "nvidia/nemotron-3-embed-1b",
+          "dimension": 2048,
+          "failed_providers": []
+        },
+        "chunks_uploaded": 719,
+        "health": {
+          "total_chunks": 719,
+          "embedded_chunks": 719,
+          "coverage_pct": 100.0,
+          "embedding_dim": 2048,
+          "model": "nvidia/nemotron-3-embed-1b"
+        },
+        "metrics": {
+          "total_chunks": 719,
+          "coverage_pct": 100.0
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:12"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-LIFECYCLE",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_dedup_update_delete",
+      "result": "passed",
+      "duration_s": 10.8,
+      "evidence": {
+        "collection_id": "94afd8dcd863479cbb55b55fb911f0ea",
+        "v1": {
+          "chunks": 8,
+          "document_id": "5743204cc6245127b61302848d9089af"
+        },
+        "reupload": {
+          "http": 201,
+          "chunks": 0,
+          "deduplicated": true
+        },
+        "unchanged_chunk_ids_before": {
+          "liability": [
+            "2d67db779bc050b787122e5f4e84c78e"
+          ],
+          "invoices": [
+            "63644a68a26953c7bc50b004cbc3d6a6"
+          ]
+        },
+        "edit_upload": {
+          "http": 201,
+          "chunks": 8,
+          "document_id": "5743204cc6245127b61302848d9089af"
+        },
+        "after_edit": {
+          "amended_clause_served": true,
+          "stale_clause_served": false
+        },
+        "docx_copies_listed": 1,
+        "unchanged_chunks_preserved": {
+          "liability": true,
+          "invoices": true
+        },
+        "metrics": {
+          "unchanged_chunks_preserved": 1.0
+        },
+        "chunks_after_edit": 10,
+        "delete_http": [
+          200
+        ],
+        "chunks_deleted": 8,
+        "health_after_delete": {
+          "total_chunks": 2,
+          "embedded_chunks": 2
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:23"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-COMPLEX-CSV-SCALE",
+      "test": "tests/real_world/test_kb_complex.py::test_kb_csv_row_lookup_in_large_file",
+      "result": "passed",
+      "duration_s": 1.5,
+      "evidence": {
+        "top_sources": [
+          "shipment-ledger-2026.csv",
+          "shipment-ledger-2026.csv",
+          "shipment-ledger-2026.csv",
+          "shipment-ledger-2026.csv",
+          "shipment-ledger-2026.csv"
+        ],
+        "csv_chunks": 624
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:01:24"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-RETRIEVAL-HARD",
+      "test": "tests/real_world/test_kb_retrieval.py::test_kb_retrieval_hard",
+      "result": "passed",
+      "duration_s": 256.8,
+      "evidence": {
+        "collection_id": "ef8dbd55e1ab43ea9f72d3a845c0019f",
+        "excluded_not_ingested": [],
+        "metrics": {
+          "questions": 29,
+          "hit_at_1": 0.966,
+          "hit_at_5": 1.0,
+          "mrr": 0.983,
+          "answer_accuracy": 0.931,
+          "answers_produced": 29,
+          "citation_accuracy": 1.0,
+          "search_latency_ms": {
+            "n": 29,
+            "mean": 1977.12,
+            "p50": 1435.919,
+            "p95": 3451.858,
+            "max": 12781.673
+          },
+          "rag_latency_ms": {
+            "n": 29,
+            "mean": 6873.843,
+            "p50": 5368.28,
+            "p95": 14809.384,
+            "max": 18315.988
+          }
+        },
+        "by_kind": {
+          "numeric": {
+            "n": 6,
+            "top5": 6,
+            "correct": 6
+          },
+          "negation": {
+            "n": 2,
+            "top5": 2,
+            "correct": 1
+          },
+          "fact": {
+            "n": 3,
+            "top5": 3,
+            "correct": 3
+          },
+          "table": {
+            "n": 6,
+            "top5": 6,
+            "correct": 6
+          },
+          "speaker_notes": {
+            "n": 1,
+            "top5": 1,
+            "correct": 1
+          },
+          "formula": {
+            "n": 1,
+            "top5": 1,
+            "correct": 1
+          },
+          "nested_list": {
+            "n": 2,
+            "top5": 2,
+            "correct": 2
+          },
+          "code": {
+            "n": 2,
+            "top5": 2,
+            "correct": 2
+          },
+          "ocr": {
+            "n": 2,
+            "top5": 2,
+            "correct": 1
+          },
+          "zip": {
+            "n": 2,
+            "top5": 2,
+            "correct": 2
+          },
+          "cross_doc": {
+            "n": 2,
+            "top5": 2,
+            "correct": 2
+          }
+        },
+        "misses": [],
+        "wrong_answers": {
+          "pdf-konkan-footnote": "The Konkan Zone late penalty is 4.0\u202f% [1].  \nTherefore a late shipment in July would be subject to this penalty [1].",
+          "scan-received-by": "Meenakshi lyer received delivery note DN-58213 [1].  \n14 pallets were delivered [1]."
+        },
+        "bad_citations": {}
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:05:41"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-2col]",
+      "result": "passed",
+      "duration_s": 20.9,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "meridian-annual-report-fy26.pdf",
+        "bytes": 4617,
+        "upload_http": 201,
+        "upload_s": 1.96,
+        "chunks": 4,
+        "expected_chunks": [
+          2,
+          8
+        ],
+        "response": {
+          "pages": 2,
+          "ocr_pages": [],
+          "document_id": "12e83f6d5f5a52b9bb8c8f035b66c7f7",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 1.96,
+          "chunks": 4,
+          "facts": 2,
+          "facts_top5": 2,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 4,
+        "questions": {
+          "2col-teu": {
+            "search_ms": 4442,
+            "rank": 5,
+            "top_sources": [
+              "berth-planning-review-q3.pptx",
+              "meridian-annual-report-fy26.pdf",
+              "crane-inspection-report-cir-2026-0912-scan.pdf"
+            ],
+            "rag_http": 200,
+            "rag_ms": 9064,
+            "rag_retries": 0,
+            "answer_head": "The Tamarind Bay terminal handled 1,284,500 TEU in FY26 [5].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "berth-planning-review-q3.pptx",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "marine-circular-ms-118.pdf",
+              "meridian-annual-report-fy26.pdf"
+            ]
+          },
+          "2col-crane": {
+            "search_ms": 5053,
+            "rank": 1,
+            "top_sources": [
+              "meridian-annual-report-fy26.pdf",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "marine-circular-ms-118.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:09:01"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-tables]",
+      "result": "failed",
+      "duration_s": 29.8,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "saltmarsh-tariff-schedule-2027.pdf",
+        "bytes": 3363,
+        "upload_http": 201,
+        "upload_s": 0.36,
+        "chunks": 2,
+        "expected_chunks": [
+          2,
+          6
+        ],
+        "response": {
+          "pages": 2,
+          "ocr_pages": [],
+          "document_id": "304a0e0a46895c29bdbb36cb6ffb7f95",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.36,
+          "chunks": 2,
+          "facts": 3,
+          "facts_top5": 2,
+          "rag_answered": 2,
+          "rag_cited": 2,
+          "rag_retries": 0
+        },
+        "chunks_seen": 2,
+        "questions": {
+          "tariff-reefer": {
+            "search_ms": 3589,
+            "rank": 2,
+            "top_sources": [
+              "fournisseurs-legacy-export.csv",
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "terminal-handbook-bundle.zip/archive/archive-2025.zip/notes/history.md"
+            ],
+            "rag_http": 200,
+            "rag_ms": 6179,
+            "rag_retries": 0,
+            "answer_head": "The daily reefer plug-in rate at Saltmarsh terminal is 2,150 INR per box per day [2].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "fournisseurs-legacy-export.csv",
+              "harbour-services-agreement-hsa-4471.docx",
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "terminal-handbook-bundle.zip/archive/archive-2025.zip/notes/history.md"
+            ]
+          },
+          "tariff-oog": {
+            "search_ms": 5153,
+            "rank": null,
+            "top_sources": [
+              "heron-tugs-receipt-tj-5531-photo.png",
+              "terminal-handbook-bundle.zip/handbook/tariff-extract.pdf",
+              "harbour-services-agreement-hsa-4471.docx"
+            ]
+          },
+          "penalty-24h": {
+            "search_ms": 3591,
+            "rank": 1,
+            "top_sources": [
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "kestrel-wharf-berth-booking.html",
+              "vessel-incident-letter-vil-3307.pdf"
+            ],
+            "rag_http": 200,
+            "rag_ms": 7120,
+            "rag_retries": 0,
+            "answer_head": "The berth delay penalty for delays over 24 hours is INR\u202f46,000 per vessel [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "berth-planning-review-q3.pptx",
+              "harbour-services-agreement-hsa-4471.docx",
+              "kestrel-wharf-berth-booking.html",
+              "saltmarsh-tariff-schedule-2027.pdf"
+            ]
+          }
+        },
+        "docker_logs": []
+      },
+      "failure_detail": "tests/real_world/test_kb_upload_hard.py:188: in test_hard_upload\n    assert not soft, \"; \".join(soft)\nE   AssertionError: tariff-oog: not in the top 5 (top: ['heron-tugs-receipt-tj-5531-photo.png', 'terminal-handbook-bundle.zip/handbook/tariff-extract.pdf', 'harbour-services-agreement-hsa-4471.docx'])\nE   assert not [\"tariff-oog: not in the top 5 (top: ['heron-tugs-receipt-tj-5531-photo.png', 'terminal-handbook-bundle.zip/handbook/tariff-extract.pdf', 'harbour-services-agreement-hsa-4471.docx'])\"]",
+      "finished_at": "2026-10-05T18:09:33"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-owner-encrypted]",
+      "result": "passed",
+      "duration_s": 15.3,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "marine-circular-ms-118.pdf",
+        "bytes": 1832,
+        "upload_http": 201,
+        "upload_s": 0.57,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          2
+        ],
+        "response": {
+          "pages": 1,
+          "ocr_pages": [],
+          "document_id": "ae2e3c33f66f5375b99acfc9ad3d8c1e",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.57,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "enc-pilotage": {
+            "search_ms": 3682,
+            "rank": 1,
+            "top_sources": [
+              "marine-circular-ms-118.pdf",
+              "berth-planning-review-q3.pptx",
+              "meridian-annual-report-fy26.pdf"
+            ],
+            "rag_http": 200,
+            "rag_ms": 10409,
+            "rag_retries": 0,
+            "answer_head": "Two pilots are required for vessels above 300 metres LOA at Tamarind Bay [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "berth-planning-review-q3.pptx",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "marine-circular-ms-118.pdf",
+              "meridian-annual-report-fy26.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:09:49"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-cjk]",
+      "result": "passed",
+      "duration_s": 15.8,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "east-asia-terminal-guide-cjk.pdf",
+        "bytes": 45280,
+        "upload_http": 201,
+        "upload_s": 0.61,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          2
+        ],
+        "response": {
+          "pages": 1,
+          "ocr_pages": [],
+          "document_id": "675c7afb0157579d9e4abcab853f8268",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.61,
+          "chunks": 1,
+          "facts": 2,
+          "facts_top5": 2,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "cjk-zh-reefer": {
+            "search_ms": 3538,
+            "rank": 1,
+            "top_sources": [
+              "east-asia-terminal-guide-cjk.pdf",
+              "gate-transactions-2026.csv",
+              "gate-transactions-2026.csv"
+            ],
+            "rag_http": 200,
+            "rag_ms": 5172,
+            "rag_retries": 0,
+            "answer_head": "\u9752\u5c9a\u7801\u5934\u7684\u51b7\u85cf\u96c6\u88c5\u7bb1\u63d2\u5ea7\u5171\u6709 640 \u4e2a\u3002[1]",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "east-asia-terminal-guide-cjk.pdf",
+              "gate-transactions-2026.csv"
+            ]
+          },
+          "cjk-ja-hours": {
+            "search_ms": 3842,
+            "rank": 1,
+            "top_sources": [
+              "east-asia-terminal-guide-cjk.pdf",
+              "multilingual-staff-notice.md",
+              "staff-circular-42-hindi.docx"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:10:05"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pdf-mixed-scan]",
+      "result": "passed",
+      "duration_s": 39.8,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "vessel-incident-letter-vil-3307.pdf",
+        "bytes": 52864,
+        "upload_http": 201,
+        "upload_s": 5.78,
+        "chunks": 2,
+        "expected_chunks": [
+          2,
+          4
+        ],
+        "response": {
+          "pages": 2,
+          "ocr_pages": [
+            2
+          ],
+          "document_id": "02159ea8a2a85a07a525c270370627af",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 5.78,
+          "chunks": 2,
+          "facts": 2,
+          "facts_top5": 2,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 2,
+        "questions": {
+          "mix-typed": {
+            "search_ms": 3531,
+            "rank": 1,
+            "top_sources": [
+              "vessel-incident-letter-vil-3307.pdf",
+              "vessel-incident-letter-vil-3307.pdf",
+              "kestrel-wharf-berth-booking.html"
+            ]
+          },
+          "mix-scan": {
+            "search_ms": 3561,
+            "rank": 1,
+            "top_sources": [
+              "vessel-incident-letter-vil-3307.pdf",
+              "vessel-incident-letter-vil-3307.pdf",
+              "kestrel-wharf-berth-booking.html"
+            ],
+            "rag_http": 200,
+            "rag_ms": 31719,
+            "rag_retries": 0,
+            "answer_head": "Okonkwo Marine replaced fender F-12 after the MV Calloway Star incident [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "crane-maintenance-plan-fy27.xlsx",
+              "gate-transactions-2026.csv",
+              "kestrel-wharf-berth-booking.html",
+              "vessel-incident-letter-vil-3307.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:10:45"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[scan-3p]",
+      "result": "passed",
+      "duration_s": 25.8,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "crane-inspection-report-cir-2026-0912-scan.pdf",
+        "bytes": 147408,
+        "upload_http": 201,
+        "upload_s": 7.45,
+        "chunks": 3,
+        "expected_chunks": [
+          3,
+          6
+        ],
+        "response": {
+          "pages": 3,
+          "ocr_pages": [
+            1,
+            2,
+            3
+          ],
+          "document_id": "842b7261bae956caaa37eb956c4f1b0b",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 7.45,
+          "chunks": 3,
+          "facts": 3,
+          "facts_top5": 3,
+          "rag_answered": 2,
+          "rag_cited": 2,
+          "rag_retries": 0
+        },
+        "chunks_seen": 3,
+        "questions": {
+          "scan3-brake": {
+            "search_ms": 3611,
+            "rank": 1,
+            "top_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-maintenance-plan-fy27.xlsx"
+            ],
+            "rag_http": 200,
+            "rag_ms": 7702,
+            "rag_retries": 0,
+            "answer_head": "The hoist brake wear measured on crane STS-09 was 2.4\u202fmm [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-maintenance-plan-fy27.xlsx",
+              "crane-telemetry-runbook.md"
+            ]
+          },
+          "scan3-approved": {
+            "search_ms": 4023,
+            "rank": 1,
+            "top_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-maintenance-plan-fy27.xlsx"
+            ],
+            "rag_http": 200,
+            "rag_ms": 5771,
+            "rag_retries": 0,
+            "answer_head": "Chief Engineer Lucia Ferreira approved crane STS-09's return to service [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-maintenance-plan-fy27.xlsx",
+              "harbour-services-agreement-hsa-4471.docx"
+            ]
+          },
+          "scan3-inspector": {
+            "search_ms": 3214,
+            "rank": 1,
+            "top_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-inspection-report-cir-2026-0912-scan.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:11:11"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[docx-redlines]",
+      "result": "passed",
+      "duration_s": 34.5,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "harbour-services-agreement-hsa-4471.docx",
+        "bytes": 38921,
+        "upload_http": 201,
+        "upload_s": 0.75,
+        "chunks": 4,
+        "expected_chunks": [
+          1,
+          4
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "5eb22612c58d55f98cfdee156ce9da7a",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.75,
+          "chunks": 4,
+          "facts": 4,
+          "facts_top5": 4,
+          "rag_answered": 2,
+          "rag_cited": 2,
+          "rag_retries": 0
+        },
+        "chunks_seen": 4,
+        "questions": {
+          "docx-demurrage": {
+            "search_ms": 3328,
+            "rank": 1,
+            "top_sources": [
+              "harbour-services-agreement-hsa-4471.docx",
+              "harbour-services-agreement-hsa-4471.docx",
+              "saltmarsh-tariff-schedule-2027.pdf"
+            ],
+            "rag_http": 200,
+            "rag_ms": 6069,
+            "rag_retries": 0,
+            "answer_head": "The demurrage free period is 6 calendar days from discharge [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "harbour-services-agreement-hsa-4471.docx",
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "terminal-handbook-bundle.zip/archive/archive-2025.zip/notes/history.md"
+            ]
+          },
+          "docx-header": {
+            "search_ms": 3657,
+            "rank": 1,
+            "top_sources": [
+              "harbour-services-agreement-hsa-4471.docx",
+              "meridian-annual-report-fy26.pdf",
+              "harbour-services-agreement-hsa-4471.docx"
+            ]
+          },
+          "docx-footer": {
+            "search_ms": 3902,
+            "rank": 1,
+            "top_sources": [
+              "harbour-services-agreement-hsa-4471.docx",
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "harbour-services-agreement-hsa-4471.docx"
+            ]
+          },
+          "docx-sla": {
+            "search_ms": 3910,
+            "rank": 1,
+            "top_sources": [
+              "harbour-services-agreement-hsa-4471.docx",
+              "crane-maintenance-plan-fy27.xlsx",
+              "meridian-annual-report-fy26.pdf"
+            ],
+            "rag_http": 200,
+            "rag_ms": 6569,
+            "rag_retries": 0,
+            "answer_head": "The reefer alarm response time at North Quay is 20 minutes [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "crane-maintenance-plan-fy27.xlsx",
+              "harbour-services-agreement-hsa-4471.docx",
+              "kestrel-wharf-berth-booking.html",
+              "meridian-annual-report-fy26.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:11:45"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[docx-hindi]",
+      "result": "passed",
+      "duration_s": 15.3,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "staff-circular-42-hindi.docx",
+        "bytes": 36904,
+        "upload_http": 201,
+        "upload_s": 0.43,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          2
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "654fb5dc59105c4eb8cae1872cf6e9ec",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.43,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "hi-allowance": {
+            "search_ms": 3676,
+            "rank": 1,
+            "top_sources": [
+              "staff-circular-42-hindi.docx",
+              "multilingual-staff-notice.md",
+              "safety-circular-9-arabic.html"
+            ],
+            "rag_http": 200,
+            "rag_ms": 10639,
+            "rag_retries": 0,
+            "answer_head": "\u0930\u093e\u0924\u094d\u0930\u093f \u092a\u093e\u0932\u0940 \u0915\u093e \u092d\u0924\u094d\u0924\u093e 850 \u0930\u0941\u092a\u092f\u0947 \u092a\u094d\u0930\u0924\u093f \u092a\u093e\u0932\u0940 \u0939\u0948\u0964[1]",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "meridian-annual-report-fy26.pdf",
+              "multilingual-staff-notice.md",
+              "safety-circular-9-arabic.html",
+              "staff-circular-42-hindi.docx"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:12:01"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[pptx-notes]",
+      "result": "passed",
+      "duration_s": 14.5,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "berth-planning-review-q3.pptx",
+        "bytes": 37327,
+        "upload_http": 201,
+        "upload_s": 0.72,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          3
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "533e4d13fbc856f58d9ded9fe0b1b154",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.72,
+          "chunks": 1,
+          "facts": 2,
+          "facts_top5": 2,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "pptx-dredging": {
+            "search_ms": 3065,
+            "rank": 1,
+            "top_sources": [
+              "berth-planning-review-q3.pptx",
+              "vessel-incident-letter-vil-3307.pdf",
+              "kestrel-wharf-berth-booking.html"
+            ],
+            "rag_http": 200,
+            "rag_ms": 6657,
+            "rag_retries": 0,
+            "answer_head": "Berth 7 dredging finishes on 30 March 2027 [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "berth-planning-review-q3.pptx",
+              "kestrel-wharf-berth-booking.html",
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "terminal-handbook-bundle.zip/archive/archive-2025.zip/notes/history.md"
+            ]
+          },
+          "pptx-table": {
+            "search_ms": 3569,
+            "rank": 1,
+            "top_sources": [
+              "berth-planning-review-q3.pptx",
+              "kestrel-wharf-berth-booking.html",
+              "saltmarsh-tariff-schedule-2027.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:12:15"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[xlsx-merged]",
+      "result": "passed",
+      "duration_s": 27.2,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "crane-maintenance-plan-fy27.xlsx",
+        "bytes": 6409,
+        "upload_http": 201,
+        "upload_s": 0.88,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          4
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "a205b7402fc55b778af322af4115b3be",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.88,
+          "chunks": 1,
+          "facts": 3,
+          "facts_top5": 3,
+          "rag_answered": 2,
+          "rag_cited": 2,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "xlsx-sts14": {
+            "search_ms": 3549,
+            "rank": 1,
+            "top_sources": [
+              "crane-maintenance-plan-fy27.xlsx",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-inspection-report-cir-2026-0912-scan.pdf"
+            ],
+            "rag_http": 200,
+            "rag_ms": 6969,
+            "rag_retries": 0,
+            "answer_head": "Crane STS-14 is next serviced on 12 February 2027 [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-maintenance-plan-fy27.xlsx",
+              "harbour-services-agreement-hsa-4471.docx"
+            ]
+          },
+          "xlsx-contracts-total": {
+            "search_ms": 3994,
+            "rank": 1,
+            "top_sources": [
+              "crane-maintenance-plan-fy27.xlsx",
+              "meridian-annual-report-fy26.pdf",
+              "harbour-services-agreement-hsa-4471.docx"
+            ],
+            "rag_http": 200,
+            "rag_ms": 7178,
+            "rag_retries": 0,
+            "answer_head": "The total annual value of the crane maintenance contracts is 6,425,000 INR [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-maintenance-plan-fy27.xlsx",
+              "harbour-services-agreement-hsa-4471.docx",
+              "heron-tugs-receipt-tj-5531-photo.png"
+            ]
+          },
+          "xlsx-budget-total": {
+            "search_ms": 3426,
+            "rank": 1,
+            "top_sources": [
+              "crane-maintenance-plan-fy27.xlsx",
+              "crane-telemetry-runbook.md",
+              "crane-telemetry-runbook.md"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:12:42"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[csv-large]",
+      "result": "passed",
+      "duration_s": 26.1,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "gate-transactions-2026.csv",
+        "bytes": 1691189,
+        "upload_http": 201,
+        "upload_s": 150.72,
+        "chunks": 2857,
+        "expected_chunks": [
+          314,
+          3774
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "b52511f48b815275ae24491b1e38c8e3",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 150.72,
+          "chunks": 2857,
+          "facts": 1,
+          "facts_top5": 1,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 40,
+        "questions": {
+          "csv-seal": {
+            "search_ms": 3482,
+            "rank": 1,
+            "top_sources": [
+              "gate-transactions-2026.csv",
+              "gate-transactions-2026.csv",
+              "gate-transactions-2026.csv"
+            ],
+            "rag_http": 200,
+            "rag_ms": 8268,
+            "rag_retries": 0,
+            "answer_head": "The seal mismatch for truck TN-38-BX-9921 occurred in transaction GT-2026-0177342 at Gate 4 [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "gate-transactions-2026.csv"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:13:09"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[csv-cp1252]",
+      "result": "passed",
+      "duration_s": 5.0,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "fournisseurs-legacy-export.csv",
+        "bytes": 141,
+        "upload_http": 201,
+        "upload_s": 1.48,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          1
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "1e33c8f0c0395fd58404c23580ca80ca",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 1.48,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1,
+          "rag_answered": 0,
+          "rag_cited": 0,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "cp1252-lashing": {
+            "search_ms": 3331,
+            "rank": 1,
+            "top_sources": [
+              "fournisseurs-legacy-export.csv",
+              "vessel-incident-letter-vil-3307.pdf",
+              "kestrel-wharf-berth-booking.html"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:13:14"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[html-boilerplate]",
+      "result": "passed",
+      "duration_s": 21.9,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "kestrel-wharf-berth-booking.html",
+        "bytes": 4047,
+        "upload_http": 201,
+        "upload_s": 1.83,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          2
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "2df6b0f40cf85b91bf4f75a6ce41aece",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 1.83,
+          "chunks": 1,
+          "facts": 2,
+          "facts_top5": 2,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "html-booking": {
+            "search_ms": 3135,
+            "rank": 1,
+            "top_sources": [
+              "kestrel-wharf-berth-booking.html",
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "harbour-services-agreement-hsa-4471.docx"
+            ],
+            "rag_http": 200,
+            "rag_ms": 5595,
+            "rag_retries": 0,
+            "answer_head": "Berth booking requests for Kestrel Wharf close 72 hours before the vessel's estimated time of arrival [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "berth-planning-review-q3.pptx",
+              "harbour-services-agreement-hsa-4471.docx",
+              "kestrel-wharf-berth-booking.html",
+              "saltmarsh-tariff-schedule-2027.pdf"
+            ]
+          },
+          "html-draft": {
+            "search_ms": 4236,
+            "rank": 1,
+            "top_sources": [
+              "kestrel-wharf-berth-booking.html",
+              "crane-telemetry-runbook.md",
+              "marine-circular-ms-118.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:13:37"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[html-arabic]",
+      "result": "passed",
+      "duration_s": 11.5,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "safety-circular-9-arabic.html",
+        "bytes": 654,
+        "upload_http": 201,
+        "upload_s": 0.4,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          1
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "36287a8c66055a91b17fd05ed478d33e",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.4,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "ar-helmet": {
+            "search_ms": 3254,
+            "rank": 1,
+            "top_sources": [
+              "safety-circular-9-arabic.html",
+              "multilingual-staff-notice.md",
+              "staff-circular-42-hindi.docx"
+            ],
+            "rag_http": 200,
+            "rag_ms": 4905,
+            "rag_retries": 0,
+            "answer_head": "\u064a\u062c\u0628 \u0639\u0644\u0649 \u0627\u0644\u0639\u0627\u0645\u0644\u064a\u0646 \u0641\u064a \u0631\u0635\u064a\u0641 \u0627\u0644\u064a\u0627\u0633\u0645\u064a\u0646 \u0627\u0631\u062a\u062f\u0627\u0621 \u062e\u0648\u0630\u0629 \u0632\u0631\u0642\u0627\u0621 [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "east-asia-terminal-guide-cjk.pdf",
+              "multilingual-staff-notice.md",
+              "safety-circular-9-arabic.html",
+              "staff-circular-42-hindi.docx"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:13:48"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[md-code]",
+      "result": "passed",
+      "duration_s": 17.5,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "crane-telemetry-runbook.md",
+        "bytes": 3531,
+        "upload_http": 201,
+        "upload_s": 0.35,
+        "chunks": 3,
+        "expected_chunks": [
+          1,
+          4
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "e01b65d005335be5b2754c8688ae08ac",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.35,
+          "chunks": 3,
+          "facts": 2,
+          "facts_top5": 2,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 3,
+        "questions": {
+          "md-offset": {
+            "search_ms": 3254,
+            "rank": 1,
+            "top_sources": [
+              "crane-telemetry-runbook.md",
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "harbour-services-agreement-hsa-4471.docx"
+            ],
+            "rag_http": 200,
+            "rag_ms": 5000,
+            "rag_retries": 0,
+            "answer_head": "The crane must be taken out of service if the twistlock offset exceeds 3.5\u202fmm. [1]",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "crane-inspection-report-cir-2026-0912-scan.pdf",
+              "crane-maintenance-plan-fy27.xlsx",
+              "crane-telemetry-runbook.md",
+              "harbour-services-agreement-hsa-4471.docx"
+            ]
+          },
+          "md-register": {
+            "search_ms": 7622,
+            "rank": 1,
+            "top_sources": [
+              "crane-telemetry-runbook.md",
+              "crane-telemetry-runbook.md",
+              "crane-telemetry-runbook.md"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:14:06"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[md-mixed-lang]",
+      "result": "failed",
+      "duration_s": 46.1,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "multilingual-staff-notice.md",
+        "bytes": 483,
+        "upload_http": 201,
+        "upload_s": 0.56,
+        "chunks": 2,
+        "expected_chunks": [
+          1,
+          3
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "dd90966b320857c294002c78dec45e15",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.56,
+          "chunks": 2
+        },
+        "chunks_seen": 2,
+        "docker_logs": []
+      },
+      "failure_detail": "tests/real_world/test_kb_upload_hard.py:139: in test_hard_upload\n    hits = _search(api, cid, q.question, top_k=5)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/real_world/test_kb_upload_hard.py:59: in _search\n    body = api.json_ok(\"GET\", \"/knowledge/search\", params=params)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntests/real_world/helpers.py:129: in json_ok\n    assert resp.status_code in expect, (\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   AssertionError: GET /knowledge/search -> 503: {\"detail\":\"RAG strategy execution failed: hybrid (strategy deadline exceeded)\"}",
+      "finished_at": "2026-10-05T18:14:53"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[png-rotated]",
+      "result": "passed",
+      "duration_s": 10.9,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "gate-pass-gp-77120-sideways.png",
+        "bytes": 35581,
+        "upload_http": 201,
+        "upload_s": 1.8,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          1
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "39d76d218627520d8011c61e8f57b320",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 1.8,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "rot-driver": {
+            "search_ms": 3628,
+            "rank": 1,
+            "top_sources": [
+              "gate-pass-gp-77120-sideways.png",
+              "gate-transactions-2026.csv",
+              "gate-transactions-2026.csv"
+            ],
+            "rag_http": 200,
+            "rag_ms": 6239,
+            "rag_retries": 0,
+            "answer_head": "The driver on gate pass GP-77120 is Tomasz Wieczorek [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "gate-pass-gp-77120-sideways.png",
+              "gate-transactions-2026.csv"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:15:04"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[png-lowq]",
+      "result": "passed",
+      "duration_s": 10.4,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "heron-tugs-receipt-tj-5531-photo.png",
+        "bytes": 59070,
+        "upload_http": 201,
+        "upload_s": 0.52,
+        "chunks": 1,
+        "expected_chunks": [
+          1,
+          1
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "document_id": "2165bb7e118b53548f708797911c1742",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.52,
+          "chunks": 1,
+          "facts": 1,
+          "facts_top5": 1,
+          "rag_answered": 1,
+          "rag_cited": 1,
+          "rag_retries": 0
+        },
+        "chunks_seen": 1,
+        "questions": {
+          "lowq-job": {
+            "search_ms": 3486,
+            "rank": 1,
+            "top_sources": [
+              "heron-tugs-receipt-tj-5531-photo.png",
+              "marine-circular-ms-118.pdf",
+              "gate-transactions-2026.csv"
+            ],
+            "rag_http": 200,
+            "rag_ms": 5860,
+            "rag_retries": 0,
+            "answer_head": "The towage job number on the Heron Tugs receipt is TJ-5531 [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "gate-transactions-2026.csv",
+              "heron-tugs-receipt-tj-5531-photo.png",
+              "marine-circular-ms-118.pdf",
+              "vessel-incident-letter-vil-3307.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:15:15"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-HARD",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_hard_upload[zip-nested]",
+      "result": "passed",
+      "duration_s": 39.6,
+      "evidence": {
+        "collection_id": "547f8abad824428da0a3325958d88c9d",
+        "file": "terminal-handbook-bundle.zip",
+        "bytes": 36158,
+        "upload_http": 201,
+        "upload_s": 0.9,
+        "chunks": 5,
+        "expected_chunks": [
+          4,
+          10
+        ],
+        "response": {
+          "pages": null,
+          "ocr_pages": [],
+          "archive": {
+            "members_indexed": [
+              "handbook/overtime-policy.docx",
+              "handbook/tariff-extract.pdf",
+              "contacts.csv",
+              "archive/archive-2025.zip/notes/history.md",
+              "outside/escape-note.txt"
+            ],
+            "members_skipped": [
+              {
+                "name": "legacy/old-roster.doc",
+                "reason": "legacy/old-roster.doc: .doc files are not supported; convert to PDF, DOCX, XLSX, PPTX or text"
+              }
+            ]
+          },
+          "document_id": "63e761104260555e9e39c76483c54441",
+          "replaced": false,
+          "truncated": false
+        },
+        "metrics": {
+          "upload_s": 0.9,
+          "chunks": 5,
+          "facts": 4,
+          "facts_top5": 4,
+          "rag_answered": 2,
+          "rag_cited": 2,
+          "rag_retries": 0
+        },
+        "chunks_seen": 5,
+        "archive": {
+          "members_indexed": [
+            "handbook/overtime-policy.docx",
+            "handbook/tariff-extract.pdf",
+            "contacts.csv",
+            "archive/archive-2025.zip/notes/history.md",
+            "outside/escape-note.txt"
+          ],
+          "members_skipped": [
+            {
+              "name": "legacy/old-roster.doc",
+              "reason": "legacy/old-roster.doc: .doc files are not supported; convert to PDF, DOCX, XLSX, PPTX or text"
+            }
+          ]
+        },
+        "questions": {
+          "zip-overtime": {
+            "search_ms": 3761,
+            "rank": 1,
+            "top_sources": [
+              "terminal-handbook-bundle.zip/handbook/overtime-policy.docx",
+              "fournisseurs-legacy-export.csv",
+              "heron-tugs-receipt-tj-5531-photo.png"
+            ],
+            "rag_http": 200,
+            "rag_ms": 6402,
+            "rag_retries": 0,
+            "answer_head": "Overtime is paid at 1.75 times the base hourly rate [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "fournisseurs-legacy-export.csv",
+              "heron-tugs-receipt-tj-5531-photo.png",
+              "meridian-annual-report-fy26.pdf",
+              "saltmarsh-tariff-schedule-2027.pdf"
+            ]
+          },
+          "zip-history": {
+            "search_ms": 3586,
+            "rank": 1,
+            "top_sources": [
+              "terminal-handbook-bundle.zip/archive/archive-2025.zip/notes/history.md",
+              "saltmarsh-tariff-schedule-2027.pdf",
+              "kestrel-wharf-berth-booking.html"
+            ],
+            "rag_http": 200,
+            "rag_ms": 4990,
+            "rag_retries": 0,
+            "answer_head": "The Saltmarsh terminal was commissioned in 1987 by the Brackwater Harbour Trust [1].",
+            "answered": true,
+            "cited": true,
+            "cited_sources": [
+              "berth-planning-review-q3.pptx",
+              "kestrel-wharf-berth-booking.html",
+              "meridian-annual-report-fy26.pdf",
+              "saltmarsh-tariff-schedule-2027.pdf"
+            ]
+          },
+          "zip-contact": {
+            "search_ms": 9221,
+            "rank": 1,
+            "top_sources": [
+              "terminal-handbook-bundle.zip/contacts.csv",
+              "harbour-services-agreement-hsa-4471.docx",
+              "terminal-handbook-bundle.zip/archive/archive-2025.zip/notes/history.md"
+            ]
+          },
+          "zip-pdf": {
+            "search_ms": 10425,
+            "rank": 1,
+            "top_sources": [
+              "terminal-handbook-bundle.zip/handbook/tariff-extract.pdf",
+              "kestrel-wharf-berth-booking.html",
+              "saltmarsh-tariff-schedule-2027.pdf"
+            ]
+          }
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:15:54"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-REFUSALS",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_upload_refusals",
+      "result": "passed",
+      "duration_s": 6.6,
+      "evidence": {
+        "refusals": {
+          "pdf-encrypted": {
+            "http": 422,
+            "s": 0.35,
+            "detail": "board-minutes-restricted.pdf: the PDF is encrypted and needs a password to open; upload an unprotected copy"
+          },
+          "pdf-truncated": {
+            "http": 422,
+            "s": 0.05,
+            "detail": "tariff-schedule-truncated.pdf: not a readable PDF (Stream has ended unexpectedly)"
+          },
+          "docx-garbage": {
+            "http": 422,
+            "s": 0.08,
+            "detail": "not-really-a-document.docx: not a readable .docx (File is not a zip file)"
+          },
+          "empty-file": {
+            "http": 422,
+            "s": 0.04,
+            "detail": "empty-notes.txt: the file is empty"
+          },
+          "png-truncated": {
+            "http": 422,
+            "s": 0.09,
+            "detail": "half-uploaded-photo.png: not a readable image (Truncated File Read)"
+          },
+          "zip-bomb": {
+            "http": 422,
+            "s": 0.58,
+            "detail": "quarterly-exports.zip: payload.txt has a compression ratio of 1028:1 (limit 100:1); this looks like a zip bomb and was refused"
+          },
+          "zip-bomb-nested": {
+            "http": 422,
+            "s": 0.79,
+            "detail": "nested-exports.zip/part-0.zip: payload.txt has a compression ratio of 1028:1 (limit 100:1); this looks like a zip bomb and was refused"
+          }
+        },
+        "documents_after": 0,
+        "health_after": 200,
+        "metrics": {
+          "refusals": 7,
+          "refused_correctly": 7
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:16:01"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-SIZE-LIMIT",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_upload_size_limit",
+      "result": "passed",
+      "duration_s": 9.1,
+      "evidence": {
+        "limit": 52428800,
+        "at_limit": {
+          "http": 201,
+          "s": 7.31,
+          "chunks": 1
+        },
+        "over_limit": {
+          "http": 413,
+          "s": 0.46,
+          "detail": "Upload exceeds the 50 MiB limit"
+        },
+        "metrics": {
+          "at_limit_s": 7.31,
+          "over_limit_s": 0.46
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:16:12"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-UPLOAD-DUPLICATES",
+      "test": "tests/real_world/test_kb_upload_hard.py::test_upload_duplicates",
+      "result": "passed",
+      "duration_s": 1.5,
+      "evidence": {
+        "uploads": {
+          "ops-bulletin-31.md": {
+            "http": 201,
+            "chunks": 1,
+            "deduplicated": false,
+            "document_id": "7b288a80a24355ef96c7134510a91051"
+          },
+          "ops-bulletin-31-copy.md": {
+            "http": 201,
+            "chunks": 0,
+            "deduplicated": true,
+            "document_id": "7b288a80a24355ef96c7134510a91051"
+          },
+          "ops-bulletin-31.txt": {
+            "http": 201,
+            "chunks": 0,
+            "deduplicated": true,
+            "document_id": "7b288a80a24355ef96c7134510a91051"
+          },
+          "ops-bulletin-32.md": {
+            "http": 201,
+            "chunks": 1,
+            "deduplicated": false,
+            "document_id": "45962a154cab5a73b307106f009755bc"
+          }
+        },
+        "documents": [
+          "ops-bulletin-31.md",
+          "ops-bulletin-32.md"
+        ],
+        "shared_paragraph_sources": [
+          "ops-bulletin-31.md",
+          "ops-bulletin-32.md"
+        ],
+        "metrics": {
+          "documents": 2
+        }
+      },
+      "failure_detail": "",
+      "finished_at": "2026-10-05T18:16:14"
+    },
+    {
+      "suite": "backend",
+      "scenario": "KB-REAL-DOCS",
+      "test": "tests/real_world/test_knowledge.py::test_kb_real_documents",
+      "result": "failed",
+      "duration_s": 489.4,
+      "evidence": {
+        "collection_id": "4bcfc13e8b314ec5ab257717294c71a4",
+        "uploads": {
+          "halcyon-change-notice.pdf": {
+            "http": 201,
+            "chunks": 1
+          },
+          "zephyrine-contract.docx": {
+            "http": 201,
+            "chunks": 1
+          },
+          "quokka-pay-launch.pptx": {
+            "http": 201,
+            "chunks": 1
+          },
+          "warehouses.xlsx": {
+            "http": 201,
+            "chunks": 1
+          },
+          "service-owners.csv": {
+            "http": 201,
+            "chunks": 1
+          },
+          "workplace-handbook.html": {
+            "http": 201,
+            "chunks": 1
+          },
+          "travel-policy.md": {
+            "http": 201,
+            "chunks": 1
+          }
+        },
+        "documents": {
+          "service-owners.csv": 1,
+          "zephyrine-contract.docx": 1,
+          "travel-policy.md": 1,
+          "workplace-handbook.html": 1,
+          "halcyon-change-notice.pdf": 1,
+          "quokka-pay-launch.pptx": 1,
+          "warehouses.xlsx": 1
+        },
+        "embedding_health": {
+          "total_chunks": 7,
+          "embedded_chunks": 7,
+          "coverage_pct": 100.0,
+          "embedding_dim": 2048,
+          "model": "nvidia/nemotron-3-embed-1b"
+        },
+        "embedder": {
+          "status": "available",
+          "provider": "dedicated",
+          "model": "nvidia/nemotron-3-embed-1b",
+          "dimension": 2048,
+          "failed_providers": []
+        },
+        "search_rank": {
+          "halcyon-change-notice.pdf": 1,
+          "zephyrine-contract.docx": 1,
+          "quokka-pay-launch.pptx": 1,
+          "warehouses.xlsx": 1,
+          "service-owners.csv": 1,
+          "workplace-handbook.html": 1,
+          "travel-policy.md": 1
+        },
+        "not_rank_1": [],
+        "goal_id": "63e805e1ac8c4070be3e7eefea9d6daa",
+        "docker_logs": []
+      },
+      "failure_detail": "tests/real_world/test_knowledge.py:153: in test_kb_real_documents\n    final = wait_until(lambda: api.json_ok(\"GET\", f\"/goals/{goal_id}\"), timeout=GOAL_TIMEOUT,\ntests/real_world/helpers.py:163: in wait_until\n    raise AssertionError(\nE   AssertionError: timed out after 480s waiting for KB goal 63e805e1ac8c4070be3e7eefea9d6daa; last={\"goal_id\": \"63e805e1ac8c4070be3e7eefea9d6daa\", \"status\": \"planning\", \"goal\": \"Using only our knowledge base, answer and cite the source document for each: (1) When is the Project Halcyon database migration window? (2) On what date does the Zephyrine Analytics contract auto-renew? (3) In which city does Quokka Pay launch first?\", \"priority\": \"normal\", \"dry_run\": false, \"agent_id\": \"a03fbb22f77046668c1e396427245f0f\", \"workflow_mode\": \"single_agent\", \"created_at\": \"2026-10-05T12:46:24.962040+00:00\", \"event_count\": 0, \"provider_warning\": null, \"result_artifact\": {\"version\": 1, \"kind\": \"empty\", \"title\": \"Using only our knowledge base, answer and cite the source document for each: (1) When is the Project Halcyon database migration window? (2) On what date does the Zephyrine Analytics contract a",
+      "finished_at": "2026-10-05T18:24:31"
+    }
+  ]
+}
