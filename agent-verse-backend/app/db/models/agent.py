@@ -26,9 +26,9 @@ from app.db.models import Base
 class Agent(Base):
     __tablename__ = "agents"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     goal_template: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
@@ -96,11 +96,11 @@ class AgentPermission(Base):
     __tablename__ = "agent_permissions"
     __table_args__ = (UniqueConstraint("agent_id", "tool_name", name="uq_agent_tool"),)
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     agent_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(200), nullable=False)
     level: Mapped[str] = mapped_column(String(20), nullable=False, default="allow_log")
     daily_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)

@@ -20,8 +20,8 @@ def _hex_id() -> str:
 class ChatSessionFolder(Base):
     __tablename__ = "chat_session_folders"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_hex_id)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     color: Mapped[str] = mapped_column(String(20), nullable=False, default="#6366f1")
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -37,15 +37,15 @@ class ChatSessionFolder(Base):
 class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_hex_id)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False, default="New Chat")
     pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ttl_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    agent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     folder_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("chat_session_folders.id", ondelete="SET NULL"), nullable=True
+        String(64), ForeignKey("chat_session_folders.id", ondelete="SET NULL"), nullable=True
     )
     show_reasoning: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     proactive_suggestions: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -75,11 +75,11 @@ class ChatSession(Base):
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_hex_id)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
     session_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # user|assistant|system
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     # NOTE: the Python attribute is named ``metadata_`` (not ``metadata``) because
@@ -90,9 +90,9 @@ class ChatMessage(Base):
     metadata_: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
-    branch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    parent_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    goal_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    branch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    goal_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     intent: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -104,12 +104,12 @@ class ChatMessage(Base):
 class ChatMessageUsage(Base):
     __tablename__ = "chat_message_usage"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_hex_id)
-    message_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
+    message_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     session_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -124,12 +124,12 @@ class ChatMessageUsage(Base):
 class ChatArtifact(Base):
     __tablename__ = "chat_artifacts"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_hex_id)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_hex_id)
     session_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     language: Mapped[str] = mapped_column(String(50), nullable=False, default="text")
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")

@@ -29,10 +29,10 @@ class UserSession(Base):
         Index("ix_user_sessions_expires_at", "expires_at"),
     )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     user_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     # SHA-256 of the bearer token; NULL until the login code is exchanged.
     token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)

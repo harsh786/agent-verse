@@ -28,15 +28,15 @@ from app.db.models import Base
 class Goal(Base):
     __tablename__ = "goals"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     agent_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
+        String(64), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
     )
     parent_goal_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("goals.id", ondelete="SET NULL"), nullable=True
+        String(64), ForeignKey("goals.id", ondelete="SET NULL"), nullable=True
     )
     goal_text: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="planning")
@@ -106,11 +106,11 @@ class Goal(Base):
 class GoalStep(Base):
     __tablename__ = "goal_steps"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     step_index: Mapped[int] = mapped_column(Integer, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
@@ -145,7 +145,7 @@ class GoalEvent(Base):
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     goal_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -163,12 +163,12 @@ class GoalCheckpoint(Base):
         UniqueConstraint("tenant_id", "goal_id", "checkpoint_key", name="uq_goal_checkpoints_key"),
     )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     goal_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
     checkpoint_key: Mapped[str] = mapped_column(String(120), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

@@ -20,8 +20,8 @@ class EvalSuite(Base):
 
     # Keyed per tenant: suite ids are caller-chosen, so a global key let one
     # tenant probe for (and collide with) another tenant's ids.
-    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True, index=True)
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     # Bumped by every golden-task add / edit / delete / import (MEM-54). The
@@ -45,10 +45,10 @@ class EvalSuiteRunResult(Base):
         Index("ix_eval_suite_results_tenant_suite_run", "tenant_id", "suite_id", "run_at"),
     )
 
-    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True, index=True)
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    suite_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    run_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    suite_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
     total_tasks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     passed_tasks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_tasks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -59,7 +59,7 @@ class EvalSuiteRunResult(Base):
     # The suite dataset version the run executed (MEM-54).
     dataset_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The agent the golden goals ran on and its behaviour-config hash (MEM-52).
-    agent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     agent_config_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     agent_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

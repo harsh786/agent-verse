@@ -25,7 +25,7 @@ class ChatChannelSession(Base):
     channel: Mapped[str] = mapped_column(Text, primary_key=True)
     channel_user_id: Mapped[str] = mapped_column(Text, primary_key=True)
     chat_session_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -43,7 +43,7 @@ class ChatPrincipalSession(Base):
     tenant_id: Mapped[str] = mapped_column(Text, primary_key=True)
     principal_id: Mapped[str] = mapped_column(Text, primary_key=True)
     chat_session_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
+        String(64), ForeignKey("chat_sessions.id", ondelete="CASCADE"), nullable=False
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

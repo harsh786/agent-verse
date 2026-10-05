@@ -16,8 +16,8 @@ class UserRole(Base):
 
     __tablename__ = "user_roles"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # user_id is the Keycloak `sub` claim or the api_key_id for API key users
     user_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -31,8 +31,8 @@ class IPAllowlistEntry(Base):
 
     __tablename__ = "ip_allowlist"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     cidr: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[str] = mapped_column(String(200), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(

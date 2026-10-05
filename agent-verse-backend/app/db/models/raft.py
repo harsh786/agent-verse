@@ -50,15 +50,15 @@ class RAFTDataset(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     collection_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         nullable=False,
         index=True,
     )
@@ -131,19 +131,19 @@ class RAFTFineTuneJob(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     dataset_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         nullable=False,
         index=True,
     )
-    collection_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    collection_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
     base_model: Mapped[str] = mapped_column(String(200), nullable=False)
     capability: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -196,13 +196,13 @@ class RAFTConfirmationGrant(Base):
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     dataset_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         nullable=False,
     )
     provider_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -237,12 +237,12 @@ class RAFTModelDeployment(Base):
     )
 
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    collection_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    job_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    collection_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
     deployed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

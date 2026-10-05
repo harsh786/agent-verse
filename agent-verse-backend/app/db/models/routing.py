@@ -18,9 +18,9 @@ class RoutingDecisionRow(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False)
     execution_id: Mapped[str] = mapped_column(String(64), nullable=False)
     category: Mapped[str] = mapped_column(String(20), nullable=False)
     profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -36,7 +36,7 @@ class RoutingOutcomeRow(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     decision_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("routing_decisions.id", ondelete="CASCADE"), nullable=False
