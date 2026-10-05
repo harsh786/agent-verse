@@ -29,6 +29,8 @@ export interface GoalEvent {
   success?: boolean;
   reason?: string;
   iteration?: number;
+  /** Durable event-store sequence; also the SSE id (absent when not stored). */
+  _seq?: number;
   [key: string]: unknown;
 }
 
@@ -75,6 +77,10 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
   // lastEventId on the MessageEvent.  With a fetch-based reader we extract it
   // from the raw frame ("id: " prefix) and store it here.
   const lastEventIdRef = useRef<string>('');
+  // Durable server sequences (`_seq`, also the SSE id) already delivered for
+  // this goal (SVC-05). A resume after Last-Event-ID, or a reconnect to another
+  // replica, may replay some of them: each is shown, and reported, only once.
+  const seenSeqsRef = useRef<Set<number>>(new Set());
   const reconnectKey = opts?.reconnectKey;
 
   onEventRef.current = opts?.onEvent;
@@ -93,6 +99,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
     // goal's live feed.
     retryCountRef.current = 0;
     lastEventIdRef.current = '';
+    seenSeqsRef.current = new Set();
     setStreamingToken(null);
     setEvents([]);
 
@@ -191,7 +198,11 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
             for (const line of frame.split("\n")) {
               if (line.startsWith("id: ")) {
                 const id = line.slice(4).trim();
-                if (id) lastEventIdRef.current = id;
+                // Ids are durable sequences: a replayed (lower) one never
+                // moves the resume point back.
+                const replayed =
+                  /^\d+$/.test(id) && Number(id) <= Number(lastEventIdRef.current || "0");
+                if (id && !replayed) lastEventIdRef.current = id;
               }
             }
 
@@ -218,7 +229,15 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
                   continue;
                 }
 
-                // Structural events — push to events array with dedup + cap
+                // Structural events — push to events array with dedup + cap.
+                // An event whose durable sequence was delivered already is a
+                // replay (resume / another replica): dropped before anything
+                // sees it. Events without one (never stored) are kept.
+                const seq = parsed._seq;
+                if (typeof seq === "number") {
+                  if (seenSeqsRef.current.has(seq)) continue;
+                  seenSeqsRef.current.add(seq);
+                }
                 setEvents((prev) => {
                   const eventId = parsed["event_id"] as string | undefined;
                   if (eventId && prev.some((e) => (e["event_id"] as string | undefined) === eventId)) {

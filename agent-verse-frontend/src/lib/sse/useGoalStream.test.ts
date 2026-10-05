@@ -238,6 +238,70 @@ describe('useGoalStream — reconnection, backoff, and resilience', () => {
     await advance(0);
   });
 
+  test('reconnect resumes from the durable id and drops replayed events by sequence (SVC-05)', async () => {
+    vi.useFakeTimers();
+    const ctl1 = makeControllableStream();
+    const ctl2 = makeControllableStream();
+    const streams = [ctl1, ctl2];
+    let call = 0;
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(streams[call++].stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const seen: unknown[] = [];
+
+    const { result } = renderHook(() =>
+      useGoalStream('goal-seq', { onEvent: (e) => seen.push(e._seq) })
+    );
+    ctl1.push(`id: 1\ndata: ${JSON.stringify({ type: 'step_started', _seq: 1 })}\n\n`);
+    ctl1.push(`id: 2\ndata: ${JSON.stringify({ type: 'step_complete', _seq: 2 })}\n\n`);
+    await advance(0);
+    ctl1.close();
+    await advance(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const headers = (fetchMock.mock.calls[1][1] as RequestInit).headers as Record<string, string>;
+    expect(headers['Last-Event-ID']).toBe('2');
+
+    // The new replica replays seq 1-2 (an overlap) before the new events, and
+    // one live event arrives twice: each is shown, and reported, once.
+    ctl2.push(`id: 1\ndata: ${JSON.stringify({ type: 'step_started', _seq: 1 })}\n\n`);
+    ctl2.push(`id: 2\ndata: ${JSON.stringify({ type: 'step_complete', _seq: 2 })}\n\n`);
+    ctl2.push(`id: 3\ndata: ${JSON.stringify({ type: 'step_started', _seq: 3 })}\n\n`);
+    ctl2.push(`id: 3\ndata: ${JSON.stringify({ type: 'step_started', _seq: 3 })}\n\n`);
+    ctl2.push(`data: ${JSON.stringify({ type: 'note_without_seq' })}\n\n`);
+    ctl2.push(`id: 4\ndata: ${JSON.stringify({ type: 'goal_complete', _seq: 4 })}\n\n`);
+    await advance(0);
+    expect(result.current.events.map((e) => e._seq)).toEqual([1, 2, 3, undefined, 4]);
+    expect(seen).toEqual([1, 2, 3, undefined, 4]);
+  });
+
+  test('sequences are per goal: a new goal starts from an empty set (SVC-05)', async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          makeSseStream([
+            `id: 1\ndata: ${JSON.stringify({ type: 'step_started', _seq: 1 })}\n\n`,
+            `id: 2\ndata: ${JSON.stringify({ type: 'goal_complete', _seq: 2 })}\n\n`,
+          ]),
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
+        )
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result, rerender } = renderHook(({ id }) => useGoalStream(id), {
+      initialProps: { id: 'goal-a' },
+    });
+    await waitFor(() => expect(result.current.events).toHaveLength(2));
+    rerender({ id: 'goal-b' });
+    await waitFor(() => expect(result.current.events.map((e) => e._seq)).toEqual([1, 2]));
+  });
+
   test('worker_failed is terminal: no reconnect after it (SVC-06)', async () => {
     vi.useFakeTimers();
     const ctl = makeControllableStream();
