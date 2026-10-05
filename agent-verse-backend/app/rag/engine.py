@@ -4,7 +4,7 @@ World-Class RAG Retrieval Engine
 
 Four retrieval legs fused with Reciprocal Rank Fusion (RRF):
   1. pgvector ANN — cosine similarity with HNSW index
-  2. PostgreSQL FTS — tsvector + ts_rank_cd
+  2. PostgreSQL FTS — OR of the significant terms, ts_rank_cd + all-terms bonus
   3. pg_trgm fuzzy — trigram similarity for typo tolerance
   4. Application Okapi BM25 over a bounded persisted corpus
 
@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.observability.logging import get_logger
 from app.rag.bm25 import BM25CorpusScorer, BM25Hit
+from app.rag.lexical_query import analyze_query
 from app.rag.rerank_stage import apply_default_rerank
 
 logger = get_logger(__name__)
@@ -543,22 +544,16 @@ async def hybrid_search(
     fts_started = time.perf_counter()
     if retrieval_mode in ("hybrid", "lexical"):
         try:
-            fts_sql = text(f"""
-                SELECT id, content, metadata,
-                       ts_rank_cd(to_tsvector('english', content),
-                                  plainto_tsquery('english', :q)) AS score
-                FROM {table}
-                WHERE collection_id = :cid
-                  {metadata_clause}
-                  {live_chunk_clause}
-                  AND to_tsvector('english', content) @@ plainto_tsquery('english', :q)
-                 ORDER BY score DESC, id ASC
-                LIMIT :limit
-            """)
+            fts_sql, fts_params = _fts_statement(
+                table=table,
+                query=query,
+                metadata_clause=metadata_clause,
+                live_chunk_clause=live_chunk_clause,
+            )
             rows = await session.execute(
                 fts_sql,
                 {
-                    "q": query[:500],
+                    **fts_params,
                     "cid": collection_id,
                     "limit": top_k * 3,
                     **metadata_params,
@@ -763,6 +758,61 @@ async def hybrid_search(
     )
 
     return results
+
+
+# Each full-text tier (all-terms AND / any-term OR) reads at most this many
+# GIN-matched rows before ranking, so a query of common words over a
+# million-chunk collection never ranks the whole collection.
+_FTS_CANDIDATE_CAP = 1000
+
+
+def _fts_statement(
+    *,
+    table: str,
+    query: str,
+    metadata_clause: str,
+    live_chunk_clause: str,
+) -> tuple[Any, dict[str, Any]]:
+    """Full-text leg: OR the significant terms, rank all-term matches first.
+
+    ``plainto_tsquery`` ANDs every word, so a long natural-language step matched
+    no chunk at all (P2-1). The leg now ORs the query's significant terms
+    (stop words dropped, identifiers first, at most ``MAX_LEXICAL_TERMS``) and
+    ranks by ``ts_rank_cd`` coverage, with a +1 bonus for a chunk that matches
+    every term (the old AND semantics), so short precise queries keep their
+    precision. Each tier is a bounded GIN lookup (``_FTS_CANDIDATE_CAP``).
+    Every term is bound as a parameter and parsed by ``plainto_tsquery``, so no
+    user text ever reaches the ``to_tsquery`` syntax.
+    """
+    analysed = analyze_query(query)
+    params: dict[str, Any] = {"q": query[:500], "cap": _FTS_CANDIDATE_CAP}
+    and_query = "plainto_tsquery('english', :q)"
+    if analysed.terms:
+        or_parts = []
+        for i, term in enumerate(analysed.terms):
+            params[f"fts_t{i}"] = term
+            or_parts.append(f"plainto_tsquery('english', :fts_t{i})")
+        or_query = "(" + " || ".join(or_parts) + ")"
+    else:
+        or_query = and_query
+    tsv = "to_tsvector('english', content)"
+    scope = f"collection_id = :cid {metadata_clause} {live_chunk_clause}"
+    sql = text(f"""
+        WITH candidates AS (
+            (SELECT id FROM {table} WHERE {scope} AND {tsv} @@ {and_query} LIMIT :cap)
+            UNION
+            (SELECT id FROM {table} WHERE {scope} AND {tsv} @@ {or_query} LIMIT :cap)
+        )
+        SELECT c.id, c.content, c.metadata,
+               ts_rank_cd(to_tsvector('english', c.content), {or_query}, 32)
+               + CASE WHEN to_tsvector('english', c.content) @@ {and_query}
+                      THEN 1.0 ELSE 0.0 END AS score
+          FROM {table} c
+          JOIN candidates USING (id)
+         ORDER BY score DESC, c.id ASC
+         LIMIT :limit
+    """)
+    return sql, params
 
 
 def _record_leg_evidence(
