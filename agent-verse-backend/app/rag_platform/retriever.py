@@ -276,6 +276,7 @@ class RAGRetriever:
             # RAFT answers come only from the deployed fine-tuned model; never
             # let the base model synthesize an answer reported as RAFT.
             raise RAGSynthesisError("RAFT result has no fine-tuned model answer")
+        strategy_answered = bool(answer)
         if not answer and result.citations:
             answer = await self.synthesize(
                 query=query,
@@ -287,10 +288,59 @@ class RAGRetriever:
             )
         result = result.model_copy(update={"answer": answer})
         result._budget_context = budget_context
-        return await self.verify_result(
+        verified = await self.verify_result(
             result,
             tenant_ctx=tenant_ctx,
             cost_trace_start=post_retrieval_cost_start,
+        )
+        if (
+            verified.grounded
+            or not strategy_answered
+            or not result.citations
+            or result.resolved_strategy_id is RAGStrategy.RAFT
+        ):
+            return verified
+        # A strategy wrote its own answer (agentic, self-RAG, ...) and it did not
+        # pass citation verification, typically because it carries no [N]
+        # markers. Re-synthesize from the same citations with the
+        # citation-requiring synthesis (/knowledge/chat's path) and verify again;
+        # the caller still sees grounded=False if that fails too.
+        original_reason = next(
+            (
+                str(trace.detail.get("reason", "unsupported"))
+                for trace in reversed(verified.strategy_trace)
+                if trace.action == "citation_verification"
+            ),
+            "unsupported",
+        )
+        resynthesis_cost_start = budget_context.event_count if budget_context is not None else 0
+        resynthesized = await self.synthesize(
+            query=query,
+            tenant_ctx=tenant_ctx,
+            strategy=result.resolved_strategy_id,
+            citations=result.citations,
+            max_context_chars=max_context_chars,
+            budget_context=budget_context,
+        )
+        retry = verified.model_copy(
+            update={
+                "answer": resynthesized,
+                "strategy_trace": [
+                    *verified.strategy_trace,
+                    RAGStrategyTrace(
+                        strategy=result.resolved_strategy_id,
+                        action="answer_resynthesized",
+                        status="complete",
+                        detail={"original_reason": original_reason},
+                    ),
+                ],
+            }
+        )
+        retry._budget_context = budget_context
+        return await self.verify_result(
+            retry,
+            tenant_ctx=tenant_ctx,
+            cost_trace_start=resynthesis_cost_start,
         )
 
     async def verify_result(

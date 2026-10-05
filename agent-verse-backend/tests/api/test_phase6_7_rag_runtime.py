@@ -121,7 +121,9 @@ class _Gateway:
                     result_count=0,
                 )
             ],
-            answer="No matching certified evidence.",
+            # Nothing retrieved: no answer. (A non-empty answer with no
+            # verified citation is a 422 answer_ungrounded since P2-7.)
+            answer="",
         )
 
 

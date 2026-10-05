@@ -7,6 +7,7 @@ from typing import Any, NoReturn
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.observability.logging import get_logger
 from app.orchestration.strategy_registry import get_strategy_registry
 from app.rag.catalogue import RAG_CAPABILITY_CATALOGUE
 from app.rag.contracts import (
@@ -36,6 +37,8 @@ from app.rag.raft import (
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/rag", tags=["rag-platform"])
 
@@ -159,6 +162,29 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
         )
     except Exception as exc:
         _raise_retrieval_http_error(exc)
+
+    if result.answer and not result.grounded:
+        # Same contract as /knowledge/chat: an answer that fails citation
+        # verification is a 422, never a 200 the caller might take as fact.
+        last = result.strategy_trace[-1].detail if result.strategy_trace else {}
+        logger.warning(
+            "rag_query_answer_ungrounded",
+            strategy=result.resolved_strategy_id.value,
+            reason=last.get("reason"),
+            citations=len(result.citations),
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "answer_ungrounded",
+                "reason": last.get("reason", "unsupported"),
+                "requested_strategy_id": result.requested_strategy_id,
+                "resolved_strategy_id": result.resolved_strategy_id.value,
+                "strategy_trace": [
+                    trace.model_dump(mode="json") for trace in result.strategy_trace
+                ],
+            },
+        )
 
     # ``confidence`` used to be the single best citation score presented as an
     # answer confidence. Prefer the gateway's calibrated aggregate retrieval

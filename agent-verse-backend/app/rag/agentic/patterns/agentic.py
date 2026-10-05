@@ -26,8 +26,16 @@ from app.rag.engine import (
 _DECISION_SYSTEM = """Choose exactly one next Agentic RAG action.
 Actions: retrieve, reformulate, fallback, stop.
 Return JSON with action, reason, optional query or answer, and verified_claims.
-Use stop only with a non-empty answer. When evidence supports the answer, include short
-verbatim claims that occur in both the answer and evidence. Never invent another action."""
+Use stop only with a non-empty answer. The evidence is numbered [1], [2], ...: end every
+factual sentence of the answer with the [N] marker(s) of the evidence that states it,
+and cite only numbers that appear in the evidence. If the evidence does not answer the
+question, retrieve or reformulate instead of answering. When evidence supports the
+answer, include short verbatim claims that occur in both the answer and evidence. Never
+invent another action."""
+
+#: Output budget of one decision. 180 tokens truncated cited answers and left a
+#: reasoning model nothing to answer with.
+_DECISION_MAX_TOKENS = 768
 
 _MAX_DECISION_EVIDENCE_CHARS = 3_500
 
@@ -184,7 +192,7 @@ class AgenticRAGRuntimeAdapter(AgenticRAGRuntimeContract):
                         ),
                     ],
                     model=model,
-                    max_tokens=180,
+                    max_tokens=_DECISION_MAX_TOKENS,
                     temperature=0.0,
                     response_schema={
                         "type": "object",

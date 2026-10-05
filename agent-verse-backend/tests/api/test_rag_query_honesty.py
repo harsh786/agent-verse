@@ -88,3 +88,36 @@ def test_confidence_falls_back_to_labelled_max_citation_score() -> None:
     body = resp.json()
     assert body["confidence"] == 0.97
     assert body["confidence_basis"] == "max_citation_score"
+
+
+def test_ungrounded_answer_is_422_like_knowledge_chat() -> None:
+    """P2-7: an answer that fails citation verification is not a 200."""
+    ungrounded = _result(calibrated=0.8).model_copy(
+        update={"grounded": False, "answer": "uncited claim", "requested_strategy_id": "agentic"}
+    )
+    with patch(
+        "app.api.rag_platform.RAGRetriever.retrieve",
+        new=AsyncMock(return_value=ungrounded),
+    ):
+        resp = _client(object()).post(
+            "/rag/query", json={"query": "q", "strategy": "agentic"}, headers=_HDRS
+        )
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "answer_ungrounded"
+    assert detail["requested_strategy_id"] == "agentic"
+
+
+def test_empty_result_without_an_answer_is_still_200() -> None:
+    """Nothing retrieved and no answer is "nothing found", not an ungrounded claim."""
+    empty = RAGExecutionResult(
+        requested_strategy_id="hybrid",
+        resolved_strategy_id=RAGStrategy.HYBRID,
+        citations=[],
+        grounded=False,
+        answer="",
+    )
+    with patch("app.api.rag_platform.RAGRetriever.retrieve", new=AsyncMock(return_value=empty)):
+        resp = _client(object()).post("/rag/query", json={"query": "q"}, headers=_HDRS)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["grounded"] is False
