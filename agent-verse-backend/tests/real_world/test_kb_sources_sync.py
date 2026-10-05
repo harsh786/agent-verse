@@ -9,9 +9,10 @@ documents — the unchanged one under the SAME document id, the edited one repla
   needs a URL the stack's egress guard accepts — RW_FIXTURE_PUBLIC_URL (a tunnel to
   RW_FIXTURE_PORT), or RW_FIXTURE_REACHABLE=1 when the operator allowlisted the host.
 * Redis (SRC-REDIS-INCREMENTAL): RW_REDIS_URL (as the stack reaches it) + a seeding
-  path: RW_REDIS_SEED_URL (as this host reaches it; default RW_REDIS_URL).
+  path: RW_REDIS_SEED_URL (as this host reaches it; default RW_REDIS_URL). Deleted keys
+  are removed by reconciliation, triggered explicitly as for S3.
 * MongoDB (SRC-MONGO-INCREMENTAL): RW_MONGO_URI (+ RW_MONGO_SEED_URI); incremental
-  cursor on ``updated_at``.
+  cursor on ``updated_at``; deletions reconciled as above.
 * S3 / MinIO (SRC-S3-INCREMENTAL): RW_S3_ENDPOINT, RW_S3_BUCKET, RW_S3_ACCESS_KEY,
   RW_S3_SECRET_KEY (+ RW_S3_SEED_ENDPOINT, RW_S3_SOURCE_TYPE=minio|s3, RW_S3_REGION).
   Objects deleted upstream are removed by reconciliation, which syncs schedule at most
@@ -54,10 +55,15 @@ EDITED_BRAVO = "Dock 7 at the Pune hub reopens early on 6 October after resurfac
 NEW_DELTA = "Guwahati inbound cut-off moves to 18:00 for the Durga Puja peak."
 
 
+# The family the Sources UI files each type under (the catalogue has no family).
+_FAMILIES = {"rss": "web", "redis": "nosql_database", "mongodb": "nosql_database",
+             "s3": "object_storage", "minio": "object_storage"}
+
+
 def _family(api: LiveAPI, source_type: str) -> str:
     for c in api.json_ok("GET", "/sources/catalogue"):
         if str(c.get("source_type")) == source_type:
-            return str(c.get("family") or "")
+            return str(c.get("family") or _FAMILIES.get(source_type, ""))
     pytest.fail(f"no {source_type!r} connector in GET /sources/catalogue")
 
 
@@ -220,6 +226,8 @@ def test_redis_source_incremental(api: LiveAPI, cleanup: Any, evidence: dict[str
         seed.delete(f"{prefix}:charlie")
         seed.set(f"{prefix}:delta", NEW_DELTA)
         _sync(api, sid, evidence, "sync2")
+        # Deleted keys are removed by reconciliation (P1c-8), like objects (KB-44).
+        _reconcile(api, sid, cid, {str(d.get("id")) for d in before["charlie"]}, evidence)
         _assert_second_sync(api, cid, before, evidence, _key)
     finally:
         for k2 in [*ITEMS_V1, "delta"]:
@@ -259,6 +267,8 @@ def test_mongo_source_incremental(api: LiveAPI, cleanup: Any, evidence: dict[str
         col.delete_one({"_id": "charlie"})
         col.insert_one({"_id": "delta", "body": NEW_DELTA, "updated_at": later})
         _sync(api, sid, evidence, "sync2")
+        # Deleted documents are removed by reconciliation (TG-07 / KB-44).
+        _reconcile(api, sid, cid, {str(d.get("id")) for d in before["charlie"]}, evidence)
         _assert_second_sync(api, cid, before, evidence, _key)
     finally:
         with contextlib.suppress(Exception):
