@@ -15,17 +15,24 @@ import pytest
 
 from app.workflow.approval_store import PostgresWorkflowApprovalStore
 from app.workflow.hitl_extension import WorkflowHITLRequest
-from tests.workflow.test_approval_store import _req, postgres_url, store  # noqa: F401
+from tests.workflow.test_approval_store import (  # noqa: F401
+    _req,
+    _seed_live_runs,
+    postgres_url,
+    store,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 
 async def test_decide_and_delegate_in_parallel_never_revert(
     store: PostgresWorkflowApprovalStore,  # noqa: F811
+    postgres_url: str,  # noqa: F811
 ) -> None:
     tenant = str(uuid.uuid4())
-    for _ in range(20):
-        req = _req(tenant)
+    reqs = [_req(tenant) for _ in range(20)]
+    await _seed_live_runs(postgres_url, tenant, *(r.run_id for r in reqs))
+    for req in reqs:
         await store.save(req)
         decided = dataclasses.replace(
             req, status="decided", action_taken="approve", reviewed_by="alice"
@@ -47,9 +54,11 @@ async def test_decide_and_delegate_in_parallel_never_revert(
 
 async def test_mutation_of_decided_approval_returns_none(
     store: PostgresWorkflowApprovalStore,  # noqa: F811
+    postgres_url: str,  # noqa: F811
 ) -> None:
     tenant = str(uuid.uuid4())
     req = _req(tenant)
+    await _seed_live_runs(postgres_url, tenant, req.run_id)
     await store.save(req)
     assert await store.decide_if_pending(dataclasses.replace(req, status="decided"))
     assert (

@@ -27,6 +27,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
+from app.db.app_role import AppRoleSpec, ensure_app_role
 from app.workflow.approval_store import PostgresWorkflowApprovalStore
 from app.workflow.hitl_extension import WorkflowHITLRequest
 
@@ -65,26 +66,34 @@ async def store(postgres_url: str) -> AsyncIterator[PostgresWorkflowApprovalStor
     password = secrets.token_urlsafe(24)
     admin_engine = create_async_engine(postgres_url)
     async with admin_engine.begin() as conn:
-        quoted = (
-            await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})
-        ).scalar_one()
-        await conn.execute(
-            text(
-                f"CREATE ROLE {APP_ROLE} LOGIN PASSWORD {quoted} "
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
-            )
-        )
-        await conn.execute(text(f"GRANT CONNECT ON DATABASE test TO {APP_ROLE}"))
-        await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}"))
-        await conn.execute(
-            text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON workflow_approvals TO {APP_ROLE}")
-        )
-        await conn.execute(text(f"GRANT SELECT ON user_roles TO {APP_ROLE}"))
+        # The SAME bootstrap production runs after every migration
+        # (app/db/app_role.py), not a hand-picked table list: deciding an approval
+        # also reads workflow_runs (WF-CANCEL-PAUSED: only a live run's gate can be
+        # decided), exactly as it does in production.
+        await conn.run_sync(ensure_app_role, AppRoleSpec(role=APP_ROLE, password=password))
 
     app_engine = create_async_engine(_app_url(postgres_url, password), pool_size=4, max_overflow=0)
     yield PostgresWorkflowApprovalStore(async_sessionmaker(app_engine, expire_on_commit=False))
     await app_engine.dispose()
     await admin_engine.dispose()
+
+
+async def _seed_live_runs(postgres_url: str, tenant_id: str, *run_ids: str) -> None:
+    """Insert the (non-terminal) runs the approvals gate: a decision is claimed only
+    while its run is live (WF-CANCEL-PAUSED), so a gate with no run is undecidable."""
+    admin_engine = create_async_engine(postgres_url)
+    try:
+        async with admin_engine.begin() as conn:
+            for run_id in run_ids:
+                await conn.execute(
+                    text(
+                        "INSERT INTO workflow_runs (id, tenant_id, status) "
+                        "VALUES (CAST(:id AS uuid), CAST(:t AS uuid), 'waiting_hitl')"
+                    ),
+                    {"id": run_id, "t": tenant_id},
+                )
+    finally:
+        await admin_engine.dispose()
 
 
 def _req(tenant_id: str, **overrides: object) -> WorkflowHITLRequest:
@@ -201,7 +210,7 @@ async def test_list_by_run(store: PostgresWorkflowApprovalStore) -> None:
 
 
 async def test_concurrent_decisions_on_two_replicas_resume_once(
-    store: PostgresWorkflowApprovalStore,
+    store: PostgresWorkflowApprovalStore, postgres_url: str
 ) -> None:
     import asyncio
 
@@ -214,7 +223,9 @@ async def test_concurrent_decisions_on_two_replicas_resume_once(
         resumed.append(str(req.action_taken))
 
     a, b = (HITLWorkflowGateway(approval_store=store, resume_callback=resume) for _ in range(2))
-    rid = await a.create_workflow_approval(run_id=str(uuid.uuid4()), step_id="g", tenant_id=tenant)
+    run_id = str(uuid.uuid4())
+    await _seed_live_runs(postgres_url, tenant, run_id)
+    rid = await a.create_workflow_approval(run_id=run_id, step_id="g", tenant_id=tenant)
 
     results = await asyncio.gather(
         a.decide(rid, "approve", "alice", tenant_id=tenant),
