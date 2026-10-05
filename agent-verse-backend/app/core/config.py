@@ -552,6 +552,13 @@ class Settings(BaseSettings):
 
     # --- object storage (MinIO / S3) ---
     minio_endpoint: str = "http://minio:9000"
+    # NF-17: a finished training-export file is deleted from object storage this
+    # many hours after its job completed (the job becomes 'expired'); 0 keeps
+    # files forever. The hourly beat sweep handles at most
+    # batch_size * max_batches jobs per run.
+    training_export_retention_hours: int = Field(default=168, ge=0)
+    training_export_expiry_batch_size: int = Field(default=100, ge=1, le=1000)
+    training_export_expiry_max_batches: int = Field(default=10, ge=1)
     minio_access_key: str = "agentverse"
     minio_secret_key: str = "agentverse_minio"
 

@@ -308,6 +308,15 @@ async def download_training_export_job(
     if found is None:
         raise HTTPException(404, "Export job not found")
     status, key = found
+    if status == "expired":
+        # NF-17: the file was deleted after the retention period.
+        return JSONResponse(
+            status_code=410,
+            content={
+                "detail": "Export file expired and was deleted; start a new export",
+                "status": status,
+            },
+        )
     if status != "complete" or not key:
         return JSONResponse(
             status_code=409, content={"detail": f"Export job is {status}", "status": status}

@@ -1841,7 +1841,7 @@ export interface TrainingPreview {
 
 export interface TrainingExportJob {
   job_id: string;
-  status: "queued" | "running" | "complete" | "failed";
+  status: "queued" | "running" | "complete" | "failed" | "expired";
   format: "openai" | "anthropic";
   min_score: number | null;
   limit: number;

@@ -159,6 +159,7 @@ celery_app.conf.update(
         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
         # Training-data export jobs (OPS-37) — long-running, streamed to object storage.
         "agentverse.training_export.run": {"queue": "maintenance"},
+        "agentverse.training_export.expire": {"queue": "maintenance"},
         # Per-plan routing aliases (workers can subscribe to these specific queues)
         "agentverse.goals.run_goal_free": {"queue": "goals.free"},
         "agentverse.goals.run_goal_starter": {"queue": "goals.starter"},
@@ -202,6 +203,12 @@ celery_app.conf.update(
         "agentverse.workflows.run_enterprise": {"queue": "workflows.enterprise"},
     },
     beat_schedule={
+        # NF-17: finished training-export files are deleted after their retention.
+        "expire-training-exports-hourly": {
+            "task": "agentverse.training_export.expire",
+            "schedule": 3600.0,
+            "options": {"queue": "maintenance"},
+        },
         # MEM-53: re-dispatch eval-suite runs whose workers died.
         "resume-stalled-eval-suite-runs-every-60s": {
             "task": "app.scaling.tasks.resume_stalled_eval_suite_runs",
