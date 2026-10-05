@@ -417,11 +417,14 @@ def _make_agent_loop() -> Any:
     Configure ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY to avoid this.
     """
     from app.core.config import get_settings as _get_cfg
+    from app.providers.llm_resolution import FAKE_LLM_ENVIRONMENTS
 
-    _cfg = _get_cfg()
-    if getattr(_cfg, "environment", "development") == "production":
+    # BYOK-3: canned answers only in an explicit development/test environment
+    # (it used to be every ENVIRONMENT except exactly "production").
+    _env = str(getattr(_get_cfg(), "environment", "development") or "")
+    if _env.strip().lower() not in FAKE_LLM_ENVIRONMENTS:
         raise RuntimeError(
-            "Cannot use FakeProvider in production mode. "
+            f"Cannot use FakeProvider outside development/test (ENVIRONMENT={_env!r}). "
             "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY "
             "to configure a real LLM provider."
         )
@@ -456,17 +459,6 @@ def _make_agent_loop() -> Any:
             f"Failed to construct AgentGraph: {exc}. "
             "Check provider configuration (ANTHROPIC_API_KEY or OPENAI_API_KEY)."
         ) from exc
-
-
-def _fake_provider() -> Any:
-    """Return a cycling FakeProvider suitable for use as planner, executor, and verifier."""
-    return FakeProvider(
-        responses=[
-            '{"steps": ["Complete the requested task"]}',
-            "Task executed successfully",
-            '{"success": true, "reason": "Goal achieved"}',
-        ]
-    )
 
 
 def _failed_goal_state(
@@ -1669,13 +1661,14 @@ class GoalService:
         # 4. Final fallback: FakeProvider — development only, and always flagged.
         simulated = provider is None
         if simulated:
-            import os as _os
+            from app.providers.llm_resolution import fake_llm_allowed, no_provider_message
 
-            if _os.getenv("ENVIRONMENT", "development").lower() == "production":
-                # Never fabricate a "successful" goal in production.
+            if not fake_llm_allowed():
+                # Never fabricate a "successful" goal outside development/test
+                # (it used to be every ENVIRONMENT except exactly "production").
                 raise RuntimeError(
-                    "No LLM provider is configured; refusing to simulate goal execution "
-                    "in production."
+                    f"{no_provider_message(tenant_ctx.tenant_id)}; refusing to simulate "
+                    "goal execution"
                 )
             from app.providers.fake import FakeProvider as _FakeProvider
 

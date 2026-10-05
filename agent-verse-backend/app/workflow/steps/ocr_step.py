@@ -78,6 +78,8 @@ class OcrStepNode:
         self.ctx = context_resolver
         self._ocr_engine = services.get("ocr_engine")
         self._provider = services.get("llm_provider") or services.get("provider")
+        # BYOK-3: the run tenant's provider (vision) per execution when wired.
+        self._provider_resolver = services.get("llm_provider_resolver")
 
     def _engine(self) -> Any:
         if self._ocr_engine is None:
@@ -85,6 +87,18 @@ class OcrStepNode:
 
             self._ocr_engine = OcrEngine()
         return self._ocr_engine
+
+    async def _step_provider(self, state: WorkflowState) -> Any:
+        """Tenant BYOK → platform; ``None`` (no vision) when neither is configured."""
+        from app.workflow.llm_provider import step_llm_provider
+
+        return await step_llm_provider(
+            resolver=self._provider_resolver,
+            fallback=self._provider,
+            state=state,
+            step_id=self.step.id,
+            required=False,
+        )
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         resolved = self.ctx.resolve_dict(self.step.input, state)
@@ -95,7 +109,7 @@ class OcrStepNode:
         if state.get("is_test_run") and self.step.id in (state.get("mock_overrides") or {}):
             output: dict[str, Any] = (state["mock_overrides"] or {})[self.step.id]
         else:
-            output = await self._run_ocr(resolved)
+            output = await self._run_ocr(resolved, await self._step_provider(state))
 
         duration_ms = int((time.monotonic() - start) * 1000)
         return {
@@ -103,7 +117,7 @@ class OcrStepNode:
             "step_timings": {**(state.get("step_timings") or {}), self.step.id: duration_ms},
         }
 
-    async def _run_ocr(self, resolved: dict[str, Any]) -> dict[str, Any]:
+    async def _run_ocr(self, resolved: dict[str, Any], provider: Any = None) -> dict[str, Any]:
         # URL ingestion (async, SSRF-guarded) takes precedence, then base64 /
         # file_path (sync). Lets a workflow OCR a remote document directly.
         data: bytes | None = None
@@ -129,7 +143,7 @@ class OcrStepNode:
             }
         try:
             result = await self._engine().extract_any(
-                data, content_type=content_type, filename=filename, provider=self._provider
+                data, content_type=content_type, filename=filename, provider=provider
             )
         except Exception as exc:  # never crash the run; surface as a degraded output
             _log.warning("ocr_step_failed", step_id=self.step.id, error=str(exc))

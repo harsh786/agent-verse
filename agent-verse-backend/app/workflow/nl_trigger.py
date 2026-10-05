@@ -104,8 +104,11 @@ class NLTriggerResolver:
         llm_provider: Any | None = None,
         redis_client: Any | None = None,
         cache_ttl: int = 3600,
+        llm_provider_resolver: Any | None = None,
     ) -> None:
         self._llm = llm_provider
+        # BYOK-3: the calling tenant's provider (tenant BYOK → platform) per parse.
+        self._llm_resolver = llm_provider_resolver
         self._redis = redis_client
         self._cache_ttl = cache_ttl
 
@@ -172,8 +175,23 @@ class NLTriggerResolver:
         except Exception as exc:
             _log.debug("nl_trigger_cache_write_failed", error=str(exc))
 
+    async def _provider_for(self, tenant_ctx: Any) -> Any | None:
+        tenant_id = str(getattr(tenant_ctx, "tenant_id", "") or "")
+        if self._llm_resolver is None or not tenant_id:
+            return self._llm
+        from app.providers.llm_resolution import NoLLMProviderConfiguredError
+        from app.providers.tenant_provider import TenantProviderError
+
+        try:
+            return await self._llm_resolver(tenant_id)
+        except NoLLMProviderConfiguredError:
+            return None
+        except TenantProviderError as exc:
+            raise NLTriggerParseError(f"LLM provider unavailable: {exc}") from exc
+
     async def _llm_parse(self, description: str, *, tenant_ctx: Any = None) -> TriggerDefinition:
-        if self._llm is None:
+        llm = await self._provider_for(tenant_ctx)
+        if llm is None:
             raise NLTriggerParseError(
                 "This phrase needs the AI parser, but no LLM provider is configured. "
                 f"Try a phrase like: {EXAMPLE_PHRASES}"
@@ -186,7 +204,10 @@ class NLTriggerResolver:
 
             req = CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
-                model=configured_default_model("gpt-4o"),
+                # A tenant's own provider uses its configured model ("" → default).
+                model=""
+                if getattr(llm, "_byok_tenant_id", None)
+                else configured_default_model("gpt-4o"),
                 max_tokens=256,
                 temperature=0.0,
             )
@@ -194,9 +215,7 @@ class NLTriggerResolver:
             # every other narrow LLM decision (was an unmetered raw call).
             from app.providers.guarded_completion import complete_decision
 
-            response = await complete_decision(
-                self._llm, req, role="nl_trigger", tenant_ctx=tenant_ctx
-            )
+            response = await complete_decision(llm, req, role="nl_trigger", tenant_ctx=tenant_ctx)
             raw_text = response.content if hasattr(response, "content") else str(response)
         except Exception as exc:
             raise NLTriggerParseError(f"LLM call failed: {exc}") from exc

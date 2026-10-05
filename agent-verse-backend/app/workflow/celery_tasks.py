@@ -90,9 +90,16 @@ def _build_worker_runner() -> Any:
     # receive services from the COMPILER (node_class(step, ctx, **compiler._services)),
     # so these must go on the compiler, not the runner.
     from app.ocr.engine import OcrEngine
-    from app.providers.registry import resolve_provider
+    from app.providers.llm_resolution import TenantLLMProviderResolver, platform_llm_provider
 
-    _wf_provider = resolve_provider()
+    # BYOK-3: LLM steps resolve the RUN's tenant provider per execution (tenant
+    # BYOK → this platform provider → "no LLM provider configured for tenant").
+    # This used to be one process-wide resolve_provider() — the tenant's own key
+    # was never used, and with no platform key steps got the canned FakeProvider.
+    _wf_provider = platform_llm_provider()  # None when no real platform LLM
+    _wf_llm_resolver = TenantLLMProviderResolver(
+        platform_provider=_wf_provider, db_factory=db_factory
+    )
     _wf_knowledge: Any = None
     try:
         from app.rag.store import KnowledgeStore
@@ -142,6 +149,7 @@ def _build_worker_runner() -> Any:
         hitl_workflow_gateway=hitl_workflow_gateway,
         llm_provider=_wf_provider,
         provider=_wf_provider,
+        llm_provider_resolver=_wf_llm_resolver,
         ocr_engine=OcrEngine(),
         knowledge_store=_wf_knowledge,
         mcp_client=_wf_mcp_client,

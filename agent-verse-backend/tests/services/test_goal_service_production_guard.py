@@ -18,7 +18,7 @@ def test_make_agent_loop_raises_in_production() -> None:
     with patch("app.core.config.get_settings", return_value=_mock_settings("production")):
         from app.services import goal_service
 
-        with pytest.raises(RuntimeError, match="Cannot use FakeProvider in production"):
+        with pytest.raises(RuntimeError, match="Cannot use FakeProvider outside development/test"):
             goal_service._make_agent_loop()
 
 
@@ -42,14 +42,21 @@ def test_make_agent_loop_works_when_environment_missing() -> None:
         assert loop is not None
 
 
-def test_make_agent_loop_raises_only_for_production_string() -> None:
-    """Only the exact string 'production' triggers the guard — not 'PRODUCTION', 'prod', etc."""
+def test_make_agent_loop_refuses_every_non_dev_environment() -> None:
+    """BYOK-3: canned answers only in development/test. Staging, "PRODUCTION",
+    "prod", "" all used to get the FakeProvider loop (only exactly "production"
+    was refused)."""
     from app.services import goal_service
 
-    for env in ("staging", "test", "PRODUCTION", "prod", ""):
+    for env in ("staging", "PRODUCTION", "prod", "", "qa"):
+        with (
+            patch("app.core.config.get_settings", return_value=_mock_settings(env)),
+            pytest.raises(RuntimeError, match="outside development/test"),
+        ):
+            goal_service._make_agent_loop()
+    for env in ("test", "development", "dev", "local"):
         with patch("app.core.config.get_settings", return_value=_mock_settings(env)):
-            loop = goal_service._make_agent_loop()
-            assert loop is not None, f"Should not raise for environment={env!r}"
+            assert goal_service._make_agent_loop() is not None, env
 
 
 def test_make_agent_loop_error_message_mentions_api_keys() -> None:

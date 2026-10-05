@@ -201,6 +201,13 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
                 "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
                 "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
             )
+        from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
+
+        if not fake_llm_allowed():
+            # BYOK-3: never canned answers outside development/test. Tenants
+            # with their own key still run (resolved per goal / workflow run).
+            logger.error("no_platform_llm_provider_configured")
+            return UnconfiguredLLMProvider()
         logger.warning(
             "fake_provider_active_dev_only",
             message=(
@@ -739,17 +746,25 @@ def create_app(
                     "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
                     "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
                 )
-            logger.warning(
-                "fake_provider_active_dev_only",
-                message="FakeProvider active — set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
-            )
-            _app_provider = FakeProvider(
-                responses=[
-                    '{"steps": ["Complete the requested task"]}',
-                    "Task executed successfully",
-                    '{"success": true, "reason": "Goal achieved"}',
-                ]
-            )
+            from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
+
+            if not fake_llm_allowed():
+                # BYOK-3: no canned answers outside development/test; keep the
+                # failing stand-in (tenants with their own key still run).
+                logger.error("no_platform_llm_provider_configured")
+                _app_provider = UnconfiguredLLMProvider()
+            else:
+                logger.warning(
+                    "fake_provider_active_dev_only",
+                    message="FakeProvider active — set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
+                )
+                _app_provider = FakeProvider(
+                    responses=[
+                        '{"steps": ["Complete the requested task"]}',
+                        "Task executed successfully",
+                        '{"success": true, "reason": "Goal achieved"}',
+                    ]
+                )
         logger.info("provider_resolved_via_registry")
     except Exception as _reg_exc:
         logger.warning("provider_registry_failed_fallback", error=str(_reg_exc)[:60])
@@ -1873,14 +1888,27 @@ def create_app(
                 # (node_class(step, ctx, **compiler._services)), so the real
                 # llm/ocr/knowledge services must be wired here — otherwise steps
                 # fall back to FakeProvider and degraded OCR.
+                from app.providers.llm_resolution import (
+                    TenantLLMProviderResolver as _WFLLMResolver,
+                )
+                from app.providers.llm_resolution import (
+                    is_placeholder_provider as _wf_is_placeholder,
+                )
+
+                # BYOK-3: never the canned FakeProvider; LLM steps resolve the
+                # run tenant's provider per execution (tenant BYOK → platform).
+                _wf_platform = None if _wf_is_placeholder(_app_provider) else _app_provider
                 _wf_compiler_db = _WFCompiler(
                     context_resolver=_WFCtx(),
                     checkpointer=_wf_checkpointer,
                     mcp_client=_wf_mcp_client,
                     run_store=_wf_run_store,
                     hitl_workflow_gateway=_wf_hitl_gw_existing,
-                    llm_provider=_app_provider,
-                    provider=_app_provider,
+                    llm_provider=_wf_platform,
+                    provider=_wf_platform,
+                    llm_provider_resolver=_WFLLMResolver(
+                        platform_provider=_wf_platform, db_factory=db_factory
+                    ),
                     ocr_engine=_WFOcrEngine(),
                     knowledge_store=getattr(app.state, "knowledge_store", None),
                     # Durable timer waits: woken by the Celery beat task
@@ -3240,8 +3268,15 @@ def create_app(
         # actually finds it — previously it was never passed at all, so every
         # HITL step silently took the no-gateway "test mode" fallback branch
         # and no approval request was ever created for a real workflow run.
+        from app.providers.llm_resolution import TenantLLMProviderResolver
+
         _wf_compiler = WorkflowCompiler(
-            context_resolver=_wf_ctx, hitl_workflow_gateway=_hitl_wf_gateway
+            context_resolver=_wf_ctx,
+            hitl_workflow_gateway=_hitl_wf_gateway,
+            # BYOK-3: tenant BYOK → platform → "no LLM provider configured".
+            llm_provider_resolver=TenantLLMProviderResolver(
+                platform_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
+            ),
         )
         _wf_runner = WorkflowRunner(compiler=_wf_compiler)
         # In-memory (no-DB) engine: sub_workflow runs its child inline via this
@@ -3255,7 +3290,11 @@ def create_app(
         # WF-09: the regex fast path alone 422'd every other phrase; give the
         # resolver the real LLM (never the canned no-key FakeProvider).
         _nl_trigger_resolver = NLTriggerResolver(
-            llm_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
+            llm_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider,
+            # BYOK-3: the calling tenant's own key first, then the platform's.
+            llm_provider_resolver=TenantLLMProviderResolver(
+                platform_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
+            ),
         )
         _system_template_store = SystemTemplateStore()
 
