@@ -31,7 +31,24 @@ async def _signup(app: Any, client: Any) -> AsyncClient:
     )
 
 
-async def test_eval_suites_are_isolated_and_runs_are_async(app: Any, client: Any) -> None:
+@pytest.fixture
+def _no_celery_worker(app: Any) -> Any:
+    """This tier runs no Celery worker. Since MEM-53 a run is advanced on Celery
+    whenever goals are queued to Celery, which here would sit unconsumed; with the
+    goal queue off the same durable steps run in-process (the single-process
+    executor), so the run really finishes."""
+    gs = app.state.goal_service
+    prev_queue = gs._task_queue
+    gs._task_queue = None
+    try:
+        yield
+    finally:
+        gs._task_queue = prev_queue
+
+
+async def test_eval_suites_are_isolated_and_runs_are_async(
+    app: Any, client: Any, _no_celery_worker: None
+) -> None:
     owner = await _signup(app, client)
     other = await _signup(app, client)
     try:
@@ -72,6 +89,7 @@ async def test_eval_suites_are_isolated_and_runs_are_async(app: Any, client: Any
         assert time.monotonic() - t0 < 10, "run must not execute inside the request"
         run_id = started.json()["run_id"]
         assert started.json()["total"] == 1
+        assert started.json()["executor"] == "in_process"
 
         deadline = time.monotonic() + 120
         runs: list[dict[str, Any]] = []
