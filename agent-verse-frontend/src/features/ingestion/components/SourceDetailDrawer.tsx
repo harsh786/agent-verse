@@ -16,7 +16,8 @@ type Tab = 'overview' | 'documents' | 'history' | 'settings';
 
 export function SourceDetailDrawer({ source, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('overview');
-  const { data: health } = useSourceHealth(source.source_id);
+  // The open drawer is the one place that keeps polling health (C8).
+  const { data: health } = useSourceHealth(source.source_id, true, { poll: true });
   const { data: syncStatus } = useSyncStatus(source.source_id);
   const triggerSync = useTriggerSync();
   const cancelSync = useCancelSync();

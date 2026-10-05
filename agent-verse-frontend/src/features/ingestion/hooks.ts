@@ -47,12 +47,51 @@ export function useSource(sourceId: string) {
   });
 }
 
-export function useSourceHealth(sourceId: string, enabled = true) {
+/** LAW-21: a healthy source is re-checked every 5 minutes while it is watched. */
+export const HEALTH_POLL_BASE_MS = 5 * 60 * 1000;
+export const HEALTH_POLL_MAX_MS = 60 * 60 * 1000;
+
+/** Poll interval after `consecutiveFailures` failed checks: 5, 10, 20, 40, then 60 min. */
+export function healthPollInterval(consecutiveFailures: number): number {
+  return Math.min(HEALTH_POLL_BASE_MS * 2 ** Math.max(0, consecutiveFailures), HEALTH_POLL_MAX_MS);
+}
+
+// Consecutive failed checks per source in this tab (an {ok:false} answer or a
+// failed request) — UI pacing only, so it lives with the query client.
+const healthFailures = new Map<string, number>();
+
+/**
+ * GET /sources/{id}/health. Every call makes the backend open a real
+ * connection (discovery + ping + listCollections for MongoDB), so (C8):
+ * - no retries: the app default (3) turned one failing check into 4 connections;
+ * - no refetch on window focus;
+ * - `poll` (the open detail drawer only) re-checks on an interval that backs
+ *   off while the source keeps failing and pauses while the tab is hidden.
+ *   A list card checks once (cached for staleTime) and does not poll.
+ */
+export function useSourceHealth(sourceId: string, enabled = true, { poll = false }: { poll?: boolean } = {}) {
   return useQuery({
     queryKey: INGESTION_KEYS.health(sourceId),
-    queryFn: () => apiFetch<ConnectionHealth>(`/sources/${sourceId}/health`),
+    queryFn: async () => {
+      try {
+        const health = await apiFetch<ConnectionHealth>(`/sources/${sourceId}/health`);
+        healthFailures.set(sourceId, health.ok ? 0 : (healthFailures.get(sourceId) ?? 0) + 1);
+        return health;
+      } catch (e) {
+        healthFailures.set(sourceId, (healthFailures.get(sourceId) ?? 0) + 1);
+        throw e;
+      }
+    },
     enabled: !!sourceId && enabled,
-    refetchInterval: 5 * 60 * 1000, // LAW-21: poll every 5 minutes
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchIntervalInBackground: false,
+    refetchInterval: poll
+      ? () =>
+          typeof document !== 'undefined' && document.visibilityState === 'hidden'
+            ? false
+            : healthPollInterval(healthFailures.get(sourceId) ?? 0)
+      : false,
     staleTime: 4 * 60 * 1000,
   });
 }
