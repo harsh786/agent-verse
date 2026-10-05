@@ -81,17 +81,31 @@ function rawText(error: unknown): string {
  * A short reason for a connection error plus sanitised details.
  * `fallback` is used when there is no error text at all.
  */
+const ERROR_ID_RE = /\s*\(error id ([0-9a-f]{12})\)\s*$/i;
+/** A backend-classified message is short and carries no driver dump. */
+const MAX_CLASSIFIED_MESSAGE = 400;
+
 export function friendlyConnectionError(error: unknown, fallback = 'The connection failed.'): FriendlyError {
-  const raw = rawText(error).trim();
-  if (!raw) return { message: fallback, detail: null };
+  const full = rawText(error).trim();
+  if (!full) return { message: fallback, detail: null };
+  // fix/mongo-mcp: tool and /test errors end "(error id <12 hex>)" — the full
+  // detail is in the server log under that id, so the id is always shown.
+  const errorId = full.match(ERROR_ID_RE)?.[1];
+  const raw = errorId ? full.replace(ERROR_ID_RE, '') : full;
+  const withId = (message: string) => (errorId ? `${message.replace(/\.$/, '')} (error id ${errorId})` : message);
   const detail = sanitizeErrorDetail(raw);
+  // A message the backend already classified (it has an error id, nothing
+  // private in it, no driver dump) is the best reason there is: keep it.
+  if (errorId && detail === raw && raw.length <= MAX_CLASSIFIED_MESSAGE && !/topology/i.test(raw)) {
+    return { message: withId(raw), detail: null };
+  }
   for (const [re, msg] of RULES) {
     const m = raw.match(re);
     if (m) {
       const message = typeof msg === 'string' ? msg : msg(m);
-      return { message, detail: detail === message ? null : detail };
+      return { message: withId(message), detail: detail === message ? null : detail };
     }
   }
-  if (detail.length <= MAX_PLAIN_MESSAGE && !detail.includes('\n')) return { message: detail, detail: null };
-  return { message: 'The connection failed.', detail };
+  if (detail.length <= MAX_PLAIN_MESSAGE && !detail.includes('\n')) return { message: withId(detail), detail: null };
+  return { message: withId('The connection failed.'), detail };
 }

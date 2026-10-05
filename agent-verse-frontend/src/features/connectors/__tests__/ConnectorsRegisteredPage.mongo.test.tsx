@@ -521,3 +521,18 @@ describe('422 save errors are shown on the field they name', () => {
     expect(screen.getByTestId('field-error-auth_source')).toHaveTextContent('bad auth source');
   });
 });
+
+describe('error ids from the backend are shown', () => {
+  it('a failed /test shows the classified message with its error id', async () => {
+    const ROW = { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', url: 'builtin://', auth_type: 'connection_string', has_builtin: true, auth_config: { url: '<redacted>' } };
+    mockFetch([listOf([ROW]), {
+      match: (u, i) => u.endsWith('/test') && i?.method === 'POST',
+      response: { server_id: ROW.server_id, reachable: false, status: 'failed', error: 'Authentication failed: check the username, password and auth source (error id 9c1e2d3f4a5b)' },
+    }]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    const row = screen.getByRole('link', { name: 'orders-db' }).closest('tr') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: /^test$/i }));
+    expect(await within(row).findByTestId('test-error')).toHaveTextContent('(error id 9c1e2d3f4a5b)');
+  });
+});

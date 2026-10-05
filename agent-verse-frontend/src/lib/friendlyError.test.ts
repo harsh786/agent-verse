@@ -63,3 +63,26 @@ describe('friendlyConnectionError (mongo re-audit A9/B6)', () => {
     expect(friendlyConnectionError(undefined, 'Test failed').detail).toBeNull();
   });
 });
+
+describe('backend error ids (fix/mongo-mcp: "... (error id <12 hex>)")', () => {
+  test('a classified backend message is kept as-is with its error id', () => {
+    const raw = 'Could not reach the MongoDB server (connection refused or timed out, DNS, firewall, or no primary available) (error id 3f9a0c12be47)';
+    const f = friendlyConnectionError(raw);
+    expect(f.message).toBe(raw);
+    expect(f.message).toContain('(error id 3f9a0c12be47)');
+    expect(f.detail).toBeNull();
+  });
+
+  test('the error id survives inside an ApiError and a "Test failed" prefix context', () => {
+    const f = friendlyConnectionError(new Error('Authentication failed: check the username, password and auth source (error id 0123456789ab)'));
+    expect(f.message).toMatch(/authentication failed/i);
+    expect(f.message).toContain('error id 0123456789ab');
+  });
+
+  test('a raw driver dump that carries an error id is still summarised, id appended', () => {
+    const f = friendlyConnectionError('10.0.0.5:27017: [Errno 61] Connection refused, Topology Description: <x> (error id abcdefabcdef)');
+    expect(f.message).toMatch(/refused the connection/i);
+    expect(f.message).toContain('(error id abcdefabcdef)');
+    expect(f.message).not.toContain('10.0.0.5');
+  });
+});
