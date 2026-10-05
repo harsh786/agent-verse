@@ -418,8 +418,16 @@ async def call_tool(
     except MongoArgumentError as exc:
         return {"error": str(exc), "tool": tool_name, "status": "invalid_arguments"}
     except Exception as exc:
-        logger.warning("mongodb_call_tool_error tool=%s error=%s", tool_name, str(exc)[:200])
-        return {"error": str(exc)}
+        from app.net.ssrf_guard import SSRFError
+
+        if isinstance(exc, SSRFError | MemberGuardUnavailableError):
+            # Our own policy messages: they name only the tenant's configured hosts.
+            logger.warning("mongodb_call_refused tool=%s error=%s", tool_name, str(exc)[:200])
+            return {"error": str(exc), "status": "egress_refused"}
+        # MDB-20: never the driver's text (topology, member hosts, command echo).
+        from app.net.mongodb_errors import public_mongo_error
+
+        return {"error": public_mongo_error(exc, context=f"mcp {tool_name}")}
 
 
 async def _open_client(

@@ -381,11 +381,13 @@ async def _connected(settings: _Settings) -> AsyncIterator[tuple[Any, _Settings]
         try:
             await stack.enter_async_context(pin_source_hosts(members, context=_CONTEXT))
         except ConnectorEgressBlockedError as exc:
+            # MDB-20: the names the SERVER advertised stay in the server log only.
             names = ", ".join(f"{h}:{p}" for h, p in members)
+            _log.warning("mongodb_member_refused members=%s error=%s", names, exc)
             raise ConnectorEgressBlockedError(
-                f"replica-set member(s) {names} advertised by the server are not allowed "
-                f"by the egress policy ({exc}); set direct_connection to use only the "
-                "given host"
+                f"{len(members)} replica-set member(s) advertised by the server are not "
+                "allowed by the egress policy; set direct_connection to use only the given "
+                "host"
             ) from exc
         allowed = {_host_key(h, p) for h, p in _dsn_hosts(pins.dsn)} | set(members)
         client = await asyncio.to_thread(
@@ -526,6 +528,19 @@ def _dotted_get(doc: dict[str, Any], path: str) -> Any:
     return value
 
 
+def _public_error(exc: BaseException) -> str:
+    """MDB-20: our own policy / egress messages as-is; driver text never."""
+    from pymongo.errors import PyMongoError
+
+    if not isinstance(exc, PyMongoError) and isinstance(
+        exc, ValueError | ConnectorEgressBlockedError | ConnectorUnavailableError
+    ):
+        return str(exc) or type(exc).__name__
+    from app.net.mongodb_errors import public_mongo_error
+
+    return public_mongo_error(exc, context="ingestion mongodb")
+
+
 @register("mongodb", feature_flag="ingestion_connector_mongodb_enabled")
 class MongoDBConnector(BaseConnector):
     """MongoDB connector — collection-based incremental ingestion."""
@@ -543,7 +558,7 @@ class MongoDBConnector(BaseConnector):
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata=meta)
         except Exception as exc:
-            return ConnectionHealth(ok=False, error=str(exc) or type(exc).__name__)
+            return ConnectionHealth(ok=False, error=_public_error(exc))
 
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
