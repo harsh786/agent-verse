@@ -18,6 +18,7 @@ import contextlib
 import hashlib
 import json as _json
 import os
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -100,6 +101,22 @@ class CompiledWorkflow:
         deleter = getattr(saver, "adelete_thread", None)
         if deleter is not None:
             await deleter(thread_id)
+
+
+def _step_timeout_error(
+    step: Any, exc: BaseException, elapsed: float, deadline: Any
+) -> TimeoutError:
+    """The error for a TimeoutError out of a step attempt: the step deadline
+    (our ``asyncio.timeout`` expired) or an inner timeout, with its cause."""
+    if deadline is not None and deadline.expired():
+        return TimeoutError(f"step {step.id!r} exceeded timeout {step.timeout}")
+    cause = str(exc) or "an operation inside the step timed out"
+    limit = f"; the {step.timeout} step deadline was not reached" if step.timeout else ""
+    err = TimeoutError(
+        f"step {step.id!r} failed after {elapsed:.1f}s: {cause} (inner timeout{limit})"
+    )
+    err.__cause__ = exc
+    return err
 
 
 class WorkflowCompiler:
@@ -414,14 +431,21 @@ class WorkflowCompiler:
             timeout_s = self._parse_step_timeout(step.timeout)
             last_exc: BaseException | None = None
             for attempt in range(1, max_attempts + 1):
+                deadline: Any = None
+                started = time.monotonic()
                 try:
                     if timeout_s and timeout_s > 0:
-                        result = await asyncio.wait_for(node.execute(state), timeout_s)
+                        async with asyncio.timeout(timeout_s) as deadline:
+                            result = await node.execute(state)  # type: ignore[arg-type]
                     else:
                         result = await node.execute(state)  # type: ignore[arg-type]
-                except TimeoutError:
-                    last_exc = TimeoutError(
-                        f"step {step.id!r} exceeded timeout {step.timeout}"
+                except TimeoutError as exc:
+                    # Only OUR deadline is the step timeout. A TimeoutError raised
+                    # inside the step (the provider's generation timeout, an HTTP
+                    # timeout) used to be reported as "exceeded timeout 180s"
+                    # after 61 s; keep its real cause and the real elapsed time.
+                    last_exc = _step_timeout_error(
+                        step, exc, time.monotonic() - started, deadline
                     )
                 except WorkflowConfigurationError as exc:
                     # A wiring problem: record the failed step and fail the run.

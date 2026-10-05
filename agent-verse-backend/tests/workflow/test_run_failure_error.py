@@ -94,11 +94,22 @@ class _Slow:
         return {"step_outputs": {self.step.id: {}}}
 
 
+class _InnerTimeout:
+    """Stands in for an llm step whose provider call times out inside the step."""
+
+    def __init__(self, step: Any, ctx: Any, **services: Any) -> None:
+        self.step = step
+
+    async def execute(self, state: Any) -> dict[str, Any]:
+        raise TimeoutError("LLM call timed out after 0.05s")
+
+
 @pytest.fixture(autouse=True)
 def _step_types() -> Any:
     saved = dict(StepTypeRegistry._registry)  # type: ignore[attr-defined]
     StepTypeRegistry._registry["sandbox_disabled_t"] = _SandboxDisabled  # type: ignore[attr-defined]
     StepTypeRegistry._registry["slow_llm_t"] = _Slow  # type: ignore[attr-defined]
+    StepTypeRegistry._registry["inner_timeout_t"] = _InnerTimeout  # type: ignore[attr-defined]
     yield
     StepTypeRegistry._registry = saved  # type: ignore[attr-defined]
 
@@ -199,3 +210,51 @@ async def test_failed_run_without_a_state_error_falls_back_to_the_failed_step_ro
     assert store.run["status"] == "failed"
     assert store.run["error"] == _SANDBOX_ERR
     assert store.run["error_step_id"] == "momentum_score"
+
+
+@pytest.mark.asyncio
+async def test_inner_timeout_keeps_its_cause_and_real_elapsed_time() -> None:
+    """WF-TIMEOUT-MISREPORT: a TimeoutError raised inside the step (e.g. the
+    provider's generation timeout) is not reported as the step deadline."""
+    import asyncio
+
+    from app.workflow.compiler import _step_timeout_error
+
+    step = StepDefinition(id="draft_report", type="llm", timeout="180s")
+    inner = TimeoutError("LLM call timed out after 60s")
+    err = _step_timeout_error(step, inner, 61.04, deadline=None)
+    assert str(err) == (
+        "step 'draft_report' failed after 61.0s: LLM call timed out after 60s "
+        "(inner timeout; the 180s step deadline was not reached)"
+    )
+    assert err.__cause__ is inner
+
+    # Our own deadline expiring is still the step timeout.
+    with pytest.raises(TimeoutError) as raised:
+        async with asyncio.timeout(0.01) as expired:
+            await asyncio.sleep(1)
+    err = _step_timeout_error(step, raised.value, 0.01, expired)
+    assert str(err) == "step 'draft_report' exceeded timeout 180s"
+
+
+@pytest.mark.asyncio
+async def test_run_with_an_inner_timeout_reports_the_inner_cause() -> None:
+    """WF-TIMEOUT-MISREPORT through a real run: the step's 30 s deadline never
+    expired, so the run must not say it did."""
+    definition = WorkflowDefinition(
+        name="digest",
+        id="wf",
+        steps=[
+            StepDefinition(
+                id="draft_report", type="inner_timeout_t", timeout="30s", on_failure="abort"
+            )
+        ],
+    ).to_json()
+    store = await _run(definition)
+
+    assert store.run["status"] == "failed"
+    assert store.run["error_step_id"] == "draft_report"
+    error = store.run["error"]
+    assert "exceeded timeout" not in error, error
+    assert "LLM call timed out after 0.05s" in error
+    assert "the 30s step deadline was not reached" in error
