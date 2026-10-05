@@ -13,6 +13,9 @@ import { CommunicationForm } from './families/CommunicationForm';
 import { CodeRepoForm } from './families/CodeRepoForm';
 import { WebForm } from './families/WebForm';
 import { GenericSourceForm } from './families/GenericSourceForm';
+import { FieldError } from './families/fields';
+import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
+import { connectionConfigErrors, parseApiFieldErrors, type ApiFieldErrors } from '@/lib/apiFieldErrors';
 
 interface Props { onClose: () => void; onCreated?: () => void; }
 
@@ -39,17 +42,24 @@ const SOURCE_TYPES_BY_FAMILY: Record<SourceFamily, string[]> = {
   agent_generated: ['agent_generated', 'pdf_file', 'docx_file'],
 };
 
-function FamilyFormRouter({ family, sourceType, value, onChange }: {
+/** Families whose form renders server field errors next to each field. */
+function formShowsFieldErrors(family: SourceFamily, sourceType: string): boolean {
+  return (family === 'nosql_database' && sourceType !== 'redis') || family === 'olap_database' || family === 'oltp_database';
+}
+
+function FamilyFormRouter({ family, sourceType, value, onChange, errors }: {
   family: SourceFamily; sourceType: string;
   value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void;
+  /** connection_config field errors from the server, keyed by config key. */
+  errors?: Record<string, string>;
 }) {
   switch (family) {
     case 'object_storage': return <ObjectStorageForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'nosql_database':
       if (sourceType === 'redis') return <RedisForm sourceType={sourceType} value={value} onChange={onChange} />;
-      return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} />;
+      return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} errors={errors} />;
     case 'olap_database':
-    case 'oltp_database': return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} />;
+    case 'oltp_database': return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} errors={errors} />;
     case 'streaming':      return <StreamingForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'communication':  return <CommunicationForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'code_repository': return <CodeRepoForm sourceType={sourceType} value={value} onChange={onChange} />;
@@ -68,9 +78,19 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
   const [syncMode, setSyncMode] = useState<'incremental' | 'full' | 'streaming'>('incremental');
 
   const create = useCreateSource();
+  /** The last create refusal (4xx/5xx), split per field (B1). */
+  const [createErrors, setCreateErrors] = useState<ApiFieldErrors | null>(null);
+  const connErrors = createErrors ? connectionConfigErrors(createErrors) : {};
+  // Field errors the form can't place go to the summary instead.
+  const unplacedConnErrors =
+    selectedFamily && selectedType && formShowsFieldErrors(selectedFamily, selectedType) ? {} : connErrors;
+  const otherFieldErrors = Object.entries(createErrors?.fields ?? {}).filter(
+    ([path]) => !path.startsWith('connection_config.') && !['name', 'collection_id', 'sync_mode'].includes(path),
+  );
 
   function handleSubmit() {
     if (!selectedFamily || !selectedType || !sourceName.trim()) return;
+    setCreateErrors(null);
     create.mutate({
       name: sourceName,
       family: selectedFamily,
@@ -78,7 +98,10 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
       connection_config: connConfig,
       sync_mode: syncMode,
       collection_id: collectionId,
-    } as Record<string, unknown>, { onSuccess: () => { onCreated?.(); onClose(); } });
+    } as Record<string, unknown>, {
+      onSuccess: () => { onCreated?.(); onClose(); },
+      onError: (e: unknown) => setCreateErrors(parseApiFieldErrors(e)),
+    });
   }
 
   const steps: Step[] = ['family', 'type', 'configure'];
@@ -168,19 +191,21 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
                   <h2 className="text-base font-semibold mb-4">Configure <code className="font-mono bg-muted rounded px-1.5 py-0.5 text-sm">{selectedType}</code></h2>
 
                   <div className="space-y-4">
-                    <Field label="Source Name *">
+                    <Field label="Source Name *" error={createErrors?.fields.name}>
                       <input type="text" value={sourceName} onChange={e => setSourceName(e.target.value)}
+                        aria-invalid={createErrors?.fields.name ? true : undefined}
                         placeholder={`My ${selectedType} source`} className={inputCls} />
                     </Field>
 
-                    <FamilyFormRouter family={selectedFamily} sourceType={selectedType} value={connConfig} onChange={setConnConfig} />
+                    <FamilyFormRouter family={selectedFamily} sourceType={selectedType} value={connConfig} onChange={setConnConfig} errors={connErrors} />
 
-                    <Field label="Target Collection ID" hint="Leave blank to use the default collection">
+                    <Field label="Target Collection ID" hint="Leave blank to use the default collection" error={createErrors?.fields.collection_id}>
                       <input type="text" value={collectionId} onChange={e => setCollectionId(e.target.value)}
+                        aria-invalid={createErrors?.fields.collection_id ? true : undefined}
                         placeholder="col-abc123" className={`${inputCls} font-mono`} />
                     </Field>
 
-                    <Field label="Sync Mode">
+                    <Field label="Sync Mode" error={createErrors?.fields.sync_mode}>
                       <select value={syncMode} onChange={e => setSyncMode(e.target.value as typeof syncMode)} className={inputCls}>
                         <option value="incremental">Incremental (default)</option>
                         <option value="full">Full re-index</option>
@@ -195,6 +220,15 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
         </div>
 
         {/* Footer */}
+        {step === 'configure' && createErrors && (createErrors.general || otherFieldErrors.length > 0 || Object.keys(unplacedConnErrors).length > 0) && (
+          <div role="alert" className="border-t border-border bg-red-50 px-5 py-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
+            <p className="font-medium">Could not create the source</p>
+            {createErrors.general && <FriendlyErrorMessage className="text-xs" error={createErrors.general} />}
+            {[...otherFieldErrors, ...Object.entries(unplacedConnErrors)].map(([k, msg]) => (
+              <p key={k} className="text-xs"><code className="font-mono">{k}</code>: {msg}</p>
+            ))}
+          </div>
+        )}
         {step === 'configure' && (
           <div className="border-t border-border px-5 py-4 flex gap-2 justify-end">
             <button onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors">Cancel</button>
@@ -212,12 +246,13 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string; children: React.ReactNode }) {
   return (
     <div>
       <label className="block text-sm font-medium mb-1">{label}</label>
       {hint && <p className="text-xs text-muted-foreground mb-1.5">{hint}</p>}
       {children}
+      <FieldError error={error} />
     </div>
   );
 }

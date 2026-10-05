@@ -5,14 +5,23 @@ import type { CSSProperties, ReactNode } from 'react';
 
 export const inputCls = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
-export function Field({ label, hint, htmlFor, children }: { label: string; hint?: string; htmlFor?: string; children: ReactNode }) {
+export function Field({ label, hint, htmlFor, error, children }: {
+  label: string; hint?: string; htmlFor?: string; error?: string; children: ReactNode;
+}) {
   return (
     <div>
       <label htmlFor={htmlFor} className="block text-sm font-medium mb-1">{label}</label>
       {hint && <p className="text-xs text-muted-foreground mb-1.5">{hint}</p>}
       {children}
+      <FieldError error={error} />
     </div>
   );
+}
+
+/** A server-side validation message under its field (B1). */
+export function FieldError({ error }: { error?: string }) {
+  if (!error) return null;
+  return <p className="mt-1 text-xs text-destructive">{error}</p>;
 }
 
 const MASKED: CSSProperties = { WebkitTextSecurity: 'disc' } as CSSProperties;
@@ -22,12 +31,12 @@ const MASKED: CSSProperties = { WebkitTextSecurity: 'disc' } as CSSProperties;
  * embedded password). The backend returns stored secrets as "********"; sending
  * that value back unchanged keeps the stored secret.
  */
-export function SecretInput({ id, label, value, onChange, placeholder, hint }: {
-  id: string; label: string; value: unknown; onChange: (v: string) => void; placeholder?: string; hint?: string;
+export function SecretInput({ id, label, value, onChange, placeholder, hint, error }: {
+  id: string; label: string; value: unknown; onChange: (v: string) => void; placeholder?: string; hint?: string; error?: string;
 }) {
   const [shown, setShown] = useState(false);
   return (
-    <Field label={label} hint={hint} htmlFor={id}>
+    <Field label={label} hint={hint} htmlFor={id} error={error}>
       <div className="flex gap-2">
         <input
           id={id}
@@ -37,6 +46,7 @@ export function SecretInput({ id, label, value, onChange, placeholder, hint }: {
           placeholder={placeholder}
           autoComplete="new-password"
           spellCheck={false}
+          aria-invalid={error ? true : undefined}
           className={`${inputCls} font-mono`}
         />
         <button type="button" onClick={() => setShown(s => !s)} aria-label={`${shown ? 'Hide' : 'Show'} ${label}`}
