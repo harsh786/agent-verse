@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { FieldError, SecretInput, TlsFields } from './fields';
 interface FormProps {
   sourceType: string; value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void;
@@ -51,7 +52,69 @@ export function DatabaseForm({ sourceType, value, onChange, errors = {} }: FormP
         <F label="Incremental cursor field" error={errors.cursor_field}><input type="text" value={String(value.cursor_field ?? '')} aria-invalid={errors.cursor_field ? true : undefined} onChange={e => set('cursor_field', e.target.value)} placeholder="_id" className={inputCls} /></F>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(value.direct_connection)} onChange={e => set('direct_connection', e.target.checked)} />Direct connection (no replica-set discovery)</label>
         <TlsFields prefix="mongo" value={value} set={set} />
+        <MongoAdvanced value={value} onChange={onChange} errors={errors} />
       </>}
+    </div>
+  );
+}
+
+/** connection_config keys of the MongoDB connector's advanced options (mongodb_connector.py). */
+const MONGO_ADVANCED_KEYS = ['host', 'port', 'replica_set', 'batch_size', 'max_documents_per_sync', 'timeout_ms'] as const;
+
+/**
+ * Advanced MongoDB options the backend reads but the form never offered (B4):
+ * host/port (used when no URI is given), replica set, batch size, the per-sync
+ * document cap and the connect / server-selection timeout. Collapsed unless
+ * one is already set.
+ */
+function MongoAdvanced({ value, onChange, errors }: {
+  value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void; errors: Record<string, string>;
+}) {
+  const [open, setOpen] = useState(() => MONGO_ADVANCED_KEYS.some(k => value[k] !== undefined && value[k] !== ''));
+  const setText = (k: string, v: string) => onChange({ ...value, [k]: v });
+  /** Positive integers are sent as numbers; an emptied field is dropped (backend default). */
+  const setNumber = (k: string, raw: string) => {
+    const next = { ...value };
+    if (raw.trim() === '') delete next[k];
+    else next[k] = Number(raw);
+    onChange(next);
+  };
+  const num = (k: string) => (value[k] === undefined || value[k] === null ? '' : String(value[k]));
+  const text = (id: string, k: string, label: string, placeholder: string, hint?: string) => (
+    <div>
+      <label htmlFor={id} className="block text-sm font-medium mb-1">{label}</label>
+      {hint && <p className="text-xs text-muted-foreground mb-1.5">{hint}</p>}
+      <input id={id} type="text" value={String(value[k] ?? '')} onChange={e => setText(k, e.target.value)} placeholder={placeholder}
+        aria-invalid={errors[k] ? true : undefined} className={inputCls} />
+      <FieldError error={errors[k]} />
+    </div>
+  );
+  const number = (id: string, k: string, label: string, placeholder: string, hint?: string) => (
+    <div>
+      <label htmlFor={id} className="block text-sm font-medium mb-1">{label}</label>
+      {hint && <p className="text-xs text-muted-foreground mb-1.5">{hint}</p>}
+      <input id={id} type="number" min={1} inputMode="numeric" value={num(k)} onChange={e => setNumber(k, e.target.value)} placeholder={placeholder}
+        aria-invalid={errors[k] ? true : undefined} className={inputCls} />
+      <FieldError error={errors[k]} />
+    </div>
+  );
+  return (
+    <div className="rounded-lg border border-border">
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open} aria-controls="mongo-advanced"
+        className="flex w-full items-center justify-between px-3 py-2 text-sm font-medium hover:bg-muted/50">
+        Advanced options <span aria-hidden="true">{open ? '−' : '+'}</span>
+      </button>
+      {open && (
+        <div id="mongo-advanced" className="space-y-3 border-t border-border p-3">
+          {text('mongo-host', 'host', 'Host', 'db1.example.com,db2.example.com',
+            'Used only when no Connection URI is given. Comma-separate replica-set seeds (host or host:port).')}
+          {number('mongo-port', 'port', 'Port', '27017', 'Default port for seeds without one.')}
+          {text('mongo-replica-set', 'replica_set', 'Replica set', 'rs0')}
+          {number('mongo-batch-size', 'batch_size', 'Batch size', '500', 'Documents fetched per round trip.')}
+          {number('mongo-max-docs', 'max_documents_per_sync', 'Max documents per sync', '10000', 'Cap on documents read in one sync run.')}
+          {number('mongo-timeout', 'timeout_ms', 'Timeout (ms)', '10000', 'Connect and server-selection timeout.')}
+        </div>
+      )}
     </div>
   );
 }
