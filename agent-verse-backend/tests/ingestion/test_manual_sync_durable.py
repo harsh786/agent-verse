@@ -23,15 +23,13 @@ def test_manual_sync_enqueues_the_celery_sync_task() -> None:
     tracker.acquire_lock.return_value = "job-123"
     client: TestClient = _client(ingestion_job_tracker=tracker, ingestion_pipeline=AsyncMock())
 
-    with (
-        patch("app.ingestion.scheduler.sync_source_task") as task,
-        patch("app.api.ingestion._run_sync", new=AsyncMock()) as in_process,
-    ):
+    with patch("app.ingestion.scheduler.sync_source_task") as task:
         resp = client.post(f"/sources/{source.source_id}/sync", headers=_auth())
 
     assert resp.status_code == 202, resp.text
     assert resp.json() == {"status": "queued", "job_id": "job-123"}
-    in_process.assert_not_awaited()
+    # NF-18: no in-process sync exists any more (the API only enqueues).
+    assert not hasattr(ingestion_mod, "_run_sync")
     enqueue = task.apply_async
     enqueue.assert_called_once()
     kwargs = enqueue.call_args.kwargs

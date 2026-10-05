@@ -38,16 +38,7 @@ spec:
             - configMapRef:
                 name: agentverse-config
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: database-url
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: redis-url
+            {{- include "agentverse.appSecretEnv" . | nindent 12 }}
             - name: WORKER_PRELOAD_RETRIEVAL_MODELS
               value: {{ .Values.worker.preloadRetrievalModels | quote }}
           resources:

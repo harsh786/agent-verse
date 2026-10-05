@@ -24,6 +24,9 @@ imagePullPolicy: IfNotPresent
 secrets:
   create: true
   databasePassword: agentverse
+  appDatabasePassword: change-me-app-db-password
+  # Empty = databasePassword (the maintenance role defaults to the owner).
+  maintenanceDatabasePassword: ""
   redisPassword: agentverse-redis
   minioRootUser: minioadmin
   minioRootPassword: minioadmin
@@ -34,6 +37,14 @@ secrets:
   goalTokenSecret: change-me-goal-token
   manifestSigningSecret: change-me-manifest
   platformAdminKey: change-me-admin-key
+  # Optional platform LLM / embedding keys and SMTP credentials (NF-15): every
+  # app workload (API, workers, beat) gets the same values.
+  anthropicApiKey: ""
+  openaiApiKey: ""
+  voyageApiKey: ""
+  googleApiKey: ""
+  smtpUser: ""
+  smtpPassword: ""
 
 backend:
   enabled: true
@@ -147,7 +158,13 @@ beat:
 postgresql:
   enabled: true
   image: pgvector/pgvector:pg16
+  # Schema owner: migrations run as it (migrate Job only).
   username: agentverse
+  # NF-16: least-privilege application role (NOSUPERUSER, NOBYPASSRLS) the API,
+  # workers and beat connect as; the migrate Job creates/repairs it.
+  appUsername: agentverse_app
+  # NF-16: BYPASSRLS role for cross-tenant system jobs; empty = the owner.
+  maintenanceUsername: ""
   database: agentverse
   service:
     port: 5432
@@ -276,3 +293,17 @@ backup:
   enabled: true
   schedule: "0 2 * * *"
   existingPVC: ""
+
+# NF-16: one-shot Job per install/upgrade (named by release revision): migrates
+# as the schema owner, then creates/repairs postgresql.appUsername with grants.
+# App pods wait in an initContainer until the schema is at this image's head.
+migrations:
+  enabled: true
+  backoffLimit: 20
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

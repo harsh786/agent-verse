@@ -26,6 +26,7 @@ from app.org.feature_flags import is_feature_enabled
 from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app, goal_queue_for
+from app.scaling.retry_policy import is_transient_infra_error
 
 logger = get_logger(__name__)
 
@@ -2396,6 +2397,27 @@ async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
     return str(existing)
 
 
+async def _current_goal_status(goal_id: str, tenant_id: str) -> str | None:
+    """The goal row's status under the tenant's RLS scope (None: no row).
+
+    Raises on a DB error — the caller decides what an unreadable status means.
+    """
+    from sqlalchemy import select
+
+    from app.db.models.goal import Goal
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        status = (
+            await session.execute(
+                select(Goal.status).where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+            )
+        ).scalar()
+    return None if status is None else str(status)
+
+
 async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
     from sqlalchemy import update
 
@@ -2416,7 +2438,12 @@ async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
         ):
             await session.execute(
                 update(Goal)
-                .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+                .where(
+                    Goal.id == goal_id,
+                    Goal.tenant_id == tenant_id,
+                    # NF-10: never rewrite a goal that completed / was cancelled.
+                    Goal.status.notin_(("complete", "cancelled")),
+                )
                 .values(status="failed", error_message=f"Dead lettered: {reason}")
             )
     except Exception as exc:
@@ -3715,6 +3742,11 @@ def run_goal(
                 "message": "Canonical AgentGraph assembly failed",
             }
 
+    # NF-10: set once the run recorded its terminal status / released its slot,
+    # so an error raised AFTER that is never retried (a rerun would repeat the
+    # goal's side effects) and the slot is never released twice.
+    _terminal_recorded: str | None = None
+    _slot_released = False
     try:
         # Block fake execution outside development/test — a real LLM provider
         # (the tenant's own key or the platform's) is required. BYOK-3: this used
@@ -4009,6 +4041,8 @@ def run_goal(
                 "result_scope": "worker_only",
             }
         _run_async(mark_worker_complete(state.status.value, state.iterations))
+        if state.status.value in {"complete", "failed", "cancelled", "waiting_human"}:
+            _terminal_recorded = state.status.value
         if state.status.value == "complete" and not dry_run:
             _publish_worker_score_below(
                 state,
@@ -4059,6 +4093,7 @@ def run_goal(
             )
         # Decrement concurrent-goal counter — goal has reached terminal state
         _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        _slot_released = True
         result = {
             "status": state.status.value,
             "goal_id": goal_id,
@@ -4116,9 +4151,58 @@ def run_goal(
         return {"status": "failed", "goal_id": goal_id, "reason": _redacted_error(exc)}
     except Exception as exc:
         logger.error("Goal %s failed: %s", goal_id, exc)
+        # NF-10 (1): the goal already finished (or is parked for a human) — this
+        # run recorded it, or another attempt / replica did. Retrying would
+        # re-run its side effects and failing it would rewrite an honest
+        # terminal status; neither happens. An unreadable status is "unknown":
+        # a transient error still retries and the next attempt's atomic claim
+        # refuses a finished goal.
+        _final_status = _terminal_recorded
+        if _final_status is None and goal_bridge is not None:
+            try:
+                _seen = _run_async(_current_goal_status(goal_id, tenant_id))
+            except Exception as _status_exc:
+                logger.warning(
+                    "goal_status_unreadable_after_error goal_id=%s: %s", goal_id, _status_exc
+                )
+            else:
+                if _seen in (*_TERMINAL_GOAL_STATUSES, _WAITING_HUMAN_STATUS):
+                    _final_status = _seen
+        if _final_status is not None:
+            logger.error(
+                "goal_error_after_terminal_status goal_id=%s status=%s error=%s",
+                goal_id,
+                _final_status,
+                _redacted_error(exc),
+            )
+            if _terminal_recorded is not None and not _slot_released:
+                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            return {
+                "status": _final_status,
+                "goal_id": goal_id,
+                "reason": "error_after_terminal_status",
+                "error": _redacted_error(exc),
+                "retryable": False,
+            }
         _record_goal_duration_metric(
             "failed", started_monotonic=started_monotonic, priority=priority
         )
+        # NF-10 (2): only a transient infrastructure failure (DB/Redis
+        # connection, timeout, provider 429/5xx) is retried. A programming
+        # error or any other permanent failure fails ONCE with its real
+        # (redacted) reason — no retry storm, no "exceeded max retries" DLQ.
+        if not is_transient_infra_error(exc):
+            logger.error(
+                "goal_failed_non_retryable goal_id=%s error=%s", goal_id, _redacted_error(exc)
+            )
+            _run_async(mark_worker_failed(exc))
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            return {
+                "status": "failed",
+                "goal_id": goal_id,
+                "reason": _redacted_error(exc),
+                "retryable": False,
+            }
         # Decide BEFORE calling self.retry() whether this is the final,
         # unrecoverable attempt. Celery's Task.retry(exc=exc, ...) re-raises the
         # *original* exception once retries are exhausted whenever `exc` is
@@ -6820,10 +6904,18 @@ def expire_hitl_approvals(self: Any) -> dict[str, Any]:
 
     expired_count = 0
     released = 0
+    parked_failed: list[dict[str, Any]] = []
     notified: list[str] = []
     try:
-        expired_ids = _run_async(_expire_db_approvals())
+        expired_ids, parked_failed = _run_async(_expire_db_approvals_and_fail_parked())
         expired_count = len(expired_ids)
+        if parked_failed:
+            # NF-11: parked supervised goals were failed with the approvals; tell
+            # every replica (SSE / in-memory record) and close owning missions.
+            try:
+                _run_async(_announce_parked_goal_failures(parked_failed))
+            except Exception as _a_exc:
+                logger.warning("expire_hitl_approvals_announce_failed: %s", _a_exc)
         if expired_ids:
             # P5-4: wake the goals blocked on these approvals (on any replica) so
             # they fail or replan with the "expired" outcome instead of hanging.
@@ -6842,6 +6934,7 @@ def expire_hitl_approvals(self: Any) -> dict[str, Any]:
     return {
         "expired": expired_count,
         "waiters_released": released,
+        "parked_goals_failed": len(parked_failed),
         "notified": len(notified),
         "checked_at": datetime.now(UTC).isoformat(),
     }
@@ -6918,11 +7011,23 @@ async def _notify_expired_approvals(expired_ids: list[str]) -> list[str]:
 
 
 async def _expire_db_approvals() -> list[str]:
+    ids, _parked = await _expire_db_approvals_and_fail_parked()
+    return ids
+
+
+async def _expire_db_approvals_and_fail_parked() -> tuple[list[str], list[dict[str, Any]]]:
+    """Expire overdue approvals and fail the goals parked on them, atomically.
+
+    NF-11: a supervised goal parked in ``waiting_human`` (no live waiter) whose
+    approval expires is failed with "approval expired" in the SAME transaction,
+    so an expired approval never leaves its goal parked forever.
+    """
     try:
         from sqlalchemy import text
 
         from app.db.rls import system_session
         from app.db.session import get_system_session_factory
+        from app.governance.hitl_expiry import fail_goals_parked_on_expired
 
         # Cross-tenant beat scan → maintenance (BYPASSRLS) role.
         db = get_system_session_factory()
@@ -6937,10 +7042,39 @@ async def _expire_db_approvals() -> list[str]:
                             RETURNING id"""
                 )
             )
-            return [row[0] for row in result.fetchall()]
+            ids = [row[0] for row in result.fetchall()]
+            parked = await fail_goals_parked_on_expired(session, [str(i) for i in ids])
+            return ids, parked
     except Exception as exc:
         logger.warning("expire_db_approvals failed: %s", exc)
-        return []
+        return [], []
+
+
+async def _announce_parked_goal_failures(parked: list[dict[str, Any]]) -> int:
+    """goal_failed events + SSE publish + mission finalize for NF-11 failures."""
+    import json as _json
+
+    from app.db.session import get_session_factory
+    from app.governance.hitl_expiry import announce_parked_goal_failures
+
+    redis_client = _get_sync_redis()
+
+    def _publish(tenant_id: str, goal_id: str, event: dict[str, Any]) -> None:
+        if redis_client is None:
+            return
+        envelope: dict[str, Any] = {
+            "goal_id": goal_id,
+            "tenant_id": tenant_id,
+            "type": event.get("type", ""),
+            "payload": event,
+        }
+        if "_seq" in event:
+            envelope["_seq"] = event["_seq"]
+        redis_client.publish(f"goal_events:{tenant_id}:{goal_id}", _json.dumps(envelope))
+
+    return await announce_parked_goal_failures(
+        get_session_factory(), parked, publish=_publish, finalize=_finalize_owning_mission
+    )
 
 
 # G-16: Register the HITL expiry task in Celery's beat schedule so approvals
@@ -8758,6 +8892,13 @@ with contextlib.suppress(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _webhook_reingest_lock_ttl() -> int:
+    """TTL of the webhook re-ingest's sync lock (renewed every third of it)."""
+    from app.core.config import get_settings
+
+    return max(5, int(get_settings().ingestion_sync_lock_ttl_seconds))
+
+
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="agentverse.maintenance.delta_reingest_files",
     queue="maintenance",
@@ -8822,13 +8963,29 @@ def delta_reingest_files(
         # every document was skipped (``no_embedder``) while this reported
         # ``status: ok``. Use the worker's fully-wired pipeline (store, embedder,
         # PII, quota) like the scheduled sync does.
+        from app.ingestion.job_tracker import SyncLockLostError, SyncLockUnavailableError
         from app.ingestion.scheduler import _build_worker_ingestion
 
-        _tracker, pipeline, _store = _build_worker_ingestion()
+        tracker, pipeline, _store = _build_worker_ingestion()
+        base = {"source_type": source_type, "tenant_id": tenant_id, "collection_id": collection_id}
+
+        # NF-18: the same shared (Redis, cross-process) per-source lock every
+        # sync takes — a burst of webhooks used to run full re-reads of the same
+        # source concurrently on every worker. Fail closed when it cannot be
+        # checked; skip (honestly) while another run holds it.
+        try:
+            lease = await tracker.hold_without_fence(
+                config.source_id, tenant_id, ttl_seconds=_webhook_reingest_lock_ttl()
+            )
+        except SyncLockUnavailableError as exc:
+            return {**base, "status": "error", "error": f"sync lock unavailable: {exc}"[:300]}
+        if lease is None:
+            return {**base, "status": "skipped", "reason": "already_running"}
 
         indexed = skipped = failed = 0
         try:
             async for raw_doc, _cursor in connector.get_delta(config, None):
+                lease.check()  # stop at once if this run lost the lock
                 result = await pipeline.ingest(raw_doc, config)
                 if result.success:
                     indexed += 1
@@ -8836,6 +8993,17 @@ def delta_reingest_files(
                     skipped += 1
                 else:
                     failed += 1
+            lease.check()
+        except SyncLockLostError as exc:
+            return {
+                **base,
+                "status": "error",
+                "reason": "lock_lost",
+                "error": str(exc)[:300],
+                "docs_indexed": indexed,
+                "docs_skipped": skipped,
+                "docs_failed": failed,
+            }
         except Exception as exc:
             return {
                 "status": "error",
@@ -8847,6 +9015,8 @@ def delta_reingest_files(
                 "tenant_id": tenant_id,
                 "collection_id": collection_id,
             }
+        finally:
+            await lease.release()
         return {
             "status": "ok",
             "source_type": source_type,

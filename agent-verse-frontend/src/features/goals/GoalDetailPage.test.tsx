@@ -1114,6 +1114,32 @@ describe('GoalDetailPage — additional coverage', () => {
     );
   });
 
+  test('failure banner shows the API failure_reason when no failure event was streamed (NF-14)', async () => {
+    goalStreamState.current = { ...goalStreamState.current, events: [] };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'failed',
+          goal: 'Deploy the api',
+          failure_reason:
+            'approval expired: approval request r9 was not decided before it expired while the goal waited for a human (supervised mode). Resubmit the goal to retry.',
+          terminal_reason: 'approval_expired',
+          result_artifact: {
+            version: 1, kind: 'error', title: 'Failed', summary: '', status: 'failed',
+            metrics: [], tables: [], evidence: {}, downloads: [], debug: { event_count: 0 },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    renderGoalDetailPage();
+
+    await waitFor(() => expect(screen.getByText(/goal did not fully complete/i)).toBeInTheDocument());
+    expect(screen.getByTestId('goal-failure-reason')).toHaveTextContent(/approval expired/i);
+  });
+
   test('evidence tab shows populated tool evidence with verification banner', async () => {
     mockCompletedGoalWithResultArtifact();
     renderGoalDetailPage();

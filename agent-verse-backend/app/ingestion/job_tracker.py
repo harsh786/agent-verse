@@ -48,6 +48,20 @@ class SyncLockLostError(RuntimeError):
     """
 
 
+class IngestionPersistenceError(RuntimeError):
+    """A job row or cursor could not be written to Postgres (NF-12).
+
+    These writes used to be logged at WARNING and dropped, so a job that was
+    never recorded — or a cursor that was never committed — looked successful.
+    The run stops instead; a cursor is never advanced past a failed write.
+    """
+
+
+def _db_error(exc: BaseException) -> str:
+    """The error class only: driver messages can name hosts/ports (tenant-visible)."""
+    return type(exc).__name__
+
+
 # Hold KEYS[1] under ARGV[1] for ARGV[2] ms: extend it if ours, take it if free.
 _ADOPT_LUA = """
 local v = redis.call('GET', KEYS[1])
@@ -354,6 +368,23 @@ class IngestionJobTracker:
         lease.start()
         return lease
 
+    async def hold_without_fence(
+        self, source_id: str, tenant_id: str, *, ttl_seconds: int
+    ) -> SyncLease | None:
+        """Take the lock (new token) and keep it renewed — no fencing token (NF-18).
+
+        For runs that commit no cursor and have no ``source_configs`` row to
+        fence on (the webhook re-ingest of a synthetic source). None when the
+        lock is held; raises :class:`SyncLockUnavailableError` when it cannot be
+        checked. The caller must :meth:`SyncLease.release` it.
+        """
+        token = await self.acquire_lock(source_id, tenant_id, ttl_seconds=ttl_seconds)
+        if token is None:
+            return None
+        lease = SyncLease(self, source_id, tenant_id, token, 0, ttl_seconds)
+        lease.start()
+        return lease
+
     # ── Cancellation (KB-15) ──────────────────────────────────────────────────
     # A cancel request is a Redis flag keyed by job id, so the API replica that
     # receives it and the worker running the sync need not be the same process.
@@ -402,10 +433,10 @@ class IngestionJobTracker:
             cursor_before=cursor_before,
             created_at=datetime.now(UTC).isoformat(),
         )
-        self._jobs[job_id] = job
-
         if self._db is not None:
+            # Raises IngestionPersistenceError: an unrecorded job never runs.
             await self._persist_job_created(job)
+        self._jobs[job_id] = job
 
         return job
 
@@ -519,7 +550,15 @@ class IngestionJobTracker:
         )
 
         if self._db is not None:
-            await self._persist_job_completed(job)
+            try:
+                await self._persist_job_completed(job)
+            except IngestionPersistenceError as exc:
+                # Never report a result that was not recorded: the job is failed
+                # here, the caller gets the error, and the stale-job reaper fails
+                # the still-"running" row if no later write lands.
+                job.status = "failed"
+                job.error_message = str(exc)[:2048]
+                raise
 
     def get_job(self, job_id: str) -> IngestionJob | None:
         return self._jobs.get(job_id)
@@ -680,7 +719,10 @@ class IngestionJobTracker:
                     },
                 )
         except Exception as e:
-            _log.warning("ingestion_job_persist_error job=%s: %s", job.job_id, e)
+            _log.error("ingestion_job_persist_error job=%s: %s", job.job_id, e)
+            raise IngestionPersistenceError(
+                f"ingestion job {job.job_id} could not be recorded ({_db_error(e)})"
+            ) from e
 
     async def _persist_cursor_update(
         self,
@@ -728,7 +770,11 @@ class IngestionJobTracker:
         except SyncLockLostError:
             raise
         except Exception as e:
-            _log.warning("ingestion_cursor_persist_error source=%s: %s", source_id, e)
+            _log.error("ingestion_cursor_persist_error source=%s: %s", source_id, e)
+            raise IngestionPersistenceError(
+                f"cursor of source {source_id} could not be saved ({_db_error(e)}); "
+                "the sync stopped without advancing it"
+            ) from e
 
     async def _persist_job_completed(self, job: IngestionJob) -> None:
         try:
@@ -773,7 +819,10 @@ class IngestionJobTracker:
                     },
                 )
         except Exception as e:
-            _log.warning("ingestion_job_complete_persist_error job=%s: %s", job.job_id, e)
+            _log.error("ingestion_job_complete_persist_error job=%s: %s", job.job_id, e)
+            raise IngestionPersistenceError(
+                f"result of ingestion job {job.job_id} could not be recorded ({_db_error(e)})"
+            ) from e
 
     # ── Methods required by scheduler.py ────────────────────────────────────
 

@@ -362,12 +362,18 @@ async def call_tool(
     tenant_ctx: Any = None,
     server_id: str = "",
 ) -> dict[str, Any]:
+    from app.mcp.builtin_kill_switch import DISABLED_STATUS, disabled_reason
     from app.net.mongodb_policy import (
         MongoOperatorError,
         MongoTlsPolicyError,
         assert_safe_mongo_arguments,
         assert_tls_not_weakened,
     )
+
+    # NF-13: the operator kill switch is checked before anything else runs.
+    _disabled = disabled_reason("builtin-mongodb")
+    if _disabled is not None:
+        return {"error": _disabled, "tool": tool_name, "status": DISABLED_STATUS}
 
     try:
         # MDB-03: write stages / server-side JavaScript anywhere in the call are

@@ -327,6 +327,10 @@ export interface GoalResponse {
   workflow_mode?: string;
   /** Error message if the goal failed */
   error_message?: string;
+  /** NF-14: sanitized reason a failed / cancelled goal ended (no secrets or hosts) */
+  failure_reason?: string | null;
+  /** NF-14: short code, e.g. approval_expired | runner_lost | timeout | error */
+  terminal_reason?: string | null;
   /** Verifier feedback on last iteration */
   verification_feedback?: string;
   /** Priority: normal | high | low */
@@ -1837,7 +1841,7 @@ export interface TrainingPreview {
 
 export interface TrainingExportJob {
   job_id: string;
-  status: "queued" | "running" | "complete" | "failed";
+  status: "queued" | "running" | "complete" | "failed" | "expired";
   format: "openai" | "anthropic";
   min_score: number | null;
   limit: number;

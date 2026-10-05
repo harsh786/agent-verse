@@ -565,7 +565,7 @@ async def _sync_locked(
 ) -> dict:
     """The sync itself, run while ``lease`` holds the Source's lock (released by the caller)."""
     from app.ingestion.connector_registry import get_connector
-    from app.ingestion.job_tracker import SyncLockLostError
+    from app.ingestion.job_tracker import IngestionPersistenceError, SyncLockLostError
 
     # ── Load SourceConfig (durable, cross-process store) ─────────────────────
     # The task carries its tenant, so this is a tenant-scoped (RLS) read — not a
@@ -729,7 +729,9 @@ async def _sync_locked(
                         job, new_cursor or "", config, fence=lease.fence
                     )
 
-            except SyncLockLostError:
+            except (SyncLockLostError, IngestionPersistenceError):
+                # NF-12: a failed cursor commit stops the run; it is not a
+                # document failure (that path used to swallow it into the DLQ).
                 raise
             except Exception as doc_exc:
                 docs_failed += 1
