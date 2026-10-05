@@ -188,7 +188,7 @@ spec:
         image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
         imagePullPolicy: {{ .Values.imagePullPolicy }}
         command: ["celery"]
-        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.worker.queues | quote }}, "--concurrency", {{ .Values.worker.concurrency | quote }}]
+        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.worker.queues | quote }}, "--concurrency", {{ .Values.worker.concurrency | quote }}, "--max-tasks-per-child", {{ .Values.worker.maxTasksPerChild | quote }}, "--max-memory-per-child", {{ .Values.worker.maxMemoryPerChildKb | quote }}]
         envFrom:
         - configMapRef:
             name: {{ include "agentverse.fullname" . }}-config
@@ -207,6 +207,8 @@ spec:
               key: REDIS_PASSWORD
         - name: REDIS_URL
           value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        - name: WORKER_PRELOAD_RETRIEVAL_MODELS
+          value: {{ .Values.worker.preloadRetrievalModels | quote }}
         resources:
           {{- toYaml .Values.worker.resources | nindent 10 }}
 {{- end }}
@@ -241,7 +243,7 @@ spec:
         image: "{{ .Values.subgoalWorker.image.repository }}:{{ .Values.subgoalWorker.image.tag }}"
         imagePullPolicy: {{ .Values.imagePullPolicy }}
         command: ["celery"]
-        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.subgoalWorker.queues | quote }}, "--concurrency", {{ .Values.subgoalWorker.concurrency | quote }}]
+        args: ["-A", "app.scaling.celery_app", "worker", "--loglevel=info", "-Q", {{ .Values.subgoalWorker.queues | quote }}, "--concurrency", {{ .Values.subgoalWorker.concurrency | quote }}, "--max-tasks-per-child", {{ .Values.subgoalWorker.maxTasksPerChild | quote }}, "--max-memory-per-child", {{ .Values.subgoalWorker.maxMemoryPerChildKb | quote }}]
         envFrom:
         - configMapRef:
             name: {{ include "agentverse.fullname" . }}-config
@@ -260,6 +262,8 @@ spec:
               key: REDIS_PASSWORD
         - name: REDIS_URL
           value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        - name: WORKER_PRELOAD_RETRIEVAL_MODELS
+          value: {{ .Values.subgoalWorker.preloadRetrievalModels | quote }}
         resources:
           {{- toYaml .Values.subgoalWorker.resources | nindent 10 }}
 {{- end }}

@@ -29,19 +29,20 @@ frontend:
     repository: ghcr.io/harsh786/agentverse-frontend
     tag: latest
 
+# D4: 4 processes per pod (values.yaml budget); capacity comes from pods.
+# 6 x 4 = 24 slots, the same as the former 3 x 8 that did not fit its limit.
 worker:
-  replicaCount: 3
+  replicaCount: 6
   image:
     repository: ghcr.io/harsh786/agentverse-backend
     tag: latest
-  concurrency: 8
 
+# 4 x 4 = 16 sub-goal slots (formerly 2 x 8).
 subgoalWorker:
-  replicaCount: 2
+  replicaCount: 4
   image:
     repository: ghcr.io/harsh786/agentverse-backend
     tag: latest
-  concurrency: 8
 
 beat:
   image:

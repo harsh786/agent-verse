@@ -30,6 +30,8 @@ spec:
             - worker
             - --loglevel=info
             - --concurrency={{ .Values.worker.concurrency }}
+            - --max-tasks-per-child={{ .Values.worker.maxTasksPerChild }}
+            - --max-memory-per-child={{ .Values.worker.maxMemoryPerChildKb }}
             - -Q
             - {{ .Values.worker.queues }}
           envFrom:
@@ -46,5 +48,7 @@ spec:
                 secretKeyRef:
                   name: agentverse-secrets
                   key: redis-url
+            - name: WORKER_PRELOAD_RETRIEVAL_MODELS
+              value: {{ .Values.worker.preloadRetrievalModels | quote }}
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}
