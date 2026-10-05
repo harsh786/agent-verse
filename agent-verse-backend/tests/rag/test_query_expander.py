@@ -193,18 +193,21 @@ class TestExpandForFusionAsync:
             )
 
     @pytest.mark.asyncio
-    async def test_empty_llm_response_falls_back_to_query_only(self) -> None:
+    async def test_empty_llm_response_falls_back_to_the_original_query(self) -> None:
         from app.providers.base import CompletionResponse
 
         provider = AsyncMock()
         provider.complete.return_value = CompletionResponse(content="   ", model="m")
         expander = QueryExpander()
+        trace: dict[str, object] = {}
 
         variants = await expander.expand_for_fusion_async(
-            "authentication flow error", provider=provider, model="m"
+            "authentication flow error", provider=provider, model="m", trace=trace
         )
 
-        assert variants == ["authentication flow error"]
+        assert variants == expander.expand_for_fusion("authentication flow error")
+        assert variants[0] == "authentication flow error"
+        assert trace == {"source": "rules", "fallback_reason": "empty_expansion"}
 
     @pytest.mark.asyncio
     async def test_empty_string_input_with_no_provider(self) -> None:
@@ -221,3 +224,83 @@ class TestExpandForFusionAsync:
         variants = await expander.expand_for_fusion_async("   ", provider=None)
 
         assert variants == []
+
+
+class TestExpansionBudgetAndFallback:
+    """P2-2: a 200-token budget left a reasoning model nothing to answer with."""
+
+    @pytest.mark.asyncio
+    async def test_budget_leaves_room_for_a_reasoning_model(self) -> None:
+        from app.providers.base import CompletionResponse
+
+        provider = AsyncMock()
+        provider.complete.return_value = CompletionResponse(content="a\nb\nc", model="m")
+        await QueryExpander().expand_for_fusion_async("q x", provider=provider, model="m")
+        request = provider.complete.await_args.args[0]
+        assert request.max_tokens >= 1024
+
+    @pytest.mark.asyncio
+    async def test_empty_completion_falls_back_even_when_strict(self) -> None:
+        from app.core.errors import EmptyCompletionError
+
+        provider = AsyncMock()
+        provider.complete.side_effect = EmptyCompletionError("empty completion twice")
+        expander = QueryExpander()
+        trace: dict[str, object] = {}
+
+        variants = await expander.expand_for_fusion_async(
+            "total H1 diesel cost in INR", provider=provider, model="m", strict=True, trace=trace
+        )
+
+        assert variants[0] == "total H1 diesel cost in INR"
+        assert trace == {"source": "rules", "fallback_reason": "empty_completion"}
+
+    @pytest.mark.asyncio
+    async def test_outage_still_raises_when_strict(self) -> None:
+        from app.core.errors import ExternalServiceError
+
+        provider = AsyncMock()
+        provider.complete.side_effect = ExternalServiceError("429 rate limited")
+        with pytest.raises(ExternalServiceError):
+            await QueryExpander().expand_for_fusion_async(
+                "q x", provider=provider, model="m", strict=True
+            )
+
+    @pytest.mark.asyncio
+    async def test_preamble_only_output_is_invalid_and_falls_back(self) -> None:
+        from app.providers.base import CompletionResponse
+
+        provider = AsyncMock()
+        provider.complete.return_value = CompletionResponse(
+            content="Here are three alternative phrasings:", model="m"
+        )
+        trace: dict[str, object] = {}
+        variants = await QueryExpander().expand_for_fusion_async(
+            "diesel cost total", provider=provider, model="m", strict=True, trace=trace
+        )
+        assert variants[0] == "diesel cost total"
+        assert trace["fallback_reason"] == "invalid_expansion"
+
+    @pytest.mark.asyncio
+    async def test_numbering_bullets_and_think_blocks_are_stripped(self) -> None:
+        from app.providers.base import CompletionResponse
+
+        provider = AsyncMock()
+        provider.complete.return_value = CompletionResponse(
+            content=(
+                "<think>the user wants fuel spend</think>\n"
+                "1. total diesel spend H1\n- H1 fuel cost in rupees\n* \"diesel expense first half\""
+            ),
+            model="m",
+        )
+        trace: dict[str, object] = {}
+        variants = await QueryExpander().expand_for_fusion_async(
+            "diesel cost total", provider=provider, model="m", trace=trace
+        )
+        assert variants == [
+            "diesel cost total",
+            "total diesel spend H1",
+            "H1 fuel cost in rupees",
+            "diesel expense first half",
+        ]
+        assert trace == {"source": "llm", "fallback_reason": None}

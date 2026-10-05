@@ -312,8 +312,9 @@ async def test_complete_empty_content_is_retried_then_raised() -> None:
     the agent's answer; now it is retried once and then raised so the caller's
     fallback routing can take over.
     """
-    from app.core.errors import ExternalServiceError
+    from app.core.errors import EmptyCompletionError, ExternalServiceError
 
+    assert issubclass(EmptyCompletionError, ExternalServiceError)
     mock_openai, mock_client = _make_openai_module()
     mock_resp = _make_chat_response(content=None)  # type: ignore[arg-type]
     mock_resp.choices[0].message.content = None
@@ -322,7 +323,9 @@ async def test_complete_empty_content_is_retried_then_raised() -> None:
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(api_key="key")
-        with pytest.raises(ExternalServiceError):
+        # A distinct type so callers can fall back on "no text" without
+        # swallowing real outages (429, 5xx, circuit open).
+        with pytest.raises(EmptyCompletionError):
             await provider.complete(
                 CompletionRequest(messages=[Message(role="user", content="Hi")], model="gpt-4o")
             )

@@ -1509,6 +1509,7 @@ async def execute_core_strategy(
         )
 
     if strategy is RAGStrategy.FUSION:
+        expansion_trace: dict[str, Any] = {}
         results = await rag_engine.retrieve_fusion(
             None,
             query=request.query,
@@ -1522,6 +1523,7 @@ async def execute_core_strategy(
             strict=True,
             search_operation=search_operation,
             strategy_evidence=strategy_evidence,
+            expansion_trace=expansion_trace,
         )
         for item in strategy_evidence:
             item["latency_ms"] = search_latencies.get(str(item.get("query")), 0.0)
@@ -1537,6 +1539,8 @@ async def execute_core_strategy(
                     "model": llm.model,
                     "provider_type": llm.provider_type,
                     "variant_count": len(strategy_evidence),
+                    "source": expansion_trace.get("source", "llm"),
+                    "fallback_reason": expansion_trace.get("fallback_reason"),
                 },
             ),
         )

@@ -1363,8 +1363,13 @@ async def retrieve_fusion(
     ]
     | None = None,
     strategy_evidence: list[dict[str, Any]] | None = None,
+    expansion_trace: dict[str, Any] | None = None,
 ) -> list[RetrievalResult]:
     """Fusion RAG: expand query into N variants, retrieve, and RRF-merge.
+
+    ``expansion_trace`` (optional out-param) receives how the variants were
+    made: ``source`` ("llm" | "rules") and ``fallback_reason`` when an empty or
+    invalid LLM expansion fell back to the original query.
 
     A gateway supplies ``search_operation`` to run variants concurrently with a
     fresh tenant-scoped session per call. Legacy direct callers are serialized
@@ -1382,6 +1387,7 @@ async def retrieve_fusion(
         raise RetrievalStrategyExecutionError("fusion", "embedding provider is required")
 
     expander = QueryExpander()
+    trace: dict[str, Any] = expansion_trace if expansion_trace is not None else {}
     try:
         if provider is not None and hasattr(expander, "expand_for_fusion_async"):
             variants = await expander.expand_for_fusion_async(
@@ -1390,6 +1396,7 @@ async def retrieve_fusion(
                 provider=provider,
                 model=model,
                 strict=strict,
+                trace=trace,
             )
         else:
             variants = expander.expand_for_fusion(query, max_variants=max_variants)
@@ -1401,8 +1408,19 @@ async def retrieve_fusion(
                 "fusion", "provider query expansion failed"
             ) from exc
         variants = expander.expand_for_fusion(query, max_variants=max_variants)
+        trace.update(source="rules", fallback_reason="provider_error")
 
-    if strict and len(variants) < 2:
+    # An empty/invalid LLM expansion fell back to the original query (recorded
+    # in the trace): retrieving over it is honest, so a single variant is
+    # allowed then. Otherwise strict fusion still needs a real expansion.
+    expansion_fell_back = bool(trace.get("fallback_reason"))
+    if expansion_fell_back:
+        logger.warning(
+            "fusion_query_expansion_fallback",
+            reason=trace.get("fallback_reason"),
+            variant_count=len(variants),
+        )
+    if strict and len(variants) < 2 and not expansion_fell_back:
         raise RetrievalStrategyExecutionError("fusion", "query expansion produced one variant")
 
     # Embed every variant, including the original query.

@@ -2312,6 +2312,36 @@ class TestRetrieveFusionCoverage:
             )
 
     @pytest.mark.asyncio
+    async def test_empty_expansion_strict_falls_back_to_the_original_query(self) -> None:
+        """P2-2: an empty completion from the expander no longer fails the goal.
+
+        Fusion retrieves over the original query and the trace says so; it is
+        never a silent empty result.
+        """
+        from app.core.errors import EmptyCompletionError
+        from app.rag.engine import RetrievalResult, retrieve_fusion
+
+        provider = AsyncMock()
+        provider.complete.side_effect = EmptyCompletionError("empty completion twice")
+        hit = RetrievalResult(chunk_id="c1", content="diesel", score=1.0, source_metadata={})
+        search = AsyncMock(return_value=[hit])
+        trace: dict[str, object] = {}
+        with patch("app.rag.engine.hybrid_search", search):
+            out = await retrieve_fusion(
+                AsyncMock(),
+                query="diesel cost H1",
+                query_embedding=[0.1],
+                collection_id="col-1",
+                provider=provider,
+                model="m",
+                strict=True,
+                expansion_trace=trace,
+            )
+        assert [r.chunk_id for r in out] == ["c1"]
+        assert search.await_args.kwargs["query"] == "diesel cost H1"
+        assert trace == {"source": "rules", "fallback_reason": "empty_completion"}
+
+    @pytest.mark.asyncio
     async def test_single_variant_expansion_strict_raises(self) -> None:
         from app.rag.engine import RetrievalStrategyExecutionError, retrieve_fusion
 
