@@ -4157,7 +4157,7 @@ def run_goal(
         # mode, a policy DENY, a rejected or timed-out approval) is final.
         # Retrying re-ran the same denial and then dead-lettered the goal as
         # "exceeded max retries", burying the real reason (CORE-01).
-        logger.info("goal_denied_by_governance goal_id=%s: %s", goal_id, exc)
+        logger.info("goal_denied_by_governance goal_id=%s: %s", goal_id, _redacted_error(exc))
         _record_goal_duration_metric(
             "failed", started_monotonic=started_monotonic, priority=priority
         )

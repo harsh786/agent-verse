@@ -60,6 +60,8 @@ def _loop_error_records(records: list[logging.LogRecord]) -> list[str]:
         text = record.getMessage()
         if record.exc_info and record.exc_info[1] is not None:
             text += f" {record.exc_info[1]!r}"
+        if record.exc_text:  # OI-3: redaction pre-renders the traceback here
+            text += f" {record.exc_text}"
         if any(marker in text for marker in _LOOP_ERRORS):
             found.append(f"{record.name}: {text[:300]}")
     return found

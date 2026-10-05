@@ -16,6 +16,8 @@ from typing import Any, cast
 import structlog
 from opentelemetry import trace
 
+from app.observability.log_redaction import install_log_redaction, redact_event_dict
+
 
 def add_trace_correlation(
     _logger: Any, _method: str, event_dict: dict[str, Any]
@@ -116,6 +118,9 @@ def configure_logging(*, level: str = "INFO", json_logs: bool = True) -> None:
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        # OI-3: mask credentials in every value (incl. rendered tracebacks)
+        # before the tenant log feed and the renderer see them.
+        redact_event_dict,
         # After contextvars merge + timestamp/level, before rendering.
         feed_tenant_log_store,
     ]
@@ -131,6 +136,8 @@ def configure_logging(*, level: str = "INFO", json_logs: bool = True) -> None:
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )
+    # stdlib records (uvicorn, celery, libraries) are redacted at creation.
+    install_log_redaction()
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:

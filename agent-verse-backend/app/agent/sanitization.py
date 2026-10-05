@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any, Protocol
+
+# The credential patterns live in a leaf module so the logging pipeline can use
+# them without importing the agent package (OI-3); re-exported here.
+from app.observability.secret_patterns import (
+    BARE_SECRET_PATTERNS,
+    redact_sensitive_text,
+)
 
 # Cap for event payloads (step/tool outputs shown in the timeline AND used as the
 # goal's result summary). 1000 was far too small — it truncated real answers
@@ -12,56 +18,21 @@ from typing import Any, Protocol
 _TOOL_EVENT_MAX_LENGTH = 16000
 _EXECUTOR_CONTEXT_MAX_LENGTH = 16000  # LLM context for executor — richer than SSE events
 _TOOL_EVENT_TRUNCATION_MARKER = "...[truncated]"
-_SENSITIVE_KV_PATTERN = re.compile(
-    r"(?i)(['\"]?\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|secret|password|passwd|pwd|token)"
-    r"\b['\"]?\s*[:=]\s*['\"]?)[^\s,;}'\"]+"
-)
-_AUTHORIZATION_HEADER_PATTERN = re.compile(
-    r"(?i)\b(authorization\s*[:=]?\s*(?:basic|bearer)\s+)[^\s,;}'\"]+"
-)
-_BASIC_TOKEN_PATTERN = re.compile(r"(?i)\b(basic\s+)[A-Za-z0-9+/]{8,}={0,2}")
-# Bare secrets that carry no "key=" / "Authorization:" prefix (a token pasted into
-# a step output or error message). Only the key=value / header forms were
-# redacted, so these reached SSE events and the persisted event log verbatim.
-BARE_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # PEM private-key blocks
-    re.compile(
-        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
-    ),
-    # OpenAI / Anthropic style keys (sk-..., sk-proj-..., sk-ant-...)
-    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),
-    # GitHub tokens
-    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{22,})"),
-    # AWS access key ids
-    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
-    # Slack tokens
-    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
-    # JSON Web Tokens
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
-    # Stripe secret / restricted keys and webhook signing secrets
-    re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}"),
-    re.compile(r"\bwhsec_[A-Za-z0-9]{24,}"),
-    # Google API keys
-    re.compile(r"\bAIza[0-9A-Za-z_-]{35}"),
-    # GitLab personal / project / group access tokens
-    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}"),
-)
 _SIMPLE_EVENT_VALUE_TYPES = (str, int, float, bool)
+
+__all__ = [
+    "BARE_SECRET_PATTERNS",
+    "ResultProcessor",
+    "redact_sensitive_text",
+    "sanitize_event",
+    "sanitize_event_value",
+    "sanitize_tool_event_value",
+    "sanitize_tool_raw_output",
+]
 
 
 class ResultProcessor(Protocol):
     def process(self, text: str) -> str: ...
-
-
-def redact_sensitive_text(value: object) -> str:
-    """Return *value* as text with common credentials redacted."""
-    text = "" if value is None else str(value)
-    text = _SENSITIVE_KV_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
-    text = _AUTHORIZATION_HEADER_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
-    text = _BASIC_TOKEN_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
-    for pattern in BARE_SECRET_PATTERNS:
-        text = pattern.sub("[REDACTED]", text)
-    return text
 
 
 def sanitize_tool_raw_output(
