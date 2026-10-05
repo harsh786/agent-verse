@@ -113,7 +113,7 @@ _WORKER_GOAL_LOCK_KEY = "goal_lock:{goal_id}"
 _METERED_EVENT_TYPES = {"tool_call_complete", "goal_complete", "goal_failed", "goal_cancelled"}
 from app.agent.sanitization import sanitize_event
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
-from app.agent.tool_context import ToolContext, ToolRef
+from app.agent.tool_context import ToolContext
 from app.agent.workflow_executor import WorkflowExecutor
 from app.agent.workflow_planner import build_static_workflow
 from app.core.errors import ConflictError, NotFoundError, ServiceUnavailableError
@@ -2763,84 +2763,51 @@ class GoalService:
     async def _build_tool_context(
         self, agent_id: str | None, tenant_ctx: TenantContext, goal: str = ""
     ) -> ToolContext:
-        # Always include built-in RPA tools so agents can use browser automation
-        # (same builder as the Celery worker's tool context).
-        from app.rpa.tools import rpa_tool_refs
+        """The planner's tools — the same builder as the Celery worker.
 
-        tools: list[ToolRef] = rpa_tool_refs()
+        ``app.agent.tool_context_builder.build_goal_tool_context``: the agent's
+        connectors (``auto_approve`` carried), or the tenant's connectors when
+        the goal has no agent; unreachable connectors are recorded, not fatal;
+        RPA tools only where Playwright runs; tiered ToolSelector when wired.
+        """
+        from app.agent.tool_context_builder import build_goal_tool_context
 
-        if agent_id is None or self._app_state is None:
-            return ToolContext(connectors=[], tools=tools)
-
-        agent_store = self._get_agent_store()
         mcp_client = self._get_mcp_client()
-        if agent_store is None or mcp_client is None:
-            return ToolContext(connectors=[], tools=tools)
+        registry = getattr(mcp_client, "_registry", None) or getattr(
+            self._app_state, "mcp_registry", None
+        )
+        if mcp_client is None:
+            # No connector runtime wired (bare test app): built-ins only.
+            from app.agent.tool_context_builder import rpa_tools_available
+            from app.rpa.tools import rpa_tool_refs
 
-        agent: dict[str, Any] | None = agent_store.get(agent_id, tenant_ctx=tenant_ctx)
-        if agent is None:
-            return ToolContext(connectors=[], tools=tools)
+            return ToolContext(
+                connectors=[], tools=rpa_tool_refs() if rpa_tools_available() else []
+            )
 
-        connector_errors: list[dict[str, str]] = []
-        for connector_id in agent.get("connector_ids", []):
-            connector_id_str = str(connector_id)
-            try:
-                discovered = await mcp_client.discover_tools(
-                    server_id=connector_id_str, tenant_ctx=tenant_ctx
-                )
-            except Exception as exc:
-                connector_errors.append({"connector_id": connector_id_str, "error": str(exc)})
-                continue
-            for discovered_tool in discovered:
-                name = str(getattr(discovered_tool, "name", "") or "")
-                if not name:
-                    continue
-                input_schema = getattr(discovered_tool, "input_schema", {})
-                if not isinstance(input_schema, dict):
-                    input_schema = {}
-                server_id = connector_id_str
-                server_name = str(getattr(discovered_tool, "server_name", server_id) or server_id)
-                tools.append(
-                    ToolRef(
-                        server_id=server_id,
-                        server_name=server_name,
-                        name=name,
-                        description=str(getattr(discovered_tool, "description", "") or ""),
-                        input_schema=input_schema,
-                    )
-                )
+        agent: dict[str, Any] | None = None
+        connector_ids: list[str] | None = None
+        if agent_id is not None:
+            agent_store = self._get_agent_store()
+            agent = (
+                agent_store.get(agent_id, tenant_ctx=tenant_ctx)
+                if agent_store is not None
+                else None
+            )
+            # The agent's connectors; an agent without any is treated like a goal
+            # without an agent (the tenant's connectors), exactly as the worker
+            # does for a queued goal whose connector_ids are empty.
+            connector_ids = [str(c) for c in (agent or {}).get("connector_ids", [])] or None
 
-        connector_metadata = dict(agent)
-        if connector_errors:
-            connector_metadata["connector_errors"] = connector_errors
-
-        # Same tool on several connections (two MongoDB connections): give each
-        # a distinct "<connection>__<tool>" name so the model can target one.
-        from app.mcp.tool_naming import qualify_colliding_tools
-
-        all_tools = qualify_colliding_tools(tools)  # full list (RPA + discovered connectors)
-
-        # NEW: if we have a goal, ToolSelector, and enough tools, use tiered selection
-        tool_selector = getattr(self._app_state, "tool_selector", None)
-        if tool_selector is not None and goal and len(all_tools) > 0:
-            try:
-                selection = await tool_selector.select(
-                    goal=goal,
-                    tools=all_tools,
-                    tenant_ctx=tenant_ctx,
-                )
-                from app.agent.tool_context import to_tiered_prompt
-
-                tool_prompt = to_tiered_prompt(selection)
-                return ToolContext(
-                    connectors=[connector_metadata],
-                    tools=selection.selected,
-                    tool_prompt_override=tool_prompt,
-                )
-            except Exception as exc:
-                _svc_logger.debug("tool_selector_failed_fallback_to_full", error=str(exc)[:60])
-
-        return ToolContext(connectors=[connector_metadata], tools=all_tools)
+        return await build_goal_tool_context(
+            registry=registry,
+            mcp_client=mcp_client,
+            tenant_ctx=tenant_ctx,
+            connector_ids=connector_ids,
+            goal=goal,
+            tool_selector=getattr(self._app_state, "tool_selector", None),
+            agent=agent,
+        )
 
     def _tenant_ctx_for_event_store(
         self, record: GoalRecord, tenant_ctx: TenantContext | None

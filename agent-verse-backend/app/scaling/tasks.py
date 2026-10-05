@@ -3058,7 +3058,6 @@ def run_goal(
     async def _build_worker_mcp_context() -> tuple[Any, Any, Any]:
         import redis.asyncio as aioredis
 
-        from app.agent.tool_context import ToolContext, ToolRef
         from app.mcp.client import MCPClient
         from app.mcp.connector_wiring import build_connector_secret_store
         from app.mcp.registry import MCPRegistry
@@ -3105,47 +3104,25 @@ def run_goal(
             )
         except Exception as _oauth_exc:
             logger.warning("worker_oauth_manager_wire_failed: %s", _oauth_exc)
+        # One builder with the in-process path (TOOLCTX-01..07): no connector ids
+        # (goal without an agent) = the tenant's connectors, bounded; an
+        # unreachable connector is recorded instead of failing the goal; RPA
+        # tools only where Playwright runs; the same tiered ToolSelector.
+        from app.agent.tool_context_builder import (
+            build_goal_tool_context,
+            build_worker_tool_selector,
+        )
+
         worker_connector_ids = [str(item) for item in (connector_ids or [])]
-
-        # When no connector_ids are specified (e.g. goal submitted without an agent),
-        # discover ALL tools registered for the tenant so the planner has full context.
-        if not worker_connector_ids:
-            try:
-                all_server_records = await registry.list_server_records(tenant_ctx=tenant_ctx)
-                worker_connector_ids = [sid for sid, _ in all_server_records]
-            except Exception as _discover_exc:
-                logger.warning("worker_all_connector_discovery_failed: %s", _discover_exc)
-
-        # Built-in rpa_* tools, exactly as the in-process path offers them: the
-        # worker has an RPA executor, so queued goals must be able to plan them.
-        from app.rpa.tools import rpa_tool_refs
-
-        tools: list[ToolRef] = rpa_tool_refs()
-        connectors: list[dict[str, Any]] = []
-        for connector_id in worker_connector_ids:
-            cfg = await registry.get(connector_id, tenant_ctx=tenant_ctx)
-            if cfg is None:
-                continue
-            connectors.append({"id": connector_id, "name": cfg.name})
-            for discovered in await mcp_client.discover_tools(
-                server_id=connector_id, tenant_ctx=tenant_ctx
-            ):
-                tools.append(
-                    ToolRef(
-                        server_id=connector_id,
-                        server_name=discovered.server_name,
-                        name=discovered.name,
-                        description=discovered.description,
-                        input_schema=discovered.input_schema,
-                        auto_approve=bool(getattr(cfg, "auto_approve", False)),
-                    )
-                )
-        # Same tool on several connections (two MongoDB connections): give each
-        # a distinct "<connection>__<tool>" name so the model can target one.
-        from app.mcp.tool_naming import qualify_colliding_tools
-
-        tools = qualify_colliding_tools(tools)
-        return redis_client, mcp_client, ToolContext(connectors=connectors, tools=tools)
+        tool_context = await build_goal_tool_context(
+            registry=registry,
+            mcp_client=mcp_client,
+            tenant_ctx=tenant_ctx,
+            connector_ids=worker_connector_ids or None,
+            goal=effective_goal,
+            tool_selector=build_worker_tool_selector(),
+        )
+        return redis_client, mcp_client, tool_context
 
     if not _loop_is_patched:
         # Production path: Try AgentGraph first (full capabilities)

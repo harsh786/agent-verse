@@ -118,11 +118,15 @@ def test_worker_goal_rpa_open_url_dispatches_to_the_rpa_executor(
 
 
 def test_worker_tool_context_offers_the_rpa_tools(worker: dict[str, Any]) -> None:
-    """RPA-01: queued goals plan with the same rpa_* ToolRefs as in-process goals."""
+    """RPA-01: queued goals plan with the same rpa_* ToolRefs as in-process goals.
+
+    TOOLCTX-07: the worker now applies the same tiered ToolSelector as the API,
+    which offers rpa_* tools only to goals that signal browser work.
+    """
     from app.rpa.tools import RPA_TOOLS
     from app.scaling import tasks
 
-    tasks.run_goal.run("g-rpa-w0", T.tenant_id, "open example.com", "normal", False)
+    tasks.run_goal.run("g-rpa-w0", T.tenant_id, "navigate to example.com", "normal", False)
     tool_context = worker["initial_context"].get("tool_context")
     assert tool_context is not None, "the worker built no tool context"
     rpa_refs = {t.name for t in tool_context.tools if t.server_id == "rpa"}
