@@ -751,7 +751,8 @@ export interface CatalogEntry {
 
 export interface ConnectorTestResult {
   server_id: string;
-  reachable: boolean;
+  /** null when nothing was contacted (status "not_tested"). */
+  reachable: boolean | null;
   latency_ms?: number;
   error?: string;
   /** Human-readable success detail, e.g. "Authenticated as @username (Full Name) · scopes: repo,read:org" */

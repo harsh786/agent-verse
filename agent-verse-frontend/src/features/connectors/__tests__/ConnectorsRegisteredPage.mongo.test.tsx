@@ -317,3 +317,40 @@ describe('A7 one masked URI input, never a link', () => {
     expect(JSON.parse(String((put[1] as RequestInit).body))).toMatchObject({ url: 'builtin://', auth_config: { uri: '<redacted>', database: 'orders' } });
   });
 });
+
+// ── A6: Test Connection results (incl. 4xx) are visible in the table ─────────
+
+describe('A6 table Test Connection shows every outcome', () => {
+  const ROW = { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', url: 'builtin://', auth_type: 'connection_string', has_builtin: true, auth_config: { uri: '<redacted>' } };
+  const testHandler = (response: unknown, status = 200): Handler => ({
+    match: (u, i) => u.endsWith('/test') && i?.method === 'POST', response, status,
+  });
+  const row = () => screen.getByRole('link', { name: 'orders-db' }).closest('tr') as HTMLElement;
+
+  it('a 4xx answer is shown as a failed test, not swallowed', async () => {
+    mockFetch([listOf([ROW]), testHandler({ detail: 'SSRF protection: disallowed URL' }, 400)]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    await userEvent.click(within(row()).getByRole('button', { name: /^test$/i }));
+    expect(await within(row()).findByText(/failed/i)).toBeInTheDocument();
+    expect(within(row()).queryByText(/not tested/i)).not.toBeInTheDocument();
+    expect(within(row()).getByTestId('test-error')).not.toBeEmptyDOMElement();
+  });
+
+  it('a failed result shows its error', async () => {
+    mockFetch([listOf([ROW]), testHandler({ server_id: ROW.server_id, reachable: false, status: 'failed', error: 'Credentials were rejected by the connector endpoint' })]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    await userEvent.click(within(row()).getByRole('button', { name: /^test$/i }));
+    expect(await within(row()).findByTestId('test-error')).toHaveTextContent(/rejected/i);
+  });
+
+  it('a not_tested result is neutral and says why', async () => {
+    mockFetch([listOf([ROW]), testHandler({ server_id: ROW.server_id, reachable: null, status: 'not_tested', detail: 'No test is available for this connector; nothing was contacted.' })]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    await userEvent.click(within(row()).getByRole('button', { name: /^test$/i }));
+    expect(await within(row()).findByText(/no test is available/i)).toBeInTheDocument();
+    expect(within(row()).queryByTestId('test-error')).not.toBeInTheDocument();
+  });
+});

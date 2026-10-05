@@ -3,7 +3,7 @@ import { useLocation, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
-import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
+import { ApiError, connectorsApi, type ConnectorResponse, type CatalogAuthField, type ConnectorTestResult } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { connectorLabel, connectorTypeLabel, isDsn, isHttpUrl, isMaskedSecret, maskDsn } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -889,11 +889,67 @@ function parseAuthConfigToValues(_authType: string, authConfig: Record<string, s
   return { ...authConfig };
 }
 
+/** POST /connectors/{id}/test outcome, or the request's own failure (4xx/5xx). */
 interface TestResult {
-  reachable: boolean;
+  /** null = nothing was contacted (status "not_tested"). */
+  reachable: boolean | null;
   status: string;
   latency_ms?: number;
   error?: string;
+  detail?: string;
+  http_status?: number;
+}
+
+function testResultFrom(data: ConnectorTestResult): TestResult {
+  return {
+    reachable: data.reachable ?? null,
+    status: data.status ?? (data.reachable ? 'passed' : 'failed'),
+    latency_ms: data.latency_ms,
+    error: data.error,
+    detail: data.detail,
+    http_status: data.http_status,
+  };
+}
+
+/** A refused/failed test REQUEST (e.g. a 400 SSRF refusal) is a failed test. */
+function testResultFromError(e: unknown): TestResult {
+  return {
+    reachable: false,
+    status: 'failed',
+    error: e instanceof Error && e.message ? e.message : 'The connection test could not be run',
+    http_status: e instanceof ApiError ? e.status : undefined,
+  };
+}
+
+function TestResultCell({ result }: { result: TestResult }) {
+  if (result.reachable === null && result.status === 'not_tested') {
+    return (
+      <div className="space-y-1">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
+          <Info className="h-3 w-3" /> Not testable
+        </span>
+        {result.detail && <p className="text-xs text-muted-foreground max-w-xs">{result.detail}</p>}
+      </div>
+    );
+  }
+  const ok = result.reachable === true && result.status !== 'failed';
+  return (
+    <div className="space-y-1">
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+        ok
+          ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+          : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+      }`}>
+        {ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+        {ok ? `OK · ${result.latency_ms ?? '?'}ms` : 'Failed'}
+      </span>
+      {!ok && (
+        <p data-testid="test-error" className="text-xs text-destructive max-w-xs break-words">
+          {result.error || `Test failed (${result.http_status ?? result.status})`}
+        </p>
+      )}
+    </div>
+  );
 }
 
 export function ConnectorsRegisteredPage() {
@@ -973,8 +1029,11 @@ export function ConnectorsRegisteredPage() {
 
   const testMutation = useMutation({
     mutationFn: (id: string) => connectorsApi.test(id),
-    onSuccess: (data: any, id: string) =>
-      setTestResults((prev) => ({ ...prev, [id]: data })),
+    onSuccess: (data, id) =>
+      setTestResults((prev) => ({ ...prev, [id]: testResultFrom(data) })),
+    // A 4xx (SSRF refusal, validation) used to leave the row at "Not tested".
+    onError: (e, id) =>
+      setTestResults((prev) => ({ ...prev, [id]: testResultFromError(e) })),
   });
 
   const openCreate = useCallback(() => {
@@ -1198,16 +1257,7 @@ export function ConnectorsRegisteredPage() {
                       </td>
                       <td className="px-4 py-3">
                         {result ? (
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                            result.reachable
-                              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                              : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-                          }`}>
-                            {result.reachable
-                              ? <CheckCircle2 className="h-3 w-3" />
-                              : <XCircle className="h-3 w-3" />}
-                            {result.reachable ? `OK · ${result.latency_ms ?? '?'}ms` : result.status}
-                          </span>
+                          <TestResultCell result={result} />
                         ) : (
                           <span className="text-muted-foreground text-xs">Not tested</span>
                         )}
