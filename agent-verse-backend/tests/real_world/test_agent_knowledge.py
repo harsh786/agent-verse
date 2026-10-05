@@ -188,11 +188,37 @@ def _submit(api: LiveAPI, cleanup: Any, goal: str, agent_id: str) -> str:
     return str(gx.submit(api, cleanup, goal, agent_id=agent_id)["goal_id"])
 
 
-def _complete(api: LiveAPI, goal_id: str) -> dict[str, Any]:
-    goal = gx.wait_terminal(api, goal_id)
-    assert goal.get("status") == "complete", (
-        f"goal {goal_id} ended {goal.get('status')}: {mask(goal.get('failure_reason'))}")
-    return goal
+# Not what these scenarios test: the LLM provider throttling, or the planner
+# phrasing a pure text step so that the risk classifier asks for an approval a
+# bounded-autonomous agent cannot get (reported in the P1e report, open item).
+_RETRYABLE = ("rate-limited", "rate limited", "requires human approval")
+
+
+def _failed_reason(api: LiveAPI, goal: dict[str, Any]) -> str:
+    reason = str(goal.get("failure_reason") or "")
+    for event in gx.timeline(api, str(goal.get("goal_id"))):
+        data = event.get("data") or {}
+        if event.get("type") in ("goal_failed", "step_failed"):
+            reason += " " + str(data.get("reason") or data.get("error") or "")
+    return reason
+
+
+def _run_goal(api: LiveAPI, cleanup: Any, text: str, agent: str, evidence: dict[str, Any],
+              attempts: int = 3) -> str:
+    """Submit and wait for completion; resubmit (bounded) on a throttled provider or a
+    planner-phrasing approval refusal. Every retry is recorded in the evidence."""
+    for attempt in range(1, attempts + 1):
+        gid = _submit(api, cleanup, text, agent)
+        goal = gx.wait_terminal(api, gid)
+        if goal.get("status") == "complete":
+            return gid
+        reason = _failed_reason(api, goal)
+        evidence.setdefault("goal_retries", []).append(
+            {"goal_id": gid, "status": goal.get("status"), "reason": mask(reason)[:240]})
+        if attempt == attempts or not any(r in reason for r in _RETRYABLE):
+            pytest.fail(f"goal {gid} ended {goal.get('status')}: {mask(reason)[:400]}")
+        time.sleep(20 * attempt)
+    raise AssertionError("unreachable")
 
 
 # ── AGK-GOAL-OUTPUT ──────────────────────────────────────────────────────────
@@ -224,21 +250,17 @@ def test_goal_outputs_become_cited_knowledge(
     mobile = "+91 9" + _rand(9, string.digits)
     register_secret(mobile)
     personal = {"email": secret["email"], "mobile": mobile}
-    g1 = _submit(api, cleanup, (
+    g1 = _run_goal(api, cleanup, (
         "Without using any tools, write a three-sentence internal note for the Pune "
         f"warehouse team stating exactly: the cold-room probe calibration interval is {days} "
         f"days; the duty supervisor is reachable at {secret['email']} or {mobile}; logs are "
-        "reviewed every Monday."), agent)
-    g2 = _submit(api, cleanup, (
+        "reviewed every Monday."), agent, evidence)
+    g2 = _run_goal(api, cleanup, (
         "Without using any tools, state in two sentences that dock door "
         f"{code} at the Hosur yard handles reefer containers only and takes at most {rate} kg "
         "per pallet from 1 November."),
-        agent)
+        agent, evidence)
     evidence["goals"] = [g1, g2]
-    done_at = {}
-    for gid in (g1, g2):
-        _complete(api, gid)
-        done_at[gid] = time.monotonic()
     urls = {f"agentverse://goals/{g1}", f"agentverse://goals/{g2}"}
     docs, waited = _wait_docs(api, cid, urls)
     evidence["seconds_after_last_goal"] = waited
@@ -297,10 +319,9 @@ def test_goal_outputs_become_cited_knowledge(
     assert len(after_docs) == 2, [_doc_url(d) for d in after_docs]
 
     # Incremental: one more goal is added, the others are untouched.
-    g3 = _submit(api, cleanup, (
+    g3 = _run_goal(api, cleanup, (
         "Without using any tools, write one sentence: the Chakan dock opens at 06:30 IST "
-        "from Monday."), agent)
-    _complete(api, g3)
+        "from Monday."), agent, evidence)
     docs3, waited3 = _wait_docs(api, cid, urls | {f"agentverse://goals/{g3}"})
     evidence["incremental_seconds"] = waited3
     now = {d.get("document_id") or d.get("id"): d.get("chunk_count") for d in docs3
@@ -580,14 +601,13 @@ def test_agent_knowledge_governance(
     cid = _collection(api, cleanup, "rw-agk-gov")
     sid = _source(api, cleanup, cid, {"source_types": ["goal_output"],
                                       "agent_ids": [agent]})["id"]
-    held_goal = _submit(api, cleanup, (
+    held_goal = _run_goal(api, cleanup, (
         "Without using any tools, write two sentences: dock inspection IR-4471 at the Hosur "
-        "yard found three cracked pallets, and the re-inspection is on Friday."), agent)
-    open_goal = _submit(api, cleanup, (
+        "yard found three cracked pallets, and the re-inspection is on Friday."), agent,
+        evidence)
+    open_goal = _run_goal(api, cleanup, (
         "Without using any tools, write one sentence: dock inspection IR-5590 at the Chakan "
-        "yard found the seal photos missing for container 12."), agent)
-    for gid in (held_goal, open_goal):
-        _complete(api, gid)
+        "yard found the seal photos missing for container 12."), agent, evidence)
     urls = {f"agentverse://goals/{held_goal}", f"agentverse://goals/{open_goal}"}
     docs, _ = _wait_docs(api, cid, urls)
     ids_before = sorted(str(d.get("document_id") or d.get("id")) for d in docs)
