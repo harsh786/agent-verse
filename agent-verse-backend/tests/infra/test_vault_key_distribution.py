@@ -225,7 +225,8 @@ _API_ONLY = {"PLATFORM_ADMIN_KEY"}
 # DB / Redis, MinIO (artifacts, training exports), JWT, the vault key pair,
 # goal / stream tokens (HITL links), manifest signing, provider keys, SMTP.
 _HELM_APP_SECRETS = {
-    "DATABASE_PASSWORD",
+    "APP_DB_PASSWORD",  # NF-16: the app role, not the owner's DATABASE_PASSWORD
+    "MAINTENANCE_DB_PASSWORD",
     "REDIS_PASSWORD",
     "MINIO_ACCESS_KEY",
     "MINIO_SECRET_KEY",
@@ -268,11 +269,13 @@ def test_helm_every_app_workload_gets_the_api_app_secrets() -> None:
         for c, b in blocks.items()
     }
     assert all(u == urls["backend"] and len(u) == 2 for u in urls.values()), urls
+    # The owner password never reaches an app workload (NF-16).
+    assert all("DATABASE_PASSWORD" not in env for env in secrets.values())
 
 
 def test_helm_secret_provides_every_app_secret() -> None:
     text = (HELM_DIR / "secrets.yaml").read_text()
-    for key in _HELM_APP_SECRETS | _API_ONLY:
+    for key in _HELM_APP_SECRETS | _API_ONLY | {"DATABASE_PASSWORD"}:
         assert re.search(rf"^\s+{key}:", text, re.M), key
 
 
@@ -282,15 +285,19 @@ LEGACY_HELM_DIR = INFRA.parent / "helm" / "agentverse" / "templates"
 def _legacy_env(fname: str) -> dict[str, tuple[str, str]]:
     text = (LEGACY_HELM_DIR / fname).read_text()
     helpers = (LEGACY_HELM_DIR / "_helpers.tpl").read_text()
-    match = re.search(
-        r'\{\{-? define "agentverse.appSecretEnv" -?\}\}(.*?)\{\{-? end -?\}\}', helpers, re.S
-    )
-    assert match, "legacy chart has no agentverse.appSecretEnv helper"
-    text = re.sub(
-        r'\{\{-? include "agentverse.appSecretEnv" \.(?: \| nindent \d+)? -?\}\}',
-        lambda _m: "\n" + match.group(1),
-        text,
-    )
+    for helper in ("agentverse.appSecretEnv", "agentverse.migrationEnv"):
+        match = re.search(
+            r'\{\{-? define "' + re.escape(helper) + r'" -?\}\}(.*?)\{\{-? end -?\}\}',
+            helpers,
+            re.S,
+        )
+        assert match, f"legacy chart has no {helper} helper"
+        body = match.group(1)
+        text = re.sub(
+            r'\{\{-? include "' + re.escape(helper) + r'" \.(?: \| nindent \d+)? -?\}\}',
+            lambda _m, b=body: "\n" + b,
+            text,
+        )
     return _secret_env(text)
 
 
@@ -300,12 +307,17 @@ def test_legacy_helm_workers_get_the_api_secrets_and_the_vault_key() -> None:
     assert "ANTHROPIC_API_KEY" in api
     # The vault never read MASTER_ENCRYPTION_KEY: the API ran on the dev key.
     assert "MASTER_ENCRYPTION_KEY" not in api
+    shared = {
+        k: v
+        for k, v in api.items()
+        if k not in {"MIGRATION_DATABASE_URL", "APP_DB_USER", "APP_DB_PASSWORD"}
+    }
     for fname in (
         "worker-deployment.yaml",
         "subgoal-worker-deployment.yaml",
         "beat-deployment.yaml",
     ):
-        assert _legacy_env(fname) == api, fname
+        assert _legacy_env(fname) == shared, fname
 
 
 def test_k8s_every_backend_workload_gets_the_api_secret_sources() -> None:
@@ -324,6 +336,100 @@ def test_k8s_every_backend_workload_gets_the_api_secret_sources() -> None:
     assert api_refs
     for fname, name, container in workloads:
         assert refs(container) >= api_refs, f"{fname}:{name} lacks {api_refs - refs(container)}"
+
+
+# ── NF-16: the three database roles (app / maintenance / migration) ──────────
+#
+# DATABASE_URL = least-privilege app role (NOSUPERUSER, NOBYPASSRLS),
+# MAINTENANCE_DATABASE_URL = BYPASSRLS role for cross-tenant system jobs (beat
+# scans run on workers; the API's startup warm-up), MIGRATION_DATABASE_URL =
+# schema owner, ONLY for the migrate job (alembic + APP_DB_USER provisioning).
+
+
+def _helm_template(name: str) -> str:
+    return _expand((HELM_DIR / name).read_text())
+
+
+def test_helm_app_workloads_get_app_and_maintenance_roles_but_never_the_owner() -> None:
+    blocks = {c: _expand(b) for c, b in _helm_blocks().items() if c != "frontend"}
+    for comp, block in blocks.items():
+        plain = dict(_PLAIN_ENV.findall(block))
+        assert "MAINTENANCE_DATABASE_URL" in plain, comp
+        assert "MIGRATION_DATABASE_URL" not in plain, f"{comp} holds the owner DSN"
+        assert plain["DATABASE_URL"].startswith(
+            "postgresql+asyncpg://{{ .Values.postgresql.appUsername }}:$(APP_DB_PASSWORD)@"
+        ), comp
+        assert plain["MAINTENANCE_DATABASE_URL"].startswith(
+            "postgresql+asyncpg://{{ include \"agentverse.maintenanceUsername\" . }}:"
+            "$(MAINTENANCE_DB_PASSWORD)@"
+        ), comp
+        refs = _secret_env(block)
+        assert refs["APP_DB_PASSWORD"][1] == "APP_DB_PASSWORD", comp
+        assert refs["MAINTENANCE_DB_PASSWORD"][1] == "MAINTENANCE_DB_PASSWORD", comp
+    # The app role cannot run DDL: the API no longer migrates on start.
+    code = "\n".join(
+        ln for ln in blocks["backend"].splitlines() if not ln.lstrip().startswith("#")
+    )
+    assert "alembic" not in code
+    assert re.search(r'command: \["uvicorn"', blocks["backend"])
+
+
+def test_helm_migrate_job_runs_as_owner_and_provisions_the_app_role() -> None:
+    job = _helm_template("migrate-job.yaml")
+    assert "kind: Job" in job
+    assert '"alembic", "upgrade", "head"' in job
+    plain = dict(_PLAIN_ENV.findall(job))
+    assert plain["MIGRATION_DATABASE_URL"].startswith(
+        "postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@"
+    )
+    assert plain["APP_DB_USER"] == "{{ .Values.postgresql.appUsername | quote }}"
+    assert "DATABASE_URL" in plain
+    refs = _secret_env(job)
+    assert {"DATABASE_PASSWORD", "APP_DB_PASSWORD"} <= set(refs)
+    secret = (HELM_DIR / "secrets.yaml").read_text()
+    for key in ("APP_DB_PASSWORD", "MAINTENANCE_DB_PASSWORD"):
+        assert re.search(rf"^\s+{key}:", secret, re.M), key
+
+
+def _k8s_env_names(container: dict[str, Any], secret_keys: dict[str, set[str]]) -> set[str]:
+    names = {e["name"] for e in container.get("env") or []}
+    for ref in container.get("envFrom") or []:
+        sec = (ref.get("secretRef") or {}).get("name")
+        if sec:
+            names |= secret_keys.get(sec, set())
+    return names
+
+
+def test_k8s_roles_reach_the_right_workloads() -> None:
+    docs = _k8s_docs()
+    secret_keys = _secret_keys(docs, _kustomized())
+    for fname, name, container in _k8s_app_workloads():
+        names = _k8s_env_names(container, secret_keys)
+        literal_db = [
+            e.get("value", "")
+            for e in container.get("env") or []
+            if e.get("name") == "DATABASE_URL" and "value" in e
+        ]
+        assert not literal_db, f"{name}: DATABASE_URL hard-coded (owner role?): {literal_db}"
+        if name == "agentverse-db-migration":
+            assert {"MIGRATION_DATABASE_URL", "APP_DB_USER", "APP_DB_PASSWORD", "DATABASE_URL"} <= (
+                names
+            ), f"{fname}: {sorted(names)}"
+        else:
+            assert "MAINTENANCE_DATABASE_URL" in names, f"{fname}:{name}"
+            assert "MIGRATION_DATABASE_URL" not in names, f"{fname}:{name} holds the owner DSN"
+
+
+def test_legacy_helm_roles() -> None:
+    api = _legacy_env("deployment.yaml")
+    assert api["MAINTENANCE_DATABASE_URL"] == ("agentverse-secrets", "maintenance-database-url")
+    # The legacy API image migrates on start (owner DSN, API only).
+    assert api["MIGRATION_DATABASE_URL"] == ("agentverse-secrets", "migration-database-url")
+    for fname in ("worker-deployment.yaml", "subgoal-worker-deployment.yaml",
+                  "beat-deployment.yaml"):
+        env = _legacy_env(fname)
+        assert "MAINTENANCE_DATABASE_URL" in env, fname
+        assert "MIGRATION_DATABASE_URL" not in env, fname
 
 
 # ── docker compose ────────────────────────────────────────────────────────────

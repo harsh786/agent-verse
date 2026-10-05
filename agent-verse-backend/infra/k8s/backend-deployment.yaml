@@ -22,22 +22,18 @@ spec:
           image: agentverse-backend:latest
           ports:
             - containerPort: 8000
+          # NF-16: the image CMD migrates first; this least-privilege app role
+          # cannot run DDL — the PreSync migration Job does it as the owner.
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
           envFrom:
             - configMapRef:
                 name: agentverse-config
             - secretRef:
                 name: agentverse-secrets
-          env:
-            # Expose POSTGRES_PASSWORD so DATABASE_URL substitution works below
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: POSTGRES_PASSWORD
-                  optional: true
-            # Route all DB traffic through pgBouncer for connection pooling
-            - name: DATABASE_URL
-              value: "postgresql+asyncpg://agentverse:$(POSTGRES_PASSWORD)@pgbouncer:5432/agentverse"
+          # NF-16: DATABASE_URL (the least-privilege APP role, via pgBouncer) and
+          # MAINTENANCE_DATABASE_URL (BYPASSRLS, cross-tenant system jobs) come
+          # from agentverse-secrets like every other app workload. This used to
+          # override DATABASE_URL with the schema OWNER, which bypasses RLS.
           resources:
             requests:
               memory: "256Mi"

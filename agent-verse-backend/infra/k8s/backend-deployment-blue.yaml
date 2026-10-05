@@ -24,6 +24,9 @@ spec:
           image: ghcr.io/agentverse/backend:latest
           ports:
             - containerPort: 8000
+          # NF-16: the image CMD migrates first; this least-privilege app role
+          # cannot run DDL — the PreSync migration Job does it as the owner.
+          command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
           # DATABASE_URL, REDIS_URL and the vault master key come from the same
           # Secret as every other app workload (BYOK-1). The explicit
           # `database-url` / `redis-url` keys this used to reference do not exist

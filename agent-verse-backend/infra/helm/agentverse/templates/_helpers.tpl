@@ -56,15 +56,29 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   failed only on workers). Provider keys and SMTP credentials are optional
   (BYOK-only / no-mail deployments). API-only secrets (PLATFORM_ADMIN_KEY) are
   added by the backend alone. Enforced by tests/infra/test_vault_key_distribution.py.
+
+  NF-16, the three database roles (repo-root CLAUDE.md): DATABASE_URL is the
+  least-privilege APPLICATION role (postgresql.appUsername: NOSUPERUSER,
+  NOBYPASSRLS — created/repaired by the migrate Job), MAINTENANCE_DATABASE_URL
+  the BYPASSRLS role the cross-tenant system jobs use (beat scans executed by
+  the workers, the API's startup warm-up; default: the owner), and the owner
+  DSN (MIGRATION_DATABASE_URL) is given to the migrate Job ONLY.
 */}}
 {{- define "agentverse.appSecretEnv" -}}
-- name: DATABASE_PASSWORD
+- name: APP_DB_PASSWORD
   valueFrom:
     secretKeyRef:
       name: {{ include "agentverse.secretName" . }}
-      key: DATABASE_PASSWORD
+      key: APP_DB_PASSWORD
 - name: DATABASE_URL
-  value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
+  value: postgresql+asyncpg://{{ .Values.postgresql.appUsername }}:$(APP_DB_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
+- name: MAINTENANCE_DB_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: MAINTENANCE_DB_PASSWORD
+- name: MAINTENANCE_DATABASE_URL
+  value: postgresql+asyncpg://{{ include "agentverse.maintenanceUsername" . }}:$(MAINTENANCE_DB_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
 - name: REDIS_PASSWORD
   valueFrom:
     secretKeyRef:
@@ -134,6 +148,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       name: {{ include "agentverse.secretName" . }}
       key: SMTP_PASSWORD
       optional: true
+{{- end -}}
+
+{{- define "agentverse.maintenanceUsername" -}}
+{{- default .Values.postgresql.username .Values.postgresql.maintenanceUsername -}}
 {{- end -}}
 
 {{- define "agentverse.postgresHost" -}}

@@ -55,11 +55,13 @@ Full image references
 {{- end }}
 
 {{/*
-NF-15: the app secrets EVERY app workload gets (API, workers, sub-goal workers,
+NF-15/NF-16: the app secrets EVERY app workload gets (API, workers, sub-goal workers,
 beat) from one helper, so a worker never lacks a secret the API has. The workers
 had only DATABASE_URL / REDIS_URL: no platform LLM key and no vault master key
 (which the API passed as MASTER_ENCRYPTION_KEY, a name the vault never reads —
-it reads VAULT_MASTER_KEY). Enforced by tests/infra/test_vault_key_distribution.py.
+it reads VAULT_MASTER_KEY). MAINTENANCE_DATABASE_URL is the BYPASSRLS role for the
+cross-tenant system jobs (unset = DATABASE_URL). Enforced by
+tests/infra/test_vault_key_distribution.py.
 */}}
 {{- define "agentverse.appSecretEnv" -}}
 - name: DATABASE_URL
@@ -82,4 +84,37 @@ it reads VAULT_MASTER_KEY). Enforced by tests/infra/test_vault_key_distribution.
     secretKeyRef:
       name: agentverse-secrets
       key: master-encryption-key
+- name: MAINTENANCE_DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: maintenance-database-url
+      optional: true
+{{- end }}
+
+{{/*
+NF-16: the schema owner DSN + the app role it provisions — for the API only,
+whose image CMD runs `alembic upgrade head` before uvicorn. With them set,
+alembic migrates as the owner and creates/repairs APP_DB_USER, so database-url
+can be that least-privilege role (unset = the previous single-role behaviour).
+*/}}
+{{- define "agentverse.migrationEnv" -}}
+- name: MIGRATION_DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: migration-database-url
+      optional: true
+- name: APP_DB_USER
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: app-db-user
+      optional: true
+- name: APP_DB_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: app-db-password
+      optional: true
 {{- end }}

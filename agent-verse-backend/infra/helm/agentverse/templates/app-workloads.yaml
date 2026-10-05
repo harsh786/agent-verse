@@ -24,6 +24,9 @@ spec:
       - name: backend
         image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
         imagePullPolicy: {{ .Values.imagePullPolicy }}
+        # NF-16: the image CMD runs `alembic upgrade head` first; the app role
+        # cannot run DDL — the migrate Job migrates (as the owner) instead.
+        command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
         ports:
         - name: http
           containerPort: 8000

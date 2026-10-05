@@ -148,6 +148,22 @@ externalSecrets:
     masterEncryptionKey:
       remoteRef:
         key: agentverse/master-encryption-key
+    # NF-16 (three roles, see the repo-root CLAUDE.md): database-url should be the
+    # least-privilege app role; the BYPASSRLS maintenance role serves the
+    # cross-tenant system jobs; the owner DSN + app role credentials let the
+    # API's start-up migration provision that app role. Remove an entry to skip it.
+    maintenanceDatabaseUrl:
+      remoteRef:
+        key: agentverse/maintenance-database-url
+    migrationDatabaseUrl:
+      remoteRef:
+        key: agentverse/migration-database-url
+    appDbUser:
+      remoteRef:
+        key: agentverse/app-db-user
+    appDbPassword:
+      remoteRef:
+        key: agentverse/app-db-password
 
 # ── Non-secret config ─────────────────────────────────────────────────────────
 config:

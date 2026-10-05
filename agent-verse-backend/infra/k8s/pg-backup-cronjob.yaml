@@ -21,7 +21,12 @@ spec:
             - -c
             - |
               FILENAME="agentverse-$(date +%Y%m%d-%H%M%S).sql.gz"
-              pg_dump "$DATABASE_URL" | gzip > /tmp/$FILENAME
+              # NF-16: DATABASE_URL is the RLS-bound app role (pg_dump would
+              # refuse the RLS tables); dump as the BYPASSRLS maintenance role.
+              # libpq does not know the SQLAlchemy "+asyncpg" scheme.
+              DSN=$(printf '%s' "$MAINTENANCE_DATABASE_URL" | sed 's#^postgresql+asyncpg://#postgresql://#')
+              set -o pipefail
+              pg_dump "$DSN" | gzip > /tmp/$FILENAME
               echo "Backup: $FILENAME ($(du -h /tmp/$FILENAME | cut -f1))"
             envFrom:
             - secretRef:

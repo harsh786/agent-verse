@@ -36,6 +36,7 @@ spec:
                 name: agentverse-config
           env:
             {{- include "agentverse.appSecretEnv" . | nindent 12 }}
+            {{- include "agentverse.migrationEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           readinessProbe:
