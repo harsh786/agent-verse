@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
 import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
-import { connectorLabel, connectorTypeLabel } from '@/lib/connectors';
+import { connectorLabel, connectorTypeLabel, isDsn, isHttpUrl, isMaskedSecret, maskDsn } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -852,6 +852,32 @@ const EMPTY_FORM: FormState = {
   auto_approve: false,
 };
 
+/** True when the auth values hold a connection URI under any accepted key. */
+function hasUriValue(values: Record<string, string>): boolean {
+  return URI_KEYS.some((k) => (values[k] ?? '').trim() !== '');
+}
+
+/**
+ * The top-level `url` to send. A connection-string connector keeps its URI in
+ * auth_config (a secret) and sends the built-in marker; only a legacy row whose
+ * stored url is a MASKED DSN (unrecoverable here) is sent back unchanged.
+ */
+function payloadUrl(form: FormState): string {
+  if (form.auth_type !== 'connection_string') return form.url.trim();
+  if (isDsn(form.url) && isMaskedSecret(form.url)) return form.url;
+  return 'builtin://';
+}
+
+/**
+ * Edit-time migration of a legacy connection-string row that stored its DSN in
+ * the top-level url: move it into the masked URI field (it leaves `url`).
+ */
+function migrateLegacyDsn(form: FormState): FormState {
+  if (form.auth_type !== 'connection_string' || !isDsn(form.url) || isMaskedSecret(form.url)) return form;
+  if (hasUriValue(form.auth_values)) return { ...form, url: 'builtin://' };
+  return { ...form, url: 'builtin://', auth_values: { ...form.auth_values, uri: form.url } };
+}
+
 function buildAuthConfig(_authType: string, authValues: Record<string, string>): Record<string, string> {
   // Strip empty values
   return Object.fromEntries(
@@ -886,7 +912,9 @@ export function ConnectorsRegisteredPage() {
         connector_type: prefill.connector_type ?? '',
         type_label: prefill.type_name ?? prefill.connector_type ?? '',
         builtin_type: prefill.type ?? '',
-        url: prefill.url ?? prefill.default_url ?? '',
+        // A connection string lives in auth_config only; the catalog's
+        // default_url ("mongodb://localhost:27017") is a sample, not a value.
+        url: prefill.auth_type === 'connection_string' ? '' : prefill.url ?? prefill.default_url ?? '',
         auth_type: prefill.auth_type ?? 'bearer',
         auth_values: {},
         auto_approve: false,
@@ -915,7 +943,7 @@ export function ConnectorsRegisteredPage() {
       const auth_config = buildAuthConfig(form.auth_type, form.auth_values);
       const payload = {
         name: form.name.trim(),
-        url: form.url.trim(),
+        url: payloadUrl(form),
         auth_type: form.auth_type,
         auth_config,
         auto_approve: form.auto_approve,
@@ -958,7 +986,7 @@ export function ConnectorsRegisteredPage() {
 
   const openEdit = useCallback((c: ConnectorResponse) => {
     setEditingId(c.server_id);
-    setForm({
+    setForm(migrateLegacyDsn({
       name: connectorLabel(c),
       connector_type: (c.builtin_type ?? '').replace(/^builtin-/, '').split(':')[0],
       type_label: connectorTypeLabel(c),
@@ -967,7 +995,7 @@ export function ConnectorsRegisteredPage() {
       auth_type: c.auth_type ?? 'bearer',
       auth_values: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
       auto_approve: Boolean(c.auto_approve),
-    });
+    }));
     setFormError('');
     setShowModal(true);
   }, []);
@@ -1007,11 +1035,17 @@ export function ConnectorsRegisteredPage() {
   const authFields = fieldsFor(form.auth_type, form.auth_values);
 
   const applyAuthType = useCallback((type: string, keep: Set<string>) => {
-    setForm((f) => ({
-      ...f,
-      auth_type: type,
-      auth_values: Object.fromEntries(Object.entries(f.auth_values).filter(([k]) => keep.has(k))),
-    }));
+    setForm((f) => {
+      const next: FormState = {
+        ...f,
+        auth_type: type,
+        auth_values: Object.fromEntries(Object.entries(f.auth_values).filter(([k]) => keep.has(k))),
+      };
+      if (type === 'connection_string') return migrateLegacyDsn(next);
+      // Leaving connection_string: the hidden built-in marker is not a URL to edit.
+      if (f.auth_type === 'connection_string' && !f.builtin_type && next.url === 'builtin://') next.url = '';
+      return next;
+    });
   }, []);
 
   /** Switch auth type keeping the values both types share; confirm before dropping any. */
@@ -1038,9 +1072,10 @@ export function ConnectorsRegisteredPage() {
     );
 
   // Validation
+  const isConnectionString = form.auth_type === 'connection_string';
   const canSubmit =
     form.name.trim() &&
-    form.url.trim() &&
+    (isConnectionString ? hasUriValue(form.auth_values) : form.url.trim()) &&
     !nameTaken &&
     !registerMutation.isPending;
 
@@ -1140,11 +1175,12 @@ export function ConnectorsRegisteredPage() {
                         </p>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate">
+                        {/* Plain text, userinfo masked: a DSN carries its password. */}
                         {c.upstream_url
-                          ? c.upstream_url
+                          ? maskDsn(c.upstream_url)
                           : c.url === 'builtin://'
                             ? 'Built-in'
-                            : c.url}
+                            : maskDsn(c.url)}
                         {c.upstream_url && (
                           <span className="ml-1.5 not-italic font-sans text-[10px] uppercase tracking-wide text-muted-foreground/50">
                             built-in
@@ -1269,7 +1305,9 @@ export function ConnectorsRegisteredPage() {
                 )}
               </div>
 
-              {/* URL — with connector-specific hint */}
+              {/* URL — with connector-specific hint. A connection string has no
+                  top-level URL: its URI is the masked field under Auth. */}
+              {!isConnectionString && (
               <div>
                 <label htmlFor="connector-url" className="block text-sm font-medium mb-1">
                   {urlConfig?.label ?? 'URL'} <span className="text-destructive">*</span>
@@ -1283,7 +1321,8 @@ export function ConnectorsRegisteredPage() {
                     placeholder={urlConfig?.url ?? 'https://api.example.com'}
                     className="w-full border border-input rounded-lg px-3 py-2 pr-9 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                   />
-                  {form.url && (
+                  {/* Only an http(s) URL is a link — never a DSN (it embeds a password). */}
+                  {isHttpUrl(form.url) && (
                     <a
                       href={form.url}
                       target="_blank"
@@ -1309,6 +1348,7 @@ export function ConnectorsRegisteredPage() {
                   </button>
                 )}
               </div>
+              )}
 
               {/* Auth Type */}
               <AuthTypeSelector

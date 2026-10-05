@@ -7,6 +7,7 @@ import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
+import { maskDsn } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -249,6 +250,12 @@ export function ConnectorDetailPage() {
     );
   }
 
+  // Plain text with userinfo masked — a DSN carries its password. A built-in
+  // connection's url is the "builtin://" marker; show its configured host.
+  const displayUrl = maskDsn(
+    connector.url === 'builtin://' && connector.upstream_url ? connector.upstream_url : connector.url,
+  );
+
   return (
     <JARVISPageShell>
     <JARVISStagger className="space-y-0">
@@ -263,7 +270,7 @@ export function ConnectorDetailPage() {
 
       <DetailLayout
         title={connector.name ?? connectorId}
-        subtitle={connector.url}
+        subtitle={displayUrl}
         status={connector.status ?? 'unknown'}
         meta={[
           { label: 'Auth type', value: connector.auth_type ?? '—' },
@@ -321,7 +328,7 @@ export function ConnectorDetailPage() {
               <h3 className="font-medium text-sm mb-3">Connector Info</h3>
               <dl className="grid grid-cols-2 gap-y-2 text-sm">
                 {[
-                  ['URL', connector.url],
+                  ['URL', displayUrl],
                   ['Auth type', connector.auth_type ?? '—'],
                   ['Status', connector.status ?? '—'],
                 ].map(([k, v]) => (

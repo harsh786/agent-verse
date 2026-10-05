@@ -226,3 +226,94 @@ describe('A4 MongoDB connector fields', () => {
     expect(postBody(spy).auth_config).toEqual({ api_key: 'k-1', verbose: 'true', notes: 'line1', cert: 'PEMDATA' });
   });
 });
+
+// ── A7: one masked URI, never a link ─────────────────────────────────────────
+
+describe('A7 one masked URI input, never a link', () => {
+  const PLAIN_DSN = 'mongodb://alice:S3cretPw@db.example.com:27017/orders';
+
+  it('a MongoDB form has no top-level URL input and no link for the URI', async () => {
+    mockFetch([listOf([])]);
+    renderPage(mongoPrefill);
+    await screen.findByTestId('register-modal');
+    expect(screen.queryByLabelText(/mongodb uri/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^url/i)).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText(/uri/i)).toHaveLength(1);
+    await userEvent.type(screen.getByLabelText(/connection uri/i), PLAIN_DSN);
+    expect(screen.getByLabelText(/connection uri/i)).toHaveAttribute('type', 'password');
+    expect(document.querySelector('a[href^="mongodb"]')).toBeNull();
+    expect(screen.queryByRole('link', { name: /open url/i })).not.toBeInTheDocument();
+  });
+
+  it('requires the URI, and sends it only in auth_config (url is the builtin marker)', async () => {
+    const spy = mockFetch([
+      listOf([]),
+      { match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { server_id: 'builtin-mongodb:orders-db', name: 'orders-db' } },
+    ]);
+    renderPage(mongoPrefill);
+    await screen.findByTestId('register-modal');
+    expect(screen.getByRole('button', { name: /^register$/i })).toBeDisabled();
+    await userEvent.type(screen.getByLabelText(/connection uri/i), PLAIN_DSN);
+    await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
+    await waitFor(() => expect(postBody(spy)).toBeTruthy());
+    expect(postBody(spy).url).toBe('builtin://');
+    expect(postBody(spy).auth_config.uri).toBe(PLAIN_DSN);
+    expect(JSON.stringify({ ...postBody(spy), auth_config: undefined })).not.toContain('S3cretPw');
+  });
+
+  it('a non-DSN http URL keeps its Open URL link', async () => {
+    mockFetch([listOf([])]);
+    renderPage();
+    await openRegister();
+    await userEvent.type(screen.getByLabelText(/url/i), 'https://api.example.com');
+    expect(screen.getByRole('link', { name: /open url/i })).toHaveAttribute('href', 'https://api.example.com');
+  });
+
+  it('the table never prints a DSN password and never links it', async () => {
+    mockFetch([listOf([
+      { server_id: 's-legacy', name: 'legacy-mongo', url: PLAIN_DSN, auth_type: 'connection_string', auth_config: {} },
+      { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', url: 'builtin://', upstream_url: 'mongodb://bob:Pw2@cluster0.example.net/', auth_type: 'connection_string', has_builtin: true, auth_config: { uri: '<redacted>' } },
+    ])]);
+    renderPage();
+    await screen.findByRole('link', { name: 'legacy-mongo' });
+    const table = screen.getByTestId('connectors-table');
+    expect(table).not.toHaveTextContent('S3cretPw');
+    expect(table).not.toHaveTextContent('Pw2');
+    expect(table).toHaveTextContent('mongodb://***@db.example.com:27017/orders');
+    expect(table).toHaveTextContent('cluster0.example.net');
+    expect(table.querySelector('a[href^="mongodb"]')).toBeNull();
+  });
+
+  it('editing a legacy row moves its plaintext DSN into the masked URI field', async () => {
+    const spy = mockFetch([
+      listOf([{ server_id: 's-legacy', name: 'legacy-mongo', url: PLAIN_DSN, auth_type: 'connection_string', auth_config: {} }]),
+      { match: (_u, i) => i?.method === 'PUT', response: { server_id: 's-legacy', name: 'legacy-mongo' } },
+    ]);
+    renderPage();
+    await screen.findByRole('link', { name: 'legacy-mongo' });
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    expect(screen.getByLabelText(/connection uri/i)).toHaveValue(PLAIN_DSN);
+    expect(screen.getByLabelText(/connection uri/i)).toHaveAttribute('type', 'password');
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === 'PUT')).toBe(true));
+    const put = spy.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'PUT')!;
+    const body = JSON.parse(String((put[1] as RequestInit).body));
+    expect(body.url).toBe('builtin://');
+    expect(body.auth_config.uri).toBe(PLAIN_DSN);
+  });
+
+  it('a masked URI is sent back unchanged on save (the backend keeps the stored secret)', async () => {
+    const spy = mockFetch([
+      listOf([{ server_id: 'builtin-mongodb:orders-db', name: 'orders-db', builtin_type: 'builtin-mongodb', url: 'builtin://', auth_type: 'connection_string', has_builtin: true, auth_config: { uri: '<redacted>', database: 'orders' } }]),
+      { match: (_u, i) => i?.method === 'PUT', response: { server_id: 'builtin-mongodb:orders-db', name: 'orders-db' } },
+    ]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === 'PUT')).toBe(true));
+    const put = spy.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'PUT')!;
+    expect(JSON.parse(String((put[1] as RequestInit).body))).toMatchObject({ url: 'builtin://', auth_config: { uri: '<redacted>', database: 'orders' } });
+  });
+});
