@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
+from app.db.app_role import AppRoleSpec, ensure_app_role
 from app.workflow.run_store import PostgresWorkflowRunStore
 from app.workflow.state import StepStatus, WorkflowRunStatus
 
@@ -35,14 +36,6 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 APP_ROLE = "workflow_app"
-GRANT_TABLES = (
-    "workflow_definitions",
-    "workflow_runs",
-    "workflow_step_results",
-    "workflow_definition_versions",
-    "workflow_permissions",
-    "workflow_webhook_events",
-)
 
 _DEF_DSL = {
     "name": "Nightly Report",
@@ -80,19 +73,11 @@ async def factories(postgres_url: str) -> AsyncIterator[tuple]:
     password = secrets.token_urlsafe(24)
     admin_engine = create_async_engine(postgres_url)
     async with admin_engine.begin() as conn:
-        quoted = (
-            await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})
-        ).scalar_one()
-        await conn.execute(
-            text(
-                f"CREATE ROLE {APP_ROLE} LOGIN PASSWORD {quoted} "
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
-            )
-        )
-        await conn.execute(text(f"GRANT CONNECT ON DATABASE test TO {APP_ROLE}"))
-        await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {APP_ROLE}"))
-        for tbl in GRANT_TABLES:
-            await conn.execute(text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {tbl} TO {APP_ROLE}"))
+        # The SAME bootstrap production runs after every migration
+        # (app/db/app_role.py), not a hand-picked table list: a terminal status
+        # also withdraws the run's pending approvals in workflow_approvals
+        # (WF-CANCEL-PAUSED), exactly as it does in production.
+        await conn.run_sync(ensure_app_role, AppRoleSpec(role=APP_ROLE, password=password))
 
     app_engine = create_async_engine(_app_url(postgres_url, password), pool_size=4, max_overflow=0)
     yield (
