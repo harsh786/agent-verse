@@ -34,9 +34,19 @@ Connection config (Sources UI: NoSQL / Relational -> mongodb):
     max_documents_per_sync  Cap per sync run (default 10000); the next sync resumes
                          from the cursor.
 
+Changes (TG-07): with the default ``_id`` cursor, new documents come from the
+``_id`` scan and updated / replaced ones from the collection's change stream
+(replica sets, Atlas; its resume token is kept in the cursor; a token that fell
+off the oplog re-reads the collection). A standalone server has no change
+stream: set ``cursor_field`` to an update timestamp to re-read edits. Deleted
+documents are removed by upstream-deletion reconciliation (KB-44), which lists
+every ``_id``. Document ids are UUID v8; ids of earlier releases (v5) are never
+reconciled away.
+
 Cursor: JSON (MongoDB canonical Extended JSON) holding, per collection, the last
-``cursor_field`` value and ``_id`` processed. A legacy cursor (a bare ObjectId
-string) is honoured for the single configured collection.
+``cursor_field`` value and ``_id`` processed (and the change-stream token). A
+legacy cursor (a bare ObjectId string) is honoured for the single configured
+collection.
 
 Egress: every seed host (and SRV target) must pass the connector egress policy
 and is pinned for the connection; replica-set members the server advertises are
@@ -55,6 +65,7 @@ import logging
 import os
 import shutil
 import tempfile
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -64,7 +75,6 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
-    stable_doc_id,
 )
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
@@ -591,6 +601,8 @@ def _encode_cursor(settings: _Settings, positions: dict[str, dict[str, Any]]) ->
 
 
 def _page_query(field_name: str, position: dict[str, Any] | None) -> dict[str, Any]:
+    if position is not None and "_id" not in position:
+        position = None  # only a change-stream token so far: read from the start
     if field_name == "_id":
         return {"_id": {"$gt": position["_id"]}} if position else {}
     # Documents without the cursor field cannot be ordered by it; they are not
@@ -634,11 +646,103 @@ def _doc_id(config: SourceConfig, collection: str, oid: Any) -> str:
     another name (a new replica-set seed, an Atlas SRV name, an IP) re-ided —
     duplicated — every document. ``_id`` is keyed in canonical Extended JSON,
     so an ObjectId and the string of its hex are different documents.
+
+    The id is a UUID *version 8* (same key derivation as ``stable_doc_id``,
+    SHA-256 based): the host-based ids of earlier releases were version 5, and
+    :meth:`MongoDBConnector.manages_doc_id` must tell them apart — such a
+    document's new-id copy is never indexed (the content-hash dedup skips it),
+    so reconciling it away would lose it.
     """
+    import hashlib
+
     from bson import json_util
 
     key = json_util.dumps({"_id": oid}, json_options=json_util.CANONICAL_JSON_OPTIONS)
-    return stable_doc_id(config, "mongodb", collection, key)
+    digest = hashlib.sha256(
+        f"agentverse-source:{config.source_id}:mongodb\x1f{collection}\x1f{key}".encode()
+    ).digest()
+    value = int.from_bytes(digest[:16], "big")
+    value = (value & ~(0xF << 76)) | (8 << 76)  # version 8
+    value = (value & ~(0x3 << 62)) | (0x2 << 62)  # RFC 4122 variant
+    return str(uuid.UUID(int=value))
+
+
+# Change streams (TG-07): server error codes meaning "not available here".
+_NO_CHANGE_STREAM_CODES = frozenset({40573, 40324, 13, 115})
+# ... and "the resume token fell off the oplog: re-read the collection".
+_HISTORY_LOST_CODES = frozenset({286, 280, 136})
+_CHANGE_TYPES = ["update", "replace"]
+
+
+def _change_stream_start(client: Any, settings: _Settings, collection: str) -> Any:
+    """A resume token for "now" on ``collection``, or None without change streams.
+
+    Taken BEFORE the collection is scanned, so an update made during or after
+    the scan is read from the stream by a later sync.
+    """
+    from pymongo.errors import OperationFailure
+
+    col = client[settings.database][collection]
+    try:
+        with col.watch(
+            [{"$match": {"operationType": {"$in": _CHANGE_TYPES}}}], max_await_time_ms=50
+        ) as stream:
+            stream.try_next()
+            return stream.resume_token
+    except OperationFailure as exc:
+        if exc.code in _NO_CHANGE_STREAM_CODES or "replica set" in str(exc).lower():
+            _log.warning(
+                "mongodb_change_stream_unavailable collection=%s: %s — updates are re-read "
+                "only with a cursor_field on an update timestamp",
+                collection,
+                exc,
+            )
+            return None
+        raise
+
+
+def _read_changes(
+    client: Any, settings: _Settings, collection: str, token: Any, limit: int
+) -> tuple[list[tuple[dict[str, Any], Any]], Any, bool]:
+    """Updated / replaced documents since ``token``: ([(doc, token_after)], token, lost)."""
+    from pymongo.errors import OperationFailure
+
+    col = client[settings.database][collection]
+    changes: list[tuple[dict[str, Any], Any]] = []
+    try:
+        with col.watch(
+            [{"$match": {"operationType": {"$in": _CHANGE_TYPES}}}],
+            full_document="updateLookup",
+            resume_after=token,
+            max_await_time_ms=50,
+        ) as stream:
+            while len(changes) < limit:
+                change = stream.try_next()
+                if change is None:
+                    break
+                doc = change.get("fullDocument")
+                if isinstance(doc, dict):  # None: deleted since (reconcile removes it)
+                    changes.append((doc, stream.resume_token))
+            return changes, stream.resume_token, False
+    except OperationFailure as exc:
+        if exc.code in _HISTORY_LOST_CODES or exc.has_error_label(
+            "NonResumableChangeStreamError"
+        ):
+            return [], None, True
+        raise
+
+
+def _live_id_page(
+    client: Any, settings: _Settings, collection: str, after: Any, limit: int
+) -> list[Any]:
+    col = client[settings.database][collection]
+    query = {"_id": {"$gt": after}} if after is not None else {}
+    return [
+        d["_id"]
+        for d in col.find(
+            query, {"_id": 1}, sort=[("_id", 1)], limit=limit, max_time_ms=settings.max_time_ms
+        )
+    ]
 
 
 def _dotted_get(doc: dict[str, Any], path: str) -> Any:
@@ -655,6 +759,36 @@ class MongoDBConnector(BaseConnector):
     """MongoDB connector — collection-based incremental ingestion."""
 
     source_type = "mongodb"
+
+    def manages_doc_id(self, doc_id: str) -> bool:
+        """Only this connector's current (UUID v8) ids are deletion candidates."""
+        try:
+            return uuid.UUID(str(doc_id)).version == 8
+        except ValueError:
+            return False
+
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Every document id upstream (TG-07 / KB-44 deletes), keyset-paged by _id.
+
+        Only ``_id`` is read, 1000 per query; any error propagates, so a partial
+        listing never looks complete (nothing is deleted then).
+        """
+        settings = _settings(config.connection_config)
+        async with _connected(settings) as (client, _s):
+            collections = settings.collections or await asyncio.to_thread(
+                _list_collections, client, settings
+            )
+            for collection in collections:
+                after: Any = None
+                while True:
+                    page = await asyncio.to_thread(
+                        _live_id_page, client, settings, collection, after, 1000
+                    )
+                    for oid in page:
+                        yield _doc_id(config, collection, oid)
+                    if len(page) < 1000:
+                        break
+                    after = page[-1]
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
@@ -706,35 +840,84 @@ class MongoDBConnector(BaseConnector):
             )
             positions = _decode_cursor(cursor, settings, collections)
             remaining = settings.max_documents
+            # TG-07: with the default _id cursor new documents come from the _id
+            # scan and updated / replaced ones from the collection's change
+            # stream (replica sets / Atlas); deletions are reconciled (KB-44).
+            track_changes = settings.cursor_field == "_id"
+
+            def _raw(collection: str, doc: dict[str, Any]) -> RawDocument:
+                oid = doc.get("_id")
+                doc_key = str(oid)
+                text = _flatten_doc({**doc, "_id": doc_key})
+                url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
+                return RawDocument(
+                    doc_id=_doc_id(config, collection, oid),
+                    source_id=config.source_id,
+                    tenant_id=config.tenant_id,
+                    source_url=f"{url}/{quote(doc_key, safe='')}",
+                    content=text.encode(),
+                    content_type="text/plain",
+                    metadata={
+                        "database": settings.database,
+                        "collection": collection,
+                        "_id": doc_key,
+                    },
+                )
+
             for collection in collections:
-                while remaining > 0:
-                    limit = min(settings.batch_size, remaining)
-                    page = await asyncio.to_thread(
-                        _fetch_page, client, settings, collection, positions.get(collection), limit
-                    )
-                    for doc in page:
-                        oid = doc.get("_id")
-                        value = oid if settings.cursor_field == "_id" else _dotted_get(
-                            doc, settings.cursor_field
+                # A second pass only when the change stream's history was lost.
+                for _pass in range(2):
+                    if track_changes and not (positions.get(collection) or {}).get("cs"):
+                        token = await asyncio.to_thread(
+                            _change_stream_start, client, settings, collection
                         )
-                        positions[collection] = {"value": value, "_id": oid}
-                        doc_key = str(oid)
-                        text = _flatten_doc({**doc, "_id": doc_key})
-                        url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
-                        raw_doc = RawDocument(
-                            doc_id=_doc_id(config, collection, oid),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=f"{url}/{quote(doc_key, safe='')}",
-                            content=text.encode(),
-                            content_type="text/plain",
-                            metadata={
-                                "database": settings.database,
-                                "collection": collection,
-                                "_id": doc_key,
-                            },
+                        if token is not None:
+                            positions[collection] = {**positions.get(collection, {}), "cs": token}
+                    while remaining > 0:
+                        limit = min(settings.batch_size, remaining)
+                        page = await asyncio.to_thread(
+                            _fetch_page,
+                            client,
+                            settings,
+                            collection,
+                            positions.get(collection),
+                            limit,
                         )
-                        yield raw_doc, _encode_cursor(settings, positions)
-                    remaining -= len(page)
-                    if len(page) < limit:
+                        for doc in page:
+                            oid = doc.get("_id")
+                            value = oid if settings.cursor_field == "_id" else _dotted_get(
+                                doc, settings.cursor_field
+                            )
+                            positions[collection] = {
+                                **positions.get(collection, {}),
+                                "value": value,
+                                "_id": oid,
+                            }
+                            yield _raw(collection, doc), _encode_cursor(settings, positions)
+                        remaining -= len(page)
+                        if len(page) < limit:
+                            break
+                    token = (positions.get(collection) or {}).get("cs")
+                    if not track_changes or token is None or remaining <= 0:
                         break
+                    changes, next_token, lost = await asyncio.to_thread(
+                        _read_changes, client, settings, collection, token, remaining
+                    )
+                    if lost:
+                        # The resume point fell off the oplog: updates in between
+                        # are unknown, so the collection is read again from the
+                        # start (unchanged documents are skipped by the dedup).
+                        _log.warning(
+                            "mongodb_change_stream_history_lost source=%s collection=%s — "
+                            "re-reading the collection",
+                            config.source_id,
+                            collection,
+                        )
+                        positions[collection] = {}
+                        continue
+                    for doc, after in changes:
+                        positions[collection] = {**positions[collection], "cs": after}
+                        remaining -= 1
+                        yield _raw(collection, doc), _encode_cursor(settings, positions)
+                    positions[collection] = {**positions[collection], "cs": next_token}
+                    break

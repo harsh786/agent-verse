@@ -237,7 +237,56 @@ class TestStableDocIds:
         a = _make_config({"uri": "mongodb://a.example/", "database": "db"})
         b = _make_config({"uri": "mongodb://b.example:27018/", "database": "db"})
         assert _doc_id(a, "orders", oid) == _doc_id(b, "orders", oid)
+        # Version 8: distinguishable from the host-based (v5) ids of earlier releases.
+        import uuid
+
+        assert uuid.UUID(_doc_id(a, "orders", oid)).version == 8
+        assert MongoDBConnector().manages_doc_id(_doc_id(a, "orders", oid))
+        legacy = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mongodb://h:27017/db/orders/{oid}"))
+        assert not MongoDBConnector().manages_doc_id(legacy)
         assert _doc_id(a, "orders", oid) != _doc_id(a, "customers", oid)
         assert _doc_id(a, "orders", oid) != _doc_id(a, "orders", str(oid))  # types differ
         other = SourceConfig(**{**a.__dict__, "source_id": "src-other"})
         assert _doc_id(a, "orders", oid) != _doc_id(other, "orders", oid)
+
+
+class TestChangeStreamHistoryLost:
+    async def test_a_lost_resume_point_re_reads_the_collection(self) -> None:
+        """TG-07: when the stored change-stream token fell off the oplog the
+        updates in between are unknown — the collection is read again."""
+        import contextlib
+        from unittest.mock import patch
+
+        from bson import json_util
+
+        import app.ingestion.connectors.mongodb_connector as mc
+
+        docs = [{"_id": i, "v": i} for i in range(1, 4)]
+        reads: list[Any] = []
+
+        def _fetch(client: Any, s: Any, coll: str, position: Any, limit: int) -> list[Any]:
+            after = (position or {}).get("_id")
+            reads.append(after)
+            return [d for d in docs if after is None or d["_id"] > after][:limit]
+
+        @contextlib.asynccontextmanager
+        async def _connected(settings: Any) -> Any:
+            yield object(), settings
+
+        cursor = json_util.dumps(
+            {"v": 2, "field": "_id", "positions": {"col": {"value": 3, "_id": 3, "cs": {"t": 1}}}}
+        )
+        with (
+            patch.object(mc, "_connected", _connected),
+            patch.object(mc, "_fetch_page", _fetch),
+            patch.object(mc, "_change_stream_start", return_value={"t": 2}),
+            patch.object(mc, "_read_changes", return_value=([], None, True)),
+        ):
+            out = [
+                d async for d in MongoDBConnector().get_delta(_make_config(), cursor)
+            ]
+        # Caught up (after _id 3) -> history lost -> re-read from the start.
+        assert reads[0] == 3 and None in reads
+        assert [d.metadata["_id"] for d, _c in out] == ["1", "2", "3"]
+        final = json_util.loads(out[-1][1])["positions"]["col"]
+        assert final["_id"] == 3 and final["cs"] == {"t": 2}

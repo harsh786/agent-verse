@@ -132,6 +132,14 @@ class FakeMongod:
             }
         if name == "find":
             return {"ok": 1.0, "cursor": {"id": 0, "ns": "db.c", "firstBatch": []}}
+        if name == "aggregate":
+            # A standalone server: no change streams.
+            return {
+                "ok": 0.0,
+                "code": 40573,
+                "codeName": "Location40573",
+                "errmsg": "The $changeStream stage is only supported on replica sets",
+            }
         return {"ok": 1.0}
 
     def _serve(self, conn: socket.socket) -> None:
