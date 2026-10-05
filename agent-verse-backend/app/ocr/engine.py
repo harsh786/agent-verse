@@ -340,8 +340,12 @@ class OcrEngine:
         try:
             import pytesseract
 
+            plain = img
             img = self._preprocess_image(img)
             text, avg_conf = await self._tesseract_best(pytesseract, img)
+            if not text.strip():
+                # Never trust preprocessing blindly: it once blacked out sparse pages.
+                text, avg_conf = await self._tesseract_best(pytesseract, plain)
             if avg_conf >= CONFIDENCE_THRESHOLD:
                 return text, avg_conf, "tesseract"
             low_conf = (text, avg_conf, "tesseract")
@@ -488,8 +492,10 @@ class OcrEngine:
                 img = img.convert("L")
             # Apply slight sharpening to improve character edges
             img = img.filter(ImageFilter.SHARPEN)
-            # Auto-contrast to improve binarization
-            img = ImageOps.autocontrast(img, cutoff=2)
+            # Auto-contrast to improve binarization. Clip only the bright end: on a
+            # sparse page the ink is under 2 % of the pixels, and clipping 2 % at the
+            # dark end landed on the paper's grey and turned the page black.
+            img = ImageOps.autocontrast(img, cutoff=(0, 2))
             return img
         except Exception:
             return img  # graceful fallback: return original if preprocessing fails

@@ -118,3 +118,47 @@ async def test_without_hindi_traineddata_only_english_runs() -> None:
     text, _, _ = await _ocr(tess)
     assert text == "weak text"
     assert {lang for lang, _ in tess.calls} == {"eng"}
+
+
+def test_preprocessing_keeps_a_sparse_page_readable() -> None:
+    """P1a-6: a full scanned page with little text (under 2 % dark pixels) came out
+    of _preprocess_image solid black: autocontrast clipped 2 % at the dark end, which
+    landed on the paper's grey, so Tesseract read nothing (live: the delivery-note
+    scan OCR'd to an empty page with "confidence" 0.95)."""
+    from PIL import ImageDraw
+
+    # Off-white paper with a little noise (as scanned), then ~1 % of "ink".
+    page = Image.effect_noise((2480, 3508), 6).point(
+        lambda v: max(0, min(255, 240 + (v - 128) // 8)))
+    draw = ImageDraw.Draw(page)
+    for y in range(300, 780, 120):  # four short lines of "text": ~1 % of pixels
+        draw.rectangle((200, y, 1200, y + 25), fill=20)
+    out = OcrEngine._preprocess_image(page)
+    assert out.getpixel((100, 100)) > 200  # paper stays light
+    assert out.getpixel((800, 315)) < 60  # ink stays dark
+    hist = out.histogram()
+    assert sum(hist[:60]) < 0.05 * sum(hist)  # the page did not turn black
+
+
+async def test_an_empty_preprocessed_reading_falls_back_to_the_plain_page() -> None:
+    calls: list[str] = []
+
+    class _Tess(_FakeTess):
+        def image_to_data(self, img: Any, lang: str = "eng", output_type: Any = None) -> Any:
+            calls.append(img.info.get("variant", "plain"))
+            if img.info.get("variant") == "preprocessed":
+                return _data("", 95)
+            return _data("DN-58213 received by Meenakshi Iyer", 93)
+
+    def _pre(img: Any) -> Any:
+        out = img.copy()
+        out.info["variant"] = "preprocessed"
+        return out
+
+    engine = OcrEngine()
+    with patch.dict("sys.modules", {"pytesseract": _Tess({})}), \
+            patch.object(OcrEngine, "_preprocess_image", staticmethod(_pre)):
+        text, _, _ = await engine._ocr_page(Image.new("L", (700, 450), 255),
+                                            vision_fallback=False)
+    assert text == "DN-58213 received by Meenakshi Iyer"
+    assert calls[0] == "preprocessed"
