@@ -2588,6 +2588,14 @@ def run_goal(
     except Exception as exc:
         logger.warning("Goal %s status bridge unavailable: %s", goal_id, exc)
 
+    # P8-1: screen this goal against the tenant's PERSISTED guardrail rules, as
+    # the API does. The lifespan that binds the rule repository never runs in a
+    # worker, so a tenant's own rules (e.g. a PII redact rule) never applied
+    # here — only the in-memory baseline did. Raises rather than run unscreened.
+    from app.guardrails_v2.worker_binding import bind_worker_guardrail_rules
+
+    bind_worker_guardrail_rules()
+
     async def update_submitted_goal_status(
         status: str,
         *,

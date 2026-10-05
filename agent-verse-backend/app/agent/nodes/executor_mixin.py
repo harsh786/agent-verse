@@ -1527,6 +1527,43 @@ class ExecutorMixin:
                 request_id, tenant_ctx=tenant_ctx, timeout=timeout
             )
 
+    async def _screen_step_output(
+        self, step: str, output: str, state: AgentState, tenant_ctx: TenantContext
+    ) -> str:
+        """Apply the tenant's ``tool_output`` guardrail rules to a step's output.
+
+        BLOCK withholds the output, REDACT replaces it with the redacted text;
+        both emit an event naming the rules. An errored check fails closed on
+        high-risk work (SAFE-4), else the output passes with a warning.
+        """
+        if guardrails_engine is None or GuardrailLayer is None:
+            return output
+        try:
+            verdict = await guardrails_engine.evaluate(
+                content=output,
+                layer=GuardrailLayer.TOOL_OUTPUT,
+                tenant_id=tenant_ctx.tenant_id,
+                goal_id=getattr(state, "goal_id", None),
+                step_description=step,
+            )
+        except Exception as exc:
+            if _guardrail_should_fail_closed(step, state.context.get("_risk_level")):
+                self._logger.warning("step_output_guardrail_failed_closed", error=str(exc)[:200])
+                return "[Output withheld: the guardrail check could not be completed]"
+            self._logger.warning("step_output_guardrail_failed", error=str(exc)[:200])
+            return output
+        rules = [str(v.get("rule_name") or "") for v in verdict.get("violations") or []]
+        if verdict.get("blocked"):
+            await self._emit(
+                {"type": "guardrail_blocked", "scope": "step_output", "rules": rules}
+            )
+            return "[Output blocked by guardrail policy]"
+        redacted = verdict.get("redacted_content")
+        if isinstance(redacted, str) and redacted != output:
+            await self._emit({"type": "pii_redacted", "issues": rules, "scope": "step_output"})
+            return redacted
+        return output
+
     async def _execute_step_pipeline(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
@@ -3388,6 +3425,14 @@ class ExecutorMixin:
                 self._logger.warning(
                     "guardrail_engine_v2_output_check_failed", error=str(_ge_out_exc)
                 )
+
+        # P8-1: the TENANT's own output rules (guardrails_v2, ``tool_output``
+        # layer) on this step's output — LLM-only steps included, not just tool
+        # results — before it is recorded, streamed and served as the answer. A
+        # tenant PII ``redact`` rule used to apply nowhere on this path (and on a
+        # worker its rules were never even loaded).
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx and raw_output:
+            raw_output = await self._screen_step_output(step, str(raw_output), state, tenant_ctx)
 
         # 10. Record rollback point — only for a tool call that actually ran and
         # succeeded (nothing external to undo otherwise). The undo record carries

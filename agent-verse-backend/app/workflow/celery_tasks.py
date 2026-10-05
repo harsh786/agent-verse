@@ -58,6 +58,12 @@ def _build_worker_runner() -> Any:
     from app.workflow.runner import WorkflowRunner
 
     db_factory = get_session_factory()
+    # P8-1: workflow steps (tool / agent gates) screen against the tenant's
+    # PERSISTED guardrail rules, as the API does — the lifespan that binds the
+    # rule repository never runs in a worker.
+    from app.guardrails_v2.worker_binding import bind_worker_guardrail_rules
+
+    bind_worker_guardrail_rules()
     # Tenant-scoped run/step I/O goes through db_factory (application role). The
     # store's cross-tenant maintenance methods resolve the maintenance-role
     # factory per call (get_system_session_factory), so it is not captured here.

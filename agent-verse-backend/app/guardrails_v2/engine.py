@@ -63,6 +63,9 @@ _PII_PATTERNS = [
     (r"\b5[1-5][0-9]{14}\b", "Mastercard"),
     (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "Email"),
     (r"\b(?:\+1)?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b", "Phone"),
+    # International numbers with a country code (e.g. "+91 98450 12345", "+44 20 7946
+    # 0958"); the North-American pattern above misses every non-3-3-4 grouping.
+    (r"(?<![\w+])\+\d{1,3}(?:[\s.-]?\d){6,14}\b", "International phone"),
 ]
 
 _SECRET_PATTERNS = [

@@ -46,6 +46,17 @@ def worker(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         seen["service_args"].append((db_factory, embedder))
         return ReflexionService(repository=repo)
 
+    class _NoTenantRules:
+        """The tenant's persisted guardrail rules (none). run_goal binds the
+        Postgres rule store when nothing is bound (P8-1); this suite has no
+        database, so it binds an empty store first."""
+
+        async def load(self, tenant_id: str) -> list[Any]:
+            return []
+
+    from app.guardrails_v2.engine import guardrails_engine
+
+    guardrails_engine.bind_repository(_NoTenantRules())  # restored by tests/conftest.py
     monkeypatch.setattr(graph_mod, "AgentGraph", _Graph)
     monkeypatch.setattr(tasks, "_worker_reflexion_service", _service)
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)

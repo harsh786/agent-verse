@@ -773,6 +773,7 @@ class VerifierMixin:
             except Exception:
                 pass
             # Guardrail check: final_output (Guardrails 2.0)
+            _final_output_withheld = False
             if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx:
                 try:
                     _g2_final_content = (
@@ -798,6 +799,13 @@ class VerifierMixin:
                         )
                         if _g2_final_result.get("blocked"):
                             agent_state.cited_answer = "[Output redacted by guardrail policy]"
+                            _final_output_withheld = True
+                        elif isinstance(
+                            _g2_final_result.get("redacted_content"), str
+                        ) and _g2_final_result["redacted_content"] != str(_g2_final_content)[:2000]:
+                            # P8-1: a tenant REDACT rule's verdict was discarded.
+                            agent_state.cited_answer = _g2_final_result["redacted_content"]
+                            _final_output_withheld = True
                 except Exception as _gv_exc:
                     # SAFE-4 (P0-15): an errored final-output guardrail must not
                     # let a high-risk answer through unredacted — fail closed.
@@ -805,12 +813,15 @@ class VerifierMixin:
                         agent_state.goal, agent_state.context.get("_risk_level")
                     ):
                         agent_state.cited_answer = "[Output redacted by guardrail policy]"
+                        _final_output_withheld = True
                         self._logger.warning(
                             "verifier_guardrail_failed_closed", error=str(_gv_exc)
                         )
 
-            # Phase 3 Track C: synthesize cited answer on success
-            if self._answer_synthesizer is not None:
+            # Phase 3 Track C: synthesize cited answer on success — never over an
+            # answer the final-output guardrail withheld or redacted (P8-1: the
+            # synthesis used to overwrite the redaction with the raw answer).
+            if self._answer_synthesizer is not None and not _final_output_withheld:
                 try:
                     cited = await self._answer_synthesizer.synthesize(
                         goal=agent_state.goal,

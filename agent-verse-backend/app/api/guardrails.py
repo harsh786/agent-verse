@@ -75,7 +75,9 @@ class ViolationFilters(BaseModel):
 # In-memory store (upgraded to DB in lifespan when DB available)
 # ---------------------------------------------------------------------------
 
-_configs_store: dict[str, dict] = {}  # tenant_id → {id → config}
+# Deprecated: configs are guardrails_v2 rules now (see "Configs are guardrails_v2
+# rules" below); kept only so old imports keep working.
+_configs_store: dict[str, dict] = {}
 _violations_store: dict[str, list] = defaultdict(list)  # tenant_id → [violation]
 
 # Per-tenant rate limiting for /test endpoint: {tenant_id → (count, window_start)}
@@ -117,6 +119,145 @@ def _check_test_rate(tenant_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Configs are guardrails_v2 rules (P8-1)
+# ---------------------------------------------------------------------------
+#
+# A config created here used to live only in this API process's
+# ``_configs_store`` (its ``guardrail_configs`` insert failed and was swallowed
+# by ``except: pass``), so no agent, worker or other replica ever enforced it.
+# Each config is now a durable guardrails_v2 rule in the tenant's RLS-scoped
+# rule store — the rules every goal / workflow / ingestion path evaluates,
+# workers included. The legacy request/response shape is kept; the legacy
+# fields ride along in the rule's ``config["_legacy"]``.
+
+_LEGACY_KEY = "_legacy"
+
+_LAYER_MAP: dict[str, tuple[str, ...]] = {
+    "goal": ("goal",),
+    "input": ("goal",),
+    "plan": ("plan",),
+    "step": ("step",),
+    "tool": ("tool_args", "tool_output"),
+    "tool_args": ("tool_args",),
+    "tool_input": ("tool_args",),
+    "tool_output": ("tool_output",),
+    "output": ("tool_output",),
+    "final": ("final_output",),
+    "final_output": ("final_output",),
+    "memory": ("memory_write",),
+    "memory_write": ("memory_write",),
+    "rag_ingest": ("rag_ingest",),
+}
+
+_RULE_TYPE_MAP: dict[str, tuple[str, tuple[str, ...]]] = {
+    "pii": ("pii_detection", ("pii",)),
+    "pii_detection": ("pii_detection", ("pii",)),
+    "phi": ("pii_detection", ("phi",)),
+    "pci": ("pii_detection", ("pci",)),
+    "secrets": ("pii_detection", ("secrets",)),
+    "injection": ("prompt_injection", ("prompt_injection",)),
+    "prompt_injection": ("prompt_injection", ("prompt_injection",)),
+    "jailbreak": ("prompt_injection", ("jailbreak",)),
+    "toxicity": ("toxicity", ("toxicity",)),
+    "keyword": ("keyword_block", ()),
+    "keyword_block": ("keyword_block", ()),
+    "regex": ("regex_match", ()),
+    "regex_match": ("regex_match", ()),
+}
+
+_ACTION_MAP: dict[str, str] = {
+    "block": "block",
+    "redact": "redact",
+    "warn": "warn",
+    "flag": "warn",
+    "log": "log",
+    "allow": "log",
+    "require_hitl": "require_hitl",
+    "require_approval": "require_hitl",
+    "quarantine": "quarantine",
+}
+
+
+def _rules_engine() -> Any:
+    # Resolved per call so the process singleton (and a test's replacement) wins.
+    from app.guardrails_v2 import engine as _engine_mod
+
+    return _engine_mod.guardrails_engine
+
+
+def _v2_rule_fields(record: dict[str, Any]) -> dict[str, Any]:
+    """The guardrails_v2 rule fields of a legacy config record (422 on unknowns)."""
+    from app.guardrails_v2.models import GuardrailAction, GuardrailLayer, ViolationCategory
+
+    layers: list[GuardrailLayer] = []
+    for raw in record.get("layers") or [record.get("layer") or "goal"]:
+        mapped = _LAYER_MAP.get(str(raw).strip().lower())
+        if mapped is None:
+            raise HTTPException(status_code=422, detail=f"Unsupported guardrail layer {raw!r}")
+        layers += [GuardrailLayer(m) for m in mapped if GuardrailLayer(m) not in layers]
+    rule_type = _RULE_TYPE_MAP.get(str(record.get("rule_type") or "").strip().lower())
+    if rule_type is None:
+        raise HTTPException(
+            status_code=422, detail=f"Unsupported guardrail rule_type {record.get('rule_type')!r}"
+        )
+    action = _ACTION_MAP.get(str(record.get("action") or "").strip().lower())
+    if action is None:
+        raise HTTPException(
+            status_code=422, detail=f"Unsupported guardrail action {record.get('action')!r}"
+        )
+    legacy = {k: record.get(k) for k in ("agent_id", "layer", "layers", "rule_type", "action",
+                                          "created_at")}
+    return {
+        "name": str(record["name"]),
+        "rule_type": rule_type[0],
+        "layers": layers,
+        "action": GuardrailAction(action),
+        "categories": [ViolationCategory(c) for c in rule_type[1]],
+        "severity": str(record.get("severity") or "high"),
+        "enabled": bool(record.get("enabled", True)),
+        "config": {**dict(record.get("config") or {}), _LEGACY_KEY: legacy},
+    }
+
+
+def _record_of(rule: Any) -> dict[str, Any]:
+    """The legacy config view of a guardrails_v2 rule created through this router."""
+    config = dict(rule.config or {})
+    legacy = dict(config.pop(_LEGACY_KEY, {}) or {})
+    return {
+        "id": rule.rule_id,
+        "tenant_id": rule.tenant_id,
+        "agent_id": legacy.get("agent_id"),
+        "name": rule.name,
+        "layer": legacy.get("layer"),
+        "layers": legacy.get("layers") or [],
+        "rule_type": legacy.get("rule_type") or rule.rule_type,
+        "config": config,
+        "severity": rule.severity,
+        "action": legacy.get("action") or rule.action.value,
+        "enabled": rule.enabled,
+        "created_at": legacy.get("created_at"),
+    }
+
+
+async def _legacy_rules(tenant_id: str) -> list[Any]:
+    engine = _rules_engine()
+    try:
+        await engine.ensure_tenant_loaded(tenant_id)
+    except Exception as exc:  # never answer with a partial (in-memory) list
+        raise HTTPException(
+            status_code=503, detail="Guardrail rules are temporarily unavailable"
+        ) from exc
+    return [r for r in engine.all_rules(tenant_id) if _LEGACY_KEY in (r.config or {})]
+
+
+async def _legacy_rule(tenant_id: str, config_id: str) -> Any:
+    rule = next((r for r in await _legacy_rules(tenant_id) if r.rule_id == config_id), None)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Guardrail config not found")
+    return rule
+
+
+# ---------------------------------------------------------------------------
 # GET /guardrails  — list configs for tenant
 # ---------------------------------------------------------------------------
 
@@ -126,32 +267,8 @@ async def list_guardrail_configs(
     request: Request,
     ctx: Any = Depends(_require_tenant),
 ) -> dict[str, Any]:
-    tenant_id = ctx.tenant_id
-    # Try DB first
-    db_factory = getattr(request.app.state, "_db_session_factory", None)
-    if db_factory is not None:
-        try:
-            from sqlalchemy import text as _sql
-
-            async with db_factory() as session:
-                from app.db.rls import rls_context
-
-                async with rls_context(session, tenant_id):
-                    result = await session.execute(
-                        _sql(
-                            "SELECT id, tenant_id, agent_id, name, layer, rule_type, "
-                            "config, severity, action, enabled, created_at "
-                            "FROM guardrail_configs WHERE tenant_id = :tid ORDER BY created_at DESC",  # noqa: E501
-                        ),
-                        {"tid": tenant_id},
-                    )
-                    rows = result.fetchall()
-                    configs = [dict(r._mapping) for r in rows]
-                    return {"configs": configs, "total": len(configs)}
-        except Exception:
-            pass  # fall through to in-memory
-
-    configs = list(_configs_store.get(tenant_id, {}).values())
+    configs = [_record_of(r) for r in await _legacy_rules(ctx.tenant_id)]
+    configs.sort(key=lambda c: str(c.get("created_at") or ""), reverse=True)
     return {"configs": configs, "total": len(configs)}
 
 
@@ -166,10 +283,11 @@ async def create_guardrail_config(
     request: Request,
     ctx: Any = Depends(_require_tenant),
 ) -> dict[str, Any]:
+    from app.guardrails_v2.models import GuardrailRule
+
     tenant_id = ctx.tenant_id
-    config_id = str(uuid.uuid4())
     record = {
-        "id": config_id,
+        "id": str(uuid.uuid4()),
         "tenant_id": tenant_id,
         "agent_id": body.agent_id,
         "name": body.name,
@@ -182,37 +300,18 @@ async def create_guardrail_config(
         "enabled": body.enabled,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-
-    db_factory = getattr(request.app.state, "_db_session_factory", None)
-    if db_factory is not None:
-        try:
-            import json as _json
-
-            from sqlalchemy import text as _sql
-
-            async with db_factory() as session:
-                from app.db.rls import rls_context
-
-                async with rls_context(session, tenant_id):
-                    db_record = {k: v for k, v in record.items() if k != "layers"}
-                    await session.execute(
-                        _sql("""
-                        INSERT INTO guardrail_configs
-                            (id, tenant_id, agent_id, name, layer, rule_type,
-                             config, severity, action, enabled)
-                        VALUES
-                            (:id, :tenant_id, :agent_id, :name, :layer, :rule_type,
-                             :config, :severity, :action, :enabled)
-                    """),
-                        {**db_record, "config": _json.dumps(body.config)},
-                    )
-                    await session.commit()
-            return record
-        except Exception:
-            pass
-
-    _configs_store.setdefault(tenant_id, {})[config_id] = record
-    return record
+    rule = GuardrailRule(
+        rule_id=record["id"], tenant_id=tenant_id, created_at=record["created_at"],
+        **_v2_rule_fields(record),
+    )
+    try:
+        durable = await _rules_engine().add_rule_durable(rule)
+    except Exception as exc:
+        # Persisted BEFORE answering "created": never a rule nobody enforces.
+        raise HTTPException(
+            status_code=503, detail="Guardrail config could not be saved; nothing was created"
+        ) from exc
+    return {**record, "durable": durable}
 
 
 # ---------------------------------------------------------------------------
@@ -228,13 +327,18 @@ async def update_guardrail_config(
     ctx: Any = Depends(_require_tenant),
 ) -> dict[str, Any]:
     tenant_id = ctx.tenant_id
-    existing = _configs_store.get(tenant_id, {}).get(config_id)
-    if existing is None:
+    current = _record_of(await _legacy_rule(tenant_id, config_id))
+    current.update(body.model_dump(exclude_none=True))
+    fields = _v2_rule_fields(current)
+    try:
+        updated = await _rules_engine().update_rule_durable(tenant_id, config_id, **fields)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Guardrail config could not be saved; nothing changed"
+        ) from exc
+    if updated is None:
         raise HTTPException(status_code=404, detail="Guardrail config not found")
-
-    updates = body.model_dump(exclude_none=True)
-    existing.update(updates)
-    return existing
+    return _record_of(updated)
 
 
 # ---------------------------------------------------------------------------
@@ -248,11 +352,15 @@ async def delete_guardrail_config(
     request: Request,
     ctx: Any = Depends(_require_tenant),
 ) -> None:
-    tenant_id = ctx.tenant_id
-    tenant_configs = _configs_store.get(tenant_id, {})
-    if config_id not in tenant_configs:
+    await _legacy_rule(ctx.tenant_id, config_id)
+    try:
+        deleted = await _rules_engine().delete_rule_durable(ctx.tenant_id, config_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Guardrail config could not be deleted"
+        ) from exc
+    if not deleted:
         raise HTTPException(status_code=404, detail="Guardrail config not found")
-    del tenant_configs[config_id]
 
 
 # ---------------------------------------------------------------------------
