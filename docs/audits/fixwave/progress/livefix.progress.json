@@ -1,1 +1,7 @@
-{"L-01": {"status": "done", "commit": "981eb83ed", "note": "dispatch_outbox used asyncio.run (no engine dispose); all sync->async bridges via run_in_fresh_loop, system engine tracked, per-loop usage Redis client, AST guard + PG/Redis integration test"}}
+{"L-01": {"status": "done", "commit": "981eb83ed", "note": "dispatch_outbox used asyncio.run (no engine dispose); all sync->async bridges via run_in_fresh_loop, system engine tracked, per-loop usage Redis client, AST guard + PG/Redis integration test"},
+ "L-02": {"status": "done", "commit": "87a73f21f", "note": "source_configs.config_status/reason (migration c4e1a7b9d2f3 after f1e790b4050a, single head); sync parks a collection-less Source once, due-scan + DLQ retry skip it, API 422 + needs_configuration, UI badge; PATCH collection_id revives it. PG integration test written but NOT run (colima down)"},
+ "L-03": {"status": "done", "commit": "499c5d327", "note": "per-child reranker preload opt-in (WORKER_PRELOAD_RETRIEVAL_MODELS, main worker only); per-child cap 700MB; dev compose pools 1G->2G with explicit --max-memory-per-child; prod compose/k8s 1G->3584M; budget test + no-torch-on-import test. Numbers measured on dev host (live stack down, no docker stats)"},
+ "_new_findings": [
+   "Helm chart (infra/helm/agentverse): worker/subgoalWorker pass no --max-memory-per-child and values-production.yaml sets concurrency 8 with 2Gi/1Gi limits (budget needs ~6.7Gi at 700MB/child) - owner decision: raise limits or lower concurrency",
+   "L-02 real-Postgres test (tests/ingestion/test_ingestion_rls_integration.py::test_parked_sources_leave_the_due_and_dlq_scans_until_fixed) and migration c4e1a7b9d2f3 not executed: colima was not running; run once Docker is up"
+ ]}

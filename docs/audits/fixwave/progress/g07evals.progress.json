@@ -1,0 +1,44 @@
+{
+ "MEM-51": {
+  "status": "done",
+  "commit": "581068e40",
+  "note": "golden tasks fail when their goal does not complete; checks required; min_score + judge on every path (merged earlier)"
+ },
+ "MEM-52": {
+  "status": "done",
+  "commit": "1d4d63f5c",
+  "note": "suite runs execute on the agent being promoted; gate pins agent config + dataset version, min suite size (merged earlier)"
+ },
+ "MEM-54": {
+  "status": "done",
+  "commit": "a14ca87f8",
+  "note": "versioned golden datasets in rows, task CRUD, import/export; FE d7482e18b (merged earlier)"
+ },
+ "MEM-53": {
+  "status": "done",
+  "commit": "1d22e11c4",
+  "note": "durable suite runs: non-blocking Celery steps, bounded in-flight goals, MATERIALIZED-CTE claims, migration b53e9d1f7a24 (+ merge 9075a5928); real-PG 2000-task + resume test. Rebased onto main e6b99545a (main already carried wip 590dfe6ef + wip2 d29c33a33)"
+ },
+ "_env": "colima running on 2026-10-05 morning: real-PG test test_eval_suite_durable_runs_pg.py ran via testcontainers (pass, before and after rebase)",
+ "_new_findings": [
+  "main is red on tests/db/test_task_loop_entrypoints.py::test_no_app_module_drives_async_code_outside_run_in_fresh_loop (app/cli/main.py:646, app/coordination/outbox_tasks.py:111, app/coordination/pattern_runs/tasks.py:105 use asyncio.run) - not eval code"
+ ],
+ "MEM-53-UI": {
+  "status": "done",
+  "commit": "241c93e60",
+  "note": "GET /intelligence/eval-suites returns each suite's last_run (LATERAL, stalled=abandoned) with live progress; EvalSuitesPage + SuitesTab show running/stalled/failed runs, newest first, poll only while running; AgentLab charts pass_rate; stale empty-suite API test now asserts fail-closed 422"
+ },
+ "_open": [
+  "continuous gate: later failing runs / config changes demote fully-autonomous agents; clone re-checks the gate",
+  "eval_suite.py timeout swallowed + golden goal not cancelled on timeout (verify against MEM-51/53 code)",
+  "Goal eval scoring: GET /eval memory-first 404 across replicas, POST /eval unpersisted heuristic-only, per-process _eval_pending, stale LRU",
+  "failed goals get scorecards; regression baselines/cases + verifier verdicts persisted from workers; self-improvement engine per-tenant 100-row backlog",
+  "AI-Ops eval datasets: per-replica run body not durable; judge calls uncharged/no timeout; timed-out case goal not cancelled",
+  "Self-optimizer v2: minimal diff of changed fields, agent UPDATE not seen by API replicas, PG/RLS test",
+  "Self-optimizer v1 leftovers (RLS-less persist, unbounded per-process dicts); prompt optimizer legacy non-DB paths",
+  "A/B engine (app/optimization): implement or remove from API/UI",
+  "Benchmarking: /intelligence/benchmarks without GUC under FORCE RLS, swallowed DB error, duplicate endpoints",
+  "Verifier calibration: per-process _records (unbounded, feedback scan), unused learning_experiment_service",
+  "e2e_full: golden suite against a real worker (fail gate / pass gate / survive worker restart)"
+ ]
+}

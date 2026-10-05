@@ -6,8 +6,8 @@
  },
  "SECRET-01": {
   "status": "done",
-  "commit": "707d12246",
-  "note": "mcp_credentials source of truth; sealed with tenant envelope key via main's ensure_tenant_vault/seal/open/needs_rewrap (CAS re-wrap); Redis ciphertext cache; legacy read-repair + backfill; vault_rotation PG_STORES covers it, caches purged"
+  "commit": "000951fbb",
+  "note": "707d12246 was dropped by the batch merge; coordinator cherry-picked it onto integrate/2026-10-05 as 000951fbb (a02-F028-01). Re-verified in this worktree: 16 real-PG+Redis tests incl. FLUSHALL pass"
  },
  "MCPREG-02": {
   "status": "done",
@@ -40,7 +40,8 @@
   "note": "create() = INSERT (unique tenant+name_key / PK) or SET NX; API 409 on name race, id race retried with suffix; real-PG concurrent test in durable integration file"
  },
  "_new_findings": [
-  "tests/e2e/test_governance_e2e.py::test_audit_trail_records_all_tool_calls fails on main (agent-core): 'call jira to create ticket' is now gated as high-risk in bounded-autonomous mode, so only 1 audit entry; not connector-related"
+  "tests/e2e/test_governance_e2e.py::test_audit_trail_records_all_tool_calls fails on main (agent-core): 'call jira to create ticket' is now gated as high-risk in bounded-autonomous mode, so only 1 audit entry; not connector-related",
+  "tests/scaling/test_worker_rpa_executor.py::test_worker_goal_rpa_open_url_dispatches_to_the_rpa_executor fails on main: rpa_open_url denied 'policy rules could not be loaded; failing closed' (test fixture has no Redis for the worker policy load); not tool-context related"
  ],
  "MCPCLI-02": {
   "status": "done",
@@ -89,7 +90,117 @@
  },
  "OAUTH-05": {
   "status": "done",
-  "commit": "ce5ac3335",
-  "note": "typed exchange errors -> 400/400/502/504/502 with stable codes and safe messages; unexpected 502 not 'invalid state'; UI maps codes"
+  "commit": "2d9bf8255",
+  "note": "typed exchange errors -> 400/400/502/504/502 with stable codes and safe messages; unexpected 502 not 'invalid state'; UI maps codes (on main)"
+ },
+ "OAUTH-06": {
+  "status": "done",
+  "commit": "4d48bfd9a",
+  "note": "popup flow (process-local CSRF state, 501 completion) removed; marketplace adds OAuth connectors via credential form + PKCE; openapi.json not regenerated (shared contract)"
+ },
+ "OAUTH-04": {
+  "status": "done",
+  "commit": "86c242e50",
+  "note": "refresh/lookup errors logged; OAuth HTTP dispatch without a usable token raises OAuthReauthorizationRequiredError before any request (was sent with no bearer)"
+ },
+ "MCPCLI-01": {
+  "status": "already_fixed",
+  "commit": "31f838652",
+  "note": "MCPClient._db defaults to the durable registry db_factory since MCPREG-03; regression tests added (commit is test-only)"
+ },
+ "SECRET-02": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "MCPClient._resolve_auth_value raises ConnectorSecretUnavailableError when a secret ref resolves to None/empty (PROV-14, tests/providers/test_prov14_connector_secrets.py)"
+ },
+ "MCPCLI-03": {
+  "status": "done",
+  "commit": "4c8f72dd8",
+  "note": "WS handshake carries connector auth headers; WS failure propagates (breaker + honest error), no HTTP fallthrough; websockets-15 additional_headers + IP pinning were already on main (connect_public_websocket)"
+ },
+ "MCPCLI-09": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "ws_client dials via app.net.ssrf_guard.connect_public_websocket (resolve+check once, host= pinned, additional_headers); tests/net/test_websocket_pinning.py"
+ },
+ "MCPCLI-04": {
+  "status": "done",
+  "commit": "d472c11a4",
+  "note": "breaker check error refuses the call (was fail-open); unbuildable Redis breaker -> local breaker, not None (shared commit with 05/06, same block)"
+ },
+ "MCPCLI-05": {
+  "status": "done",
+  "commit": "d472c11a4",
+  "note": "open-circuit stale cache result flagged ToolCallResult.stale=True"
+ },
+ "MCPCLI-06": {
+  "status": "done",
+  "commit": "d472c11a4",
+  "note": "success=False results record a breaker failure unless caused by caller arguments"
+ },
+ "a02-F034-N1": {
+  "status": "done",
+  "commit": "3e31d3df8",
+  "note": "on main as 3e31d3df8 (cherry-pick of d0caddda5): check_mcp_health sweeps Postgres mcp_servers (maintenance session, keyset pages, bounded concurrency, per-probe timeout, 25s budget, Redis cursor + non-overlap lock); error status when registry unreadable; real-PG tests"
+ },
+ "HEALTH-05": {
+  "status": "done",
+  "commit": "d0caddda5",
+  "note": "serial 5000-key probe / overlapping 30s runs / cursor restart at 0: fixed by the sweep (budget < beat, lock, persisted keyset cursor)"
+ },
+ "HEALTH-03": {
+  "status": "done",
+  "commit": "d0caddda5",
+  "note": "legacy _fallback (50-key cap, no snapshots) removed"
+ },
+ "HEALTH-04": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "history endpoint 503 on missing/failed DB since MCPREG-02 (428a9ec85)"
+ },
+ "HEALTH-07": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "probe uses public_async_client (pinned connect IP) + request_public per hop (SSRF-01, tests/scaling/test_mcp_health_pinned.py)"
+ },
+ "HEALTH-06": {
+  "status": "done",
+  "commit": "616c5469e",
+  "note": "hourly batched prune (CONNECTOR_HEALTH_RETENTION_DAYS, default 7) on maintenance session; migration b7d3e1f0a9c2 adds checked_at + history indexes; real-PG test; rebased on main: migration b7d3e1f0a9c2 now revises merge head c087b9d58f6f (single alembic head)"
+ },
+ "TOOLCTX-01": {
+  "status": "done",
+  "commit": "0e31d7901",
+  "note": "shared build_goal_tool_context: web ToolRefs now carry the connector's auto_approve"
+ },
+ "TOOLCTX-02": {
+  "status": "done",
+  "commit": "0e31d7901",
+  "note": "no agent / agent without connectors = tenant's connectors on both paths, one bounded keyset page (50), truncation recorded"
+ },
+ "TOOLCTX-03": {
+  "status": "done",
+  "commit": "0e31d7901",
+  "note": "rpa_* tools offered only where Playwright is importable"
+ },
+ "TOOLCTX-04": {
+  "status": "done",
+  "commit": "4fef64a7c",
+  "note": "ToolTrustStore keyed (tenant_id, tool_name), LRU-bounded 10k keys; persistence records/hydrates per tenant, hydration replays oldest-first"
+ },
+ "TOOLCTX-05": {
+  "status": "done",
+  "commit": "0e31d7901",
+  "note": "worker offers rpa_* tools through the shared builder (subject to the same ToolSelector RPA gating as the API)"
+ },
+ "TOOLCTX-06": {
+  "status": "done",
+  "commit": "0e31d7901",
+  "note": "unreachable/missing connector recorded in connector_errors, others still offered; no longer fails a queued goal"
+ },
+ "TOOLCTX-07": {
+  "status": "done",
+  "commit": "0e31d7901",
+  "note": "worker applies the same tiered ToolSelector (build_worker_tool_selector) on effective_goal"
  }
 }

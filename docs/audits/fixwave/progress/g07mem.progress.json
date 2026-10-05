@@ -66,7 +66,32 @@
  "MEM-40": {
   "status": "done",
   "commit": "a7ebe5007",
-  "note": "embedding_vec vector(2048) + batched backfill + HNSW halfvec, GIN trgm, quality-window indexes (d46b0c2e4f85); exact search for small tenants, iterative HNSW for large; real-PG 10k test"
+  "note": "embedding_vec vector(2048) + batched backfill + HNSW halfvec, GIN trgm, quality-window indexes (d46b0c2e4f85); exact search for small tenants, iterative HNSW for large; real-PG 10k test (on main as 23ee2f9fa)"
  },
- "_note_shas": "SHAs for MEM-34..46 changed when main was re-merged; look up by commit subject on main"
+ "_note_shas": "Branch worktree-agent-adae33c84289bd073 rebased on main 6488dd528 (single alembic head b42d6e1f8a37); MEM-34..48/68 earlier items are on main by subject",
+ "MEM-38": {
+  "status": "done",
+  "commit": "0b7e50c23",
+  "note": "memory_records.embedding vector(2048) + halfvec HNSW + CHECK=2048 in one ALTER (e47c1d3f5a96, parent f1e790b4050a); sweep keysets by id and marks unembeddable:<model>; real-PG test_canonical_2048_pg.py + 6 affected PG files pass"
+ },
+ "MEM-39": {
+  "status": "done",
+  "commit": "4921197a4+d3e605ce3",
+  "note": "tenant discovery = keyset pages over tenants PK with LATERAL LIMIT 1 index probes (EXISTS..OR planned a hashed full scan); real-PG EXPLAIN test (400 tenants/40k rows) passes"
+ },
+ "MEM-47": {
+  "status": "done",
+  "commit": "ee8ad62fa+ee9cc9934",
+  "note": "one GROUP BY md5(content) HAVING>1 query per tenant + chunked deletes within dup groups over expression index (tenant_id, md5(content), created_at DESC) CONCURRENTLY (a47e3c9d1b52); tenant scan LATERAL probes; real-PG 100k-row test passes"
+ },
+ "a05-F084-N1": {
+  "status": "done",
+  "commit": "37668b647",
+  "note": "POST /memory/prospective needs goals:write too (ENDPOINT_EXTRA_SCOPES, role + key scopes); creator recorded in policy_snapshot.created_by; fire re-checks creator live (active key, effective scopes incl. goals:write) and submits as that principal; unauthorized/unrecorded -> failed at once. Pre-existing intentions without created_by now fail closed. Unit + real-PG tests"
+ },
+ "MEM-42": {
+  "status": "done",
+  "commit": "6bc651a47",
+  "note": "department_memory_entries embedding vector(2048)+model, halfvec HNSW (b42d6e1f8a37); embed on add; SQL blend 0.7 cosine (same model) + 0.3 keyword share x confidence over semantic+lexical candidates (exact <=5000 rows, iterative HNSW above); lexical fallback; real-PG test (RLS per tenant/dept, 6k-row dept via index). Embedding uses the shared embedder (not tenant-charged, same as LTM/canonical)"
+ }
 }

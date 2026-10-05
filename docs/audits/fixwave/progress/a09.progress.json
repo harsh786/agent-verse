@@ -1,0 +1,17 @@
+{
+ "a09-F212-10": {
+  "status": "already_fixed",
+  "commit": "f03c780c4",
+  "note": "fixed by the F212-01 commit (on merge/all-branches): agents/schedules read from Postgres with tenant predicate"
+ },
+ "a09-F212-11": {
+  "status": "already_fixed",
+  "commit": "f03c780c4",
+  "note": "fixed by the F212-01 commit (on merge/all-branches): every sync-export section LIMIT 10k+1, over-limit fails the export (no unbounded load)"
+ },
+ "a09-F212-03": {
+  "status": "done",
+  "commit": "38e05e446",
+  "note": "keyset-paged goals+audit (real audit_log columns), read error/over-ceiling fails the job; PG integration test passes"
+ }
+}

@@ -1,0 +1,2008 @@
+{
+ "tests/agent/test_checkpoint_write_failure_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 55.25s",
+  "duration_s": 79,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/agent/test_decision_traces_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 52.67s",
+  "duration_s": 76,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/agent/test_fanout_ledger_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 54.53s",
+  "duration_s": 78,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/agent/test_goal_tree_resume_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 54.80s",
+  "duration_s": 75,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/agent/test_router_candidates_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 52.64s",
+  "duration_s": 74,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/analytics/test_aggregator_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 48.75s",
+  "duration_s": 69,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_a2a_remote_agents_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 47.61s",
+  "duration_s": 69,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_agent_trigger_config_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 50.23s",
+  "duration_s": 68,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_channel_mapping_verification_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "11 passed in 88.32s (0:01:28)",
+  "duration_s": 108,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_civilization_api.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "24 passed in 135.06s (0:02:15)",
+  "duration_s": 152,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_guardrails_v2_rule_management.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "9 passed in 35.84s",
+  "duration_s": 52,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_replay_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 48.21s",
+  "duration_s": 58,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_server_errors_rls_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 49.41s",
+  "duration_s": 62,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_session_persistence_stores.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 49.42s",
+  "duration_s": 61,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_skills_runtime_disabled_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 55.86s",
+  "duration_s": 71,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_skills_runtime_store_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 57.16s",
+  "duration_s": 71,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/api/test_state_machines_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 43.64s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/chat/test_channel_sessions_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 56.85s",
+  "duration_s": 66,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/chat/test_chat_artifacts_integration.py": {
+  "status": "fixed",
+  "failures": [
+   "tests/chat/test_chat_artifacts_integration.py::test_downgrade_then_upgrade"
+  ],
+  "summary": "1 failed, 4 passed in 70.10s (0:01:10)",
+  "duration_s": 78,
+  "root_cause": "alembic heads now joined by merge revision f1e790b4050a; 'alembic downgrade -1' from a merge is ambiguous ('Ambiguous walk'). Test now downgrades c7fbea9807c1-1 explicitly. 5/5 pass.",
+  "commit": "0d494a89a"
+ },
+ "tests/chat/test_personalization_repo_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 60.39s (0:01:00)",
+  "duration_s": 71,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/chat/test_repository_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "9 passed in 55.91s",
+  "duration_s": 72,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_auction_registry_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 52.22s",
+  "duration_s": 66,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_cancellation.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 61.02s (0:01:01)",
+  "duration_s": 72,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_goal_strategies_postgres.py": {
+  "status": "fixed",
+  "failures": [
+   "tests/coordination/test_goal_strategies_postgres.py::test_worker_builds_a_pattern_loop_against_postgres"
+  ],
+  "summary": "1 failed, 1 passed in 66.86s (0:01:06)",
+  "duration_s": 77,
+  "root_cause": "Intentional behaviour change (b812bff76 HITL-DISTRIBUTED-GATES): worker distributed loop fails closed without a verifiable budget (policy_denied/budget_reservation_failed) and supervisor now runs on the worker StrategyRunner. Test now passes a CostController (budget_configs via app role) and asserts react gets no loop. 2/2 pass.",
+  "commit": "9639f1669"
+ },
+ "tests/coordination/test_handoff_sweeper_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 60.11s (0:01:00)",
+  "duration_s": 75,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_leases.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 57.34s",
+  "duration_s": 71,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_outbox_dispatcher_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 59.62s",
+  "duration_s": 76,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_pattern_runs_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 62.12s (0:01:02)",
+  "duration_s": 77,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_store.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 55.79s",
+  "duration_s": 84,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/coordination/test_store_mocked.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "15 passed in 23.18s",
+  "duration_s": 50,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/core/test_pools_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 18.93s",
+  "duration_s": 34,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/costs/test_cost_ledger_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 50.36s",
+  "duration_s": 66,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/db/test_app_role_bootstrap.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "13 passed in 59.10s",
+  "duration_s": 76,
+  "root_cause": "Added regression test: app role holds DML on every migrated table (13 passed)",
+  "commit": "e9d27cfb3"
+ },
+ "tests/db/test_bypassrls_tenant_predicates.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 46.93s",
+  "duration_s": 64,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/db/test_chat_billing_rls_integration.py": {
+  "status": "fixed",
+  "failures": [
+   "tests/db/test_chat_billing_rls_integration.py::test_chat_side_tables_and_audit_wal_are_isolated"
+  ],
+  "summary": "1 failed, 6 passed in 45.79s",
+  "duration_s": 72,
+  "root_cause": "Schema change ORG-42 (c7fbea9807c1): chat_artifacts.content BYTEA without default + required kind; the test's raw seed insert omitted them (NOT NULL violation). Inserts now write a valid snippet row. 7/7 pass.",
+  "commit": "00a4fffc2"
+ },
+ "tests/db/test_drop_gateway_conversations_migration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 66.63s (0:01:06)",
+  "duration_s": 81,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/db/test_identity_tables_rls_integration.py": {
+  "status": "fixed",
+  "failures": [
+   "tests/db/test_identity_tables_rls_integration.py::test_vault_key_versions_is_maintenance_only"
+  ],
+  "summary": "1 failed, 12 passed in 53.09s",
+  "duration_s": 65,
+  "root_cause": "Renamed API: PROV-13 (f52e210da) removed CredentialVault.rotate_key; test now uses rotate_all_stores as the maintenance role and asserts the app role's version write is refused by RLS. 13/13 pass.",
+  "commit": "c301c6cfe"
+ },
+ "tests/db/test_session_connection_return_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "8 passed in 20.00s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/db/test_tenancy_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 20.43s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/e2e/test_integration_with_real_redis.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 30.88s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/embedding/test_embedding_metering_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 31.37s",
+  "duration_s": 56,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/enterprise/test_compliance_requests_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 101.42s (0:01:41)",
+  "duration_s": 134,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/enterprise/test_compliance_tables_rls_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "13 passed in 129.23s (0:02:09)",
+  "duration_s": 162,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/enterprise/test_compliance_v2_hipaa_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 128.41s (0:02:08)",
+  "duration_s": 174,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/enterprise/test_gdpr_erasure_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 132.50s (0:02:12)",
+  "duration_s": 179,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/enterprise/test_marketplace_paid_install_gate.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 96.23s (0:01:36)",
+  "duration_s": 129,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/enterprise/test_marketplace_reinstall_orphans.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 93.22s (0:01:33)",
+  "duration_s": 118,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/enterprise/test_marketplace_rls_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 119.97s (0:01:59)",
+  "duration_s": 151,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/gateway/test_gateway_bindings_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 122.13s (0:02:02)",
+  "duration_s": 159,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_audit_chain_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 80.81s (0:01:20)",
+  "duration_s": 131,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_audit_durable_write.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "7 passed in 81.20s (0:01:21)",
+  "duration_s": 110,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_audit_flush_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 64.45s (0:01:04)",
+  "duration_s": 86,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_audit_v3_persistence_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 70.48s (0:01:10)",
+  "duration_s": 85,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_cost_agent_budget.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 34.27s",
+  "duration_s": 49,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_emergency_stop_cancel_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 70.68s (0:01:10)",
+  "duration_s": 87,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_emergency_stop_org_index.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 29.24s",
+  "duration_s": 49,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_grant_store_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 95.00s (0:01:35)",
+  "duration_s": 113,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_hitl_approval_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 94.96s (0:01:34)",
+  "duration_s": 114,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_hitl_bounded_cache_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 83.71s (0:01:23)",
+  "duration_s": 111,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_legal_holds_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 79.05s (0:01:19)",
+  "duration_s": 107,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_policy_rules_enforced.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 82.76s (0:01:22)",
+  "duration_s": 115,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_policy_tenant_lazy_load.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "7 passed in 103.25s (0:01:43)",
+  "duration_s": 140,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_siem_outbox_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 72.07s (0:01:12)",
+  "duration_s": 96,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/governance/test_trust_and_ai_ops_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "8 passed in 75.59s (0:01:15)",
+  "duration_s": 97,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/guardrails/test_guardrail_rules_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 91.90s (0:01:31)",
+  "duration_s": 117,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/guardrails/test_guardrail_violations_durable.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 104.28s (0:01:44)",
+  "duration_s": 131,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/identity/test_identity_repo_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 102.81s (0:01:42)",
+  "duration_s": 156,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_azure_blob_azurite_container.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 65.48s (0:01:05)",
+  "duration_s": 104,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_clickhouse_container.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 73.81s (0:01:13)",
+  "duration_s": 122,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_ingestion_read_models_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 124.55s (0:02:04)",
+  "duration_s": 176,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_ingestion_rls_integration.py": {
+  "status": "fixed",
+  "commit": "e9d27cfb3",
+  "root_cause": "Harness hand-rolled an app role with DML on only 3 ingestion tables; the source store now also uses tenant_vault_keys (PROV-15 per-tenant envelope key). Production app role (app_role.py: ALL TABLES + default privileges) was already correct; harness now provisions via ensure_app_role. 7/8 failed -> 8/8 pass.",
+  "failures": [
+   "7 of 8: permission denied for table tenant_vault_keys"
+  ]
+ },
+ "tests/ingestion/test_mongodb_source_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "10 passed in 68.75s (0:01:08)",
+  "duration_s": 105,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_mqtt_mosquitto_container.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 49.80s",
+  "duration_s": 91,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_neo4j_routing_egress.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "4 passed in 20.54s",
+  "duration_s": 267,
+  "root_cause": "SSRF-02 (08caab80b) autouse fixture in tests/ingestion/conftest.py answers every *.test name with 10.255.0.1 from the SSRF guard's resolver, bypassing this module's stub_dns; module overrides that fixture with a no-op. Guard unchanged.",
+  "commit": "91464140e"
+ },
+ "tests/ingestion/test_redis_source_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "14 passed in 119.80s (0:01:59)",
+  "duration_s": 183,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_reindex_legal_hold_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 164.16s (0:02:44)",
+  "duration_s": 267,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/ingestion/test_s3_minio_container.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 85.40s (0:01:25)",
+  "duration_s": 165,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_admin_usage_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 159.51s (0:02:39)",
+  "duration_s": 227,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_agent_graph_full_run.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "35 passed in 124.00s (0:02:03)",
+  "duration_s": 176,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_agent_keys_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 177.14s (0:02:57)",
+  "duration_s": 267,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_billing_dsr_rls_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 179.80s (0:02:59)",
+  "duration_s": 261,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_checkpoint_upsert.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 132.85s (0:02:12)",
+  "duration_s": 192,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_code_execution_audit_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 121.12s (0:02:01)",
+  "duration_s": 180,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_coordination_migration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 19.97s",
+  "duration_s": 43,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_coordination_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 19.98s",
+  "duration_s": 42,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_core_execution_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 94.82s (0:01:34)",
+  "duration_s": 108,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_cost_and_rate_limiting.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "23 passed in 19.22s",
+  "duration_s": 34,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_email_quota_redis.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 19.27s",
+  "duration_s": 34,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_eval_strategy_provenance.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 91.65s (0:01:31)",
+  "duration_s": 104,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_hitl_flow.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "17 passed in 18.99s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_insights_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 63.86s (0:01:03)",
+  "duration_s": 80,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_knowledge_base_pipeline.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "20 passed in 163.10s (0:02:43)",
+  "duration_s": 175,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_memory_repository_rls_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "8 passed in 94.63s (0:01:34)",
+  "duration_s": 108,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_mfa_rotate_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 56.01s",
+  "duration_s": 63,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_mission_lifecycle.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "16 passed in 17.50s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_oauth_needs_reauth_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 35.94s",
+  "duration_s": 46,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_observability_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 30.45s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_orchestration_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 11.25s",
+  "duration_s": 16,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_orchestration_persistence_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 29.78s",
+  "duration_s": 34,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_prov15_tenant_vault_keys_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 33.84s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_real_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "18 passed in 52.94s",
+  "duration_s": 60,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_real_world_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "",
+  "duration_s": 4,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_redis_lease_limiter.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 8.75s",
+  "duration_s": 14,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_rls_behavioral_isolation.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 40.15s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_rpa_session_cap_redis.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 9.26s",
+  "duration_s": 16,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_strategy_certification_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 5.48s",
+  "duration_s": 10,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_strategy_evidence_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 30.88s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_strategy_runtime_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 5.14s",
+  "duration_s": 9,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_tenant_envelope_all_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 26.37s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integration/test_tenant_key_compact_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 24.70s (rebased on main e6b99545a)",
+  "duration_s": 29,
+  "root_cause": "Fixed on main before rebase; passes unchanged.",
+  "commit": null
+ },
+ "tests/integration/test_vault_rotate_all_stores_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 27.93s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/integrations/test_slack_identity_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 22.13s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/intelligence/test_eval_rescore_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 25.76s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/intelligence/test_golden_dataset_versions_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 29.51s",
+  "duration_s": 33,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/intelligence/test_self_optimization_persistence_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 24.31s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/intelligence/test_self_optimizer_v2_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 24.59s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/intelligence/test_verifier_calibration_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 21.54s",
+  "duration_s": 25,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/knowledge_graph/test_kg_mentions_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 27.80s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/lifecycle/test_deletion_cascade.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 25.88s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/mcp/test_builtin_oauth_token_store_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 26.99s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/mcp/test_connector_registry_durable_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "16 passed in 29.53s (rebased on main e6b99545a)",
+  "duration_s": 38,
+  "root_cause": "Fixed on main before rebase; passes unchanged.",
+  "commit": null
+ },
+ "tests/mcp/test_mongodb_builtin_isolation_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 12.29s",
+  "duration_s": 16,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/mcp/test_mysql_builtin_pinned_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 19.54s",
+  "duration_s": 23,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/mcp/test_tool_capabilities_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 41.40s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/mcp/test_tool_capabilities_write_paths_rls.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 40.63s",
+  "duration_s": 44,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_canonical_reembed_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 22.60s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_dept_memory_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 22.13s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_episodic_indexed_recall_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 32.98s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_episodic_relevance_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 23.07s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_execution_memory_relevance_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 23.99s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_ltm_consolidation_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 22.15s",
+  "duration_s": 25,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_ltm_recall_indexes_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 20.74s",
+  "duration_s": 24,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_memory_recall_small_tenant_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 72.25s (0:01:12)",
+  "duration_s": 76,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_memory_write_gate_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 21.10s",
+  "duration_s": 25,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_procedural_memory_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 28.29s",
+  "duration_s": 32,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_prospective_fire_once_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 22.91s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_prospective_fire_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 22.78s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_prospective_lease_bounded_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 22.67s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_prospective_postgres.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 21.55s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_tool_reliability_order_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 24.40s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_tool_reliability_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 31.13s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_tool_reliability_recovery_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 27.61s",
+  "duration_s": 32,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/memory/test_voyager_skills_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 26.66s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/observability/test_tenant_span_store.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "13 passed in 8.89s",
+  "duration_s": 13,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_agent_audit.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 95.12s (0:01:35)",
+  "duration_s": 99,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_brain_store.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 23.27s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_collaboration_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 72.06s (0:01:12)",
+  "duration_s": 76,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_create_mission_status.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 41.70s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_cross_org_scoping.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 76.90s (0:01:16)",
+  "duration_s": 81,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_decision_metadata.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 41.54s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_finalize_mission_idempotency.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 22.08s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_finalize_mission_many_tasks_isolation.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 22.33s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_graph_versions_rls_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 24.42s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_mission_metadata.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 41.83s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_mission_patch_persistence.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 44.74s",
+  "duration_s": 48,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_mission_timeline.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 65.43s (0:01:05)",
+  "duration_s": 69,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/org/test_org_router.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "23 passed in 6.66s",
+  "duration_s": 10,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_ann_recall.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "",
+  "duration_s": 3,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_chunk_partitioning.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 8.94s",
+  "duration_s": 12,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_collection_delete_legal_hold_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 26.01s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_collection_documents_listing_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 26.70s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_collection_plan_limit.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 23.92s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_engine_collection_metadata_tenant.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 25.04s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_engine_search_tenant_isolation.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 24.51s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_graph_rag_postgres_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "10 passed in 25.73s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_ingestion_time_strategies.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "11 passed in 29.18s",
+  "duration_s": 33,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_persisted_rag_store.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "48 passed in 46.16s",
+  "duration_s": 51,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_pgvector_unavailable.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "",
+  "duration_s": 3,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_raft_repository_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "20 passed in 26.30s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_raft_repository_mocked.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "36 passed in 5.05s",
+  "duration_s": 9,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_rag_migration_roundtrip.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "7 passed in 68.98s (0:01:08)",
+  "duration_s": 72,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_reembed_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 22.96s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_retention_legal_hold_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 8.02s",
+  "duration_s": 12,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_semantic_cache_generation_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 24.34s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/rag/test_store_delete_graph_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 6.59s",
+  "duration_s": 10,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/reliability/test_idempotency_store_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 6.99s",
+  "duration_s": 10,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_conclude_stale_experiments_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 26.36s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_document_retention_graph_cascade.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 24.61s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_gdpr_export_download.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 22.67s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_goal_watchdog_pg.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "9 passed in 24.39s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_poll_claim_redis_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 5.75s",
+  "duration_s": 9,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_reembed_metering_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 25.70s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_run_goal_estop_failclosed.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 7.68s",
+  "duration_s": 11,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/scaling/test_task_loop_isolation_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 23.74s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/services/test_cross_replica_stream_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 6.15s",
+  "duration_s": 10,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/services/test_event_store_append_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 26.77s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/services/test_goal_cache_bounded_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 25.03s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/services/test_goal_dedup_atomic_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 6.27s",
+  "duration_s": 10,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/services/test_goal_status_writes_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 24.50s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/services/test_sse_bridge_memory_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 9.24s",
+  "duration_s": 12,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/services/test_tenant_sso_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 23.14s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/tenancy/test_concurrent_goal_leases_redis.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 6.46s",
+  "duration_s": 10,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/tenancy/test_tenancy_auth_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 23.01s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/triggers/test_bus_redis_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 7.81s",
+  "duration_s": 11,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/triggers/test_dlq_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 21.97s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/triggers/test_state_machine_concurrency_integration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 21.68s",
+  "duration_s": 25,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/triggers/test_state_machine_db_backed.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "34 passed in 4.97s",
+  "duration_s": 9,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/triggers/test_trigger_persistence_integration.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "9 passed in 23.91s",
+  "duration_s": 30,
+  "root_cause": "Harness hand-rolled app role with DML on 5 tables; schedule store seals webhook secrets via tenant_vault_keys (PROV-15). Production grant (app_role.py ALL TABLES + default privileges) already correct and pinned by test_app_role_bootstrap; harness now uses ensure_app_role.",
+  "commit": "65bbf0b1e"
+ },
+ "tests/triggers/test_trigger_replay_dedup.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 23.82s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/workflow/test_approval_store.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "9 passed in 19.85s",
+  "duration_s": 27,
+  "root_cause": "WF-CANCEL-PAUSED (d765ec2e4): decide_if_pending requires a live workflow_runs row. Harness role lacked workflow_runs grant (now ensure_app_role) and tests decided gates of nonexistent runs (now seed waiting_hitl runs).",
+  "commit": "bb2b4f4bf"
+ },
+ "tests/workflow/test_approval_store_mocked.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "16 passed in 4.68s",
+  "duration_s": 8,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/workflow/test_approval_store_mutation_pg.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "3 passed in 19.70s",
+  "duration_s": 28,
+  "root_cause": "Same as test_approval_store.py (shares its fixtures).",
+  "commit": "bb2b4f4bf"
+ },
+ "tests/workflow/test_run_store.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "16 passed in 16.40s",
+  "duration_s": 30,
+  "root_cause": "WF-CANCEL-PAUSED: terminal status withdraws pending approvals; harness role lacked workflow_approvals grant. Harness now uses ensure_app_role.",
+  "commit": "141a4ceaf"
+ },
+ "tests/workflow/test_run_store_bypassrls_isolation.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 24.44s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/workflow/test_run_store_mocked.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "40 passed in 4.95s",
+  "duration_s": 9,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/workflow/test_workflow_bridge_migration.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 25.48s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "tests/workflow/test_workflow_definition_bridge.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 22.77s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_a2a_tenant_boundary_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 33.23s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_a2a_tenant_boundary_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 33.32s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_agent_auto_routing_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 28.72s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_agent_auto_routing_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 28.86s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_agent_pattern_flags_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 28.53s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_agent_pattern_flags_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 28.67s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_agent_pattern_selection_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 27.78s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_agent_pattern_selection_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 27.95s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_agent_patterns_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 32.45s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_agent_patterns_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "\u001b[2m2026-10-05T05:09:18.116136Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_agent_teams_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 71.52s",
+  "duration_s": 72,
+  "root_cause": "Test-only: direct asyncpg check of goals.parent_goal_id ran GUC-less via DATABASE_URL, which under LP is the NOBYPASSRLS app role, so RLS returned no rows. Now sets app.tenant_id + explicit tenant predicate; tenant id from signup (polling /tenants/me tripped free-plan 60 rpm).",
+  "commit": "afa0f20f1"
+ },
+ "e2e_full:tests/e2e_full/test_agent_teams_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "\u001b[2m2026-10-05T05:10:30.343006Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
+  "duration_s": 72,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_approvals_stream_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 93.16s (0:01:33)",
+  "duration_s": 102,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_approvals_stream_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 26.96s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_binary_prefilter_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "2 passed in 37.67s",
+  "duration_s": 114,
+  "root_cause": "Two tests shared one module-scoped FREE tenant, each creating a collection; RATE-01 (c2f3a3749) enforces the 1-collection free limit. Tenant fixture now per-test.",
+  "commit": "c093dd3c0"
+ },
+ "e2e_full:tests/e2e_full/test_budget_pause_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 80.31s (0:01:20)",
+  "duration_s": 91,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_civilization_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 62.12s (0:01:02)",
+  "duration_s": 69,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_compliance_bundle_autonomy_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 40.33s",
+  "duration_s": 47,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_connectors_multi_instance_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 54.55s",
+  "duration_s": 57,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_coordination_strategy_goals_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "9 passed in 37.71s",
+  "duration_s": 40,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_binary_prefilter_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 22.46s",
+  "duration_s": 25,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_cross_tenant_list_sweep_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 39.92s",
+  "duration_s": 42,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_budget_pause_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 23.24s",
+  "duration_s": 26,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_cross_tenant_sweep_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 33.74s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_civilization_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 26.21s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_distributed_hitl_gates_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 29.32s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_compliance_bundle_autonomy_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 24.65s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_embedding_health_and_reembed_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 25.54s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_connectors_multi_instance_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 32.96s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_coordination_strategy_goals_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "9 passed in 27.03s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_cross_tenant_list_sweep_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 38.36s",
+  "duration_s": 41,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_cross_tenant_sweep_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 39.31s",
+  "duration_s": 42,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_eval_suite_tenant_boundary_e2e.py": {
+  "status": "fail",
+  "failures": [
+   "test_eval_suites_are_isolated_and_runs_are_async: AssertionError: {'run_id': 'ce65efe6a0904cdb8f5945aa9cc62ab0', 'status': 'running', 'total': 1, 'passed': 0, ...}\nassert 'running' in ('completed', 'failed')"
+  ],
+  "summary": "1 failed in 147.61s (0:02:27)",
+  "duration_s": 150,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_distributed_hitl_gates_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 28.83s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_embedding_health_and_reembed_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 25.97s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_evals_scorecard_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "\u001b[2m2026-10-05T05:24:43.835244Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
+  "duration_s": 38,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_goal_events_partitioning_e2e.py": {
+  "status": "fail",
+  "failures": [
+   "test_a_tenant_cannot_append_to_or_read_another_tenants_goal: app.services.event_store.EventAppendError: goal 839349c41a194d8490e829d3abd6ac69 has no row to append events to"
+  ],
+  "summary": "1 failed, 5 passed in 25.63s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_goal_hitl_lifecycle_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "\u001b[2m2026-10-05T05:25:49.358342Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_goal_idempotency_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "\u001b[2m2026-10-05T05:26:17.027834Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_goal_lookup_outage_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 24.66s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_eval_suite_tenant_boundary_e2e.py": {
+  "status": "fail",
+  "failures": [
+   "test_eval_suites_are_isolated_and_runs_are_async: AssertionError: {'run_id': 'c823855aca6e41d5a8096dcd7b6d0ccf', 'status': 'running', 'total': 1, 'passed': 0, ...}\nassert 'running' in ('completed', 'failed')"
+  ],
+  "summary": "1 failed in 151.56s (0:02:31)",
+  "duration_s": 154,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_goal_run_goal_worker_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 43.35s",
+  "duration_s": 46,
+  "root_cause": null,
+  "commit": null
+ }
+}

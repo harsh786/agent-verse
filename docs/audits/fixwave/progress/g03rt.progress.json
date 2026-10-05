@@ -1,7 +1,8 @@
 {
  "_branch": "worktree-agent-a204a38e448c1e743",
  "_new_findings": [
-  "tests/governance/test_hitl_multi_replica.py::test_slack_button_approval_goes_through_the_db_first_path and tests/governance/test_hitl_trigger_events.py::test_published_payload_drives_the_hitl_consumer fail on main b37941155 (approve_async not awaited; publish called with strict=True) - not touched by this branch"
+  "tests/governance/test_hitl_multi_replica.py::test_slack_button_approval_goes_through_the_db_first_path and tests/governance/test_hitl_trigger_events.py::test_published_payload_drives_the_hitl_consumer fail on main b37941155 (approve_async not awaited; publish called with strict=True) - not touched by this branch",
+  "app/rpa/session_manager.py list_active_from_redis uses Redis KEYS over the whole keyspace (O(N), blocking); no app caller today (dead code) - delete or index per tenant before any use [low]"
  ],
  "AGID-01": {
   "status": "already_fixed",
@@ -100,12 +101,93 @@
  },
  "PERC-01": {
   "status": "done",
-  "commit": "bded6a8ae",
+  "commit": "43a0f0ac5",
   "note": "One shared Chromium per process w/ bounded page semaphore, capture() single load per URL, Redis per-tenant page slots (429); shared browser not closed on app shutdown (process exit only)"
  },
  "PERC-02": {
   "status": "done",
-  "commit": "3cd7b9517",
+  "commit": "309c6d2fa",
   "note": "Browser extra installed via RPA-06; 'browser'-marked real-Chromium perception tests + vision charge/budget-refusal unit tests"
- }
+ },
+ "A2A-01": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (fire-and-forget execute_and_callback (no durable task)); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-02": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (per-agent directory 501); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-03": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (callback POST unsigned); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-04": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (agent card omits X-A2A-Timestamp/signing base); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-05": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (context not passed to submit_goal); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-06": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (goal_service None -> 202 accepted never executed); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-07": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (sync assert_public_url in async handlers); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-08": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (no restart/long-running/signed-callback tests); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-09": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (300s watcher timeout writes terminal 'timeout' while goal runs); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-10": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (A2ATaskRequest unbounded lengths); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "A2A-11": {
+  "status": "skipped",
+  "commit": null,
+  "note": "owned by g04net (per-process replay cache without Redis); my partial work parked at docs/audits/fixwave/parked/g03rt-a2a.patch"
+ },
+ "NATIVE-05-test": {
+  "status": "done",
+  "commit": "5d9d69fae",
+  "note": "stale comprehensive email test expected SMTP text in tenant error"
+ },
+ "NATIVE-01": {
+  "status": "done",
+  "commit": "7814b14ae",
+  "note": "workspace_files table (RLS, explicit dirs, keyset list), Postgres store in lifespan, per-process store refused outside dev, FileOps deleted; pg test verified on local PG16 (testcontainers pending: colima down)"
+ },
+ "_main_base": "c825b26f3 (rebased 2026-10-05; migration chained after f1e790b4050a)",
+ "NATIVE-04": {
+  "status": "done",
+  "commit": "664615e6c",
+  "note": "1 MiB/file 413, per-tenant bytes+entries quota 507 via locked workspace_usage row (exact across replicas), usage endpoint + FE display/toasts; pg race test on local PG16"
+ },
+ "RPA-07": {
+  "status": "done",
+  "commit": "ba2ca7972",
+  "note": "per-process pages now usable from any replica: owner serves a Redis relay queue (execute + view), secrets resolved on owner, silent owner 504; real-Chromium 2-replica test; real-Redis test pending Docker"
+ },
+ "_pending_docker": "colima is down (not started: rule against touching local services). Not run via testcontainers: tests/integration/test_workspace_store_pg.py (both verified against a local PG 16 NOBYPASSRLS harness), tests/integration/test_rpa_session_cap_redis.py::test_relay_runs_the_call_on_the_owner_over_real_redis",
+ "_owner_decisions": [
+  "NATIVE-02: per-tenant email domain allowlist needs a tenant settings store",
+  "RPA-01: has_feature('rpa') entitlement is enforced nowhere"
+ ]
 }

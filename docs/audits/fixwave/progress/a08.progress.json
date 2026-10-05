@@ -1,0 +1,68 @@
+{
+  "a08-F177-04": {
+    "status": "skipped",
+    "commit": null,
+    "note": "Owned by the parallel org-route require_org_role agent (per assignment)"
+  },
+  "a08-F180-05": {
+    "status": "skipped",
+    "commit": null,
+    "note": "require_org_role on /command owned by the parallel org-route agent"
+  },
+  "a08-F193-03": {
+    "status": "skipped",
+    "commit": null,
+    "note": "goal_lifecycle fail-open owned by another agent"
+  },
+  "a08-F177-01": {
+    "status": "done",
+    "commit": "af20cd462",
+    "note": "Attachments in Postgres org_attachments (RLS, retention purge beat); extract_document(attachment_id) tenant-bound; FE references attachment_id"
+  },
+  "a08-F178-02": {
+    "status": "done",
+    "commit": "4d4c633ed",
+    "note": "Per-tenant bounded ZSET index replaces KEYS; TTLs; Redis errors raise; WATCH/MULTI votes+escalation"
+  },
+  "a08-F180-01": {
+    "status": "done",
+    "commit": "1d92dd254",
+    "note": "Command endpoint awaits submit_goal; 202 routed+goal_id or 503 routing_failed"
+  },
+  "a08-F180-03": {
+    "status": "done",
+    "commit": "030ba702b",
+    "note": "GET /org/{id}/emergency-stop (fail-closed 503) + triggered/resumed org events emitted"
+  },
+  "a08-F206-05": {
+    "status": "done",
+    "commit": "3da7d43e4",
+    "note": "Banner reads GET emergency-stop, invalidated by org stop events; unknown state shown as unknown"
+  },
+  "a08-F181-01": {
+    "status": "done",
+    "commit": "9052e0456",
+    "note": "Capabilities from org_capabilities+dept domains, decisions from org_decisions via RLS OrgService"
+  },
+  "a08-F181-02": {
+    "status": "done",
+    "commit": "ecff70ae8",
+    "note": "Keyset ORDER BY id pages from random start with wrap; per-run bound env; no fixed subset"
+  },
+  "a08-F182-01": {
+    "status": "done",
+    "commit": "2a76ff02a",
+    "note": "Unread civ_kill_agent flag removed; kill retires then cancels the member goals via goal_lifecycle (keyset batches)"
+  },
+  "a08-F182-02": {
+    "status": "done",
+    "commit": "2a76ff02a",
+    "note": "pause/resume raise CivilizationControlError (503) on no-DB/failed write, LookupError (404) for unknown civ; pause flag no TTL"
+  },
+  "a08-F182-03": {
+    "status": "done",
+    "commit": "2a76ff02a",
+    "note": "kill: non-member 404, retire failure 503, response reports goals_cancelled/signal_failures"
+  },
+  "_new_findings": []
+}

@@ -131,7 +131,9 @@
  },
  "_new_findings": [
   "main (WF-16) regression: ~19 tests in tests/scaling (test_celery_agentgraph, test_priority_queue, test_run_goal_lock_release, test_run_goal_retry_bookkeeping, test_worker_onprem_provider, ...) fail identically on main - run_goal's fail-closed e-stop start check hits real Redis (_get_sync_redis never None) and retries; the tests need _get_sync_redis stubbed",
-  "main: tests/workflow/test_steps/test_foreach_step.py (code step 'execution could not be audited' in unit env) and webhook tests importing app.tenancy.rate_limiter.RateLimiter fail on main, unrelated to governance changes"
+  "main: tests/workflow/test_steps/test_foreach_step.py (code step 'execution could not be audited' in unit env) and webhook tests importing app.tenancy.rate_limiter.RateLimiter fail on main, unrelated to governance changes",
+  "main: tests/scaling/test_worker_rpa_executor.py::test_worker_goal_rpa_open_url_dispatches_to_the_rpa_executor fails on main too (unit env)",
+  "main: tests/services/test_subgoal_concurrency_slot.py::test_worker_subgoal_run_releases_no_slot fails (worker run_goal unit env)"
  ],
  "POL-04": {
   "status": "done",
@@ -145,12 +147,102 @@
  },
  "POL-01": {
   "status": "done",
-  "commit": "88a3d3e6a",
+  "commit": "ed99c5c7e",
   "note": "policy_rules evaluated on every tool call (executor + GovernedToolGate), 15 s cache, fail closed; PG integration test"
  },
  "TRUST-05": {
   "status": "done",
-  "commit": "080c0b1c9",
+  "commit": "d3f9b690a",
   "note": "worker ceiling: supervised on no DB / lookup error / unknown value"
+ },
+ "TRUST-06": {
+  "status": "done",
+  "commit": "d3f9b690a",
+  "note": "worker ceiling fail-open (recert new defect) fixed in the TRUST-05 commit"
+ },
+ "GRANT-04": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "duplicate of GRANT-01 (delegation parent empty)"
+ },
+ "GRANT-06": {
+  "status": "done",
+  "commit": "730d1b873",
+  "note": "executor delegation call-site test = GRANT-05 in the GRANT-01 commit"
+ },
+ "HITL-07": {
+  "status": "done",
+  "commit": "307590816",
+  "note": "below-quorum vote answers vote_recorded + counts (REST + email link)"
+ },
+ "HITL-09": {
+  "status": "done",
+  "commit": "c0c6b0d97",
+  "note": "wait timeout writes 'expired' with pending-only CAS; a decision that won first is honoured"
+ },
+ "HITL-08": {
+  "status": "done",
+  "commit": "a06d23d32",
+  "note": "vote txn locks the approval_requests row before INSERT+COUNT; PG race test written (Docker down: not run)"
+ },
+ "TRUST-02": {
+  "status": "done",
+  "commit": "20e8de3a8",
+  "note": "executor + GovernedToolGate route bundle required_hitl_for tools to HITL; PG read cached 15 s, fail closed"
+ },
+ "INC-07": {
+  "status": "done",
+  "commit": "957e1bf2b",
+  "note": "tenant e-stop cancels <=200 inline, rest via keyset-batched worker task"
+ },
+ "INC-03": {
+  "status": "done",
+  "commit": "957e1bf2b",
+  "note": "celery_signal_sent reports the real enqueue (+goal_cancellation); failed enqueue -> partial"
+ },
+ "INC-06": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "multi_agent worker runs go through _run_with_signals: poll loop (pub/sub woken) enforces tenant/org stop fail-closed (CORE-13 + INC-04)"
+ },
+ "a03-F061-N1": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "main RV-05 f125ac289 + RV-09 6488dd528; my equivalent commit dropped (its tests pass on main's fix)"
+ },
+ "INC-01": {
+  "status": "done",
+  "commit": "4628212a0",
+  "note": "e-stop audit awaited via record_async; failure -> audit_recorded false + partial"
+ },
+ "PERM-01b": {
+  "status": "already_fixed",
+  "commit": null,
+  "note": "recert PERM item 1 (worker daily_limit per process): worker _app_state now carries _redis, so reserve_daily_call uses the shared counter"
+ },
+ "GRANT-07": {
+  "status": "done",
+  "commit": "14fdadb77",
+  "note": "unreadable enforce_agent_grants flag -> enforce (goal_service + workflow gate)"
+ },
+ "GRANT-08": {
+  "status": "done",
+  "commit": "f660cabcf",
+  "note": "hot paths use active_for_agent (SQL-filtered, LIMIT 500) + LIMIT 1 existence probe on denial"
+ },
+ "GRANT-05b": {
+  "status": "done",
+  "commit": "402ee5663",
+  "note": "recert GRANT item 5: child cap = parent remaining; spend charged up the chain; exhausted ancestor denies"
+ },
+ "AUDIT-03": {
+  "status": "done",
+  "commit": "e0ec55316",
+  "note": "CEF adapter socket I/O runs in asyncio.to_thread; errors still return False"
+ },
+ "COST-03": {
+  "status": "done",
+  "commit": "852af3d15",
+  "note": "alert_pct_thresholds evaluated on in-memory, non-Lua and Lua paths (tenant + agent daily), once/day fleet-wide via Redis SET NX, sent to tenant notification channels, never blocks the charge; replaces the hard-coded 79-81% log band; real-Redis Lua test passes"
  }
 }

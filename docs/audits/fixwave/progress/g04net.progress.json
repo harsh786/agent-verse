@@ -68,5 +68,26 @@
   "status": "done",
   "commit": "2c1ee0234",
   "note": "unresolvable allowlisted host -> SSRFError; pinned backends raise SSRFError on empty list; ingestion test conftest resolves placeholders"
- }
+ },
+ "SSRF-04": {
+  "status": "done",
+  "commit": "ab7353db8",
+  "note": "async paths use assert_public_url_async; AST guard (tests/net/test_no_blocking_dns_in_async.py) with shrinking list of other-owner sites"
+ },
+ "A2A-01": {
+  "status": "done",
+  "commit": "931316e97",
+  "note": "goal submitted+bound before 202; migration c8e41a2d9f37; beat reconcile + SKIP LOCKED callback claims w/ backoff; reconcile-on-GET; merged parked g03rt design. PG integration test written but NOT run (colima down)"
+ },
+ "A2A-03": {
+  "status": "skipped",
+  "commit": null,
+  "note": "per-agent /.well-known/agents directory stays an honest 501: needs an owner decision on a public-agent visibility/publish model (anonymous cross-tenant exposure of agent metadata) and per-agent inbound routing; not implementable fail-closed without it"
+ },
+ "_new_findings": [
+  "tests/rpa/test_real_browser.py::test_open_extract_and_screenshot_a_real_page flaky in a large run (passes alone)",
+  "app/api/knowledge.py and app/mcp/client.py have pre-existing ruff-format drift (not touched)",
+  "alembic revision id b3d5f7a9c1e2 already used by org_graph_versions; A2A migration renamed to c8e41a2d9f37 (single head after f1e790b4050a)",
+  "tests/services/test_a2a_tasks_reconcile_pg.py (A2A-01 Postgres integration) not yet executed: colima was not running; run it once Docker is up"
+ ]
 }

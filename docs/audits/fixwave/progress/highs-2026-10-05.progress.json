@@ -1,0 +1,15 @@
+{
+  "a01-F008-04": {"status": "already_fixed", "commit": "fb9434271", "note": "fixed on main by RV-02 (another session); this branch's version dc3239b65 was dropped in the rebase onto 6488dd528"},
+  "a01-F008-N1": {"status": "already_fixed", "commit": "fb9434271", "note": "fixed on main by RV-02 (another session); this branch's version dc3239b65 was dropped"},
+  "a04-F066-N1": {"status": "already_fixed", "commit": "f01fe6e37", "note": "fixed on main by RV-06 (another session); this branch's version 9fa540ac2 was dropped"},
+  "a09-F212-01": {"status": "done", "commit": "2e4f13753", "note": "already on main; sync export: all 5 sections from Postgres (RLS + tenant predicate, LIMIT 10001), 'ready' only when complete, else 'failed' + reason; failed download 409"},
+  "a08-F177-04": {"status": "done", "commit": "75627be51", "note": "require_org_role on all 25 unguarded mutating /v1/org routes; structural test guards future routes (sha after rebase onto main e6b99545a)"},
+  "a08-F180-05": {"status": "done", "commit": "75627be51", "note": "POST /{org_id}/command requires team_lead"},
+  "a09-F223-02": {"status": "done", "commit": "0c518f811", "note": "GoalService.get_metrics runs under sqlalchemy_rls_context; explicit tenant_id predicate kept; tests/services/test_goal_metrics_rls.py"},
+  "a08-F193-03": {"status": "done", "commit": "7f38d0ca0", "note": "is_paused/is_cancelled(+_sync) fail closed on Redis read errors: cancel read error = cancelled, pause read error = still paused; tests/reliability/test_goal_lifecycle_fail_closed.py"},
+  "_branch": "worktree-agent-adaa184db07bd9f5c rebased onto main e6b99545a (not merged)",
+  "_new_findings": [
+    "app/scaling/tasks.py run_gdpr_export (async GDPR export, ~7470-7500): goals/audit reads use LIMIT 10000 (silent truncation) and an audit read error becomes audit=[]; the job can still complete as ready with incomplete data (same class as a09-F212-01).",
+    "tests/scaling/test_worker_rpa_executor.py::test_worker_goal_rpa_open_url_dispatches_to_the_rpa_executor fails on this branch before and after the a08-F193-03 change (rpa.execute awaited 0 times) - pre-existing, not investigated."
+  ]
+}
