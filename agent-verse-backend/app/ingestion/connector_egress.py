@@ -63,12 +63,15 @@ _log = get_logger(__name__)
 
 __all__ = [
     "ConnectorEgressBlockedError",
+    "GuardedFetch",
+    "RedirectBlockedError",
     "assert_source_dsn",
     "assert_source_host",
     "assert_source_url",
     "check_source_dsn",
     "check_source_host",
     "egress_checked_lookups",
+    "guarded_fetch",
     "guarded_request",
     "pin_source_dsn",
     "pin_source_hosts",
@@ -261,7 +264,49 @@ def assert_source_dsn(dsn: object, *, context: str) -> None:
             assert_source_host(host, port or None, context=context)
 
 
-async def guarded_request(
+_PERMANENT_REDIRECTS = frozenset({301, 308})
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+class RedirectBlockedError(ConnectorEgressBlockedError):
+    """A redirect pointed at a destination the egress policy forbids."""
+
+
+@dataclass
+class GuardedFetch:
+    """A response reached through egress-checked redirects (USR-5).
+
+    ``final_url`` is the URL the response came from; ``hops`` lists every
+    redirect as ``(status, from, to)``; ``moved_to`` is where the requested URL
+    moved *permanently* (the target of the leading 301/308 redirects), or None.
+    """
+
+    response: Any
+    requested_url: str
+    final_url: str
+    hops: list[tuple[int, str, str]] = field(default_factory=list)
+
+    @property
+    def moved_to(self) -> str | None:
+        target: str | None = None
+        for status, _src, dst in self.hops:
+            if status not in _PERMANENT_REDIRECTS:
+                break
+            target = dst
+        return target
+
+    @property
+    def moved_status(self) -> int | None:
+        return self.hops[0][0] if self.moved_to else None
+
+    def move_notice(self) -> dict[str, Any] | None:
+        """``{"from", "to", "status"}`` when the requested URL moved permanently."""
+        if not self.moved_to:
+            return None
+        return {"from": self.requested_url, "to": self.moved_to, "status": self.moved_status}
+
+
+async def guarded_fetch(
     client: Any,
     method: str,
     url: str,
@@ -269,12 +314,14 @@ async def guarded_request(
     context: str,
     max_redirects: int = _MAX_REDIRECTS,
     **kwargs: Any,
-) -> Any:
-    """Send ``method url`` on an ``httpx.AsyncClient`` with every hop egress-checked.
+) -> GuardedFetch:
+    """Send ``method url`` following redirects safely; return the response and its path.
 
     Redirects are followed manually so each ``Location`` is re-validated before it
     is requested: with ``follow_redirects=True`` a public URL can 302 straight to
-    ``169.254.169.254`` past a check on the first URL only. Credentials
+    ``169.254.169.254`` past a check on the first URL only. A blocked hop raises
+    :class:`RedirectBlockedError` (the target is never requested); more than
+    ``max_redirects`` hops raise ``httpx.TooManyRedirects``. Credentials
     (``auth``, ``Authorization`` / ``Cookie`` headers) are dropped once a redirect
     leaves the original host, so a redirect cannot harvest them either.
     """
@@ -288,15 +335,26 @@ async def guarded_request(
     await asyncio.to_thread(assert_source_url, url, context=context)
     current = url
     origin = (urlsplit(url).hostname or "").lower()
+    hops: list[tuple[int, str, str]] = []
+    from urllib.parse import urljoin
+
     for _hop in range(max_redirects + 1):
         response = await client.request(method, current, follow_redirects=False, **kwargs)
-        if not response.is_redirect:
-            return response
-        location = response.headers.get("location", "")
+        status = getattr(response, "status_code", None)
+        location = ""
+        if isinstance(status, int) and status in _REDIRECT_STATUSES:
+            location = str((getattr(response, "headers", None) or {}).get("location", "") or "")
         if not location:
-            return response
-        nxt = str(response.url.join(location))
-        await asyncio.to_thread(assert_source_url, nxt, context=context)
+            return GuardedFetch(response=response, requested_url=url, final_url=current, hops=hops)
+        nxt = urljoin(current, location)
+        try:
+            await asyncio.to_thread(assert_source_url, nxt, context=context)
+        except ConnectorEgressBlockedError as exc:
+            raise RedirectBlockedError(
+                f"{current} redirected ({status}) to {nxt}, a destination "
+                f"blocked by the egress policy — not followed: {exc}"
+            ) from exc
+        hops.append((int(status or 0), current, nxt))
         if (urlsplit(nxt).hostname or "").lower() != origin:
             kwargs.pop("auth", None)
             kwargs["headers"] = {
@@ -304,12 +362,30 @@ async def guarded_request(
                 for k, v in dict(kwargs.get("headers") or {}).items()
                 if k.lower() not in ("authorization", "cookie", "proxy-authorization")
             }
-        if response.status_code in (301, 302, 303) and method.upper() != "GET":
+        if status in (301, 302, 303) and method.upper() != "GET":
             method = "GET"
             for body_kw in ("content", "data", "json", "files"):
                 kwargs.pop(body_kw, None)
         current = nxt
-    raise httpx.TooManyRedirects(f"Exceeded {max_redirects} redirects")
+    raise httpx.TooManyRedirects(
+        f"{url}: more than {max_redirects} redirects (last: {current}) — not followed"
+    )
+
+
+async def guarded_request(
+    client: Any,
+    method: str,
+    url: str,
+    *,
+    context: str,
+    max_redirects: int = _MAX_REDIRECTS,
+    **kwargs: Any,
+) -> Any:
+    """:func:`guarded_fetch`, returning only the response."""
+    fetched = await guarded_fetch(
+        client, method, url, context=context, max_redirects=max_redirects, **kwargs
+    )
+    return fetched.response
 
 
 async def check_source_host(host: object, port: object = None, *, context: str) -> None:

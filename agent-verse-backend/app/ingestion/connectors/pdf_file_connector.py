@@ -7,6 +7,8 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from httpx import TooManyRedirects
+
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
@@ -18,10 +20,13 @@ from app.ingestion.base_connector import (
 )
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
+    GuardedFetch,
     assert_source_url,
+    guarded_fetch,
     source_client,
 )
 from app.ingestion.connector_registry import register
+from app.ingestion.source_config import CONNECTOR_MOVED_KEY
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -91,35 +96,45 @@ class _UrlFileConnector(BaseConnector):
         """The file at ``url``, or a failure document saying why it could not be read."""
         from app.ingestion.source_config import RawDocument
 
+        context = f"{self.source_type}.get_delta"
+        fetched: GuardedFetch | None = None
         try:
-            assert_source_url(url, context=f"{self.source_type}.get_delta", config=config)
+            assert_source_url(url, context=context, config=config)
             async with source_client(timeout=60) as c:
-                r = await c.get(url)
-                r.raise_for_status()
-                content_bytes = r.content
+                # USR-5: redirects are followed, every hop re-checked by the
+                # egress guard, at most 5 hops; a moved file used to fail.
+                fetched = await guarded_fetch(c, "GET", url, context=context)
+                fetched.response.raise_for_status()
+                content_bytes = fetched.response.content
         except ConnectorUnavailableError:
             raise
         except Exception as exc:
             _log.warning("%s_fetch_error url=%s: %s", self.source_type, url, exc)
+            moved = fetched.move_notice() if fetched is not None else None
             return fetch_failure_document(
                 config,
                 doc_id=_doc_id(url),
                 reason=describe_fetch_error(exc),
-                retryable=not isinstance(exc, ConnectorEgressBlockedError)
+                retryable=not isinstance(exc, ConnectorEgressBlockedError | TooManyRedirects)
                 and is_retryable_fetch_error(exc),
                 source_url=url,
                 title=url.split("/")[-1],
                 # USR-4: the DLQ retry fetches the URL again (replay_event).
                 replay={"kind": URL_REPLAY_KIND, "url": url},
+                metadata={CONNECTOR_MOVED_KEY: moved} if moved else None,
             )
+        metadata: dict[str, Any] = {"final_url": fetched.final_url}
+        if (moved := fetched.move_notice()) is not None:
+            metadata[CONNECTOR_MOVED_KEY] = moved
         return RawDocument(
             doc_id=_doc_id(url),
             source_id=config.source_id,
             tenant_id=config.tenant_id,
             content=content_bytes,
             content_type=self._mime,
-            source_url=url,
+            source_url=fetched.final_url,
             title=url.split("/")[-1],
+            metadata=metadata,
         )
 
 

@@ -41,7 +41,9 @@ from app.ingestion.base_connector import (
     row_identity,
     stable_doc_id,
 )
+from app.ingestion.connector_egress import GuardedFetch, guarded_fetch
 from app.ingestion.connector_registry import register
+from app.ingestion.source_config import CONNECTOR_MOVED_KEY
 from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 
 if TYPE_CHECKING:
@@ -138,8 +140,11 @@ class HttpApiConnector(BaseConnector):
         max_records = int(cc.get("max_records", 500))
         records_path = str(cc.get("records_path", ""))
 
-        payload = await self._fetch(config, cursor=cursor)
+        payload, fetched = await self._fetch_with_path(config, cursor=cursor)
         records = _extract_records(payload, records_path, strict=True)
+        fetch_meta: dict[str, Any] = {"final_url": fetched.final_url}
+        if (moved := fetched.move_notice()) is not None:
+            fetch_meta[CONNECTOR_MOVED_KEY] = moved
 
         new_cursor = cursor or ""
         emitted = 0
@@ -174,13 +179,20 @@ class HttpApiConnector(BaseConnector):
                 content_type="application/json" if not content_fields else "text/plain",
                 title=str(record.get(title_field, "")),
                 modified_at=record_cursor,
-                metadata={"endpoint": url, "record_id": doc_id},
+                metadata={"endpoint": url, "record_id": doc_id, **fetch_meta},
             )
             emitted += 1
             yield doc, new_cursor
 
     async def _fetch(self, config: SourceConfig, *, cursor: str | None) -> Any:
-        """Perform the HTTP request and return the parsed JSON payload.
+        """The parsed JSON payload of the endpoint."""
+        payload, _fetched = await self._fetch_with_path(config, cursor=cursor)
+        return payload
+
+    async def _fetch_with_path(
+        self, config: SourceConfig, *, cursor: str | None
+    ) -> tuple[Any, GuardedFetch]:
+        """Perform the HTTP request; the parsed JSON payload and the redirect path.
 
         The URL was SSRF-checked by the caller; the pinned client re-checks at
         connect time (a plain client re-resolved the name — DNS rebinding).
@@ -196,6 +208,11 @@ class HttpApiConnector(BaseConnector):
         timeout = float(cc.get("timeout_seconds", 15.0))
 
         async with public_async_client(timeout=timeout) as client:
-            resp = await client.request(method, url, headers=headers, params=params)
-            resp.raise_for_status()
-            return resp.json()
+            # USR-5: a moved endpoint is followed (every hop egress-checked, at
+            # most 5); the final URL and a permanent move are recorded.
+            fetched = await guarded_fetch(
+                client, method, url, context="http_connector",
+                headers=headers, params=params,
+            )
+            fetched.response.raise_for_status()
+            return fetched.response.json(), fetched

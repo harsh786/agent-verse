@@ -23,6 +23,10 @@ CONNECTOR_FAILURE_RETRYABLE_KEY = "connector_failure_retryable"
 # the connector to fetch the item again (BaseConnector.replay_event) instead of
 # replaying the empty failure document.
 CONNECTOR_REPLAY_KEY = "connector_replay"
+# RawDocument.metadata key a connector sets when the URL it was configured with
+# moved permanently (301/308): ``{"from": old, "to": new, "status": code}``. The
+# sync surfaces it on the job and records the new URL on the Source (USR-5).
+CONNECTOR_MOVED_KEY = "connector_moved_permanently"
 
 
 class IngestionStatus(enum.StrEnum):

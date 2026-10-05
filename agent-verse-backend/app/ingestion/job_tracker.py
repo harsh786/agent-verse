@@ -225,6 +225,7 @@ class IngestionJobTracker:
         error: str = "",
         cancelled: bool = False,
         partial: bool = False,
+        notices: list[str] | None = None,
     ) -> None:
         """Finish the job: ``completed``, ``partial``, ``failed`` or ``cancelled``.
 
@@ -252,6 +253,13 @@ class IngestionJobTracker:
         else:
             job.status = "completed"
             job.error_message = ""
+        if notices:
+            # USR-5: things the tenant should act on (e.g. a URL that moved
+            # permanently) are shown on the job even when it succeeded.
+            text = "; ".join(notices)
+            job.error_message = (f"{job.error_message}; {text}" if job.error_message else text)[
+                :2048
+            ]
         job.completed_at = datetime.now(UTC).isoformat()
 
         _log.info(

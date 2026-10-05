@@ -36,6 +36,13 @@ async def _collect(agen) -> list:
 def _fake_client(get_impl):
     client = AsyncMock()
     client.get = get_impl
+
+    async def _request(method, url, **kw):
+        # Pages are fetched with client.request (redirects followed by
+        # guarded_fetch, USR-5); route GETs to the test's get implementation.
+        return await get_impl(url)
+
+    client.request = _request
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client

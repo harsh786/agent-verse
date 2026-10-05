@@ -598,6 +598,7 @@ async def _sync_source_async(
 
     docs_indexed = docs_failed = docs_skipped = 0
     cancelled = False
+    moves: dict[str, str] = {}  # configured URL -> where it moved permanently (USR-5)
 
     try:
         if reindex:
@@ -630,6 +631,7 @@ async def _sync_source_async(
                     plan=PlanTier.FREE,
                 )
 
+                _note_move(moves, raw_doc)
                 result = await pipeline.ingest(raw_doc, config)
 
                 # PipelineResult exposes a ``status`` string, not success/skipped
@@ -693,7 +695,8 @@ async def _sync_source_async(
         job.docs_indexed = docs_indexed
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed
-        await tracker.complete_job(job, cancelled=cancelled)
+        await tracker.complete_job(job, cancelled=cancelled, notices=_move_notices(moves))
+        await _record_moves(source_store, config, moves)
         # Advance last_synced_at + cursor on the durable source row so the beat
         # due-scan reschedules the next sync one interval out (item 6).
         # mark_synced is the single owner of consecutive_failures (0 when no doc
@@ -739,8 +742,12 @@ async def _sync_source_async(
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed + (exc.failed_units if partial else 1)
         await tracker.complete_job(
-            job, error=str(exc) or type(exc).__name__, partial=partial
+            job,
+            error=str(exc) or type(exc).__name__,
+            partial=partial,
+            notices=_move_notices(moves),
         )
+        await _record_moves(source_store, config, moves)
         await source_store.mark_synced(
             source_id,
             tenant_id,
@@ -758,6 +765,51 @@ async def _sync_source_async(
 
     finally:
         await tracker.release_lock(source_id, tenant_id)
+
+
+# At most this many moved URLs are recorded per sync (a crawl can hit many).
+_MAX_MOVES_RECORDED = 50
+
+
+def _note_move(moves: dict[str, str], raw_doc: Any) -> None:
+    """Remember a permanent redirect a connector reported on a document (USR-5)."""
+    from app.ingestion.source_config import CONNECTOR_MOVED_KEY
+
+    moved = (getattr(raw_doc, "metadata", None) or {}).get(CONNECTOR_MOVED_KEY)
+    if not isinstance(moved, dict) or len(moves) >= _MAX_MOVES_RECORDED:
+        return
+    old, new = str(moved.get("from") or ""), str(moved.get("to") or "")
+    if old and new and old != new:
+        moves[old] = new
+
+
+def _move_notices(moves: dict[str, str]) -> list[str]:
+    return [
+        f"{old} moved permanently to {new} — the new URL is recorded on the source "
+        "(connection_config.moved_permanently); update the source to use it"
+        for old, new in moves.items()
+    ]
+
+
+async def _record_moves(source_store: Any, config: Any, moves: dict[str, str]) -> None:
+    """Record where configured URLs moved permanently on the Source (USR-5).
+
+    The configured URLs are left as the tenant set them (the redirect keeps
+    being followed and re-checked); ``connection_config.moved_permanently``
+    offers the new ones. A failure to record is logged — the job still says it.
+    """
+    if not moves:
+        return
+    cc = dict(config.connection_config or {})
+    known = dict(cc.get("moved_permanently") or {})
+    merged = {**known, **moves}
+    if merged == known:
+        return
+    cc["moved_permanently"] = dict(list(merged.items())[-_MAX_MOVES_RECORDED:])
+    try:
+        await source_store.update(config.source_id, config.tenant_id, connection_config=cc)
+    except Exception as exc:
+        _log.warning("record_moved_urls_failed source=%s: %s", config.source_id, exc)
 
 
 @shared_task(name="ingestion.reap_stale_jobs", bind=True)

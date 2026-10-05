@@ -148,6 +148,16 @@ describe('SourceDetailDrawer', () => {
     expect(screen.getByText(/2 document\(s\) failed to sync/)).toBeInTheDocument();
   });
 
+  test('USR-5: a completed sync shows a moved-URL notice as a notice, not an error', async () => {
+    mockFetch({ syncStatus: { status: 'completed', sync_mode: 'incremental', docs_indexed: 1, docs_skipped: 0, docs_failed: 0, chunks_created: 1, error_message: 'https://a.example/old moved permanently to https://a.example/new — the new URL is recorded on the source' } });
+    renderDrawer();
+    await userEvent.click(screen.getByRole('button', { name: 'History' }));
+    const message = await screen.findByTestId('sync-job-message');
+    expect(message).toHaveTextContent('moved permanently to https://a.example/new');
+    expect(message.className).toContain('amber');
+    expect(message.className).not.toContain('destructive');
+  });
+
   test('the Settings tab renders the source configuration', async () => {
     mockFetch();
     renderDrawer();

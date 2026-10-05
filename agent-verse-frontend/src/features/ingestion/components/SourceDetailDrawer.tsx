@@ -195,7 +195,11 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
           <dt className="text-muted-foreground">Chunks</dt><dd>{String(job.chunks_created ?? 0)}</dd>
         </dl>
         {Boolean(job.error_message) && (
-          <p className="mt-2 text-xs text-destructive">{String(job.error_message)}</p>
+          // A completed job's message is a notice (USR-5: e.g. a URL that moved
+          // permanently), not an error.
+          <p data-testid="sync-job-message" className={`mt-2 text-xs ${job.status === 'completed' ? 'text-amber-700 dark:text-amber-300' : 'text-destructive'}`}>
+            {String(job.error_message)}
+          </p>
         )}
       </div>
     </div>

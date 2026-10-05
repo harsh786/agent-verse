@@ -28,6 +28,7 @@ import pytest
 from app.ingestion.source_config import SourceConfig, SourceFamily
 from tests.ingestion._drain import content_docs, drain, failure_docs
 from app.ingestion.base_connector import ConnectorFetchError, ConnectorPartialFailureError
+from typing import Any
 
 
 def _config(source_type: str, conn_config: dict | None = None) -> SourceConfig:
@@ -244,7 +245,9 @@ class TestRSSConnectorValidateConnection:
         # these tests exercise parsing, so the fetch is stubbed.
         from app.ingestion.connectors import rss_connector
 
-        monkeypatch.setattr(rss_connector, "_fetch_feed", AsyncMock(return_value=b"<rss/>"))
+        monkeypatch.setattr(
+            rss_connector, "_fetch_feed_path", AsyncMock(return_value=(b"<rss/>", _unmoved()))
+        )
     def test_import_error(self):
         from app.ingestion.connectors.rss_connector import RSSConnector
 
@@ -292,7 +295,9 @@ class TestRSSConnectorGetDelta:
         # these tests exercise parsing, so the fetch is stubbed.
         from app.ingestion.connectors import rss_connector
 
-        monkeypatch.setattr(rss_connector, "_fetch_feed", AsyncMock(return_value=b"<rss/>"))
+        monkeypatch.setattr(
+            rss_connector, "_fetch_feed_path", AsyncMock(return_value=(b"<rss/>", _unmoved()))
+        )
     def test_import_error_fails_the_sync(self):
         # SRC-RSS: an empty generator was recorded as a successful, empty sync.
         from app.ingestion.base_connector import ConnectorUnavailableError
@@ -801,6 +806,12 @@ class TestSlackConnectorGetDelta:
 # PDFFileConnector / DOCXFileConnector
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _unmoved(url: str = "https://example.com/feed") -> Any:
+    from app.ingestion.connector_egress import GuardedFetch
+
+    return GuardedFetch(response=None, requested_url=url, final_url=url)
+
+
 def _mock_httpx_get(content=b"%PDF-1.4 fake", status_ok=True):
     resp = MagicMock()
     resp.content = content
@@ -810,6 +821,7 @@ def _mock_httpx_get(content=b"%PDF-1.4 fake", status_ok=True):
         resp.raise_for_status = MagicMock(side_effect=RuntimeError("HTTP 404"))
     client = AsyncMock()
     client.get = AsyncMock(return_value=resp)
+    client.request = client.get  # files are fetched with client.request (USR-5)
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client

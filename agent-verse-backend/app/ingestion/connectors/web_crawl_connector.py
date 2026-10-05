@@ -20,6 +20,8 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
@@ -30,11 +32,15 @@ from app.ingestion.base_connector import (
     is_retryable_fetch_error,
 )
 from app.ingestion.connector_egress import (
+    ConnectorEgressBlockedError,
+    GuardedFetch,
     assert_source_url,
+    guarded_fetch,
     source_client,
     source_url_is_allowed,
 )
 from app.ingestion.connector_registry import register
+from app.ingestion.source_config import CONNECTOR_MOVED_KEY
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -161,13 +167,12 @@ class WebCrawlConnector(BaseConnector):
 
         import asyncio
 
-        # Redirects are not followed (source_client forces follow_redirects=False):
-        # httpx would follow a 302 without re-checking the target, so a public
-        # page could bounce the crawler to a link-local/metadata address past the
-        # egress guard. Redirect targets go back onto the frontier below, where
-        # they are guarded like any other URL. source_client also pins each
-        # connection to the address checked at connect time (a plain client
-        # re-resolved the name — DNS rebinding).
+        # httpx never follows redirects here (source_client forces
+        # follow_redirects=False): it would follow a 302 without re-checking the
+        # target. guarded_fetch follows them instead, re-validating every hop
+        # with the egress guard (a public page cannot bounce the crawler to a
+        # link-local/metadata address). source_client also pins each connection
+        # to the address checked at connect time (DNS rebinding).
         async with source_client(
             timeout=30,
             headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"},
@@ -211,19 +216,13 @@ class WebCrawlConnector(BaseConnector):
                         )
                     continue
 
+                fetched: GuardedFetch | None = None
                 try:
                     await asyncio.sleep(crawl_delay)
-                    response = await client.get(url)
-                    if response.status_code in (301, 302, 303, 307, 308):
-                        location = response.headers.get("location", "")
-                        if location:
-                            from urllib.parse import urljoin
-
-                            target = urljoin(url, location)
-                            if target not in urls_to_visit:
-                                urls_to_visit.append(target)
-                        new_seen.add(url_hash)
-                        continue
+                    # USR-5: redirects are followed here — every hop re-checked
+                    # by the egress guard, at most 5 — and the final URL kept.
+                    fetched = await guarded_fetch(client, "GET", url, context="web_crawl.fetch")
+                    response = fetched.response
                     if response.status_code >= 400:
                         retryable = is_retryable_fetch_error(response)
                         if url in requested or retryable:
@@ -237,14 +236,31 @@ class WebCrawlConnector(BaseConnector):
                             _log.info("webcrawl_dead_link url=%s status=%d", url[:200],
                                       response.status_code)
                         continue
-                    response.headers.get("content-type", "text/html")
                     html_bytes = response.content
                 except ConnectorUnavailableError:
                     raise
+                except (ConnectorEgressBlockedError, httpx.TooManyRedirects) as exc:
+                    # A redirect to a blocked destination, or a redirect loop:
+                    # retrying cannot help. Counted when the tenant asked for it.
+                    _log.warning("webcrawl_redirect_refused url=%s: %s", url[:200], exc)
+                    new_seen.add(url_hash)
+                    if url in requested:
+                        yield _failure(url, exc, retryable=False), json.dumps(sorted(new_seen))
+                    continue
                 except Exception as exc:
                     _log.warning("webcrawl_fetch_error url=%s: %s", url[:200], exc)
                     yield _failure(url, exc, retryable=True), json.dumps(sorted(new_seen))
                     continue
+                final_url = fetched.final_url
+                final_hash = hashlib.md5(final_url.encode()).hexdigest()
+                if final_hash != url_hash:
+                    if final_hash in new_seen:
+                        new_seen.add(url_hash)
+                        continue  # the redirect target was crawled already
+                    new_seen.add(final_hash)
+                page_meta: dict[str, Any] = {"final_url": final_url}
+                if (moved := fetched.move_notice()) is not None and url in requested:
+                    page_meta[CONNECTOR_MOVED_KEY] = moved
 
                 visited += 1
                 new_seen.add(url_hash)
@@ -263,7 +279,7 @@ class WebCrawlConnector(BaseConnector):
                     content_type="text/plain",
                     source_url=url,
                     title=self._extract_title(html_bytes.decode("utf-8", errors="replace")),
-                    metadata={"original_url": url, "content_hash": content_hash},
+                    metadata={"original_url": url, "content_hash": content_hash, **page_meta},
                 )
                 new_cursor = json.dumps(sorted(new_seen))
                 yield raw, new_cursor
@@ -271,7 +287,7 @@ class WebCrawlConnector(BaseConnector):
                 # Discover more URLs from this page (limited depth)
                 if visited < max_pages and max_depth > 1:
                     new_urls = self._extract_links(
-                        html_bytes.decode("utf-8", errors="replace"), url
+                        html_bytes.decode("utf-8", errors="replace"), final_url
                     )
                     for new_url in new_urls[:20]:
                         h = hashlib.md5(new_url.encode()).hexdigest()
@@ -299,10 +315,14 @@ class WebCrawlConnector(BaseConnector):
             timeout=30, headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"}
         ) as client:
             try:
-                response = await client.get(url)
+                fetched = await guarded_fetch(client, "GET", url, context="web_crawl.replay")
+            except (ConnectorEgressBlockedError, httpx.TooManyRedirects) as exc:
+                yield _page_failure(config, url, exc, retryable=False)
+                return
             except Exception as exc:
                 yield _page_failure(config, url, exc, retryable=True)
                 return
+        response = fetched.response
         if response.status_code >= 400 or response.is_redirect:
             yield _page_failure(
                 config, url, response, retryable=is_retryable_fetch_error(response)
@@ -321,6 +341,7 @@ class WebCrawlConnector(BaseConnector):
             title=self._extract_title(html),
             metadata={
                 "original_url": url,
+                "final_url": fetched.final_url,
                 "content_hash": hashlib.sha256(text.encode()).hexdigest(),
             },
         )
