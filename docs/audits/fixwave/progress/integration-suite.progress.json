@@ -573,7 +573,8 @@
   "root_cause": "Harness hand-rolled an app role with DML on only 3 ingestion tables; the source store now also uses tenant_vault_keys (PROV-15 per-tenant envelope key). Production app role (app_role.py: ALL TABLES + default privileges) was already correct; harness now provisions via ensure_app_role. 7/8 failed -> 8/8 pass.",
   "failures": [
    "7 of 8: permission denied for table tenant_vault_keys"
-  ]
+  ],
+  "summary": "9 passed in 14.95s (rebased on main efb67e023)"
  },
  "tests/ingestion/test_mongodb_source_integration.py": {
   "status": "pass",
@@ -594,10 +595,10 @@
  "tests/ingestion/test_neo4j_routing_egress.py": {
   "status": "fixed",
   "failures": [],
-  "summary": "4 passed in 20.54s",
+  "summary": "4 passed in 12.14s (rebased on main efb67e023)",
   "duration_s": 267,
   "root_cause": "SSRF-02 (08caab80b) autouse fixture in tests/ingestion/conftest.py answers every *.test name with 10.255.0.1 from the SSRF guard's resolver, bypassing this module's stub_dns; module overrides that fixture with a no-op. Guard unchanged.",
-  "commit": "91464140e"
+  "commit": "b025bdb2e"
  },
  "tests/ingestion/test_redis_source_integration.py": {
   "status": "pass",
@@ -882,7 +883,7 @@
  "tests/integration/test_tenant_key_compact_pg.py": {
   "status": "pass",
   "failures": [],
-  "summary": "4 passed in 24.70s (rebased on main e6b99545a)",
+  "summary": "4 passed in 15.72s (rebased on main efb67e023)",
   "duration_s": 29,
   "root_cause": "Fixed on main before rebase; passes unchanged.",
   "commit": null
@@ -970,7 +971,7 @@
  "tests/mcp/test_connector_registry_durable_integration.py": {
   "status": "pass",
   "failures": [],
-  "summary": "16 passed in 29.53s (rebased on main e6b99545a)",
+  "summary": "16 passed in 19.13s (rebased on main efb67e023)",
   "duration_s": 38,
   "root_cause": "Fixed on main before rebase; passes unchanged.",
   "commit": null
@@ -1586,10 +1587,10 @@
  "tests/triggers/test_trigger_persistence_integration.py": {
   "status": "fixed",
   "failures": [],
-  "summary": "9 passed in 23.91s",
+  "summary": "9 passed in 16.04s (rebased)",
   "duration_s": 30,
   "root_cause": "Harness hand-rolled app role with DML on 5 tables; schedule store seals webhook secrets via tenant_vault_keys (PROV-15). Production grant (app_role.py ALL TABLES + default privileges) already correct and pinned by test_app_role_bootstrap; harness now uses ensure_app_role.",
-  "commit": "65bbf0b1e"
+  "commit": "d176425a6"
  },
  "tests/triggers/test_trigger_replay_dedup.py": {
   "status": "pass",
@@ -1602,10 +1603,10 @@
  "tests/workflow/test_approval_store.py": {
   "status": "fixed",
   "failures": [],
-  "summary": "9 passed in 19.85s",
+  "summary": "9 passed in 17.32s (rebased)",
   "duration_s": 27,
   "root_cause": "WF-CANCEL-PAUSED (d765ec2e4): decide_if_pending requires a live workflow_runs row. Harness role lacked workflow_runs grant (now ensure_app_role) and tests decided gates of nonexistent runs (now seed waiting_hitl runs).",
-  "commit": "bb2b4f4bf"
+  "commit": "5b90f32c3"
  },
  "tests/workflow/test_approval_store_mocked.py": {
   "status": "pass",
@@ -1618,18 +1619,18 @@
  "tests/workflow/test_approval_store_mutation_pg.py": {
   "status": "fixed",
   "failures": [],
-  "summary": "3 passed in 19.70s",
+  "summary": "3 passed in 17.16s (rebased)",
   "duration_s": 28,
   "root_cause": "Same as test_approval_store.py (shares its fixtures).",
-  "commit": "bb2b4f4bf"
+  "commit": "5b90f32c3"
  },
  "tests/workflow/test_run_store.py": {
   "status": "fixed",
   "failures": [],
-  "summary": "16 passed in 16.40s",
+  "summary": "16 passed in 14.29s (rebased)",
   "duration_s": 30,
   "root_cause": "WF-CANCEL-PAUSED: terminal status withdraws pending approvals; harness role lacked workflow_approvals grant. Harness now uses ensure_app_role.",
-  "commit": "141a4ceaf"
+  "commit": "16b2fc23c"
  },
  "tests/workflow/test_run_store_bypassrls_isolation.py": {
   "status": "pass",
@@ -1666,55 +1667,55 @@
  "e2e_full:tests/e2e_full/test_a2a_tenant_boundary_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "3 passed in 33.23s",
-  "duration_s": 36,
+  "summary": "3 passed in 29.09s",
+  "duration_s": 32,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_a2a_tenant_boundary_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "3 passed in 33.32s",
-  "duration_s": 36,
+  "summary": "3 passed in 26.89s",
+  "duration_s": 29,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_agent_auto_routing_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 28.72s",
-  "duration_s": 31,
+  "summary": "1 passed in 25.62s",
+  "duration_s": 28,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_agent_auto_routing_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 28.86s",
-  "duration_s": 31,
+  "summary": "1 passed in 25.53s",
+  "duration_s": 28,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_agent_pattern_flags_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 28.53s",
-  "duration_s": 31,
+  "summary": "1 passed in 26.17s",
+  "duration_s": 28,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_agent_pattern_flags_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 28.67s",
-  "duration_s": 31,
+  "summary": "1 passed in 26.08s",
+  "duration_s": 28,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_agent_pattern_selection_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "2 passed in 27.78s",
+  "summary": "2 passed in 27.89s",
   "duration_s": 30,
   "root_cause": null,
   "commit": null
@@ -1722,7 +1723,7 @@
  "e2e_full:tests/e2e_full/test_agent_pattern_selection_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "2 passed in 27.95s",
+  "summary": "2 passed in 27.99s",
   "duration_s": 30,
   "root_cause": null,
   "commit": null
@@ -1730,47 +1731,47 @@
  "e2e_full:tests/e2e_full/test_agent_patterns_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 32.45s",
-  "duration_s": 35,
+  "summary": "1 passed in 31.66s",
+  "duration_s": 34,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_agent_patterns_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "\u001b[2m2026-10-05T05:09:18.116136Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
-  "duration_s": 35,
+  "summary": "1 passed in 31.76s",
+  "duration_s": 34,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_agent_teams_e2e.py": {
   "status": "fixed",
   "failures": [],
-  "summary": "1 passed in 71.52s",
-  "duration_s": 72,
+  "summary": "1 passed in 32.22s",
+  "duration_s": 34,
   "root_cause": "Test-only: direct asyncpg check of goals.parent_goal_id ran GUC-less via DATABASE_URL, which under LP is the NOBYPASSRLS app role, so RLS returned no rows. Now sets app.tenant_id + explicit tenant predicate; tenant id from signup (polling /tenants/me tripped free-plan 60 rpm).",
-  "commit": "afa0f20f1"
+  "commit": "1bd6ca762"
  },
  "e2e_full:tests/e2e_full/test_agent_teams_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "\u001b[2m2026-10-05T05:10:30.343006Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
-  "duration_s": 72,
+  "summary": "1 passed in 32.30s",
+  "duration_s": 35,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_approvals_stream_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "2 passed in 93.16s (0:01:33)",
-  "duration_s": 102,
+  "summary": "2 passed in 27.29s",
+  "duration_s": 30,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_approvals_stream_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "2 passed in 26.96s",
+  "summary": "2 passed in 27.22s",
   "duration_s": 30,
   "root_cause": null,
   "commit": null
@@ -1778,87 +1779,87 @@
  "e2e_full:tests/e2e_full/test_binary_prefilter_e2e.py": {
   "status": "fixed",
   "failures": [],
-  "summary": "2 passed in 37.67s",
-  "duration_s": 114,
+  "summary": "2 passed in 24.62s",
+  "duration_s": 27,
   "root_cause": "Two tests shared one module-scoped FREE tenant, each creating a collection; RATE-01 (c2f3a3749) enforces the 1-collection free limit. Tenant fixture now per-test.",
-  "commit": "c093dd3c0"
+  "commit": "4d73f93d7"
  },
  "e2e_full:tests/e2e_full/test_budget_pause_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 80.31s (0:01:20)",
-  "duration_s": 91,
+  "summary": "1 passed in 25.01s",
+  "duration_s": 27,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_civilization_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 62.12s (0:01:02)",
-  "duration_s": 69,
+  "summary": "1 passed in 25.85s",
+  "duration_s": 28,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_compliance_bundle_autonomy_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "5 passed in 40.33s",
-  "duration_s": 47,
+  "summary": "5 passed in 26.86s",
+  "duration_s": 29,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_connectors_multi_instance_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 54.55s",
-  "duration_s": 57,
+  "summary": "1 passed in 37.61s",
+  "duration_s": 40,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_coordination_strategy_goals_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "9 passed in 37.71s",
-  "duration_s": 40,
+  "summary": "9 passed in 59.72s",
+  "duration_s": 62,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_binary_prefilter_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "2 passed in 22.46s",
-  "duration_s": 25,
+  "summary": "2 passed in 24.73s",
+  "duration_s": 27,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_cross_tenant_list_sweep_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 39.92s",
-  "duration_s": 42,
+  "summary": "1 passed in 43.78s",
+  "duration_s": 46,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_budget_pause_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 23.24s",
-  "duration_s": 26,
+  "summary": "1 passed in 25.14s",
+  "duration_s": 27,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_cross_tenant_sweep_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 33.74s",
-  "duration_s": 36,
+  "summary": "1 passed in 38.86s",
+  "duration_s": 41,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_civilization_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 26.21s",
+  "summary": "1 passed in 25.97s",
   "duration_s": 28,
   "root_cause": null,
   "commit": null
@@ -1866,143 +1867,1393 @@
  "e2e_full:tests/e2e_full/test_distributed_hitl_gates_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "4 passed in 29.32s",
-  "duration_s": 31,
+  "summary": "4 passed in 43.60s",
+  "duration_s": 46,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_compliance_bundle_autonomy_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "5 passed in 24.65s",
-  "duration_s": 27,
+  "summary": "5 passed in 26.40s",
+  "duration_s": 29,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_embedding_health_and_reembed_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "5 passed in 25.54s",
-  "duration_s": 28,
+  "summary": "5 passed in 26.63s",
+  "duration_s": 29,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_connectors_multi_instance_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 32.96s",
-  "duration_s": 35,
+  "summary": "1 passed in 37.72s",
+  "duration_s": 40,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_coordination_strategy_goals_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "9 passed in 27.03s",
-  "duration_s": 29,
+  "summary": "9 passed in 60.07s (0:01:00)",
+  "duration_s": 62,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_cross_tenant_list_sweep_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 38.36s",
-  "duration_s": 41,
+  "summary": "1 passed in 43.71s",
+  "duration_s": 46,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_cross_tenant_sweep_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 39.31s",
-  "duration_s": 42,
+  "summary": "1 passed in 38.75s",
+  "duration_s": 41,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_eval_suite_tenant_boundary_e2e.py": {
-  "status": "fail",
-  "failures": [
-   "test_eval_suites_are_isolated_and_runs_are_async: AssertionError: {'run_id': 'ce65efe6a0904cdb8f5945aa9cc62ab0', 'status': 'running', 'total': 1, 'passed': 0, ...}\nassert 'running' in ('completed', 'failed')"
-  ],
-  "summary": "1 failed in 147.61s (0:02:27)",
-  "duration_s": 150,
-  "root_cause": null,
-  "commit": null
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 35.16s",
+  "duration_s": 37,
+  "root_cause": "MEM-53 (590dfe6ef) runs eval suites on Celery when goals queue to Celery; e2e_full has a Celery goal queue but no worker, so the run never progressed. Test turns the goal queue off (in-process executor, same durable steps) like other in-process e2e tests, asserts executor.",
+  "commit": "20bc59191"
  },
  "e2e_full_lp:tests/e2e_full/test_distributed_hitl_gates_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "4 passed in 28.83s",
-  "duration_s": 31,
+  "summary": "4 passed in 43.43s",
+  "duration_s": 46,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_embedding_health_and_reembed_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "5 passed in 25.97s",
-  "duration_s": 28,
+  "summary": "5 passed in 26.74s",
+  "duration_s": 29,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_evals_scorecard_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "\u001b[2m2026-10-05T05:24:43.835244Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
-  "duration_s": 38,
+  "summary": "2 passed in 33.91s",
+  "duration_s": 36,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_goal_events_partitioning_e2e.py": {
-  "status": "fail",
-  "failures": [
-   "test_a_tenant_cannot_append_to_or_read_another_tenants_goal: app.services.event_store.EventAppendError: goal 839349c41a194d8490e829d3abd6ac69 has no row to append events to"
-  ],
-  "summary": "1 failed, 5 passed in 25.63s",
-  "duration_s": 28,
-  "root_cause": null,
-  "commit": null
+  "status": "fixed",
+  "failures": [],
+  "summary": "6 passed in 28.15s",
+  "duration_s": 30,
+  "root_cause": "SVC-08 (bae47535f): append_event now raises EventAppendError for a goal with no row for the caller tenant instead of silently dropping; test expected the old no-op. Now asserts the refusal + nothing written.",
+  "commit": "a68378fd5"
  },
  "e2e_full:tests/e2e_full/test_goal_hitl_lifecycle_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "\u001b[2m2026-10-05T05:25:49.358342Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
-  "duration_s": 37,
+  "summary": "2 passed in 32.68s",
+  "duration_s": 35,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_goal_idempotency_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "\u001b[2m2026-10-05T05:26:17.027834Z\u001b[0m [\u001b[33m\u001b[1mwarning  \u001b[0m] \u001b[1mspan_store_export_failed      \u001b[0m \u001b[36merror\u001b[0m=\u001b[35mConnectionError\u001b[0m",
-  "duration_s": 27,
+  "summary": "2 passed in 32.45s",
+  "duration_s": 35,
   "root_cause": null,
   "commit": null
  },
  "e2e_full:tests/e2e_full/test_goal_lookup_outage_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 24.66s",
+  "summary": "1 passed in 25.26s",
   "duration_s": 27,
   "root_cause": null,
   "commit": null
  },
  "e2e_full_lp:tests/e2e_full/test_eval_suite_tenant_boundary_e2e.py": {
-  "status": "fail",
-  "failures": [
-   "test_eval_suites_are_isolated_and_runs_are_async: AssertionError: {'run_id': 'c823855aca6e41d5a8096dcd7b6d0ccf', 'status': 'running', 'total': 1, 'passed': 0, ...}\nassert 'running' in ('completed', 'failed')"
-  ],
-  "summary": "1 failed in 151.56s (0:02:31)",
-  "duration_s": 154,
-  "root_cause": null,
-  "commit": null
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 35.26s",
+  "duration_s": 37,
+  "root_cause": "MEM-53 (590dfe6ef) runs eval suites on Celery when goals queue to Celery; e2e_full has a Celery goal queue but no worker, so the run never progressed. Test turns the goal queue off (in-process executor, same durable steps) like other in-process e2e tests, asserts executor.",
+  "commit": "20bc59191"
  },
  "e2e_full:tests/e2e_full/test_goal_run_goal_worker_e2e.py": {
   "status": "pass",
   "failures": [],
-  "summary": "1 passed in 43.35s",
+  "summary": "1 passed in 42.38s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_goal_stall_watchdog_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 80.90s (0:01:20)",
+  "duration_s": 83,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_goal_events_partitioning_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "6 passed in 28.06s",
+  "duration_s": 30,
+  "root_cause": "SVC-08 (bae47535f): append_event now raises EventAppendError for a goal with no row for the caller tenant instead of silently dropping; test expected the old no-op. Now asserts the refusal + nothing written.",
+  "commit": "a68378fd5"
+ },
+ "_new_findings": [
+  "~120 integration harnesses (grep NOBYPASSRLS in tests/) still hand-roll the app role with a per-table GRANT list; every new table a store touches (tenant_vault_keys, workflow_runs, workflow_approvals so far) breaks them with 'permission denied' while production (app/db/app_role.py ALL TABLES + default privileges) is fine. They should provision via ensure_app_role (tests/_auth_pg.py) the way the fixed harnesses now do."
+ ],
+ "e2e_full_lp:tests/e2e_full/test_evals_scorecard_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 34.03s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_goal_hitl_lifecycle_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 32.75s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_goal_idempotency_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 32.27s",
+  "duration_s": 34,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_goal_lookup_outage_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 25.34s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_goal_run_goal_worker_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 42.46s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_goal_stall_watchdog_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "2 passed in 75.66s",
+  "duration_s": 44,
+  "root_cause": "Test-only: _goal_row read goals/goal_events GUC-less via DATABASE_URL (the NOBYPASSRLS app role under LP); RLS hid the row. Now sets app.tenant_id + tenant predicates.",
+  "commit": "625c678c8"
+ },
+ "e2e_full_lp:tests/e2e_full/test_grant_lifecycle_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 28.03s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_guardrail_block_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 32.06s",
+  "duration_s": 35,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_grant_lifecycle_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 25.99s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_guardrail_block_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 31.70s",
+  "duration_s": 34,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_hallucination_grounding_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 28.65s",
+  "duration_s": 31,
+  "root_cause": "HIGH-RISK-GATE-WORDING (6417c6595) gates non-read-only steps of high-risk goals; the planned step 'Report how many rows were removed' hit the approval gate before the grounding gate the test targets. Step reworded read-only.",
+  "commit": "7d95702d9"
+ },
+ "e2e_full:tests/e2e_full/test_high_risk_gate_wording_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 34.69s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_hitl_cross_replica_visibility_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 26.45s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_ingestion_pipeline_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "2 passed in 28.23s",
+  "duration_s": 34,
+  "root_cause": "RATE-01 free plan allows 1 knowledge collection; test created 2 without checking status. Tenant moved to STARTER via TenantService.update_plan.",
+  "commit": "9aa7abaef"
+ },
+ "e2e_full:tests/e2e_full/test_ingestion_worldclass_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 24.87s",
+  "duration_s": 27,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_kb_convergence_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 26.66s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_knowledge_documents_api_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 31.36s",
+  "duration_s": 34,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_knowledge_graph_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 25.74s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_knowledge_graph_sql_backed_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "7 passed in 26.58s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_hallucination_grounding_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 32.34s",
+  "duration_s": 534,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_knowledge_ingest_scale_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 34.64s",
+  "duration_s": 532,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_knowledge_multiformat_real_e2e.py": {
+  "status": "blocked",
+  "failures": [],
+  "summary": "3 skipped in 5.93s",
+  "duration_s": 8,
+  "root_cause": "skipif REAL_PROVIDERS!=1 / real embedder env (slow marker: real provider calls); not runnable without real keys.",
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_knowledge_real_documents_e2e.py": {
+  "status": "blocked",
+  "failures": [],
+  "summary": "1 skipped in 0.06s",
+  "duration_s": 1,
+  "root_cause": "skipif REAL_PROVIDERS!=1 / real embedder env (slow marker: real provider calls); not runnable without real keys.",
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_high_risk_gate_wording_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 40.28s",
   "duration_s": 46,
   "root_cause": null,
   "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_marketplace_autonomy_gate_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 29.49s",
+  "duration_s": 32,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_hitl_cross_replica_visibility_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 25.59s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_memory_bindparam_persistence_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 26.73s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_ingestion_pipeline_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 30.79s",
+  "duration_s": 33,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_memory_inspector_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 27.55s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_ingestion_worldclass_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 28.20s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_memory_recall_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 36.76s",
+  "duration_s": 40,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_kb_convergence_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 26.35s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_model_router_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 28.52s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_knowledge_documents_api_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 30.62s",
+  "duration_s": 33,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_multimodal_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 27.24s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_knowledge_graph_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 26.71s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_oauth_token_persistence_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 27.80s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_knowledge_graph_sql_backed_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "7 passed in 26.54s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_observability_trace_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 30.56s",
+  "duration_s": 33,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_knowledge_ingest_scale_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 27.26s",
+  "duration_s": 30,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_knowledge_multiformat_real_e2e.py": {
+  "status": "blocked",
+  "failures": [],
+  "summary": "3 skipped in 1.68s",
+  "duration_s": 3,
+  "root_cause": "skipif REAL_PROVIDERS!=1 / real embedder env (slow marker: real provider calls); not runnable without real keys.",
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_knowledge_real_documents_e2e.py": {
+  "status": "blocked",
+  "failures": [],
+  "summary": "1 skipped in 0.05s",
+  "duration_s": 2,
+  "root_cause": "skipif REAL_PROVIDERS!=1 / real embedder env (slow marker: real provider calls); not runnable without real keys.",
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_ocr_agent_tool_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 41.72s",
+  "duration_s": 44,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_marketplace_autonomy_gate_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 28.23s",
+  "duration_s": 31,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_memory_bindparam_persistence_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 25.47s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_org_any_task_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 30.55s",
+  "duration_s": 33,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_memory_inspector_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 26.42s",
+  "duration_s": 29,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_org_db_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 25.93s",
+  "duration_s": 28,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_memory_recall_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 37.29s",
+  "duration_s": 40,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_org_mission_collaboration_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "3 passed in 194.94s",
+  "duration_s": 42,
+  "root_cause": "Cancel test did not pin plan_mission; FakeProvider plan yielded a multi_agent goal whose empty static plan fails at once since fc2edb156, before the cancel (order-dependent). Pinned sequential plan like sibling tests.",
+  "commit": "07515a3c6"
+ },
+ "e2e_full_lp:tests/e2e_full/test_model_router_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 38.24s",
+  "duration_s": 41,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_org_mission_hitl_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 34.72s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_multimodal_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 39.16s",
+  "duration_s": 43,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_org_rbac_negative_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 37.23s",
+  "duration_s": 41,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_org_tenant_boundary_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 39.70s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_partition_maintenance_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 40.78s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_platform_wiring_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 38.08s",
+  "duration_s": 42,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_prompt_variants_db_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 57.87s",
+  "duration_s": 62,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_rag_default_rerank_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 63.11s (0:01:03)",
+  "duration_s": 68,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_rag_goal_retrieval_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 67.78s (0:01:07)",
+  "duration_s": 74,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_real_providers_e2e.py": {
+  "status": "blocked",
+  "failures": [],
+  "summary": "1 skipped in 0.05s",
+  "duration_s": 3,
+  "root_cause": "Module skips unless REAL_PROVIDERS=1 plus real provider keys (slow marker: real LLM calls). Tests must not depend on real LLMs; not run.",
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_rls_cross_tenant_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 39.86s",
+  "duration_s": 45,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_rpa_pdf_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 66.87s (0:01:06)",
+  "duration_s": 72,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_runtime_records_durable_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 78.99s (0:01:18)",
+  "duration_s": 84,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_scheduled_trigger_is_governed.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 53.78s",
+  "duration_s": 60,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_security_sweep_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "4 passed in 55.71s",
+  "duration_s": 56,
+  "root_cause": "ENT-42 added public /livez (middleware bypass list); sweep _PUBLIC_PREFIXES mirror was not updated.",
+  "commit": "aaf09b85e"
+ },
+ "e2e_full:tests/e2e_full/test_self_optimizer_regression_gate_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 53.39s",
+  "duration_s": 58,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_ssrf_guard_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 61.34s (0:01:01)",
+  "duration_s": 66,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_supervisor_subgoal_pool_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 181.48s (0:03:01)",
+  "duration_s": 188,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_system_jobs_maintenance_role_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed, 1 skipped in 131.54s (0:02:11)",
+  "duration_s": 149,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_tenant_llm_config_durable_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 87.40s (0:01:27)",
+  "duration_s": 108,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_trigger_families_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "8 passed in 59.99s",
+  "duration_s": 65,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_trigger_fire_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 55.90s",
+  "duration_s": 61,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_oauth_token_persistence_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 56.90s",
+  "duration_s": 62,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_trigger_isolation_and_dlq_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 60.78s (0:01:00)",
+  "duration_s": 67,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_observability_trace_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 74.89s (0:01:14)",
+  "duration_s": 81,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_voice_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 83.90s (0:01:23)",
+  "duration_s": 90,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_ocr_agent_tool_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 103.70s (0:01:43)",
+  "duration_s": 110,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_waiting_human_claim_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 76.48s (0:01:16)",
+  "duration_s": 84,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_org_any_task_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 108.91s (0:01:48)",
+  "duration_s": 117,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_approval_ids_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 130.65s (0:02:10)",
+  "duration_s": 138,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_org_db_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 87.85s (0:01:27)",
+  "duration_s": 108,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_approval_mutation_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 80.22s",
+  "duration_s": 123,
+  "root_cause": "703bcac38 decision_status(): approve -> \"approved\" (not generic \"decided\"); test asserted the old value.",
+  "commit": "7a08005a7"
+ },
+ "e2e_full_lp:tests/e2e_full/test_org_mission_collaboration_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 145.86s (0:02:25)",
+  "duration_s": 157,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_approval_save_failure_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 106.96s (0:01:46)",
+  "duration_s": 115,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_audit_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 57.63s",
+  "duration_s": 63,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_cancel_at_gate_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 89.41s (0:01:29)",
+  "duration_s": 96,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_org_mission_hitl_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 69.34s (0:01:09)",
+  "duration_s": 74,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_org_rbac_negative_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 69.52s (0:01:09)",
+  "duration_s": 75,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_code_step_docker_probe_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 80.89s",
+  "duration_s": 108,
+  "root_cause": "Race with the 2 s failed-probe memo (_DOCKER_RETRY_SECONDS): runs triggered right after the socket appeared reused the cached failure (worker log timings confirm). Test waits past the window.",
+  "commit": "5192b50cf"
+ },
+ "e2e_full_lp:tests/e2e_full/test_org_tenant_boundary_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 82.96s (0:01:22)",
+  "duration_s": 92,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_engine_audit_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 91.79s (0:01:31)",
+  "duration_s": 101,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_partition_maintenance_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 54.17s",
+  "duration_s": 60,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_hitl_crossproc_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 66.72s (0:01:06)",
+  "duration_s": 73,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_hitl_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 56.00s",
+  "duration_s": 61,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_platform_wiring_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 46.45s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_inflight_redispatch_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 73.04s (0:01:13)",
+  "duration_s": 77,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_prompt_variants_db_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 49.04s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_input_defaults_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 41.14s",
+  "duration_s": 46,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_rag_default_rerank_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 45.27s",
+  "duration_s": 49,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_legacy_acl_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 42.43s",
+  "duration_s": 46,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_rag_goal_retrieval_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 58.12s",
+  "duration_s": 62,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_real_providers_e2e.py": {
+  "status": "blocked",
+  "failures": [],
+  "summary": "1 skipped in 0.05s",
+  "duration_s": 3,
+  "root_cause": "Module skips unless REAL_PROVIDERS=1 plus real provider keys (slow marker: real LLM calls). Tests must not depend on real LLMs; not run.",
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_parallel_failure_worker_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 61.53s (0:01:01)",
+  "duration_s": 66,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_rls_cross_tenant_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 42.99s",
+  "duration_s": 47,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_published_pinning_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 59.08s",
+  "duration_s": 63,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_rpa_pdf_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 52.68s",
+  "duration_s": 58,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_resume_vars_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 60.90s (0:01:00)",
+  "duration_s": 65,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_runtime_records_durable_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 48.86s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_run_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 65.71s (0:01:05)",
+  "duration_s": 70,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_scheduled_trigger_is_governed.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 51.84s",
+  "duration_s": 56,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_schedule_plan_floor_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 39.39s",
+  "duration_s": 44,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_security_sweep_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 38.59s",
+  "duration_s": 42,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_schedule_scan_scale_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 43.39s",
+  "duration_s": 47,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_self_optimizer_regression_gate_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 46.47s",
+  "duration_s": 50,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_ssrf_guard_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "6 passed in 92.16s (0:01:32)",
+  "duration_s": 97,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_ssrf_egress_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 119.63s (0:01:59)",
+  "duration_s": 126,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_templates_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 86.24s (0:01:26)",
+  "duration_s": 97,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_supervisor_subgoal_pool_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "2 passed in 125.60s",
+  "duration_s": 204,
+  "root_cause": "Test-only: GUC-less child-goal query as the NOBYPASSRLS app role returned no rows. Now tenant GUC + predicate.",
+  "commit": "bea9164ba"
+ },
+ "e2e_full:tests/e2e_full/test_workflow_trigger_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 85.51s (0:01:25)",
+  "duration_s": 93,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_system_jobs_maintenance_role_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "5 passed in 63.93s (0:01:03)",
+  "duration_s": 70,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_two_gate_resume_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 86.83s (0:01:26)",
+  "duration_s": 94,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_workflow_versions_approval_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 58.58s",
+  "duration_s": 64,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full:tests/e2e_full/test_world_class_platform_scenario_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "4 passed in 59.42s",
+  "duration_s": 90,
+  "root_cause": "HIGH-RISK-GATE-WORDING makes the leaked-secret goal high risk: (1) non-read-only planned step hit the approval gate; (2) fail-closed claim grounding rejected the canned/paraphrased answer (provider lacked stream_tokens). Step reworded read-only; provider streams an evidence-faithful answer.",
+  "commit": "4fd3b419e"
+ },
+ "e2e_full_lp:tests/e2e_full/test_tenant_llm_config_durable_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 49.73s",
+  "duration_s": 57,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_trigger_families_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "8 passed in 42.44s",
+  "duration_s": 47,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_trigger_fire_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 32.67s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_trigger_isolation_and_dlq_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 33.87s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_voice_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 45.52s",
+  "duration_s": 49,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_waiting_human_claim_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 32.76s",
+  "duration_s": 36,
+  "root_cause": "Test-only, fixed before the LP lane reached it: setup/DDL fault injection/verification read ran via DATABASE_URL (NOBYPASSRLS app role under LP: no DDL, no rows without app.tenant_id). New conftest owner_dsn fixture used for those steps.",
+  "commit": "4168a7630"
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_approval_ids_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 50.01s",
+  "duration_s": 53,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_approval_mutation_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 50.47s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_approval_save_failure_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 51.63s",
+  "duration_s": 56,
+  "root_cause": "Test-only, fixed before the LP lane reached it: setup/DDL fault injection/verification read ran via DATABASE_URL (NOBYPASSRLS app role under LP: no DDL, no rows without app.tenant_id). New conftest owner_dsn fixture used for those steps.",
+  "commit": "4168a7630"
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_audit_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 33.06s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_cancel_at_gate_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 60.28s (0:01:00)",
+  "duration_s": 64,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_code_step_docker_probe_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 54.22s",
+  "duration_s": 58,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_engine_audit_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 58.08s",
+  "duration_s": 62,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_hitl_crossproc_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 58.58s",
+  "duration_s": 62,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_hitl_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 39.19s",
+  "duration_s": 43,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_inflight_redispatch_e2e.py": {
+  "status": "fixed",
+  "failures": [],
+  "summary": "1 passed in 53.44s",
+  "duration_s": 57,
+  "root_cause": "Test-only, fixed before the LP lane reached it: setup/DDL fault injection/verification read ran via DATABASE_URL (NOBYPASSRLS app role under LP: no DDL, no rows without app.tenant_id). New conftest owner_dsn fixture used for those steps.",
+  "commit": "4168a7630"
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_input_defaults_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 36.60s",
+  "duration_s": 40,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_legacy_acl_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 36.45s",
+  "duration_s": 40,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_parallel_failure_worker_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 53.30s",
+  "duration_s": 57,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_published_pinning_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 50.56s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_resume_vars_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 49.76s",
+  "duration_s": 53,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_run_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 46.46s",
+  "duration_s": 50,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_schedule_plan_floor_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 33.19s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_schedule_scan_scale_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 33.82s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_ssrf_egress_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 50.04s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_templates_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "2 passed in 33.12s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_trigger_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "3 passed in 32.98s",
+  "duration_s": 36,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_two_gate_resume_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "1 passed in 57.13s",
+  "duration_s": 61,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_workflow_versions_approval_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 33.97s",
+  "duration_s": 37,
+  "root_cause": null,
+  "commit": null
+ },
+ "e2e_full_lp:tests/e2e_full/test_world_class_platform_scenario_e2e.py": {
+  "status": "pass",
+  "failures": [],
+  "summary": "4 passed in 50.08s",
+  "duration_s": 54,
+  "root_cause": null,
+  "commit": null
+ },
+ "_branch": {
+  "name": "worktree-agent-a3f26604302354ec1",
+  "head": "4fd3b419e",
+  "base": "main ca4993ce8"
  }
 }

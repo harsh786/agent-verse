@@ -1,0 +1,41 @@
+{
+  "CORE-18": {
+    "status": "done",
+    "commit": "d7f773774",
+    "note": "Postgres strategy_run_checkpoints (RLS) wired into executor/main/goal_bridge; voyager resumes on stored curriculum; unit + real-PG tests"
+  },
+  "WF-TIMEOUT-MISREPORT": {
+    "status": "done",
+    "commit": "755e55e3a",
+    "note": "compiler uses asyncio.timeout; inner TimeoutError keeps cause + real elapsed; unit + run-level + e2e_full tests"
+  },
+  "a08-F188-02": {
+    "status": "done",
+    "commit": "5060cd759",
+    "note": "dead sync get_or_create_channel_session/handle_channel_message removed; tests moved to async path"
+  },
+  "ORG-32": {
+    "status": "done",
+    "commit": "165591b3b",
+    "note": "repo FTS search_messages + count; asearch_messages/asummarize_session; /search, /summarize and GET /sessions/{id}/search on Postgres (a08-F186-01)"
+  },
+  "FE-01": {
+    "status": "done",
+    "commit": "59f7274dc",
+    "note": "stop outcome counts on Redis flag (SET XX), GET returns them; FE store unpersisted, 'status unknown' banner on read failure (a08-F202-01)"
+  },
+  "GDPR-FAILED-EXPORT-UI": {
+    "status": "done",
+    "commit": "75d5772fd",
+    "note": "EnterprisePage shows failed export (error + failed_sections) as red alert, no download; vitest"
+  },
+  "MCP-HEALTH-PROBE-INDEX": {
+    "status": "skipped",
+    "commit": null,
+    "note": "main's health_sweep.fetch_connector_page filters only 'enabled IS TRUE' (ORDER BY tenant_id,id keyset on the PK); it does not imply the partial predicate (status<>'removed' AND url<>'' AND url NOT LIKE 'builtin://%'), so the planner could never use ix_mcp_servers_health_probe"
+  },
+  "_new_findings": [
+    "app/mcp/health_sweep.py fetch_connector_page pages every enabled mcp_servers row, including builtin:// and url='' rows that _probe_target then drops in Python; at scale a page can be mostly unprobeable rows. Fix = push the probe filter into the SQL plus a matching partial (tenant_id, id) index (the leftover RV-03 patch's design).",
+    "app/api/governance.py emergency_stop: record_stop_outcome rewrites the whole flag record (SET XX), so a second operator's re-activation between activate_stop and the outcome write would be overwritten with the first activation's activated_at/activated_by (narrow race, flag stays active)."
+  ]
+}
