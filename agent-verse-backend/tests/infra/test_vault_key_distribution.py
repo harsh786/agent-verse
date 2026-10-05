@@ -420,6 +420,58 @@ def test_k8s_roles_reach_the_right_workloads() -> None:
             assert "MIGRATION_DATABASE_URL" not in names, f"{fname}:{name} holds the owner DSN"
 
 
+def _pgbouncer() -> tuple[dict[str, Any], dict[str, Any]]:
+    docs = [d for _f, d in _k8s_docs() if _f == "pgbouncer-deployment.yaml"]
+    deploy = next(d for d in docs if d.get("kind") == "Deployment")
+    scripts = next(d for d in docs if d.get("kind") == "ConfigMap")
+    return deploy, scripts
+
+
+def test_k8s_pgbouncer_knows_the_app_role() -> None:
+    """NF-16 follow-up: app pods connect as APP_DB_USER through pgBouncer.
+
+    The image writes only DB_USER (the owner) into its auth file; the same
+    wrapper compose uses (infra/pgbouncer/add-app-user.sh) adds APP_DB_USER with
+    the password from agentverse-secrets — the Secret the app's DATABASE_URL and
+    the migration Job (which creates the role with it) read too.
+    """
+    deploy, scripts = _pgbouncer()
+    container = deploy["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"].startswith("edoburu/pgbouncer:")
+    script = (INFRA / "pgbouncer" / "add-app-user.sh").read_text()
+    assert scripts["data"]["add-app-user.sh"] == script, "k8s copy drifted from compose's"
+    assert container["command"] == ["/bin/sh", "/opt/agentverse/add-app-user.sh"]
+    mounts = {m["mountPath"] for m in container.get("volumeMounts") or []}
+    assert "/opt/agentverse" in mounts
+    env = {e["name"]: e for e in container["env"]}
+    for name in ("APP_DB_USER", "APP_DB_PASSWORD", "DB_PASSWORD"):
+        ref = env[name]["valueFrom"]["secretKeyRef"]
+        assert ref["name"] == "agentverse-secrets", name
+    secret_keys = _secret_keys(_k8s_docs(), _kustomized())["agentverse-secrets"]
+    assert {"APP_DB_USER", "APP_DB_PASSWORD", "POSTGRES_PASSWORD"} <= secret_keys
+    assert env["APP_DB_PASSWORD"]["valueFrom"]["secretKeyRef"]["key"] == "APP_DB_PASSWORD"
+    assert env["AUTH_TYPE"]["value"] == "scram-sha-256"
+    assert env["LISTEN_PORT"]["value"] == "5432"  # the Service / NetworkPolicy port
+    ignored = env["IGNORE_STARTUP_PARAMETERS"]["value"]
+    for param in ("statement_timeout", "idle_in_transaction_session_timeout"):
+        assert param in ignored  # asyncpg sends them (app/db/session.py)
+
+
+def test_k8s_dev_secret_app_dsn_matches_the_app_role() -> None:
+    docs = [d for f, d in _k8s_docs() if f == "secrets.yaml"]
+    main = next(d for d in docs if d["metadata"]["name"] == "agentverse-secrets")["stringData"]
+    from sqlalchemy.engine import make_url
+
+    url = make_url(main["DATABASE_URL"])
+    assert url.username == main["APP_DB_USER"]
+    assert url.host == "pgbouncer"
+    migration = next(
+        d for d in docs if d["metadata"]["name"] == "agentverse-migration-secrets"
+    )["stringData"]
+    # The role's credentials live in ONE Secret; the owner DSN alone is separate.
+    assert set(migration) == {"MIGRATION_DATABASE_URL"}
+
+
 def test_legacy_helm_roles() -> None:
     api = _legacy_env("deployment.yaml")
     assert api["MAINTENANCE_DATABASE_URL"] == ("agentverse-secrets", "maintenance-database-url")

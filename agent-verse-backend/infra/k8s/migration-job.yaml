@@ -28,7 +28,8 @@ spec:
           # NF-16: alembic runs as the schema OWNER (MIGRATION_DATABASE_URL) and
           # then creates/repairs the least-privilege app role APP_DB_USER with
           # grants. Only this Job gets the owner DSN (agentverse-migration-secrets);
-          # DATABASE_URL (the app role) comes from agentverse-secrets.
+          # DATABASE_URL and the app role's APP_DB_USER / APP_DB_PASSWORD come
+          # from agentverse-secrets (pgBouncer lists the same credentials).
           envFrom:
             - configMapRef:
                 name: agentverse-config
