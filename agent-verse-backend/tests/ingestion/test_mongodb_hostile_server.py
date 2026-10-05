@@ -178,3 +178,54 @@ async def test_stalled_server_fails_the_sync_with_an_error(stalled: FakeMongod) 
     assert "timed out" in job.error_message.lower()
     assert job.docs_failed >= 1  # USR-1: the source-level failure is counted
     assert pipeline.docs == []
+
+
+# ── C4 / MDB-11 / TG-08: a member advertised AFTER discovery is never dialled ─
+
+
+async def test_member_advertised_after_discovery_is_never_dialled() -> None:
+    from tests.ingestion.fake_mongod import Victim
+
+    victim = Victim()
+    # Discovery's hello is answered clean; afterwards every hello (the driver's
+    # monitors) also lists localhost:<victim> — a host the egress policy never
+    # checked (only 127.0.0.1 is allowlisted).
+    srv = FakeMongod(set_name="rs0", advertise=f"localhost:{victim.port}")
+    try:
+        settings = mc._settings({"uri": f"mongodb://{srv.me}/", "database": "db"})
+        async with mc._connected(settings) as (client, s):
+            names = await asyncio.to_thread(mc._list_collections, client, s)
+            assert names == ["c"]
+            # Give the monitors time to learn about, and try, the new member.
+            for _ in range(30):
+                topology = {
+                    tuple(a) for a in client.topology_description.server_descriptions()
+                }
+                if ("localhost", victim.port) in topology:
+                    break
+                await asyncio.sleep(0.1)
+            await asyncio.sleep(1.5)
+        assert srv.turned, "the fake server never advertised the extra member"
+        assert ("localhost", victim.port) in topology, topology
+        assert victim.hits == [], "an unchecked replica-set member was dialled"
+    finally:
+        srv.close()
+        victim.close()
+
+
+async def test_member_advertised_after_discovery_is_never_dialled_by_a_sync() -> None:
+    """The same through the connector's get_delta (the worker's sync path)."""
+    from tests.ingestion.fake_mongod import Victim
+
+    victim = Victim()
+    srv = FakeMongod(set_name="rs0", advertise=f"localhost:{victim.port}")
+    try:
+        connector = mc.MongoDBConnector()
+        docs = [d async for d in connector.get_delta(_config(f"mongodb://{srv.me}/"), None)]
+        await asyncio.sleep(1.5)
+        assert docs == []
+        assert srv.turned
+        assert victim.hits == []
+    finally:
+        srv.close()
+        victim.close()

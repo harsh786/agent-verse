@@ -40,8 +40,9 @@ string) is honoured for the single configured collection.
 
 Egress: every seed host (and SRV target) must pass the connector egress policy
 and is pinned for the connection; replica-set members the server advertises are
-checked and pinned before the driver may dial them, and a server selector keeps
-operations on checked members only. URI options that read platform files
+checked and pinned before the driver may dial them; a member advertised later is
+refused in the driver's socket factory (no socket is ever opened to it), and a
+server selector keeps operations on checked members only. URI options that read platform files
 (``tlsCAFile``...), route through a proxy, or authenticate with the platform's
 own ambient credentials (MONGODB-AWS / OIDC / GSSAPI) are refused.
 """
@@ -327,10 +328,26 @@ def _single_host_uri(dsn: str, host: str, port: int) -> str:
     )
 
 
-def _client(dsn: str, kwargs: dict[str, Any], **extra: Any) -> Any:
+def _client(
+    dsn: str, kwargs: dict[str, Any], *, allowed: set[tuple[str, int]], **extra: Any
+) -> Any:
+    """A MongoClient that can open sockets to ``allowed`` (checked) hosts only.
+
+    C4 / MDB-11: pymongo's monitor threads dial every member a server lists in
+    ``hello`` — including one advertised AFTER discovery, which no egress check
+    ever saw (a blind SSRF: TCP connect + hello to any host:port). The member
+    guard shared with the MCP builtin (MONGO-MONITOR) refuses, in the driver's
+    socket factory, any address not in ``allowed`` before a socket exists; the
+    server selector additionally keeps operations off such members.
+    """
     from pymongo import MongoClient
 
-    return MongoClient(dsn, **{**kwargs, **extra})
+    from app.mcp.servers.mongodb_server import _install_member_guard, _MemberGuard
+
+    _install_member_guard()
+    options = {**kwargs, **extra}
+    options["event_listeners"] = [*options.get("event_listeners", []), _MemberGuard(allowed)]
+    return MongoClient(dsn, **options)
 
 
 def _discover_members(
@@ -352,6 +369,7 @@ def _discover_members(
         client = _client(
             _single_host_uri(dsn, host, port),
             {k: v for k, v in kwargs.items() if k not in ("replicaSet", "directConnection")},
+            allowed={(host, port)},
             directConnection=True,
         )
         try:
@@ -412,7 +430,7 @@ async def _connected(settings: _Settings) -> AsyncIterator[tuple[Any, _Settings]
             ) from exc
         allowed = {_host_key(h, p) for h, p in _dsn_hosts(pins.dsn)} | set(members)
         client = await asyncio.to_thread(
-            _client, pins.dsn, kwargs, server_selector=_selector(allowed)
+            _client, pins.dsn, kwargs, allowed=allowed, server_selector=_selector(allowed)
         )
         try:
             yield client, settings
