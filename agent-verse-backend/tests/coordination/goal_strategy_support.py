@@ -6,7 +6,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.coordination.pattern_runs.goal_bridge import CoordinationGoalBridge
-from app.orchestration.distributed_strategy_loop import DistributedStrategyLoop
+from app.orchestration.distributed_strategy_loop import (
+    DistributedStrategyLoop,
+    DistributedStrategyOutcome,
+)
 from app.orchestration.runtime_profile import StrategySelection, default_pattern_limits
 from app.orchestration.strategy_context_store import StrategyGoalContextStore
 from app.orchestration.strategy_executor import (
@@ -39,7 +42,7 @@ async def run_goal(
     tenant_ctx: Any,
     provider: Any,
     **limit_overrides: Any,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+) -> tuple[DistributedStrategyOutcome, list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
 
     async def callback(event: dict[str, Any]) -> None:

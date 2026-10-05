@@ -228,3 +228,57 @@ def test_worker_graph_receives_episodic_procedural_and_tool_reliability(
     # DB-wired (the worker's session factory), not a per-process cache.
     assert graph._tool_reliability_store._db is not None
     assert graph._procedural_memory._db is not None
+
+
+@pytest.mark.parametrize(
+    ("terminal", "expected"),
+    [("succeeded", "complete"), ("failed", "failed"), ("cancelled", "cancelled")],
+)
+def test_distributed_strategy_result_completes_the_worker_without_retry(
+    worker: dict[str, Any], monkeypatch: pytest.MonkeyPatch, terminal: str, expected: str
+) -> None:
+    """P5-3: DistributedStrategyLoop.run returned a dict; the worker read
+    ``state.status.value`` → AttributeError, retried as transient, and the rerun
+    opened a fresh approval (mixture_of_agents stuck ``executing``)."""
+    from types import SimpleNamespace
+
+    from app.orchestration.distributed_strategy_loop import DistributedStrategyLoop
+    from app.orchestration.strategy_context_store import StrategyGoalContextStore
+    from app.orchestration.strategy_contracts import ExecutionTerminalState
+
+    profile = _profile("mixture_of_agents", ExecutionTier.DISTRIBUTED)
+    runs: list[Any] = []
+
+    class _Runner:
+        has_real_executor = True
+
+        async def run(self, request: Any, limits: Any) -> Any:
+            runs.append(request)
+            return SimpleNamespace(
+                terminal_state=ExecutionTerminalState(terminal),
+                answer="MOA ANSWER" if terminal == "succeeded" else None,
+                cost_usd=0.01,
+                trace_summary=SimpleNamespace(reason_codes=()),
+            )
+
+    def _loop(*_a: Any, **_k: Any) -> Any:
+        return DistributedStrategyLoop(
+            strategy_runner=_Runner(),  # type: ignore[arg-type]
+            context_store=StrategyGoalContextStore(),
+            profile=profile,
+            provider=object(),
+            agent_id="agent-moa",
+        )
+
+    monkeypatch.setattr(
+        "app.coordination.pattern_runs.goal_bridge.build_worker_distributed_loop", _loop
+    )
+    worker["with_context"]({"runtime_profile": profile.to_dict(), "strategy_runtime_path": "v2"})
+
+    result = _run()
+
+    assert result["status"] == expected, result
+    assert len(runs) == 1  # ran once: no transient retry re-running the strategy
+    execution = worker["merged"]["strategy_execution"]
+    assert execution["driver"] == "strategy_runner"
+    assert execution["patterns"] == ["mixture_of_agents"]

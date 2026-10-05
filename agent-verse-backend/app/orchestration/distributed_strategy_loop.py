@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from app.agent.state import AgentState, GoalStatus
 from app.orchestration.strategy_context_store import StrategyGoalContext, StrategyGoalContextStore
 from app.orchestration.strategy_contracts import ExecutionTerminalState, StrategyExecutionRequest
 
@@ -37,6 +38,30 @@ _FAILURE_REASON_BY_STATE = {
     ExecutionTerminalState.LIMIT_EXCEEDED: "Strategy execution exceeded a bounded limit.",
     ExecutionTerminalState.POLICY_DENIED: "Strategy execution was denied by policy.",
 }
+
+
+_GOAL_STATUS_BY_STATE = {
+    ExecutionTerminalState.SUCCEEDED: GoalStatus.COMPLETE,
+    ExecutionTerminalState.CANCELLED: GoalStatus.CANCELLED,
+}
+
+
+@dataclass
+class DistributedStrategyOutcome(AgentState):
+    """The terminal ``AgentState`` of a goal run through ``StrategyRunner`` (P5-3).
+
+    ``DistributedStrategyLoop`` is a drop-in for ``AgentGraph.run``, whose callers
+    (the Celery worker's terminal bookkeeping, GoalService, goal learning) read
+    ``.status`` / ``.iterations`` / ``.context``. It used to return a dict, so every
+    finished v2 distributed-strategy goal crashed the worker with
+    ``'dict' object has no attribute 'status'``, was retried as transient and
+    re-ran the strategy (a fresh approval each time). The strategy's own result
+    fields ride along as attributes.
+    """
+
+    terminal_state: str = ""
+    answer: str | None = None
+    cost_usd: float = 0.0
 
 
 @dataclass
@@ -64,7 +89,7 @@ class DistributedStrategyLoop:
         event_callback: Any = None,
         goal_id: str | None = None,
         **_ignored_agent_graph_kwargs: Any,
-    ) -> dict[str, Any]:
+    ) -> DistributedStrategyOutcome:
         profile = self.profile
         resolved_goal_id = goal_id or profile.goal_id
         context_snapshot_ref = f"strategy-goal-context://{tenant_ctx.tenant_id}:{resolved_goal_id}"
@@ -105,6 +130,13 @@ class DistributedStrategyLoop:
         finally:
             await self.context_store.discard(context_snapshot_ref)
 
+        failure_reason = ""
+        if result.terminal_state is not ExecutionTerminalState.SUCCEEDED:
+            reason = _FAILURE_REASON_BY_STATE.get(
+                result.terminal_state, "Strategy execution stopped safely."
+            )
+            reason_codes = ", ".join(result.trace_summary.reason_codes)
+            failure_reason = f"{reason} ({reason_codes})" if reason_codes else reason
         if event_callback is not None:
             if result.terminal_state is ExecutionTerminalState.SUCCEEDED:
                 await event_callback(
@@ -116,23 +148,32 @@ class DistributedStrategyLoop:
                     }
                 )
             else:
-                reason = _FAILURE_REASON_BY_STATE.get(
-                    result.terminal_state, "Strategy execution stopped safely."
-                )
-                reason_codes = ", ".join(result.trace_summary.reason_codes)
                 await event_callback(
                     {
                         "type": "goal_failed",
-                        "reason": f"{reason} ({reason_codes})" if reason_codes else reason,
+                        "reason": failure_reason,
                         "strategy_id": profile.primary_strategy.strategy_id,
                         "execution_tier": "distributed",
                     }
                 )
-        return {
-            "terminal_state": result.terminal_state.value,
-            "answer": result.answer,
-            "cost_usd": result.cost_usd,
-        }
+        answer = result.answer
+        return DistributedStrategyOutcome(
+            goal=goal,
+            tenant_ctx=tenant_ctx,
+            goal_id=resolved_goal_id,
+            status=_GOAL_STATUS_BY_STATE.get(result.terminal_state, GoalStatus.FAILED),
+            iterations=1,
+            context={
+                "strategy_id": profile.primary_strategy.strategy_id,
+                "execution_tier": "distributed",
+            },
+            verification_success=result.terminal_state is ExecutionTerminalState.SUCCEEDED,
+            error_message=failure_reason,
+            cited_answer=answer or "",
+            terminal_state=result.terminal_state.value,
+            answer=answer,
+            cost_usd=float(result.cost_usd),
+        )
 
 
-__all__ = ["DistributedStrategyLoop"]
+__all__ = ["DistributedStrategyLoop", "DistributedStrategyOutcome"]
