@@ -99,13 +99,13 @@ export function PemTextarea({ id, label, value, onChange, hint }: {
   );
 }
 
-export function Checkbox({ id, label, checked, onChange, hint }: {
-  id: string; label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string;
+export function Checkbox({ id, label, checked, onChange, hint, disabled }: {
+  id: string; label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean;
 }) {
   return (
     <div>
       <label htmlFor={id} className="flex items-center gap-2 text-sm font-medium">
-        <input id={id} type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
+        <input id={id} type="checkbox" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
         {label}
       </label>
       {hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
@@ -118,13 +118,16 @@ export function Checkbox({ id, label, checked, onChange, hint }: {
  * custom CA, and a client certificate + key for mutual TLS. Field names match
  * the backend connectors (tls, tls_ca_pem, tls_client_cert, tls_client_private_key).
  */
-export function TlsFields({ prefix, value, set }: {
+export function TlsFields({ prefix, value, set, requiredReason }: {
   prefix: string; value: Record<string, unknown>; set: (k: string, v: unknown) => void;
+  /** TLS is mandatory (e.g. X.509 auth): the switch is locked on and this explains why. */
+  requiredReason?: string;
 }) {
-  const enabled = Boolean(value.tls);
+  const enabled = Boolean(value.tls) || !!requiredReason;
   return (
     <div className="space-y-3">
-      <Checkbox id={`${prefix}-tls`} label="Use TLS" checked={enabled} onChange={v => set('tls', v)} />
+      <Checkbox id={`${prefix}-tls`} label="Use TLS" checked={enabled} disabled={!!requiredReason}
+        onChange={v => set('tls', v)} hint={requiredReason} />
       {enabled && <>
         <PemTextarea id={`${prefix}-tls-ca`} label="CA certificate (PEM, optional)" hint="Verify the server against this CA instead of the system trust store."
           value={value.tls_ca_pem} onChange={v => set('tls_ca_pem', v)} />

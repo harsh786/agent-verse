@@ -16,6 +16,7 @@ export function DatabaseForm({ sourceType, value, onChange, errors = {} }: FormP
   const isSnowflake = sourceType === 'snowflake';
   const isBigQuery  = sourceType === 'bigquery';
   const isMongo     = sourceType === 'mongodb';
+  const isX509      = isMongo && String(value.auth_mechanism ?? '').toUpperCase() === 'MONGODB-X509';
 
   return (
     <div className="space-y-3">
@@ -45,13 +46,19 @@ export function DatabaseForm({ sourceType, value, onChange, errors = {} }: FormP
         <F label="Username" error={errors.username}><input type="text" value={String(value.username ?? '')} aria-invalid={errors.username ? true : undefined} onChange={e => set('username', e.target.value)} autoComplete="off" className={inputCls} /></F>
         <SecretInput id="mongo-password" label="Password" value={value.password} onChange={v => set('password', v)} error={errors.password} />
         <F label="Auth source" error={errors.auth_source}><input type="text" value={String(value.auth_source ?? '')} aria-invalid={errors.auth_source ? true : undefined} onChange={e => set('auth_source', e.target.value)} placeholder="admin" className={inputCls} /></F>
-        <F label="Auth mechanism" error={errors.auth_mechanism}><select value={String(value.auth_mechanism ?? '')} aria-invalid={errors.auth_mechanism ? true : undefined} onChange={e => set('auth_mechanism', e.target.value)} className={inputCls}>
+        <F label="Auth mechanism" error={errors.auth_mechanism}><select value={String(value.auth_mechanism ?? '')} aria-invalid={errors.auth_mechanism ? true : undefined} onChange={e => {
+          // X.509 authenticates with a client certificate over TLS (B5): turn
+          // TLS on so the certificate fields appear with the choice.
+          const mechanism = e.target.value;
+          onChange(mechanism === 'MONGODB-X509' ? { ...value, auth_mechanism: mechanism, tls: true } : { ...value, auth_mechanism: mechanism });
+        }} className={inputCls}>
           <option value="">Default (SCRAM)</option><option value="SCRAM-SHA-256">SCRAM-SHA-256</option><option value="SCRAM-SHA-1">SCRAM-SHA-1</option>
           <option value="PLAIN">PLAIN (LDAP)</option><option value="MONGODB-X509">X.509 client certificate</option>
         </select></F>
         <F label="Incremental cursor field" error={errors.cursor_field}><input type="text" value={String(value.cursor_field ?? '')} aria-invalid={errors.cursor_field ? true : undefined} onChange={e => set('cursor_field', e.target.value)} placeholder="_id" className={inputCls} /></F>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(value.direct_connection)} onChange={e => set('direct_connection', e.target.checked)} />Direct connection (no replica-set discovery)</label>
-        <TlsFields prefix="mongo" value={value} set={set} />
+        <TlsFields prefix="mongo" value={value} set={set}
+          requiredReason={isX509 ? 'X.509 needs the client certificate and its private key below (TLS is required).' : undefined} />
         <MongoAdvanced value={value} onChange={onChange} errors={errors} />
       </>}
     </div>

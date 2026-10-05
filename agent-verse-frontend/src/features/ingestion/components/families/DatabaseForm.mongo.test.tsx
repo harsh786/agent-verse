@@ -49,3 +49,31 @@ describe('B4 MongoDB advanced options', () => {
     expect(screen.getByLabelText(/replica set/i)).toHaveValue('rs0');
   });
 });
+
+describe('B5 X.509 reveals the certificate fields', () => {
+  const mech = () => screen.getByDisplayValue('Default (SCRAM)') as HTMLSelectElement;
+
+  test('choosing MONGODB-X509 turns TLS on and shows the client certificate and key', async () => {
+    const spy = vi.fn();
+    render(<Harness spy={spy} />);
+    expect(screen.queryByLabelText(/client certificate/i)).not.toBeInTheDocument();
+    await userEvent.selectOptions(mech(), 'MONGODB-X509');
+    expect(last(spy)).toMatchObject({ auth_mechanism: 'MONGODB-X509', tls: true });
+    expect(screen.getByRole('checkbox', { name: /use tls/i })).toBeChecked();
+    expect(screen.getByLabelText(/client certificate/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/client private key/i)).toBeInTheDocument();
+    expect(screen.getByText(/x\.509 needs the client certificate and its private key/i)).toBeInTheDocument();
+  });
+
+  test('with X.509 the certificate fields stay visible and TLS stays on', async () => {
+    render(<Harness initial={{ auth_mechanism: 'MONGODB-X509', tls: true }} spy={vi.fn()} />);
+    const tls = screen.getByRole('checkbox', { name: /use tls/i });
+    expect(tls).toBeDisabled();
+    expect(screen.getByLabelText(/client certificate/i)).toBeInTheDocument();
+  });
+
+  test('a stored X.509 source without tls still shows its certificate fields', () => {
+    render(<Harness initial={{ auth_mechanism: 'MONGODB-X509' }} spy={vi.fn()} />);
+    expect(screen.getByLabelText(/client certificate/i)).toBeInTheDocument();
+  });
+});
