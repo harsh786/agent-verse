@@ -169,9 +169,11 @@ def _docx_blocks(document: object) -> list[str]:
     for child in body.iterchildren():
         tag = child.tag.rsplit("}", 1)[-1]
         if tag == "p":
-            text = Paragraph(child, document).text  # type: ignore[arg-type]
+            paragraph = Paragraph(child, document)  # type: ignore[arg-type]
+            text = paragraph.text
             if text.strip():
-                out.append(text)
+                level = _docx_heading_level(paragraph)
+                out.append(f"{'#' * level} {text.strip()}" if level else text)
         elif tag == "tbl":
             table = Table(child, document)  # type: ignore[arg-type]
             rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
@@ -190,6 +192,22 @@ def _docx_blocks(document: object) -> list[str]:
                 if pairs:
                     out.append("; ".join(pairs))
     return out
+
+
+def _docx_heading_level(paragraph: Any) -> int:
+    """Markdown level of a Word heading paragraph (Title = 1, Heading N = N), else 0,
+    so the upload chunker can start a chunk per section."""
+    try:
+        name = str(paragraph.style.name or "")
+    except Exception:
+        return 0
+    if name == "Title":
+        return 1
+    if name.startswith("Heading "):
+        digits = name.removeprefix("Heading ").strip()
+        if digits.isdigit():
+            return max(1, min(6, int(digits)))
+    return 0
 
 
 class UnsupportedDocumentError(ValueError):

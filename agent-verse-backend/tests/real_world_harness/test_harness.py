@@ -44,9 +44,10 @@ def _extract(doc: cp.CorpusDoc) -> list[str]:
 
 
 def _chunks(texts: list[str]) -> int:
-    from app.knowledge.chunker_v2 import chunk_by_tokens
+    """Chunks the upload endpoint makes of these segments (its structure-aware chunker)."""
+    from app.knowledge.chunker_v2 import chunk_structured
 
-    return sum(len([c for c in (chunk_by_tokens(t, max_tokens=512, overlap_tokens=64) or [t])
+    return sum(len([c for c, _ in chunk_structured(t, max_tokens=512, overlap_tokens=64)
                     if c.strip()]) for t in texts)
 
 

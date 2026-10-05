@@ -1242,25 +1242,21 @@ async def ingest_file(
             )
         ]
 
-    from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
+    from app.knowledge.chunker_v2 import chunk_structured
 
     # (unit, content, page, char_offset): a PDF keeps its pages so results can
     # cite them; an archive member never shares a chunk with another member.
+    # Structure-aware chunks (whole lines, a new chunk per section) keep an
+    # edit's effect inside its own section, so unchanged chunks keep their ids.
     pieces: list[tuple[_UploadUnit, str, int | None, int]] = []
     for unit in units:
         for page, raw_text in unit.segments:
             text = await _screen_or_http(
                 request, tenant.tenant_id, raw_text, doc_id=unit.source_file
             )
-            chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64) or [text]
-            cursor = 0
-            for chunk in chunks:
-                if not chunk.strip():
-                    continue
-                found = text.find(chunk[:200], cursor)
-                offset = found if found >= 0 else cursor
-                cursor = max(cursor, offset)
-                pieces.append((unit, chunk, page, offset))
+            for chunk, offset in chunk_structured(text, max_tokens=512, overlap_tokens=64):
+                if chunk.strip():
+                    pieces.append((unit, chunk, page, offset))
     if not pieces:
         raise HTTPException(422, "File is empty or could not be parsed")
 

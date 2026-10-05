@@ -9,9 +9,20 @@ module is safe to import in environments without the tiktoken package.
 
 from __future__ import annotations
 
+import functools
+import re
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
-__all__ = ["ParentWindow", "build_parent_windows", "chunk_by_chars", "chunk_by_tokens"]
+__all__ = [
+    "ParentWindow",
+    "build_parent_windows",
+    "chunk_by_chars",
+    "chunk_by_tokens",
+    "chunk_structured",
+    "count_tokens",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,3 +148,144 @@ def chunk_by_tokens(
 # Alias kept for backward compat with code that imports chunk_by_chars
 # ---------------------------------------------------------------------------
 chunk_by_chars = _chunk_by_chars
+
+
+# ---------------------------------------------------------------------------
+# Structure-aware chunking (uploads)
+# ---------------------------------------------------------------------------
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+\S")
+_SENTENCE_END = re.compile(r"(?<=[.!?;\u3002\uff01\uff1f\u0964])\s+")
+
+
+@functools.lru_cache(maxsize=1)
+def _encoding() -> Any:
+    try:
+        import tiktoken
+    except ImportError:
+        return None
+    return tiktoken.get_encoding("cl100k_base")
+
+
+def count_tokens(text: str) -> int:
+    """cl100k_base tokens of ``text`` (about 4 characters per token without tiktoken)."""
+    enc = _encoding()
+    if enc is None:
+        return max(1, len(text) // 4) if text else 0
+    return len(enc.encode(text))
+
+
+def _token_windows(text: str, max_tokens: int) -> list[str]:
+    enc = _encoding()
+    if enc is None:
+        step = max_tokens * 4
+        return [text[i : i + step] for i in range(0, len(text), step)]
+    tokens = enc.encode(text)
+    return [enc.decode(tokens[i : i + max_tokens]) for i in range(0, len(tokens), max_tokens)]
+
+
+@dataclass(frozen=True, slots=True)
+class _Unit:
+    text: str
+    offset: int
+    tokens: int
+    level: int  # markdown heading level, 0 for body text
+
+
+def _units(text: str, max_tokens: int) -> Iterator[_Unit]:
+    """Lines of ``text`` (blank lines dropped); a line over the budget becomes its
+    sentences, a sentence over the budget token windows."""
+    pos = 0
+    for line in text.split("\n"):
+        start, pos = pos, pos + len(line) + 1
+        if not line.strip():
+            continue
+        tokens = count_tokens(line)
+        heading = _HEADING_RE.match(line)
+        level = len(heading.group(1)) if heading and len(line) <= 300 else 0
+        if tokens <= max_tokens:
+            yield _Unit(line, start, tokens, level)
+            continue
+        cursor = 0
+        for sentence in _SENTENCE_END.split(line):
+            if not sentence.strip():
+                continue
+            at = line.find(sentence, cursor)
+            at = cursor if at < 0 else at
+            cursor = at + len(sentence)
+            pieces = (
+                [sentence]
+                if count_tokens(sentence) <= max_tokens
+                else _token_windows(sentence, max_tokens)
+            )
+            inner = 0
+            for piece in pieces:
+                found = sentence.find(piece, inner)
+                inner = found if found >= 0 else inner
+                yield _Unit(piece, start + at + inner, count_tokens(piece), 0)
+                inner += len(piece)
+
+
+def _cost(units: list[_Unit]) -> int:
+    # one token per line break: a conservative bound for the joined text
+    return sum(u.tokens for u in units) + max(0, len(units) - 1)
+
+
+def chunk_structured(
+    text: str,
+    max_tokens: int = 512,
+    overlap_tokens: int = 64,
+    heading_break_tokens: int | None = None,
+) -> list[tuple[str, int]]:
+    """Chunk ``text`` along its structure: ``[(chunk_text, char_offset), ...]``.
+
+    Whole lines are packed up to ``max_tokens`` (a line longer than that is
+    split into sentences, a sentence longer than that into token windows), so a
+    table row or a sentence is never cut in half. A markdown heading starts a
+    new chunk once the current one holds ``heading_break_tokens`` (default a
+    quarter of the budget): an edit inside one section then leaves the other
+    sections' chunks byte-identical (stable chunk ids, P1a-7) — fixed token
+    windows shifted every later chunk. A section split for size carries its
+    heading path into the continuation chunk, and consecutive chunks of a
+    section overlap by up to ``overlap_tokens`` of whole lines. ``char_offset``
+    is where the chunk's first line (after any carried headings) starts.
+    """
+    if not text.strip():
+        return []
+    min_break = max_tokens // 4 if heading_break_tokens is None else heading_break_tokens
+    chunks: list[tuple[str, int]] = []
+    path: list[_Unit] = []  # current heading path (one per level)
+    prefix: list[_Unit] = []  # headings carried into a continuation chunk
+    body: list[_Unit] = []
+    own = 0  # units of ``body`` that are not overlap
+
+    def flush() -> None:
+        if own and body:
+            chunks.append(("\n".join(u.text for u in prefix + body), body[0].offset))
+
+    for unit in _units(text, max_tokens):
+        if unit.level:
+            if own and _cost(body[-own:]) >= min_break:
+                flush()
+                prefix, body, own = [], [], 0
+            path = [h for h in path if h.level < unit.level] + [unit]
+        elif own and _cost(prefix + body + [unit]) > max_tokens:
+            while body and body[-1].level:  # never end a chunk on a heading
+                body.pop()
+                own -= 1
+            flush()
+            overlap: list[_Unit] = []
+            for prev in reversed(body):
+                if prev.level or _cost([prev, *overlap]) > overlap_tokens:
+                    break
+                overlap.insert(0, prev)
+            prefix = list(path)
+            body, own = overlap, 0
+            while body and _cost(prefix + body + [unit]) > max_tokens:
+                body.pop(0)
+            if _cost(prefix + body + [unit]) > max_tokens:
+                prefix = []
+        body.append(unit)
+        own += 1
+    flush()
+    return chunks
