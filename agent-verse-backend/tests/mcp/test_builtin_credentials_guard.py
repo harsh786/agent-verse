@@ -242,12 +242,19 @@ def sentinel_world(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
 
         return _factory
 
+    import importlib
+
     import boto3
+
+    # Import the submodule explicitly: tests that swap a fake ``boto3`` into
+    # sys.modules leave the real ``boto3.session`` cached, so a later fresh
+    # ``import boto3`` never binds the ``session`` attribute on the package.
+    boto3_session = importlib.import_module("boto3.session")
 
     monkeypatch.setattr(boto3, "client", _sdk("boto3.client"))
     monkeypatch.setattr(boto3, "resource", _sdk("boto3.resource"))
     monkeypatch.setattr(boto3, "Session", _sdk("boto3.Session"))
-    monkeypatch.setattr(boto3.session, "Session", _sdk("boto3.session.Session"))
+    monkeypatch.setattr(boto3_session, "Session", _sdk("boto3.session.Session"))
     for mod_name, attr in (
         ("asyncpg", "connect"),
         ("asyncpg", "create_pool"),
