@@ -111,6 +111,20 @@ _HELD_DOCUMENT_SQL = (
 )
 
 
+# The first of :ids (documents about to be replaced) that HAS chunks in the
+# collection and is covered by an in-force hold (document, collection, tenant).
+_REPLACED_HELD_SQL = (
+    "SELECT d.rid FROM unnest(CAST(:ids AS text[])) AS d(rid) "
+    "WHERE EXISTS (SELECT 1 FROM {table} c WHERE c.collection_id = :cid "
+    "AND c.tenant_id = :tid AND c.document_id = d.rid) "
+    "AND EXISTS (SELECT 1 FROM legal_holds lh WHERE lh.tenant_id = :tid "
+    "AND lh.status = 'active' AND (lh.expires_at IS NULL OR lh.expires_at > now()) "
+    "AND (lh.resource_type = 'tenant' "
+    "OR lh.resource_ids @> jsonb_build_array(CAST(:cid AS text)) "
+    "OR lh.resource_ids @> jsonb_build_array(d.rid))) LIMIT 1"
+)
+
+
 def _collection_held_sql(table: str | None) -> str:
     documents = _HELD_DOCUMENT_SQL.format(table=table) if table else ""
     return _COLLECTION_HELD_SQL.format(documents=documents)
@@ -3344,6 +3358,25 @@ class KnowledgeStore:
                     {"dimension": dimension, "id": collection_id, "tid": tenant_id},
                 )
 
+            replaced_ids = [
+                d for d in (replacement_document_id, superseded_document_id) if d is not None
+            ]
+            if replaced_ids:
+                # P1d-5: a replacement deletes the previous version; a held
+                # document (document, collection or tenant-wide hold) is never
+                # replaced — checked here, in the replacing transaction, for every
+                # path (URL re-ingest, re-upload, connector re-sync).
+                held = (
+                    await session.execute(
+                        text(_REPLACED_HELD_SQL.format(table=table)),
+                        {"ids": replaced_ids, "cid": collection_id, "tid": tenant_id},
+                    )
+                ).fetchone()
+                if held is not None:
+                    raise KnowledgeLegalHoldError(
+                        f"document {held[0]} of collection {collection_id} is under legal "
+                        "hold; it cannot be replaced"
+                    )
             removed_chunks = 0
             removed_bytes = 0
             superseded_chunks = 0
