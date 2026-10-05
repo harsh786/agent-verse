@@ -103,6 +103,13 @@ class MCPServerConfig(BaseModel):
         if not self.builtin_type and self.server_id.startswith("builtin-"):
             # Compat: legacy "builtin-<name>" ids and "builtin-<type>:<slug>" ids.
             self.builtin_type = self.server_id.split(":", 1)[0]
+        if not self.builtin_type and any(
+            isinstance(v, str) and v.strip().lower().startswith(("mongodb://", "mongodb+srv://"))
+            for v in (self.url, *self.auth_config.values())
+        ):
+            # A3: a legacy row saved as a "remote MCP server" with a MongoDB
+            # connection string is the MongoDB built-in (HTTP could never reach it).
+            self.builtin_type = "builtin-mongodb"
         return self
 
 

@@ -604,16 +604,7 @@ async def list_connectors(request: Request) -> list[dict[str, Any]]:
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def register_connector(request: Request, body: RegisterConnectorRequest) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
-    # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time
-    # (the connector URL and endpoint-like auth_config keys).
-    await _assert_connector_urls_public(
-        body.url, body.auth_config, context="connector registration"
-    )
     reg = _registry(request)
-    secret_store = _connector_secret_store(
-        request,
-        needs_secret_storage=_auth_config_requires_secret_storage(body.auth_config, body.url),
-    )
     pending_secrets: dict[str, str] = {}
 
     # Display names are unique per tenant: they are how a user, an agent's
@@ -633,10 +624,22 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
                 detail=f"Unknown connector type '{body.builtin_type}'",
             )
     else:
-        _inferred = _infer_builtin_type(body.name, body.url)
+        # A3: a mongodb:// connection string IS the MongoDB built-in, whatever
+        # the connection is called ("orders-db" used to become a remote MCP server).
+        _inferred = _dsn_builtin_type(body.url, body.auth_config) or _infer_builtin_type(
+            body.name, body.url
+        )
         _builtin_cfg = _builtin_config_for_type(_inferred) if _inferred else None
     _canonical_id = str(_builtin_cfg.get("server_id")) if _builtin_cfg else ""
-    _assert_mongodb_policy(body.url, body.auth_config, _canonical_id)
+    url = _effective_url(body.url, body.auth_config, _canonical_id)
+    _assert_mongodb_policy(url, body.auth_config, _canonical_id)
+    # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time
+    # (the connector URL and endpoint-like auth_config keys).
+    await _assert_connector_urls_public(url, body.auth_config, context="connector registration")
+    secret_store = _connector_secret_store(
+        request,
+        needs_secret_storage=_auth_config_requires_secret_storage(body.auth_config, url),
+    )
     _builtin_tool_defs = list(_builtin_cfg.get("tool_definitions", [])) if _builtin_cfg else []
     _connection_id = (
         await _new_connection_id(reg, _canonical_id, body.name, tenant_ctx=tenant_ctx)
@@ -659,7 +662,7 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
         cfg = MCPServerConfig(
             server_id=sid,
             name=body.name,
-            url=body.url,
+            url=url,
             auth_type=body.auth_type,
             auth_config=_store_sensitive_auth_refs(
                 sid,
@@ -706,7 +709,7 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
         "server_id": server_id,
         "name": body.name,
         "display_name": body.name,
-        "url": stored.url if stored is not None else body.url,
+        "url": stored.url if stored is not None else url,
         "display_url": stored.display_url if stored is not None else "",
         "builtin_type": _canonical_id,
     }
@@ -733,6 +736,9 @@ async def update_connector(
     shown = {existing.display_url, mask_dsn(existing.url) if is_dsn(existing.url) else ""}
     if url and url in shown - {""}:
         url = existing.url
+    url = _effective_url(
+        url, auth_config, existing.builtin_type or _declared_type_on_update(body)
+    )
     _assert_mongodb_policy(
         url, auth_config, existing.builtin_type or _declared_type_on_update(body)
     )
@@ -1705,6 +1711,37 @@ async def _purge_connector_rows(db: Any, tenant_id: str, server_id: str) -> None
 
 
 _MONGODB_SCHEMES = ("mongodb://", "mongodb+srv://")
+_MONGODB_BUILTIN = "builtin-mongodb"
+_URI_AUTH_KEYS = ("uri", "connection_string", "url", "base_url", "mongodb_uri", "dsn")
+
+
+def _is_mongodb_uri(value: object) -> bool:
+    return isinstance(value, str) and value.strip().lower().startswith(_MONGODB_SCHEMES)
+
+
+def _dsn_builtin_type(url: str, auth_config: dict[str, Any]) -> str | None:
+    """'builtin-mongodb' when the connection is a MongoDB connection string (A3)."""
+    if _is_mongodb_uri(url) or any(_is_mongodb_uri(v) for v in auth_config.values()):
+        return _MONGODB_BUILTIN
+    return None
+
+
+def _effective_url(url: str, auth_config: dict[str, Any], builtin_type: str) -> str:
+    """A7: for a MongoDB connection the URI in auth_config is the ONE source of truth.
+
+    The catalog form also sends its ``default_url`` (``mongodb://localhost:27017``)
+    as the top-level url; that copy is never used, so it is neither stored nor
+    egress-checked. A sealed URI (``<redacted>`` / a vault reference) counts too.
+    """
+    if builtin_type != _MONGODB_BUILTIN:
+        return url
+    has_uri = any(
+        _is_mongodb_uri(auth_config.get(k))
+        or is_connector_secret_ref(auth_config.get(k))
+        or auth_config.get(k) == _REDACTED
+        for k in _URI_AUTH_KEYS
+    )
+    return "builtin://" if has_uri else url
 
 
 def _assert_mongodb_policy(url: str, auth_config: dict[str, Any], builtin_type: str) -> None:
