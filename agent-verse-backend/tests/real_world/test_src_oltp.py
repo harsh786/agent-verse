@@ -42,6 +42,9 @@ BATCH = int(os.getenv("RW_DB_BATCH", "500"))
 
 
 class Engine:
+    def __repr__(self) -> str:  # never the root password (pytest prints fixtures)
+        return f"Engine({self.name!r})"
+
     def __init__(self, name: str) -> None:
         self.name = name
         if name == "postgresql":

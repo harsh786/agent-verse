@@ -35,7 +35,7 @@ class Seeded:
     engine: str
     namespace: str  # PG schema / MySQL database
     reader: str
-    reader_password: str
+    reader_password: str = field(repr=False)  # pytest prints fixtures in tracebacks
     counts: dict[str, int] = field(default_factory=dict)
 
     def tables(self, *names: str) -> list[str]:

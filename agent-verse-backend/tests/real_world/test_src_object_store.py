@@ -39,7 +39,7 @@ import os
 import random
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -63,10 +63,11 @@ class Flavor:
     bucket: str
     region: str
     access: str
-    secret: str
-    seed_access: str
-    seed_secret: str
-    extra: dict[str, Any]
+    # Kept out of reprs: pytest prints fixture values in failure tracebacks.
+    secret: str = field(repr=False)
+    seed_access: str = field(repr=False)
+    seed_secret: str = field(repr=False)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     def config(self, prefix: str, **over: Any) -> dict[str, Any]:
         cfg: dict[str, Any] = {
