@@ -12,6 +12,7 @@ import { useThemeStore } from '@/stores/theme';
 import { toast } from '@/stores/toast';
 import { apiFetch as apiClient, ApiError, tenantsApi } from '@/lib/api/client';
 import { MFASettings } from './MFASettings';
+import { A2ADirectorySetting } from './A2ADirectorySetting';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -653,6 +654,8 @@ function SecurityTab() {
         <h3 className="text-base font-semibold">Two-Factor Authentication</h3>
         <MFASettings />
       </div>
+
+      <A2ADirectorySetting />
 
       <div>
         <h3 className="text-base font-semibold">API Key Management</h3>

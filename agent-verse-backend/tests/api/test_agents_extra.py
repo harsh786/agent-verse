@@ -186,7 +186,10 @@ class TestAgentStore:
         (update_sql,) = [q for q in session.statements if q.startswith("UPDATE agents")]
         assert "connector_ids = CAST(:connector_ids AS jsonb)" in update_sql
         assert "::jsonb" not in update_sql
-        assert session.params[-1]["connector_ids"] == json.dumps(["jira-server"])
+        update_params = session.params[session.statements.index(update_sql)]
+        assert update_params["connector_ids"] == json.dumps(["jira-server"])
+        # D3: the public-card projection is re-synced in the same transaction.
+        assert any("a2a_public_agents" in q for q in session.statements)
 
     @pytest.mark.asyncio
     async def test_sync_from_db_returns_zero_without_db(self):

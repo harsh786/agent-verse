@@ -1118,6 +1118,46 @@ async def delete_ip_allowlist_entry(
 # ── Notification preferences ──────────────────────────────────────────────────
 
 
+class A2ADirectorySetting(BaseModel):
+    enabled: bool
+
+
+@router.get("/me/a2a-directory")
+async def get_a2a_directory(
+    request: Request, ctx: TenantContext = Depends(_require_tenant)
+) -> dict[str, bool]:
+    """Whether this tenant's opted-in agents are listed in the public A2A
+    directory (``/.well-known/agents``). Off by default (D3)."""
+    from app.services.a2a_directory import DirectoryUnavailableError, directory_for
+
+    try:
+        enabled = await directory_for(request.app.state).tenant_enabled(ctx.tenant_id)
+    except DirectoryUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": enabled}
+
+
+@router.put("/me/a2a-directory")
+async def set_a2a_directory(
+    body: A2ADirectorySetting,
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+    _: None = Depends(require_role("admin")),
+) -> dict[str, bool]:
+    """Turn the tenant's public A2A directory listing on or off (admin only).
+
+    Only agents that also opted in (``a2a_public``) and are active are listed;
+    turning it off hides every card at once.
+    """
+    from app.services.a2a_directory import DirectoryUnavailableError, directory_for
+
+    try:
+        await directory_for(request.app.state).set_tenant_enabled(ctx.tenant_id, body.enabled)
+    except DirectoryUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": body.enabled}
+
+
 _NOTIFICATION_KEYS = frozenset(
     {"goalComplete", "goalFailed", "budgetAlert", "hitlPending", "weeklyReport"}
 )

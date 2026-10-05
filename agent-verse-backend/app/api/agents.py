@@ -17,6 +17,11 @@ from app.agent.pattern_flags import (
 )
 from app.api._deps import require_owned_agent
 from app.intelligence.meta_agent import MetaAgentPlanner
+from app.services.a2a_directory import (
+    A2A_DESCRIPTION_MAX,
+    A2A_SKILLS_MAX,
+    normalize_skills,
+)
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -125,6 +130,10 @@ class AgentStore:
         record["agent_id"] = agent_id
         record["tenant_id"] = tenant_ctx.tenant_id
         record.setdefault("created_at", datetime.now(UTC).isoformat())
+        # D3: every agent starts private (opt-in via PUT /agents/{id}).
+        record["a2a_public"] = False
+        record.setdefault("a2a_description", "")
+        record.setdefault("a2a_skills", [])
         if self._db is not None:
             await self._db_persist_agent(record)
         self._data[(tenant_ctx.tenant_id, agent_id)] = record
@@ -236,6 +245,9 @@ class AgentStore:
             "cloned_from": getattr(row, "cloned_from", None),
             "permissions": {},
             "created_at": created_at.isoformat() if created_at else "",
+            "a2a_public": bool(getattr(row, "a2a_public", False)),
+            "a2a_description": getattr(row, "a2a_description", "") or "",
+            "a2a_skills": list(getattr(row, "a2a_skills", None) or []),
         }
 
     # ── async DB reads ─────────────────────────────────────────────────────────
@@ -480,6 +492,14 @@ class AgentStore:
                     )
                     if result.rowcount == 0:
                         return False
+                    # D3: a deleted agent leaves the public directory with it.
+                    await session.execute(
+                        text(
+                            "DELETE FROM a2a_public_agents "
+                            "WHERE agent_id = :id AND tenant_id = :tid"
+                        ),
+                        {"id": agent_id, "tid": tenant_ctx.tenant_id},
+                    )
             except Exception as exc:
                 from app.observability.logging import get_logger
 
@@ -545,6 +565,9 @@ class AgentStore:
                     "eval_suite_id",
                     "policy_ids",
                     "pattern_flags",
+                    "a2a_public",
+                    "a2a_description",
+                    "a2a_skills",
                 }
                 updates = {k: v for k, v in data.items() if k in allowed}
                 if not updates:
@@ -576,6 +599,13 @@ class AgentStore:
                         params,
                     )
                     updated = result.rowcount > 0
+                    if updated:
+                        # D3: the public card follows the agent in this transaction.
+                        from app.services.a2a_directory import sync_public_agent
+
+                        await sync_public_agent(
+                            session, agent_id=agent_id, tenant_id=tenant_ctx.tenant_id
+                        )
             except Exception as exc:
                 from app.observability.logging import get_logger
 
@@ -666,6 +696,21 @@ class UpdateAgentRequest(BaseModel):
     enable_peer_review: bool | None = None
     enable_supervisor: bool | None = None
     enable_debate: bool | None = None
+    # D3: public A2A directory opt-in and the card text shown there (only these,
+    # the name and the endpoint are public — never prompts, tools or connectors).
+    a2a_public: bool | None = None
+    a2a_description: str | None = Field(default=None, max_length=A2A_DESCRIPTION_MAX)
+    a2a_skills: list[str] | None = Field(default=None, max_length=A2A_SKILLS_MAX)
+
+    @field_validator("a2a_skills")
+    @classmethod
+    def _bounded_skills(cls, v: list[str] | None) -> list[str] | None:
+        return None if v is None else normalize_skills(v)
+
+    @field_validator("a2a_description")
+    @classmethod
+    def _stripped_description(cls, v: str | None) -> str | None:
+        return None if v is None else v.strip()
 
 
 class CloneAgentRequest(BaseModel):
