@@ -18,6 +18,7 @@ import contextlib
 import hashlib
 import logging
 import random
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from celery import shared_task  # type: ignore[import-not-found]
@@ -197,6 +198,38 @@ async def _close(client: Any) -> None:
     if close is not None:
         with contextlib.suppress(Exception):
             await close()
+
+
+def _shared_redis() -> Any:
+    """The shared Redis holding every source's sync lock and cancel flag, or None."""
+    return _reconcile_redis()
+
+
+@contextlib.asynccontextmanager
+async def _coordinated(tracker: Any) -> AsyncIterator[None]:
+    """Run with the worker's tracker on the shared Redis (P1b-1).
+
+    The API takes a source's sync lock (and sets cancel flags) in Redis; a
+    worker tracker without Redis kept its own per-process lock, so it never
+    released the API's lock (every later manual sync was ``already_running``),
+    ran a scheduled sync beside a manual one, and never saw a cancel.
+    """
+    from app.ingestion.job_tracker import attach_shared_redis
+
+    client = None
+    if getattr(tracker, "_redis", "") is None:  # a real tracker without a client
+        client = _shared_redis()
+        if client is None:
+            _log.warning("ingestion_lock_not_shared: no shared Redis; the lock is per-process")
+        elif not attach_shared_redis(tracker, client):
+            await _close(client)
+            client = None
+    try:
+        yield
+    finally:
+        if client is not None:
+            tracker._redis = None
+            await _close(client)
 
 
 async def _enqueue_reconcile(
@@ -465,17 +498,18 @@ async def _reconcile_source_async(*, source_id: str, tenant_id: str) -> dict[str
     load_all_connectors()
     tracker: Any
     tracker, pipeline, source_store = _build_worker_ingestion()
-    token = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
-    if not token:
-        return {"skipped": "locked"}
-    try:
-        config = await source_store.get(source_id, tenant_id)  # type: ignore[attr-defined]
-        if config is None or not config.enabled:
-            return {"skipped": "source_unavailable"}
-        connector = get_connector(config.source_type)()
-        return dict(await _reconcile_upstream_deletions(connector, config, pipeline))
-    finally:
-        await tracker.release_lock(source_id, tenant_id, token)
+    async with _coordinated(tracker):
+        token = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
+        if not token:
+            return {"skipped": "locked"}
+        try:
+            config = await source_store.get(source_id, tenant_id)  # type: ignore[attr-defined]
+            if config is None or not config.enabled:
+                return {"skipped": "source_unavailable"}
+            connector = get_connector(config.source_type)()
+            return dict(await _reconcile_upstream_deletions(connector, config, pipeline))
+        finally:
+            await tracker.release_lock(source_id, tenant_id, token)
 
 
 async def _sync_source_async(
@@ -493,10 +527,38 @@ async def _sync_source_async(
     source's lock (its token is the job id) so it can answer "already running";
     the task adopts that lock instead of acquiring it, and releases it at the end.
     """
-    from app.ingestion.connector_registry import get_connector, load_all_connectors
+    from app.ingestion.connector_registry import load_all_connectors
 
     load_all_connectors()  # ensure the @register registry is populated in the worker
     tracker, pipeline, source_store = _build_worker_ingestion()
+    async with _coordinated(tracker):
+        return await _sync_with(
+            tracker,
+            pipeline,
+            source_store,
+            task=task,
+            source_id=source_id,
+            tenant_id=tenant_id,
+            triggered_by=triggered_by,
+            job_id=job_id,
+            reindex=reindex,
+        )
+
+
+async def _sync_with(
+    tracker: Any,
+    pipeline: Any,
+    source_store: Any,
+    *,
+    task: Any,
+    source_id: str,
+    tenant_id: str,
+    triggered_by: str,
+    job_id: str | None,
+    reindex: bool,
+) -> dict:
+    """The sync itself, on a tracker that shares the API's lock / cancel flags."""
+    from app.ingestion.connector_registry import get_connector
 
     # ── Distributed lock (LAW-14) ────────────────────────────────────────────
     lock_acquired = job_id or await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)

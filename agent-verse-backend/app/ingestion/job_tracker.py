@@ -40,6 +40,28 @@ def _orphan_reason(older_than_seconds: int) -> str:
     )
 
 
+def _as_text(value: object) -> str:
+    return value.decode() if isinstance(value, bytes | bytearray) else str(value)
+
+
+def attach_shared_redis(tracker: object, redis: object) -> bool:
+    """Give a tracker that has no Redis the shared client (P1b-1).
+
+    The sync lock and the cancel flag must be visible to every process: the API
+    takes the lock and the Celery worker releases it, the API sets the cancel
+    flag and the worker reads it. With a per-process (in-memory) tracker the
+    worker could never release the API's lock — every later manual sync was
+    ``already_running`` — and a scheduled sync ran beside a manual one. Returns
+    True when the client was attached.
+    """
+    if tracker is None or redis is None or not hasattr(tracker, "_redis"):
+        return False
+    if getattr(tracker, "_redis", None) is not None:
+        return False
+    setattr(tracker, "_redis", redis)  # noqa: B010 - private slot of the tracker
+    return True
+
+
 class IngestionJobTracker:
     """Manages ingestion job lifecycle: create, update cursor, complete.
 
@@ -98,13 +120,16 @@ class IngestionJobTracker:
             try:
                 if job_id:
                     stored = await self._redis.get(lock_key)
-                    if stored and stored.decode() == job_id:
+                    # The API's pooled client decodes responses (str); others
+                    # return bytes. ``stored.decode()`` on a str raised here and
+                    # the lock was never released (P1b-1).
+                    if stored is not None and _as_text(stored) == job_id:
                         await self._redis.delete(lock_key)
                 else:
                     await self._redis.delete(lock_key)
                 return
             except Exception as e:
-                _log.debug("ingestion_lock_release_error: %s", e)
+                _log.warning("ingestion_lock_release_error source=%s: %s", source_id, e)
         # In-memory fallback
         if job_id:
             if self._locks.get(source_id) == job_id:

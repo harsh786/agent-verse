@@ -1814,6 +1814,12 @@ def create_app(
             if _ing_tracker is not None and getattr(_ing_tracker, "_db", None) is None:
                 _ing_tracker._db = db_factory
                 logger.info("ingestion_job_tracker_db_wired")
+            # P1b-1: the sync lock + cancel flags live in the shared Redis, where
+            # the Celery worker that runs the sync releases / reads them.
+            from app.ingestion.job_tracker import attach_shared_redis as _attach_ing_redis
+
+            if _attach_ing_redis(_ing_tracker, redis_for_runtime):
+                logger.info("ingestion_job_tracker_redis_wired")
 
             # WT-3: wire the TriggerDispatcher so trigger fires actually create
             # goals (previously never instantiated -> every fire returned 503).

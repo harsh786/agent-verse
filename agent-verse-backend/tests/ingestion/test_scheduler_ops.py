@@ -65,6 +65,8 @@ async def _run(tracker: Any, pipeline: Any, store: Any, **kwargs: Any) -> dict:
         ),
         patch("app.ingestion.connector_registry.load_all_connectors"),
         patch("app.ingestion.connector_registry.get_connector", return_value=_Connector),
+        # These exercise the in-memory tracker (no shared Redis configured).
+        patch("app.ingestion.scheduler._shared_redis", return_value=None),
     ):
         return await _sync_source_async(
             task=MagicMock(), source_id="src-1", tenant_id="t1", **kwargs
