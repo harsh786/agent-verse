@@ -112,7 +112,13 @@ class LocalEmbedProvider:
         # Loads (and on first use downloads) the model: raises on a bad name or
         # no network — the embedder factory records and logs that loudly.
         self._model = SentenceTransformer(model_name)
-        dim = self._model.get_sentence_embedding_dimension()
+        # ``get_sentence_embedding_dimension`` is deprecated (FutureWarning) since
+        # sentence-transformers 5 renamed it ``get_embedding_dimension``; the old
+        # name is used only on releases that predate the rename.
+        dimension_of = getattr(self._model, "get_embedding_dimension", None)
+        if not callable(dimension_of):
+            dimension_of = self._model.get_sentence_embedding_dimension
+        dim = dimension_of()
         # The REAL output width, so new collections are sized to it (not to a
         # static EMBEDDING_DIM setting that may disagree, e.g. 768 vs 2048).
         self.embedding_dim: int | None = int(dim) if dim else None

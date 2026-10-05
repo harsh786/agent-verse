@@ -179,7 +179,7 @@ def test_local_embed_provider_reports_its_model_and_real_dimension() -> None:
         def __init__(self, name: str) -> None:
             self.name = name
 
-        def get_sentence_embedding_dimension(self) -> int:
+        def get_embedding_dimension(self) -> int:
             return 768
 
     with patch("sentence_transformers.SentenceTransformer", _ST):
