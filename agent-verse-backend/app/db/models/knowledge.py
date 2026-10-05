@@ -41,7 +41,7 @@ class KnowledgeCollection(Base):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
@@ -78,14 +78,14 @@ class Document(Base):
 
     __tablename__ = "documents"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     collection_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("knowledge_collections.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(100), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -107,7 +107,7 @@ class Document(Base):
 
 class _KnowledgeChunkMixin:
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     collection_id: Mapped[str] = mapped_column(
         String(32),
         ForeignKey("knowledge_collections.id", ondelete="CASCADE"),
@@ -122,7 +122,7 @@ class _KnowledgeChunkMixin:
         "metadata", JSONB, nullable=False, default=dict
     )
     domain_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    parent_chunk_id: Mapped[str | None] = mapped_column(String(32))
+    parent_chunk_id: Mapped[str | None] = mapped_column(String(64))
     chunk_level: Mapped[str | None] = mapped_column(String(10), default="leaf")
     window_start: Mapped[int | None] = mapped_column(Integer)
     window_end: Mapped[int | None] = mapped_column(Integer)
@@ -165,8 +165,8 @@ class ExecutionMemory(Base):
 
     __tablename__ = "execution_memory"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     goal_text: Mapped[str] = mapped_column(Text, nullable=False)
     plan: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     success: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -180,10 +180,10 @@ class LongTermMemory(Base):
 
     __tablename__ = "long_term_memory"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    source_goal_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
+    source_goal_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default="")
     memory_type: Mapped[str | None] = mapped_column(
         String(50), nullable=True, default="success_pattern"
     )
@@ -199,9 +199,9 @@ class MemoryConflict(Base):
 
     __tablename__ = "memory_conflicts"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

@@ -93,10 +93,10 @@ class OAuthToken(Base):
 
     __tablename__ = "oauth_tokens"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     # No FK to mcp_servers (dropped in f1a2b3c4d5e7): unique (tenant_id, server_id).
-    server_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    server_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     access_token_enc: Mapped[str] = mapped_column(Text, nullable=False)
     refresh_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     token_type: Mapped[str | None] = mapped_column(String(50), nullable=True, default="Bearer")

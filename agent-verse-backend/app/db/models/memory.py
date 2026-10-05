@@ -18,14 +18,14 @@ class EpisodicMemory(Base):
 
     __tablename__ = "episodic_memories"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     goal_text: Mapped[str] = mapped_column(Text, nullable=False)
     # What the agent decided to do
     action_summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -53,9 +53,9 @@ class ProceduralMemory(Base):
 
     __tablename__ = "procedural_memories"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -83,19 +83,19 @@ class ProceduralMemory(Base):
 class CanonicalMemoryRecord(Base):
     __tablename__ = "memory_records"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     memory_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     content_ref: Mapped[str] = mapped_column(Text, nullable=False)
     safe_summary: Mapped[str] = mapped_column(Text, nullable=False)
-    source_goal_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_goal_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_execution_id: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     classification: Mapped[str] = mapped_column(String(20), nullable=False)
     # Optional scoping dimensions of the canonical contract (migration c8d2f4a6b1e3).
-    agent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    agent_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     collection_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # Vault-sealed payload of a confidential/restricted record — what its
@@ -128,7 +128,7 @@ class MemoryBackfillCheckpoint(Base):
     __tablename__ = "memory_backfill_checkpoints"
 
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
     )
     source_table: Mapped[str] = mapped_column(String(64), primary_key=True)
     last_created_at: Mapped[datetime | None] = mapped_column(
@@ -145,12 +145,12 @@ class MemoryBackfillCheckpoint(Base):
 class MemoryFeedbackRow(Base):
     __tablename__ = "memory_feedback"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     memory_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("memory_records.id", ondelete="CASCADE"), nullable=False
+        String(64), ForeignKey("memory_records.id", ondelete="CASCADE"), nullable=False
     )
     execution_id: Mapped[str] = mapped_column(String(64), nullable=False)
     was_used: Mapped[bool] = mapped_column(nullable=False)

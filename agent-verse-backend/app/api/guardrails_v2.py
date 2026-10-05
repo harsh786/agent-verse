@@ -271,18 +271,30 @@ async def evaluate_corpus(request: Request, body: EvaluateCorpusRequest) -> dict
 @router.get("/violations")
 async def list_violations(
     request: Request,
-    limit: int = Query(default=50, le=500),
+    limit: int = Query(default=50, ge=1, le=500),
     severity: str | None = Query(default=None),
+    layer: str | None = Query(default=None),
+    goal_id: str | None = Query(default=None),
+    cursor: str | None = Query(default=None, description="next_cursor of the previous page"),
 ) -> dict[str, Any]:
-    """List guardrail violations for the tenant."""
+    """The tenant's guardrail violations, newest first, keyset-paginated."""
     tenant = _require_tenant(request)
     from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.violation_pages import InvalidCursorError, violation_page
 
     # Every replica's violations from Postgres (GRD-04), never this process's alone.
     try:
-        violations = await guardrails_engine.aget_violations(
-            tenant.tenant_id, limit, severity=severity
+        page = await violation_page(
+            guardrails_engine,
+            tenant.tenant_id,
+            limit=limit,
+            severity=severity,
+            layer=layer,
+            goal_id=goal_id,
+            cursor=cursor,
         )
+    except InvalidCursorError as exc:
+        raise HTTPException(422, "Invalid cursor") from exc
     except Exception as exc:
         raise HTTPException(503, "Guardrail violations are temporarily unavailable") from exc
 
@@ -290,6 +302,7 @@ async def list_violations(
         "violations": [
             {
                 "violation_id": v.violation_id,
+                "rule_id": v.rule_id,
                 "rule_name": v.rule_name,
                 "layer": v.layer,
                 "action_taken": v.action_taken,
@@ -299,9 +312,11 @@ async def list_violations(
                 "content_preview": v.content_preview,
                 "created_at": v.created_at,
             }
-            for v in violations
+            for v in page.violations
         ],
-        "total": len(violations),
+        # The size of THIS page (kept for older clients); page with next_cursor.
+        "total": len(page.violations),
+        "next_cursor": page.next_cursor,
     }
 
 

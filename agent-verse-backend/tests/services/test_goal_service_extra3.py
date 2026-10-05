@@ -817,7 +817,8 @@ class TestSubscribeEvents:
         task = asyncio.create_task(_collect_first_event())
         await asyncio.wait_for(task, timeout=0.2)
 
-        assert received == [{"type": "goal_started", "_seq": 1}]
+        # P8b-1: every dispatched event is output-screened (and says so).
+        assert received == [{"type": "goal_started", "_screened": True, "_seq": 1}]
 
     async def test_not_found_raises(self):
         svc = _svc()
@@ -1050,13 +1051,13 @@ class TestDispatchEvent:
         assert mock_redis.publish.await_count == 3
         # The live copy carries its sequence (SVC-05; in-memory position here).
         mock_redis.publish.assert_any_await(
-            "goal_events:t1:g1", '{"type": "goal_complete", "_seq": 1}'
+            "goal_events:t1:g1", '{"type": "goal_complete", "_screened": true, "_seq": 1}'
         )
         assert any(
             c.args[0] == "goal.completed" for c in mock_redis.publish.await_args_list
         )
         mock_redis.publish.assert_any_await(
-            "platform_events:t1", '{"type": "goal_complete", "_seq": 1}'
+            "platform_events:t1", '{"type": "goal_complete", "_screened": true, "_seq": 1}'
         )
 
     async def test_unknown_goal_id_is_noop(self):

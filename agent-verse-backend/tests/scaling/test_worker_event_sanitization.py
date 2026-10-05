@@ -50,6 +50,18 @@ def test_worker_failed_event_and_error_message_are_redacted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.agent.graph as _graph_mod
+    from app.guardrails_v2 import engine as engine_mod
+    from app.guardrails_v2.engine import GuardrailsEngine
+
+    class _NoRules:
+        async def load(self, tenant_id: str) -> list[Any]:
+            return []
+
+    # The tenant's (empty) rule set is readable: output screening (P8b-1)
+    # withholds every output field when the rules cannot be loaded.
+    fresh = GuardrailsEngine()
+    fresh.bind_repository(_NoRules())
+    monkeypatch.setattr(engine_mod, "guardrails_engine", fresh)
     from app.scaling import tasks
     from app.services.goal_service import GoalService
 

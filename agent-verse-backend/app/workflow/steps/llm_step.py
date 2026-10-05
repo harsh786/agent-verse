@@ -103,8 +103,24 @@ class LLMStepNode:
                 "_simulated": True,
             }
         else:
+            from app.guardrails_v2.models import GuardrailLayer
             from app.providers.base import CompletionRequest, Message
+            from app.workflow.guardrails import interpolated_text, screen_step_content
 
+            # P8b-2: input guardrails (tenant rules + baseline, step layer) on
+            # the prompt before it leaves for the model. Injection rules look
+            # only at the untrusted part: interpolated values + retrieved context.
+            full_prompt = await screen_step_content(
+                full_prompt,
+                layer=GuardrailLayer.STEP,
+                state=state,
+                step_id=self.step.id,
+                step_type=self.step.type,
+                direction="prompt",
+                untrusted="\n".join(
+                    filter(None, (interpolated_text(self.step.prompt, prompt_text), rag_context))
+                ),
+            )
             req = CompletionRequest(
                 messages=[
                     Message(
@@ -143,6 +159,17 @@ class LLMStepNode:
                 timeout_seconds=generation_timeout_seconds(),
             )
             raw_text = response.content.strip()
+            # P8b-2: output guardrails (tool_output layer) before the answer is
+            # parsed, stored or handed to a later step: block fails the step,
+            # redact keeps the redacted text.
+            raw_text = await screen_step_content(
+                raw_text,
+                layer=GuardrailLayer.TOOL_OUTPUT,
+                state=state,
+                step_id=self.step.id,
+                step_type=self.step.type,
+                direction="output",
+            )
             # CompletionResponse exposes input_tokens/output_tokens (and a `usage`
             # object); the older prompt_tokens/completion_tokens names don't exist
             # on it, so reading those always yielded 0 tokens. Prefer the real

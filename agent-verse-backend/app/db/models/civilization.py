@@ -15,7 +15,7 @@ class Civilization(Base):
     __tablename__ = "civilizations"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="active", server_default="active"
@@ -38,7 +38,7 @@ class CivilizationAgent(Base):
     civilization_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("civilizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     agent_id: Mapped[str] = mapped_column(String(32), nullable=False)
     role: Mapped[str] = mapped_column(
         String(50), nullable=False, default="worker", server_default="worker"
@@ -73,7 +73,7 @@ class SpawnRequest(Base):
     civilization_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("civilizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     requester_agent_id: Mapped[str] = mapped_column(String(32), nullable=False)
     requested_capability: Mapped[str] = mapped_column(Text, nullable=False)
     goal_text: Mapped[str] = mapped_column(Text, nullable=False)
@@ -93,7 +93,7 @@ class BlackboardEntry(Base):
     civilization_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("civilizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     author_agent_id: Mapped[str] = mapped_column(String(32), nullable=False)
     topic: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -116,7 +116,7 @@ class BusMessage(Base):
     civilization_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("civilizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     from_agent_id: Mapped[str] = mapped_column(String(32), nullable=False)
     topic: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
@@ -132,7 +132,7 @@ class CivilizationLearning(Base):
     civilization_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("civilizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     candidate: Mapped[str] = mapped_column(Text, nullable=False)
     source_agent_id: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(
@@ -153,7 +153,7 @@ class CivilizationEvent(Base):
     civilization_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("civilizations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     ts: Mapped[datetime] = mapped_column(

@@ -24,10 +24,10 @@ from app.db.models import Base
 class EvalScorecard(Base):
     __tablename__ = "eval_scorecards"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -58,9 +58,9 @@ class EvalScorecard(Base):
 class RegressionCase(Base):
     __tablename__ = "regression_cases"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False)
     strategy_id: Mapped[str] = mapped_column(Text, nullable=False)
     strategy_version: Mapped[str] = mapped_column(Text, nullable=False)
     profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -75,8 +75,8 @@ class RegressionCase(Base):
 class RegressionBaseline(Base):
     __tablename__ = "regression_baselines"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     cohort: Mapped[str] = mapped_column(Text, nullable=False)
     strategy_id: Mapped[str] = mapped_column(Text, nullable=False)
     strategy_version: Mapped[str] = mapped_column(Text, nullable=False)
@@ -94,9 +94,9 @@ class RegressionBaseline(Base):
 class ReasoningPromotionDecision(Base):
     __tablename__ = "reasoning_promotion_decisions"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    baseline_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    baseline_id: Mapped[str] = mapped_column(String(64), nullable=False)
     strategy_id: Mapped[str] = mapped_column(Text, nullable=False)
     strategy_version: Mapped[str] = mapped_column(Text, nullable=False)
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
@@ -111,10 +111,10 @@ class ReasoningPromotionDecision(Base):
 class ToolTrustRecord(Base):
     __tablename__ = "tool_trust_records"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tool_name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -131,10 +131,10 @@ class ToolTrustRecord(Base):
 class SelfImprovementAction(Base):
     __tablename__ = "self_improvement_actions"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -150,10 +150,10 @@ class SelfImprovementAction(Base):
 class ABTestResult(Base):
     __tablename__ = "ab_test_results"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    goal_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
@@ -169,15 +169,15 @@ class ABTestResult(Base):
 class ReflexionLesson(Base):
     __tablename__ = "reflexion_lessons"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     lesson: Mapped[str] = mapped_column(Text, nullable=False)
-    source_goal_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_goal_id: Mapped[str] = mapped_column(String(64), nullable=False)
     failure_class: Mapped[str] = mapped_column(String(100), nullable=False, default="unknown")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -187,9 +187,9 @@ class ReflexionLesson(Base):
 class StrategyCertificationEvidence(Base):
     __tablename__ = "strategy_certification_evidence"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("tenants.id", ondelete="CASCADE"),
         nullable=False,
         index=True,

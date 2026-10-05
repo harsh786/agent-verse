@@ -13,6 +13,7 @@ each tenant's rules lazily instead of warming every tenant's rules at startup.
 
 from __future__ import annotations
 
+import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -150,8 +151,17 @@ class PostgresGuardrailRuleRepository:
             )
 
     async def list_violations(
-        self, tenant_id: str, *, limit: int = 100, severity: str | None = None
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 100,
+        severity: str | None = None,
+        layer: str | None = None,
+        goal_id: str | None = None,
+        before: tuple[datetime.datetime, str] | None = None,
     ) -> list[GuardrailViolation]:
+        """Newest first, keyset-paged by ``(created_at, id)``: *before* is the
+        last row of the previous page (served by ix_guardrail_violations_tenant_ts)."""
         from sqlalchemy import text
 
         sql = (
@@ -163,7 +173,16 @@ class PostgresGuardrailRuleRepository:
         if severity:
             sql += " AND severity = :sev"
             params["sev"] = severity
-        sql += " ORDER BY created_at DESC LIMIT :lim"
+        if layer:
+            sql += " AND layer = :layer"
+            params["layer"] = layer
+        if goal_id:
+            sql += " AND goal_id = :goal"
+            params["goal"] = goal_id
+        if before is not None:
+            sql += " AND (created_at, id) < (:before_ts, :before_id)"
+            params["before_ts"], params["before_id"] = before
+        sql += " ORDER BY created_at DESC, id DESC LIMIT :lim"
         async with (
             self._sessions() as db,
             db.begin(),
@@ -185,6 +204,32 @@ class PostgresGuardrailRuleRepository:
                     content_preview=r[9] or "",
                     created_at=r[10].isoformat() if hasattr(r[10], "isoformat") else str(r[10]),
                 )
+                for r in result.fetchall()
+            ]
+
+    async def violation_stats(
+        self, tenant_id: str, *, since: datetime.datetime, day_start: datetime.datetime
+    ) -> list[tuple[str, str, str, int, int]]:
+        """``(severity, layer, violation_type, count, count_since_day_start)``
+        groups of the tenant's violations since *since* (a bounded window)."""
+        from sqlalchemy import text
+
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            result = await db.execute(
+                text(
+                    "SELECT severity, layer, violation_type, count(*), "
+                    "count(*) FILTER (WHERE created_at >= :day) "
+                    "FROM guardrail_violations WHERE tenant_id = :tid AND created_at >= :since "
+                    "GROUP BY severity, layer, violation_type"
+                ),
+                {"tid": tenant_id, "since": since, "day": day_start},
+            )
+            return [
+                (str(r[0]), str(r[1]), str(r[2]), int(r[3]), int(r[4]))
                 for r in result.fetchall()
             ]
 

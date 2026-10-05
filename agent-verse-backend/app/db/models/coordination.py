@@ -374,15 +374,17 @@ def _domain_column(name: str) -> sa.Column[Any]:
     return sa.Column(name, sa.Text(), nullable=nullable)
 
 
-# Event/outbox tables whose ``id``/``tenant_id`` were widened to 64 chars
-# (migration d4e7a2c9b1f3, P4-2): a dashed UUID tenant id must never overflow.
+# Event/outbox tables whose ``id``/``tenant_id`` were widened to 64 chars first
+# (migration d4e7a2c9b1f3, P4-2); every other coordination table followed in
+# e7b1c4d9a2f6 (P8b-4): a dashed UUID tenant id must never overflow.
 WIDE_ID_TABLES: frozenset[str] = frozenset(
     {"event_inbox", "coordination_events", "coordination_outbox", "coordination_dead_letters"}
 )
+_ID_WIDTH = 64
 
 COORDINATION_TABLES: dict[str, sa.Table] = {}
 for _table_name, _domain_columns in TABLE_COLUMNS.items():
-    _id_width = 64 if _table_name in WIDE_ID_TABLES else 32
+    _id_width = _ID_WIDTH
     COORDINATION_TABLES[_table_name] = sa.Table(
         _table_name,
         Base.metadata,
@@ -419,7 +421,7 @@ AUCTION_REGISTRY = sa.Table(
     Base.metadata,
     sa.Column("id", sa.String(32), primary_key=True),
     sa.Column(
-        "tenant_id", sa.String(32), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+        "tenant_id", sa.String(64), sa.ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
     ),
     sa.Column("session_id", sa.Text(), nullable=False),
     sa.Column("state", sa.Text(), nullable=False),

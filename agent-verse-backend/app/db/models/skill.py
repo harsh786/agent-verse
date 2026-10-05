@@ -17,9 +17,9 @@ class Skill(Base):
 
     __tablename__ = "skills"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str | None] = mapped_column(
-        String(32), nullable=True, index=True
+        String(64), nullable=True, index=True
     )  # null = platform skill
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False, default="1.0.0")

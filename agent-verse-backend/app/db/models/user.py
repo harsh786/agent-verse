@@ -17,7 +17,7 @@ class User(Base):
 
     __tablename__ = "users"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     picture_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
@@ -50,11 +50,11 @@ class TenantMembership(Base):
     __tablename__ = "tenant_memberships"
     __table_args__ = (UniqueConstraint("user_id", "tenant_id", name="uq_user_tenant"),)
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     user_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(64), nullable=False, default="viewer")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     invited_by: Mapped[str | None] = mapped_column(String(32), nullable=True)

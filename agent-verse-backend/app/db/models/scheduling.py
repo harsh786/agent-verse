@@ -28,9 +28,9 @@ class Policy(Base):
 
     __tablename__ = "policies"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
@@ -56,12 +56,12 @@ class Schedule(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     agent_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True
+        String(64), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True
     )
     goal_id_template: Mapped[str] = mapped_column(String(500), nullable=False)
     trigger_type: Mapped[str] = mapped_column(String(20), nullable=False)

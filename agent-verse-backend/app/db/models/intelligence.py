@@ -19,12 +19,12 @@ class DecisionTrace(Base):
 
     __tablename__ = "decision_traces"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    step_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    step_id: Mapped[str | None] = mapped_column(String(64), nullable=True, default="")
     action: Mapped[str] = mapped_column(Text, nullable=False)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True, default="")
     evidence: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
@@ -40,11 +40,11 @@ class Evaluation(Base):
 
     __tablename__ = "evaluations"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     goal_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     scores: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
     average_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     passed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -73,7 +73,7 @@ class CostLedger(Base):
     __tablename__ = "cost_ledger"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     goal_id: Mapped[str | None] = mapped_column(String(32), nullable=True, default="")
     tool_name: Mapped[str | None] = mapped_column(String(200), nullable=True, default="")
     cost_usd: Mapped[float] = mapped_column(Float, nullable=False)
@@ -88,9 +88,9 @@ class CollabSession(Base):
 
     __tablename__ = "collab_sessions"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     mode: Mapped[str | None] = mapped_column(String(50), nullable=True, default="suggest")
@@ -116,14 +116,14 @@ class CollabOperation(Base):
 
     __tablename__ = "collab_operations"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     session_id: Mapped[str] = mapped_column(
-        String(32),
+        String(64),
         ForeignKey("collab_sessions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     operation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     author: Mapped[str | None] = mapped_column(String(200), nullable=True, default="")
@@ -139,10 +139,10 @@ class AgentTemplate(Base):
 
     __tablename__ = "agent_templates"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     # NULL = system/public template; non-NULL = tenant-owned template
     tenant_id: Mapped[str | None] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=True, index=True
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     domain: Mapped[str | None] = mapped_column(String(100), nullable=True, default="")

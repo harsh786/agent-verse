@@ -20,21 +20,25 @@ const STATS = {
   top_categories: [{ category: 'pii_leak', count: 9 }, { category: 'toxicity', count: 3 }],
 };
 
+// GET /guardrails-v2/violations rows (P8b-3: the durable store).
 const VIOLATIONS = [
-  { id: 'v1', guardrail_name: 'Block PII', type: 'pii_detection', severity: 'critical',
-    message: 'SSN detected in output', created_at: '2026-01-01T10:00:00Z' },
+  { violation_id: 'v1', rule_id: 'gr-1', rule_name: 'Block PII', layer: 'final_output',
+    action_taken: 'block', category: 'pii_detection', severity: 'critical',
+    content_preview: 'SSN detected in output', created_at: '2026-01-01T10:00:00Z' },
 ];
 
 interface MockOpts {
   rules?: unknown[];
   violations?: unknown[];
   test?: unknown;
+  stats?: unknown;
 }
 
 function mockFetch(opts: MockOpts = {}) {
   const {
     rules = RULES,
     violations = [],
+    stats = STATS,
     test: testResult = { passed: false, risk_score: 0.9, violations: [{ type: 'pii_detection', severity: 'critical', message: 'blocked content' }] },
   } = opts;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -43,8 +47,8 @@ function mockFetch(opts: MockOpts = {}) {
     const json = (body: unknown, status = 200) =>
       new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-    if (url.includes('/guardrails/violations')) return json(violations);
-    if (url.includes('/guardrails/stats')) return json(STATS);
+    if (url.includes('/guardrails-v2/violations')) return json({ violations, next_cursor: null });
+    if (url.includes('/guardrails/stats')) return json(stats);
     if (url.includes('/guardrails/test')) return json(testResult);
     if (/\/guardrails\/[^/?]+$/.test(url) && (method === 'PUT' || method === 'DELETE')) return json({});
     if (url.includes('/guardrails') && method === 'POST') return json({ id: 'gr-new' });
@@ -77,6 +81,17 @@ describe('GuardrailCenterPage — branches', () => {
     expect(screen.getByText('Last 24h')).toBeInTheDocument();
     expect(screen.getByText('Top Violation Categories')).toBeInTheDocument();
     expect(screen.getByText('pii leak')).toBeInTheDocument();
+  });
+
+  test('Dashboard shows the durable window and no fake risk score (P8b-3)', async () => {
+    mockFetch({ stats: { ...STATS, total_window: 20, window_days: 30, risk_score_p95: null } });
+    renderPage();
+    await userEvent.click(screen.getByTestId('tab-dashboard'));
+    const cards = await screen.findByTestId('stats-cards');
+    expect(within(cards).getByText('Last 30 days')).toBeInTheDocument();
+    expect(within(cards).getByText('Critical')).toBeInTheDocument();
+    expect(within(cards).queryByText('Risk P95')).not.toBeInTheDocument();
+    expect(within(cards).queryByText(/NaN/)).not.toBeInTheDocument();
   });
 
   test('toggling a rule PUTs to /guardrails/:id', async () => {
@@ -162,7 +177,7 @@ describe('GuardrailCenterPage — branches', () => {
     renderPage();
     await userEvent.click(screen.getByTestId('tab-violations'));
     expect(await screen.findByTestId('violations-table')).toBeInTheDocument();
-    expect(screen.getByText('SSN detected in output')).toBeInTheDocument();
+    expect(screen.getByText('block · final_output — SSN detected in output')).toBeInTheDocument();
   });
 
   test('Violations tab shows empty state when clean', async () => {

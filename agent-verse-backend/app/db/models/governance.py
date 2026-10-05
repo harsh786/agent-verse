@@ -49,8 +49,8 @@ class ApprovalRequest(Base):
 
     __tablename__ = "approval_requests"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # 64 not 32: an org mission-HITL goal_id is a 36-char dashed UUID (migration 0118).
     goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     action: Mapped[str] = mapped_column(Text, nullable=False)
@@ -76,8 +76,8 @@ class ApprovalVote(Base):
 
     __tablename__ = "approval_votes"
 
-    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    request_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     approver: Mapped[str] = mapped_column(String(200), primary_key=True)
     note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(

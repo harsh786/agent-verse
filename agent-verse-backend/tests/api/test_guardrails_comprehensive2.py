@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 from app.api.guardrails import (
     _configs_store,
-    _violations_store,
 )
 from app.api.guardrails import (
     router as guardrails_router,
@@ -42,7 +41,7 @@ def _clean_store(tenant_id: str = _CTX.tenant_id) -> None:
 
     _configs_store.pop(tenant_id, None)
     guardrails_engine._rules.pop(tenant_id, None)
-    _violations_store.pop(tenant_id, None)
+    guardrails_engine._violations.pop(tenant_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -388,59 +387,59 @@ def test_list_violations_empty() -> None:
     assert body["total"] == 0
 
 
+def _record(**kw: Any) -> None:
+    """A violation in the engine's (repository-less) store — what the API reads."""
+    import datetime
+    import uuid as _uuid
+
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.models import GuardrailViolation
+
+    fields: dict[str, Any] = {
+        "violation_id": _uuid.uuid4().hex, "tenant_id": _CTX.tenant_id, "rule_id": "r1",
+        "rule_name": "rule", "layer": "goal", "action_taken": "block", "category": "pii",
+        "content_preview": "***", "severity": "high",
+        "created_at": datetime.datetime.now(datetime.UTC).isoformat(), **kw,
+    }
+    guardrails_engine._remember_violation(_CTX.tenant_id, GuardrailViolation(**fields))
+
+
 def test_list_violations_with_filters() -> None:
-    """Filtering by severity/layer/goal_id should work."""
-    from app.api.guardrails import _violations_store as vs
-    tid = _CTX.tenant_id
-    vs[tid] = [
-        {"severity": "high", "layer": "goal", "goal_id": "g1", "risk_score": 0.9},
-        {"severity": "low", "layer": "tool", "goal_id": "g2", "risk_score": 0.3},
-    ]
+    """Filtering by severity/layer/goal_id should work (P8b-3: durable store)."""
+    _clean_store()
+    _record(severity="high", layer="goal", goal_id="g1")
+    _record(severity="low", layer="tool_args", goal_id="g2")
 
     client = TestClient(_make_app(), raise_server_exceptions=False)
-
-    # Filter by severity
-    resp = client.get(
-        "/guardrails/violations?severity=high",
-        headers={"X-API-Key": _VALID_KEY},
-    )
+    resp = client.get("/guardrails/violations?severity=high", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
+    assert [v["severity"] for v in resp.json()["violations"]] == ["high"]
+    resp = client.get("/guardrails/violations?layer=tool_args", headers={"X-API-Key": _VALID_KEY})
+    assert [v["goal_id"] for v in resp.json()["violations"]] == ["g2"]
+    resp = client.get("/guardrails/violations?goal_id=g2", headers={"X-API-Key": _VALID_KEY})
     assert resp.json()["total"] == 1
-    assert resp.json()["violations"][0]["severity"] == "high"
-
-    # Filter by layer
-    resp = client.get(
-        "/guardrails/violations?layer=tool",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.json()["total"] == 1
-
-    # Filter by goal_id
-    resp = client.get(
-        "/guardrails/violations?goal_id=g2",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.json()["total"] == 1
-
     _clean_store()
 
 
-def test_list_violations_pagination() -> None:
-    from app.api.guardrails import _violations_store as vs
-    tid = _CTX.tenant_id
-    vs[tid] = [{"severity": "high", "risk_score": i * 0.1} for i in range(10)]
-
+def test_list_violations_pagination_is_keyset() -> None:
+    _clean_store()
+    for i in range(10):
+        _record(created_at=f"2026-10-01T00:00:{i:02d}+00:00", rule_name=f"r{i}")
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get(
-        "/guardrails/violations?limit=3&offset=2",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["violations"]) == 3
-    assert body["total"] == 10
-    assert body["offset"] == 2
-
+    seen: list[str] = []
+    cursor = ""
+    for _ in range(5):
+        resp = client.get(f"/guardrails/violations?limit=3{cursor}",
+                          headers={"X-API-Key": _VALID_KEY})
+        assert resp.status_code == 200
+        body = resp.json()
+        seen += [v["guardrail_name"] for v in body["violations"]]
+        if not body["next_cursor"]:
+            break
+        cursor = f"&cursor={body['next_cursor']}"
+    assert seen == [f"r{i}" for i in range(9, -1, -1)]
+    resp = client.get("/guardrails/violations?limit=3&offset=2", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 400
     _clean_store()
 
 
@@ -458,29 +457,29 @@ def test_guardrail_stats_empty() -> None:
     assert body["total_all"] == 0
     assert body["total_24h"] == 0
     assert body["by_severity"] == {}
-    assert body["risk_score_p95"] == 0.0
+    assert body["risk_score_p95"] is None
 
 
 def test_guardrail_stats_with_violations() -> None:
-    from app.api.guardrails import _violations_store as vs
-    now = time.time()
-    tid = _CTX.tenant_id
-    vs[tid] = [
-        {"severity": "high", "layer": "goal", "violation_type": "injection", "risk_score": 0.9, "_ts": now},
-        {"severity": "low", "layer": "tool", "violation_type": "pii", "risk_score": 0.3, "_ts": now},
-        {"severity": "high", "layer": "goal", "violation_type": "injection", "risk_score": 0.7, "_ts": 0},  # old
-    ]
+    import datetime
+
+    _clean_store()
+    now = datetime.datetime.now(datetime.UTC)
+    _record(severity="high", layer="goal", category="injection")
+    _record(severity="low", layer="tool_args", category="pii")
+    _record(severity="high", layer="goal", category="injection",
+            created_at=(now - datetime.timedelta(days=3)).isoformat())
+    _record(severity="high", layer="goal", category="injection",
+            created_at=(now - datetime.timedelta(days=90)).isoformat())  # outside the window
 
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/guardrails/stats", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["total_all"] == 3
-    assert body["total_24h"] == 2  # only recent ones
-    assert body["by_severity"]["high"] == 2
-    assert body["by_severity"]["low"] == 1
-    assert body["by_layer"]["goal"] == 2
-    assert len(body["top_categories"]) > 0
-    assert body["risk_score_p95"] > 0
-
+    assert body["total_all"] == body["total_window"] == 3
+    assert body["window_days"] == 30
+    assert body["total_24h"] == 2
+    assert body["by_severity"] == {"high": 2, "low": 1}
+    assert body["by_layer"] == {"goal": 2, "tool_args": 1}
+    assert body["top_categories"][0] == {"category": "injection", "count": 2}
     _clean_store()
