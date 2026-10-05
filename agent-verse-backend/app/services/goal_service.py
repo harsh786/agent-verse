@@ -3115,11 +3115,20 @@ class GoalService:
 
     async def _refresh_goal_from_db_if_needed(
         self, record: GoalRecord, tenant_ctx: TenantContext
-    ) -> GoalRecord:
+    ) -> GoalRecord | None:
+        """The goal as persisted, or ``None`` when its row was deleted (erasure).
+
+        With a task queue a (non-dry-run) goal's row is written synchronously at
+        submit, so a missing row means the goal was erased: it used to be served
+        on from this process's memory after a data-subject erasure deleted it.
+        """
         if not self._should_refresh_goal_from_db(record):
             return record
         persisted = await self._db_get_goal_record(record.goal_id, tenant_ctx)
         if persisted is None:
+            if self._task_queue is not None and not record.dry_run:
+                self._goals.pop(record.goal_id, None)
+                return None
             return record
         return persisted
 
@@ -6109,9 +6118,10 @@ class GoalService:
             if record.status in _TERMINAL_STATUSES:
                 return
 
-            record = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
-            if record.status in _TERMINAL_STATUSES:
+            refreshed = await self._refresh_goal_from_db_if_needed(record, tenant_ctx)
+            if refreshed is None or refreshed.status in _TERMINAL_STATUSES:
                 return
+            record = refreshed
 
             if queue is None:
                 return
