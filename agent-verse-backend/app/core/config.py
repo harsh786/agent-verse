@@ -693,6 +693,16 @@ class Settings(BaseSettings):
     stripe_success_url: str = "https://app.agentverse.ai/settings/billing?success=1"
     stripe_cancel_url: str = "https://app.agentverse.ai/settings/billing?cancelled=1"
 
+    llm_require_platform_key: bool = Field(
+        default=True,
+        description=(
+            "Production refuses to start without a platform LLM key. Set "
+            "LLM_REQUIRE_PLATFORM_KEY=false for a BYOK-only deployment: tenants "
+            "with their own key run, tenants without one get 'no LLM provider "
+            "configured' (read via app.providers.llm_resolution.platform_key_required)."
+        ),
+    )
+
     # --- billing (Razorpay) ---
     razorpay_key_id: str = "rzp_test_placeholder"
     razorpay_key_secret: str = ""

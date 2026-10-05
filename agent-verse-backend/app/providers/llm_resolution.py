@@ -39,6 +39,18 @@ def fake_llm_allowed() -> bool:
     return os.getenv("ENVIRONMENT", "development").strip().lower() in FAKE_LLM_ENVIRONMENTS
 
 
+def platform_key_required() -> bool:
+    """Whether production refuses to start without a platform LLM key.
+
+    ``LLM_REQUIRE_PLATFORM_KEY`` (default true). Set it to false for a BYOK-only
+    deployment (owner decision 2026-10-05): the platform then runs with the
+    failing :class:`UnconfiguredLLMProvider`, tenants with their own key run
+    normally and tenants without one get "no LLM provider configured".
+    """
+    raw = os.getenv("LLM_REQUIRE_PLATFORM_KEY", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 class NoLLMProviderConfiguredError(TenantProviderError):
     """Neither the tenant nor the platform has an LLM provider configured."""
 

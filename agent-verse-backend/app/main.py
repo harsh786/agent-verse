@@ -194,8 +194,12 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
 
     # Production safety guard: refuse to start with FakeProvider in production.
     if isinstance(_app_provider, FakeProvider):
+        from app.providers.llm_resolution import platform_key_required
+
         env = os.getenv("ENVIRONMENT", "development").lower()
-        if env == "production":
+        # LLM_REQUIRE_PLATFORM_KEY=false: a BYOK-only deployment starts without a
+        # platform key (tenants without their own key get an honest error).
+        if env == "production" and platform_key_required():
             raise RuntimeError(
                 "FATAL: No LLM provider configured for production. "
                 "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
@@ -740,7 +744,12 @@ def create_app(
         if isinstance(_app_provider, FakeProvider):
             import os as _os
 
-            if _os.getenv("ENVIRONMENT", "development").lower() == "production":
+            from app.providers.llm_resolution import platform_key_required
+
+            if (
+                _os.getenv("ENVIRONMENT", "development").lower() == "production"
+                and platform_key_required()
+            ):
                 raise RuntimeError(
                     "FATAL: No LLM provider configured for production. "
                     "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
