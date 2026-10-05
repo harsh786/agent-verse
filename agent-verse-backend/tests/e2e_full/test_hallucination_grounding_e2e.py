@@ -9,8 +9,10 @@ replan, ultimately failed) instead of letting the hallucinated answer complete.
 The e2e harness has no executable tools, so the text-only answer has **no**
 evidence at all. The gates used to fail closed only when evidence existed, so
 this case completed with a mere warning (CORE-03). The planned step itself is
-worded without a high-risk keyword so the approval gate does not deny it
-first: the grounding gate is what must fail the goal.
+worded as read/report-only (since HIGH-RISK-GATE-WORDING every step of a
+high-risk goal that is not read-only — "how many rows were removed" names a
+removal — needs an approval, which bounded-autonomous mode denies first), so
+the grounding gate is what must fail the goal.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ class _UngroundedHighRiskProvider(FakeProvider):
         schema = getattr(request, "response_schema", None)
         props = (schema or {}).get("properties", {}) if isinstance(schema, dict) else {}
         if "steps" in props:
-            content = '{"steps": ["Report how many rows were removed"]}'
+            content = '{"steps": ["Report the row count"]}'
         elif "success" in props:
             # Verifier believes the step succeeded — the grounding gate is the
             # only thing that should catch the unsupported claim.
