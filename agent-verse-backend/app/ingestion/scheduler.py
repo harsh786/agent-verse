@@ -660,6 +660,17 @@ async def _sync_with(
 
     docs_indexed = docs_failed = docs_skipped = 0
     cancelled = False
+    # Documents indexed this run whose open DLQ entries are now stale (P1b-4).
+    indexed_ids: list[str] = []
+
+    async def _resolve_indexed() -> None:
+        if not indexed_ids:
+            return
+        try:
+            await tracker.resolve_dlq_for_documents(source_id, tenant_id, list(indexed_ids))
+        except Exception as exc:  # the entries stay open; the retry resolves them
+            _log.warning("dlq_resolve_after_index_failed source=%s: %s", source_id, exc)
+        indexed_ids.clear()
     moves: dict[str, str] = {}  # configured URL -> where it moved permanently (USR-5)
 
     try:
@@ -704,6 +715,9 @@ async def _sync_with(
                 job.chunks_created += int(getattr(result, "chunks_created", 0) or 0)
                 if result.status == "indexed":
                     docs_indexed += 1
+                    indexed_ids.append(str(raw_doc.doc_id))
+                    if len(indexed_ids) >= _RESOLVE_BATCH:
+                        await _resolve_indexed()
                 elif result.status == "skipped":
                     docs_skipped += 1
                 else:
@@ -748,6 +762,7 @@ async def _sync_with(
                     job_id=job.job_id,
                 )
 
+        await _resolve_indexed()
         # ── Final cursor commit ───────────────────────────────────────────────
         # A connector whose per-document cursor is a resume position (S3: the
         # last key handed over) publishes the next run's watermark once its
@@ -763,6 +778,7 @@ async def _sync_with(
         job.docs_indexed = docs_indexed
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed
+        job.docs_discovered = docs_indexed + docs_skipped + docs_failed
         await tracker.complete_job(job, cancelled=cancelled, notices=_move_notices(moves))
         await _record_moves(source_store, config, moves)
         # Advance last_synced_at + cursor on the durable source row so the beat
@@ -809,6 +825,8 @@ async def _sync_with(
         job.docs_indexed = docs_indexed
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed + (exc.failed_units if partial else 1)
+        job.docs_discovered = docs_indexed + docs_skipped + docs_failed
+        await _resolve_indexed()
         await tracker.complete_job(
             job,
             error=str(exc) or type(exc).__name__,
@@ -834,6 +852,9 @@ async def _sync_with(
     finally:
         await tracker.release_lock(source_id, tenant_id)
 
+
+# Indexed document ids are matched against open DLQ entries in batches this big.
+_RESOLVE_BATCH = 200
 
 # At most this many moved URLs are recorded per sync (a crawl can hit many).
 _MAX_MOVES_RECORDED = 50
@@ -1037,9 +1058,10 @@ async def _retry_one_dlq_entry(
 
     from app.ingestion.source_config import CONNECTOR_FAILURE_RETRYABLE_KEY
 
-    if (raw_doc.metadata or {}).get(CONNECTOR_FAILURE_RETRYABLE_KEY) is False:
+    if not force and (raw_doc.metadata or {}).get(CONNECTOR_FAILURE_RETRYABLE_KEY) is False:
         # The connector said no retry can fix this (object deleted, access
-        # denied, over the size cap): stop rescanning it.
+        # denied, over the size cap): stop rescanning it. An operator retry
+        # (force) fetches it again — the cause may have been fixed (P1b-4).
         _log.info("retry_dlq: dlq=%s is a permanent connector failure", dlq_id)
         await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
         return "permanent"
