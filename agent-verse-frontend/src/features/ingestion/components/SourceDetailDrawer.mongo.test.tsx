@@ -112,4 +112,45 @@ describe('B3 edit connection_config with a masked round-trip', () => {
   });
 });
 
-void within;
+const RAW_TOPOLOGY =
+  "mongo-0.db.internal.example.com:27017: [Errno 61] Connection refused, Timeout: 10.0s, Topology Description: " +
+  "<TopologyDescription servers: [<ServerDescription ('10.0.0.5', 27017) error=AutoReconnect('10.0.0.5:27017: refused')>]>";
+
+describe('B6 friendly health / sync / job errors with details', () => {
+  test('a failing health check shows a short reason; raw text (sanitised) only behind Details', async () => {
+    mockFetch({ health: () => json({ ok: false, latency_ms: 0, error: RAW_TOPOLOGY, metadata: {} }) });
+    renderDrawer();
+    const alert = await screen.findByTestId('health-error');
+    expect(alert).toHaveTextContent(/refused the connection/i);
+    expect(alert).not.toHaveTextContent(/TopologyDescription/);
+    await userEvent.click(within(alert).getByRole('button', { name: /details/i }));
+    expect(alert).toHaveTextContent(/Errno 61/);
+    expect(document.body.innerHTML).not.toContain('internal.example.com');
+    expect(document.body.innerHTML).not.toContain('10.0.0.5');
+  });
+
+  test('a refused sync start is explained', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/health')) return json({ ok: true, latency_ms: 1, error: null, metadata: {} });
+      if (url.includes('/sync/status')) return json({ status: 'completed' });
+      if (url.endsWith('/sync') && init?.method === 'POST') return json({ detail: 'Source destination refused by egress policy: 10.0.0.5 is a private address' }, 422);
+      return json([]);
+    });
+    renderDrawer();
+    await userEvent.click(screen.getByRole('button', { name: /sync source/i }));
+    const alert = await screen.findByText(/sync failed to start/i);
+    expect(alert.closest('[role="alert"]')).toHaveTextContent(/address is blocked/i);
+    expect(document.body.innerHTML).not.toContain('10.0.0.5');
+  });
+
+  test('a failed job shows a friendly reason in History', async () => {
+    mockFetch({ syncStatus: { status: 'failed', sync_mode: 'incremental', docs_indexed: 0, error_message: "Authentication failed., full error: {'ok': 0.0, 'errmsg': 'Authentication failed.', 'code': 18}" } });
+    renderDrawer();
+    await userEvent.click(screen.getByRole('button', { name: /^history$/i }));
+    const err = await screen.findByTestId('job-error');
+    expect(err).toHaveTextContent(/authentication failed: check the username/i);
+    await userEvent.click(within(err).getByRole('button', { name: /details/i }));
+    expect(err).toHaveTextContent(/code/);
+  });
+});

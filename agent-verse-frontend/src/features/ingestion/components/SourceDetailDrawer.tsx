@@ -9,6 +9,7 @@ import { formShowsFieldErrors } from './families/formSupport';
 import { restoreMaskedSecrets } from '../sourceSecrets';
 import { connectionConfigErrors, parseApiFieldErrors, type ApiFieldErrors } from '@/lib/apiFieldErrors';
 import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
+import { friendlyConnectionError } from '@/lib/friendlyError';
 
 interface Props { source: SourceConfig; onClose: () => void; }
 type Tab = 'overview' | 'documents' | 'history' | 'settings';
@@ -34,19 +35,19 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
               <span className="rounded bg-muted px-2 py-0.5 text-xs font-mono">{source.source_type}</span>
               <span className="text-xs text-muted-foreground">{familyCfg.label}</span>
               {health && (
-                <span className={`text-xs ${health.ok ? 'text-emerald-600' : 'text-red-600'}`} title={health.ok ? undefined : health.error ?? undefined}>
+                <span className={`text-xs ${health.ok ? 'text-emerald-600' : 'text-red-600'}`}
+                  title={health.ok ? undefined : friendlyConnectionError(health.error, 'Connection error').message}>
                   {health.ok ? `● ${Math.round(health.latency_ms)}ms` : '✕ Error'}
                 </span>
               )}
             </div>
             <h2 className="mt-1 text-base font-semibold">{source.name}</h2>
+            {/* Raw driver text (TopologyDescription, member hosts) stays behind Details, sanitised (B6). */}
             {health && !health.ok && health.error && (
-              <p role="alert" className="mt-1 text-xs text-red-600 break-words">{health.error}</p>
+              <FriendlyErrorMessage role="alert" data-testid="health-error" className="mt-1 text-xs text-red-600" error={health.error} />
             )}
             {triggerSync.isError && (
-              <p role="alert" className="mt-1 text-xs text-red-600 break-words">
-                Sync failed to start: {triggerSync.error instanceof Error ? triggerSync.error.message : String(triggerSync.error)}
-              </p>
+              <FriendlyErrorMessage role="alert" className="mt-1 text-xs text-red-600" prefix="Sync failed to start: " error={triggerSync.error} />
             )}
             {reindex.isError && (
               <p role="alert" className="mt-1 text-xs text-red-600 break-words">
@@ -54,7 +55,7 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
                   ? reindex.error.message.toLowerCase().includes('legal hold')
                     ? 'Reindex refused: the collection is under legal hold.'
                     : 'Reindex refused: a sync is already running for this source.'
-                  : `Reindex failed: ${reindex.error instanceof Error ? reindex.error.message : String(reindex.error)}`}
+                  : `Reindex failed: ${friendlyConnectionError(reindex.error).message}`}
               </p>
             )}
           </div>
@@ -198,7 +199,7 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
           <dt className="text-muted-foreground">Chunks</dt><dd>{String(job.chunks_created ?? 0)}</dd>
         </dl>
         {Boolean(job.error_message) && (
-          <p className="mt-2 text-xs text-destructive">{String(job.error_message)}</p>
+          <FriendlyErrorMessage data-testid="job-error" className="mt-2 text-xs text-destructive" error={String(job.error_message)} />
         )}
       </div>
     </div>
