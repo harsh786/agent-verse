@@ -76,6 +76,7 @@ from app.ingestion.base_connector import (
     ConnectionHealth,
     ConnectorFetchError,
     ConnectorUnavailableError,
+    UnitFailures,
 )
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
@@ -502,6 +503,20 @@ def _probe(client: Any, settings: _Settings) -> dict[str, Any]:
             )
         meta["collections"] = names[:_MAX_COLLECTIONS]
     return meta
+
+
+def _existing_collections(client: Any, settings: _Settings, names: list[str]) -> set[str]:
+    """Which of ``names`` exist (and the user may read) in the database.
+
+    ``authorizedCollections`` lets a user with collection-level privileges only
+    (no ``listCollections`` on the database) list the ones it can read.
+    """
+    found = client[settings.database].list_collection_names(
+        filter={"name": {"$in": list(names)}},
+        authorizedCollections=True,
+        maxTimeMS=settings.max_time_ms,
+    )
+    return {str(n) for n in found}
 
 
 def _list_collections(client: Any, settings: _Settings) -> list[str]:
@@ -1038,6 +1053,23 @@ class MongoDBConnector(BaseConnector):
             collections = settings.collections or await asyncio.to_thread(
                 _list_collections, client, settings
             )
+            # P1c-2: MongoDB reads a missing collection as empty, so a typo in
+            # ``collections`` used to "complete" with nothing from it. A
+            # configured collection that does not exist is a counted failure;
+            # the others are synced (job ``partial``, or ``failed`` if none).
+            failures = UnitFailures("mongodb")
+            if settings.collections:
+                present = await asyncio.to_thread(
+                    _existing_collections, client, settings, collections
+                )
+                for name in collections:
+                    if name not in present:
+                        failures.add(
+                            f"collection {name}",
+                            f"not found in database {settings.database!r} (or not "
+                            "readable by this user)",
+                        )
+                collections = [c for c in collections if c in present]
             positions = _decode_cursor(cursor, settings, collections)
             remaining = settings.max_documents
             # TG-07: with the default _id cursor new documents come from the _id
@@ -1105,3 +1137,4 @@ class MongoDBConnector(BaseConnector):
                         yield _raw(collection, doc), _encode_cursor(settings, positions)
                     positions[collection] = {**positions[collection], "cs": next_token}
                     break
+            failures.raise_if_any()

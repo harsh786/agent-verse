@@ -674,3 +674,34 @@ async def test_bson_types_round_trip_through_a_sync(mongo: tuple[str, int]) -> N
         "deep_fields": 1,
     }
 
+
+async def test_a_configured_collection_that_does_not_exist_is_a_counted_failure(
+    mongo: tuple[str, int],
+) -> None:
+    """P1c-2: a typo in ``collections`` used to complete the sync with 0 documents
+    from it (MongoDB reads a missing collection as empty) — the live run showed a
+    "completed" job for a Source whose only collection did not exist. Test
+    connection already said "not found"; the sync now says so too: the other
+    collections are synced, the job is ``partial`` and names the missing one."""
+    host, port = mongo
+    h = _Harness()
+    source = h.create(_ui_payload(host, port, collections_csv="customers, custmers"))
+
+    with pytest.raises(Exception, match="custmers"):
+        await h.sync(source["source_id"])
+
+    job = max(h.tracker.list_jobs_for_source(source["source_id"]), key=lambda j: j.created_at)
+    assert job.status == "partial", (job.status, job.error_message)
+    assert job.docs_indexed == 3
+    assert job.docs_failed == 1
+    assert "custmers" in job.error_message
+    assert "not found" in job.error_message
+
+    only_missing = h.create(_ui_payload(host, port, collections_csv="no_such_collection"))
+    with pytest.raises(Exception, match="no_such_collection"):
+        await h.sync(only_missing["source_id"])
+    job = max(
+        h.tracker.list_jobs_for_source(only_missing["source_id"]), key=lambda j: j.created_at
+    )
+    assert job.status == "failed", (job.status, job.error_message)
+    assert job.docs_indexed == 0

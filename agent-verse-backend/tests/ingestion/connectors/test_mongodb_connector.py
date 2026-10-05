@@ -116,6 +116,7 @@ class TestBsonTypesAndLimits:
             patch.object(mc, "_connected", _connected),
             patch.object(mc, "_fetch_page", side_effect=[docs, []]),
             patch.object(mc, "_change_stream_start", return_value=None),
+            patch.object(mc, "_existing_collections", lambda _c, _s, names: set(names)),
         ):
             out = [d async for d, _c in MongoDBConnector().get_delta(_make_config(), None)]
         assert out[0].metadata["truncated"] == {"array_items_omitted": 50, "arrays_truncated": 1}
@@ -347,6 +348,7 @@ class TestChangeStreamHistoryLost:
             patch.object(mc, "_connected", _connected),
             patch.object(mc, "_fetch_page", _fetch),
             patch.object(mc, "_change_stream_start", return_value={"t": 2}),
+            patch.object(mc, "_existing_collections", lambda _c, _s, names: set(names)),
             patch.object(mc, "_read_changes", return_value=([], None, True)),
         ):
             out = [
