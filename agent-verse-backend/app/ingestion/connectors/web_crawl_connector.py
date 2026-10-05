@@ -8,7 +8,8 @@ Connection config (Sources UI: Web & Internet -> web_crawl):
     max_depth            Link depth: the seeds (and sitemap entries) are depth 1, a link
                          on a depth-d page is depth d+1; nothing deeper than this is
                          fetched (default 3; 1 = only the listed pages).
-    max_pages            Pages fetched per sync (default 100, at most 5000).
+    max_pages            Pages read per sync (default 100, at most 5000); dead links do
+                         not count, but all page requests stay under 3 x max_pages.
     include_url_pattern / exclude_url_pattern  Regexes applied to every URL.
     crawl_delay_seconds  Minimum pause between two requests to one host (default 1.0);
                          a larger robots.txt ``Crawl-delay`` wins (capped at 30 s).
@@ -468,7 +469,8 @@ class WebCrawlConnector(BaseConnector):
         indexed_as: set[str] = set()  # canonical / document URLs taken this crawl
         texts: dict[str, str] = {}  # text hash -> URL that holds it
         frontier: deque[tuple[str, int]] = deque((u, 1) for u in seeds)
-        fetched = 0
+        fetched = 0  # pages read
+        attempts = 0  # page requests, dead links included
 
         async with source_client(timeout=30, headers={"User-Agent": USER_AGENT}) as client:
             crawl = _Crawl(client, settings)
@@ -505,8 +507,10 @@ class WebCrawlConnector(BaseConnector):
                     continue
                 if settings.exclude and settings.exclude.search(url):
                     continue
-                if fetched >= settings.max_pages:
-                    complete = False  # the site has more pages than this sync reads
+                if fetched >= settings.max_pages or attempts >= settings.max_pages * 3:
+                    # The site has more pages than this sync reads (pages read count;
+                    # dead links only against the overall request budget).
+                    complete = False
                     break
                 if not source_url_is_allowed(url, context="web_crawl.fetch"):
                     _log.warning("webcrawl_url_blocked url=%s", url[:200])
@@ -528,7 +532,7 @@ class WebCrawlConnector(BaseConnector):
                                             retryable=False), progress
                     continue
 
-                fetched += 1
+                attempts += 1
                 try:
                     page = await self._read_page(crawl, config, url, settings)
                 except ConnectorUnavailableError:
@@ -544,6 +548,7 @@ class WebCrawlConnector(BaseConnector):
                     else:
                         _log.info("webcrawl_dead_link url=%s: %s", url[:200], exc)
                     continue
+                fetched += 1
                 final = page.url
                 visited.add(final)
                 if page.links and depth < settings.max_depth:

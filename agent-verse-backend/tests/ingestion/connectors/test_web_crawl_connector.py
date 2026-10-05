@@ -129,6 +129,22 @@ async def test_depth_page_limits_and_same_host(site: Site) -> None:
     assert json.loads(conn.completed_cursor or "")["complete"] is False
 
 
+async def test_dead_links_do_not_use_up_the_page_budget(site: Site) -> None:
+    """max_pages counts pages read: three dead links before the articles must not
+    leave the crawl with one document (live P1d WEB-CRAWL-SITE)."""
+    site.html("/", "Home", "/dead-1", "/dead-2", "/dead-3", "/a", "/b", "/c")
+    for rel in ("/a", "/b", "/c"):
+        site.html(rel, f"Page {rel}", body=f"Article {rel}. " + _TEXT)
+    items, conn = await _crawl(site, max_pages=3)
+    assert _urls(items) == [site.url(p) for p in ("/", "/a", "/b")]
+    assert json.loads(conn.completed_cursor or "")["complete"] is False
+    # Requests stay bounded even on a site of dead links.
+    site.html("/", "Home", *[f"/dead/{i}" for i in range(50)])
+    site.server.site_log.clear()
+    await _crawl(site, max_pages=4)
+    assert len(site.hits("/dead/")) <= 4 * 3
+
+
 async def test_more_than_twenty_links_per_page_are_followed(site: Site) -> None:
     paths = [f"/doc/{i}" for i in range(30)]
     site.html("/", "Index", *paths)
