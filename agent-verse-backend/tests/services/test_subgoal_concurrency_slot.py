@@ -80,9 +80,15 @@ async def test_worker_subgoal_run_releases_no_slot() -> None:
     with patch("app.tenancy.limits.decrement_concurrent_goals", new=dec):
         token = tasks._SUBGOAL_RUN.set(True)
         try:
-            await tasks._decrement_after_completion("tid-slot", "redis://localhost:1/0")
+            await tasks._decrement_after_completion(
+                "tid-slot", "redis://localhost:1/0", goal_id="goal-slot"
+            )
         finally:
             tasks._SUBGOAL_RUN.reset(token)
         dec.assert_not_awaited()
-        await tasks._decrement_after_completion("tid-slot", "redis://localhost:1/0")
+        # RATE-06: the release is keyed by goal id (ZREM goal_id), so pass it
+        # explicitly rather than relying on a _RUN_GOAL_ID leaked by another test.
+        await tasks._decrement_after_completion(
+            "tid-slot", "redis://localhost:1/0", goal_id="goal-slot"
+        )
         dec.assert_awaited_once()
