@@ -75,6 +75,11 @@ _SOURCE_TRUST: dict[str, float] = {
 _RECENCY_HALFLIFE_DAYS = 30.0
 
 
+
+# Characters of a chunk handed to the cross-encoder. Its tokenizer truncates at
+# 512 tokens (~2,000+ characters of English); this only bounds pathological input.
+_CE_MAX_INPUT_CHARS = 4096
+
 def source_trust(chunk: dict[str, Any]) -> float:
     """Trust multiplier in (0, 1] for a chunk's source.
 
@@ -387,7 +392,10 @@ class RerankPolicy:
         try:
             from app.rag.cross_encoder import cross_encode
 
-            documents = [c.get("content", "")[:512] for c in chunks]
+            # P1c-3: the model truncates at 512 *tokens* itself; a 512-character
+            # cut dropped most of a normal chunk (a record's distinguishing
+            # field often comes last). Capped only against pathological input.
+            documents = [str(c.get("content", ""))[:_CE_MAX_INPUT_CHARS] for c in chunks]
             scores = cross_encode(query, documents)
             # Normalize scores to 0-1 range
             if scores:
