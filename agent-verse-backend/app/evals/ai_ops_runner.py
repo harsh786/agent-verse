@@ -49,30 +49,15 @@ _TERMINAL = {"goal_complete", "goal_failed", "goal_cancelled", "goal_rejected"}
 
 
 def _extract_output(events: list[dict[str, Any]]) -> str:
-    """The goal's final answer, read from its own event stream (never the expectation)."""
-    for evt in reversed(events):
-        if evt.get("type") != "goal_complete":
-            continue
-        for key in ("answer", "cited_answer", "summary", "message", "output"):
-            val = evt.get(key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-        result = evt.get("result")
-        if isinstance(result, str) and result.strip():
-            return result.strip()
-        if isinstance(result, dict | list) and result:
-            return json.dumps(result)[:4000]
-    for evt in reversed(events):
-        if evt.get("type") == "synthesis_complete":
-            val = evt.get("cited_answer")
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-    for evt in reversed(events):
-        if evt.get("type") == "step_complete" and evt.get("output") is not None:
-            out = str(evt.get("output") or "").strip()
-            if out:
-                return out
-    return ""
+    """The goal's final answer, read from its own event stream (never the expectation).
+
+    The same reader GET /goals/{id} uses for its ``result_artifact`` (P7-2), so a
+    case is scored on exactly the answer the goal shows; bridge-wrapped events
+    (``{"type", "payload": ...}``) are unwrapped.
+    """
+    from app.services.result_artifacts import final_answer_text
+
+    return final_answer_text(events)
 
 
 async def execute_case(

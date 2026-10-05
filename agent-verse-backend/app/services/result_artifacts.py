@@ -58,7 +58,59 @@ def _jira_rows(issues: list[Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def unwrap_event(event: Any) -> dict[str, Any]:
+    """The goal event itself, whether flat or in the worker bridge envelope.
+
+    Celery workers publish ``{goal_id, tenant_id, type, payload: <event>}``; the
+    API and the event store hand out the event itself. Readers must see both
+    the same way (P7-2: an eval read only top-level keys and scored ``""``).
+    """
+    if not isinstance(event, dict):
+        return {"type": "unknown"}
+    payload = event.get("payload")
+    if isinstance(payload, dict) and payload.get("type", event.get("type")) == event.get("type"):
+        merged = dict(payload)
+        merged.setdefault("type", event.get("type", ""))
+        return merged
+    return event
+
+
+_TERMINAL_ANSWER_KEYS = ("answer", "output", "result", "cited_answer", "summary")
+
+
+def _answer_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict | list) and value:
+        return json.dumps(value)[:4000]
+    return ""
+
+
+def final_answer_text(events: list[dict[str, Any]]) -> str:
+    """A goal's final answer: what GET /goals/{id} shows as its text result.
+
+    The terminal ``goal_complete`` event's own answer when it carries one
+    (distributed strategies put ``answer`` there), else the last
+    ``step_complete`` output. Flat and bridge-wrapped events read the same.
+    ``""`` when the goal produced no answer (never a placeholder).
+    """
+    flat = [unwrap_event(e) for e in events]
+    for event in reversed(flat):
+        if event.get("type") != "goal_complete":
+            continue
+        for key in _TERMINAL_ANSWER_KEYS:
+            text = _answer_value(event.get(key))
+            if text:
+                return text
+        break
+    last_step = next((e for e in reversed(flat) if e.get("type") == "step_complete"), None)
+    if last_step is None or last_step.get("output") is None:
+        return ""
+    return str(last_step["output"]).strip()
+
+
 def build_result_artifact(goal: str, status: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+    events = [unwrap_event(e) for e in events]
     tool_events = [event for event in events if event.get("type") == "tool_call_complete"]
     verification = next(
         (event for event in reversed(events) if event.get("type") == "verification_done"), {}
@@ -113,11 +165,8 @@ def build_result_artifact(goal: str, status: str, events: list[dict[str, Any]]) 
             "debug": {"event_count": len(events)},
         }
 
-    last_step = next(
-        (event for event in reversed(events) if event.get("type") == "step_complete"), {}
-    )
-    output_value = last_step["output"] if "output" in last_step else verification.get("reason", "")
-    output = str(output_value) if output_value is not None else ""
+    # One answer reader for GET /goals/{id} and the evals (P7-2).
+    output = final_answer_text(events) or str(verification.get("reason", "") or "")
     return {
         "version": 1,
         "kind": "text" if output else "empty",
