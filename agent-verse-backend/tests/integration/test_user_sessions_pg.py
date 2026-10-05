@@ -290,3 +290,81 @@ async def test_scim_deprovisioning_revokes_the_users_sessions(pg_url: str, redis
         await redis.aclose()
         await app_engine.dispose()
         await owner_engine.dispose()
+
+
+async def _maintenance_factory(pg_url: str) -> tuple[Any, Any]:
+    """A BYPASSRLS, non-owner role like MAINTENANCE_DATABASE_URL's."""
+    import secrets
+
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    password = secrets.token_urlsafe(24)
+    role = f"test_us_prune_{secrets.token_hex(4)}"
+    admin = create_async_engine(pg_url)
+    async with admin.begin() as conn:
+        quoted = (await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})).scalar()
+        await conn.execute(text(f"CREATE ROLE {role} LOGIN PASSWORD {quoted} BYPASSRLS"))
+        await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
+        await conn.execute(text(f"GRANT SELECT, DELETE ON user_sessions TO {role}"))
+    await admin.dispose()
+    url = make_url(pg_url).set(username=role, password=password)
+    engine = create_async_engine(url.render_as_string(hide_password=False))
+    return async_sessionmaker(engine, expire_on_commit=False), engine
+
+
+async def test_prune_deletes_only_sessions_expired_past_the_grace_in_batches(
+    pg_url: str,
+) -> None:
+    """Million-scale: one row per login must not accumulate forever."""
+    from app.auth.user_sessions import prune_user_sessions
+
+    owner_engine, owner = session_factory(pg_url)
+    tenants = [uuid.uuid4().hex, uuid.uuid4().hex]
+    email = f"prune.{tenants[0][:6]}@corp.test"
+    try:
+        for t in tenants:
+            await _seed_tenant(owner, t)
+        async with owner() as s, s.begin():
+            user_id = (
+                await s.execute(
+                    text("INSERT INTO users (id, email) VALUES (:i, :e) RETURNING id"),
+                    {"i": uuid.uuid4().hex, "e": email},
+                )
+            ).scalar_one()
+            rows = [(f"old{i}", tenants[i % 2], "NOW() - interval '8 days'") for i in range(5)]
+            rows += [("recent-expired", tenants[0], "NOW() - interval '1 hour'")]
+            rows += [("live", tenants[1], "NOW() + interval '1 hour'")]
+            for sid, tid, expires in rows:
+                await s.execute(
+                    text(
+                        "INSERT INTO user_sessions (id, tenant_id, user_id, auth_method, "
+                        f"expires_at) VALUES (:id, :t, :u, 'saml', {expires})"
+                    ),
+                    {"id": sid, "t": tid, "u": user_id},
+                )
+            indexes = {
+                r[0]
+                for r in await s.execute(
+                    text("SELECT indexname FROM pg_indexes WHERE tablename = 'user_sessions'")
+                )
+            }
+        mnt, mnt_engine = await _maintenance_factory(pg_url)
+        try:
+            deleted = await prune_user_sessions(mnt, grace_days=7, batch_size=2)
+        finally:
+            await mnt_engine.dispose()
+        async with owner() as s, s.begin():
+            left = sorted(
+                r[0]
+                for r in await s.execute(
+                    text("SELECT id FROM user_sessions WHERE user_id = :u"), {"u": user_id}
+                )
+            )
+        assert deleted == 5
+        assert left == ["live", "recent-expired"]
+        assert "ix_user_sessions_expires_at" in indexes
+    finally:
+        for t in tenants:
+            await _cleanup(owner, t, [email])
+        await owner_engine.dispose()

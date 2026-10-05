@@ -5491,6 +5491,27 @@ def prune_connector_health_snapshots() -> dict[str, Any]:
     return result
 
 
+@celery_app.task(name="agentverse.maintenance.prune_user_sessions")  # type: ignore[untyped-decorator]
+def prune_user_sessions() -> dict[str, Any]:
+    """Delete SSO user sessions expired for over a week (SAML-01), in batches.
+
+    Cross-tenant, so it runs on the BYPASSRLS maintenance factory; a failure
+    raises so Celery records it instead of reporting zero rows pruned.
+    """
+
+    async def _run() -> dict[str, Any]:
+        from app.auth import user_sessions
+        from app.db import session as db_session
+
+        pruned = await user_sessions.prune_user_sessions(
+            db_session.get_system_session_factory()
+        )
+        return {"pruned_count": pruned}
+
+    result: dict[str, Any] = _run_async(_run())
+    return result
+
+
 def _run_poll_trigger(
     key: str, sched: dict[str, Any], r: Any, now: datetime.datetime
 ) -> int:

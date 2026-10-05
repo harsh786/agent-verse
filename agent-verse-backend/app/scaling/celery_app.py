@@ -337,6 +337,12 @@ celery_app.conf.update(
             "schedule": 3600,
             "options": {"queue": "maintenance"},
         },
+        # SAML-01: SSO user sessions expired for over a week.
+        "prune-user-sessions-hourly": {
+            "task": "agentverse.maintenance.prune_user_sessions",
+            "schedule": 3600,
+            "options": {"queue": "maintenance"},
+        },
         # ORG-42: generated chat documents past their retention window.
         "purge-expired-chat-artifacts-hourly": {
             "task": "agentverse.maintenance.purge_expired_chat_artifacts",

@@ -570,6 +570,44 @@ async def revoke_member_sessions_in_tx(session: Any, tenant_id: str, user_id: st
     return [str(h) for h in rows if h]
 
 
+async def prune_user_sessions(
+    factory: Any,
+    *,
+    grace_days: int = 7,
+    batch_size: int = 5000,
+    max_batches: int = 200,
+) -> int:
+    """Delete sessions that expired more than *grace_days* ago, in batches.
+
+    One row per login would otherwise accumulate forever. Cross-tenant, so it
+    runs on the maintenance (BYPASSRLS) factory; each batch is its own short
+    transaction driven by ``ix_user_sessions_expires_at`` and a run is capped
+    at *max_batches* so a backlog drains over several runs. Revoked sessions
+    are kept until they would have expired (plus the grace) for audit.
+    """
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+
+    deleted = 0
+    for _ in range(max_batches):
+        async with factory() as session, session.begin(), system_session(session):
+            result = await session.execute(
+                text(
+                    "DELETE FROM user_sessions WHERE id IN ("
+                    "SELECT id FROM user_sessions "
+                    "WHERE expires_at < NOW() - make_interval(days => :d) "
+                    "ORDER BY expires_at LIMIT :n)"
+                ),
+                {"d": int(grace_days), "n": int(batch_size)},
+            )
+        count = int(getattr(result, "rowcount", 0) or 0)
+        deleted += count
+        if count < batch_size:
+            break
+    return deleted
+
+
 def get_user_session_store(app: Any) -> UserSessionStore:
     """The app's store (created in ``create_app``, DB/Redis wired in the lifespan)."""
     store = getattr(getattr(app, "state", None), "user_session_store", None)
