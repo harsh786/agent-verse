@@ -2,7 +2,7 @@
  * MongoDB / connection_string connectors on the Registered Connectors page
  * (mongo re-audit A2, A4, A6, A7, A9, A10/TG-06).
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -165,7 +165,7 @@ describe('A4 MongoDB connector fields', () => {
     expect(screen.queryByRole('checkbox', { name: /invalid certificates/i })).not.toBeInTheDocument();
   });
 
-  it('TLS reveals the CA PEM (paste or file) and a warned allow-invalid-certs switch; all are submitted', async () => {
+  it('TLS reveals CA PEM (paste or file), client cert, key and passphrase; there is no allow-invalid switch', async () => {
     const spy = mockFetch([
       listOf([]),
       { match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { server_id: 'builtin-mongodb:orders-db', name: 'orders-db' } },
@@ -182,20 +182,70 @@ describe('A4 MongoDB connector fields', () => {
     const pem = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n';
     await userEvent.upload(screen.getByLabelText(/upload ca certificate/i), new File([pem], 'ca.pem', { type: 'application/x-pem-file' }));
     await waitFor(() => expect(screen.getByLabelText(/^ca certificate/i)).toHaveValue(pem));
-
-    expect(screen.queryByText(/disables server certificate verification/i)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('checkbox', { name: /invalid certificates/i }));
-    expect(screen.getByText(/disables server certificate verification/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^client certificate/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^client private key/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/client key passphrase/i)).toHaveAttribute('type', 'password');
+    // The backend refuses every TLS-weakening option (422), so the UI never offers one.
+    expect(screen.queryByRole('checkbox', { name: /invalid certificates/i })).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
     await waitFor(() => expect(postBody(spy)).toBeTruthy());
     expect(postBody(spy).auth_type).toBe('connection_string');
-    expect(postBody(spy).auth_config).toMatchObject({
-      uri: 'mongodb+srv://cluster0.example.net/', username: 'alice', password: 'S3cret', auth_source: 'admin',
-      auth_mechanism: 'SCRAM-SHA-256', tls: 'true', tls_ca_pem: pem, tls_allow_invalid_certificates: 'true',
+    expect(postBody(spy).auth_config).toEqual({
+      url: 'mongodb+srv://cluster0.example.net/', username: 'alice', password: 'S3cret', auth_source: 'admin',
+      auth_mechanism: 'SCRAM-SHA-256', tls: 'true', tls_ca_pem: pem,
     });
-    // The catalog's generic `url` field is the same URI — it is not collected twice.
-    expect(postBody(spy).auth_config).not.toHaveProperty('url');
+  });
+
+  it('MONGODB-X509 turns TLS on and requires the client certificate and key', async () => {
+    const spy = mockFetch([
+      listOf([]),
+      { match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { server_id: 'builtin-mongodb:orders-db', name: 'orders-db' } },
+    ]);
+    renderPage(mongoPrefill);
+    await screen.findByTestId('register-modal');
+    await userEvent.type(screen.getByLabelText(/connection uri/i), 'mongodb+srv://cluster0.example.net/');
+    await userEvent.selectOptions(screen.getByLabelText(/auth mechanism/i), 'MONGODB-X509');
+    expect(screen.getByRole('checkbox', { name: /use tls/i })).toBeChecked();
+    expect(screen.getByTestId('auth-blocker')).toHaveTextContent(/client certificate and its private key/i);
+    expect(screen.getByRole('button', { name: /^register$/i })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/^client certificate/i), { target: { value: '-----BEGIN CERTIFICATE-----\nC\n' } });
+    fireEvent.change(screen.getByLabelText(/^client private key/i), { target: { value: '-----BEGIN PRIVATE KEY-----\nK\n' } });
+    expect(screen.queryByTestId('auth-blocker')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
+    await waitFor(() => expect(postBody(spy)).toBeTruthy());
+    expect(postBody(spy).auth_config).toMatchObject({
+      auth_mechanism: 'MONGODB-X509', tls: 'true',
+      tls_client_cert: '-----BEGIN CERTIFICATE-----\nC\n', tls_client_private_key: '-----BEGIN PRIVATE KEY-----\nK\n',
+    });
+  });
+
+  it('edit: a saved private key shows as saved (empty) and goes back as <redacted>; cleared secrets too', async () => {
+    const spy = mockFetch([
+      listOf([{
+        server_id: 'builtin-mongodb:orders-db', name: 'orders-db', builtin_type: 'builtin-mongodb', connector_type: 'mongodb',
+        url: 'builtin://', display_url: 'mongodb://8.8.8.8:27017/shop', auth_type: 'connection_string', has_builtin: true,
+        auth_config: { url: '<redacted>', password: '<redacted>', auth_mechanism: 'MONGODB-X509', tls: true, tls_client_cert: '-----BEGIN CERTIFICATE-----\nC\n', tls_client_private_key: '<redacted>' },
+      }]),
+      { match: (_u, i) => i?.method === 'PUT', response: { server_id: 'builtin-mongodb:orders-db', name: 'orders-db' } },
+    ]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    await userEvent.click(screen.getByRole('button', { name: /^edit$/i }));
+    const key = screen.getByLabelText(/^client private key/i);
+    expect(key).toHaveValue('');
+    expect(key).toHaveAttribute('placeholder', expect.stringMatching(/saved/i));
+    expect(document.body.innerHTML).not.toContain('&lt;redacted&gt;');
+    expect(screen.queryByTestId('auth-blocker')).not.toBeInTheDocument(); // the saved key counts
+    // Type then clear the password: it still goes back as the mask, never as a deletion.
+    await userEvent.type(screen.getByLabelText(/^password/i), 'x');
+    await userEvent.clear(screen.getByLabelText(/^password/i));
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === 'PUT')).toBe(true));
+    const put = spy.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'PUT')!;
+    expect(JSON.parse(String((put[1] as RequestInit).body)).auth_config).toMatchObject({
+      url: '<redacted>', password: '<redacted>', tls_client_private_key: '<redacted>',
+    });
   });
 
   it('catalog-driven checkbox, textarea and file fields use the shared renderer', async () => {
@@ -257,7 +307,7 @@ describe('A7 one masked URI input, never a link', () => {
     await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
     await waitFor(() => expect(postBody(spy)).toBeTruthy());
     expect(postBody(spy).url).toBe('builtin://');
-    expect(postBody(spy).auth_config.uri).toBe(PLAIN_DSN);
+    expect(postBody(spy).auth_config.url).toBe(PLAIN_DSN);
     expect(JSON.stringify({ ...postBody(spy), auth_config: undefined })).not.toContain('S3cretPw');
   });
 
@@ -299,7 +349,7 @@ describe('A7 one masked URI input, never a link', () => {
     const put = spy.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'PUT')!;
     const body = JSON.parse(String((put[1] as RequestInit).body));
     expect(body.url).toBe('builtin://');
-    expect(body.auth_config.uri).toBe(PLAIN_DSN);
+    expect(body.auth_config.url).toBe(PLAIN_DSN);
   });
 
   it('a masked URI is sent back unchanged on save (the backend keeps the stored secret)', async () => {

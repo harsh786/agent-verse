@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, type CSSProperties } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
@@ -33,6 +33,8 @@ interface AuthField {
   visibleWhen?: (values: Record<string, string>) => boolean;
   /** Warning shown while a checkbox is on (a security-weakening switch). */
   warning?: string;
+  /** Multi-line secret (a private key): shown masked. */
+  secret?: boolean;
 }
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
@@ -113,7 +115,8 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
     color: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400',
     fields: [
       {
-        key: 'uri',
+        // `url` — the key the backend catalog and the MongoDB handler use.
+        key: 'url',
         label: 'Connection URI',
         placeholder: 'mongodb+srv://cluster0.example.mongodb.net/',
         type: 'password',
@@ -287,16 +290,23 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
 };
 
 // ── MongoDB connection fields (the built-in handler's credential keys) ───────
-// Keys match app/mcp/servers/mongodb_server.py: uri, username, password,
-// auth_source, auth_mechanism, database, tls, tls_ca_pem,
-// tls_allow_invalid_certificates.
+// Keys match GET /connectors/catalog `mongodb` auth_fields (app/mcp/catalog.py):
+// url, database, username, password, auth_source, auth_mechanism, tls,
+// tls_ca_pem, tls_client_cert, tls_client_private_key, tls_client_key_password.
+// There is no "allow invalid certificates" switch: the backend refuses every
+// TLS-weakening option at save time (422).
 
+const X509 = 'MONGODB-X509';
+const isX509 = (v: Record<string, string>) => (v.auth_mechanism ?? '').trim().toUpperCase() === X509;
 const mongoTlsOn = (v: Record<string, string>) =>
-  isTruthy(v.tls) || !!v.tls_ca_pem?.trim() || isTruthy(v.tls_allow_invalid_certificates);
+  isTruthy(v.tls) ||
+  isX509(v) ||
+  ['tls_ca_pem', 'tls_client_cert', 'tls_client_private_key', 'tls_client_key_password'].some((k) => !!v[k]?.trim());
 
 const MONGODB_AUTH_FIELDS: AuthField[] = [
-  AUTH_TYPE_CONFIGS.connection_string.fields[0], // uri (masked)
-  { key: 'username', label: 'Username', placeholder: 'app-user', type: 'text', required: false },
+  AUTH_TYPE_CONFIGS.connection_string.fields[0], // url (masked)
+  AUTH_TYPE_CONFIGS.connection_string.fields[3], // database
+  { key: 'username', label: 'Username', placeholder: 'app_user', type: 'text', required: false },
   { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password', required: false },
   {
     key: 'auth_source', label: 'Auth source', placeholder: 'admin', type: 'text', required: false,
@@ -309,24 +319,41 @@ const MONGODB_AUTH_FIELDS: AuthField[] = [
       { value: 'SCRAM-SHA-256', label: 'SCRAM-SHA-256' },
       { value: 'SCRAM-SHA-1', label: 'SCRAM-SHA-1' },
       { value: 'PLAIN', label: 'PLAIN (LDAP)' },
+      { value: X509, label: 'X.509 client certificate' },
     ],
   },
-  AUTH_TYPE_CONFIGS.connection_string.fields[3], // database
   {
     key: 'tls', label: 'Use TLS', placeholder: '', type: 'checkbox', required: false,
-    hint: 'mongodb+srv:// URIs (Atlas) use TLS automatically.',
+    hint: 'mongodb+srv:// URIs (Atlas) use TLS automatically. Certificate verification cannot be turned off.',
   },
   {
     key: 'tls_ca_pem', label: 'CA certificate (PEM, optional)', placeholder: '-----BEGIN CERTIFICATE-----',
     type: 'file', required: false, accept: '.pem,.crt,.cer,text/plain', visibleWhen: mongoTlsOn,
-    hint: 'Verify the server against this CA instead of the system trust store. Paste it or choose a file.',
+    hint: 'The CA that signed the server certificate, if not a public CA. Paste it or choose a file.',
   },
   {
-    key: 'tls_allow_invalid_certificates', label: 'Allow invalid certificates', placeholder: '',
-    type: 'checkbox', required: false, visibleWhen: mongoTlsOn,
-    warning: 'This disables server certificate verification: anyone on the network path can impersonate the database. Use it only for local development.',
+    key: 'tls_client_cert', label: 'Client certificate (PEM)', placeholder: '-----BEGIN CERTIFICATE-----',
+    type: 'file', required: false, accept: '.pem,.crt,.cer,text/plain', visibleWhen: mongoTlsOn,
+    hint: 'For mutual TLS or X.509 authentication.',
+  },
+  {
+    key: 'tls_client_private_key', label: 'Client private key (PEM)', placeholder: '-----BEGIN PRIVATE KEY-----',
+    type: 'file', secret: true, required: false, accept: '.pem,.key,text/plain', visibleWhen: mongoTlsOn,
+  },
+  {
+    key: 'tls_client_key_password', label: 'Client key passphrase', placeholder: '', type: 'password',
+    required: false, visibleWhen: mongoTlsOn,
   },
 ];
+
+/** Why a MongoDB form can't be saved yet ('' = it can): X.509 needs the client cert + key. */
+function mongoBlocker(fields: AuthField[], v: Record<string, string>): string {
+  if (!fields.some((f) => f.key === 'tls_client_cert') || !isX509(v)) return '';
+  if (!v.tls_client_cert?.trim() || !v.tls_client_private_key?.trim()) {
+    return 'X.509 authentication needs the client certificate and its private key.';
+  }
+  return '';
+}
 
 /** auth_config keys that hold a connection URI (the handler accepts any of them). */
 const URI_KEYS = ['uri', 'connection_string', 'url', 'mongodb_uri', 'dsn'];
@@ -489,8 +516,15 @@ function SmartAuthFields({
   connectorName: string;
   onChange: (values: Record<string, string>) => void;
 }) {
-  const setField = (key: string, value: string) =>
-    onChange({ ...authValues, [key]: value });
+  const setField = (key: string, value: string) => {
+    const next = { ...authValues, [key]: value };
+    // X.509 authenticates with a client certificate over TLS: turn TLS on so
+    // the certificate fields appear with the choice.
+    if (key === 'auth_mechanism' && value.trim().toUpperCase() === X509 && fields.some((f) => f.key === 'tls')) {
+      next.tls = 'true';
+    }
+    onChange(next);
+  };
 
   // custom_header: dynamic key-value pairs
   if (authType === 'custom_header') {
@@ -598,6 +632,8 @@ function readFileText(file: Blob): Promise<string> {
   });
 }
 
+const SAVED_SECRET_PLACEHOLDER = '•••••••• saved — type to replace';
+
 const INPUT_CLS =
   'w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none';
 
@@ -616,6 +652,12 @@ function AuthFieldInput({
   const hintId = `hint-${field.key}`;
   const inputId = `auth-${field.key}`;
   const describedBy = hint ? hintId : undefined;
+  // A stored secret comes back masked ('<redacted>'): show it as "saved" (empty
+  // input) — left empty, the original mask is sent back and the backend keeps it.
+  const savedSecret =
+    (field.type === 'password' || field.type === 'textarea' || field.type === 'file') && isMaskedSecret(value);
+  const shownValue = savedSecret ? '' : value;
+  const shownPlaceholder = savedSecret ? SAVED_SECRET_PLACEHOLDER : field.placeholder;
 
   if (field.type === 'checkbox') {
     const checked = isTruthy(value);
@@ -651,21 +693,23 @@ function AuthFieldInput({
       {field.type === 'password' ? (
         <PasswordInput
           id={inputId}
-          value={value}
+          value={shownValue}
           onChange={onChange}
-          placeholder={field.placeholder}
+          placeholder={shownPlaceholder}
           aria-describedby={describedBy}
         />
       ) : field.type === 'textarea' || field.type === 'file' ? (
         <>
           <textarea
             id={inputId}
-            value={value}
+            value={shownValue}
             onChange={(e) => onChange(e.target.value)}
-            placeholder={field.placeholder}
+            placeholder={shownPlaceholder}
             rows={4}
             spellCheck={false}
+            autoComplete="off"
             aria-describedby={describedBy}
+            style={field.secret ? ({ WebkitTextSecurity: 'disc' } as CSSProperties) : undefined}
             className={`${INPUT_CLS} font-mono resize-y`}
           />
           {field.type === 'file' && (
@@ -769,8 +813,8 @@ function resolveAuthFields(
       ? MONGODB_AUTH_FIELDS
       : AUTH_TYPE_CONFIGS[authType]?.fields ?? unknownAuthTypeConfig(authType, authValues).fields;
   if (authType === 'connection_string') {
-    const uriKey = URI_KEYS.find((k) => k in authValues) ?? 'uri';
-    base = base.map((f) => (f.key === 'uri' ? { ...f, key: uriKey } : f));
+    const uriKey = URI_KEYS.find((k) => k in authValues) ?? 'url';
+    base = base.map((f) => (f.key === 'url' ? { ...f, key: uriKey } : f));
   }
   if (!catalogFields.length) return base;
   const fromCatalog = catalogFields.map(catalogFieldToAuthField);
@@ -840,6 +884,8 @@ interface FormState {
   url: string;
   auth_type: string;
   auth_values: Record<string, string>;
+  /** auth_config as loaded for edit — its masked secrets go back unchanged when left empty. */
+  original_auth: Record<string, string>;
   auto_approve: boolean;
 }
 
@@ -851,6 +897,7 @@ const EMPTY_FORM: FormState = {
   url: '',
   auth_type: 'bearer',
   auth_values: {},
+  original_auth: {},
   auto_approve: false,
 };
 
@@ -877,18 +924,39 @@ function payloadUrl(form: FormState): string {
 function migrateLegacyDsn(form: FormState): FormState {
   if (form.auth_type !== 'connection_string' || !isDsn(form.url) || isMaskedSecret(form.url)) return form;
   if (hasUriValue(form.auth_values)) return { ...form, url: 'builtin://' };
-  return { ...form, url: 'builtin://', auth_values: { ...form.auth_values, uri: form.url } };
+  return { ...form, url: 'builtin://', auth_values: { ...form.auth_values, url: form.url } };
 }
 
-function buildAuthConfig(_authType: string, authValues: Record<string, string>): Record<string, string> {
+function buildAuthConfig(
+  _authType: string,
+  authValues: Record<string, string>,
+  original: Record<string, string> = {},
+): Record<string, string> {
   // Strip empty values
-  return Object.fromEntries(
+  const out = Object.fromEntries(
     Object.entries(authValues).filter(([, v]) => v.trim() !== '')
   );
+  // A stored secret the user left (or cleared to) empty goes back as its mask
+  // ('<redacted>'), which the backend reads as "unchanged" — dropping the key
+  // would delete the stored credential.
+  for (const [k, v] of Object.entries(original)) {
+    if (k in authValues && !(k in out) && typeof v === 'string' && isMaskedSecret(v)) out[k] = v;
+  }
+  return out;
 }
 
-function parseAuthConfigToValues(_authType: string, authConfig: Record<string, string>): Record<string, string> {
-  return { ...authConfig };
+/**
+ * auth_config as form values (strings). The backend may return non-strings
+ * (tls: true); a checkbox stores 'true' / '' — an explicit false is not sent
+ * back (the MongoDB policy refuses tls: false).
+ */
+function parseAuthConfigToValues(_authType: string, authConfig: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(authConfig).map(([k, v]) => [
+      k,
+      v === null || v === undefined || v === false ? '' : v === true ? 'true' : typeof v === 'object' ? JSON.stringify(v) : String(v),
+    ]),
+  );
 }
 
 /** POST /connectors/{id}/test outcome, or the request's own failure (4xx/5xx). */
@@ -978,6 +1046,7 @@ export function ConnectorsRegisteredPage() {
         url: prefill.auth_type === 'connection_string' ? '' : prefill.url ?? prefill.default_url ?? '',
         auth_type: prefill.auth_type ?? 'bearer',
         auth_values: {},
+        original_auth: {},
         auto_approve: false,
       };
     }
@@ -1001,7 +1070,7 @@ export function ConnectorsRegisteredPage() {
 
   const registerMutation = useMutation({
     mutationFn: () => {
-      const auth_config = buildAuthConfig(form.auth_type, form.auth_values);
+      const auth_config = buildAuthConfig(form.auth_type, form.auth_values, form.original_auth);
       const payload = {
         name: form.name.trim(),
         url: payloadUrl(form),
@@ -1059,6 +1128,7 @@ export function ConnectorsRegisteredPage() {
       url: c.url,
       auth_type: c.auth_type ?? 'bearer',
       auth_values: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
+      original_auth: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
       auto_approve: Boolean(c.auto_approve),
     }));
     setFormError('');
@@ -1138,7 +1208,9 @@ export function ConnectorsRegisteredPage() {
 
   // Validation
   const isConnectionString = form.auth_type === 'connection_string';
+  const authBlocker = isConnectionString ? mongoBlocker(authFields, form.auth_values) : '';
   const canSubmit =
+    !authBlocker &&
     form.name.trim() &&
     (isConnectionString ? hasUriValue(form.auth_values) : form.url.trim()) &&
     !nameTaken &&
@@ -1428,6 +1500,9 @@ export function ConnectorsRegisteredPage() {
                     connectorName={connectorNameForHints}
                     onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
                   />
+                  {authBlocker && (
+                    <p data-testid="auth-blocker" className="pt-2 text-xs text-amber-700 dark:text-amber-300">{authBlocker}</p>
+                  )}
                 </div>
               )}
 

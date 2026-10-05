@@ -78,9 +78,8 @@ describe('MongoDB from the real catalog payload (A10 / TG-06)', () => {
       type: 'builtin-mongodb',
       auth_type: 'connection_string',
       url: 'builtin://',
-      auth_config: { uri: 'mongodb+srv://cluster0.example.mongodb.net/', username: 'alice', password: 'S3cret' },
+      auth_config: { url: 'mongodb+srv://cluster0.example.mongodb.net/', username: 'alice', password: 'S3cret' },
     });
-    expect(body.auth_config).not.toHaveProperty('url');
   });
 
   it('edits: shows the stored fields (secrets masked) and sends masked values back unchanged', async () => {
