@@ -536,7 +536,125 @@ async def _sync_source_async(
         )
     finally:
         await lease.release()
+        await _rerun_if_events_arrived(getattr(tracker, "_redis", None), source_id, tenant_id)
         await _close(getattr(tracker, "_redis", None))
+
+
+# ── Agent-generated knowledge (A12): platform events trigger syncs ──────────
+
+
+async def _rerun_if_events_arrived(redis: Any, source_id: str, tenant_id: str) -> None:
+    """Platform events arrived while this sync held the lock: sync once more.
+
+    ``ingestion.agent_generated_notify`` sets the marker when it finds the
+    Source's lock taken (only agent_generated Sources ever have one); the
+    records those events named may have committed after this run read past
+    them. Best effort: the next scheduled sync reads them anyway.
+    """
+    if redis is None:
+        return
+    from app.ingestion.agent_generated_events import RERUN_KEY, enqueue_notify
+
+    key = RERUN_KEY.format(tenant=tenant_id, source=source_id)
+    try:
+        if await redis.getdel(key):
+            enqueue_notify(tenant_id, source_id=source_id, countdown=1)
+    except Exception as exc:
+        _log.warning("agent_generated_rerun_failed source=%s: %s", source_id, exc)
+
+
+@shared_task(name="ingestion.agent_generated_notify", bind=True)
+def agent_generated_notify_task(
+    self: Any,
+    *,
+    tenant_id: str,
+    kind: str = "",
+    ref_id: str = "",
+    source_id: str = "",
+    attempt: int = 0,
+) -> dict[str, Any]:
+    """Queue a sync of every agent_generated Source of the tenant listening for ``kind``."""
+    return dict(
+        _run_task_loop(
+            _agent_generated_notify_async(
+                tenant_id=tenant_id,
+                kind=kind,
+                ref_id=ref_id,
+                source_id=source_id,
+                attempt=attempt,
+            )
+        )
+    )
+
+
+async def _agent_generated_notify_async(
+    *, tenant_id: str, kind: str, ref_id: str, source_id: str, attempt: int
+) -> dict[str, Any]:
+    from app.db.session import get_session_factory, get_system_session_factory
+    from app.ingestion.agent_generated_events import (
+        READY_MAX_ATTEMPTS,
+        READY_RETRY_SECONDS,
+        RERUN_KEY,
+        RERUN_TTL_SECONDS,
+        enqueue_notify,
+        listening_sources,
+        record_ready,
+    )
+    from app.ingestion.job_tracker import IngestionJobTracker
+
+    # The producing transaction may not be visible yet: look again shortly.
+    if ref_id and attempt + 1 < READY_MAX_ATTEMPTS and not await record_ready(
+        tenant_id, kind, ref_id
+    ):
+        enqueue_notify(
+            tenant_id, kind, ref_id, source_id=source_id, attempt=attempt + 1,
+            countdown=READY_RETRY_SECONDS,
+        )
+        return {"deferred": True, "attempt": attempt + 1}
+    sources = await listening_sources(tenant_id, kind, source_id=source_id)
+    if not sources:
+        return {"queued": [], "rerun": []}
+    redis = _reconcile_redis()
+    tracker = IngestionJobTracker(
+        db=get_session_factory(), system_db=get_system_session_factory(), redis=redis
+    )
+    queued: list[str] = []
+    rerun: list[str] = []
+    try:
+        for sid in sources:
+            token = await tracker.acquire_lock(
+                sid, tenant_id, ttl_seconds=_QUEUED_LOCK_TTL_SECONDS
+            )
+            if token is None:
+                # A sync is running (or queued): it runs once more when it ends.
+                if redis is not None:
+                    await redis.set(
+                        RERUN_KEY.format(tenant=tenant_id, source=sid), "1",
+                        ex=RERUN_TTL_SECONDS,
+                    )
+                rerun.append(sid)
+                continue
+            try:
+                sync_source_task.apply_async(
+                    kwargs={
+                        "source_id": sid,
+                        "tenant_id": tenant_id,
+                        "triggered_by": "event",
+                        "job_id": token,
+                    },
+                    queue="ingestion",
+                )
+            except Exception:
+                await tracker.release_lock(sid, tenant_id, token)
+                raise
+            queued.append(sid)
+    finally:
+        await _close(redis)
+    _log.info(
+        "agent_generated_notify tenant=%s kind=%s ref=%s queued=%s rerun=%s",
+        tenant_id, kind, ref_id, queued, rerun,
+    )
+    return {"queued": queued, "rerun": rerun}
 
 
 # The lock a manual sync takes in the API covers the task's wait in the queue;

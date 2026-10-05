@@ -150,6 +150,11 @@ class PostgresMemoryRepository:
         self._cipher = cipher
 
     @property
+    def session_factory(self) -> async_sessionmaker[AsyncSession]:
+        """The session factory the records are written through."""
+        return self._sessions
+
+    @property
     def embedding_model(self) -> str | None:
         """The model id stored with (and matched against) this repository's vectors."""
         if self._embedder is None:

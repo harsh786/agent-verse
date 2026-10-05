@@ -3405,6 +3405,13 @@ class GoalService:
         # "when goal X completes, run Y" trigger could never fire.
         if etype == "goal_complete":
             await self._publish_chain_event(record, "goal.completed", tenant_ctx)
+            if not record.dry_run:
+                # A12: the tenant's agent_generated Sources index the answer now.
+                from app.ingestion.agent_generated_events import notify_agent_generated
+
+                await notify_agent_generated(
+                    record.tenant_id, "goal_output", goal_id, db_factory=self._db
+                )
         elif etype == "goal_failed":
             await self._publish_chain_event(record, "goal.failed", tenant_ctx)
         # Also publish terminal events to the broader platform channel used by

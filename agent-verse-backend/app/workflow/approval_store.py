@@ -174,7 +174,14 @@ class PostgresWorkflowApprovalStore:
                 )
             ).first()
             await session.commit()
-            return row is not None
+        if row is not None:
+            # A12: the tenant's agent_generated Sources index the decision now.
+            from app.ingestion.agent_generated_events import notify_agent_generated
+
+            await notify_agent_generated(
+                req.tenant_id, "hitl_decision", req.request_id, db_factory=self._db
+            )
+        return row is not None
 
     async def mutate_if_pending(
         self,

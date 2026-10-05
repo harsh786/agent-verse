@@ -396,7 +396,16 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
     else:
         apply_configuration_health(config)
         _SOURCES[source_id] = config
+    _forget_agent_generated_listeners(config.source_type, tenant.tenant_id)
     return _serialize_source(config)
+
+
+def _forget_agent_generated_listeners(source_type: str, tenant_id: str) -> None:
+    """A12: the tenant's agent_generated Sources changed — re-read who listens."""
+    if source_type == "agent_generated":
+        from app.ingestion.agent_generated_events import forget_tenant
+
+        forget_tenant(tenant_id)
 
 
 @router.get("/{source_id}", response_model=dict)
@@ -425,6 +434,7 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
         _refuse_connection_policy(source.source_type, update_data["connection_config"])
         await _refuse_internal_destinations(source.source_type, update_data["connection_config"])
     store = _get_source_store(request)
+    _forget_agent_generated_listeners(source.source_type, tenant.tenant_id)
     if store is not None:
         updated = await store.update(source_id, tenant.tenant_id, **update_data)
         return _serialize_source(updated or source)
@@ -440,6 +450,9 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
 async def delete_source(source_id: str, request: Request) -> None:
     tenant = _require_tenant(request)
     store = _get_source_store(request)
+    from app.ingestion.agent_generated_events import forget_tenant
+
+    forget_tenant(tenant.tenant_id)
     if store is not None:
         if not await store.delete(source_id, tenant.tenant_id):
             raise HTTPException(status_code=404, detail="Source not found")

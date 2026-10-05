@@ -536,51 +536,43 @@ async def test_web_crawl_validate_no_seed_urls():
 
 
 @pytest.mark.asyncio
-async def test_agent_generated_validate_connection():
+async def test_agent_generated_validate_connection_reports_an_unreachable_db():
     from app.ingestion.connectors.agent_generated_connector import AgentGeneratedConnector
     from app.ingestion.source_config import SourceConfig, SourceFamily
     c = AgentGeneratedConnector()
     config = SourceConfig(source_id="s1", tenant_id="t1", name="T",
                           family=SourceFamily.AGENT_GENERATED, source_type="agent_generated")
     health = await c.validate_connection(config)
-    assert health.ok is True
+    # The test process has no database: an honest failure, never a fake "ok".
+    assert health.ok is False
+    assert "platform database unavailable" in health.error
 
 
-@pytest.mark.asyncio
-async def test_agent_generated_on_webhook_high_score():
-    from app.ingestion.connectors.agent_generated_connector import AgentGeneratedConnector
-    from app.ingestion.source_config import SourceConfig, SourceFamily
-    c = AgentGeneratedConnector()
-    config = SourceConfig(source_id="s1", tenant_id="t1", name="T",
-                          family=SourceFamily.AGENT_GENERATED, source_type="agent_generated",
-                          connection_config={"min_eval_score": 0.7})
-
-    payload = json.dumps({
-        "goal_id": "g1", "tenant_id": "t1", "score": 0.9,
-        "output": "This is a high quality agent output worth indexing."
-    }).encode()
-
-    docs = []
-    async for doc in c.on_webhook(config, payload, {}):
-        docs.append(doc)
-    assert len(docs) == 1
-    assert docs[0].doc_id == "g1"
+@pytest.mark.parametrize("cfg, needle", [
+    ({"source_types": ["goal_output", "chat_transcript"]}, "unsupported source_types"),
+    ({"source_types": []}, "non-empty list"),
+    ({"min_eval_score": 1.5}, "min_eval_score"),
+    ({"min_eval_score": True}, "min_eval_score"),
+    ({"max_items_per_sync": 0}, "max_items_per_sync"),
+    ({"agent_ids": "agent-1"}, "agent_ids"),
+    ({"include_subgoals": "yes"}, "include_subgoals"),
+    ({"learning_classifications": ["secret"]}, "learning_classifications"),
+])
+def test_agent_generated_config_is_validated_on_save(cfg, needle):
+    from app.ingestion.connectors.agent_generated_connector import (
+        AgentGeneratedConfigError,
+        AgentGeneratedConnector,
+    )
+    with pytest.raises(AgentGeneratedConfigError, match=needle):
+        AgentGeneratedConnector.check_connection_policy(cfg)
 
 
-@pytest.mark.asyncio
-async def test_agent_generated_on_webhook_low_score():
-    from app.ingestion.connectors.agent_generated_connector import AgentGeneratedConnector
-    from app.ingestion.source_config import SourceConfig, SourceFamily
-    c = AgentGeneratedConnector()
-    config = SourceConfig(source_id="s1", tenant_id="t1", name="T",
-                          family=SourceFamily.AGENT_GENERATED, source_type="agent_generated",
-                          connection_config={"min_eval_score": 0.7})
-
-    payload = json.dumps({"goal_id": "g2", "tenant_id": "t1", "score": 0.5, "output": "low quality"}).encode()
-    docs = []
-    async for doc in c.on_webhook(config, payload, {}):
-        docs.append(doc)
-    assert len(docs) == 0  # below min_score
+def test_agent_generated_config_defaults():
+    from app.ingestion.connectors.agent_generated_connector import parse_options
+    opts = parse_options({})
+    assert opts.kinds == ("goal_output", "hitl_decision")
+    assert opts.min_eval_score == 0.7 and opts.include_subgoals is False
+    assert opts.learning_classes == ("public", "internal")
 
 
 # ── Parsers ───────────────────────────────────────────────────────────────────

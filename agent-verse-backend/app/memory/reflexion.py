@@ -32,7 +32,7 @@ class ReflexionService:
         agent_id: str | None = None,
         source: str | None = None,
     ) -> MemoryRecord:
-        return cast(
+        record = cast(
             MemoryRecord,
             await self._repository.write(
                 MemoryWriteRequest(
@@ -51,6 +51,17 @@ class ReflexionService:
                 )
             ),
         )
+        if record.lifecycle_state == "active":
+            # A12: the tenant's agent_generated Sources index the lesson now.
+            from app.ingestion.agent_generated_events import notify_agent_generated
+
+            await notify_agent_generated(
+                tenant_id,
+                "learning",
+                record.memory_id,
+                db_factory=getattr(self._repository, "session_factory", None),
+            )
+        return record
 
     async def recall(
         self,

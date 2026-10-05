@@ -690,20 +690,27 @@ async def test_http_records_without_an_id() -> None:
     await _assert_stable(run, "http", {"url": "https://1.1.1.1/api"})
 
 
-async def test_agent_generated_event_without_goal_id() -> None:
-    import json
+async def test_agent_generated_goal_outputs_keep_their_ids() -> None:
+    from datetime import UTC, datetime
 
     from app.ingestion.connectors.agent_generated_connector import AgentGeneratedConnector
 
-    async def run(config: SourceConfig) -> list[RawDocument]:
-        connector = AgentGeneratedConnector()
-        docs: list[RawDocument] = []
-        for output in ("first output", "second output"):
-            payload = json.dumps({"output": output, "score": 1.0}).encode()
-            docs.extend([d async for d in connector.on_webhook(config, payload, {})])
-        return docs
+    at = datetime(2026, 10, 5, tzinfo=UTC)
+    rows = [
+        {"_ts": at, "_id": gid, "goal_id": gid, "goal_text": f"goal {gid}", "agent_id": "",
+         "completed_at": at.isoformat(), "answer": f"answer {gid}", "eval_score": None}
+        for gid in ("g1", "g2")
+    ]
 
-    await _assert_stable(run, "agent_generated", {})
+    class _Fixed(AgentGeneratedConnector):
+        async def _page_goals(self, *args: Any) -> list[dict[str, Any]]:  # type: ignore[override]
+            after = args[3]
+            return [r for r in rows if r["_id"] > after]
+
+    async def run(config: SourceConfig) -> list[RawDocument]:
+        return [d async for d, _ in _Fixed().get_delta(config, None)]
+
+    await _assert_stable(run, "agent_generated", {"source_types": ["goal_output"]})
 
 
 def test_no_connector_mints_random_document_ids() -> None:

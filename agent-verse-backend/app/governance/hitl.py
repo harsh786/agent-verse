@@ -481,12 +481,20 @@ class HITLGateway:
                         "tid": tenant_id,
                     },
                 )
-            return bool(result.rowcount)
+            decided = bool(result.rowcount)
         except Exception as exc:
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("hitl_db_resolve_failed", error=str(exc))
             raise HITLResolutionUnavailableError(str(exc)) from exc
+        if decided and status in ("approved", "rejected"):
+            # A12: the tenant's agent_generated Sources index the decision now.
+            from app.ingestion.agent_generated_events import notify_agent_generated
+
+            await notify_agent_generated(
+                tenant_id, "hitl_decision", request_id, db_factory=self._db_session_factory
+            )
+        return decided
 
     async def _db_read_status(self, request_id: str, tenant_id: str) -> str | None:
         """Read the DB-authoritative status for a request, or ``None`` if unavailable."""

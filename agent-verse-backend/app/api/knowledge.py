@@ -1099,6 +1099,8 @@ async def search_knowledge(
             "trigram_score": citation.metadata.get("trigram_score", 0.0),
             "source_file": citation.metadata.get("source_file", citation.source),
             "source_url": citation.metadata.get("source_url", ""),
+            # What produced an agent-generated chunk: goal / approval / run ids.
+            "origin": citation.metadata.get("origin") or None,
             "char_offset": citation.metadata.get("char_offset"),
             "line_start": citation.metadata.get("line_start"),
             "page": citation.metadata.get("page"),
@@ -3066,6 +3068,7 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
             "retrieval_legs": citation.metadata.get("retrieval_legs", []),
             "strategy_trace": citation.metadata.get("strategy_trace", []),
             "source_url": citation.metadata.get("source_url", ""),
+            "origin": citation.metadata.get("origin") or None,
             "page_number": citation.metadata.get("page_number"),
             "excerpt": citation.content[:300],
         }

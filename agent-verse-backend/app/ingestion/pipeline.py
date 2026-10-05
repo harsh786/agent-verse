@@ -52,6 +52,26 @@ except ImportError:  # pragma: no cover - guardrails_v2 always ships with the ap
 _log = logging.getLogger(__name__)
 
 
+_ORIGIN_MAX_KEYS = 12
+_ORIGIN_MAX_VALUE = 256
+
+
+def chunk_origin(metadata: dict[str, Any] | None) -> dict[str, str]:
+    """The connector's ``metadata["origin"]`` as stored on every chunk.
+
+    A small flat mapping of strings (kind + the producing record's ids): what a
+    search hit cites. Anything else a connector puts there is dropped.
+    """
+    raw = (metadata or {}).get("origin")
+    if not isinstance(raw, dict):
+        return {}
+    origin: dict[str, str] = {}
+    for key, value in list(raw.items())[:_ORIGIN_MAX_KEYS]:
+        if isinstance(key, str) and isinstance(value, str | int | float) and str(value):
+            origin[key[:64]] = str(value)[:_ORIGIN_MAX_VALUE]
+    return origin
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity of two equal-length embedding vectors (0.0 on degenerate input)."""
     if not a or not b or len(a) != len(b):
@@ -768,6 +788,7 @@ class IngestionPipeline:
                     "collection_id": config.collection_id,
                     "content_hash": hashlib.sha256(text.encode()).hexdigest(),
                     "correlation_id": raw_doc.correlation_id,
+                    "origin": chunk_origin(raw_doc.metadata),
                 }
             )
         return enriched
@@ -921,6 +942,10 @@ class IngestionPipeline:
                 "correlation_id": c.get("correlation_id", ""),
                 "embedding_model": c.get("embedding_model", ""),
             }
+            if c.get("origin"):
+                # What produced the document (a goal, an approval, a workflow
+                # run …): search hits cite it and erasure can find it (P1e).
+                metadata["origin"] = c["origin"]
             if prov:
                 metadata["ingestion_provenance"] = prov
                 # Surface the OCR-used flag at the top level for cheap filtering.

@@ -2709,6 +2709,14 @@ def run_goal(
                     _chain_published.add(_chain_channel)
             except Exception as _chain_exc:
                 logger.warning("goal_chain_event_publish_failed: %s", _chain_exc)
+            if _chain_channel == "goal.completed":
+                # A12: the tenant's agent_generated Sources index the answer now.
+                from app.db.session import get_session_factory as _agen_factory
+                from app.ingestion.agent_generated_events import notify_agent_generated
+
+                await notify_agent_generated(
+                    tenant_id, "goal_output", goal_id, db_factory=_agen_factory()
+                )
 
         # ── Usage metering: one tool_calls record per completed tool call ─────
         if not dry_run and event.get("type") == "tool_call_complete":

@@ -491,7 +491,14 @@ class PostgresWorkflowRunStore:
                     error_step_id=error_step_id,
                 )
             await session.commit()
-            return row is not None
+        if row is not None and status_str == "complete":
+            # A12: the tenant's agent_generated Sources index the outputs now.
+            from app.ingestion.agent_generated_events import notify_agent_generated
+
+            await notify_agent_generated(
+                tenant_id, "workflow_output", str(run_id), db_factory=self._db
+            )
+        return row is not None
 
     @staticmethod
     async def _withdraw_pending_approvals(
