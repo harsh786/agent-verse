@@ -138,8 +138,16 @@ class DistributedStrategyExecutor:
         skill_store: Callable[[], Any] | Any = None,
         hitl_gateway: Callable[[], Any] | Any = None,
         approval_timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_S,
+        checkpoint_db: Callable[[], Any] | None = None,
     ) -> None:
         self._context_store = context_store
+        # CORE-18: a zero-arg getter returning the DB session factory (None until
+        # wired). With it, runs checkpoint into strategy_run_checkpoints and a
+        # redelivered goal resumes; without it (tests, no DB) the bounded
+        # in-process LRU below is used.
+        from app.orchestration.strategy_checkpoint_store import postgres_store_factory
+
+        self._durable_checkpoints = postgres_store_factory(checkpoint_db)
         # Runs magentic / MoA / CAMEL / generative / swarm / auction goals on a
         # coordination session (app.coordination.pattern_runs.goal_bridge).
         self._pattern_bridge = pattern_bridge
@@ -151,17 +159,18 @@ class DistributedStrategyExecutor:
         # A cost controller (or a zero-arg getter, so the lifespan's Redis-backed
         # swap is picked up). Every LLM call is charged to the goal/tenant budget.
         self._cost_controller = cost_controller
-        # Per-(tenant, goal) checkpoint stores so a retried execution within this process can
-        # resume mid-flight. Not durable across process restarts — see module docstring.
-        # Bounded LRU (CORE-18): one store per goal was kept for the process's life.
+        # Fallback when no DB is wired (tests, pre-lifespan): per-(tenant, goal) in-process
+        # checkpoint stores so a retried execution within this process can resume
+        # mid-flight. Bounded LRU; with a DB the durable store above is used instead.
         self._checkpoint_stores: OrderedDict[
             tuple[str, str], InMemoryPatternCheckpointStore
         ] = OrderedDict()
         self._answers: dict[str, str] = {}
 
-    def _checkpoint_store_for(
-        self, request: StrategyExecutionRequest
-    ) -> InMemoryPatternCheckpointStore:
+    def _checkpoint_store_for(self, request: StrategyExecutionRequest) -> Any:
+        durable = self._durable_checkpoints(request)
+        if durable is not None:
+            return durable
         key = (request.tenant_id, request.goal_id)
         store = self._checkpoint_stores.get(key)
         if store is None:
@@ -241,22 +250,26 @@ class DistributedStrategyExecutor:
                     "voyager_skill_store_unavailable",
                     "voyager needs the persistent skill library",
                 )
-            runtime = create_runtime(
-                checkpoint_store=self._checkpoint_store_for(request), skill_store=skill_store
+            store = self._checkpoint_store_for(request)
+            runtime = create_runtime(checkpoint_store=store, skill_store=skill_store)
+            answer = await self._run_voyager(
+                runtime, request, context, complete, cancelled, store=store
             )
-            answer = await self._run_voyager(runtime, request, context, complete, cancelled)
             return StrategyRunOutput(
                 answer=answer,
                 metrics=ExecutionMetrics(calls=calls, tokens=tokens, cost_usd=round(cost_usd, 6)),
                 safe_rationale_summary="voyager strategy executed via StrategyRunner.",
             )
 
-        runtime = create_runtime(checkpoint_store=self._checkpoint_store_for(request))
+        store = self._checkpoint_store_for(request)
+        runtime = create_runtime(checkpoint_store=store)
 
         if strategy_id in {"supervisor", "goal_tree"}:
-            answer = await self._run_supervisor_like(runtime, request, context, complete, cancelled)
+            answer = await self._run_supervisor_like(
+                runtime, request, context, complete, cancelled, store=store
+            )
         else:
-            answer = await self._run_debate(runtime, request, context, complete)
+            answer = await self._run_debate(runtime, request, context, complete, store=store)
 
         return StrategyRunOutput(
             answer=answer,
@@ -325,6 +338,8 @@ class DistributedStrategyExecutor:
         context: Any,
         complete: Any,
         cancelled: Any,
+        *,
+        store: Any = None,
     ) -> str:
         goal_text = context.goal_text
         goal_approved = await self._gate_high_risk(request, context, goal_text)
@@ -367,7 +382,7 @@ class DistributedStrategyExecutor:
                 f"Complete this sub-task and give a concise result.\nSub-task: {item.safe_summary}"
             )
             ref = f"strategy-run://{uuid.uuid4()}"
-            self._answers[ref] = answer
+            await self._remember_answer(store, ref, answer)
             return {
                 "child_goal_id": f"child-{uuid.uuid4()}",
                 "result_reference": ref,
@@ -375,18 +390,26 @@ class DistributedStrategyExecutor:
             }
 
         async def synthesize(work_items: Any) -> str:
-            parts = [
-                self._answers.pop(item.result_reference, "")
-                for item in work_items
-                if item.result_reference
-            ]
+            refs = [item.result_reference for item in work_items if item.result_reference]
+            parts: list[str] = []
+            for ref in refs:
+                # Peek, not pop: a synthesis that fails is retried with the same answers.
+                part = await self._peek_answer(store, ref)
+                if part is None:
+                    # A resumed run must not synthesize from a subset of its results.
+                    raise RuntimeError("sub-task result missing for a checkpointed work item")
+                parts.append(part)
             joined = "\n".join(f"- {part}" for part in parts if part)
             if not joined:
-                return "No sub-task results were produced."
-            return await complete(
-                "Combine these sub-task results into one final answer for the goal "
-                f"'{goal_text}':\n{joined}"
-            )
+                answer = "No sub-task results were produced."
+            else:
+                answer = await complete(
+                    "Combine these sub-task results into one final answer for the goal "
+                    f"'{goal_text}':\n{joined}"
+                )
+            for ref in refs:
+                self._answers.pop(ref, None)
+            return answer
 
         state, answer = await runtime.execute(
             session_id=request.tenant_id,
@@ -493,6 +516,8 @@ class DistributedStrategyExecutor:
         context: Any,
         complete: Any,
         cancelled: Any,
+        *,
+        store: Any = None,
     ) -> str:
         """Curriculum -> evidence-backed tasks -> governed skill publication.
 
@@ -501,20 +526,35 @@ class DistributedStrategyExecutor:
         is published as an immutable, validated skill into the tenant's
         persistent library; the results are combined into the answer. High-risk
         goal text or tasks need a persisted human approval first.
+
+        CORE-18: the curriculum and every task result are kept with the run's
+        checkpoint, so a redelivered run continues on the SAME curriculum (the
+        checkpoint's ``task_index`` points into it), re-runs no finished task and
+        publishes no second skill. A checkpoint whose curriculum or evidence is
+        gone fails closed rather than continuing on a fresh plan.
         """
         import hashlib
 
         goal_text = str(context.goal_text)
-        raw = await complete(
-            f"List 1-{_VOYAGER_MAX_TASKS} concrete sub-tasks needed to accomplish this goal.\n"
-            f"Goal: {goal_text}\n"
-            'Respond with strict JSON: {"steps": [{"id": "step-1", "summary": "..."}]}'
-        )
-        steps = self._parse_steps(raw, fallback_summary=goal_text)
-        tasks = tuple(dict.fromkeys(step["summary"][:500] for step in steps))
+        curriculum_ref = f"voyager-curriculum://{request.tenant_id}/{request.goal_id}"
+        stored = await self._peek_answer(store, curriculum_ref)
+        if stored is not None:
+            tasks = tuple(str(task) for task in json.loads(stored))
+        else:
+            if await self._has_checkpoint(store, request):
+                raise RuntimeError(
+                    "voyager checkpoint exists but its curriculum is missing; "
+                    "refusing to resume on a new plan"
+                )
+            raw = await complete(
+                f"List 1-{_VOYAGER_MAX_TASKS} concrete sub-tasks needed to accomplish this "
+                f"goal.\nGoal: {goal_text}\n"
+                'Respond with strict JSON: {"steps": [{"id": "step-1", "summary": "..."}]}'
+            )
+            steps = self._parse_steps(raw, fallback_summary=goal_text)
+            tasks = tuple(dict.fromkeys(step["summary"][:500] for step in steps))
+            await self._remember_answer(store, curriculum_ref, json.dumps(list(tasks)))
         await self._gate_high_risk(request, context, goal_text, *tasks)
-
-        results: dict[str, str] = {}
 
         async def run_task(task: str) -> dict[str, str]:
             answer = await complete(
@@ -524,7 +564,7 @@ class DistributedStrategyExecutor:
             if not answer.strip():
                 return {"evidence_ref": ""}  # no result, no evidence: the run fails
             ref = f"strategy-run://{uuid.uuid4()}"
-            results[ref] = answer
+            await self._remember_answer(store, ref, answer)
             return {"evidence_ref": ref}
 
         goal_key = hashlib.sha256(goal_text.strip().lower().encode()).hexdigest()[:16]
@@ -565,7 +605,15 @@ class DistributedStrategyExecutor:
             raise RuntimeError(
                 f"voyager did not complete: phase={state.phase} reason={state.terminal_reason}"
             )
-        joined = "\n".join(f"- {results[ref]}" for ref in state.evidence_refs if ref in results)
+        self._answers.pop(curriculum_ref, None)
+        results: list[str] = []
+        for ref in state.evidence_refs:
+            result = await self._recall_answer(store, ref, None)
+            if result is None:
+                # A resumed run must not answer from a subset of its evidence.
+                raise RuntimeError("voyager task result missing for a checkpointed task")
+            results.append(result)
+        joined = "\n".join(f"- {result}" for result in results)
         return str(
             await complete(
                 "Combine these task results into one final answer for the goal "
@@ -579,6 +627,8 @@ class DistributedStrategyExecutor:
         request: StrategyExecutionRequest,
         context: Any,
         complete: Any,
+        *,
+        store: Any = None,
     ) -> str:
         goal_text = context.goal_text
         await self._gate_high_risk(request, context, goal_text)
@@ -589,7 +639,7 @@ class DistributedStrategyExecutor:
                 f"As independent reasoner '{agent_id}', propose a concise answer to: {goal_text}"
             )
             ref = f"strategy-run://{uuid.uuid4()}"
-            self._answers[ref] = answer
+            await self._remember_answer(store, ref, answer)
             return {"proposal_reference": ref, "safe_summary": answer[:2000] or "(no proposal)"}
 
         async def critique(agent_id: str, other_agent_id: str) -> str:
@@ -622,7 +672,43 @@ class DistributedStrategyExecutor:
         if state.phase != "completed" or state.winner_agent_id is None:
             raise RuntimeError(f"debate did not complete: phase={state.phase}")
         winner = next(p for p in state.proposals if p.agent_id == state.winner_agent_id)
-        return self._answers.pop(winner.proposal_reference, winner.safe_summary)
+        return await self._recall_answer(
+            store, winner.proposal_reference, winner.safe_summary
+        )
+
+    async def _remember_answer(self, store: Any, ref: str, answer: str) -> None:
+        """Keep a sub-task / proposal answer; durably too when the store can (CORE-18).
+
+        The work item only stores ``ref``: without the answer in Postgres a resumed
+        run would synthesize from nothing.
+        """
+        self._answers[ref] = answer
+        put = getattr(store, "put_answer", None)
+        if put is not None:
+            await put(ref, answer)
+
+    async def _recall_answer(self, store: Any, ref: str, default: Any) -> Any:
+        if ref in self._answers:
+            return self._answers.pop(ref)
+        value = await self._peek_answer(store, ref)
+        return value if value is not None else default
+
+    async def _peek_answer(self, store: Any, ref: str) -> str | None:
+        """The stored answer for ``ref`` (process first, then the durable store)."""
+        if ref in self._answers:
+            return self._answers[ref]
+        get = getattr(store, "get_answer", None)
+        if get is None:
+            return None
+        value = await get(ref)
+        return str(value) if value is not None else None
+
+    @staticmethod
+    async def _has_checkpoint(store: Any, request: StrategyExecutionRequest) -> bool:
+        load = getattr(store, "load", None)
+        if load is None:
+            return False
+        return await load(request.tenant_id, request.goal_id) is not None
 
 
 __all__ = [

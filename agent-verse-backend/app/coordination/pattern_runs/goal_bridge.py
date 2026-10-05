@@ -438,6 +438,8 @@ def build_worker_distributed_loop(
             pattern_bridge=bridge,
             skill_store=PostgresVoyagerSkillStore(db_factory),
             hitl_gateway=hitl_gateway,
+            # CORE-18: checkpoints in Postgres, so a redelivered goal resumes.
+            checkpoint_db=lambda: db_factory,
         ),
         admission=default_distributed_admission,
         reserve_budget=_reserve,

@@ -2867,6 +2867,8 @@ def create_app(
             # (None until the lifespan wires the DB -> voyager goals are refused).
             skill_store=lambda: _voyager_skill_store(app.state),
             hitl_gateway=lambda: getattr(app.state, "hitl_gateway", None),
+            # CORE-18: durable run checkpoints once the lifespan wires the DB.
+            checkpoint_db=lambda: getattr(app.state, "db_session_factory", None),
         ),
         admission=default_distributed_admission,
         reserve_budget=_strategy_budget_reserver(app.state),
