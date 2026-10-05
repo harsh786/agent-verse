@@ -39,8 +39,11 @@ def extract_pdf_pages(
         raise ParserUnavailableError("PDF parsing requires pypdf") from exc
     try:
         reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            raise DocumentParseError(f"{filename}: encrypted PDFs are not supported")
+        if reader.is_encrypted and not _decrypt_without_password(reader):
+            raise DocumentParseError(
+                f"{filename}: the PDF is encrypted and needs a password to open; upload an "
+                "unprotected copy"
+            )
         pages = [page.extract_text() or "" for page in reader.pages]
     except DocumentParseError:
         raise
@@ -51,6 +54,17 @@ def extract_pdf_pages(
             f"{filename}: the PDF has no extractable text (scanned images need OCR)"
         )
     return pages
+
+
+def _decrypt_without_password(reader: Any) -> bool:
+    """Open a permissions-only encrypted PDF (empty user password), as every viewer
+    does; False when a real password is needed."""
+    from pypdf import PasswordType
+
+    try:
+        return bool(reader.decrypt("") != PasswordType.NOT_DECRYPTED)
+    except Exception as exc:  # e.g. an AES PDF without the cryptography package
+        raise DocumentParseError(f"the PDF's encryption could not be opened ({exc})") from exc
 
 
 # Pages of one upload OCR'd in the request (each is ~1-3 s of Tesseract at 300 dpi).
