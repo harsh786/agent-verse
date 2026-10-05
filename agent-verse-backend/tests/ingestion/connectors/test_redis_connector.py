@@ -126,13 +126,17 @@ class TestSettings:
 class TestCursor:
     def test_round_trip_and_new_pass_rules(self) -> None:
         patterns = ["a:*"]
-        cursor = _encode_cursor({"p": 0, "n": {"h:1": 42}}, patterns)
-        assert _decode_cursor(cursor, patterns) == {"p": 0, "n": {"h:1": 42}}
+        cursor = _encode_cursor({"p": 0, "n": {"h:1": 42}, "o": {"h:1": 7}}, patterns)
+        # P1c-7: the offset inside the SCAN batch round-trips too.
+        assert _decode_cursor(cursor, patterns) == {"p": 0, "n": {"h:1": 42}, "o": {"h:1": 7}}
         # Patterns changed or the pass finished -> start a new pass.
-        assert _decode_cursor(cursor, ["b:*"]) == {"p": 0, "n": {}}
+        assert _decode_cursor(cursor, ["b:*"]) == {"p": 0, "n": {}, "o": {}}
         done = _encode_cursor({"p": 1, "n": {}}, patterns, done=True)
         assert json.loads(done)["done"] is True
-        assert _decode_cursor(done, patterns) == {"p": 0, "n": {}}
+        assert _decode_cursor(done, patterns) == {"p": 0, "n": {}, "o": {}}
+        # A v1 cursor (no offsets) still resumes at its batch.
+        legacy = json.dumps({"v": 1, "patterns": patterns, "p": 0, "n": {"h:1": 42}})
+        assert _decode_cursor(legacy, patterns) == {"p": 0, "n": {"h:1": 42}, "o": {}}
 
     def test_unreadable_cursor_is_an_error(self) -> None:
         with pytest.raises(ValueError, match="cursor"):

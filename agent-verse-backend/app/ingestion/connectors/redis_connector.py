@@ -71,6 +71,7 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
+    UnitFailures,
 )
 from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_hosts
 from app.ingestion.connector_registry import register
@@ -584,23 +585,30 @@ def _read_key(client: Any, key: bytes, settings: _Settings) -> tuple[str, str, b
 
 
 def _decode_cursor(cursor: str | None, patterns: list[str]) -> dict[str, Any]:
-    """``{"p": pattern index, "n": {node: scan cursor}}``; empty -> start a new pass."""
+    """``{"p": pattern index, "n": {node: scan cursor}, "o": {node: keys of that SCAN
+    batch already read}}``; empty -> start a new pass."""
     if not cursor:
-        return {"p": 0, "n": {}}
+        return {"p": 0, "n": {}, "o": {}}
     try:
         data = json.loads(cursor)
     except ValueError as exc:
         raise ValueError(f"stored Redis cursor is unreadable: {exc}") from exc
     if not isinstance(data, dict) or data.get("done") or data.get("patterns") != patterns:
-        return {"p": 0, "n": {}}  # finished pass or changed patterns -> new pass
-    return {"p": int(data.get("p", 0)), "n": dict(data.get("n") or {})}
+        return {"p": 0, "n": {}, "o": {}}  # finished pass or changed patterns -> new pass
+    return {
+        "p": int(data.get("p", 0)),
+        "n": dict(data.get("n") or {}),
+        "o": dict(data.get("o") or {}),  # v1 cursors had no offsets
+    }
 
 
 def _encode_cursor(state: dict[str, Any], patterns: list[str], *, done: bool = False) -> str:
     if done:
-        return json.dumps({"v": 1, "done": True, "at": int(time.time())})
+        return json.dumps({"v": 2, "done": True, "at": int(time.time())})
     return json.dumps(
-        {"v": 1, "patterns": patterns, "p": state["p"], "n": state["n"]}, sort_keys=True
+        {"v": 2, "patterns": patterns, "p": state["p"], "n": state["n"],
+         "o": state.get("o") or {}},
+        sort_keys=True,
     )
 
 
@@ -610,6 +618,20 @@ def _doc_id(config: SourceConfig, url: str) -> str:
 
 def _key_url(settings: _Settings, db: int, name: str) -> str:
     return f"redis://{settings.display}/{db}/{quote(name, safe='')}"
+
+
+def _is_key_error(exc: BaseException) -> bool:
+    """A failure of one key (permission, type changed under us) — not of the
+    connection: the other keys can still be read."""
+    try:
+        from redis import exceptions as rex
+    except ImportError:  # pragma: no cover - redis is a core dependency
+        return False
+    if isinstance(exc, rex.NoPermissionError):
+        return True
+    return isinstance(exc, rex.ResponseError) and not isinstance(
+        exc, rex.AuthenticationError | rex.AuthorizationError | rex.BusyLoadingError
+    )
 
 
 @register("redis")
@@ -666,13 +688,28 @@ class RedisConnector(BaseConnector):
         state = _decode_cursor(cursor, patterns)
         resumed = bool(state["p"] or state["n"])
         budget = [settings.max_keys]
+        failures = UnitFailures("redis")
+        async for item in self._delta(config, settings, state, resumed, budget, failures):
+            yield item
+        failures.raise_if_any()
+
+    async def _delta(
+        self,
+        config: SourceConfig,
+        settings: _Settings,
+        state: dict[str, Any],
+        resumed: bool,
+        budget: list[int],
+        failures: UnitFailures,
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        patterns = settings.key_patterns
         async with _connected(settings) as conn:
             # Documents are released one behind, so the last one of a finished
             # pass can carry the "pass done" cursor (-> the next sync starts over).
             pending: tuple[RawDocument, str] | None = None
             for attempt in range(2):
                 completed = True
-                async for item in _scan_pass(conn, settings, config, state, budget):
+                async for item in _scan_pass(conn, settings, config, state, budget, failures):
                     if item is None:
                         completed = False  # max_keys_per_sync reached
                         continue
@@ -687,7 +724,7 @@ class RedisConnector(BaseConnector):
                 if not resumed or attempt:
                     return
                 # A resumed pass had nothing left: begin the next pass right away.
-                state.update({"p": 0, "n": {}})
+                state.update({"p": 0, "n": {}, "o": {}})
             if pending is not None:
                 yield pending
 
@@ -698,21 +735,27 @@ async def _scan_pass(
     config: SourceConfig,
     state: dict[str, Any],
     budget: list[int],
+    failures: UnitFailures,
 ) -> AsyncIterator[tuple[RawDocument, str] | None]:
     """One SCAN pass from ``state`` (mutated as it advances); yields ``(doc, cursor)``
     and a final ``None`` when the per-sync key budget runs out mid-pass.
 
-    Each document's cursor points at the start of its SCAN batch (the last one of
-    a batch at the next batch), so an interrupted sync re-reads at most one batch.
+    Each document's cursor is its SCAN batch's position plus how many keys of that
+    batch were read (P1c-7): it used to be the batch's start only, so a budget
+    smaller than a batch (SCAN COUNT 500) re-read the same keys every sync and
+    never got further. A key that cannot be read (NOPERM, a type changed under
+    us) is a counted failure; the other keys go on.
     """
     from app.ingestion.source_config import RawDocument
 
     patterns = settings.key_patterns
     db = 0 if settings.mode == "cluster" else settings.db
+    state.setdefault("o", {})
     while state["p"] < len(patterns):
         pattern = patterns[state["p"]]
         for label, client in conn.nodes.items():
             scan_at = int(state["n"].get(label, 0))
+            skip = int(state["o"].get(label, 0))
             while scan_at != -1:
                 if budget[0] <= 0:
                     yield None
@@ -720,23 +763,37 @@ async def _scan_pass(
                 next_at, keys = await asyncio.to_thread(client.scan, scan_at, pattern, _SCAN_COUNT)
                 following = int(next_at) or -1
                 for index, key in enumerate(keys):
+                    if index < skip:
+                        continue  # read by an earlier sync of this pass
                     if budget[0] <= 0:
+                        state["n"][label], state["o"][label] = scan_at, index
                         yield None
                         return
-                    read = await asyncio.to_thread(_read_key, client, key, settings)
+                    name = _text(key)
+                    try:
+                        read = await asyncio.to_thread(_read_key, client, key, settings)
+                    except Exception as exc:
+                        if not _is_key_error(exc):
+                            raise
+                        failures.add(f"key {name}", exc)
+                        read = None
                     if read is None:
                         continue
                     ktype, body, truncated = read
-                    name = _text(key)
-                    url = f"redis://{settings.display}/{db}/{quote(name, safe='')}"
-                    at = following if index == len(keys) - 1 else scan_at
+                    url = _key_url(settings, db, name)
+                    last = index == len(keys) - 1
                     cursor = _encode_cursor(
-                        {"p": state["p"], "n": {**state["n"], label: at}}, patterns
+                        {
+                            "p": state["p"],
+                            "n": {**state["n"], label: following if last else scan_at},
+                            "o": {**state["o"], label: 0 if last else index + 1},
+                        },
+                        patterns,
                     )
                     budget[0] -= 1
                     yield (
                         RawDocument(
-                            doc_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{config.source_id}:{url}")),
+                            doc_id=_doc_id(config, url),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=url,
@@ -754,6 +811,8 @@ async def _scan_pass(
                         cursor,
                     )
                 state["n"][label] = following
-                scan_at = following
+                state["o"][label] = 0
+                scan_at, skip = following, 0
         state["p"] += 1
         state["n"] = {}
+        state["o"] = {}

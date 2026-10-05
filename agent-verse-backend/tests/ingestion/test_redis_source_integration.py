@@ -541,3 +541,49 @@ async def test_deleted_keys_are_listed_away_for_reconciliation(plain: tuple[str,
     gone = {d.doc_id for d in pipeline.docs if d.metadata["key"] in ("rec:3", "rec:4")}
     assert len(gone) == 2 and not (gone & live2)
     assert live2 == ids - gone
+
+async def test_a_key_budget_smaller_than_a_scan_batch_still_progresses(
+    plain: tuple[str, int],
+) -> None:
+    """P1c-7: each document's cursor pointed at the START of its SCAN batch. With
+    ``max_keys_per_sync`` below the batch size (SCAN COUNT 500) every sync resumed
+    at the same batch and re-read the same keys: live, 600 keys at 250 per sync
+    stayed at 250 forever (runs 2..6 indexed 0)."""
+    host, port = plain
+    h = _harness()
+    source = h.create(
+        {"host": host, "port": port, "key_patterns": "bulk:*", "max_keys_per_sync": 150}
+    )
+    seen: set[str] = set()
+    counts = []
+    for _ in range(10):
+        result, pipeline = await h.sync(source["source_id"])
+        counts.append(result.get("docs_indexed"))
+        seen |= {d.metadata["key"] for d in pipeline.docs}
+        if len(seen) == 1200:
+            break
+    assert seen == {f"bulk:{i}" for i in range(1200)}, (len(seen), counts)
+    assert all(c and c <= 150 for c in counts), counts
+
+
+async def test_a_key_the_user_may_not_read_fails_alone(plain: tuple[str, int]) -> None:
+    """P1c-9: one NOPERM (an ACL user without JSON.GET, a key outside its pattern)
+    failed the whole sync after the keys before it. Each unreadable key is now a
+    counted failure with its reason; every other key is synced (job partial)."""
+    host, port = plain
+    admin = redis.Redis(host=host, port=port)
+    admin.acl_setuser("nojson", enabled=True, passwords=["+nojson-pw-1"], keys=["*"],
+                      commands=["+@read", "+@connection", "+info", "-json.get"])
+    admin.close()
+    h = _harness()
+    source = h.create({"host": host, "port": port, "auth_type": "acl", "username": "nojson",
+                       "password": "nojson-pw-1",
+                       "key_patterns": "greeting, user:*, doc:*, tags"})
+    with pytest.raises(Exception, match="doc:1"):
+        await h.sync(source["source_id"])
+    job = max(h.tracker.list_jobs_for_source(source["source_id"]), key=lambda j: j.created_at)
+    assert job.status == "partial", (job.status, job.error_message)
+    assert job.docs_indexed == 3
+    assert job.docs_failed == 1
+    assert "json.get" in job.error_message.lower()
+
