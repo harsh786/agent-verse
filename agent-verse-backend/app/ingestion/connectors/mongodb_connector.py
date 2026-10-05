@@ -94,30 +94,6 @@ _DEFAULT_BATCH = 500
 _DEFAULT_MAX_DOCS = 10_000
 _MAX_COLLECTIONS = 200
 
-# URI options a tenant may not set: they read files on the platform's disk, send
-# traffic through an arbitrary (unchecked) proxy, or pass provider properties
-# that make the driver fetch the platform's own cloud credentials.
-_FORBIDDEN_URI_OPTIONS = frozenset(
-    {
-        "tlscafile",
-        "tlscertificatekeyfile",
-        "tlscertificatekeyfilepassword",
-        "tlscrlfile",
-        "ssl_ca_certs",
-        "ssl_certfile",
-        "ssl_keyfile",
-        "ssl_crlfile",
-        "ssl_pem_passphrase",
-        "authmechanismproperties",
-        "proxyhost",
-        "proxyport",
-        "proxyusername",
-        "proxypassword",
-    }
-)
-# MONGODB-AWS / MONGODB-OIDC / GSSAPI authenticate with ambient credentials
-# (instance metadata, env vars, Kerberos tickets) — the platform's, not the tenant's.
-_ALLOWED_AUTH_MECHANISMS = frozenset({"SCRAM-SHA-1", "SCRAM-SHA-256", "PLAIN", "MONGODB-X509"})
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
@@ -188,12 +164,14 @@ def _strip_uri_timeouts(uri: str) -> tuple[str, dict[str, int]]:
     import re
     from urllib.parse import unquote_plus
 
-    parts = urlsplit(uri)
-    if not parts.query:
+    from app.net.mongodb_policy import _query_of
+
+    query = _query_of(uri)
+    if not query:
         return uri, {}
     kept: list[str] = []
     found: dict[str, int] = {}
-    for item in re.split(r"[&;]", parts.query):
+    for item in re.split(r"[&;]", query):
         if not item:
             continue
         key, _, value = item.partition("=")
@@ -207,7 +185,9 @@ def _strip_uri_timeouts(uri: str) -> tuple[str, dict[str, int]]:
             continue
         if number > 0:
             found[name] = min(number, found.get(name, number))
-    return urlunsplit(parts._replace(query="&".join(kept))), found
+    head, _sep, tail = uri.strip().rpartition("?" + query)
+    rebuilt = head + (("?" + "&".join(kept)) if kept else "") + tail
+    return rebuilt, found
 
 
 def _split_list(value: object) -> list[str]:
@@ -247,13 +227,9 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
     from app.net.mongodb_policy import assert_mongo_connection_allowed, uri_options
 
     assert_mongo_connection_allowed(uri, cc)
+    # One validator (app/net/mongodb_policy): no parallel option / mechanism
+    # lists here — this only reads the options the connector acts on.
     options = {k.lower(): v for k, v in uri_options(uri)}
-    forbidden = sorted(set(options) & _FORBIDDEN_URI_OPTIONS)
-    if forbidden:
-        raise ValueError(
-            f"MongoDB URI option(s) {', '.join(forbidden)} are not allowed; use the "
-            "tls_ca_pem / tls_client_cert / tls_client_private_key fields for certificates"
-        )
 
     # C1 / MDB-12: every wait is bounded. Driver kwargs override the same URI
     # options, so ``socketTimeoutMS=0`` in a tenant URI cannot unbound a read;
@@ -293,12 +269,7 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
         kwargs["authSource"] = "admin"
 
     mechanism = str(cc.get("auth_mechanism") or options.get("authmechanism") or "").strip()
-    if mechanism:
-        if mechanism.upper() not in _ALLOWED_AUTH_MECHANISMS:
-            raise ValueError(
-                f"MongoDB auth mechanism {mechanism!r} is not allowed (it would use the "
-                f"platform's own credentials); use one of {sorted(_ALLOWED_AUTH_MECHANISMS)}"
-            )
+    if mechanism:  # allowed by the shared policy above
         kwargs["authMechanism"] = mechanism.upper()
 
     if cc.get("replica_set"):
