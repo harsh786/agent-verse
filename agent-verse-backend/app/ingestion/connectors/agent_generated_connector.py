@@ -224,6 +224,7 @@ class AgentGeneratedConnector(BaseConnector):
 
     source_type = "agent_generated"
     supports_streaming = True
+    supports_deletion_tracking = True  # iter_live_doc_ids -> reconcile (KB-44)
 
     def __init__(self, db_factory: Any = None) -> None:
         self._db_factory = db_factory

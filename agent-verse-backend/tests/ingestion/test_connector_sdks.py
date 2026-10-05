@@ -29,6 +29,7 @@ BACKEND = Path(__file__).resolve().parents[2]
 _CORE_OR_OPTIONAL = {
     "app",  # the backend itself
     "httpx",  # core dependency
+    "sqlalchemy",  # core dependency (agent_generated reads the platform's own tables)
     "botocore",  # ships with boto3 (core)
     "bson",  # ships with pymongo (core)
     "trafilatura",  # optional extraction quality; web_crawl falls back to a regex strip

@@ -278,6 +278,11 @@ def test_goal_outputs_become_cited_knowledge(
         if str(rate) not in str(rbody.get("answer")).replace(",", ""):
             soft.append(f"RAG answer misses {rate} INR: {mask(rbody.get('answer'))[:200]}")
 
+    lessons = [_doc_url(d) for d in _docs(api, cid)
+               if _doc_url(d).startswith("agentverse://memories/")]
+    evidence["lesson_documents"] = lessons  # reflexion lessons of the agent's goals
+    time.sleep(10)  # let the lesson events' syncs settle before the idempotence check
+
     # Re-sync: everything is already indexed, nothing changes.
     before = {d.get("document_id") or d.get("id"): d.get("chunk_count") for d in goal_docs}
     again = jobs.sync(api, sid, timeout=180)
@@ -570,11 +575,11 @@ def test_agent_knowledge_governance(
     sid = _source(api, cleanup, cid, {"source_types": ["goal_output"],
                                       "agent_ids": [agent]})["id"]
     held_goal = _submit(api, cleanup, (
-        "Without using any tools, write two sentences: claim CLM-4471 for the customer was "
-        "settled at 18,250 INR, and the settlement letter goes out on Friday."), agent)
+        "Without using any tools, write two sentences: dock inspection IR-4471 at the Hosur "
+        "yard found three cracked pallets, and the re-inspection is on Friday."), agent)
     open_goal = _submit(api, cleanup, (
-        "Without using any tools, write one sentence: claim CLM-5590 was rejected because "
-        "the seal photos were missing."), agent)
+        "Without using any tools, write one sentence: dock inspection IR-5590 at the Chakan "
+        "yard found the seal photos missing for container 12."), agent)
     for gid in (held_goal, open_goal):
         _complete(api, gid)
     urls = {f"agentverse://goals/{held_goal}", f"agentverse://goals/{open_goal}"}
@@ -593,7 +598,7 @@ def test_agent_knowledge_governance(
         assert int(job.get("docs_failed") or 0) == 0, job
 
         # 2. Erasure of the claimant: the goal goes, its held knowledge stays (reported).
-        principal = f"claimant-{_rand(8, string.ascii_lowercase)}"
+        principal = f"inspector-{_rand(8, string.ascii_lowercase)}"
         _tag_principal(held_goal, principal)
         er = api.post(f"/compliance/dpdp/erasure/{principal}/execute")
         evidence["erasure_held"] = {"http": er.status_code, "body": mask(body_of(er))[:600]}
@@ -617,7 +622,7 @@ def test_agent_knowledge_governance(
     assert f"agentverse://goals/{open_goal}" in remaining
 
     # 4. Without a hold the erasure removes the goal's knowledge at once.
-    principal2 = f"claimant-{_rand(8, string.ascii_lowercase)}"
+    principal2 = f"inspector-{_rand(8, string.ascii_lowercase)}"
     _tag_principal(open_goal, principal2)
     er2 = api.post(f"/compliance/dpdp/erasure/{principal2}/execute")
     assert er2.status_code == 200, mask(er2.text)[:300]
@@ -625,8 +630,8 @@ def test_agent_knowledge_governance(
     evidence["erasure_open"] = {k: receipt2.get(k) for k in ("per_store", "verified")}
     assert receipt2.get("per_store", {}).get("knowledge_chunks_goal_derived", 0) >= 1, receipt2
     assert not _docs(api, cid), [_doc_url(d) for d in _docs(api, cid)]
-    hits = _search(api, cid, "claim CLM-5590 seal photos")
-    assert not [h for h in hits if "CLM-5590" in str(h.get("content"))], "erased text served"
+    hits = _search(api, cid, "inspection IR-5590 seal photos")
+    assert not [h for h in hits if "IR-5590" in str(h.get("content"))], "erased text served"
     assert not soft, "; ".join(soft)
 
 
