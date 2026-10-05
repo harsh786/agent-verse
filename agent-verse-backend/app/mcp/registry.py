@@ -60,6 +60,10 @@ class MCPServerConfig(BaseModel):
     # url: existing field kept for backward compat; base_url is the new preferred name
     url: str = ""
     base_url: str = ""
+    # Non-secret display form of a database connection string (no userinfo;
+    # app.mcp.dsn_secrets.mask_dsn). The string itself is a sealed connector
+    # secret referenced from auth_config (MDB-01).
+    display_url: str = ""
     auth_type: AuthType = AuthType.NONE
     auth_config: dict[str, Any] = Field(default_factory=dict)
     status: ServerStatus = ServerStatus.ACTIVE

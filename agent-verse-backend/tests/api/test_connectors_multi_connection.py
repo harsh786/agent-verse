@@ -114,8 +114,21 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.include_router(connectors_router)
     app.state.mcp_registry = reg
-    app.state.mcp_client = MCPClient(registry=reg)
-    return {"client": TestClient(app, raise_server_exceptions=False), "reg": reg, "redis": redis}
+    # The dev / test connector secret store (connection strings are sealed in it).
+    secrets: dict[str, str] = {}
+    app.state.connector_secret_store = secrets
+
+    async def _resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
+        return secrets.get(ref)
+
+    app.state.mcp_client = MCPClient(registry=reg, secret_resolver=_resolve_secret)
+    return {
+        "resolver": _resolve_secret,
+        "client": TestClient(app, raise_server_exceptions=False),
+        "reg": reg,
+        "redis": redis,
+        "secrets": secrets,
+    }
 
 
 def _create(client: TestClient, name: str, url: str, **extra: Any) -> Any:
@@ -141,8 +154,11 @@ def test_two_connections_of_one_type_both_persist(world: dict[str, Any]) -> None
     assert listed[idb]["display_name"] == "analytics-db"
     assert listed[ida]["builtin_type"] == listed[idb]["builtin_type"] == "builtin-mongodb"
     assert listed[ida]["builtin_type_name"] == "MongoDB"
-    assert listed[ida]["auth_config"]["url"] == ORDERS_URI
-    assert listed[idb]["auth_config"]["url"] == ANALYTICS_URI
+    # MDB-01: each connection's URI is sealed under ITS id, never returned.
+    assert listed[ida]["auth_config"]["url"] == listed[idb]["auth_config"]["url"] == "<redacted>"
+    secrets = world["secrets"]
+    assert secrets[f"vault://connectors/{ida}/url"] == ORDERS_URI
+    assert secrets[f"vault://connectors/{idb}/url"] == ANALYTICS_URI
 
 
 def test_legacy_name_match_no_longer_overwrites(world: dict[str, Any]) -> None:
@@ -246,7 +262,7 @@ def test_unknown_declared_type_is_422(world: dict[str, Any]) -> None:
 
 
 async def _call(world: dict[str, Any], sid: str, tool: str, args: dict[str, Any]) -> Any:
-    return await MCPClient(registry=world["reg"]).call_tool(
+    return await MCPClient(registry=world["reg"], secret_resolver=world["resolver"]).call_tool(
         server_id=sid, tool_name=tool, arguments=args, tenant_ctx=CTX
     )
 
@@ -296,8 +312,9 @@ async def test_update_and_delete_leave_the_other_connection_untouched(
     )
     assert upd.status_code == 200
     assert upd.json()["builtin_type"] == "builtin-mongodb"
-    b = await world["reg"].get(idb, tenant_ctx=CTX)
-    assert b.auth_config["url"] == ANALYTICS_URI
+    secrets = world["secrets"]
+    assert secrets[f"vault://connectors/{ida}/url"] == new_uri
+    assert secrets[f"vault://connectors/{idb}/url"] == ANALYTICS_URI
 
     assert c.delete(f"/connectors/{ida}", headers=HDR).status_code == 204
     remaining = [row["server_id"] for row in c.get("/connectors", headers=HDR).json()]
@@ -328,7 +345,7 @@ async def test_handlers_survive_a_restart(
     fresh = MCPRegistry(redis=world["redis"])
 
     for sid, host in ((ida, "8.8.8.8"), (idb, "8.8.4.4")):
-        result = await MCPClient(registry=fresh).call_tool(
+        result = await MCPClient(registry=fresh, secret_resolver=world["resolver"]).call_tool(
             server_id=sid,
             tool_name="mongodb_count",
             arguments={"collection": "x"},
@@ -385,7 +402,7 @@ async def test_qualified_names_route_to_their_connection(world: dict[str, Any]) 
     c = world["client"]
     _create(c, "orders-db", ORDERS_URI, type="mongodb")
     idb = _create(c, "analytics-db", ANALYTICS_URI, type="mongodb").json()["server_id"]
-    client = MCPClient(registry=world["reg"])
+    client = MCPClient(registry=world["reg"], secret_resolver=world["resolver"])
 
     direct = await client.call_tool(
         server_id=idb,

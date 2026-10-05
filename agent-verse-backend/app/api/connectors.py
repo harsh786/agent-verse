@@ -19,6 +19,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.connector_store import ConnectorConflictError
+from app.mcp.dsn_secrets import is_dsn, mask_dsn, seal_connector_dsns
 from app.mcp.oauth import (
     OAuthExchangeError,
     OAuthFlowManager,
@@ -241,9 +242,11 @@ def _is_sensitive_auth_key(key: str) -> bool:
     return any(part in normalized for part in _SENSITIVE_AUTH_KEY_PARTS)
 
 
-def _auth_config_requires_secret_storage(auth_config: dict[str, Any]) -> bool:
-    return any(
-        _is_sensitive_auth_key(key)
+def _auth_config_requires_secret_storage(auth_config: dict[str, Any], url: str = "") -> bool:
+    # A database connection string carries its password in the userinfo: it is a
+    # secret whatever key holds it (MDB-01).
+    return is_dsn(url) or any(
+        (_is_sensitive_auth_key(key) or is_dsn(value))
         and value not in (None, "", _REDACTED)
         and not is_connector_secret_ref(value)
         for key, value in auth_config.items()
@@ -341,7 +344,9 @@ def _is_mcp_endpoint(url: str) -> bool:
 
 def _mask_auth_config(auth_config: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: _REDACTED if _is_sensitive_auth_key(key) or is_connector_secret_ref(value) else value
+        key: _REDACTED
+        if _is_sensitive_auth_key(key) or is_connector_secret_ref(value) or is_dsn(value)
+        else value
         for key, value in auth_config.items()
     }
 
@@ -418,6 +423,16 @@ def _upstream_url_for(name: str) -> str:
 def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data = cfg.model_dump(exclude={"server_id"})
     data["auth_config"] = _mask_auth_config(dict(cfg.auth_config))
+    # A row written before MDB-01 may still hold a connection string in clear.
+    for field in ("url", "base_url", "ws_url"):
+        if is_dsn(data.get(field)):
+            data["display_url"] = data.get("display_url") or mask_dsn(str(data[field]))
+            data[field] = "builtin://" if cfg.builtin_type else mask_dsn(str(data[field]))
+    if not data.get("display_url"):
+        for value in cfg.auth_config.values():
+            if is_dsn(value):
+                data["display_url"] = mask_dsn(str(value))
+                break
     # Expose whether this connector has a native builtin Python handler
     # so the frontend can show the ⚡ Built-in badge on registered connectors.
     from app.mcp.registry import MCPRegistry as _MCPReg
@@ -597,7 +612,7 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
     reg = _registry(request)
     secret_store = _connector_secret_store(
         request,
-        needs_secret_storage=_auth_config_requires_secret_storage(body.auth_config),
+        needs_secret_storage=_auth_config_requires_secret_storage(body.auth_config, body.url),
     )
     pending_secrets: dict[str, str] = {}
 
@@ -636,9 +651,11 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
                 f"{_canonical_id}:{_connection_slug(body.name)}-{uuid.uuid4().hex[:6]}"
             )
 
+    built: dict[str, MCPServerConfig] = {}
+
     def _config_for(server_id: str) -> MCPServerConfig:
         sid = connection["id"] or server_id
-        return MCPServerConfig(
+        cfg = MCPServerConfig(
             server_id=sid,
             name=body.name,
             url=body.url,
@@ -654,6 +671,9 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             auto_approve=body.auto_approve,
             builtin_type=_canonical_id,
         )
+        # MDB-01 / A7: one sealed copy of a connection string, never in clear.
+        built["cfg"] = seal_connector_dsns(cfg, pending_secrets)
+        return built["cfg"]
 
     server_id = await _create_connector(
         reg,
@@ -680,11 +700,13 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="connector secret storage failed",
         ) from exc
+    stored = built.get("cfg")
     return {
         "server_id": server_id,
         "name": body.name,
         "display_name": body.name,
-        "url": body.url,
+        "url": stored.url if stored is not None else body.url,
+        "display_url": stored.display_url if stored is not None else "",
         "builtin_type": _canonical_id,
     }
 
@@ -704,14 +726,40 @@ async def update_connector(
     if _name_key(body.name) != _name_key(existing.name):
         await _assert_unique_name(reg, body.name, tenant_ctx=tenant_ctx, exclude_id=server_id)
     auth_config = _preserve_redacted_auth_config(body.auth_config, dict(existing.auth_config))
+    # The edit form sends back the masked display form (or the builtin marker) it
+    # was shown: that is "unchanged", never a new connection string (MDB-01).
+    url = body.url
+    shown = {existing.display_url, mask_dsn(existing.url) if is_dsn(existing.url) else ""}
+    if url and url in shown - {""}:
+        url = existing.url
     # Update had no SSRF guard at all (only registration did).
-    await _assert_connector_urls_public(body.url, auth_config, context="connector update")
+    await _assert_connector_urls_public(url, auth_config, context="connector update")
     secret_store = _connector_secret_store(
         request,
-        needs_secret_storage=_auth_config_requires_secret_storage(auth_config),
+        needs_secret_storage=_auth_config_requires_secret_storage(auth_config, url),
     )
     pending_secrets: dict[str, str] = {}
     stored_auth_config = _store_sensitive_auth_refs(server_id, auth_config, pending_secrets)
+    cfg = seal_connector_dsns(
+        MCPServerConfig(
+            name=body.name,
+            url=url,
+            auth_type=body.auth_type,
+            auth_config=stored_auth_config,
+            description=body.description,
+            priority=body.priority,
+            auto_approve=body.auto_approve,
+            # Preserve the canonical builtin id + tool defs on update so the connector
+            # keeps its tools (a fresh UUID would strip them after a restart).
+            server_id=existing.server_id,
+            tool_definitions=list(existing.tool_definitions or []),
+            # The connection's built-in type never changes on update (a legacy
+            # connector without one may have it declared now).
+            builtin_type=existing.builtin_type or _declared_type_on_update(body),
+        ),
+        pending_secrets,
+        previous_display=existing.display_url,
+    )
     try:
         await _persist_connector_secrets(
             pending_secrets,
@@ -723,22 +771,6 @@ async def update_connector(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="connector secret storage failed",
         ) from exc
-    cfg = MCPServerConfig(
-        name=body.name,
-        url=body.url,
-        auth_type=body.auth_type,
-        auth_config=stored_auth_config,
-        description=body.description,
-        priority=body.priority,
-        auto_approve=body.auto_approve,
-        # Preserve the canonical builtin id + tool defs on update so the connector
-        # keeps its tools (a fresh UUID would strip them after a restart).
-        server_id=existing.server_id,
-        tool_definitions=list(existing.tool_definitions or []),
-        # The connection's built-in type never changes on update (a legacy
-        # connector without one may have it declared now).
-        builtin_type=existing.builtin_type or _declared_type_on_update(body),
-    )
     updated = await reg.update(server_id, cfg, tenant_ctx=tenant_ctx)
     if not updated:
         raise HTTPException(
@@ -1187,7 +1219,9 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     if mcp_client is None:
         from app.mcp.client import MCPClient
 
-        mcp_client = MCPClient(registry=registry)
+        # Tenant-scoped secret resolution: sealed credentials (connection
+        # strings, tokens) are resolved from this app's connector secret store.
+        mcp_client = MCPClient(registry=registry, secret_resolver=_secret_resolver(request))
 
     test_entry = _CONNECTOR_TEST_TOOLS.get(connector_name)
     if test_entry:
