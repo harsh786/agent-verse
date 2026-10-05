@@ -19,6 +19,7 @@ from app.ingestion.connectors.mongodb_connector import (
     MongoDBConnector,
     _decode_cursor,
     _encode_cursor,
+    _flatten,
     _flatten_doc,
     _mongo_uri,
     _page_query,
@@ -49,9 +50,75 @@ class TestFlattenDoc:
         assert "b.c: 2" in text
         assert "b.d[0]: 1" in text
 
-    def test_respects_max_depth(self) -> None:
+    def test_nesting_past_max_depth_is_kept_serialised_and_marked(self) -> None:
+        # TG-09: content below max_depth used to vanish silently.
         doc = {"a": {"b": {"c": {"d": {"e": {"f": {"g": "too deep"}}}}}}}
-        assert "too deep" not in _flatten_doc(doc, max_depth=2)
+        text, truncation = _flatten(doc, max_depth=2)
+        assert "too deep" in text
+        assert "[nested deeper than 2 levels, as JSON]" in text
+        assert truncation["deep_fields"] == 1
+
+
+class TestBsonTypesAndLimits:
+    """TG-09: BSON types render as readable values; arrays past the item limit
+    are summarised with a marker and counted, never dropped silently."""
+
+    def test_bson_types(self) -> None:
+        import re
+
+        from bson import Binary, Decimal128, Int64, Regex
+
+        text, truncation = _flatten(
+            {
+                "price": Decimal128("1234.5600"),
+                "blob": Binary(b"\x00\x01\x02secret-bytes", 0),
+                "pattern": Regex("^ab+c$", "i"),
+                "compiled": re.compile("x.y", re.MULTILINE),
+                "big": Int64(9_007_199_254_740_993),
+                "nothing": None,
+                "when": datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.UTC),
+            }
+        )
+        assert "price: 1234.5600" in text
+        assert "blob: <binary subtype 0, 15 bytes>" in text
+        assert "secret-bytes" not in text  # raw bytes are not indexed
+        assert "pattern: /^ab+c$/i" in text
+        assert "compiled: /x.y/m" in text
+        assert "big: 9007199254740993" in text
+        assert "nothing: null" in text
+        assert "when: 2026-01-02T03:04:05+00:00" in text
+        assert truncation == {}
+
+    def test_long_arrays_are_bounded_with_a_marker(self) -> None:
+        text, truncation = _flatten({"tags": [f"t{i}" for i in range(250)]})
+        assert "tags[0]: t0" in text
+        assert "tags[99]: t99" in text
+        assert "tags[100]" not in text
+        assert "tags: … 150 more item(s) of 250 not indexed" in text
+        assert truncation == {"array_items_omitted": 150, "arrays_truncated": 1}
+
+    def test_arrays_of_21_to_100_items_are_now_kept(self) -> None:
+        text, truncation = _flatten({"n": list(range(50))})
+        assert "n[49]: 49" in text and truncation == {}
+
+    async def test_truncation_is_recorded_on_the_document(self) -> None:
+        import contextlib
+        from unittest.mock import patch
+
+        import app.ingestion.connectors.mongodb_connector as mc
+
+        @contextlib.asynccontextmanager
+        async def _connected(settings: Any) -> Any:
+            yield object(), settings
+
+        docs = [{"_id": 1, "tags": list(range(150))}]
+        with (
+            patch.object(mc, "_connected", _connected),
+            patch.object(mc, "_fetch_page", side_effect=[docs, []]),
+            patch.object(mc, "_change_stream_start", return_value=None),
+        ):
+            out = [d async for d, _c in MongoDBConnector().get_delta(_make_config(), None)]
+        assert out[0].metadata["truncated"] == {"array_items_omitted": 50, "arrays_truncated": 1}
 
 
 class TestSettings:

@@ -616,3 +616,46 @@ async def test_deleted_documents_are_removed_by_reconciliation(mongo: tuple[str,
     assert kb.deleted == [by_mongo_id[str(ids[2])]], counts
     assert counts["deleted"] == 1 and counts["listing_failed"] == 0
     assert legacy in kb.docs
+
+
+async def test_bson_types_round_trip_through_a_sync(mongo: tuple[str, int]) -> None:
+    """TG-09 on the ingestion path: real BSON from a real server."""
+    from bson import Binary, Decimal128, Int64, Regex
+
+    host, port = mongo
+    client: MongoClient[dict[str, Any]] = MongoClient(
+        host, port, username=_USER, password=_PASSWORD
+    )
+    try:
+        client["shop"]["bson_tg09"].insert_one(
+            {
+                "price": Decimal128("19.99"),
+                "blob": Binary(b"\x00\xffbinary-payload", 4),
+                "pattern": Regex("^sku-[0-9]+$", "i"),
+                "big": Int64(2**62),
+                "nothing": None,
+                "tags": [f"t{i}" for i in range(130)],
+                "deep": {"a": {"b": {"c": {"d": {"e": {"f": "kept"}}}}}},
+            }
+        )
+    finally:
+        client.close()
+    h = _Harness()
+    source = h.create(_ui_payload(host, port, collections_csv="bson_tg09"))
+    result, pipeline = await h.sync(source["source_id"])
+    assert result["docs_indexed"] == 1, result
+    (doc,) = pipeline.docs
+    text = doc.content.decode()
+    assert "price: 19.99" in text
+    assert "blob: <binary subtype 4, 16 bytes>" in text
+    assert "binary-payload" not in text
+    assert "pattern: /^sku-[0-9]+$/i" in text
+    assert f"big: {2**62}" in text
+    assert "nothing: null" in text
+    assert "tags[99]: t99" in text and "30 more item(s) of 130 not indexed" in text
+    assert "kept" in text
+    assert doc.metadata["truncated"] == {
+        "array_items_omitted": 30,
+        "arrays_truncated": 1,
+        "deep_fields": 1,
+    }

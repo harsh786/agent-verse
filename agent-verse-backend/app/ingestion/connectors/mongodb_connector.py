@@ -531,24 +531,94 @@ def _list_collections(client: Any, settings: _Settings) -> list[str]:
     return sorted(str(n) for n in names if not str(n).startswith("system."))
 
 
-def _flatten_doc(doc: dict[str, Any], max_depth: int = 5) -> str:
-    """Flatten a MongoDB document to key: value pairs."""
+_MAX_ARRAY_ITEMS = 100  # items rendered per array; the rest is summarised
+_MAX_DEEP_JSON_CHARS = 4000  # a subtree below max_depth, as JSON, at most this long
+
+
+def _scalar(value: object) -> str:
+    """A readable rendering of one BSON value (TG-09)."""
+    import datetime
+    import re
+
+    from bson import Binary, Regex
+
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, Binary):
+        # Raw bytes are not text: index what they are, never their content.
+        return f"<binary subtype {value.subtype}, {len(value)} bytes>"
+    if isinstance(value, bytes | bytearray):
+        return f"<binary {len(value)} bytes>"
+    if isinstance(value, Regex):
+        return f"/{value.pattern}/{_regex_flags(value.flags)}"
+    if isinstance(value, re.Pattern):
+        return f"/{value.pattern}/{_regex_flags(value.flags)}"
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    return str(value)  # Decimal128, Int64, ObjectId, UUID, Timestamp, numbers, str
+
+
+def _regex_flags(flags: object) -> str:
+    import re
+
+    if isinstance(flags, str):
+        return flags
+    out = ""
+    for flag, letter in ((re.IGNORECASE, "i"), (re.MULTILINE, "m"), (re.DOTALL, "s"),
+                         (re.VERBOSE, "x")):
+        if int(flags) & flag:  # type: ignore[call-overload]
+            out += letter
+    return out
+
+
+def _flatten(doc: dict[str, Any], max_depth: int = 5) -> tuple[str, dict[str, int]]:
+    """Flatten a MongoDB document to ``key: value`` lines, and what was shortened.
+
+    TG-09: nothing is dropped silently. Arrays render their first
+    ``_MAX_ARRAY_ITEMS`` items and a marker line saying how many more there
+    are; a subtree nested deeper than ``max_depth`` is kept as (bounded)
+    Extended JSON. The returned counts go on the document's metadata.
+    """
+    from bson import json_util
+
     parts: list[str] = []
+    truncation: dict[str, int] = {}
+
+    def _note(key: str, amount: int = 1) -> None:
+        truncation[key] = truncation.get(key, 0) + amount
 
     def _recurse(obj: object, prefix: str = "", depth: int = 0) -> None:
-        if depth > max_depth:
+        if depth > max_depth and isinstance(obj, dict | list | tuple):
+            dumped = json_util.dumps(obj, json_options=json_util.RELAXED_JSON_OPTIONS)
+            if len(dumped) > _MAX_DEEP_JSON_CHARS:
+                dumped = dumped[:_MAX_DEEP_JSON_CHARS] + " … (truncated)"
+                _note("deep_chars_truncated")
+            parts.append(f"{prefix}: [nested deeper than {max_depth} levels, as JSON] {dumped}")
+            _note("deep_fields")
             return
         if isinstance(obj, dict):
             for k, v in obj.items():
-                _recurse(v, f"{prefix}.{k}" if prefix else k, depth + 1)
+                _recurse(v, f"{prefix}.{k}" if prefix else str(k), depth + 1)
         elif isinstance(obj, list | tuple):
-            for i, v in enumerate(obj[:20]):
+            for i, v in enumerate(obj[:_MAX_ARRAY_ITEMS]):
                 _recurse(v, f"{prefix}[{i}]", depth + 1)
+            if len(obj) > _MAX_ARRAY_ITEMS:
+                omitted = len(obj) - _MAX_ARRAY_ITEMS
+                parts.append(f"{prefix}: … {omitted} more item(s) of {len(obj)} not indexed")
+                _note("arrays_truncated")
+                _note("array_items_omitted", omitted)
         else:
-            parts.append(f"{prefix}: {obj}")
+            parts.append(f"{prefix}: {_scalar(obj)}")
 
     _recurse(doc)
-    return "\n".join(parts)
+    return "\n".join(parts), truncation
+
+
+def _flatten_doc(doc: dict[str, Any], max_depth: int = 5) -> str:
+    """Flatten a MongoDB document to ``key: value`` lines (see :func:`_flatten`)."""
+    return _flatten(doc, max_depth)[0]
 
 
 # ── Cursor ─────────────────────────────────────────────────────────────────────
@@ -848,8 +918,15 @@ class MongoDBConnector(BaseConnector):
             def _raw(collection: str, doc: dict[str, Any]) -> RawDocument:
                 oid = doc.get("_id")
                 doc_key = str(oid)
-                text = _flatten_doc({**doc, "_id": doc_key})
+                text, truncation = _flatten({**doc, "_id": doc_key})
                 url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
+                metadata: dict[str, Any] = {
+                    "database": settings.database,
+                    "collection": collection,
+                    "_id": doc_key,
+                }
+                if truncation:
+                    metadata["truncated"] = truncation  # TG-09: never silent
                 return RawDocument(
                     doc_id=_doc_id(config, collection, oid),
                     source_id=config.source_id,
@@ -857,11 +934,7 @@ class MongoDBConnector(BaseConnector):
                     source_url=f"{url}/{quote(doc_key, safe='')}",
                     content=text.encode(),
                     content_type="text/plain",
-                    metadata={
-                        "database": settings.database,
-                        "collection": collection,
-                        "_id": doc_key,
-                    },
+                    metadata=metadata,
                 )
 
             for collection in collections:
