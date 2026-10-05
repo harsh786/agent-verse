@@ -26,6 +26,7 @@ from app.org.feature_flags import is_feature_enabled
 from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app, goal_queue_for
+from app.scaling.retry_policy import is_transient_infra_error
 
 logger = get_logger(__name__)
 
@@ -2396,6 +2397,27 @@ async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
     return str(existing)
 
 
+async def _current_goal_status(goal_id: str, tenant_id: str) -> str | None:
+    """The goal row's status under the tenant's RLS scope (None: no row).
+
+    Raises on a DB error — the caller decides what an unreadable status means.
+    """
+    from sqlalchemy import select
+
+    from app.db.models.goal import Goal
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        status = (
+            await session.execute(
+                select(Goal.status).where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+            )
+        ).scalar()
+    return None if status is None else str(status)
+
+
 async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
     from sqlalchemy import update
 
@@ -2416,7 +2438,12 @@ async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
         ):
             await session.execute(
                 update(Goal)
-                .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+                .where(
+                    Goal.id == goal_id,
+                    Goal.tenant_id == tenant_id,
+                    # NF-10: never rewrite a goal that completed / was cancelled.
+                    Goal.status.notin_(("complete", "cancelled")),
+                )
                 .values(status="failed", error_message=f"Dead lettered: {reason}")
             )
     except Exception as exc:
@@ -3715,6 +3742,11 @@ def run_goal(
                 "message": "Canonical AgentGraph assembly failed",
             }
 
+    # NF-10: set once the run recorded its terminal status / released its slot,
+    # so an error raised AFTER that is never retried (a rerun would repeat the
+    # goal's side effects) and the slot is never released twice.
+    _terminal_recorded: str | None = None
+    _slot_released = False
     try:
         # Block fake execution outside development/test — a real LLM provider
         # (the tenant's own key or the platform's) is required. BYOK-3: this used
@@ -4009,6 +4041,8 @@ def run_goal(
                 "result_scope": "worker_only",
             }
         _run_async(mark_worker_complete(state.status.value, state.iterations))
+        if state.status.value in {"complete", "failed", "cancelled", "waiting_human"}:
+            _terminal_recorded = state.status.value
         if state.status.value == "complete" and not dry_run:
             _publish_worker_score_below(
                 state,
@@ -4059,6 +4093,7 @@ def run_goal(
             )
         # Decrement concurrent-goal counter — goal has reached terminal state
         _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        _slot_released = True
         result = {
             "status": state.status.value,
             "goal_id": goal_id,
@@ -4116,9 +4151,58 @@ def run_goal(
         return {"status": "failed", "goal_id": goal_id, "reason": _redacted_error(exc)}
     except Exception as exc:
         logger.error("Goal %s failed: %s", goal_id, exc)
+        # NF-10 (1): the goal already finished (or is parked for a human) — this
+        # run recorded it, or another attempt / replica did. Retrying would
+        # re-run its side effects and failing it would rewrite an honest
+        # terminal status; neither happens. An unreadable status is "unknown":
+        # a transient error still retries and the next attempt's atomic claim
+        # refuses a finished goal.
+        _final_status = _terminal_recorded
+        if _final_status is None and goal_bridge is not None:
+            try:
+                _seen = _run_async(_current_goal_status(goal_id, tenant_id))
+            except Exception as _status_exc:
+                logger.warning(
+                    "goal_status_unreadable_after_error goal_id=%s: %s", goal_id, _status_exc
+                )
+            else:
+                if _seen in (*_TERMINAL_GOAL_STATUSES, _WAITING_HUMAN_STATUS):
+                    _final_status = _seen
+        if _final_status is not None:
+            logger.error(
+                "goal_error_after_terminal_status goal_id=%s status=%s error=%s",
+                goal_id,
+                _final_status,
+                _redacted_error(exc),
+            )
+            if _terminal_recorded is not None and not _slot_released:
+                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            return {
+                "status": _final_status,
+                "goal_id": goal_id,
+                "reason": "error_after_terminal_status",
+                "error": _redacted_error(exc),
+                "retryable": False,
+            }
         _record_goal_duration_metric(
             "failed", started_monotonic=started_monotonic, priority=priority
         )
+        # NF-10 (2): only a transient infrastructure failure (DB/Redis
+        # connection, timeout, provider 429/5xx) is retried. A programming
+        # error or any other permanent failure fails ONCE with its real
+        # (redacted) reason — no retry storm, no "exceeded max retries" DLQ.
+        if not is_transient_infra_error(exc):
+            logger.error(
+                "goal_failed_non_retryable goal_id=%s error=%s", goal_id, _redacted_error(exc)
+            )
+            _run_async(mark_worker_failed(exc))
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            return {
+                "status": "failed",
+                "goal_id": goal_id,
+                "reason": _redacted_error(exc),
+                "retryable": False,
+            }
         # Decide BEFORE calling self.retry() whether this is the final,
         # unrecoverable attempt. Celery's Task.retry(exc=exc, ...) re-raises the
         # *original* exception once retries are exhausted whenever `exc` is
