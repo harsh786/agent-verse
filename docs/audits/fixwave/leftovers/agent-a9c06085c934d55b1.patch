@@ -1,0 +1,1180 @@
+diff --git a/agent-verse-backend/app/api/enterprise.py b/agent-verse-backend/app/api/enterprise.py
+index f2e77ac37..536dec8a3 100644
+--- a/agent-verse-backend/app/api/enterprise.py
++++ b/agent-verse-backend/app/api/enterprise.py
+@@ -128,8 +128,21 @@ def _get_db(request: Request) -> Any:
+ 
+ @router.get("/compliance/export")
+ async def request_data_export(request: Request) -> dict[str, Any]:
++    """Collect the tenant's complete export (RV-08): ``ready`` only when every
++    section was read; ``failed`` with the reason otherwise; 503 when the result
++    could not be recorded."""
+     ctx = _require_tenant(request)
+-    req = await _compliance(request).request_data_export(tenant_ctx=ctx)
++    try:
++        req = await _compliance(request).request_data_export(tenant_ctx=ctx)
++    except Exception as exc:
++        raise HTTPException(503, "GDPR export could not be recorded; retry") from exc
++    if req.status != "ready":
++        return {
++            "request_id": req.request_id,
++            "status": req.status,
++            "download_url": None,
++            "error": req.payload.get("error"),
++        }
+     return {
+         "request_id": req.request_id,
+         "status": req.status,
+@@ -144,6 +157,11 @@ async def download_export(request: Request, request_id: str) -> Response:
+     req = await _compliance(request).get_export_status(request_id=request_id, tenant_ctx=ctx)
+     if req is None:
+         raise HTTPException(status_code=404, detail="Export request not found")
++    if req.status == "failed":
++        raise HTTPException(
++            status_code=409,
++            detail={"status": "failed", "error": req.payload.get("error", "export failed")},
++        )
+     if req.status != "ready":
+         raise HTTPException(status_code=202, detail="Export not ready yet")
+     content = json.dumps(req.payload, indent=2, default=str)
+diff --git a/agent-verse-backend/app/enterprise/compliance.py b/agent-verse-backend/app/enterprise/compliance.py
+index fdbb216f5..801740ba5 100644
+--- a/agent-verse-backend/app/enterprise/compliance.py
++++ b/agent-verse-backend/app/enterprise/compliance.py
+@@ -105,7 +105,8 @@ class ComplianceController:
+ 
+     # ── internal DB helpers ────────────────────────────────────────────────────
+ 
+-    async def _db_save_request(self, req: DataExportRequest) -> None:
++    async def _db_save_request(self, req: DataExportRequest, *, strict: bool = False) -> None:
++        """Upsert the request row; with ``strict`` a write error propagates."""
+         if self._db is None:
+             return
+         try:
+@@ -133,13 +134,15 @@ class ComplianceController:
+                         "tid": req.tenant_id,
+                         "status": req.status,
+                         "url": req.download_url,
+-                        "payload": json.dumps(req.payload),
++                        "payload": json.dumps(req.payload, default=str),
+                     },
+                 )
+         except Exception as exc:
+             import logging
+ 
+             logging.getLogger(__name__).warning("compliance_request_save_failed: %s", exc)
++            if strict:
++                raise
+ 
+     async def _db_load_request(self, request_id: str, tenant_id: str) -> DataExportRequest | None:
+         if self._db is None:
+@@ -260,132 +263,37 @@ class ComplianceController:
+     # ── public API ─────────────────────────────────────────────────────────────
+ 
+     async def request_data_export(self, *, tenant_ctx: TenantContext) -> DataExportRequest:
+-        """GDPR right-of-access — collect and return all tenant data."""
+-        req = DataExportRequest(tenant_id=tenant_ctx.tenant_id)
+-        req.status = "ready"
++        """GDPR right-of-access — collect ALL tenant data, or fail honestly (RV-08).
+ 
+-        # Collect data from injected services
+-        goals_data: list[dict[str, Any]] = []
+-        if self._goal_service is not None:
+-            db = getattr(self._goal_service, "_db_session_factory", None)
+-            if db is not None:
+-                try:
+-                    from sqlalchemy import text as _text
++        Every section is read from Postgres under the tenant's RLS with keyset
++        pagination (:func:`app.enterprise.gdpr_export.collect_tenant_export`).
++        The request is ``processing`` while it is collected, ``ready`` only once
++        every section was read, and ``failed`` (with the reason in
++        ``payload["error"]``) when any section could not be read or no database
++        is configured — it used to be ``ready`` from the start, with read errors
++        only logged, audit capped at 100, agents/schedules from process caches
++        and knowledge collections hard-coded empty.
+ 
+-                    from app.db.rls import sqlalchemy_rls_context
++        Raises when the final state cannot be persisted (the caller answers 503
++        rather than handing out a download link no replica can serve).
++        """
++        from app.enterprise.gdpr_export import GdprExportError, collect_tenant_export
+ 
+-                    # `goals` is FORCE ROW LEVEL SECURITY: without the tenant GUC
+-                    # this read matched zero rows under the API's NOBYPASSRLS role
+-                    # and the GDPR export silently contained no goals at all.
+-                    async with (
+-                        db() as _sess,
+-                        _sess.begin(),
+-                        sqlalchemy_rls_context(_sess, tenant_ctx.tenant_id),
+-                    ):
+-                        # FIX: The previous cap has been removed.
+-                        # GDPR Art. 20 right to portability requires exporting ALL data.
+-                        # Large tenants use async Celery export (compliance_router).
+-                        _rows = (
+-                            await _sess.execute(
+-                                _text(
+-                                    "SELECT id, goal_text, status, created_at "
+-                                    "FROM goals WHERE tenant_id = :tid "
+-                                    "ORDER BY created_at DESC"
+-                                ),
+-                                {"tid": tenant_ctx.tenant_id},
+-                            )
+-                        ).fetchall()
+-                    goals_data = [
+-                        {
+-                            "goal_id": r[0],
+-                            "goal_text": r[1],
+-                            "status": r[2],
+-                            "created_at": r[3].isoformat() if r[3] else "",
+-                        }
+-                        for r in _rows
+-                    ]
+-                except Exception as exc:
+-                    logging.getLogger(__name__).warning(
+-                        "compliance_goals_db_export_failed: %s", exc
+-                    )
+-            else:
+-                try:
+-                    goal_records: dict[str, Any] = getattr(self._goal_service, "_goals", {})
+-                    for gid, record in goal_records.items():
+-                        if getattr(record, "tenant_id", "") == tenant_ctx.tenant_id:
+-                            goals_data.append(
+-                                {
+-                                    "goal_id": gid,
+-                                    "goal_text": getattr(record, "goal_text", ""),
+-                                    "status": str(getattr(record, "status", "")),
+-                                    "created_at": getattr(record, "created_at", ""),
+-                                }
+-                            )
+-                except Exception as exc:
+-                    logging.getLogger(__name__).warning(
+-                        "compliance_goals_memory_export_failed: %s", exc
+-                    )
+-
+-        audit_data: list[dict[str, Any]] = []
+-        if self._audit_log is not None:
+-            try:
+-                entries = self._audit_log.query(tenant_ctx=tenant_ctx)
+-                audit_data = [
+-                    {
+-                        "event_id": e.event_id,
+-                        "goal_id": e.goal_id,
+-                        "tool_name": e.tool_name,
+-                        "outcome": e.outcome,
+-                    }
+-                    for e in entries[:100]  # Cap at 100 for export
+-                ]
+-            except Exception as exc:
+-                logging.getLogger(__name__).warning("compliance_audit_export_failed: %s", exc)
+-
+-        agents_data: list[dict[str, Any]] = []
+-        if self._agent_store is not None:
+-            try:
+-                agents = self._agent_store.list_all(tenant_ctx=tenant_ctx)
+-                agents_data = [
+-                    {"agent_id": a.get("agent_id"), "name": a.get("name")} for a in agents
+-                ]
+-            except Exception as exc:
+-                logging.getLogger(__name__).warning("compliance_agents_export_failed: %s", exc)
+-
+-        schedules_data: list[dict[str, Any]] = []
+-        if self._schedule_store is not None:
+-            try:
+-                schedules = self._schedule_store.list_all(tenant_ctx=tenant_ctx)
+-                schedules_data = [
+-                    {"schedule_id": s.get("schedule_id"), "goal_id": s.get("goal_id")}
+-                    for s in schedules
+-                ]
+-            except Exception as exc:
+-                logging.getLogger(__name__).warning("compliance_schedules_export_failed: %s", exc)
+-
+-        req.payload = {
+-            "tenant_id": tenant_ctx.tenant_id,
+-            "plan": tenant_ctx.plan.value,
+-            "export_timestamp": datetime.now(UTC).isoformat(),
+-            "export_format_version": "1.0",
+-            "data": {
+-                "tenant_profile": {
+-                    "tenant_id": tenant_ctx.tenant_id,
+-                    "plan": tenant_ctx.plan.value,
+-                },
+-                "goals": goals_data,
+-                "audit_entries": audit_data,
+-                "api_keys": [],  # Never export raw keys
+-                "agents": agents_data,
+-                "schedules": schedules_data,
+-                "knowledge_collections": [],
+-            },
+-        }
++        req = DataExportRequest(tenant_id=tenant_ctx.tenant_id, status="processing")
+         req.download_url = f"/compliance/export/{req.request_id}/download"
+-
+-        # Persist to DB (best-effort); also keep in memory as fallback
+-        await self._db_save_request(req)
+         self._export_requests[req.request_id] = req
++        await self._db_save_request(req)
++        try:
++            req.payload = await collect_tenant_export(self._db, tenant_ctx.tenant_id)
++            req.status = "ready"
++        except GdprExportError as exc:
++            req.status = "failed"
++            req.payload = {
++                "tenant_id": tenant_ctx.tenant_id,
++                "error": str(exc),
++                "failed_section": exc.section,
++            }
++        await self._db_save_request(req, strict=True)
+         return req
+ 
+     async def get_export_status(
+diff --git a/agent-verse-backend/app/enterprise/gdpr_export.py b/agent-verse-backend/app/enterprise/gdpr_export.py
+new file mode 100644
+index 000000000..8527eb346
+--- /dev/null
++++ b/agent-verse-backend/app/enterprise/gdpr_export.py
+@@ -0,0 +1,262 @@
++"""Complete GDPR access/portability export, read from Postgres (RV-08).
++
++Used by both the synchronous ``GET /enterprise/compliance/export`` path
++(``ComplianceController.request_data_export``) and the async Celery job
++(``run_gdpr_export``). The export used to be reported ``ready`` while data was
++missing: goal read errors were only logged, audit entries were capped at 100
++(and the async job queried a non-existent ``audit_log.event_id`` column and
++swallowed the error, so it never exported any), agents/schedules came from
++this replica's in-memory cache, knowledge collections were hard-coded ``[]``
++and the async job silently stopped at ``LIMIT 10000``.
++
++Now every section is read from Postgres under the tenant's RLS with keyset
++pagination (``WHERE id > :after ORDER BY id LIMIT :page``) — no cap, nothing
++dropped — and ANY section read error raises :class:`GdprExportError`, which
++callers turn into a ``failed`` export carrying the reason. Only a fully read
++export is ever ``ready``. Secrets are never exported (no key hashes, webhook
++tokens or signing secrets).
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import UTC, date, datetime
++from decimal import Decimal
++from typing import Any
++
++from app.observability.logging import get_logger
++
++_log = get_logger(__name__)
++
++EXPORT_FORMAT_VERSION = "2.0"
++DEFAULT_PAGE_SIZE = 1000
++
++
++class GdprExportError(RuntimeError):
++    """A section of the export could not be read; the export must be ``failed``."""
++
++    def __init__(self, section: str, reason: str) -> None:
++        super().__init__(f"GDPR export section '{section}' could not be read: {reason}")
++        self.section = section
++        self.reason = reason
++
++
++@dataclass(frozen=True)
++class _Section:
++    name: str
++    table: str
++    columns: tuple[str, ...]
++
++
++#: Every tenant-owned section, keyset-paginated on the table's ``id`` key.
++SECTIONS: tuple[_Section, ...] = (
++    _Section(
++        "goals",
++        "goals",
++        (
++            "id",
++            "goal_text",
++            "status",
++            "priority",
++            "agent_id",
++            "workflow_mode",
++            "created_at",
++            "completed_at",
++        ),
++    ),
++    _Section(
++        "audit_entries",
++        "audit_log",
++        (
++            "id",
++            "goal_id",
++            "tool_name",
++            "action_level",
++            "outcome",
++            "step_id",
++            "approver",
++            "note",
++            "api_key_id",
++            "created_at",
++        ),
++    ),
++    _Section(
++        "agents",
++        "agents",
++        ("id", "name", "goal_template", "system_prompt", "created_at", "updated_at"),
++    ),
++    _Section(
++        "schedules",
++        "schedules",
++        (
++            "id",
++            "agent_id",
++            "goal_id_template",
++            "trigger_type",
++            "cron_expression",
++            "timezone",
++            "interval_seconds",
++            "description",
++            "paused",
++            "created_at",
++        ),
++    ),
++    _Section(
++        "knowledge_collections",
++        "knowledge_collections",
++        (
++            "id",
++            "name",
++            "description",
++            "domain",
++            "document_count",
++            "chunk_count",
++            "total_size_bytes",
++            "created_at",
++            "updated_at",
++        ),
++    ),
++    # Key metadata only — never the hash (a key's SHA-256 authenticates as it).
++    _Section(
++        "api_keys",
++        "api_keys",
++        ("id", "name", "scopes", "roles", "is_active", "created_at", "expires_at", "last_used_at"),
++    ),
++)
++
++
++def _jsonable(value: Any) -> Any:
++    if isinstance(value, datetime | date):
++        return value.isoformat()
++    if isinstance(value, Decimal):
++        return float(value)
++    if isinstance(value, tuple):
++        return list(value)
++    return value
++
++
++def _reason(exc: BaseException) -> str:
++    text = str(exc)
++    first = text.splitlines()[0][:200] if text else ""
++    return f"{type(exc).__name__}: {first}" if first else type(exc).__name__
++
++
++async def _read_page(
++    db_factory: Any, tenant_id: str, section: _Section, after: str | None, page_size: int
++) -> list[dict[str, Any]]:
++    from sqlalchemy import text
++
++    from app.db.rls import sqlalchemy_rls_context
++
++    cols = ", ".join(section.columns)
++    keyset = "AND id > :after " if after is not None else ""
++    sql = (
++        f"SELECT {cols} FROM {section.table} WHERE tenant_id = :tid {keyset}"
++        "ORDER BY id LIMIT :lim"
++    )
++    params: dict[str, Any] = {"tid": tenant_id, "lim": page_size}
++    if after is not None:
++        params["after"] = after
++    async with db_factory() as session, session.begin():  # noqa: SIM117
++        async with sqlalchemy_rls_context(session, tenant_id):
++            rows = (await session.execute(text(sql), params)).fetchall()
++    return [
++        {col: _jsonable(val) for col, val in zip(section.columns, row, strict=True)}
++        for row in rows
++    ]
++
++
++async def read_section(
++    db_factory: Any, tenant_id: str, section: _Section, *, page_size: int = DEFAULT_PAGE_SIZE
++) -> list[dict[str, Any]]:
++    """Every row of *section* for the tenant, page by page; raise on any error."""
++    out: list[dict[str, Any]] = []
++    after: str | None = None
++    while True:
++        try:
++            page = await _read_page(db_factory, tenant_id, section, after, page_size)
++        except Exception as exc:
++            _log.error(
++                "gdpr_export_section_failed",
++                tenant_id=tenant_id,
++                section=section.name,
++                rows_read=len(out),
++                error=str(exc)[:500],
++            )
++            raise GdprExportError(section.name, _reason(exc)) from exc
++        out.extend(page)
++        if len(page) < page_size:
++            return out
++        after = str(page[-1]["id"])
++
++
++async def _read_profile(db_factory: Any, tenant_id: str) -> dict[str, Any]:
++    from sqlalchemy import text
++
++    from app.db.rls import sqlalchemy_rls_context
++
++    try:
++        async with db_factory() as session, session.begin():  # noqa: SIM117
++            async with sqlalchemy_rls_context(session, tenant_id):
++                row = (
++                    await session.execute(
++                        text(
++                            "SELECT id, name, email, plan_tier, created_at "
++                            "FROM tenants WHERE id = :tid"
++                        ),
++                        {"tid": tenant_id},
++                    )
++                ).first()
++    except Exception as exc:
++        raise GdprExportError("tenant_profile", _reason(exc)) from exc
++    if row is None:
++        raise GdprExportError("tenant_profile", "tenant record not found")
++    return {
++        "tenant_id": row[0],
++        "name": row[1],
++        "email": row[2],
++        "plan": row[3],
++        "created_at": _jsonable(row[4]),
++    }
++
++
++async def collect_tenant_export(
++    db_factory: Any, tenant_id: str, *, page_size: int | None = None
++) -> dict[str, Any]:
++    """The complete export payload for *tenant_id*; raises :class:`GdprExportError`.
++
++    No database → error (an export from process caches is not the tenant's data).
++    """
++    if db_factory is None:
++        raise GdprExportError("all", "no database configured; nothing can be exported")
++    if page_size is None:
++        page_size = DEFAULT_PAGE_SIZE
++    if page_size < 1:
++        raise ValueError("page_size must be positive")
++    profile = await _read_profile(db_factory, tenant_id)
++    data: dict[str, Any] = {"tenant_profile": profile}
++    counts: dict[str, int] = {}
++    for section in SECTIONS:
++        rows = await read_section(db_factory, tenant_id, section, page_size=page_size)
++        data[section.name] = rows
++        counts[section.name] = len(rows)
++    return {
++        "tenant_id": tenant_id,
++        "plan": profile.get("plan"),
++        "export_timestamp": datetime.now(UTC).isoformat(),
++        "export_format_version": EXPORT_FORMAT_VERSION,
++        "complete": True,
++        "truncated": False,
++        "counts": counts,
++        "data": data,
++    }
++
++
++__all__ = [
++    "DEFAULT_PAGE_SIZE",
++    "EXPORT_FORMAT_VERSION",
++    "SECTIONS",
++    "GdprExportError",
++    "collect_tenant_export",
++    "read_section",
++]
+diff --git a/agent-verse-backend/app/scaling/tasks.py b/agent-verse-backend/app/scaling/tasks.py
+index 8ecb51bf4..478223ca5 100644
+--- a/agent-verse-backend/app/scaling/tasks.py
++++ b/agent-verse-backend/app/scaling/tasks.py
+@@ -7487,58 +7487,26 @@ def purge_expired_chat_artifacts() -> dict:
+ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
+     """Async GDPR data export job — runs in background worker.
+ 
+-    Collects all tenant data, serialises to JSON, updates the job record
+-    in gdpr_export_jobs with status='complete' and a download_url.
++    Collects ALL tenant data (RV-08: every section from Postgres under the
++    tenant's RLS, keyset-paginated, no cap — it used to stop silently at
++    ``LIMIT 10000`` and swallow the audit read error, so audit entries were
++    never exported), stores it in compliance_requests as ``ready`` and marks the
++    job ``complete``. Any section read error marks the job ``failed`` with the
++    reason; nothing is ever ``ready``/``complete`` with a section missing.
+     """
+ 
+     async def _run() -> dict[str, Any]:
+         from sqlalchemy import text
+ 
++        from app.db.rls import sqlalchemy_rls_context
+         from app.db.session import get_session_factory as _get_fresh_db
++        from app.enterprise.gdpr_export import collect_tenant_export
+ 
+         db = _get_fresh_db()
+         try:
+-            # Collect all tenant data. goals and audit_log both have FORCE ROW
+-            # LEVEL SECURITY (migrations 0004 / 0005), so this read must set the
+-            # app.tenant_id GUC via sqlalchemy_rls_context -- without it, under any
+-            # non-BYPASSRLS role the policy silently filters every row out and the
+-            # "export" would always be empty regardless of the persistence fix below.
+-            from app.db.rls import sqlalchemy_rls_context
+-
+-            async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+-                goals = (
+-                    await session.execute(
+-                        text(
+-                            "SELECT id, goal_text, status, created_at FROM goals "
+-                            "WHERE tenant_id = :tid LIMIT 10000"
+-                        ),
+-                        {"tid": tenant_id},
+-                    )
+-                ).fetchall()
+-                try:
+-                    audit = (
+-                        await session.execute(
+-                            text(
+-                                "SELECT event_id, goal_id, tool_name, outcome FROM audit_log "
+-                                "WHERE tenant_id = :tid LIMIT 10000"
+-                            ),
+-                            {"tid": tenant_id},
+-                        )
+-                    ).fetchall()
+-                except Exception:
+-                    audit = []
+-
+             import json
+-            from datetime import datetime
+ 
+-            export_data = {
+-                "tenant_id": tenant_id,
+-                "exported_at": datetime.now(UTC).isoformat(),
+-                "goals": [{"id": str(r[0]), "text": str(r[1]), "status": str(r[2])} for r in goals],
+-                "audit_entries": [
+-                    {"id": str(r[0]), "goal_id": str(r[1]), "tool": str(r[2])} for r in audit
+-                ],
+-            }
++            export_data = await collect_tenant_export(db, tenant_id)
+ 
+             # Persist the export content itself (not just a job-status row), and
+             # reuse this job's own job_id as the download URL's id, rather than an
+@@ -7549,8 +7517,7 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
+             # export must land there for the link to ever serve real data instead
+             # of 404ing forever. compliance_requests has FORCE ROW LEVEL SECURITY
+             # (migration 0026 / 767fe9d87bfe), so the write must set the
+-            # app.tenant_id GUC via sqlalchemy_rls_context (app/db/rls.py; already
+-            # imported above for the goals/audit_log read).
++            # app.tenant_id GUC via sqlalchemy_rls_context (app/db/rls.py).
+ 
+             # NOTE: the download endpoint (download_export in app/api/enterprise.py)
+             # is registered on the "/enterprise"-prefixed router, not the
+@@ -7580,17 +7547,11 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
+                         "payload": json.dumps(export_data, default=str),
+                     },
+                 )
+-
+-            # gdpr_export_jobs is tenant-isolated by RLS. This task works for ONE
+-            # tenant (it is enqueued by that tenant's own request), so it runs
+-            # under that tenant's context — not the maintenance role. Unscoped,
+-            # the UPDATE matched zero rows under a NOBYPASSRLS role and the job
+-            # sat at 'pending' forever although the export had been written.
+-            async with (
+-                db() as session,
+-                session.begin(),
+-                sqlalchemy_rls_context(session, tenant_id),
+-            ):
++                # gdpr_export_jobs is tenant-isolated by RLS. This task works for
++                # ONE tenant (it is enqueued by that tenant's own request), so it
++                # runs under that tenant's context — not the maintenance role.
++                # Same transaction as the payload: the job is 'complete' iff the
++                # complete export is stored.
+                 await session.execute(
+                     text("""
+                     UPDATE gdpr_export_jobs
+@@ -7604,9 +7565,11 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
+ 
+         except Exception as exc:
+             try:
+-                from app.db.rls import sqlalchemy_rls_context as _rls
+-
+-                async with db() as session, session.begin(), _rls(session, tenant_id):
++                async with (
++                    db() as session,
++                    session.begin(),
++                    sqlalchemy_rls_context(session, tenant_id),
++                ):
+                     await session.execute(
+                         text(
+                             "UPDATE gdpr_export_jobs SET status = 'failed', "
+@@ -7614,8 +7577,13 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
+                         ),
+                         {"err": str(exc)[:500], "jid": job_id, "tid": tenant_id},
+                     )
+-            except Exception:
+-                pass
++            except Exception as mark_exc:
++                logger.error(
++                    "gdpr_export_mark_failed_failed job=%s tenant=%s: %s",
++                    job_id,
++                    tenant_id,
++                    mark_exc,
++                )
+             raise
+ 
+     return _run_async(_run())
+diff --git a/agent-verse-backend/tests/enterprise/test_gdpr_export_complete.py b/agent-verse-backend/tests/enterprise/test_gdpr_export_complete.py
+new file mode 100644
+index 000000000..9ed10e257
+--- /dev/null
++++ b/agent-verse-backend/tests/enterprise/test_gdpr_export_complete.py
+@@ -0,0 +1,197 @@
++"""RV-08: a GDPR export is ``ready`` only when every section was fully read.
++
++It used to be ``ready`` before collection started, with a goal read error only
++logged, audit entries capped at 100, agents/schedules from process caches and
++knowledge collections hard-coded ``[]``; the async job stopped at LIMIT 10000
++and swallowed audit read errors.
++"""
++
++from __future__ import annotations
++
++from typing import Any
++from unittest.mock import patch
++
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++
++from app.enterprise import gdpr_export
++from app.enterprise.compliance import ComplianceController
++from app.tenancy.context import PlanTier, TenantContext
++
++T = TenantContext(tenant_id="gdpr-t1", plan=PlanTier.ENTERPRISE, api_key_id="k1")
++
++_PROFILE = {
++    "tenant_id": T.tenant_id,
++    "name": "n",
++    "email": "e@x",
++    "plan": "enterprise",
++    "created_at": None,
++}
++
++
++def _rows(section: str, n: int) -> list[dict[str, Any]]:
++    return [{"id": f"{section}-{i:05d}"} for i in range(n)]
++
++
++class _FakeTables:
++    """Serves _read_page from in-memory rows, honouring the keyset + limit."""
++
++    def __init__(self, sizes: dict[str, int], fail: str | None = None) -> None:
++        self.tables = {s.name: _rows(s.name, sizes.get(s.name, 0)) for s in gdpr_export.SECTIONS}
++        self.fail = fail
++        self.calls: list[tuple[str, str | None, int]] = []
++
++    async def read_page(
++        self, db: Any, tenant_id: str, section: Any, after: str | None, page_size: int
++    ) -> list[dict[str, Any]]:
++        self.calls.append((section.name, after, page_size))
++        if section.name == self.fail:
++            raise RuntimeError("relation is unreadable")
++        rows = [r for r in self.tables[section.name] if after is None or r["id"] > after]
++        return rows[:page_size]
++
++
++async def _profile(db: Any, tenant_id: str) -> dict[str, Any]:
++    return dict(_PROFILE)
++
++
++async def test_every_row_of_every_section_is_exported_across_pages() -> None:
++    fake = _FakeTables({"goals": 7, "audit_entries": 250, "knowledge_collections": 2, "agents": 3})
++    with (
++        patch.object(gdpr_export, "_read_page", side_effect=fake.read_page),
++        patch.object(gdpr_export, "_read_profile", side_effect=_profile),
++    ):
++        payload = await gdpr_export.collect_tenant_export(object(), T.tenant_id, page_size=3)
++    data = payload["data"]
++    assert len(data["goals"]) == 7
++    assert len(data["audit_entries"]) == 250  # no 100-row cap
++    assert [c["id"] for c in data["knowledge_collections"]] == [
++        "knowledge_collections-00000",
++        "knowledge_collections-00001",
++    ]
++    assert payload["counts"]["audit_entries"] == 250
++    assert payload["complete"] is True and payload["truncated"] is False
++    # Keyset pagination: each page continues after the previous page's last id.
++    goal_calls = [c for c in fake.calls if c[0] == "goals"]
++    assert goal_calls == [
++        ("goals", None, 3),
++        ("goals", "goals-00002", 3),
++        ("goals", "goals-00005", 3),
++    ]
++
++
++async def test_section_read_error_raises_with_the_section() -> None:
++    fake = _FakeTables({"goals": 5}, fail="knowledge_collections")
++    with (
++        patch.object(gdpr_export, "_read_page", side_effect=fake.read_page),
++        patch.object(gdpr_export, "_read_profile", side_effect=_profile),
++        pytest.raises(gdpr_export.GdprExportError) as err,
++    ):
++        await gdpr_export.collect_tenant_export(object(), T.tenant_id)
++    assert err.value.section == "knowledge_collections"
++    assert "relation is unreadable" in err.value.reason
++
++
++async def test_no_database_is_an_error_not_an_empty_export() -> None:
++    with pytest.raises(gdpr_export.GdprExportError):
++        await gdpr_export.collect_tenant_export(None, T.tenant_id)
++
++
++# ── ComplianceController (sync path) ─────────────────────────────────────────
++
++
++class _Saved:
++    def __init__(self) -> None:
++        self.states: list[tuple[str, bool]] = []
++
++    async def save(self, req: Any, *, strict: bool = False) -> None:
++        self.states.append((req.status, strict))
++
++
++async def test_controller_failed_section_yields_failed_never_ready() -> None:
++    cc = ComplianceController()
++    cc._db = object()
++    saved = _Saved()
++    fake = _FakeTables({"goals": 5}, fail="goals")
++    with (
++        patch.object(gdpr_export, "_read_page", side_effect=fake.read_page),
++        patch.object(gdpr_export, "_read_profile", side_effect=_profile),
++        patch.object(cc, "_db_save_request", side_effect=saved.save),
++    ):
++        req = await cc.request_data_export(tenant_ctx=T)
++    assert req.status == "failed"
++    assert "goals" in req.payload["error"] and req.payload["failed_section"] == "goals"
++    assert "data" not in req.payload
++    # processing first, then the terminal state persisted strictly; never ready.
++    assert saved.states == [("processing", False), ("failed", True)]
++    assert await cc.get_export_payload(request_id=req.request_id, tenant_ctx=T) is None
++
++
++async def test_controller_ready_only_after_all_sections() -> None:
++    cc = ComplianceController()
++    cc._db = object()
++    saved = _Saved()
++    fake = _FakeTables({"goals": 2, "knowledge_collections": 1})
++    with (
++        patch.object(gdpr_export, "_read_page", side_effect=fake.read_page),
++        patch.object(gdpr_export, "_read_profile", side_effect=_profile),
++        patch.object(cc, "_db_save_request", side_effect=saved.save),
++    ):
++        req = await cc.request_data_export(tenant_ctx=T)
++    assert req.status == "ready"
++    assert saved.states == [("processing", False), ("ready", True)]
++    assert len(req.payload["data"]["knowledge_collections"]) == 1
++    assert {s.name for s in gdpr_export.SECTIONS} <= set(req.payload["data"])
++
++
++async def test_controller_without_database_fails_honestly() -> None:
++    cc = ComplianceController()
++    req = await cc.request_data_export(tenant_ctx=T)
++    assert req.status == "failed"
++    assert "no database" in req.payload["error"]
++
++
++# ── API ──────────────────────────────────────────────────────────────────────
++
++
++def _client(cc: ComplianceController) -> TestClient:
++    from app.api.enterprise import router
++
++    app = FastAPI()
++
++    @app.middleware("http")
++    async def _tenant(request: Any, call_next: Any) -> Any:
++        request.state.tenant = T
++        return await call_next(request)
++
++    app.include_router(router)
++    app.state.compliance_controller = cc
++    return TestClient(app, raise_server_exceptions=False)
++
++
++def test_api_reports_failed_export_without_a_download_link() -> None:
++    cc = ComplianceController()  # no DB -> failed
++    with patch("app.api.enterprise._compliance", return_value=cc):
++        c = _client(cc)
++        r = c.get("/enterprise/compliance/export")
++        assert r.status_code == 200, r.text
++        body = r.json()
++        assert body["status"] == "failed" and body["download_url"] is None
++        assert body["error"]
++        dl = c.get(f"/enterprise/compliance/export/{body['request_id']}/download")
++        assert dl.status_code == 409, dl.text
++
++
++def test_api_503_when_the_result_cannot_be_recorded() -> None:
++    cc = ComplianceController()
++
++    async def _boom(**_kw: Any) -> Any:
++        raise RuntimeError("compliance_requests write failed")
++
++    with (
++        patch.object(cc, "request_data_export", side_effect=_boom),
++        patch("app.api.enterprise._compliance", return_value=cc),
++    ):
++        r = _client(cc).get("/enterprise/compliance/export")
++    assert r.status_code == 503, r.text
+diff --git a/agent-verse-backend/tests/enterprise/test_gdpr_export_pg.py b/agent-verse-backend/tests/enterprise/test_gdpr_export_pg.py
+new file mode 100644
+index 000000000..35cc0a28c
+--- /dev/null
++++ b/agent-verse-backend/tests/enterprise/test_gdpr_export_pg.py
+@@ -0,0 +1,246 @@
++"""RV-08 (integration): the GDPR export reads every section from Postgres under
++the tenant's RLS (least-privilege NOBYPASSRLS role) with keyset pagination — more
++rows than one page, nothing capped — and a section that cannot be read makes the
++export ``failed`` (never ``ready``/``complete``), on both the Celery job and the
++synchronous controller path.
++
++Run with:
++    DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock \\
++    TESTCONTAINERS_RYUK_DISABLED=true \\
++        uv run pytest tests/enterprise/test_gdpr_export_pg.py -q -m integration
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import uuid
++from collections.abc import Iterator
++from typing import Any
++
++import pytest
++from sqlalchemy import text
++from sqlalchemy.engine import make_url
++from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++from sqlalchemy.pool import NullPool
++from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
++
++from tests.memory._pg import alembic_upgrade, app_role_engine
++
++pytestmark = pytest.mark.integration
++
++TENANT = "gdpr-pg-tenant"
++OTHER = "gdpr-pg-other"
++PAGE = 50
++EXPECTED = {
++    "goals": 120,
++    "audit_entries": 130,
++    "agents": 3,
++    "schedules": 2,
++    "knowledge_collections": 2,
++    "api_keys": 1,
++}
++TABLES = [
++    "compliance_requests",
++    "gdpr_export_jobs",
++    "goals",
++    "audit_log",
++    "agents",
++    "schedules",
++    "knowledge_collections",
++    "api_keys",
++    "tenants",
++]
++
++
++async def _seed(admin: str) -> None:
++    eng = create_async_engine(admin, poolclass=NullPool)
++    async with eng.begin() as c:
++        for t, scale in ((TENANT, 1), (OTHER, 0)):
++            p = t[-5:]
++            await c.execute(
++                text("INSERT INTO tenants (id, name, email) VALUES (:t, :t, :e)"),
++                {"t": t, "e": f"{t}@example.test"},
++            )
++            n_goals = EXPECTED["goals"] if scale else 5
++            await c.execute(
++                text(
++                    "INSERT INTO goals (id, tenant_id, goal_text) "
++                    "SELECT :p || '-g' || lpad(g::text, 5, '0'), :t, 'goal ' || g "
++                    "FROM generate_series(1, :n) g"
++                ),
++                {"p": p, "t": t, "n": n_goals},
++            )
++            await c.execute(
++                text(
++                    "INSERT INTO audit_log (id, tenant_id, goal_id, tool_name, action_level, "
++                    "outcome) SELECT :p || '-a' || lpad(g::text, 5, '0'), :t, 'g', 'tool', "
++                    "'allow', 'success' FROM generate_series(1, :n) g"
++                ),
++                {"p": p, "t": t, "n": EXPECTED["audit_entries"] if scale else 5},
++            )
++            await c.execute(
++                text(
++                    "INSERT INTO agents (id, tenant_id, name) "
++                    "SELECT :p || '-ag' || g, :t, 'agent ' || g FROM generate_series(1, :n) g"
++                ),
++                {"p": p, "t": t, "n": EXPECTED["agents"] if scale else 1},
++            )
++            await c.execute(
++                text(
++                    "INSERT INTO schedules (id, tenant_id, goal_id_template, trigger_type, "
++                    "cron_expression, interval_seconds, config, paused) "
++                    "SELECT :p || '-s' || g, :t, 'x', 'cron', '0 9 * * *', 0, '{}'::jsonb, "
++                    "false FROM generate_series(1, :n) g"
++                ),
++                {"p": p, "t": t, "n": EXPECTED["schedules"] if scale else 1},
++            )
++            await c.execute(
++                text(
++                    "INSERT INTO knowledge_collections (id, tenant_id, name) "
++                    "SELECT :p || '-kc' || g, :t, 'coll ' || g FROM generate_series(1, :n) g"
++                ),
++                {"p": p, "t": t, "n": EXPECTED["knowledge_collections"] if scale else 1},
++            )
++            await c.execute(
++                text(
++                    "INSERT INTO api_keys (id, tenant_id, name, key_hash) "
++                    "VALUES (:kid, :t, 'k', :h)"
++                ),
++                {"kid": f"{p}-key", "t": t, "h": (t * 64)[:64]},
++            )
++    await eng.dispose()
++
++
++@pytest.fixture(scope="module")
++def urls() -> Iterator[tuple[str, str, str]]:
++    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
++        admin = pg.get_connection_url()
++        alembic_upgrade(admin)
++        loop = asyncio.new_event_loop()
++        engine = loop.run_until_complete(app_role_engine(admin, TABLES))
++        app_url = engine.url.render_as_string(hide_password=False)
++        loop.run_until_complete(engine.dispose())
++        loop.run_until_complete(_seed(admin))
++        loop.close()
++        role = make_url(app_url).username or ""
++        yield admin, app_url, role
++
++
++def _factory(url: str) -> Any:
++    return async_sessionmaker(create_async_engine(url, poolclass=NullPool), expire_on_commit=False)
++
++
++async def _admin(admin_url: str, sql: str, params: dict[str, Any] | None = None) -> list[Any]:
++    eng = create_async_engine(admin_url, poolclass=NullPool)
++    async with eng.begin() as c:
++        result = await c.execute(text(sql), params or {})
++        rows = list(result.fetchall()) if result.returns_rows else []
++    await eng.dispose()
++    return rows
++
++
++async def _new_job(admin_url: str) -> str:
++    job_id = uuid.uuid4().hex
++    await _admin(
++        admin_url,
++        "INSERT INTO gdpr_export_jobs (id, tenant_id, status, created_at) "
++        "VALUES (:id, :t, 'pending', NOW())",
++        {"id": job_id, "t": TENANT},
++    )
++    return job_id
++
++
++def _payload(raw: Any) -> dict[str, Any]:
++    return raw if isinstance(raw, dict) else json.loads(raw)
++
++
++def _assert_complete(payload: dict[str, Any]) -> None:
++    data = payload["data"]
++    for section, n in EXPECTED.items():
++        assert len(data[section]) == n, (section, len(data[section]))
++        assert all(not str(r["id"]).startswith("other") for r in data[section]), section
++    assert payload["counts"] == EXPECTED
++    assert data["tenant_profile"]["email"] == f"{TENANT}@example.test"
++    assert "key_hash" not in data["api_keys"][0]
++    ids = [r["id"] for r in data["goals"]]
++    assert ids == sorted(ids) and len(set(ids)) == len(ids)  # keyset: no dupes/gaps
++
++
++def test_celery_and_sync_exports_are_complete_across_pages(
++    urls: tuple[str, str, str], monkeypatch: pytest.MonkeyPatch
++) -> None:
++    from app.enterprise import gdpr_export
++    from app.enterprise.compliance import ComplianceController
++    from app.scaling import tasks
++    from app.tenancy.context import PlanTier, TenantContext
++
++    admin_url, app_url, _ = urls
++    monkeypatch.setattr(gdpr_export, "DEFAULT_PAGE_SIZE", PAGE)  # 120 goals = 3 pages
++    monkeypatch.setattr("app.db.session.get_session_factory", lambda: _factory(app_url))
++
++    job_id = asyncio.run(_new_job(admin_url))
++    result = tasks.run_gdpr_export.run(job_id, TENANT)
++    assert result["status"] == "complete"
++    (job,) = asyncio.run(
++        _admin(admin_url, "SELECT status, error_message FROM gdpr_export_jobs WHERE id = :id",
++               {"id": job_id})
++    )
++    assert job[0] == "complete" and job[1] is None
++    (req,) = asyncio.run(
++        _admin(admin_url, "SELECT status, payload FROM compliance_requests WHERE request_id = :id",
++               {"id": job_id})
++    )
++    assert req[0] == "ready"
++    _assert_complete(_payload(req[1]))
++
++    cc = ComplianceController()
++    cc._db = _factory(app_url)
++    ctx = TenantContext(tenant_id=TENANT, plan=PlanTier.ENTERPRISE, api_key_id="k")
++    sync = asyncio.run(cc.request_data_export(tenant_ctx=ctx))
++    assert sync.status == "ready"
++    _assert_complete(sync.payload)
++    (stored,) = asyncio.run(
++        _admin(admin_url, "SELECT status FROM compliance_requests WHERE request_id = :id",
++               {"id": sync.request_id})
++    )
++    assert stored[0] == "ready"
++
++
++def test_unreadable_section_fails_the_export(
++    urls: tuple[str, str, str], monkeypatch: pytest.MonkeyPatch
++) -> None:
++    from app.enterprise.compliance import ComplianceController
++    from app.scaling import tasks
++    from app.tenancy.context import PlanTier, TenantContext
++
++    admin_url, app_url, role = urls
++    monkeypatch.setattr("app.db.session.get_session_factory", lambda: _factory(app_url))
++    asyncio.run(_admin(admin_url, f"REVOKE SELECT ON knowledge_collections FROM {role}"))
++    try:
++        job_id = asyncio.run(_new_job(admin_url))
++        with pytest.raises(Exception, match="knowledge_collections"):
++            tasks.run_gdpr_export.run(job_id, TENANT)
++        (job,) = asyncio.run(
++            _admin(admin_url, "SELECT status, error_message FROM gdpr_export_jobs WHERE id = :id",
++                   {"id": job_id})
++        )
++        assert job[0] == "failed" and "knowledge_collections" in job[1]
++        assert asyncio.run(
++            _admin(admin_url, "SELECT 1 FROM compliance_requests WHERE request_id = :id",
++                   {"id": job_id})
++        ) == []
++
++        cc = ComplianceController()
++        cc._db = _factory(app_url)
++        ctx = TenantContext(tenant_id=TENANT, plan=PlanTier.ENTERPRISE, api_key_id="k")
++        sync = asyncio.run(cc.request_data_export(tenant_ctx=ctx))
++        assert sync.status == "failed"
++        assert sync.payload["failed_section"] == "knowledge_collections"
++        (stored,) = asyncio.run(
++            _admin(admin_url, "SELECT status, payload FROM compliance_requests "
++                   "WHERE request_id = :id", {"id": sync.request_id})
++        )
++        assert stored[0] == "failed" and "data" not in _payload(stored[1])
++    finally:
++        asyncio.run(_admin(admin_url, f"GRANT SELECT ON knowledge_collections TO {role}"))
+diff --git a/agent-verse-frontend/src/features/enterprise/EnterprisePage.test.tsx b/agent-verse-frontend/src/features/enterprise/EnterprisePage.test.tsx
+index b8e781020..5b0f98170 100644
+--- a/agent-verse-frontend/src/features/enterprise/EnterprisePage.test.tsx
++++ b/agent-verse-frontend/src/features/enterprise/EnterprisePage.test.tsx
+@@ -92,6 +92,34 @@ describe('EnterprisePage', () => {
+     );
+   });
+ 
++  test('a failed export is shown as failed with its reason, never as completed (RV-08)', async () => {
++    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
++      const url = String(input);
++      if (url.includes('/enterprise/compliance/export')) {
++        return new Response(
++          JSON.stringify({
++            request_id: 'req-9',
++            status: 'failed',
++            download_url: null,
++            error: "GDPR export section 'goals' could not be read: OperationalError",
++          }),
++          { status: 200, headers: { 'Content-Type': 'application/json' } }
++        );
++      }
++      return new Response(
++        JSON.stringify({ region: 'us-east-1' }),
++        { status: 200, headers: { 'Content-Type': 'application/json' } }
++      );
++    });
++
++    renderEnterprisePage();
++    await userEvent.click(screen.getByRole('button', { name: /^export$/i }));
++    await waitFor(() => expect(screen.getByText('Export failed')).toBeInTheDocument());
++    expect(screen.getByText(/section 'goals' could not be read/)).toBeInTheDocument();
++    expect(screen.queryByText('Export completed.')).not.toBeInTheDocument();
++    expect(screen.queryByRole('button', { name: /download export/i })).not.toBeInTheDocument();
++  });
++
+   test('download button fetches the export as an authenticated blob, not a bare anchor href', async () => {
+     // Regression: the download_url the backend returns is a bare relative
+     // path (e.g. "/enterprise/compliance/export/{id}/download") meant for
+diff --git a/agent-verse-frontend/src/features/enterprise/EnterprisePage.tsx b/agent-verse-frontend/src/features/enterprise/EnterprisePage.tsx
+index 8dc72332a..cf0c31b97 100644
+--- a/agent-verse-frontend/src/features/enterprise/EnterprisePage.tsx
++++ b/agent-verse-frontend/src/features/enterprise/EnterprisePage.tsx
+@@ -415,6 +415,10 @@ function ExportSection(): JSX.Element {
+     mutationFn: () => enterpriseApi.exportData(),
+     onSuccess: (data) => {
+       setResult(data);
++      if (data.status === 'failed') {
++        toast({ kind: 'error', message: 'Export failed — nothing was exported' });
++        return;
++      }
+       toast({ kind: 'info', message: 'Export started — you\'ll be notified when ready' });
+     },
+     onError: (e) => toast({ kind: 'error', message: `Failed: export data. ${String(e)}` }),
+@@ -454,7 +458,19 @@ function ExportSection(): JSX.Element {
+         </button>
+       </div>
+ 
+-      {result && (
++      {result?.status === 'failed' && (
++        <div
++          role="alert"
++          className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm"
++        >
++          <p className="text-red-800 dark:text-red-300 font-medium">Export failed</p>
++          <p className="text-red-700 dark:text-red-400 text-xs mt-1">
++            {result.error ?? 'The export could not be completed.'}
++          </p>
++        </div>
++      )}
++
++      {result && result.status !== 'failed' && (
+         <div className="mt-3 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg text-sm">
+           {result.download_url ? (
+             <div className="space-y-1.5">
+diff --git a/agent-verse-frontend/src/lib/api/client.ts b/agent-verse-frontend/src/lib/api/client.ts
+index 3dd0ae226..ce0782aef 100644
+--- a/agent-verse-frontend/src/lib/api/client.ts
++++ b/agent-verse-frontend/src/lib/api/client.ts
+@@ -2508,7 +2508,11 @@ export interface DataResidencyInfo {
+ }
+ 
+ export interface EnterpriseExportResult {
+-  download_url?: string;
++  request_id?: string;
++  /** ready | failed (a failed export carries `error` and no download_url). */
++  status?: string;
++  download_url?: string | null;
++  error?: string | null;
+   expires_at?: string;
+   size_bytes?: number;
+   message?: string;

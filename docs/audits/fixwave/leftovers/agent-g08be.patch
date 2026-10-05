@@ -1,0 +1,206 @@
+diff --git a/agent-verse-backend/app/chat/repository.py b/agent-verse-backend/app/chat/repository.py
+index 95aaeaa39..e4dd9d964 100644
+--- a/agent-verse-backend/app/chat/repository.py
++++ b/agent-verse-backend/app/chat/repository.py
+@@ -395,6 +395,32 @@ class PostgresChatRepository:
+                 )
+             return ids
+ 
++    async def search_messages(
++        self,
++        tenant_id: str,
++        query: str,
++        *,
++        session_id: str | None = None,
++        limit: int = 20,
++    ) -> list[dict[str, Any]]:
++        """Full-text search over the tenant's messages, newest first (ORG-32).
++
++        Uses the ``idx_chat_messages_fts`` GIN index (``to_tsvector('english',
++        content)``) with ``websearch_to_tsquery``, so it stays an index scan at
++        millions of rows; bounded by ``limit``."""
++        sql = (
++            "SELECT * FROM chat_messages WHERE tenant_id = :t "
++            "AND to_tsvector('english', content) @@ websearch_to_tsquery('english', :q)"
++        )
++        params: dict[str, Any] = {"t": tenant_id, "q": query, "lim": max(1, min(limit, 100))}
++        if session_id is not None:
++            sql += " AND session_id = :sid"
++            params["sid"] = session_id
++        sql += " ORDER BY created_at DESC, id DESC LIMIT :lim"
++        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
++            rows = (await s.execute(text(sql), params)).mappings().all()
++            return [dict(r) for r in rows]
++
+     # ── Artifacts (chat_artifacts, ORG-42) ────────────────────────────────────
+     # Generated documents (kind='document', retention via expires_at) and saved
+     # session artifacts (kind='snippet', deleted with their session). Every read
+diff --git a/agent-verse-backend/app/chat/router.py b/agent-verse-backend/app/chat/router.py
+index 88ee28a3c..c69c52cde 100644
+--- a/agent-verse-backend/app/chat/router.py
++++ b/agent-verse-backend/app/chat/router.py
+@@ -489,7 +489,7 @@ async def summarize_session(session_id: str, request: Request) -> dict[str, Any]
+     s = await svc.aget_session(session_id, tenant.tenant_id)
+     if not s:
+         raise HTTPException(status_code=404, detail="Session not found")
+-    summary = svc.summarize_session(session_id, tenant.tenant_id)
++    summary = await svc.asummarize_session(session_id, tenant.tenant_id)
+     return {"summary": summary}
+ 
+ 
+@@ -500,7 +500,7 @@ async def summarize_session(session_id: str, request: Request) -> dict[str, Any]
+ async def search_messages(body: SearchRequest, request: Request) -> dict[str, Any]:
+     tenant = _tenant(request)
+     svc = _svc(request)
+-    results = svc.search_messages(
++    results = await svc.asearch_messages(
+         tenant.tenant_id, body.query, session_id=body.session_id, limit=body.limit
+     )
+     return {"results": [_message_to_dict(m) for m in results], "total": len(results)}
+diff --git a/agent-verse-backend/app/chat/service.py b/agent-verse-backend/app/chat/service.py
+index b9d73118b..dee8077c8 100644
+--- a/agent-verse-backend/app/chat/service.py
++++ b/agent-verse-backend/app/chat/service.py
+@@ -2180,11 +2180,36 @@ class ChatService:
+         ]
+         return results[:limit]
+ 
++    async def asearch_messages(
++        self,
++        tenant_id: str,
++        query: str,
++        session_id: str | None = None,
++        limit: int = 20,
++    ) -> list[_Message]:
++        """Durable search (ORG-32): Postgres full-text search when a repository is
++        attached -- the in-memory dict is empty in DB mode."""
++        if self._repository is None:
++            return self.search_messages(tenant_id, query, session_id=session_id, limit=limit)
++        rows = await self._repository.search_messages(
++            tenant_id, query, session_id=session_id, limit=limit
++        )
++        return [self._message_from_row(r) for r in rows]
++
+     # ── Conversation summary ──────────────────────────────────────────────────
+ 
++    async def asummarize_session(self, session_id: str, tenant_id: str) -> str:
++        """Durable summary (ORG-32): reads the persisted (bounded) history."""
++        if self._repository is None:
++            return self.summarize_session(session_id, tenant_id)
++        return self._summary_of(await self.alist_messages(session_id, tenant_id, limit=500))
++
+     def summarize_session(self, session_id: str, tenant_id: str) -> str:
+         """Return a brief summary of the session conversation."""
+-        msgs = self.list_messages(session_id, tenant_id)
++        return self._summary_of(self.list_messages(session_id, tenant_id))
++
++    @staticmethod
++    def _summary_of(msgs: list[_Message]) -> str:
+         if not msgs:
+             return "Empty session."
+         topics: list[str] = []
+diff --git a/agent-verse-backend/tests/chat/test_durable_search_summary.py b/agent-verse-backend/tests/chat/test_durable_search_summary.py
+new file mode 100644
+index 000000000..0d8e19f8c
+--- /dev/null
++++ b/agent-verse-backend/tests/chat/test_durable_search_summary.py
+@@ -0,0 +1,63 @@
++"""ORG-32: chat search and session summary read the durable store in DB mode.
++
++Both read ChatService's in-memory dict, which is empty when the Postgres
++repository is attached, so they always returned nothing.
++"""
++
++from __future__ import annotations
++
++from datetime import UTC, datetime
++from typing import Any
++
++from app.chat.service import ChatService
++
++
++def _row(mid: str, sid: str, role: str, content: str) -> dict[str, Any]:
++    return {
++        "id": mid,
++        "session_id": sid,
++        "tenant_id": "t1",
++        "role": role,
++        "content": content,
++        "created_at": datetime.now(UTC),
++    }
++
++
++class _Repo:
++    def __init__(self) -> None:
++        self.rows = [
++            _row("m1", "s1", "user", "How do I rotate the vault encryption keys?"),
++            _row("m2", "s1", "assistant", "Use the key rotation endpoint."),
++        ]
++        self.search_calls: list[tuple[str, str, str | None, int]] = []
++
++    async def search_messages(
++        self, tenant_id: str, query: str, *, session_id: str | None = None, limit: int = 20
++    ) -> list[dict[str, Any]]:
++        self.search_calls.append((tenant_id, query, session_id, limit))
++        return [r for r in self.rows if r["tenant_id"] == tenant_id and "rotat" in r["content"]]
++
++    async def list_messages(self, session_id: str, tenant_id: str, **_: Any) -> list[dict]:
++        return [r for r in self.rows if r["session_id"] == session_id]
++
++
++async def test_db_mode_search_reads_the_repository() -> None:
++    repo = _Repo()
++    svc = ChatService(repository=repo)
++    found = await svc.asearch_messages("t1", "rotate keys", session_id="s1", limit=5)
++    assert [m.id for m in found] == ["m1", "m2"]
++    assert repo.search_calls == [("t1", "rotate keys", "s1", 5)]
++    assert await svc.asearch_messages("t2", "rotate") == []
++
++
++async def test_db_mode_summary_reads_persisted_history() -> None:
++    svc = ChatService(repository=_Repo())
++    summary = await svc.asummarize_session("s1", "t1")
++    assert "2 messages" in summary
++    assert "rotate the vault" in summary
++
++
++async def test_in_memory_path_still_works() -> None:
++    svc = ChatService()
++    assert await svc.asummarize_session("missing", "t1") == "Empty session."
++    assert await svc.asearch_messages("t1", "x") == []
+diff --git a/agent-verse-backend/tests/chat/test_repository_integration.py b/agent-verse-backend/tests/chat/test_repository_integration.py
+index fc4bf076f..fa273b97f 100644
+--- a/agent-verse-backend/tests/chat/test_repository_integration.py
++++ b/agent-verse-backend/tests/chat/test_repository_integration.py
+@@ -198,3 +198,31 @@ async def test_update_message_content_returns_false_when_missing(
+ async def test_get_message_returns_none_when_missing(repo: PostgresChatRepository) -> None:
+     tenant = f"t-{uuid.uuid4().hex[:8]}"
+     assert await repo.get_message(uuid.uuid4().hex, tenant) is None
++
++
++async def test_full_text_search_is_tenant_and_session_scoped(
++    repo: PostgresChatRepository,
++) -> None:
++    """ORG-32: search reads Postgres (GIN FTS), never the in-memory dict."""
++    t1, t2 = f"t-{uuid.uuid4().hex[:8]}", f"t-{uuid.uuid4().hex[:8]}"
++    s1, s2, s3 = uuid.uuid4().hex, uuid.uuid4().hex, uuid.uuid4().hex
++    await repo.create_session(session_id=s1, tenant_id=t1)
++    await repo.create_session(session_id=s2, tenant_id=t1)
++    await repo.create_session(session_id=s3, tenant_id=t2)
++    for sid, tenant, content in (
++        (s1, t1, "Please rotate the vault encryption keys tonight"),
++        (s2, t1, "Key rotation finished for the billing vault"),
++        (s1, t1, "Unrelated lunch plans"),
++        (s3, t2, "rotate the vault for the other tenant"),
++    ):
++        await repo.save_message(
++            message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user",
++            content=content,
++        )
++    hits = await repo.search_messages(t1, "vault")
++    assert {h["session_id"] for h in hits} == {s1, s2}
++    assert all(h["tenant_id"] == t1 for h in hits)
++    scoped = await repo.search_messages(t1, "vault", session_id=s1)
++    assert [h["session_id"] for h in scoped] == [s1]
++    assert await repo.search_messages(t1, "nonexistentword") == []
++    assert len(await repo.search_messages(t1, "vault", limit=1)) == 1

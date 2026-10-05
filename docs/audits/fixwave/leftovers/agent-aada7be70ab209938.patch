@@ -1,0 +1,1525 @@
+diff --git a/agent-verse-backend/app/db/migrations/versions/b3d9f1a7c2e5_mcp_servers_health_probe_index.py b/agent-verse-backend/app/db/migrations/versions/b3d9f1a7c2e5_mcp_servers_health_probe_index.py
+new file mode 100644
+index 000000000..d06ca02a4
+--- /dev/null
++++ b/agent-verse-backend/app/db/migrations/versions/b3d9f1a7c2e5_mcp_servers_health_probe_index.py
+@@ -0,0 +1,42 @@
++"""mcp_servers: partial index for the connector health beat (RV-03)
++
++The health beat now pages the durable registry across tenants
++(``WHERE <probe filter> AND (tenant_id, id) > (:t, :id) ORDER BY tenant_id, id
++LIMIT n``). Every tenant also holds built-in (``builtin://``) rows that are
++never probed; on the primary key alone a page would walk all of them. This
++partial index holds only probe-able rows, so a page costs O(n). Its predicate
++must stay identical to ``app.mcp.connector_health.PROBE_FILTER``.
++
++Built CONCURRENTLY (outside the migration transaction) so the table is not
++write-locked during the build.
++
++Revision ID: b3d9f1a7c2e5
++Revises: f1e790b4050a
++Create Date: 2026-10-05
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++
++from alembic import op
++
++revision: str = "b3d9f1a7c2e5"
++down_revision: str | None = "f1e790b4050a"
++branch_labels: str | Sequence[str] | None = None
++depends_on: str | Sequence[str] | None = None
++
++
++def upgrade() -> None:
++    with op.get_context().autocommit_block():
++        op.execute(
++            "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_mcp_servers_health_probe "
++            "ON mcp_servers (tenant_id, id) "
++            "WHERE enabled AND status <> 'removed' AND url <> '' "
++            "AND url NOT LIKE 'builtin://%'"
++        )
++
++
++def downgrade() -> None:
++    with op.get_context().autocommit_block():
++        op.execute("DROP INDEX CONCURRENTLY IF EXISTS ix_mcp_servers_health_probe")
+diff --git a/agent-verse-backend/app/mcp/connector_health.py b/agent-verse-backend/app/mcp/connector_health.py
+new file mode 100644
+index 000000000..6c46ccd8e
+--- /dev/null
++++ b/agent-verse-backend/app/mcp/connector_health.py
+@@ -0,0 +1,119 @@
++"""Which connectors the health beat probes, read from the durable registry (RV-03).
++
++Since MCPREG-01 the registry's source of truth is Postgres ``mcp_servers``;
++nothing writes the legacy ``mcp:servers:{tenant}:{id}`` Redis keys any more, so
++a health beat that scanned them never saw a connector created after the
++cutover (and kept probing stale configs). The beat now pages ``mcp_servers``
++across tenants through the maintenance (BYPASSRLS) session:
++
++* keyset on ``(tenant_id, id)`` with the probe filter matching the partial
++  index ``ix_mcp_servers_health_probe`` exactly, so a page costs O(limit) even
++  with millions of built-in (``builtin://``) rows that are never probed;
++* bounded per tick, with the position kept in Redis (``CURSOR_KEY``) so the
++  next tick resumes where this one stopped and connectors beyond the first page
++  are checked; a short page means the end of the keyspace and the cursor wraps.
++
++The cursor is soft state: if it is lost the next tick starts from the
++beginning, which only delays (never skips) a connector's check.
++"""
++
++from __future__ import annotations
++
++import json
++import logging
++from collections.abc import Callable
++from dataclasses import dataclass
++from typing import Any
++
++_log = logging.getLogger(__name__)
++
++CURSOR_KEY = "mcp:health:cursor:v1"
++# Kept identical to the partial index predicate (migration b3d9f1a7c2e5).
++PROBE_FILTER = "enabled AND status <> 'removed' AND url <> '' AND url NOT LIKE 'builtin://%'"
++_CURSOR_TTL_S = 7 * 86400
++
++
++@dataclass(frozen=True)
++class HealthTarget:
++    tenant_id: str
++    server_id: str
++    config: dict[str, Any]
++
++
++def _as_dict(value: Any) -> dict[str, Any]:
++    if isinstance(value, dict):
++        return value
++    try:
++        parsed = json.loads(value)
++    except (TypeError, ValueError):
++        return {}
++    return parsed if isinstance(parsed, dict) else {}
++
++
++async def list_health_targets(
++    system_db: Callable[[], Any], *, after: tuple[str, str] | None, limit: int
++) -> list[HealthTarget]:
++    """One keyset page of probe-able connectors across all tenants (raises on DB errors)."""
++    from sqlalchemy import text
++
++    from app.db.rls import system_session
++
++    params: dict[str, Any] = {"lim": int(limit)}
++    position = ""
++    if after is not None:
++        position = "AND (tenant_id, id) > (:after_t, :after_id) "
++        params.update(after_t=after[0], after_id=after[1])
++    sql = (
++        f"SELECT tenant_id, id, config FROM mcp_servers WHERE {PROBE_FILTER} "
++        f"{position}ORDER BY tenant_id, id LIMIT :lim"
++    )
++    async with system_db() as session, session.begin(), system_session(session):
++        rows = (await session.execute(text(sql), params)).fetchall()
++    return [HealthTarget(str(r[0]), str(r[1]), _as_dict(r[2])) for r in rows]
++
++
++async def load_cursor(redis: Any) -> tuple[str, str] | None:
++    """The position the previous tick stopped at (None: start of the keyspace)."""
++    if redis is None:
++        return None
++    try:
++        raw = await redis.get(CURSOR_KEY)
++        if not raw:
++            return None
++        value = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
++        if isinstance(value, list) and len(value) == 2 and all(isinstance(v, str) for v in value):
++            return value[0], value[1]
++    except Exception as exc:
++        _log.warning("mcp_health_cursor_read_failed: %s", type(exc).__name__)
++    return None
++
++
++async def save_cursor(redis: Any, cursor: tuple[str, str] | None) -> None:
++    """Record where the next tick resumes (None: wrap to the start)."""
++    if redis is None:
++        return
++    try:
++        if cursor is None:
++            await redis.delete(CURSOR_KEY)
++        else:
++            await redis.set(CURSOR_KEY, json.dumps(list(cursor)), ex=_CURSOR_TTL_S)
++    except Exception as exc:
++        _log.warning("mcp_health_cursor_write_failed: %s", type(exc).__name__)
++
++
++def next_cursor(page: list[HealthTarget], limit: int) -> tuple[str, str] | None:
++    """A full page continues after its last row; a short page wraps."""
++    if len(page) < limit or not page:
++        return None
++    return page[-1].tenant_id, page[-1].server_id
++
++
++__all__ = [
++    "CURSOR_KEY",
++    "PROBE_FILTER",
++    "HealthTarget",
++    "list_health_targets",
++    "load_cursor",
++    "next_cursor",
++    "save_cursor",
++]
+diff --git a/agent-verse-backend/app/scaling/tasks.py b/agent-verse-backend/app/scaling/tasks.py
+index e0dbbeed0..a6c92c5fc 100644
+--- a/agent-verse-backend/app/scaling/tasks.py
++++ b/agent-verse-backend/app/scaling/tasks.py
+@@ -5342,7 +5342,12 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
+         raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
+ 
+ 
+-_MCP_HEALTH_SCAN_LIMIT = 5000
++# Connector health beat (RV-03): connectors probed per 30 s tick (the rest are
++# reached on later ticks via the resumable cursor), probes in flight at once,
++# and the overlap lock's TTL (> worst case: per_tick / concurrency * 5 s timeout).
++_MCP_HEALTH_PER_TICK = 200
++_MCP_HEALTH_CONCURRENCY = 20
++_MCP_HEALTH_LOCK_TTL_S = 120
+ 
+ 
+ def _classify_health(status_code: int) -> str:
+@@ -5398,199 +5403,145 @@ async def _persist_health_snapshots(snapshots: list[dict[str, Any]]) -> int:
+     return written
+ 
+ 
++def _health_snapshot(
++    target: Any, status: str, latency_ms: int | None, error: str | None
++) -> dict[str, Any]:
++    return {
++        "tenant_id": target.tenant_id,
++        "server_id": target.server_id,
++        "status": status,
++        "latency_ms": latency_ms,
++        "error": error,
++    }
++
++
++async def _probe_connector(target: Any) -> tuple[dict[str, Any], dict[str, Any]] | None:
++    """GET ``{base_url}/health`` of one registry connector (None: nothing to probe).
++
++    Returns the summary result and the snapshot row. The URL is the tenant's, so
++    every hop is re-validated and the pinned client dials only the address
++    checked at connect time (SSRF-01: no DNS-rebinding window).
++    """
++    import time as _t
++
++    from app.mcp.registry import MCPServerConfig
++    from app.net.ssrf_guard import public_async_client, request_public
++
++    cfg_data = dict(target.config)
++    cfg_data.setdefault("server_id", target.server_id)
++    try:
++        cfg = MCPServerConfig.model_validate(cfg_data)
++    except Exception as parse_exc:
++        err = str(parse_exc)[:200]
++        result = {"server_id": target.server_id, "status": "parse_error", "error": err}
++        return result, _health_snapshot(target, "parse_error", None, err)
++    base = (cfg.base_url or cfg.url or "").rstrip("/")
++    if not base or base.startswith("builtin://"):
++        return None
++    t0 = _t.monotonic()
++    latency: int | None
++    try:
++        async with public_async_client(timeout=5.0) as client:
++            resp = await request_public(client, "GET", f"{base}/health", context="mcp health check")
++        health = _classify_health(resp.status_code)
++        latency = round((_t.monotonic() - t0) * 1000)
++        error = None if health == "healthy" else f"HTTP {resp.status_code}"
++        result = {
++            "server": cfg.name,
++            "status": health,
++            "code": resp.status_code,
++            "latency_ms": latency,
++        }
++    except Exception as http_exc:
++        health, latency, error = "unreachable", None, str(http_exc)[:200]
++        result = {"server": cfg.name, "status": "unreachable", "error": error}
++    return result, _health_snapshot(target, health, latency, error)
++
++
+ @celery_app.task(name="app.scaling.tasks.check_mcp_health")  # type: ignore[untyped-decorator]
++@beat_task_guard(lock_ttl_seconds=_MCP_HEALTH_LOCK_TTL_S)
+ def check_mcp_health() -> dict[str, Any]:
+-    """Periodic MCP server health check — pings /health on all active servers."""
++    """Periodic connector health check over the durable registry (RV-03).
++
++    Pages ``mcp_servers`` across tenants through the maintenance session
++    (keyset on (tenant_id, id), at most ``_MCP_HEALTH_PER_TICK`` per tick, the
++    position resumed from a Redis cursor so connectors beyond the first page are
++    checked on later ticks), probes ``{base_url}/health`` with bounded
++    concurrency and writes one ``connector_health_snapshots`` row per check. It
++    used to scan the legacy ``mcp:servers:*`` Redis keys, which nothing writes
++    since MCPREG-01: new connectors were never checked and stale legacy configs
++    kept being probed. The beat guard keeps 30 s ticks from overlapping.
++    """
+ 
+     async def _run() -> dict[str, Any]:
+-        results: list[dict[str, Any]] = []
+-        snapshots: list[dict[str, Any]] = []
+-        checked = 0
++        from app.db.session import get_system_session_factory
++        from app.mcp.connector_health import (
++            list_health_targets,
++            load_cursor,
++            next_cursor,
++            save_cursor,
++        )
+ 
+-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+-        if not redis_url:
+-            return {"servers_checked": 0, "results": [], "status": "skipped", "reason": "no_redis"}
+-
+-        import redis.asyncio as aioredis
+-
+-        r = aioredis.from_url(redis_url, decode_responses=True)
+-
+-        try:
+-            # Scan for all MCP server keys written by MCPRegistry:
+-            # key pattern: mcp:servers:{tenant_id}:{server_id}
+-            # The scan used to stop after 50 keys across ALL tenants, so on any
+-            # real deployment most connectors were never checked.
+-            async for key in r.scan_iter(match="mcp:servers:*:*", count=500):
+-                if checked >= _MCP_HEALTH_SCAN_LIMIT:
+-                    logger.warning("mcp_health_scan_limit_reached limit=%d", checked)
+-                    break
+-                checked += 1
+-                _key_parts = str(key).split(":")
+-                _tenant_id = _key_parts[2] if len(_key_parts) >= 4 else ""
+-                _server_id = ":".join(_key_parts[3:]) if len(_key_parts) >= 4 else ""
+-                try:
+-                    raw = await r.get(key)
+-                    if not raw:
+-                        continue
+-                    try:
+-                        from app.mcp.registry import MCPServerConfig
+-
+-                        cfg = MCPServerConfig.model_validate_json(raw)
+-                    except Exception as parse_exc:
+-                        results.append(
+-                            {"key": key, "status": "parse_error", "error": str(parse_exc)}
+-                        )
+-                        continue
+-                    # Simple health check: GET {base_url}/health
+-                    from app.net.ssrf_guard import public_async_client, request_public
+-
+-                    _base = (cfg.base_url or cfg.url or "").rstrip("/")
+-                    if not _base or _base.startswith("builtin://"):
+-                        continue
+-                    # Was client.get(..., follow_redirects=True) on the tenant's
+-                    # URL with no SSRF guard: a connector pointed at (or 302-ing
+-                    # to) an internal host made the worker probe it. Every hop is
+-                    # now re-validated, and the pinned client dials only the
+-                    # address checked at connect time (no DNS-rebinding window).
+-                    import time as _t
+-
+-                    _t0 = _t.monotonic()
+-                    async with public_async_client(timeout=5.0) as client:
+-                        try:
+-                            resp = await request_public(
+-                                client, "GET", f"{_base}/health", context="mcp health check"
+-                            )
+-                            _health = _classify_health(resp.status_code)
+-                            _latency = round((_t.monotonic() - _t0) * 1000)
+-                            results.append(
+-                                {
+-                                    "server": cfg.name,
+-                                    "status": _health,
+-                                    "code": resp.status_code,
+-                                    "latency_ms": _latency,
+-                                }
+-                            )
+-                            _err = None if _health == "healthy" else f"HTTP {resp.status_code}"
+-                        except Exception as http_exc:
+-                            _health, _latency, _err = "unreachable", None, str(http_exc)[:200]
+-                            results.append(
+-                                {
+-                                    "server": cfg.name,
+-                                    "status": "unreachable",
+-                                    "error": _err,
+-                                }
+-                            )
+-                    if _tenant_id and _server_id:
+-                        snapshots.append(
+-                            {
+-                                "tenant_id": _tenant_id,
+-                                "server_id": _server_id,
+-                                "status": _health,
+-                                "latency_ms": _latency,
+-                                "error": _err,
+-                            }
+-                        )
+-                except Exception as exc:
+-                    results.append({"key": key, "status": "error", "error": str(exc)[:200]})
+-        finally:
+-            await r.aclose()
+-
+-        persisted = await _persist_health_snapshots(snapshots)
+-        return {
+-            "servers_checked": checked,
+-            "results": results[:20],
+-            "snapshots_persisted": persisted,
+-        }
+-
+-    async def _fallback() -> dict[str, Any]:
+-        """Fallback: scan the old flat-dict key structure for backward compatibility."""
+-        results: list[dict[str, Any]] = []
+-        try:
+-            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+-            if not redis_url:
+-                return {"servers_checked": 0, "results": [], "status": "skipped"}
+-
+-            import time as _time
+-
+-            import redis.asyncio as aioredis
+-
+-            r = aioredis.from_url(redis_url, decode_responses=True)
++        redis_client: Any = None
++        redis_url = os.getenv("REDIS_URL", "")
++        if redis_url:
+             try:
+-                keys = []
+-                async for k in r.scan_iter(match="mcp:servers:*", count=100):
+-                    keys.append(k)
+-                    if len(keys) >= 50:
+-                        break
++                import redis.asyncio as aioredis
+ 
+-                import json as _json
++                redis_client = aioredis.from_url(redis_url, decode_responses=True)
++            except Exception as exc:  # the cursor is soft state: restart from the top
++                logger.warning("mcp_health_cursor_redis_unavailable: %s", exc)
++        try:
++            cursor = await load_cursor(redis_client)
++            limit = max(1, int(_MCP_HEALTH_PER_TICK))
++            try:
++                page = await list_health_targets(
++                    get_system_session_factory(), after=cursor, limit=limit
++                )
++            except Exception as exc:
++                # Fail loudly: an unreadable registry is not "0 connectors, all ok".
++                logger.error("mcp_health_registry_unavailable: %s", exc)
++                return {
++                    "status": "error",
++                    "reason": "registry_unavailable",
++                    "servers_checked": 0,
++                    "results": [],
++                }
+ 
+-                for key in keys:
+-                    raw = await r.get(key)
+-                    if not raw:
+-                        continue
+-                    try:
+-                        data = _json.loads(raw)
+-                    except Exception:
+-                        continue
+-                    if not isinstance(data, dict):
+-                        continue
+-                    for server_id, sdata in data.items():
+-                        url = sdata.get("url", "") if isinstance(sdata, dict) else ""
+-                        if not url:
+-                            continue
+-                        t0 = _time.monotonic()
+-                        try:
+-                            from app.net.ssrf_guard import (
+-                                public_async_client,
+-                                request_public,
+-                            )
++            sem = asyncio.Semaphore(max(1, int(_MCP_HEALTH_CONCURRENCY)))
+ 
+-                            # SSRF: tenant URL was probed unchecked; the pinned
+-                            # client also closes the DNS-rebinding window.
+-                            async with public_async_client(timeout=3.0) as http:
+-                                resp = await request_public(
+-                                    http,
+-                                    "GET",
+-                                    f"{url.rstrip('/')}/health",
+-                                    context="mcp health check",
+-                                )
+-                            latency_ms = round((_time.monotonic() - t0) * 1000)
+-                            status = "healthy" if resp.status_code < 400 else "degraded"
+-                            results.append(
+-                                {
+-                                    "server_id": server_id,
+-                                    "url": url,
+-                                    "status": status,
+-                                    "latency_ms": latency_ms,
+-                                }
+-                            )
+-                        except Exception as exc:
+-                            results.append(
+-                                {
+-                                    "server_id": server_id,
+-                                    "url": url,
+-                                    "status": "unreachable",
+-                                    "error": str(exc)[:200],
+-                                }
+-                            )
+-            finally:
+-                await r.aclose()
+-        except Exception as exc:
+-            results.append({"status": "error", "reason": str(exc)})
+-        return {"servers_checked": len(results), "results": results[:20]}
++            async def _bounded(target: Any) -> Any:
++                async with sem:
++                    return await _probe_connector(target)
+ 
+-    try:
+-        result = _run_async(_run())
+-    except Exception:
+-        # MCPServerConfig import may fail (e.g. mcp module not available)
+-        result = _run_async(_fallback())
++            outcomes = await asyncio.gather(*(_bounded(t) for t in page), return_exceptions=True)
++            results: list[dict[str, Any]] = []
++            snapshots: list[dict[str, Any]] = []
++            for target, outcome in zip(page, outcomes, strict=True):
++                if isinstance(outcome, BaseException):
++                    err = str(outcome)[:200]
++                    results.append({"server_id": target.server_id, "status": "error", "error": err})
++                    snapshots.append(_health_snapshot(target, "error", None, err))
++                elif outcome is not None:
++                    results.append(outcome[0])
++                    snapshots.append(outcome[1])
++            persisted = await _persist_health_snapshots(snapshots)
++            await save_cursor(redis_client, next_cursor(page, limit))
++            return {
++                "status": "ok",
++                "servers_checked": len(snapshots),
++                "results": results[:20],
++                "snapshots_persisted": persisted,
++                "page_size": len(page),
++                "wrapped": len(page) < limit,
++            }
++        finally:
++            if redis_client is not None:
++                with contextlib.suppress(Exception):
++                    await redis_client.aclose()
+ 
+-    return {
+-        "status": "ok",
+-        "checked_at": datetime.datetime.now(datetime.UTC).isoformat(),
+-        "servers_checked": result.get("servers_checked", 0),
+-        "results": result.get("results", []),
+-    }
++    result: dict[str, Any] = _run_async(_run())
++    return {**result, "checked_at": datetime.datetime.now(datetime.UTC).isoformat()}
+ 
+ 
+ # Backward-compatible alias (tests reference this name)
+diff --git a/agent-verse-backend/tests/e2e/test_comprehensive_coverage.py b/agent-verse-backend/tests/e2e/test_comprehensive_coverage.py
+index 93348531c..a9bd35c29 100644
+--- a/agent-verse-backend/tests/e2e/test_comprehensive_coverage.py
++++ b/agent-verse-backend/tests/e2e/test_comprehensive_coverage.py
+@@ -188,10 +188,17 @@ def test_run_goal_task_executes_with_fake_provider(
+ 
+ 
+ @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+-def test_health_check_mcp_task_returns_status():
++def test_health_check_mcp_task_returns_status(monkeypatch):
+     """health_check_mcp returns a dict with status and checked_at keys."""
+     from app.scaling.tasks import health_check_mcp
+ 
++    async def _no_connectors(*_a, **_k):
++        return []
++
++    # The beat reads the durable registry (RV-03); an empty registry is "ok".
++    monkeypatch.setattr("app.mcp.connector_health.list_health_targets", _no_connectors)
++    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: object())
++    monkeypatch.delenv("REDIS_URL", raising=False)
+     result = health_check_mcp()
+     assert isinstance(result, dict)
+     assert "status" in result
+diff --git a/agent-verse-backend/tests/scaling/test_celery_tasks_coverage.py b/agent-verse-backend/tests/scaling/test_celery_tasks_coverage.py
+index 1903c7089..40aecdca5 100644
+--- a/agent-verse-backend/tests/scaling/test_celery_tasks_coverage.py
++++ b/agent-verse-backend/tests/scaling/test_celery_tasks_coverage.py
+@@ -618,142 +618,6 @@ async def test_decrement_after_completion_swallows_exception() -> None:
+         await _decrement_after_completion("t1", "redis://localhost/0")
+ 
+ 
+-# ===========================================================================
+-# check_mcp_health task — covers lines 1032-1161
+-# ===========================================================================
+-
+-def test_check_mcp_health_no_redis_scan_results(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """check_mcp_health with empty Redis scan returns ok with 0 servers."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    from app.scaling.tasks import check_mcp_health
+-
+-    async def _empty_scan(*a: object, **kw: object):
+-        return
+-        yield  # Make it an async generator
+-
+-    mock_r = MagicMock()
+-    mock_r.scan_iter = _empty_scan
+-    mock_r.aclose = AsyncMock()
+-
+-    with patch("redis.asyncio.from_url", return_value=mock_r):
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-    assert result["servers_checked"] == 0
+-
+-
+-def test_check_mcp_health_with_parse_error_key(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """check_mcp_health with a key that fails MCPServerConfig parsing uses parse_error path."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    async def _scan_one_key(match: str, count: int) -> AsyncIterator[str]:
+-        yield "mcp:servers:t1:srv1"
+-
+-    mock_r = MagicMock()
+-    mock_r.scan_iter = _scan_one_key
+-    mock_r.get = AsyncMock(return_value='{"invalid": true}')  # Can't parse as MCPServerConfig
+-    mock_r.aclose = AsyncMock()
+-
+-    with patch("redis.asyncio.from_url", return_value=mock_r):
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-
+-
+-def test_check_mcp_health_fallback_on_run_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """When _run() raises, _fallback() is executed."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    from app.scaling.tasks import check_mcp_health
+-
+-    call_log: list[str] = []
+-
+-    async def _fail_scan(match: str, count: int):
+-        raise RuntimeError("scan failed")
+-        yield  # make it generator
+-
+-    async def _empty_scan(match: str, count: int):
+-        return
+-        yield
+-
+-    mock_r_fail = MagicMock()
+-    mock_r_fail.scan_iter = _fail_scan
+-    mock_r_fail.aclose = AsyncMock()
+-
+-    mock_r_fallback = MagicMock()
+-    mock_r_fallback.scan_iter = _empty_scan
+-    mock_r_fallback.aclose = AsyncMock()
+-
+-    from_url_calls: list = []
+-
+-    def _from_url(url: str, **kw: object) -> MagicMock:
+-        from_url_calls.append(url)
+-        if len(from_url_calls) == 1:
+-            return mock_r_fail
+-        return mock_r_fallback
+-
+-    with patch("redis.asyncio.from_url", side_effect=_from_url):
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-    # _fallback was called (second redis connection)
+-    assert len(from_url_calls) >= 2
+-
+-
+-def test_check_mcp_health_fallback_with_valid_server(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """_fallback parses flat-dict server structure and tries health check."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    import json
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    # _run() will fail because MCPServerConfig is hard to mock in async context
+-    # We'll force _fallback by making the main run raise
+-    server_data = {"srv1": {"url": "http://server1.example.com"}}
+-
+-    async def _scan_keys_run(match: str, count: int):
+-        # _run uses mcp:servers:*:* pattern — just raise immediately
+-        raise RuntimeError("force fallback")
+-        yield
+-
+-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
+-        yield "mcp:servers:t1"
+-
+-    call_count = [0]
+-
+-    def _from_url(url: str, **kw: object) -> MagicMock:
+-        call_count[0] += 1
+-        mock_r = MagicMock()
+-        if call_count[0] == 1:
+-            mock_r.scan_iter = _scan_keys_run
+-        else:
+-            mock_r.scan_iter = _scan_keys_fallback
+-            mock_r.get = AsyncMock(return_value=json.dumps(server_data))
+-        mock_r.aclose = AsyncMock()
+-        return mock_r
+-
+-
+-    with (
+-        patch("redis.asyncio.from_url", side_effect=_from_url),
+-        patch("httpx.AsyncClient") as mock_httpx,
+-    ):
+-        # Mock httpx to avoid real network calls
+-        mock_ctx = MagicMock()
+-        mock_response = MagicMock()
+-        mock_response.status_code = 200
+-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+-        mock_ctx.get = AsyncMock(return_value=mock_response)
+-        mock_httpx.return_value = mock_ctx
+-
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-
+-
+ # ===========================================================================
+ # fire_due_schedules — basic run with empty schedules
+ # ===========================================================================
+@@ -915,86 +779,6 @@ async def test_update_db_schedule_last_fired_at_raises_on_db_error() -> None:
+             await _update_db_schedule_last_fired_at("t1", "s1", datetime.now(UTC))
+ 
+ 
+-# ===========================================================================
+-# Additional check_mcp_health coverage
+-# ===========================================================================
+-
+-def test_check_mcp_health_httpx_health_check_path(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """Covers the MCPServerConfig parsing + httpx health check path."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
+-        yield "mcp:servers:t1:srv1"
+-
+-    mock_r = MagicMock()
+-    mock_r.scan_iter = _scan_keys
+-    mock_r.aclose = AsyncMock()
+-
+-    raw_config = '{"id": "srv1", "name": "TestServer", "base_url": "http://test.example", "tenant_id": "t1"}'
+-    mock_r.get = AsyncMock(return_value=raw_config)
+-
+-    mock_cfg = MagicMock()
+-    mock_cfg.name = "TestServer"
+-    mock_cfg.base_url = "http://test.example"
+-
+-    mock_response = MagicMock()
+-    mock_response.status_code = 200
+-
+-    with (
+-        patch("redis.asyncio.from_url", return_value=mock_r),
+-        patch("app.mcp.registry.MCPServerConfig.model_validate_json", return_value=mock_cfg),
+-        patch("httpx.AsyncClient") as mock_httpx,
+-    ):
+-        mock_ctx = AsyncMock()
+-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+-        mock_ctx.get = AsyncMock(return_value=mock_response)
+-        mock_httpx.return_value = mock_ctx
+-
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-    assert result["servers_checked"] >= 1
+-
+-
+-def test_check_mcp_health_httpx_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """Covers the httpx error handling path in check_mcp_health."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
+-        yield "mcp:servers:t1:srv2"
+-
+-    mock_r = MagicMock()
+-    mock_r.scan_iter = _scan_keys
+-    mock_r.aclose = AsyncMock()
+-    mock_r.get = AsyncMock(return_value='{"id": "srv2", "name": "BrokenServer", "base_url": "http://broken", "tenant_id": "t1"}')
+-
+-    mock_cfg = MagicMock()
+-    mock_cfg.name = "BrokenServer"
+-    mock_cfg.base_url = "http://broken"
+-
+-    with (
+-        patch("redis.asyncio.from_url", return_value=mock_r),
+-        patch("app.mcp.registry.MCPServerConfig.model_validate_json", return_value=mock_cfg),
+-        patch("httpx.AsyncClient") as mock_httpx,
+-    ):
+-        mock_ctx = AsyncMock()
+-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+-        mock_ctx.get = AsyncMock(side_effect=OSError("connection refused"))
+-        mock_httpx.return_value = mock_ctx
+-
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-
+-
+ # ===========================================================================
+ # record_queue_depths retry path
+ # ===========================================================================
+@@ -1627,174 +1411,6 @@ async def test_run_with_signals_raises_goal_cancelled_error_on_cancel() -> None:
+             )
+ 
+ 
+-# ===========================================================================
+-# check_mcp_health — per-key error path + fallback paths
+-# ===========================================================================
+-
+-def test_check_mcp_health_per_key_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """When r.get() raises per-key, the error is logged and skipped."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    async def _scan_keys(match: str, count: int) -> AsyncIterator[str]:
+-        yield "mcp:servers:t1:srv1"
+-
+-    mock_r = MagicMock()
+-    mock_r.scan_iter = _scan_keys
+-    mock_r.get = AsyncMock(side_effect=RuntimeError("redis error"))  # Per-key failure
+-    mock_r.aclose = AsyncMock()
+-
+-    with patch("redis.asyncio.from_url", return_value=mock_r):
+-        result = check_mcp_health.run()
+-
+-    # Error should be swallowed, result still ok
+-    assert result["status"] == "ok"
+-
+-
+-def test_check_mcp_health_fallback_no_redis_url(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """_fallback returns skipped when no REDIS_URL."""
+-    monkeypatch.delenv("REDIS_URL", raising=False)
+-    monkeypatch.setenv("REDIS_URL", "")  # empty
+-    from app.scaling.tasks import check_mcp_health
+-
+-    # Force fallback by making _run() fail due to no redis URL
+-    # When REDIS_URL is empty, _fallback checks os.getenv("REDIS_URL") too
+-    # _run() will skip because redis_url is empty
+-    result = check_mcp_health.run()
+-    # Should succeed with 0 servers
+-    assert result["status"] == "ok"
+-    assert result["servers_checked"] == 0
+-
+-
+-def test_check_mcp_health_fallback_json_parse_error(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """_fallback skips keys with invalid JSON."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    # Force fallback by raising in _run()
+-    async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
+-        raise RuntimeError("force fallback")
+-        yield
+-
+-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
+-        yield "mcp:servers:t1"
+-
+-    call_count = [0]
+-
+-    def _from_url(url: str, **kw: object) -> MagicMock:
+-        call_count[0] += 1
+-        mock_r = MagicMock()
+-        if call_count[0] == 1:
+-            mock_r.scan_iter = _scan_keys_run
+-        else:
+-            mock_r.scan_iter = _scan_keys_fallback
+-            mock_r.get = AsyncMock(return_value="not-valid-json!!!")  # Invalid JSON
+-        mock_r.aclose = AsyncMock()
+-        return mock_r
+-
+-    with patch("redis.asyncio.from_url", side_effect=_from_url):
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-
+-
+-def test_check_mcp_health_fallback_various_data_types(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """_fallback skips keys with None, non-dict data, and empty URL."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    import json
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
+-        raise RuntimeError("force fallback")
+-        yield
+-
+-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
+-        for k in ["mcp:servers:t1:a", "mcp:servers:t1:b", "mcp:servers:t1:c"]:
+-            yield k
+-
+-    get_responses = [
+-        None,                               # None raw → line 1115 continue
+-        json.dumps([1, 2, 3]),              # non-dict data → line 1121 continue
+-        json.dumps({"srv": {"no_url": 1}}), # dict with no URL → line 1125 continue
+-    ]
+-    get_call_count = [0]
+-
+-    async def _multi_get(key: str) -> str | None:
+-        idx = get_call_count[0] % len(get_responses)
+-        get_call_count[0] += 1
+-        return get_responses[idx]
+-
+-    call_count = [0]
+-
+-    def _from_url(url: str, **kw: object) -> MagicMock:
+-        call_count[0] += 1
+-        mock_r = MagicMock()
+-        if call_count[0] == 1:
+-            mock_r.scan_iter = _scan_keys_run
+-        else:
+-            mock_r.scan_iter = _scan_keys_fallback
+-            mock_r.get = _multi_get
+-        mock_r.aclose = AsyncMock()
+-        return mock_r
+-
+-    with patch("redis.asyncio.from_url", side_effect=_from_url):
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-
+-
+-def test_check_mcp_health_fallback_httpx_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
+-    """_fallback handles httpx connection errors per-server (lines 1138-1139)."""
+-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+-    import json
+-    from collections.abc import AsyncIterator
+-
+-    from app.scaling.tasks import check_mcp_health
+-
+-    async def _scan_keys_run(match: str, count: int) -> AsyncIterator[str]:
+-        raise RuntimeError("force fallback")
+-        yield
+-
+-    async def _scan_keys_fallback(match: str, count: int) -> AsyncIterator[str]:
+-        yield "mcp:servers:t1"
+-
+-    server_data = {"srv1": {"url": "http://unreachable.example.com"}}
+-    call_count = [0]
+-
+-    def _from_url(url: str, **kw: object) -> MagicMock:
+-        call_count[0] += 1
+-        mock_r = MagicMock()
+-        if call_count[0] == 1:
+-            mock_r.scan_iter = _scan_keys_run
+-        else:
+-            mock_r.scan_iter = _scan_keys_fallback
+-            mock_r.get = AsyncMock(return_value=json.dumps(server_data))
+-        mock_r.aclose = AsyncMock()
+-        return mock_r
+-
+-    with (
+-        patch("redis.asyncio.from_url", side_effect=_from_url),
+-        patch("httpx.AsyncClient") as mock_httpx,
+-    ):
+-        mock_ctx = AsyncMock()
+-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
+-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+-        mock_ctx.get = AsyncMock(side_effect=OSError("connection refused"))
+-        mock_httpx.return_value = mock_ctx
+-
+-        result = check_mcp_health.run()
+-
+-    assert result["status"] == "ok"
+-    # Result should include unreachable server
+-    assert any(r.get("status") == "unreachable" for r in result["results"])
+-
+-
+ # ===========================================================================
+ # _expire_db_approvals async function
+ # ===========================================================================
+diff --git a/agent-verse-backend/tests/scaling/test_mcp_health_pinned.py b/agent-verse-backend/tests/scaling/test_mcp_health_pinned.py
+index 2ec3393f8..8f62db2a4 100644
+--- a/agent-verse-backend/tests/scaling/test_mcp_health_pinned.py
++++ b/agent-verse-backend/tests/scaling/test_mcp_health_pinned.py
+@@ -10,7 +10,6 @@ checked at connect time.
+ 
+ from __future__ import annotations
+ 
+-import json
+ from typing import Any
+ 
+ import httpcore
+@@ -47,17 +46,15 @@ def test_run_probe_refuses_a_rebinding_host_at_connect(monkeypatch: pytest.Monke
+ 
+     cfg = MCPServerConfig(server_id="s1", name="rebind", url="http://rebind.example")
+ 
+-    class _R:
+-        async def scan_iter(self, **kw: Any) -> Any:
+-            yield "mcp:servers:t1:s1"
++    from app.mcp.connector_health import HealthTarget
+ 
+-        async def get(self, key: str) -> str:
+-            return cfg.model_dump_json()
++    async def _targets(*_a: Any, **_k: Any) -> list[HealthTarget]:
++        return [HealthTarget("t1", "s1", cfg.model_dump(mode="json"))]
+ 
+-        async def aclose(self) -> None:
+-            return None
+-
+-    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: _R())
++    # RV-03: connectors come from the durable registry, not legacy Redis keys.
++    monkeypatch.setattr("app.mcp.connector_health.list_health_targets", _targets)
++    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: object())
++    monkeypatch.delenv("REDIS_URL", raising=False)
+     monkeypatch.setattr(g, "_resolve_host", _rebinding_resolver())
+     dialled = _record_dials(monkeypatch)
+ 
+@@ -68,37 +65,3 @@ def test_run_probe_refuses_a_rebinding_host_at_connect(monkeypatch: pytest.Monke
+     out = tasks.check_mcp_health.run()
+     assert dialled == []  # never dialled the rebinding name (nor 127.0.0.1)
+     assert out["results"][0]["status"] == "unreachable"
+-
+-
+-def test_fallback_probe_refuses_a_rebinding_host_at_connect(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
+-    from app.scaling import tasks
+-
+-    calls = [0]
+-
+-    class _R:
+-        def __init__(self, first: bool) -> None:
+-            self._first = first
+-
+-        async def scan_iter(self, **kw: Any) -> Any:
+-            if self._first:
+-                raise RuntimeError("force fallback")
+-            yield "mcp:servers:t1"
+-
+-        async def get(self, key: str) -> str:
+-            return json.dumps({"s1": {"url": "http://rebind.example"}})
+-
+-        async def aclose(self) -> None:
+-            return None
+-
+-    def _from_url(*a: Any, **k: Any) -> _R:
+-        calls[0] += 1
+-        return _R(first=calls[0] == 1)
+-
+-    monkeypatch.setattr("redis.asyncio.from_url", _from_url)
+-    monkeypatch.setattr(g, "_resolve_host", _rebinding_resolver())
+-    dialled = _record_dials(monkeypatch)
+-    out = tasks.check_mcp_health.run()
+-    assert dialled == []
+-    assert out["results"][0]["status"] == "unreachable"
+diff --git a/agent-verse-backend/tests/scaling/test_mcp_health_registry.py b/agent-verse-backend/tests/scaling/test_mcp_health_registry.py
+new file mode 100644
+index 000000000..6ac574f08
+--- /dev/null
++++ b/agent-verse-backend/tests/scaling/test_mcp_health_registry.py
+@@ -0,0 +1,167 @@
++"""RV-03: the connector health beat enumerates the durable (Postgres) registry.
++
++Since MCPREG-01 nothing writes ``mcp:servers:{t}:{id}`` any more, yet
++check_mcp_health scanned only those legacy Redis keys: every connector created
++after the cutover was never probed (empty health history) while stale legacy
++keys kept being probed. The beat now pages ``mcp_servers`` through the
++maintenance session (keyset on (tenant_id, id), bounded per tick, resumable
++cursor) and is guarded so 30 s ticks cannot overlap.
++"""
++
++from __future__ import annotations
++
++from typing import Any
++
++import httpx
++import pytest
++
++from app.mcp.connector_health import HealthTarget
++
++
++def _target(tenant: str, sid: str, host: int) -> HealthTarget:
++    return HealthTarget(
++        tenant_id=tenant,
++        server_id=sid,
++        config={"server_id": sid, "name": f"n-{sid}", "url": f"https://93.184.216.{host}"},
++    )
++
++
++class _CursorRedis:
++    """Only what the beat may touch: the cursor key. Scanning keys is a failure."""
++
++    def __init__(self) -> None:
++        self.data: dict[str, str] = {}
++
++    async def get(self, key: str) -> str | None:
++        return self.data.get(key)
++
++    async def set(self, key: str, value: str, ex: int | None = None) -> None:
++        self.data[key] = value
++
++    async def delete(self, *keys: str) -> None:
++        for k in keys:
++            self.data.pop(k, None)
++
++    async def scan_iter(self, **kw: Any) -> Any:
++        raise AssertionError("the health beat must not scan legacy mcp:servers:* keys")
++        yield  # pragma: no cover
++
++    async def aclose(self) -> None:
++        return None
++
++
++def _install(
++    monkeypatch: pytest.MonkeyPatch,
++    targets: list[HealthTarget],
++    *,
++    per_tick: int = 100,
++    code: int = 200,
++    fail_list: bool = False,
++) -> dict[str, Any]:
++    from app.scaling import tasks
++
++    ordered = sorted(targets, key=lambda t: (t.tenant_id, t.server_id))
++    state: dict[str, Any] = {"pages": [], "probed": [], "written": [], "redis": _CursorRedis()}
++
++    async def _list(system_db: Any, *, after: tuple[str, str] | None, limit: int) -> Any:
++        if fail_list:
++            raise RuntimeError("registry down")
++        state["pages"].append((after, limit))
++        rows = [t for t in ordered if after is None or (t.tenant_id, t.server_id) > after]
++        return rows[:limit]
++
++    monkeypatch.setattr("app.mcp.connector_health.list_health_targets", _list)
++    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: object())
++    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: state["redis"])
++    monkeypatch.setattr(tasks, "_MCP_HEALTH_PER_TICK", per_tick)
++
++    def _handler(req: httpx.Request) -> httpx.Response:
++        state["probed"].append(str(req.url))
++        return httpx.Response(code)
++
++    monkeypatch.setattr(
++        "app.net.ssrf_guard.public_async_client",
++        lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(_handler), **kw),
++    )
++
++    async def _persist(snaps: list[dict[str, Any]]) -> int:
++        state["written"].extend(snaps)
++        return len(snaps)
++
++    monkeypatch.setattr(tasks, "_persist_health_snapshots", _persist)
++    return state
++
++
++def test_registry_connectors_are_probed_and_snapshotted(monkeypatch: pytest.MonkeyPatch) -> None:
++    from app.scaling import tasks
++
++    state = _install(monkeypatch, [_target("t1", "pg-made", 1), _target("t2", "other", 2)])
++    out = tasks.check_mcp_health.run()
++    assert out["status"] == "ok"
++    assert out["servers_checked"] == 2
++    assert sorted(state["probed"]) == [
++        "https://93.184.216.1/health",
++        "https://93.184.216.2/health",
++    ]
++    assert {(s["tenant_id"], s["server_id"], s["status"]) for s in state["written"]} == {
++        ("t1", "pg-made", "healthy"),
++        ("t2", "other", "healthy"),
++    }
++
++
++def test_builtin_and_urlless_targets_are_not_probed(monkeypatch: pytest.MonkeyPatch) -> None:
++    from app.scaling import tasks
++
++    builtin = HealthTarget("t1", "builtin-x", {"server_id": "builtin-x", "url": "builtin://x"})
++    empty = HealthTarget("t1", "empty", {"server_id": "empty", "url": ""})
++    state = _install(monkeypatch, [builtin, empty, _target("t1", "real", 3)])
++    tasks.check_mcp_health.run()
++    assert state["probed"] == ["https://93.184.216.3/health"]
++
++
++def test_ticks_resume_from_cursor_and_wrap(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Bounded per tick; connectors beyond the first page are checked next tick."""
++    from app.scaling import tasks
++
++    targets = [_target(f"t{i % 2}", f"s{i}", i + 1) for i in range(5)]
++    state = _install(monkeypatch, targets, per_tick=2)
++    seen: list[set[str]] = []
++    for _ in range(4):
++        before = len(state["written"])
++        tasks.check_mcp_health.run()
++        seen.append({s["server_id"] for s in state["written"][before:]})
++    assert [len(s) for s in seen] == [2, 2, 1, 2]
++    assert set().union(*seen[:3]) == {f"s{i}" for i in range(5)}
++    # The 4th tick wrapped back to the start of the keyspace.
++    assert state["pages"][3][0] is None
++    assert seen[3] == seen[0]
++
++
++def test_registry_unavailable_is_reported_not_faked(monkeypatch: pytest.MonkeyPatch) -> None:
++    from app.scaling import tasks
++
++    state = _install(monkeypatch, [_target("t1", "a", 1)], fail_list=True)
++    state["redis"].data["mcp:health:cursor:v1"] = '["t0", "zzz"]'
++    out = tasks.check_mcp_health.run()
++    assert out["status"] == "error"
++    assert state["probed"] == [] and state["written"] == []
++    assert state["redis"].data["mcp:health:cursor:v1"] == '["t0", "zzz"]'  # not advanced
++
++
++def test_overlapping_tick_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
++    import app.scaling.beat_guard as beat_guard
++    from app.scaling import tasks
++
++    state = _install(monkeypatch, [_target("t1", "a", 1)])
++
++    class _Held:
++        def set(self, *a: Any, **k: Any) -> None:
++            return None  # SET NX lost: another tick holds the lock
++
++        def eval(self, *a: Any) -> int:
++            return 0
++
++    monkeypatch.setattr(beat_guard, "_guard_client", lambda *_a, **_k: _Held())
++    out = tasks.check_mcp_health.run()
++    assert out == {"skipped": True, "reason": "overlap"}
++    assert state["probed"] == []
+diff --git a/agent-verse-backend/tests/scaling/test_mcp_health_registry_integration.py b/agent-verse-backend/tests/scaling/test_mcp_health_registry_integration.py
+new file mode 100644
+index 000000000..95f1fdf1f
+--- /dev/null
++++ b/agent-verse-backend/tests/scaling/test_mcp_health_registry_integration.py
+@@ -0,0 +1,231 @@
++"""RV-03 on real Postgres + Redis: the health beat probes registry connectors.
++
++A connector created through the durable registry (MCPREG-01, Postgres only, no
++legacy ``mcp:servers:*`` key) is probed by ``check_mcp_health`` and a
++``connector_health_snapshots`` row is written under the tenant's RLS; stale
++legacy Redis keys, built-in and disabled rows are not probed; the per-tick
++bound plus the Redis cursor reach every connector across ticks; and the page
++query uses the partial index.
++
++Run with:
++    DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock \
++    TESTCONTAINERS_RYUK_DISABLED=true \
++        uv run pytest tests/scaling/test_mcp_health_registry_integration.py -q -m integration
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import secrets
++import uuid
++from collections.abc import Iterator
++from types import SimpleNamespace
++from typing import Any
++
++import httpx
++import pytest
++from sqlalchemy import text
++from sqlalchemy.engine import make_url
++from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++from sqlalchemy.pool import NullPool
++
++from app.mcp.registry import MCPRegistry, MCPServerConfig
++from app.tenancy.context import PlanTier, TenantContext
++
++pytestmark = pytest.mark.integration
++
++_TABLES = (
++    "mcp_servers",
++    "mcp_credentials",
++    "mcp_builtin_provisioning",
++    "connector_store_backfills",
++    "connector_health_snapshots",
++)
++
++
++def _ctx(tid: str) -> TenantContext:
++    return TenantContext(tenant_id=tid, plan=PlanTier.PROFESSIONAL, api_key_id="k")
++
++
++@pytest.fixture
++def env(pg_url: str, redis_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
++    password = secrets.token_urlsafe(24)
++    role = f"test_app_health_{secrets.token_hex(4)}"
++    # NullPool: the task runs on its own fresh event loop (run_in_fresh_loop).
++    admin = create_async_engine(pg_url, poolclass=NullPool)
++
++    async def _setup() -> None:
++        async with admin.begin() as conn:
++            quoted = (
++                await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})
++            ).scalar()
++            await conn.execute(
++                text(
++                    f"CREATE ROLE {role} LOGIN PASSWORD {quoted} "
++                    "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
++                )
++            )
++            await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
++            for table in _TABLES:
++                await conn.execute(
++                    text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role}")
++                )
++                await conn.execute(text(f"DELETE FROM {table}"))
++            await conn.execute(
++                text(
++                    "INSERT INTO connector_store_backfills (name) VALUES "
++                    "('connector_redis_to_postgres_v1') ON CONFLICT DO NOTHING"
++                )
++            )
++        import redis.asyncio as aioredis
++
++        r = aioredis.from_url(redis_url, decode_responses=True)
++        await r.flushall()
++        await r.aclose()
++
++    asyncio.run(_setup())
++    url = make_url(pg_url).set(username=role, password=password)
++    app_engine = create_async_engine(url.render_as_string(hide_password=False), poolclass=NullPool)
++    app_db = async_sessionmaker(app_engine, expire_on_commit=False)
++    system_db = async_sessionmaker(admin, expire_on_commit=False)  # superuser: BYPASSRLS
++
++    monkeypatch.setattr("app.db.session.get_session_factory", lambda: app_db)
++    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: system_db)
++    monkeypatch.setenv("REDIS_URL", redis_url)
++    probed: list[str] = []
++
++    def _handler(req: httpx.Request) -> httpx.Response:
++        probed.append(req.url.host)
++        return httpx.Response(200 if req.url.host.endswith(".1") else 503)
++
++    monkeypatch.setattr(
++        "app.net.ssrf_guard.public_async_client",
++        lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(_handler), **kw),
++    )
++    try:
++        yield SimpleNamespace(
++            app_db=app_db, system_db=system_db, redis_url=redis_url, probed=probed
++        )
++    finally:
++        asyncio.run(app_engine.dispose())
++        asyncio.run(admin.dispose())
++
++
++def _create(env: Any, tid: str, name: str, host: str) -> str:
++    async def _go() -> str:
++        import redis.asyncio as aioredis
++
++        r = aioredis.from_url(env.redis_url, decode_responses=True)
++        try:
++            reg = MCPRegistry(r, db_factory=env.app_db)
++            return await reg.create(
++                MCPServerConfig(name=name, url=f"https://{host}/mcp"), tenant_ctx=_ctx(tid)
++            )
++        finally:
++            await r.aclose()
++
++    return asyncio.run(_go())
++
++
++def _sql(env: Any, sql: str, params: dict[str, Any] | None = None) -> list[Any]:
++    async def _go() -> list[Any]:
++        async with env.system_db() as s, s.begin():
++            result = await s.execute(text(sql), params or {})
++            return list(result.fetchall()) if result.returns_rows else []
++
++    return asyncio.run(_go())
++
++
++def test_registry_connector_is_probed_and_snapshot_written(env: Any) -> None:
++    from app.scaling import tasks
++
++    tid = f"t-{uuid.uuid4().hex[:8]}"
++    sid = _create(env, tid, "Orders API", "93.184.216.1")
++    # Rows the beat must NOT probe: disabled, built-in, removed.
++    for rid, url, enabled, status in (
++        ("off", "https://93.184.216.7/mcp", False, "active"),
++        ("builtin-x", "builtin://x", True, "active"),
++        ("gone", "https://93.184.216.8/mcp", True, "removed"),
++    ):
++        _sql(
++            env,
++            "INSERT INTO mcp_servers (tenant_id, id, name, name_key, url, enabled, status, "
++            "config) VALUES (:t, :id, :id, :id, :url, :en, :st, CAST(:cfg AS jsonb))",
++            {
++                "t": tid,
++                "id": rid,
++                "url": url,
++                "en": enabled,
++                "st": status,
++                "cfg": json.dumps({"server_id": rid, "name": rid, "url": url}),
++            },
++        )
++
++    # A stale legacy Redis config (nothing writes these since MCPREG-01).
++    async def _legacy() -> None:
++        import redis.asyncio as aioredis
++
++        r = aioredis.from_url(env.redis_url, decode_responses=True)
++        stale = MCPServerConfig(server_id="stale", name="stale", url="https://93.184.216.9")
++        await r.set(f"mcp:servers:{tid}:stale", stale.model_dump_json())
++        await r.aclose()
++
++    asyncio.run(_legacy())
++
++    out = tasks.check_mcp_health.run()
++
++    assert out["status"] == "ok", out
++    assert env.probed == ["93.184.216.1"]
++    rows = _sql(
++        env,
++        "SELECT tenant_id, server_id, status FROM connector_health_snapshots WHERE tenant_id = :t",
++        {"t": tid},
++    )
++    assert [tuple(r) for r in rows] == [(tid, sid, "healthy")]
++
++
++def test_bounded_ticks_resume_from_cursor_and_reach_every_connector(
++    env: Any, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    from app.scaling import tasks
++
++    monkeypatch.setattr(tasks, "_MCP_HEALTH_PER_TICK", 2)
++    created = {
++        _create(env, f"t{i % 2}-{uuid.uuid4().hex[:4]}", f"Conn {i}", f"93.184.216.{10 + i}")
++        for i in range(5)
++    }
++    per_tick: list[int] = []
++    for _ in range(3):
++        before = len(env.probed)
++        out = tasks.check_mcp_health.run()
++        assert out["status"] == "ok", out
++        per_tick.append(len(env.probed) - before)
++    assert per_tick == [2, 2, 1]
++    assert sorted(env.probed) == sorted(f"93.184.216.{10 + i}" for i in range(5))
++    snap_ids = {r[0] for r in _sql(env, "SELECT server_id FROM connector_health_snapshots")}
++    assert snap_ids == created
++
++    out = tasks.check_mcp_health.run()  # wrapped: starts again from the first page
++    assert out["page_size"] == 2 and len(env.probed) == 7
++
++
++def test_health_page_uses_partial_index(env: Any) -> None:
++    from app.mcp.connector_health import PROBE_FILTER
++
++    async def _plan() -> str:
++        async with env.system_db() as s, s.begin():
++            await s.execute(text("SET LOCAL enable_seqscan = off"))
++            rows = (
++                await s.execute(
++                    text(
++                        f"EXPLAIN SELECT tenant_id, id, config FROM mcp_servers "
++                        f"WHERE {PROBE_FILTER} AND (tenant_id, id) > ('a', 'b') "
++                        "ORDER BY tenant_id, id LIMIT 200"
++                    )
++                )
++            ).fetchall()
++        return "\n".join(r[0] for r in rows)
++
++    plan = asyncio.run(_plan())
++    assert "ix_mcp_servers_health_probe" in plan, plan
+diff --git a/agent-verse-backend/tests/scaling/test_mcp_health_status.py b/agent-verse-backend/tests/scaling/test_mcp_health_status.py
+index 70952442e..40e05f656 100644
+--- a/agent-verse-backend/tests/scaling/test_mcp_health_status.py
++++ b/agent-verse-backend/tests/scaling/test_mcp_health_status.py
+@@ -19,25 +19,26 @@ from app.mcp.registry import MCPServerConfig
+ def _install(monkeypatch: pytest.MonkeyPatch, n: int, code_for: Any) -> list[dict[str, Any]]:
+     from app.scaling import tasks
+ 
+-    cfgs = {
+-        f"mcp:servers:tenant-{i % 3}:srv-{i}": MCPServerConfig(
+-            server_id=f"srv-{i}", name=f"c{i}", url=f"https://93.184.216.{i % 250 + 1}"
++    from app.mcp.connector_health import HealthTarget
++
++    targets = [
++        HealthTarget(
++            f"tenant-{i % 3}",
++            f"srv-{i}",
++            MCPServerConfig(
++                server_id=f"srv-{i}", name=f"c{i}", url=f"https://93.184.216.{i % 250 + 1}"
++            ).model_dump(mode="json"),
+         )
+         for i in range(n)
+-    }
++    ]
+ 
+-    class _R:
+-        async def scan_iter(self, **kw: Any) -> Any:
+-            for k in cfgs:
+-                yield k
++    async def _list(*_a: Any, after: Any, limit: int) -> list[HealthTarget]:
++        return targets[:limit]
+ 
+-        async def get(self, key: str) -> str:
+-            return cfgs[key].model_dump_json()
+-
+-        async def aclose(self) -> None:
+-            return None
+-
+-    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: _R())
++    # RV-03: the beat pages the durable registry (no legacy Redis key scan).
++    monkeypatch.setattr("app.mcp.connector_health.list_health_targets", _list)
++    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: object())
++    monkeypatch.delenv("REDIS_URL", raising=False)
+ 
+     def _handler(req: httpx.Request) -> httpx.Response:
+         return httpx.Response(code_for(str(req.url)))
+@@ -74,7 +75,7 @@ def test_5xx_is_unhealthy_not_ok_and_snapshots_are_persisted(
+     }
+ 
+ 
+-def test_scan_is_not_capped_at_50(monkeypatch: pytest.MonkeyPatch) -> None:
++def test_page_is_not_capped_at_50(monkeypatch: pytest.MonkeyPatch) -> None:
+     from app.scaling import tasks
+ 
+     written = _install(monkeypatch, 120, lambda url: 200)
+diff --git a/agent-verse-backend/tests/security/test_ssrf_connectors_saml_health.py b/agent-verse-backend/tests/security/test_ssrf_connectors_saml_health.py
+index 2eee4d1a9..dd644523e 100644
+--- a/agent-verse-backend/tests/security/test_ssrf_connectors_saml_health.py
++++ b/agent-verse-backend/tests/security/test_ssrf_connectors_saml_health.py
+@@ -145,22 +145,19 @@ def test_saml_test_revalidates_redirect_hops() -> None:
+ def test_mcp_health_check_never_requests_internal_connector(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
++    from app.mcp.connector_health import HealthTarget
+     from app.mcp.registry import MCPServerConfig
+     from app.scaling import tasks
+ 
+     cfg = MCPServerConfig(server_id="s1", name="evil", url=_META, base_url=_META)
+ 
+-    class _R:
+-        async def scan_iter(self, **kw: Any) -> Any:
+-            yield "mcp:servers:t1:s1"
++    async def _targets(*_a: Any, **_k: Any) -> list[HealthTarget]:
++        return [HealthTarget("t1", "s1", cfg.model_dump(mode="json"))]
+ 
+-        async def get(self, key: str) -> str:
+-            return cfg.model_dump_json()
+-
+-        async def aclose(self) -> None:
+-            return None
+-
+-    monkeypatch.setattr("redis.asyncio.from_url", lambda *a, **k: _R())
++    # RV-03: the beat enumerates the durable registry, not legacy Redis keys.
++    monkeypatch.setattr("app.mcp.connector_health.list_health_targets", _targets)
++    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: object())
++    monkeypatch.delenv("REDIS_URL", raising=False)
+     sent: list[str] = []
+ 
+     def _handler(req: httpx.Request) -> httpx.Response:

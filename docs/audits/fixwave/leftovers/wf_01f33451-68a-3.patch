@@ -1,0 +1,1800 @@
+diff --git a/agent-verse-backend/app/api/governance.py b/agent-verse-backend/app/api/governance.py
+index 811c9578e..5a88cd9ea 100644
+--- a/agent-verse-backend/app/api/governance.py
++++ b/agent-verse-backend/app/api/governance.py
+@@ -1402,7 +1402,11 @@ async def batch_approve(
+ 
+     for req_id in body.request_ids:
+         if body.action == "approve":
+-            ok = gateway.approve(
++            # DB-resolving (tenant-scoped): the sync approve() only sees this
++            # replica's cache, which no longer gets a cross-tenant warm-up at
++            # startup — a live approval raised before a restart or on another
++            # replica would otherwise report not_found.
++            ok = await gateway.approve_async(
+                 req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+             )
+             if ok:
+diff --git a/agent-verse-backend/app/api/guardrails_v2.py b/agent-verse-backend/app/api/guardrails_v2.py
+index 21a26b0f3..8903ecc4a 100644
+--- a/agent-verse-backend/app/api/guardrails_v2.py
++++ b/agent-verse-backend/app/api/guardrails_v2.py
+@@ -96,9 +96,14 @@ async def create_rule(request: Request, body: CreateRuleRequest) -> dict[str, An
+ async def list_rules(request: Request) -> dict[str, Any]:
+     """List all guardrail rules for the tenant."""
+     tenant = _require_tenant(request)
+-    from app.guardrails_v2.engine import guardrails_engine
++    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
+ 
+-    rules = guardrails_engine.get_rules(tenant.tenant_id)
++    # aget_rules loads this tenant's persisted rules on a fresh process (there is
++    # no cross-tenant warm-up at startup any more).
++    try:
++        rules = await guardrails_engine.aget_rules(tenant.tenant_id)
++    except GuardrailRulesUnavailableError as exc:
++        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
+     return {
+         "rules": [
+             {
+@@ -120,20 +125,23 @@ async def list_rules(request: Request) -> dict[str, Any]:
+ async def evaluate_content(request: Request, body: EvaluateRequest) -> dict[str, Any]:
+     """Evaluate content against guardrail rules."""
+     tenant = _require_tenant(request)
+-    from app.guardrails_v2.engine import guardrails_engine
++    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
+ 
+     try:
+         layer = GuardrailLayer(body.layer)
+     except ValueError as _b904_exc:
+         raise HTTPException(400, f"Invalid layer: {body.layer}") from _b904_exc
+ 
+-    result = await guardrails_engine.evaluate(
+-        content=body.content,
+-        layer=layer,
+-        tenant_id=tenant.tenant_id,
+-        goal_id=body.goal_id,
+-        step_description=body.step_description,
+-    )
++    try:
++        result = await guardrails_engine.evaluate(
++            content=body.content,
++            layer=layer,
++            tenant_id=tenant.tenant_id,
++            goal_id=body.goal_id,
++            step_description=body.step_description,
++        )
++    except GuardrailRulesUnavailableError as exc:
++        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
+     return result
+ 
+ 
+@@ -141,9 +149,12 @@ async def evaluate_content(request: Request, body: EvaluateRequest) -> dict[str,
+ async def simulate_evaluation(request: Request, body: SimulateRequest) -> dict[str, Any]:
+     """Simulate guardrail evaluation without recording violations."""
+     tenant = _require_tenant(request)
+-    from app.guardrails_v2.engine import guardrails_engine
++    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
+ 
+-    return await guardrails_engine.simulate(body.content, body.layer, tenant.tenant_id)
++    try:
++        return await guardrails_engine.simulate(body.content, body.layer, tenant.tenant_id)
++    except GuardrailRulesUnavailableError as exc:
++        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
+ 
+ 
+ @router.post("/evaluate-corpus")
+diff --git a/agent-verse-backend/app/chat/skills/builtin.py b/agent-verse-backend/app/chat/skills/builtin.py
+index 69abfc9b6..d02724bc4 100644
+--- a/agent-verse-backend/app/chat/skills/builtin.py
++++ b/agent-verse-backend/app/chat/skills/builtin.py
+@@ -127,7 +127,9 @@ def build_generate_document_skill(artifact_store: Any) -> ChatSkill:
+ 
+ def build_list_pending_approvals_skill(hitl_gateway: Any) -> ChatSkill:
+     async def handler(tenant_ctx: Any, goal_id: str | None = None) -> list[dict[str, Any]]:
+-        reqs = hitl_gateway.list_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
++        # DB-backed, tenant-scoped listing: the process cache holds only what this
++        # replica raised or already read (no startup warm-up).
++        reqs = await hitl_gateway.alist_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
+         return [
+             {
+                 "request_id": getattr(r, "request_id", None) or getattr(r, "id", None),
+@@ -154,7 +156,8 @@ def build_resolve_approval_skill(hitl_gateway: Any) -> ChatSkill:
+     ) -> dict[str, Any]:
+         d = decision.strip().lower()
+         if d in ("approve", "approved", "yes"):
+-            ok = await hitl_gateway.approve(
++            # DB-resolving approve (see HITLGateway.approve_async).
++            ok = await hitl_gateway.approve_async(
+                 request_id, approver="chat", note=note, tenant_ctx=tenant_ctx
+             )
+         elif d in ("reject", "rejected", "no", "deny", "denied"):
+diff --git a/agent-verse-backend/app/governance/audit_v3.py b/agent-verse-backend/app/governance/audit_v3.py
+index 3f7fdd193..295ff818f 100644
+--- a/agent-verse-backend/app/governance/audit_v3.py
++++ b/agent-verse-backend/app/governance/audit_v3.py
+@@ -260,9 +260,17 @@ class AuditV3:
+             try:
+                 from sqlalchemy import text
+ 
+-                from app.db.rls import system_session
++                from app.db.rls import sqlalchemy_rls_context
+ 
+-                async with self._db() as session, session.begin(), system_session(session):
++                # One tenant's record → that tenant's RLS context. This used to
++                # run under system_session (RLS bypass) — a privilege escalation
++                # on a request path, and under the API's NOBYPASSRLS role every
++                # statement failed "query would be affected by row-level security".
++                async with (
++                    self._db() as session,
++                    session.begin(),
++                    sqlalchemy_rls_context(session, tenant_id),
++                ):
+                     await session.execute(
+                         text("""
+                             INSERT INTO audit_events
+diff --git a/agent-verse-backend/app/governance/hitl.py b/agent-verse-backend/app/governance/hitl.py
+index ef58655cf..794ca5280 100644
+--- a/agent-verse-backend/app/governance/hitl.py
++++ b/agent-verse-backend/app/governance/hitl.py
+@@ -114,10 +114,46 @@ class ApprovalRequest:
+         return hash(self.request_id)
+ 
+ 
+-# Cap on the fleet-wide pending-approval hydration at startup. The cache is a
+-# warm-start optimisation; correctness comes from the DB-backed reads, so there
+-# is nothing to gain from pulling every tenant's queue into every replica.
+-_STARTUP_HYDRATION_LIMIT = 5000
++# Cap on how many phantom approvals one startup sweep expires, so a huge backlog
++# cannot hold row locks on approval_requests for long while the API boots. Any
++# remainder is picked up by the next sweep.
++_PHANTOM_SWEEP_LIMIT = 5000
++
++# Cross-tenant maintenance: expire pending approvals whose owning goal/mission
++# already reached a terminal state. Those are phantoms — the work is done and
++# there is nothing left to approve — but they would otherwise sit in every
++# tenant's DB-backed pending list forever. Goal ownership is matched on tenant as
++# well as id; org mission ids are globally unique UUIDs (and their tenant_id is a
++# UUID column, not the 32-char text of approval_requests).
++_EXPIRE_PHANTOMS_SQL = """
++WITH phantom AS (
++    SELECT ar.id
++    FROM approval_requests ar
++    WHERE ar.status = 'pending'
++      AND ar.goal_id IS NOT NULL
++      AND (
++        EXISTS (
++            SELECT 1 FROM goals g
++            WHERE g.id = ar.goal_id
++              AND g.tenant_id = ar.tenant_id
++              AND g.status IN ('complete', 'failed', 'cancelled')
++        )
++        OR EXISTS (
++            SELECT 1 FROM org_missions m
++            WHERE m.id::text = ar.goal_id
++              AND m.status IN ('completed', 'failed', 'cancelled', 'archived')
++        )
++      )
++    ORDER BY ar.created_at
++    LIMIT :lim
++    FOR UPDATE OF ar SKIP LOCKED
++)
++UPDATE approval_requests AS ar
++SET status = 'expired', resolved_at = NOW()
++FROM phantom
++WHERE ar.id = phantom.id AND ar.status = 'pending'
++RETURNING ar.id, ar.tenant_id
++"""
+ 
+ # approval_requests.status values → ApprovalStatus.
+ _STATUS_BY_DB_VALUE = {
+@@ -140,11 +176,14 @@ class HITLGateway:
+         *,
+         db_session_factory: Any = None,
+     ) -> None:
+-        # Warm cache only — NOT the source of truth. ``approval_requests`` in
+-        # Postgres is, and the ``a*`` read methods below consult it, because a
+-        # process-local dict is invisible to every other replica: an approval
+-        # created on replica B could not be found or listed on replica A, and one
+-        # resolved on B still read as pending on A until A restarted.
++        # Process-local cache only — NOT the source of truth. ``approval_requests``
++        # in Postgres is, and the ``a*`` read methods (and ``reject``) consult it,
++        # because a process-local dict is invisible to every other replica: an
++        # approval created on replica B could not be found or listed on replica A,
++        # and one resolved on B still read as pending on A until A restarted.
++        # It is filled lazily, per tenant, by those DB reads; there is no
++        # cross-tenant warm scan at startup (under the API's NOBYPASSRLS role it
++        # could not see any rows anyway).
+         self._requests: dict[tuple[str, str], ApprovalRequest] = {}
+         self._timeout = timeout_seconds
+         self._notification_service: Any = None
+@@ -691,6 +730,10 @@ class HITLGateway:
+         Works in both sync and async contexts:
+         - Sync: ``ok = gateway.approve(...); assert ok``
+         - Async: ``ok = await gateway.approve(...)``
++
++        Process-local: it only sees requests this process raised or has already
++        read from the DB. Request paths use :meth:`approve_async`, which resolves
++        the request in Postgres first (there is no startup warm-up of the cache).
+         """
+         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
+         if req is None or req.status != ApprovalStatus.PENDING:
+@@ -736,6 +779,12 @@ class HITLGateway:
+         tenant_ctx: TenantContext,
+     ) -> bool:
+         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
++        if req is None and self._db_session_factory is not None:
++            # Not raised by (or cached on) this process — e.g. created on another
++            # replica, or before a restart. Postgres is the source of truth, so
++            # resolve it there (tenant-scoped, under RLS) rather than answering
++            # "not found" for a live approval.
++            req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
+         if req is None or req.status != ApprovalStatus.PENDING:
+             return False
+ 
+@@ -797,10 +846,11 @@ class HITLGateway:
+         tenant_ctx: TenantContext,
+         goal_id: str | None = None,
+     ) -> list[ApprovalRequest]:
+-        """Return pending approval requests for the tenant.
++        """Return pending approval requests for the tenant, from this process's cache.
+ 
+         When *goal_id* is given only requests belonging to that goal are
+         returned (C6.4 — prevents goal-B's pending approval from pausing goal-A).
++        Request paths use :meth:`alist_pending`, which reads Postgres.
+         """
+         return [
+             req
+@@ -910,15 +960,25 @@ class HITLGateway:
+         return expired
+ 
+     async def load_pending_from_db(self, db: Any, tenant_id: str) -> int:
+-        """Restore pending approvals from DB on startup (so goals can resume)."""
++        """Cache ONE tenant's pending approvals from the DB. Returns the count.
++
++        Runs inside the tenant's RLS context: ``approval_requests`` is FORCE-RLS,
++        so without ``app.tenant_id`` set the API's NOBYPASSRLS role reads zero
++        rows and this silently restored nothing.
++        """
+         if db is None:
+             return 0
+         try:
+             from sqlalchemy import select
+ 
+             from app.db.models.governance import ApprovalRequest as DBApprovalReq
++            from app.db.rls import sqlalchemy_rls_context
+ 
+-            async with db() as session:
++            async with (
++                db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
+                 result = await session.execute(
+                     select(DBApprovalReq).where(
+                         DBApprovalReq.tenant_id == tenant_id, DBApprovalReq.status == "pending"
+@@ -941,114 +1001,72 @@ class HITLGateway:
+             get_logger(__name__).warning("hitl_load_from_db_failed", error=str(exc))
+             return 0
+ 
+-    async def load_pending_from_db_full(self, db: Any) -> int:
+-        """Load all pending requests from DB on startup (full tenant scan).
++    async def expire_phantom_approvals(self, system_db: Any) -> int:
++        """Expire pending approvals whose goal/mission already finished (all tenants).
+ 
+-        Returns the number of requests loaded. Returns 0 immediately when db is None.
++        This is genuinely cross-tenant maintenance, so ``system_db`` MUST be the
++        maintenance session factory (``app.db.session.get_system_session_factory``
++        / ``app.state.system_db_session_factory``, a BYPASSRLS role) — never the
++        request-serving factory. Under the API's NOBYPASSRLS role
++        ``system_session`` fails loudly ("query would be affected by row-level
++        security"); that is logged and 0 is returned.
++
++        It only writes; nothing is loaded into this process's cache. The previous
++        startup scan also pulled every tenant's pending approvals into memory,
++        which was both a privilege problem and unnecessary: the DB-backed reads
++        (``aget_request`` / ``alist_pending`` / ``approve_async`` / ``reject``)
++        resolve approvals per tenant on demand.
++
++        Bounded to ``_PHANTOM_SWEEP_LIMIT`` rows per call. Returns the number of
++        approvals expired.
+         """
+-        if db is None:
++        if system_db is None:
+             return 0
+         try:
+             from sqlalchemy import text
+ 
+-            # Cross-tenant startup scan — bypass RLS (system_session) so the
+-            # phantom check can see every tenant's missions/goals. All reads +
+-            # the expire write share one transaction to avoid autobegin clashes.
+             from app.db.rls import system_session
+ 
+-            async with db() as session, session.begin(), system_session(session):
+-                raw = (
+-                    await session.execute(
+-                        text(
+-                            "SELECT id, tenant_id, goal_id, action, risk_level "
+-                            "FROM approval_requests WHERE status = 'pending' "
+-                            # Warm cache, not the source of truth: the a*
+-                            # read methods fall back to the DB, so an
+-                            # unbounded fleet-wide read here would only buy
+-                            # O(fleet) startup time and every replica holding
+-                            # every tenant's pending approvals in RAM.
+-                            "ORDER BY created_at DESC LIMIT :lim"
+-                        ),
+-                        {"lim": _STARTUP_HYDRATION_LIMIT},
+-                    )
+-                ).mappings().all()
+-
+-                # Don't resurrect gates whose owning mission/goal already finished:
+-                # those are phantom approvals (the work is done — nothing to approve).
+-                # Expire them in the DB so they never re-appear, and skip loading them.
+-                goal_ids = [r["goal_id"] for r in raw if r["goal_id"]]
+-                terminal: set[str] = set()
+-                if goal_ids:
+-                    m = (
+-                        await session.execute(
+-                            text(
+-                                "SELECT id::text FROM org_missions "
+-                                "WHERE id::text = ANY(:ids) "
+-                                "AND status IN ('completed','failed','cancelled','archived')"
+-                            ),
+-                            {"ids": goal_ids},
+-                        )
+-                    ).scalars().all()
+-                    g = (
+-                        await session.execute(
+-                            text(
+-                                "SELECT id FROM goals WHERE id = ANY(:ids) "
+-                                "AND status IN ('complete','failed','cancelled')"
+-                            ),
+-                            {"ids": goal_ids},
+-                        )
+-                    ).scalars().all()
+-                    terminal = {str(x) for x in [*m, *g]}
+-                    if terminal:
+-                        await session.execute(
+-                            text(
+-                                "UPDATE approval_requests SET status='expired', "
+-                                "resolved_at=NOW() WHERE status='pending' "
+-                                "AND goal_id = ANY(:ids)"
+-                            ),
+-                            {"ids": list(terminal)},
+-                        )
+-
+-            loaded = 0
+-            for row in raw:
+-                if row["goal_id"] and str(row["goal_id"]) in terminal:
+-                    continue  # phantom — owning mission/goal already terminal
+-                req = ApprovalRequest(
+-                    goal_id=row["goal_id"],
+-                    action=row["action"] or "unknown",
+-                    risk_level=row["risk_level"] or "unknown",
+-                    request_id=row["id"],
+-                    status=ApprovalStatus.PENDING,
++            async with (
++                system_db() as session,
++                session.begin(),
++                system_session(session),
++            ):
++                result = await session.execute(
++                    text(_EXPIRE_PHANTOMS_SQL), {"lim": _PHANTOM_SWEEP_LIMIT}
+                 )
+-                self._requests[(row["tenant_id"], row["id"])] = req
+-                loaded += 1
+-            return loaded
++                expired = [(str(r[1]), str(r[0])) for r in result.all()]
+         except Exception as exc:
+             from app.observability.logging import get_logger
+ 
+-            get_logger(__name__).warning("hitl_load_pending_full_failed", error=str(exc))
++            get_logger(__name__).warning("hitl_expire_phantoms_failed", error=str(exc))
+             return 0
++        # Keep any copy this process already cached consistent with the DB.
++        for key in expired:
++            cached = self._requests.get(key)
++            if cached is not None and cached.status == ApprovalStatus.PENDING:
++                cached.status = ApprovalStatus.TIMED_OUT
++                cached._event.set()
++        return len(expired)
+ 
+     async def startup_restore(self, db: Any) -> int:
+-        """Restore pending HITL approval requests from DB on startup.
++        """Startup HITL maintenance: expire phantom approvals.
+ 
+-        This MUST be called after DB session factory is available so that:
+-        - Goals that were waiting_human before restart can be resumed when approved
+-        - Operators who approved via Slack/UI during downtime have their approval processed
++        ``db`` must be the maintenance (system) session factory — see
++        :meth:`expire_phantom_approvals`. Pending approvals are NOT hydrated into
++        memory any more: Postgres is the source of truth and every request path
++        reads it per tenant, so a goal left ``waiting_human`` across a restart is
++        still approvable (``approve_async`` / ``reject`` resolve it in the DB).
+ 
+-        Returns: number of requests restored
++        Returns: number of phantom approvals expired.
+         """
+         if db is None:
+             return 0
+         try:
+-            count = await self.load_pending_from_db_full(db)
++            count = await self.expire_phantom_approvals(db)
+             from app.observability.logging import get_logger
+ 
+-            get_logger(__name__).info(
+-                "hitl_pending_restored",
+-                count=count,
+-                message=f"Restored {count} pending HITL approval requests from DB",
+-            )
++            get_logger(__name__).info("hitl_phantom_approvals_expired", count=count)
+             return count
+         except Exception as exc:
+             from app.observability.logging import get_logger
+diff --git a/agent-verse-backend/app/guardrails_v2/engine.py b/agent-verse-backend/app/guardrails_v2/engine.py
+index 53cef698c..bf14d57e4 100644
+--- a/agent-verse-backend/app/guardrails_v2/engine.py
++++ b/agent-verse-backend/app/guardrails_v2/engine.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ import datetime
+ import logging
+ import re
++import time
+ import uuid
+ from typing import Any
+ 
+@@ -20,6 +21,25 @@ from app.guardrails_v2.models import (
+ 
+ _log = logging.getLogger(__name__)
+ 
++# Lazy per-tenant rule loading (replaces the cross-tenant startup warm scan).
++# A tenant's persisted rules are re-read from Postgres at most this often, so a
++# rule written through another replica becomes enforced here within the window.
++_DEFAULT_RULE_REFRESH_S = 60.0
++# After a FIRST load fails, further evaluations for that tenant fail fast for this
++# long instead of each waiting on a struggling database.
++_LOAD_RETRY_BACKOFF_S = 5.0
++
++
++class GuardrailRulesUnavailableError(RuntimeError):
++    """A tenant's persisted guardrail rules could not be loaded.
++
++    Raised instead of silently evaluating against only the in-memory defaults:
++    that would quietly drop the tenant's own BLOCK rules. Callers already treat
++    an erroring guardrail check as "unknown" and fail closed on high-risk work
++    (SAFE-4). Deliberately not a ``TypeError``/``AttributeError``, which callers
++    treat as a contract bug.
++    """
++
+ # Combined secret-format regex used by the baseline ``regex_match`` rule so that
+ # an unconfigured tenant still blocks obvious credential leakage in tool args /
+ # outputs. Kept in sync with ``_SECRET_PATTERNS`` above (OpenAI/Anthropic keys,
+@@ -212,7 +232,7 @@ def _injection_deobfuscation_hit(content: str) -> str | None:
+ class GuardrailsEngine:
+     """Evaluates content against guardrail rules."""
+ 
+-    def __init__(self) -> None:
++    def __init__(self, *, rule_refresh_s: float = _DEFAULT_RULE_REFRESH_S) -> None:
+         self._rules: dict[str, list[GuardrailRule]] = {}  # tenant_id → rules
+         self._violations: dict[str, list[GuardrailViolation]] = {}  # tenant_id → violations
+         self._provider: Any = None
+@@ -221,24 +241,41 @@ class GuardrailsEngine:
+         # in the in-memory create_app path / unit tests.
+         self._repo: Any = None
+         self._auto_persist: bool = False
++        # Rules written by an operator/API call → upserted on flush.
+         self._unsaved: list[GuardrailRule] = []
++        # Seeded baseline/bundle defaults → inserted only if absent on flush, so a
++        # re-seed on a fresh process never overwrites a persisted (edited) row.
++        self._unsaved_seeds: list[GuardrailRule] = []
+         self._save_tasks: set[Any] = set()
++        # Lazy per-tenant load bookkeeping (monotonic timestamps).
++        self._rule_refresh_s = rule_refresh_s
++        self._tenant_loaded_at: dict[str, float] = {}
++        self._tenant_load_failed_at: dict[str, float] = {}
+ 
+     def set_provider(self, provider: Any) -> None:
+         self._provider = provider
+ 
+     def bind_repository(self, repo: Any, *, auto_persist: bool = False) -> None:
+-        """Attach a persistence repository. When ``auto_persist`` is set, rules
+-        added at runtime are flushed to the repo on a best-effort background task.
+-        Tests bind with ``auto_persist=False`` and call ``flush`` explicitly for
+-        deterministic behaviour."""
++        """Attach (or with ``None`` detach) a persistence repository.
++
++        When ``auto_persist`` is set, rules added at runtime are flushed to the
++        repo on a best-effort background task. Tests bind with
++        ``auto_persist=False`` and call ``flush`` explicitly for deterministic
++        behaviour. Nothing is read here: each tenant's persisted rules are loaded
++        on that tenant's first evaluation (:meth:`ensure_tenant_loaded`).
++        """
+         self._repo = repo
+         self._auto_persist = auto_persist
++        self._tenant_loaded_at.clear()
++        self._tenant_load_failed_at.clear()
+ 
+     def add_rule(self, rule: GuardrailRule) -> None:
++        self._add(rule, seed=False)
++
++    def _add(self, rule: GuardrailRule, *, seed: bool) -> None:
+         self._rules.setdefault(rule.tenant_id, []).append(rule)
+         if self._repo is not None:
+-            self._unsaved.append(rule)
++            (self._unsaved_seeds if seed else self._unsaved).append(rule)
+             if self._auto_persist:
+                 self._schedule_flush()
+ 
+@@ -256,11 +293,22 @@ class GuardrailsEngine:
+ 
+     async def flush(self) -> int:
+         """Persist any rules added since the last flush. Returns the count saved."""
+-        if self._repo is None or not self._unsaved:
++        if self._repo is None or not (self._unsaved or self._unsaved_seeds):
+             return 0
+-        pending = self._unsaved
+-        self._unsaved = []
++        seeds, self._unsaved_seeds = self._unsaved_seeds, []
++        pending, self._unsaved = self._unsaved, []
++        insert_if_absent = getattr(self._repo, "insert_if_absent", None)
+         saved = 0
++        for rule in seeds:
++            try:
++                if insert_if_absent is not None:
++                    await insert_if_absent(rule)
++                else:  # minimal repos (tests) without the conditional insert
++                    await self._repo.upsert(rule)
++                saved += 1
++            except Exception:
++                _log.exception("guardrail rule persist failed rule_id=%s", rule.rule_id)
++                self._unsaved_seeds.append(rule)  # retry on next flush
+         for rule in pending:
+             try:
+                 await self._repo.upsert(rule)
+@@ -270,20 +318,89 @@ class GuardrailsEngine:
+                 self._unsaved.append(rule)  # retry on next flush
+         return saved
+ 
+-    async def load_from_repo(self, tenant_id: str | None = None) -> int:
+-        """Rehydrate rules from the bound repository into memory. Returns count."""
++    async def load_from_repo(self, tenant_id: str) -> int:
++        """Merge ONE tenant's persisted rules into memory. Returns the count added.
++
++        Postgres is the source of truth: a persisted row replaces an in-memory
++        rule with the same id (e.g. a baseline default seeded moments earlier by
++        ``ensure_default_rules``), unless that in-memory rule is an operator write
++        still waiting to be flushed — that one is newer than the row.
++        """
+         if self._repo is None:
+             return 0
+         rules = await self._repo.load(tenant_id)
++        pending_writes = {r.rule_id for r in self._unsaved if r.tenant_id == tenant_id}
++        existing = self._rules.setdefault(tenant_id, [])
++        position = {r.rule_id: i for i, r in enumerate(existing)}
++        persisted: set[str] = set()
+         loaded = 0
+         for rule in rules:
+-            existing = self._rules.setdefault(rule.tenant_id, [])
+-            if any(r.rule_id == rule.rule_id for r in existing):
++            if rule.tenant_id != tenant_id:
++                # Defense in depth: RLS + the repo's predicate already exclude
++                # these; never let another tenant's rule into this tenant's list.
++                _log.error(
++                    "guardrail rule tenant mismatch rule_id=%s expected=%s got=%s",
++                    rule.rule_id,
++                    tenant_id,
++                    rule.tenant_id,
++                )
+                 continue
+-            existing.append(rule)
+-            loaded += 1
++            persisted.add(rule.rule_id)
++            idx = position.get(rule.rule_id)
++            if idx is None:
++                position[rule.rule_id] = len(existing)
++                existing.append(rule)
++                loaded += 1
++            elif rule.rule_id not in pending_writes:
++                existing[idx] = rule
++        # A seed whose row already exists needs no insert.
++        self._unsaved_seeds = [r for r in self._unsaved_seeds if r.rule_id not in persisted]
+         return loaded
+ 
++    async def ensure_tenant_loaded(self, tenant_id: str) -> None:
++        """Make sure ``tenant_id``'s persisted rules are in memory (and fresh).
++
++        This is the lazy, per-tenant replacement for the old cross-tenant startup
++        scan: the first evaluation for a tenant on this process reads that
++        tenant's rules under its own RLS context; later evaluations re-read them
++        at most every ``rule_refresh_s`` so rules written on another replica are
++        picked up. No-op without a bound repository.
++
++        Raises :class:`GuardrailRulesUnavailableError` when the tenant has never
++        been loaded here and the load fails. Once loaded, a failed refresh keeps
++        serving the last-known rules (logged) rather than failing the request.
++        """
++        if self._repo is None or not tenant_id:
++            return
++        now = time.monotonic()
++        loaded_at = self._tenant_loaded_at.get(tenant_id)
++        if loaded_at is not None and now - loaded_at < self._rule_refresh_s:
++            return
++        if loaded_at is None:
++            failed_at = self._tenant_load_failed_at.get(tenant_id)
++            if failed_at is not None and now - failed_at < _LOAD_RETRY_BACKOFF_S:
++                raise GuardrailRulesUnavailableError(
++                    f"guardrail rules for tenant {tenant_id!r} are unavailable"
++                )
++        try:
++            await self.load_from_repo(tenant_id)
++        except Exception as exc:
++            if loaded_at is None:
++                self._tenant_load_failed_at[tenant_id] = time.monotonic()
++                _log.warning("guardrail rules load failed tenant=%s: %s", tenant_id, exc)
++                raise GuardrailRulesUnavailableError(
++                    f"guardrail rules for tenant {tenant_id!r} could not be loaded"
++                ) from exc
++            _log.warning(
++                "guardrail rules refresh failed tenant=%s; serving last-known rules: %s",
++                tenant_id,
++                exc,
++            )
++            self._tenant_loaded_at[tenant_id] = time.monotonic()  # retry next window
++            return
++        self._tenant_loaded_at[tenant_id] = time.monotonic()
++        self._tenant_load_failed_at.pop(tenant_id, None)
++
+     def ensure_default_rules(
+         self, tenant_id: str, bundles: list[str] | None = None
+     ) -> int:
+@@ -299,7 +416,7 @@ class GuardrailsEngine:
+         for rule in _baseline_rules(tenant_id):
+             if rule.rule_id in existing_ids:
+                 continue
+-            self.add_rule(rule)
++            self._add(rule, seed=True)
+             existing_ids.add(rule.rule_id)
+             added += 1
+         for tag in bundles or []:
+@@ -312,17 +429,26 @@ class GuardrailsEngine:
+                 rule = _rule_from_spec(tenant_id, rule_id, spec)
+                 if rule.rule_id in existing_ids:
+                     continue
+-                self.add_rule(rule)
++                self._add(rule, seed=True)
+                 existing_ids.add(rule.rule_id)
+                 added += 1
+         return added
+ 
+     def get_rules(self, tenant_id: str, layer: GuardrailLayer | None = None) -> list[GuardrailRule]:
++        """In-memory view only. Request paths should use :meth:`aget_rules`, which
++        first loads the tenant's persisted rules on a fresh process."""
+         rules = [r for r in self._rules.get(tenant_id, []) if r.enabled]
+         if layer:
+             rules = [r for r in rules if layer in r.layers]
+         return rules
+ 
++    async def aget_rules(
++        self, tenant_id: str, layer: GuardrailLayer | None = None
++    ) -> list[GuardrailRule]:
++        """Like :meth:`get_rules`, after loading the tenant's persisted rules."""
++        await self.ensure_tenant_loaded(tenant_id)
++        return self.get_rules(tenant_id, layer)
++
+     def get_violations(self, tenant_id: str, limit: int = 100) -> list[GuardrailViolation]:
+         violations = list(reversed(self._violations.get(tenant_id, [])))
+         return violations[:limit]
+@@ -336,7 +462,7 @@ class GuardrailsEngine:
+         step_description: str | None = None,
+     ) -> dict[str, Any]:
+         """Evaluate content against all active rules for the given layer."""
+-        rules = self.get_rules(tenant_id, layer)
++        rules = await self.aget_rules(tenant_id, layer)
+         violations = []
+         redacted_content = content
+         blocked = False
+@@ -393,7 +519,7 @@ class GuardrailsEngine:
+         except ValueError:
+             return {"error": f"Invalid layer: {layer}"}
+ 
+-        rules = self.get_rules(tenant_id, layer_enum)
++        rules = await self.aget_rules(tenant_id, layer_enum)
+         would_trigger = []
+ 
+         for rule in rules:
+diff --git a/agent-verse-backend/app/guardrails_v2/repository.py b/agent-verse-backend/app/guardrails_v2/repository.py
+index 9479d689c..35ed9bf0f 100644
+--- a/agent-verse-backend/app/guardrails_v2/repository.py
++++ b/agent-verse-backend/app/guardrails_v2/repository.py
+@@ -4,6 +4,11 @@ Rules were previously held only in ``GuardrailsEngine._rules`` (in-memory) and
+ were lost on restart. This repository durably stores them, tenant-scoped and
+ RLS-protected. It is bound to the engine in the app lifespan (two-phase wiring:
+ in-memory in ``create_app``, DB-backed here).
++
++Every statement runs inside the owning tenant's RLS context (``app.tenant_id``)
++and also carries an explicit ``tenant_id`` predicate. There is deliberately no
++cross-tenant read: the API connects as a NOBYPASSRLS role, and the engine loads
++each tenant's rules lazily instead of warming every tenant's rules at startup.
+ """
+ 
+ from __future__ import annotations
+@@ -14,7 +19,7 @@ from sqlalchemy import select
+ from sqlalchemy.dialects.postgresql import insert as pg_insert
+ 
+ from app.db.models.guardrail_rule import GuardrailRuleRow
+-from app.db.rls import sqlalchemy_rls_context, system_session
++from app.db.rls import sqlalchemy_rls_context
+ from app.guardrails_v2.models import (
+     GuardrailAction,
+     GuardrailLayer,
+@@ -74,29 +79,52 @@ class PostgresGuardrailRuleRepository:
+             stmt = pg_insert(GuardrailRuleRow).values(**values)
+             update_cols = {k: v for k, v in values.items() if k not in ("rule_id", "tenant_id")}
+             stmt = stmt.on_conflict_do_update(
+-                index_elements=[GuardrailRuleRow.rule_id], set_=update_cols
++                index_elements=[GuardrailRuleRow.rule_id],
++                set_=update_cols,
++                # Defense in depth next to RLS: never rewrite another tenant's row.
++                where=GuardrailRuleRow.tenant_id == rule.tenant_id,
+             )
+             await db.execute(stmt)
+ 
+-    async def load(self, tenant_id: str | None = None) -> list[GuardrailRule]:
+-        """Load rules. With ``tenant_id`` set, scope to that tenant under its RLS
+-        context; with ``None`` (lifespan rehydrate) read across tenants via a
+-        system session (requires a BYPASSRLS/superuser DB role)."""
+-        if tenant_id is not None:
+-            async with (
+-                self._sessions() as db,
+-                db.begin(),
+-                sqlalchemy_rls_context(db, tenant_id),
+-            ):
+-                rows = (
+-                    await db.execute(
+-                        select(GuardrailRuleRow).where(
+-                            GuardrailRuleRow.tenant_id == tenant_id
+-                        )
+-                    )
+-                ).scalars().all()
+-                return [_from_row(r) for r in rows]
++    async def insert_if_absent(self, rule: GuardrailRule) -> None:
++        """Insert ``rule`` unless a row with its id already exists.
+ 
+-        async with self._sessions() as db, db.begin(), system_session(db):
+-            rows = (await db.execute(select(GuardrailRuleRow))).scalars().all()
+-            return [_from_row(r) for r in rows]
++        Used for seeded baseline / compliance-bundle rules. Their ids are
++        deterministic per tenant, so an existing row means the tenant already has
++        that rule, possibly edited (e.g. disabled). Re-seeding on a fresh process
++        must not overwrite it with the pristine default, which an upsert would do.
++        """
++        values = _to_row(rule)
++        async with (
++            self._sessions() as db,
++            db.begin(),
++            sqlalchemy_rls_context(db, rule.tenant_id),
++        ):
++            stmt = (
++                pg_insert(GuardrailRuleRow)
++                .values(**values)
++                .on_conflict_do_nothing(index_elements=[GuardrailRuleRow.rule_id])
++            )
++            await db.execute(stmt)
++
++    async def load(self, tenant_id: str) -> list[GuardrailRule]:
++        """Load ONE tenant's rules under that tenant's RLS context.
++
++        ``tenant_id`` is required. The previous ``load(None)`` read every tenant's
++        rules through ``system_session`` at startup; under the API's NOBYPASSRLS
++        role that failed ("failed to load persisted guardrail rules"), and a
++        maintenance-role read has no place on the request-serving path. The engine
++        now loads each tenant lazily on that tenant's first evaluation. The explicit
++        predicate is defense in depth on top of the RLS policy.
++        """
++        if not tenant_id:
++            raise ValueError("tenant_id is required to load guardrail rules")
++        async with (
++            self._sessions() as db,
++            db.begin(),
++            sqlalchemy_rls_context(db, tenant_id),
++        ):
++            result = await db.execute(
++                select(GuardrailRuleRow).where(GuardrailRuleRow.tenant_id == tenant_id)
++            )
++            return [_from_row(r) for r in result.scalars().all()]
+diff --git a/agent-verse-backend/app/main.py b/agent-verse-backend/app/main.py
+index 503935f34..246991fe7 100644
+--- a/agent-verse-backend/app/main.py
++++ b/agent-verse-backend/app/main.py
+@@ -1183,9 +1183,10 @@ def create_app(
+             event_store = EventStore(db_factory)
+ 
+             # P1-4: bind the guardrails engine to a durable, RLS-scoped repository
+-            # and rehydrate any persisted rules (two-phase wiring — in-memory in
+-            # create_app, DB-backed here). Best-effort: a load failure must not
+-            # abort startup (defaults are re-seeded per goal by the selector).
++            # (two-phase wiring — in-memory in create_app, DB-backed here). There is
++            # no startup warm-up: each tenant's persisted rules are loaded under that
++            # tenant's RLS context on its first evaluation (the old cross-tenant
++            # SELECT failed under the API's NOBYPASSRLS role).
+             try:
+                 from app.guardrails_v2.engine import guardrails_engine
+                 from app.guardrails_v2.repository import PostgresGuardrailRuleRepository
+@@ -1193,10 +1194,9 @@ def create_app(
+                 guardrails_engine.bind_repository(
+                     PostgresGuardrailRuleRepository(db_factory), auto_persist=True
+                 )
+-                _loaded_rules = await guardrails_engine.load_from_repo()
+-                logger.info("guardrails_rules_loaded", extra={"count": _loaded_rules})
++                logger.info("guardrails_rule_repository_bound")
+             except Exception:
+-                logger.exception("failed to load persisted guardrail rules")
++                logger.exception("failed to bind the guardrail rule repository")
+             from app.coordination.service import CoordinationService
+             from app.coordination.store import CoordinationStore
+ 
+@@ -2086,10 +2086,15 @@ def create_app(
+             except Exception as _pv_exc:
+                 logger.warning("prompt_optimizer_db_wire_failed", error=str(_pv_exc))
+ 
+-            # ── HITLGateway: restore pending approvals from DB on startup ──────────
++            # ── HITLGateway: startup maintenance only ────────────────────────────
++            # Expiring phantom approvals is cross-tenant system work, so it runs on
++            # the maintenance role. Pending approvals are not warmed into memory:
++            # Postgres is the source of truth and request paths read it per tenant.
+             try:
+-                _hitl_restored = await _hitl.startup_restore(db=db_factory)
+-                logger.info("hitl_startup_restore_complete", count=_hitl_restored)
++                _hitl_expired = await _hitl.startup_restore(
++                    db=app.state.system_db_session_factory
++                )
++                logger.info("hitl_startup_restore_complete", phantoms_expired=_hitl_expired)
+             except Exception as _hitl_exc:
+                 logger.warning("hitl_startup_restore_failed", error=str(_hitl_exc))
+ 
+@@ -2355,6 +2360,17 @@ def create_app(
+ 
+                     with contextlib.suppress(Exception):
+                         await _siem_fwd.stop()
++                # Persist any guardrail rules still pending, then detach the
++                # process-wide engine from this lifespan's DB pool: it now reads
++                # rules through the repository on evaluation, and must not keep
++                # doing so against a pool that is being shut down.
++                try:
++                    from app.guardrails_v2.engine import guardrails_engine as _ge_stop
++
++                    await _ge_stop.flush()
++                    _ge_stop.bind_repository(None)
++                except Exception as _ge_stop_exc:
++                    logger.warning("guardrails_repository_unbind_failed", error=str(_ge_stop_exc))
+                 await active.shutdown()
+         else:
+             try:
+diff --git a/agent-verse-backend/app/services/goal_service.py b/agent-verse-backend/app/services/goal_service.py
+index 316aa1c38..96b40f9db 100644
+--- a/agent-verse-backend/app/services/goal_service.py
++++ b/agent-verse-backend/app/services/goal_service.py
+@@ -3943,16 +3943,22 @@ class GoalService:
+         """Approve or reject a pending HITL request for *goal_id*."""
+         self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
+         if action == "approve":
+-            ok = self._hitl.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
++            # DB-resolving: the sync approve() only sees this process's cache,
++            # which is not warmed from the DB at startup (Postgres is the source
++            # of truth), so a gate raised before a restart / on another replica
++            # would read as not found.
++            ok = await self._hitl.approve_async(
++                request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
++            )
+         elif action == "reject":
+             ok = await self._hitl.reject(
+                 request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+             )
+         else:
+             ok = False
+-        # ``HITLGateway.approve`` returns a dual sync/async ``_AwaitableBool`` which
+-        # FastAPI/pydantic cannot serialize; coerce to a plain bool for the
+-        # response payload.
++        # Coerce to a plain bool for the response payload (the sync
++        # ``HITLGateway.approve`` returns an ``_AwaitableBool`` pydantic cannot
++        # serialize, and test doubles may return any truthy value).
+         return {"request_id": request_id, "action": action, "accepted": bool(ok)}
+ 
+     # ── DB persistence helpers ────────────────────────────────────────────────
+diff --git a/agent-verse-backend/app/services/usage_service.py b/agent-verse-backend/app/services/usage_service.py
+index ae7550d88..390f025e1 100644
+--- a/agent-verse-backend/app/services/usage_service.py
++++ b/agent-verse-backend/app/services/usage_service.py
+@@ -13,6 +13,7 @@ Designed to be fire-and-forget (async tasks) so it never blocks the hot path.
+ from __future__ import annotations
+ 
+ import asyncio
++import json
+ import uuid
+ from collections import defaultdict
+ from datetime import UTC, datetime
+@@ -196,30 +197,71 @@ class UsageService:
+             to_flush = self._buffer[:100]
+             self._buffer = self._buffer[100:]
+ 
+-        try:
+-            from sqlalchemy import text
++        from sqlalchemy import text
+ 
+-            from app.db.rls import system_session
++        from app.db.rls import sqlalchemy_rls_context
+ 
+-            async with self._db() as session, session.begin(), system_session(session):
+-                for record in to_flush:
+-                    await session.execute(
+-                        text(
+-                            "INSERT INTO usage_records"
+-                            " (id, tenant_id, goal_id, metric, quantity,"
+-                            " unit_cost_usd, total_cost_usd, period_start, metadata)"
+-                            " VALUES (:id, :tenant_id, :goal_id, :metric, :quantity,"
+-                            " :unit_cost_usd, :total_cost_usd, :period_start,"
+-                            " CAST(:metadata AS jsonb))"
+-                            " ON CONFLICT (id) DO NOTHING"
+-                        ),
+-                        {**record, "metadata": str(record["metadata"]).replace("'", '"')},
+-                    )
+-            logger.info("usage_flushed", count=len(to_flush))
+-        except Exception as exc:
+-            logger.warning("usage_flush_failed", error=str(exc)[:80])
++        # The buffer mixes tenants. usage_records is FORCE-RLS, so each tenant's
++        # slice is written in its own transaction under that tenant's RLS context.
++        # (This used to be one cross-tenant batch under system_session — an RLS
++        # bypass inside the API process, which under the API's NOBYPASSRLS role
++        # failed every flush.) A failing tenant re-buffers only its own records.
++        by_tenant: dict[str, list[dict[str, Any]]] = defaultdict(list)
++        for record in to_flush:
++            by_tenant[str(record["tenant_id"])].append(record)
++
++        insert = text(
++            "INSERT INTO usage_records"
++            " (id, tenant_id, goal_id, metric, quantity,"
++            " unit_cost_usd, total_cost_usd, period_start, metadata)"
++            " VALUES (:id, :tenant_id, :goal_id, :metric, :quantity,"
++            " :unit_cost_usd, :total_cost_usd, :period_start,"
++            " CAST(:metadata AS json))"
++            " ON CONFLICT (id) DO NOTHING"
++        )
++        failed: list[dict[str, Any]] = []
++        flushed = 0
++        for tenant_id, records in by_tenant.items():
++            try:
++                async with (
++                    self._db() as session,
++                    session.begin(),
++                    sqlalchemy_rls_context(session, tenant_id),
++                ):
++                    await session.execute(insert, [_insert_params(r) for r in records])
++                flushed += len(records)
++            except Exception as exc:
++                logger.warning("usage_flush_failed", tenant_id=tenant_id, error=str(exc)[:120])
++                failed.extend(records)
++        if flushed:
++            logger.info("usage_flushed", count=flushed)
++        if failed:
+             # Re-add to buffer for retry
+-            self._buffer = to_flush + self._buffer
++            self._buffer = failed + self._buffer
++
++
++def _insert_params(record: dict[str, Any]) -> dict[str, Any]:
++    """Bind parameters for one buffered record.
++
++    ``period_start`` is buffered as an ISO string but bound as a ``datetime``
++    (asyncpg will not coerce a str into a timestamptz parameter), and metadata is
++    real JSON — the previous ``str(dict).replace("'", '"')`` produced invalid JSON
++    for ``None``/``True`` values or quotes inside strings.
++    """
++    period_start = record["period_start"]
++    if isinstance(period_start, str):
++        period_start = datetime.fromisoformat(period_start)
++    return {
++        "id": record["id"],
++        "tenant_id": record["tenant_id"],
++        "goal_id": record.get("goal_id"),
++        "metric": record["metric"],
++        "quantity": record["quantity"],
++        "unit_cost_usd": record["unit_cost_usd"],
++        "total_cost_usd": record["total_cost_usd"],
++        "period_start": period_start,
++        "metadata": json.dumps(record.get("metadata") or {}, default=str),
++    }
+ 
+ 
+ # Module-level singleton
+diff --git a/agent-verse-backend/tests/api/test_final_coverage_push.py b/agent-verse-backend/tests/api/test_final_coverage_push.py
+index c690f2d0f..4678f54b4 100644
+--- a/agent-verse-backend/tests/api/test_final_coverage_push.py
++++ b/agent-verse-backend/tests/api/test_final_coverage_push.py
+@@ -591,43 +591,9 @@ class TestHITLExtra:
+         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+         mock_session.__aexit__ = AsyncMock(return_value=False)
+         mock_session.execute = AsyncMock(return_value=mock_result)
+-
+-        def _db():
+-            return mock_session
+-
+-        gw = HITLGateway()
+-        count = await gw.load_pending_from_db(db=_db, tenant_id="t1")
+-        assert count == 1
+-
+-    # lines 432–455 — load_pending_from_db_full with DB rows
+-    @pytest.mark.asyncio
+-    async def test_load_pending_from_db_full_with_rows(self) -> None:
+-        from app.governance.hitl import HITLGateway
+-
+-        # load_pending_from_db_full reads the pending query via .mappings().all()
+-        # (dict rows) and the terminal-goal checks via .scalars().all().
+-        row = {
+-            "id": "req-full-1",
+-            "goal_id": "g-full-1",
+-            "action": "migrate",
+-            "risk_level": "medium",
+-            "tenant_id": "tenant-full",
+-        }
+-        mock_mappings = MagicMock()
+-        mock_mappings.all = MagicMock(return_value=[row])
+-        mock_scalars = MagicMock()
+-        mock_scalars.all = MagicMock(return_value=[])  # no terminal missions/goals
+-
+-        mock_result = MagicMock()
+-        mock_result.mappings = MagicMock(return_value=mock_mappings)
+-        mock_result.scalars = MagicMock(return_value=mock_scalars)
+-
+-        mock_session = AsyncMock()
+-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+-        mock_session.__aexit__ = AsyncMock(return_value=False)
+-        mock_session.execute = AsyncMock(return_value=mock_result)
+-        # load_pending_from_db_full opens `async with db() as session, session.begin(), ...`
+-        # so session.begin() must return an async context manager, not a coroutine.
++        # load_pending_from_db opens `async with db() as session, session.begin(),
++        # sqlalchemy_rls_context(...)` — the tenant RLS context is mandatory on
++        # FORCE-RLS approval_requests — so begin() must be an async CM.
+         _txn = AsyncMock()
+         _txn.__aenter__ = AsyncMock(return_value=_txn)
+         _txn.__aexit__ = AsyncMock(return_value=False)
+@@ -637,17 +603,55 @@ class TestHITLExtra:
+             return mock_session
+ 
+         gw = HITLGateway()
+-        count = await gw.load_pending_from_db_full(db=_db)
++        count = await gw.load_pending_from_db(db=_db, tenant_id="t1")
+         assert count == 1
++        # The first statement sets the tenant GUC before the SELECT runs.
++        first_sql = str(mock_session.execute.await_args_list[0].args[0])
++        assert "set_config('app.tenant_id'" in first_sql
++        assert mock_session.execute.await_args_list[0].args[1] == {"tid": "t1"}
+ 
+-    # lines 477–480 — startup_restore logs warning on exception
++    @pytest.mark.asyncio
++    async def test_expire_phantom_approvals_updates_and_syncs_cache(self) -> None:
++        from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
++
++        # The sweep is a single UPDATE ... RETURNING id, tenant_id (no hydration).
++        mock_result = MagicMock()
++        mock_result.all = MagicMock(return_value=[("req-phantom", "tenant-x")])
++
++        mock_session = AsyncMock()
++        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
++        mock_session.__aexit__ = AsyncMock(return_value=False)
++        mock_session.execute = AsyncMock(return_value=mock_result)
++        _txn = AsyncMock()
++        _txn.__aenter__ = AsyncMock(return_value=_txn)
++        _txn.__aexit__ = AsyncMock(return_value=False)
++        mock_session.begin = MagicMock(return_value=_txn)
++
++        def _system_db():
++            return mock_session
++
++        gw = HITLGateway()
++        cached = ApprovalRequest(
++            goal_id="g-done", action="deploy", risk_level="high", request_id="req-phantom"
++        )
++        gw._requests[("tenant-x", "req-phantom")] = cached
++
++        count = await gw.expire_phantom_approvals(_system_db)
++        assert count == 1
++        executed = [str(c.args[0]) for c in mock_session.execute.await_args_list]
++        assert executed[0] == "SET LOCAL row_security = off"  # maintenance role
++        assert "UPDATE approval_requests" in executed[1]
++        assert "LIMIT :lim" in executed[1]
++        assert cached.status == ApprovalStatus.TIMED_OUT
++        assert list(gw._requests) == [("tenant-x", "req-phantom")]  # nothing hydrated
++
++    # startup_restore logs warning on exception
+     @pytest.mark.asyncio
+     async def test_startup_restore_exception_logged(self) -> None:
+         from app.governance.hitl import HITLGateway
+ 
+         gw = HITLGateway()
+-        # Make load_pending_from_db_full raise
+-        gw.load_pending_from_db_full = AsyncMock(side_effect=RuntimeError("full scan failed"))
++        gw.expire_phantom_approvals = AsyncMock(side_effect=RuntimeError("sweep failed"))
+ 
+         result = await gw.startup_restore(db=MagicMock())
+         assert result == 0  # returns 0 on exception
+@@ -2787,21 +2791,26 @@ class TestHITLWave5:
+         await gw._db_persist_approval_request(req, "t1")
+ 
+     @pytest.mark.asyncio
+-    async def test_load_pending_from_db_full_exception_logged(self) -> None:
+-        """Lines 452-455: load_pending_from_db_full DB exception logged."""
++    async def test_expire_phantom_approvals_exception_logged(self) -> None:
++        """A failing phantom sweep (e.g. no BYPASSRLS role) is logged, returns 0."""
+         from app.governance.hitl import HITLGateway
+ 
+         mock_session = AsyncMock()
+         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+         mock_session.__aexit__ = AsyncMock(return_value=False)
+         mock_session.execute = AsyncMock(side_effect=RuntimeError("db fail"))
++        _txn = AsyncMock()
++        _txn.__aenter__ = AsyncMock(return_value=_txn)
++        _txn.__aexit__ = AsyncMock(return_value=False)
++        mock_session.begin = MagicMock(return_value=_txn)
+ 
+         def _db():
+             return mock_session
+ 
+         gw = HITLGateway()
+-        count = await gw.load_pending_from_db_full(db=_db)
++        count = await gw.expire_phantom_approvals(_db)
+         assert count == 0
++        mock_session.execute.assert_awaited()
+ 
+ 
+ class TestIntegrationsWave5:
+diff --git a/agent-verse-backend/tests/chat/test_builtin_skills.py b/agent-verse-backend/tests/chat/test_builtin_skills.py
+index 0b7ac28c3..c0f84ec29 100644
+--- a/agent-verse-backend/tests/chat/test_builtin_skills.py
++++ b/agent-verse-backend/tests/chat/test_builtin_skills.py
+@@ -142,7 +142,13 @@ async def test_list_pending_approvals_skill() -> None:
+             self.status = "pending"
+ 
+     class _Gateway:
++        # The skill must use the DB-backed listing: the process cache is not
++        # warmed at startup, so list_pending() would miss approvals raised before
++        # a restart or on another replica.
+         def list_pending(self, *, tenant_ctx: Any, goal_id: Any = None) -> list[Any]:
++            raise AssertionError("chat skill must use alist_pending (DB-backed)")
++
++        async def alist_pending(self, *, tenant_ctx: Any, goal_id: Any = None) -> list[Any]:
+             return [_Req("req-1")]
+ 
+     skill = build_list_pending_approvals_skill(_Gateway())
+@@ -161,7 +167,11 @@ async def test_resolve_approval_skill_approve_and_reject() -> None:
+         def __init__(self) -> None:
+             self.calls: list[tuple[str, str]] = []
+ 
+-        async def approve(self, request_id: str, *, approver: str, note: str, tenant_ctx: Any) -> bool:
++        # approve_async resolves the request in Postgres first; the sync
++        # approve() only sees this process's cache.
++        async def approve_async(
++            self, request_id: str, *, approver: str, note: str, tenant_ctx: Any
++        ) -> bool:
+             self.calls.append(("approve", request_id))
+             return True
+ 
+diff --git a/agent-verse-backend/tests/governance/test_audit_v3_rls.py b/agent-verse-backend/tests/governance/test_audit_v3_rls.py
+new file mode 100644
+index 000000000..cad4d3351
+--- /dev/null
++++ b/agent-verse-backend/tests/governance/test_audit_v3_rls.py
+@@ -0,0 +1,46 @@
++"""AuditV3.append must persist under the tenant's RLS context, never bypass it.
++
++It used ``system_session`` (``SET LOCAL row_security = off``) for a single
++tenant's INSERT on the request path: a privilege escalation, and under the API's
++NOBYPASSRLS role every statement fails "query would be affected by row-level
++security".
++"""
++
++from __future__ import annotations
++
++from typing import Any
++
++from app.governance.audit_v3 import AuditV3
++
++
++class _Session:
++    def __init__(self, log: list[tuple[str, Any]]) -> None:
++        self._log = log
++
++    async def __aenter__(self) -> _Session:
++        return self
++
++    async def __aexit__(self, *args: object) -> None:
++        return None
++
++    def begin(self) -> _Session:
++        return self
++
++    async def execute(self, statement: Any, params: Any = None) -> None:
++        self._log.append((str(statement), params))
++
++
++async def test_append_persists_inside_the_tenant_rls_context() -> None:
++    log: list[tuple[str, Any]] = []
++    audit = AuditV3(db_factory=lambda: _Session(log))
++
++    record = await audit.append(tenant_id="tenant-a", goal_id="g-1", action="tool_call")
++
++    statements = [sql for sql, _ in log]
++    assert not any("row_security" in sql for sql in statements), "RLS bypass on request path"
++    assert "set_config('app.tenant_id'" in statements[0]
++    assert log[0][1] == {"tid": "tenant-a"}
++    insert = next(i for i, sql in enumerate(statements) if "INSERT INTO audit_events" in sql)
++    assert insert > 0, "the INSERT must run after the tenant GUC is set"
++    assert log[insert][1]["tid"] == "tenant-a"
++    assert record.tenant_id == "tenant-a"
+diff --git a/agent-verse-backend/tests/governance/test_hitl_comprehensive2.py b/agent-verse-backend/tests/governance/test_hitl_comprehensive2.py
+index a63041cd1..82c5f5b6a 100644
+--- a/agent-verse-backend/tests/governance/test_hitl_comprehensive2.py
++++ b/agent-verse-backend/tests/governance/test_hitl_comprehensive2.py
+@@ -335,9 +335,9 @@ class TestHITLGateway:
+         count = await gw.load_pending_from_db(bad_factory, "t1")
+         assert count == 0
+ 
+-    async def test_load_pending_from_db_full_no_db(self) -> None:
++    async def test_expire_phantom_approvals_no_db(self) -> None:
+         gw = HITLGateway()
+-        count = await gw.load_pending_from_db_full(None)
++        count = await gw.expire_phantom_approvals(None)
+         assert count == 0
+ 
+     async def test_startup_restore_no_db_returns_0(self) -> None:
+diff --git a/agent-verse-backend/tests/governance/test_hitl_lazy_db_resolution.py b/agent-verse-backend/tests/governance/test_hitl_lazy_db_resolution.py
+new file mode 100644
+index 000000000..280360bb0
+--- /dev/null
++++ b/agent-verse-backend/tests/governance/test_hitl_lazy_db_resolution.py
+@@ -0,0 +1,93 @@
++"""HITL resolution without a startup warm cache.
++
++Startup no longer pulls every tenant's pending approvals into memory (that scan
++ran through system_session and failed under the API's NOBYPASSRLS role). So a
++request path that meets a cache miss must resolve the approval in Postgres,
++scoped to the caller's tenant, instead of answering "not found".
++"""
++
++from __future__ import annotations
++
++from typing import Any
++from unittest.mock import AsyncMock
++
++from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
++from app.tenancy.context import PlanTier, TenantContext
++
++CTX_A = TenantContext(tenant_id="tenant-a", plan=PlanTier.PROFESSIONAL, api_key_id="k-a")
++CTX_B = TenantContext(tenant_id="tenant-b", plan=PlanTier.PROFESSIONAL, api_key_id="k-b")
++
++
++def _gateway(rows: dict[tuple[str, str], dict[str, Any]]) -> HITLGateway:
++    """A gateway whose DB holds ``rows`` keyed by (tenant_id, request_id)."""
++    gw = HITLGateway(db_session_factory=object())
++
++    async def _fetch(request_id: str, tenant_id: str) -> dict[str, Any] | None:
++        return rows.get((tenant_id, request_id))
++
++    gw._db_fetch_request = _fetch  # type: ignore[method-assign]
++    gw._db_update_resolution = AsyncMock(return_value=True)  # type: ignore[method-assign]
++    return gw
++
++
++def _row(request_id: str, tenant_id: str, status: str = "pending") -> dict[str, Any]:
++    return {
++        "id": request_id,
++        "tenant_id": tenant_id,
++        "goal_id": "goal-1",
++        "action": "deploy to prod",
++        "risk_level": "high",
++        "status": status,
++    }
++
++
++async def test_reject_resolves_an_uncached_pending_approval_from_the_db() -> None:
++    gw = _gateway({("tenant-a", "req-1"): _row("req-1", "tenant-a")})
++    assert gw._requests == {}  # fresh process: nothing warmed
++
++    assert await gw.reject("req-1", approver="op", note="no", tenant_ctx=CTX_A) is True
++    req = gw.get_request("req-1", tenant_ctx=CTX_A)
++    assert req is not None and req.status == ApprovalStatus.REJECTED
++    gw._db_update_resolution.assert_awaited_once_with(  # type: ignore[attr-defined]
++        "req-1", "tenant-a", "rejected", "op", "no"
++    )
++
++
++async def test_reject_cannot_reach_another_tenants_approval() -> None:
++    gw = _gateway({("tenant-a", "req-1"): _row("req-1", "tenant-a")})
++
++    assert await gw.reject("req-1", approver="op", tenant_ctx=CTX_B) is False
++    assert gw.get_request("req-1", tenant_ctx=CTX_B) is None
++    gw._db_update_resolution.assert_not_awaited()  # type: ignore[attr-defined]
++
++
++async def test_reject_of_an_already_resolved_db_row_fails() -> None:
++    gw = _gateway({("tenant-a", "req-1"): _row("req-1", "tenant-a", status="approved")})
++
++    assert await gw.reject("req-1", approver="op", tenant_ctx=CTX_A) is False
++    gw._db_update_resolution.assert_not_awaited()  # type: ignore[attr-defined]
++
++
++async def test_reject_of_an_unknown_request_fails() -> None:
++    gw = _gateway({})
++    assert await gw.reject("nope", approver="op", tenant_ctx=CTX_A) is False
++
++
++async def test_approve_async_resolves_an_uncached_pending_approval() -> None:
++    gw = _gateway({("tenant-a", "req-2"): _row("req-2", "tenant-a")})
++    gw._reconcile_after_db_resolution = AsyncMock()  # type: ignore[method-assign]
++    gw._schedule_db_resolution = lambda *a, **k: None  # type: ignore[method-assign]
++
++    assert await gw.approve_async("req-2", approver="op", tenant_ctx=CTX_A) is True
++    assert gw.get_request("req-2", tenant_ctx=CTX_A).status == ApprovalStatus.APPROVED  # type: ignore[union-attr]
++    assert await gw.approve_async("req-2", approver="op", tenant_ctx=CTX_B) is False
++
++
++async def test_cached_request_still_takes_the_fast_path() -> None:
++    gw = _gateway({})
++    req = ApprovalRequest(goal_id="g", action="a", risk_level="high", request_id="req-3")
++    gw._requests[("tenant-a", "req-3")] = req
++    gw.aget_request = AsyncMock()  # type: ignore[method-assign]
++
++    assert await gw.reject("req-3", approver="op", tenant_ctx=CTX_A) is True
++    gw.aget_request.assert_not_awaited()
+diff --git a/agent-verse-backend/tests/governance/test_hitl_startup.py b/agent-verse-backend/tests/governance/test_hitl_startup.py
+index fc7789509..89241ecfb 100644
+--- a/agent-verse-backend/tests/governance/test_hitl_startup.py
++++ b/agent-verse-backend/tests/governance/test_hitl_startup.py
+@@ -1,4 +1,4 @@
+-"""Tests for HITLGateway startup restore."""
++"""Tests for HITLGateway startup restore (maintenance-only, no warm scan)."""
+ from unittest.mock import AsyncMock
+ 
+ import pytest
+@@ -14,12 +14,23 @@ async def test_startup_restore_with_no_db_returns_zero():
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_startup_restore_calls_load_pending_full():
++async def test_startup_restore_only_expires_phantoms():
++    """Startup runs the cross-tenant phantom sweep and hydrates nothing.
++
++    The old startup scan pulled every tenant's pending approvals into memory
++    through system_session, which fails under the API's NOBYPASSRLS role. Postgres
++    is the source of truth; the request paths read it per tenant.
++    """
+     gw = HITLGateway()
+-    gw.load_pending_from_db_full = AsyncMock(return_value=5)
+-    count = await gw.startup_restore(db=AsyncMock())
++    gw.expire_phantom_approvals = AsyncMock(return_value=5)
++    system_db = AsyncMock()
++    count = await gw.startup_restore(db=system_db)
+     assert count == 5
+-    gw.load_pending_from_db_full.assert_called_once()
++    gw.expire_phantom_approvals.assert_awaited_once_with(system_db)
++    assert gw._requests == {}
++    assert not hasattr(gw, "load_pending_from_db_full"), (
++        "the cross-tenant pending-approval warm scan must not come back"
++    )
+ 
+ 
+ def test_hitl_has_startup_restore():
+diff --git a/agent-verse-backend/tests/guardrails/test_guardrails_lazy_load.py b/agent-verse-backend/tests/guardrails/test_guardrails_lazy_load.py
+new file mode 100644
+index 000000000..4fdd31b50
+--- /dev/null
++++ b/agent-verse-backend/tests/guardrails/test_guardrails_lazy_load.py
+@@ -0,0 +1,276 @@
++"""Lazy, per-tenant guardrail-rule loading (replaces the startup warm scan).
++
++The lifespan used to call ``guardrails_engine.load_from_repo()`` with no tenant,
++which read every tenant's ``guardrail_rules`` through ``system_session``. Under
++the API's NOBYPASSRLS role that failed ("failed to load persisted guardrail
++rules"), so a fresh process enforced only the baseline defaults and silently
++dropped every tenant's own BLOCK rules.
++
++Now nothing is read at startup; each tenant's rules are loaded under that
++tenant's RLS context on its first evaluation. The real-Postgres proof lives in
++``test_guardrail_rules_persistence.py``; these tests pin the engine semantics.
++"""
++
++from __future__ import annotations
++
++import time
++from dataclasses import replace
++from typing import Any
++
++import pytest
++
++from app.guardrails_v2.engine import (
++    GuardrailRulesUnavailableError,
++    GuardrailsEngine,
++)
++from app.guardrails_v2.models import GuardrailAction, GuardrailLayer, GuardrailRule
++
++TENANT_A = "tenant-a"
++TENANT_B = "tenant-b"
++
++
++def _block_rule(tenant_id: str, keyword: str, rule_id: str | None = None) -> GuardrailRule:
++    return GuardrailRule(
++        rule_id=rule_id or f"custom:{tenant_id}:{keyword}",
++        tenant_id=tenant_id,
++        name=f"block {keyword}",
++        rule_type="keyword_block",
++        layers=[GuardrailLayer.GOAL],
++        action=GuardrailAction.BLOCK,
++        config={"keywords": [keyword]},
++    )
++
++
++class _FakeRepo:
++    """Tenant-scoped in-memory stand-in for PostgresGuardrailRuleRepository."""
++
++    def __init__(self, rows: list[GuardrailRule] | None = None) -> None:
++        self.rows: dict[str, GuardrailRule] = {r.rule_id: r for r in rows or []}
++        self.load_calls: list[str] = []
++        self.upserts: list[str] = []
++        self.conditional_inserts: list[str] = []
++        self.fail_load = False
++        self.leak: GuardrailRule | None = None  # simulate a broken RLS policy
++
++    async def load(self, tenant_id: str) -> list[GuardrailRule]:
++        self.load_calls.append(tenant_id)
++        if self.fail_load:
++            raise ConnectionError("database unavailable")
++        rules = [r for r in self.rows.values() if r.tenant_id == tenant_id]
++        if self.leak is not None:
++            rules.append(self.leak)
++        return rules
++
++    async def upsert(self, rule: GuardrailRule) -> None:
++        self.upserts.append(rule.rule_id)
++        self.rows[rule.rule_id] = rule
++
++    async def insert_if_absent(self, rule: GuardrailRule) -> None:
++        self.conditional_inserts.append(rule.rule_id)
++        self.rows.setdefault(rule.rule_id, rule)
++
++
++async def _blocked(engine: GuardrailsEngine, tenant_id: str, content: str) -> bool:
++    result: dict[str, Any] = await engine.evaluate(
++        content=content, layer=GuardrailLayer.GOAL, tenant_id=tenant_id
++    )
++    return bool(result["blocked"])
++
++
++async def test_fresh_process_enforces_persisted_rule_without_startup_load() -> None:
++    repo = _FakeRepo([_block_rule(TENANT_A, "project-nightjar")])
++    engine = GuardrailsEngine()  # a fresh process: nothing in memory
++    engine.bind_repository(repo)
++
++    assert repo.load_calls == [], "binding must not read anything (no warm scan)"
++    assert await _blocked(engine, TENANT_A, "tell me about project-nightjar")
++    assert repo.load_calls == [TENANT_A], "only the requesting tenant is loaded"
++
++
++async def test_persisted_rule_is_never_visible_to_another_tenant() -> None:
++    repo = _FakeRepo([_block_rule(TENANT_A, "project-nightjar")])
++    engine = GuardrailsEngine()
++    engine.bind_repository(repo)
++
++    assert await _blocked(engine, TENANT_A, "project-nightjar")
++    assert not await _blocked(engine, TENANT_B, "project-nightjar")
++    assert repo.load_calls == [TENANT_A, TENANT_B]
++    b_ids = {r.rule_id for r in await engine.aget_rules(TENANT_B)}
++    assert not any(TENANT_A in rid for rid in b_ids)
++
++
++async def test_rows_for_another_tenant_are_dropped_even_if_returned() -> None:
++    """Defense in depth: a leaked row (broken policy) never joins B's rules."""
++    repo = _FakeRepo()
++    repo.leak = _block_rule(TENANT_A, "project-nightjar")
++    engine = GuardrailsEngine()
++    engine.bind_repository(repo)
++
++    assert not await _blocked(engine, TENANT_B, "project-nightjar")
++    assert engine.get_rules(TENANT_B) == []
++    assert engine.get_rules(TENANT_A) == []
++
++
++async def test_loaded_once_then_served_from_memory_within_refresh_window() -> None:
++    repo = _FakeRepo([_block_rule(TENANT_A, "project-nightjar")])
++    engine = GuardrailsEngine(rule_refresh_s=3600)
++    engine.bind_repository(repo)
++
++    for _ in range(3):
++        assert await _blocked(engine, TENANT_A, "project-nightjar")
++    assert repo.load_calls == [TENANT_A]
++
++
++async def test_refresh_picks_up_rule_written_by_another_replica() -> None:
++    repo = _FakeRepo()
++    engine = GuardrailsEngine(rule_refresh_s=0.0)  # refresh on every evaluation
++    engine.bind_repository(repo)
++
++    assert not await _blocked(engine, TENANT_A, "project-nightjar")
++    # Another replica persists a rule for the same tenant.
++    await repo.upsert(_block_rule(TENANT_A, "project-nightjar"))
++    assert await _blocked(engine, TENANT_A, "project-nightjar")
++
++
++async def test_first_load_failure_raises_and_backs_off_then_recovers(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    repo = _FakeRepo([_block_rule(TENANT_A, "project-nightjar")])
++    repo.fail_load = True
++    engine = GuardrailsEngine()
++    engine.bind_repository(repo)
++
++    # Unknown policy is an error, never "allowed with only the defaults".
++    with pytest.raises(GuardrailRulesUnavailableError):
++        await _blocked(engine, TENANT_A, "project-nightjar")
++    # Within the back-off window it fails fast without hitting the DB again.
++    with pytest.raises(GuardrailRulesUnavailableError):
++        await _blocked(engine, TENANT_A, "project-nightjar")
++    assert repo.load_calls == [TENANT_A]
++    assert not issubclass(GuardrailRulesUnavailableError, (TypeError, AttributeError))
++
++    # After the back-off, a healthy DB is retried and the rule enforced.
++    repo.fail_load = False
++    real_monotonic = time.monotonic
++    monkeypatch.setattr(
++        "app.guardrails_v2.engine.time.monotonic", lambda: real_monotonic() + 60.0
++    )
++    assert await _blocked(engine, TENANT_A, "project-nightjar")
++    assert repo.load_calls == [TENANT_A, TENANT_A]
++
++
++async def test_failed_refresh_keeps_serving_last_known_rules() -> None:
++    repo = _FakeRepo([_block_rule(TENANT_A, "project-nightjar")])
++    engine = GuardrailsEngine(rule_refresh_s=0.0)
++    engine.bind_repository(repo)
++
++    assert await _blocked(engine, TENANT_A, "project-nightjar")
++    repo.fail_load = True
++    assert await _blocked(engine, TENANT_A, "project-nightjar")  # no raise
++
++
++async def test_reseeded_default_does_not_clobber_a_persisted_edit() -> None:
++    """ensure_default_rules runs before evaluate on every goal. On a fresh
++    process that seeds the pristine (enabled) default before the tenant's rows
++    are read; the persisted row — here, the tenant disabled it — must win, and
++    the seed must not be written over it."""
++    engine = GuardrailsEngine()
++    seed_probe = GuardrailsEngine()
++    seed_probe.ensure_default_rules(TENANT_A)
++    default = seed_probe.get_rules(TENANT_A)[0]
++    disabled = replace(default, enabled=False, version=2)
++    repo = _FakeRepo([disabled])
++    engine.bind_repository(repo, auto_persist=False)
++
++    engine.ensure_default_rules(TENANT_A)
++    await engine.ensure_tenant_loaded(TENANT_A)
++    await engine.flush()
++
++    assert default.rule_id not in {r.rule_id for r in engine.get_rules(TENANT_A)}
++    assert repo.rows[default.rule_id].enabled is False, "persisted edit overwritten"
++    assert default.rule_id not in repo.upserts
++    # Seeds go through the conditional insert, never the overwriting upsert.
++    assert repo.upserts == []
++    assert set(repo.conditional_inserts) == {
++        r.rule_id for r in seed_probe.get_rules(TENANT_A)
++    } - {default.rule_id}
++
++
++async def test_pending_operator_write_is_not_replaced_by_older_row() -> None:
++    old = _block_rule(TENANT_A, "old-keyword", rule_id="r-1")
++    repo = _FakeRepo([old])
++    engine = GuardrailsEngine()
++    engine.bind_repository(repo, auto_persist=False)
++
++    engine.add_rule(_block_rule(TENANT_A, "new-keyword", rule_id="r-1"))  # not flushed
++    assert await _blocked(engine, TENANT_A, "new-keyword")
++    assert not await _blocked(engine, TENANT_A, "old-keyword")
++    await engine.flush()
++    assert repo.upserts == ["r-1"]
++
++
++async def test_no_repository_means_pure_in_memory() -> None:
++    engine = GuardrailsEngine()
++    engine.add_rule(_block_rule(TENANT_A, "project-nightjar"))
++    assert await _blocked(engine, TENANT_A, "project-nightjar")
++
++
++async def test_unbinding_the_repository_stops_db_reads() -> None:
++    repo = _FakeRepo([_block_rule(TENANT_A, "project-nightjar")])
++    engine = GuardrailsEngine(rule_refresh_s=0.0)
++    engine.bind_repository(repo)
++    assert await _blocked(engine, TENANT_A, "project-nightjar")
++    engine.bind_repository(None)
++    await engine.evaluate(content="x", layer=GuardrailLayer.GOAL, tenant_id=TENANT_A)
++    assert repo.load_calls == [TENANT_A]
++
++
++async def test_repository_load_requires_a_tenant() -> None:
++    from app.guardrails_v2.repository import PostgresGuardrailRuleRepository
++
++    repo = PostgresGuardrailRuleRepository(session_factory=None)  # type: ignore[arg-type]
++    with pytest.raises(ValueError, match="tenant_id is required"):
++        await repo.load("")
++
++
++def test_list_rules_endpoint_loads_tenant_rules_and_maps_unavailable_to_503(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    from fastapi import FastAPI, Request
++    from fastapi.testclient import TestClient
++
++    from app.api import guardrails_v2 as api
++    from app.guardrails_v2 import engine as engine_mod
++
++    repo = _FakeRepo([_block_rule(TENANT_A, "project-nightjar")])
++    fresh = GuardrailsEngine()
++    fresh.bind_repository(repo)
++    monkeypatch.setattr(engine_mod, "guardrails_engine", fresh)
++
++    app = FastAPI()
++
++    @app.middleware("http")
++    async def _tenant(request: Request, call_next: Any) -> Any:
++        class _Ctx:
++            tenant_id = request.headers.get("x-tenant", TENANT_A)
++
++        request.state.tenant = _Ctx()
++        return await call_next(request)
++
++    app.include_router(api.router)
++    client = TestClient(app)
++
++    ids = [r["rule_id"] for r in client.get("/guardrails-v2/rules").json()["rules"]]
++    assert ids == [f"custom:{TENANT_A}:project-nightjar"]
++    other = client.get("/guardrails-v2/rules", headers={"x-tenant": TENANT_B}).json()
++    assert other["rules"] == []
++
++    repo.fail_load = True
++    resp = client.get("/guardrails-v2/rules", headers={"x-tenant": "tenant-c"})
++    assert resp.status_code == 503
++    resp = client.post(
++        "/guardrails-v2/evaluate",
++        json={"content": "x", "layer": "goal"},
++        headers={"x-tenant": "tenant-c"},
++    )
++    assert resp.status_code == 503
+diff --git a/agent-verse-backend/tests/persistence/test_persistence_phase1.py b/agent-verse-backend/tests/persistence/test_persistence_phase1.py
+index e50185e90..80c9f5917 100644
+--- a/agent-verse-backend/tests/persistence/test_persistence_phase1.py
++++ b/agent-verse-backend/tests/persistence/test_persistence_phase1.py
+@@ -21,9 +21,9 @@ def test_hitl_has_db_session_factory_attr() -> None:
+ 
+ 
+ @pytest.mark.asyncio
+-async def test_hitl_load_pending_returns_zero_without_db() -> None:
++async def test_hitl_phantom_sweep_returns_zero_without_db() -> None:
+     gw = HITLGateway()
+-    count = await gw.load_pending_from_db_full(None)
++    count = await gw.expire_phantom_approvals(None)
+     assert count == 0
+ 
+ 
+diff --git a/agent-verse-backend/tests/services/test_goal_service_extra3.py b/agent-verse-backend/tests/services/test_goal_service_extra3.py
+index 7b6015c7d..e54cd3b6d 100644
+--- a/agent-verse-backend/tests/services/test_goal_service_extra3.py
++++ b/agent-verse-backend/tests/services/test_goal_service_extra3.py
+@@ -855,9 +855,11 @@ class TestHandleApproval:
+     async def test_approve_action_delegates_to_hitl(self):
+         svc = _svc()
+         _inject_goal(svc, "g1")
+-        with patch.object(svc._hitl, "approve", return_value=True):
++        # DB-resolving approve: the process cache is not warmed at startup.
++        with patch.object(svc._hitl, "approve_async", AsyncMock(return_value=True)) as m:
+             result = await svc.handle_approval("g1", "req-1", "approve", "admin", "", _ctx())
+         assert result["accepted"] is True
++        m.assert_awaited_once()
+ 
+     async def test_reject_action_delegates_to_hitl(self):
+         svc = _svc()
+diff --git a/agent-verse-backend/tests/services/test_usage_service.py b/agent-verse-backend/tests/services/test_usage_service.py
+index 17703f86f..5a08e13e0 100644
+--- a/agent-verse-backend/tests/services/test_usage_service.py
++++ b/agent-verse-backend/tests/services/test_usage_service.py
+@@ -130,3 +130,96 @@ class TestUsageService:
+         from app.services.usage_service import _usage_service
+ 
+         assert _usage_service is not None
++
++
++class _RecordingFlushSession:
++    """Records every INSERT with the tenant GUC that was active for it."""
++
++    def __init__(self, log: list[tuple[str | None, list[dict[str, Any]]]], fail: set[str]):
++        self._log = log
++        self._fail = fail
++        self.tenant: str | None = None
++
++    async def __aenter__(self) -> "_RecordingFlushSession":
++        return self
++
++    async def __aexit__(self, *args: object) -> None:
++        return None
++
++    def begin(self) -> "_RecordingFlushSession":
++        return self
++
++    async def execute(self, statement: Any, params: Any = None) -> None:
++        if self.tenant in self._fail:
++            raise RuntimeError("new row violates row-level security policy")
++        self._log.append((self.tenant, list(params)))
++
++
++class TestUsageFlushRls:
++    """usage_records is FORCE-RLS; the API role has no BYPASSRLS.
++
++    ``_flush`` used to write the whole mixed-tenant buffer in ONE transaction
++    under ``system_session`` — an RLS bypass inside the API process that fails
++    under the NOBYPASSRLS role, so no usage ever reached Postgres.
++    """
++
++    @pytest.fixture
++    def rls_log(self, monkeypatch: pytest.MonkeyPatch) -> list[str]:
++        from app.db import rls as rls_module
++
++        entered: list[str] = []
++
++        @asynccontextmanager
++        async def _recording_rls(session: Any, tenant_id: str) -> AsyncIterator[Any]:
++            entered.append(tenant_id)
++            session.tenant = tenant_id
++            yield session
++
++        @asynccontextmanager
++        async def _forbidden_system_session(session: Any) -> AsyncIterator[Any]:
++            raise AssertionError("usage flush must never bypass RLS")
++            yield session  # pragma: no cover
++
++        monkeypatch.setattr(rls_module, "sqlalchemy_rls_context", _recording_rls)
++        monkeypatch.setattr(rls_module, "system_session", _forbidden_system_session)
++        return entered
++
++    @pytest.mark.asyncio
++    async def test_flush_writes_each_tenant_under_its_own_rls_context(
++        self, rls_log: list[str]
++    ) -> None:
++        import json
++        from datetime import datetime
++
++        log: list[tuple[str | None, list[dict[str, Any]]]] = []
++        svc = UsageService(db_factory=lambda: _RecordingFlushSession(log, set()))
++        await svc.record(tenant_id="t1", metric="goals", quantity=1.0,
++                         metadata={"ok": True, "note": None, "q": "it's"})
++        await svc.record(tenant_id="t2", metric="goals", quantity=2.0)
++        await svc.record(tenant_id="t1", metric="tool_calls", quantity=3.0)
++
++        await svc._flush()
++
++        assert sorted(rls_log) == ["t1", "t2"]
++        assert svc._buffer == []
++        by_tenant = {tenant: params for tenant, params in log}
++        assert {p["tenant_id"] for p in by_tenant["t1"]} == {"t1"}
++        assert {p["tenant_id"] for p in by_tenant["t2"]} == {"t2"}
++        assert len(by_tenant["t1"]) == 2
++        first = by_tenant["t1"][0]
++        assert isinstance(first["period_start"], datetime)
++        assert json.loads(first["metadata"]) == {"ok": True, "note": None, "q": "it's"}
++
++    @pytest.mark.asyncio
++    async def test_failing_tenant_rebuffers_only_its_own_records(
++        self, rls_log: list[str]
++    ) -> None:
++        log: list[tuple[str | None, list[dict[str, Any]]]] = []
++        svc = UsageService(db_factory=lambda: _RecordingFlushSession(log, {"t-bad"}))
++        await svc.record(tenant_id="t-bad", metric="goals", quantity=1.0)
++        await svc.record(tenant_id="t-ok", metric="goals", quantity=1.0)
++
++        await svc._flush()
++
++        assert [t for t, _ in log] == ["t-ok"]
++        assert [r["tenant_id"] for r in svc._buffer] == ["t-bad"]

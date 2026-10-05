@@ -1,0 +1,609 @@
+diff --git a/agent-verse-backend/app/coordination/pattern_runs/goal_bridge.py b/agent-verse-backend/app/coordination/pattern_runs/goal_bridge.py
+index b10961aec..03ce7f7bf 100644
+--- a/agent-verse-backend/app/coordination/pattern_runs/goal_bridge.py
++++ b/agent-verse-backend/app/coordination/pattern_runs/goal_bridge.py
+@@ -438,6 +438,8 @@ def build_worker_distributed_loop(
+             pattern_bridge=bridge,
+             skill_store=PostgresVoyagerSkillStore(db_factory),
+             hitl_gateway=hitl_gateway,
++            # CORE-18: checkpoints in Postgres, so a redelivered goal resumes.
++            checkpoint_db=lambda: db_factory,
+         ),
+         admission=default_distributed_admission,
+         reserve_budget=_reserve,
+diff --git a/agent-verse-backend/app/db/migrations/versions/c1e5a7b9d3f2_strategy_run_checkpoints.py b/agent-verse-backend/app/db/migrations/versions/c1e5a7b9d3f2_strategy_run_checkpoints.py
+new file mode 100644
+index 000000000..fc0fc04c4
+--- /dev/null
++++ b/agent-verse-backend/app/db/migrations/versions/c1e5a7b9d3f2_strategy_run_checkpoints.py
+@@ -0,0 +1,62 @@
++"""strategy_run_checkpoints: durable StrategyRunner checkpoints (CORE-18).
++
++Distributed supervisor / goal_tree / debate / voyager runs checkpointed into a
++per-process LRU, so a worker crash or redelivery restarted the run and repeated
++its LLM spend and side effects. One row per (tenant, goal, strategy): the
++adapter's latest typed state and the sub-task answers it references. Rows
++cascade with the goal, so goal retention purges them.
++
++Revision ID: c1e5a7b9d3f2
++Revises: b9d4f2a6c8e1
++Create Date: 2026-10-02
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++
++from alembic import op
++
++revision: str = "c1e5a7b9d3f2"
++down_revision: str | None = "b9d4f2a6c8e1"
++branch_labels: str | Sequence[str] | None = None
++depends_on: str | Sequence[str] | None = None
++
++
++def upgrade() -> None:
++    op.execute(
++        """
++        CREATE TABLE IF NOT EXISTS strategy_run_checkpoints (
++            tenant_id    VARCHAR(32) NOT NULL,
++            goal_id      VARCHAR(32) NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
++            strategy_id  VARCHAR(100) NOT NULL,
++            session_id   TEXT NOT NULL DEFAULT '',
++            execution_id TEXT NOT NULL DEFAULT '',
++            state_type   VARCHAR(64) NOT NULL DEFAULT '',
++            state        JSONB NOT NULL DEFAULT '{}'::jsonb,
++            answers      JSONB NOT NULL DEFAULT '{}'::jsonb,
++            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
++            updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
++            PRIMARY KEY (tenant_id, goal_id, strategy_id)
++        )
++        """
++    )
++    op.execute(
++        "CREATE INDEX IF NOT EXISTS ix_strategy_run_checkpoints_goal "
++        "ON strategy_run_checkpoints (goal_id)"
++    )
++    op.execute("ALTER TABLE strategy_run_checkpoints ENABLE ROW LEVEL SECURITY")
++    op.execute("ALTER TABLE strategy_run_checkpoints FORCE ROW LEVEL SECURITY")
++    op.execute(
++        "DROP POLICY IF EXISTS strategy_run_checkpoints_tenant_isolation "
++        "ON strategy_run_checkpoints"
++    )
++    op.execute(
++        "CREATE POLICY strategy_run_checkpoints_tenant_isolation ON strategy_run_checkpoints "
++        "USING (tenant_id = current_setting('app.tenant_id', true)) "
++        "WITH CHECK (tenant_id = current_setting('app.tenant_id', true))"
++    )
++
++
++def downgrade() -> None:
++    op.execute("DROP TABLE IF EXISTS strategy_run_checkpoints CASCADE")
+diff --git a/agent-verse-backend/app/main.py b/agent-verse-backend/app/main.py
+index 4c1b92b67..4e960be5c 100644
+--- a/agent-verse-backend/app/main.py
++++ b/agent-verse-backend/app/main.py
+@@ -2783,6 +2783,8 @@ def create_app(
+             # (None until the lifespan wires the DB -> voyager goals are refused).
+             skill_store=lambda: _voyager_skill_store(app.state),
+             hitl_gateway=lambda: getattr(app.state, "hitl_gateway", None),
++            # CORE-18: durable run checkpoints once the lifespan wires the DB.
++            checkpoint_db=lambda: getattr(app.state, "db_session_factory", None),
+         ),
+         admission=default_distributed_admission,
+         reserve_budget=_strategy_budget_reserver(app.state),
+diff --git a/agent-verse-backend/app/orchestration/strategy_checkpoint_store.py b/agent-verse-backend/app/orchestration/strategy_checkpoint_store.py
+new file mode 100644
+index 000000000..de7412d84
+--- /dev/null
++++ b/agent-verse-backend/app/orchestration/strategy_checkpoint_store.py
+@@ -0,0 +1,203 @@
++"""Postgres-backed checkpoint store for StrategyRunner strategies (CORE-18).
++
++The distributed supervisor / goal_tree / debate / voyager runs checkpointed into
++a per-process LRU (``InMemoryPatternCheckpointStore``), so a worker crash or a
++redelivered goal restarted the run from scratch and repeated its LLM spend and
++side effects. ``strategy_run_checkpoints`` (tenant RLS, rows cascade with the
++goal) holds the adapter's latest typed state for (tenant, goal, strategy) plus
++the sub-task answers the state references, so a redelivered run resumes where
++it stopped.
++
++It implements the pattern checkpoint-store protocol the adapters use:
++``save(state)`` and ``load(session_id, execution_id)``. Loads are re-validated
++into an allow-listed state model; an unknown stored type fails loudly.
++"""
++
++from __future__ import annotations
++
++import json
++from collections.abc import Callable
++from contextlib import AsyncExitStack, asynccontextmanager
++from typing import Any
++
++from pydantic import BaseModel
++
++# Answers kept per run (bounded: a run has a handful of sub-tasks).
++_MAX_ANSWERS = 64
++_MAX_ANSWER_CHARS = 20_000
++
++
++def _state_types() -> dict[str, type[BaseModel]]:
++    from app.agent.patterns.voyager import VoyagerState
++    from app.coordination.patterns.common import DurablePatternState
++    from app.coordination.patterns.debate_adapter import DurableDebateState
++
++    return {
++        "DurablePatternState": DurablePatternState,
++        "DurableDebateState": DurableDebateState,
++        "VoyagerState": VoyagerState,
++    }
++
++
++def _retryable(state: BaseModel) -> BaseModel:
++    """A redelivered run retries what did not finish and keeps what did.
++
++    A supervisor/goal_tree state that stopped ``failed``/``cancelled`` would
++    otherwise be loaded as-is and fail again forever (the adapter only runs
++    ``pending`` items): its unfinished items go back to ``pending`` while
++    completed items — whose side effects already happened — stay completed.
++    """
++    from app.coordination.patterns.common import DurablePatternState
++
++    if not isinstance(state, DurablePatternState) or state.phase not in ("failed", "cancelled"):
++        return state
++    return state.model_copy(
++        update={
++            "phase": "executing",
++            "terminal_reason": None,
++            "work_items": tuple(
++                item
++                if item.state == "completed"
++                else item.model_copy(update={"state": "pending"})
++                for item in state.work_items
++            ),
++        }
++    )
++
++
++class PostgresStrategyCheckpointStore:
++    """One strategy run's durable checkpoint (keyed tenant + goal + strategy)."""
++
++    def __init__(
++        self, db_factory: Any, *, tenant_id: str, goal_id: str, strategy_id: str
++    ) -> None:
++        self._db = db_factory
++        self._keys = {"tid": tenant_id, "gid": goal_id, "sid": strategy_id}
++
++    def _session(self) -> Any:
++        from app.db.rls import sqlalchemy_rls_context
++
++        tenant_id = self._keys["tid"]
++
++        @asynccontextmanager
++        async def _cm() -> Any:
++            async with AsyncExitStack() as stack:
++                session = await stack.enter_async_context(self._db())
++                await stack.enter_async_context(session.begin())
++                await stack.enter_async_context(sqlalchemy_rls_context(session, tenant_id))
++                yield session
++
++        return _cm()
++
++    async def save(self, state: Any) -> None:
++        """Upsert the adapter's latest state (awaited; raises on failure)."""
++        from sqlalchemy import text
++
++        payload = state.model_dump(mode="json")
++        async with self._session() as session:
++            await session.execute(
++                text(
++                    "INSERT INTO strategy_run_checkpoints "
++                    "(tenant_id, goal_id, strategy_id, session_id, execution_id, "
++                    " state_type, state) "
++                    "VALUES (:tid, :gid, :sid, :sess, :exe, :typ, CAST(:state AS JSONB)) "
++                    "ON CONFLICT (tenant_id, goal_id, strategy_id) DO UPDATE SET "
++                    "session_id = EXCLUDED.session_id, execution_id = EXCLUDED.execution_id, "
++                    "state_type = EXCLUDED.state_type, state = EXCLUDED.state, "
++                    "updated_at = now()"
++                ),
++                {
++                    **self._keys,
++                    "sess": str(getattr(state, "session_id", "")),
++                    "exe": str(getattr(state, "execution_id", "")),
++                    "typ": type(state).__name__,
++                    "state": json.dumps(payload, default=str),
++                },
++            )
++
++    async def load(self, session_id: str, execution_id: str) -> BaseModel | None:
++        from sqlalchemy import text
++
++        async with self._session() as session:
++            row = (
++                await session.execute(
++                    text(
++                        "SELECT session_id, execution_id, state_type, state "
++                        "FROM strategy_run_checkpoints "
++                        "WHERE tenant_id = :tid AND goal_id = :gid AND strategy_id = :sid"
++                    ),
++                    self._keys,
++                )
++            ).mappings().first()
++        if row is None or (row["session_id"], row["execution_id"]) != (session_id, execution_id):
++            return None
++        model = _state_types().get(str(row["state_type"]))
++        if model is None:
++            raise RuntimeError(f"unknown strategy checkpoint type: {row['state_type']!r}")
++        raw = row["state"]
++        state = model.model_validate(json.loads(raw) if isinstance(raw, str) else raw)
++        return _retryable(state)
++
++    async def put_answer(self, ref: str, answer: str) -> None:
++        """Record a sub-task's answer under the reference its work item stores."""
++        from sqlalchemy import text
++
++        async with self._session() as session:
++            await session.execute(
++                text(
++                    "INSERT INTO strategy_run_checkpoints "
++                    "(tenant_id, goal_id, strategy_id, answers) "
++                    "VALUES (:tid, :gid, :sid, "
++                    "jsonb_build_object(CAST(:ref AS TEXT), CAST(:ans AS TEXT))) "
++                    "ON CONFLICT (tenant_id, goal_id, strategy_id) DO UPDATE SET "
++                    "answers = CASE WHEN (SELECT count(*) FROM jsonb_object_keys("
++                    "strategy_run_checkpoints.answers)) >= CAST(:cap AS INTEGER) "
++                    "THEN strategy_run_checkpoints.answers "
++                    "ELSE strategy_run_checkpoints.answers || "
++                    "jsonb_build_object(CAST(:ref AS TEXT), CAST(:ans AS TEXT)) END, "
++                    "updated_at = now()"
++                ),
++                {
++                    **self._keys,
++                    "ref": ref,
++                    "ans": answer[:_MAX_ANSWER_CHARS],
++                    "cap": _MAX_ANSWERS,
++                },
++            )
++
++    async def get_answer(self, ref: str) -> str | None:
++        from sqlalchemy import text
++
++        async with self._session() as session:
++            value = (
++                await session.execute(
++                    text(
++                        "SELECT answers ->> :ref FROM strategy_run_checkpoints "
++                        "WHERE tenant_id = :tid AND goal_id = :gid AND strategy_id = :sid"
++                    ),
++                    {**self._keys, "ref": ref},
++                )
++            ).scalar()
++        return str(value) if value is not None else None
++
++
++def postgres_store_factory(
++    db_getter: Callable[[], Any] | None,
++) -> Callable[[Any], PostgresStrategyCheckpointStore | None]:
++    """``request -> store`` when a DB is wired (via the zero-arg getter), else None."""
++
++    def _for(request: Any) -> PostgresStrategyCheckpointStore | None:
++        db = db_getter() if db_getter is not None else None
++        if db is None:
++            return None
++        return PostgresStrategyCheckpointStore(
++            db,
++            tenant_id=str(request.tenant_id),
++            goal_id=str(request.goal_id),
++            strategy_id=str(request.strategy_id),
++        )
++
++    return _for
++
++
++__all__ = ["PostgresStrategyCheckpointStore", "postgres_store_factory"]
+diff --git a/agent-verse-backend/app/orchestration/strategy_executor.py b/agent-verse-backend/app/orchestration/strategy_executor.py
+index 103e48067..d2a4a6934 100644
+--- a/agent-verse-backend/app/orchestration/strategy_executor.py
++++ b/agent-verse-backend/app/orchestration/strategy_executor.py
+@@ -138,8 +138,16 @@ class DistributedStrategyExecutor:
+         skill_store: Callable[[], Any] | Any = None,
+         hitl_gateway: Callable[[], Any] | Any = None,
+         approval_timeout_seconds: float = _DEFAULT_APPROVAL_TIMEOUT_S,
++        checkpoint_db: Callable[[], Any] | None = None,
+     ) -> None:
+         self._context_store = context_store
++        # CORE-18: a zero-arg getter returning the DB session factory (None until
++        # wired). With it, runs checkpoint into strategy_run_checkpoints and a
++        # redelivered goal resumes; without it (tests, no DB) the bounded
++        # in-process LRU below is used.
++        from app.orchestration.strategy_checkpoint_store import postgres_store_factory
++
++        self._durable_checkpoints = postgres_store_factory(checkpoint_db)
+         # Runs magentic / MoA / CAMEL / generative / swarm / auction goals on a
+         # coordination session (app.coordination.pattern_runs.goal_bridge).
+         self._pattern_bridge = pattern_bridge
+@@ -159,9 +167,10 @@ class DistributedStrategyExecutor:
+         ] = OrderedDict()
+         self._answers: dict[str, str] = {}
+ 
+-    def _checkpoint_store_for(
+-        self, request: StrategyExecutionRequest
+-    ) -> InMemoryPatternCheckpointStore:
++    def _checkpoint_store_for(self, request: StrategyExecutionRequest) -> Any:
++        durable = self._durable_checkpoints(request)
++        if durable is not None:
++            return durable
+         key = (request.tenant_id, request.goal_id)
+         store = self._checkpoint_stores.get(key)
+         if store is None:
+@@ -251,12 +260,15 @@ class DistributedStrategyExecutor:
+                 safe_rationale_summary="voyager strategy executed via StrategyRunner.",
+             )
+ 
+-        runtime = create_runtime(checkpoint_store=self._checkpoint_store_for(request))
++        store = self._checkpoint_store_for(request)
++        runtime = create_runtime(checkpoint_store=store)
+ 
+         if strategy_id in {"supervisor", "goal_tree"}:
+-            answer = await self._run_supervisor_like(runtime, request, context, complete, cancelled)
++            answer = await self._run_supervisor_like(
++                runtime, request, context, complete, cancelled, store=store
++            )
+         else:
+-            answer = await self._run_debate(runtime, request, context, complete)
++            answer = await self._run_debate(runtime, request, context, complete, store=store)
+ 
+         return StrategyRunOutput(
+             answer=answer,
+@@ -325,6 +337,8 @@ class DistributedStrategyExecutor:
+         context: Any,
+         complete: Any,
+         cancelled: Any,
++        *,
++        store: Any = None,
+     ) -> str:
+         goal_text = context.goal_text
+         goal_approved = await self._gate_high_risk(request, context, goal_text)
+@@ -367,7 +381,7 @@ class DistributedStrategyExecutor:
+                 f"Complete this sub-task and give a concise result.\nSub-task: {item.safe_summary}"
+             )
+             ref = f"strategy-run://{uuid.uuid4()}"
+-            self._answers[ref] = answer
++            await self._remember_answer(store, ref, answer)
+             return {
+                 "child_goal_id": f"child-{uuid.uuid4()}",
+                 "result_reference": ref,
+@@ -376,7 +390,7 @@ class DistributedStrategyExecutor:
+ 
+         async def synthesize(work_items: Any) -> str:
+             parts = [
+-                self._answers.pop(item.result_reference, "")
++                await self._recall_answer(store, item.result_reference, "")
+                 for item in work_items
+                 if item.result_reference
+             ]
+@@ -579,6 +593,8 @@ class DistributedStrategyExecutor:
+         request: StrategyExecutionRequest,
+         context: Any,
+         complete: Any,
++        *,
++        store: Any = None,
+     ) -> str:
+         goal_text = context.goal_text
+         await self._gate_high_risk(request, context, goal_text)
+@@ -589,7 +605,7 @@ class DistributedStrategyExecutor:
+                 f"As independent reasoner '{agent_id}', propose a concise answer to: {goal_text}"
+             )
+             ref = f"strategy-run://{uuid.uuid4()}"
+-            self._answers[ref] = answer
++            await self._remember_answer(store, ref, answer)
+             return {"proposal_reference": ref, "safe_summary": answer[:2000] or "(no proposal)"}
+ 
+         async def critique(agent_id: str, other_agent_id: str) -> str:
+@@ -622,7 +638,30 @@ class DistributedStrategyExecutor:
+         if state.phase != "completed" or state.winner_agent_id is None:
+             raise RuntimeError(f"debate did not complete: phase={state.phase}")
+         winner = next(p for p in state.proposals if p.agent_id == state.winner_agent_id)
+-        return self._answers.pop(winner.proposal_reference, winner.safe_summary)
++        return await self._recall_answer(
++            store, winner.proposal_reference, winner.safe_summary
++        )
++
++    async def _remember_answer(self, store: Any, ref: str, answer: str) -> None:
++        """Keep a sub-task / proposal answer; durably too when the store can (CORE-18).
++
++        The work item only stores ``ref``: without the answer in Postgres a resumed
++        run would synthesize from nothing.
++        """
++        self._answers[ref] = answer
++        put = getattr(store, "put_answer", None)
++        if put is not None:
++            await put(ref, answer)
++
++    async def _recall_answer(self, store: Any, ref: str, default: str) -> str:
++        if ref in self._answers:
++            return self._answers.pop(ref)
++        get = getattr(store, "get_answer", None)
++        if get is not None:
++            value = await get(ref)
++            if value is not None:
++                return str(value)
++        return default
+ 
+ 
+ __all__ = [
+diff --git a/agent-verse-backend/tests/orchestration/test_strategy_checkpoint_store.py b/agent-verse-backend/tests/orchestration/test_strategy_checkpoint_store.py
+new file mode 100644
+index 000000000..6744121f5
+--- /dev/null
++++ b/agent-verse-backend/tests/orchestration/test_strategy_checkpoint_store.py
+@@ -0,0 +1,47 @@
++"""CORE-18 unit: the executor checkpoints durably when a DB is wired."""
++
++from __future__ import annotations
++
++from app.coordination.patterns.common import (
++    DurablePatternState,
++    DurableWorkItem,
++    InMemoryPatternCheckpointStore,
++)
++from app.orchestration.strategy_checkpoint_store import (
++    PostgresStrategyCheckpointStore,
++    _retryable,
++)
++from app.orchestration.strategy_context_store import StrategyGoalContextStore
++from app.orchestration.strategy_executor import DistributedStrategyExecutor
++from tests.orchestration.test_distributed_hitl_gates import _request
++
++
++def test_executor_uses_the_postgres_store_when_a_db_is_wired() -> None:
++    db = object()
++    durable = DistributedStrategyExecutor(
++        context_store=StrategyGoalContextStore(), checkpoint_db=lambda: db
++    )
++    store = durable._checkpoint_store_for(_request("supervisor"))
++    assert isinstance(store, PostgresStrategyCheckpointStore)
++
++    unwired = DistributedStrategyExecutor(
++        context_store=StrategyGoalContextStore(), checkpoint_db=lambda: None
++    )
++    assert isinstance(
++        unwired._checkpoint_store_for(_request("supervisor")), InMemoryPatternCheckpointStore
++    )
++
++
++def test_a_failed_run_resumes_its_unfinished_items_only() -> None:
++    state = DurablePatternState(
++        session_id="t", execution_id="g", phase="failed", terminal_reason="child_failed",
++        work_items=(
++            DurableWorkItem(work_item_id="a", safe_summary="a", state="completed",
++                            result_reference="r1"),
++            DurableWorkItem(work_item_id="b", safe_summary="b", state="failed"),
++        ),
++    )
++    out = _retryable(state)
++    assert isinstance(out, DurablePatternState)
++    assert out.phase == "executing" and out.terminal_reason is None
++    assert [i.state for i in out.work_items] == ["completed", "pending"]
+diff --git a/agent-verse-backend/tests/orchestration/test_strategy_checkpoints_pg.py b/agent-verse-backend/tests/orchestration/test_strategy_checkpoints_pg.py
+new file mode 100644
+index 000000000..fe9b200a1
+--- /dev/null
++++ b/agent-verse-backend/tests/orchestration/test_strategy_checkpoints_pg.py
+@@ -0,0 +1,116 @@
++"""CORE-18 on real Postgres: a distributed strategy run resumes after a crash.
++
++A supervisor run decomposes, runs its sub-tasks, then the worker "dies" during
++synthesis. The redelivered run (a fresh executor, as a restarted worker builds)
++resumes from strategy_run_checkpoints: no second decomposition, no sub-task
++re-run, and synthesis uses the sub-task answers stored with the checkpoint.
++"""
++
++from __future__ import annotations
++
++import uuid
++from typing import Any
++
++import pytest
++from sqlalchemy import text
++from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++
++from app.orchestration.strategy_context_store import StrategyGoalContext, StrategyGoalContextStore
++from app.orchestration.strategy_contracts import ExecutionTerminalState
++from app.orchestration.strategy_executor import (
++    DistributedStrategyExecutor,
++    default_distributed_admission,
++)
++from app.orchestration.strategy_registry import build_default_registry
++from app.orchestration.strategy_runner import StrategyRunner
++from app.providers.base import CompletionResponse
++from app.tenancy.context import PlanTier, TenantContext
++from tests.orchestration.test_distributed_hitl_gates import _limits, _request
++
++_PLAN = '{"steps": [{"id": "s1", "summary": "collect facts"}, {"id": "s2", "summary": "rank them"}]}'
++
++
++class _Provider:
++    def __init__(self, *, crash_on_synthesis: bool) -> None:
++        self.crash = crash_on_synthesis
++        self.prompts: list[str] = []
++        self._default_model = "m"
++
++    async def complete(self, request: Any) -> CompletionResponse:
++        prompt = request.messages[0].content
++        self.prompts.append(prompt)
++        if prompt.startswith("Break the following goal"):
++            content = _PLAN
++        elif prompt.startswith("Combine these sub-task results"):
++            if self.crash:
++                raise ConnectionError("worker lost mid-synthesis")
++            content = "final: " + prompt.split(":", 1)[1].strip()[:200]
++        else:
++            content = "answer for " + prompt.rsplit("Sub-task:", 1)[-1].strip()
++        return CompletionResponse(content=content, model="m")
++
++
++async def _run(factory: Any, tenant_ctx: TenantContext, goal_id: str, provider: _Provider) -> Any:
++    store = StrategyGoalContextStore()
++    await store.put(
++        "ctx-supervisor",
++        StrategyGoalContext(goal_text="Compare three databases", provider=provider,
++                            tenant_ctx=tenant_ctx),
++    )
++    runner = StrategyRunner(
++        build_default_registry(),
++        executor=DistributedStrategyExecutor(context_store=store, checkpoint_db=lambda: factory),
++        admission=default_distributed_admission,
++    )
++    base = _request("supervisor").model_dump()
++    request = type(_request("supervisor")).model_validate(
++        {**base, "tenant_id": tenant_ctx.tenant_id, "goal_id": goal_id}
++    )
++    return await runner.run(request, _limits())
++
++
++@pytest.mark.integration
++async def test_redelivered_supervisor_run_resumes_from_the_stored_checkpoint(pg_url: str) -> None:
++    engine = create_async_engine(pg_url)
++    factory = async_sessionmaker(engine, expire_on_commit=False)
++    tenant_id, goal_id = uuid.uuid4().hex, uuid.uuid4().hex
++    ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.PROFESSIONAL, api_key_id="k")
++
++    async def _exec(sql: str, params: dict[str, Any]) -> list[Any]:
++        async with factory() as s, s.begin():
++            await s.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_id})
++            res = await s.execute(text(sql), params)
++            return list(res.all()) if res.returns_rows else []
++
++    try:
++        await _exec("INSERT INTO tenants (id, name, email) VALUES (:t, 'sc', :e)",
++                    {"t": tenant_id, "e": f"{tenant_id}@t.local"})
++        await _exec("INSERT INTO goals (id, tenant_id, goal_text, status) "
++                    "VALUES (:i, :t, 'Compare three databases', 'executing')",
++                    {"i": goal_id, "t": tenant_id})
++
++        crashed = _Provider(crash_on_synthesis=True)
++        first = await _run(factory, ctx, goal_id, crashed)
++        assert first.terminal_state is not ExecutionTerminalState.SUCCEEDED
++        assert sum(p.startswith("Complete this sub-task") for p in crashed.prompts) == 2
++
++        resumed = _Provider(crash_on_synthesis=False)
++        second = await _run(factory, ctx, goal_id, resumed)
++        assert second.terminal_state is ExecutionTerminalState.SUCCEEDED, (
++            second.safe_rationale_summary, second.trace_summary, resumed.prompts
++        )
++        assert not any(p.startswith("Break the following goal") for p in resumed.prompts)
++        assert not any(p.startswith("Complete this sub-task") for p in resumed.prompts)
++        [synthesis] = [p for p in resumed.prompts if p.startswith("Combine")]
++        assert "answer for collect facts" in synthesis and "answer for rank them" in synthesis
++
++        rows = await _exec(
++            "SELECT state_type, state ->> 'phase' FROM strategy_run_checkpoints "
++            "WHERE tenant_id = :t AND goal_id = :g",
++            {"t": tenant_id, "g": goal_id},
++        )
++        assert rows == [("DurablePatternState", "completed")]
++    finally:
++        await _exec("DELETE FROM goals WHERE tenant_id = :t", {"t": tenant_id})
++        await _exec("DELETE FROM tenants WHERE id = :t", {"t": tenant_id})
++        await engine.dispose()

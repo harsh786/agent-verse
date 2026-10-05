@@ -1,0 +1,2181 @@
+diff --git a/agent-verse-backend/app/ingestion/job_tracker.py b/agent-verse-backend/app/ingestion/job_tracker.py
+index 6270f6e25..8301ad538 100644
+--- a/agent-verse-backend/app/ingestion/job_tracker.py
++++ b/agent-verse-backend/app/ingestion/job_tracker.py
+@@ -3,23 +3,32 @@
+ LAW-03: cursor_value persisted after each batch; resumable on crash.
+ LAW-14: distributed lock via Redis SETNX prevents duplicate jobs.
+ LAW-18: state changes appended as events (ingestion_events table when DB avail).
++
++Database posture (the API runs as a NOBYPASSRLS role):
++
++* ``db`` is the application's own session factory. Everything that acts on one
++  tenant's rows — job records, cursors, failure counters, DLQ inserts and the
++  per-entry DLQ follow-ups — runs there under ``sqlalchemy_rls_context`` with an
++  explicit ``tenant_id`` predicate as well.
++* ``system_db`` is the maintenance-role (BYPASSRLS) factory, used only by the two
++  genuinely cross-tenant Celery-beat scans: ``get_due_sources`` and
++  ``get_retryable_dlq_entries``. It defaults to ``get_system_session_factory()``.
+ """
+ 
+ from __future__ import annotations
+ 
++import base64
++import json
+ import logging
+ import uuid
+ from datetime import UTC, datetime
+ from typing import Any
+ 
+ from app.db.rls import sqlalchemy_rls_context, system_session
+-from app.ingestion.source_config import IngestionJob, SourceConfig
++from app.ingestion.source_config import IngestionJob, RawDocument, SourceConfig
+ 
+-# Bounded batch for the due-source beat scan, most-overdue first. An unbounded
+-# scan is fine in steady state but returns EVERY source at once after an outage,
+-# when they are all simultaneously due — the one moment the scheduler must not
+-# also be the thing that falls over. The remainder is picked up next tick.
+-_DUE_SCAN_LIMIT = 500
++# Marks base64-encoded bytes inside a DLQ ``raw_doc_json`` payload.
++_BYTES_MARKER = "__bytes_b64__"
+ 
+ _log = logging.getLogger(__name__)
+ 
+@@ -31,8 +40,9 @@ class IngestionJobTracker:
+     DB-backed path persists to ingestion_jobs table (migration 0108).
+     """
+ 
+-    def __init__(self, *, db: Any = None, redis: Any = None) -> None:
++    def __init__(self, *, db: Any = None, redis: Any = None, system_db: Any = None) -> None:
+         self._db = db
++        self._system_db = system_db
+         self._redis = redis
+         # In-memory fallback
+         self._jobs: dict[str, IngestionJob] = {}
+@@ -191,12 +201,25 @@ class IngestionJobTracker:
+         return [j for j in self._jobs.values() if j.source_id == source_id]
+ 
+     # ── DB persistence (no-ops when DB not available) ─────────────────────────
++    #
++    # Every write below is tenant work: it runs on the application factory, in a
++    # transaction with the ``app.tenant_id`` GUC set, and carries an explicit
++    # ``tenant_id`` predicate too. ingestion_jobs / ingestion_dlq /
++    # source_configs are all FORCE ROW LEVEL SECURITY, so under the NOBYPASSRLS
++    # application role a statement without the GUC is rejected (INSERT) or
++    # matches zero rows (UPDATE). These sites used to open bare sessions, and the
++    # failure was swallowed at DEBUG — every job row the manual and scheduled
++    # sync "recorded" silently never existed.
+ 
+     async def _persist_job_created(self, job: IngestionJob) -> None:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, job.tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                         INSERT INTO ingestion_jobs
+@@ -218,7 +241,7 @@ class IngestionJobTracker:
+                     },
+                 )
+         except Exception as e:
+-            _log.debug("ingestion_job_persist_error: %s", e)
++            _log.warning("ingestion_job_persist_error job=%s: %s", job.job_id, e)
+ 
+     async def _persist_cursor_update(
+         self,
+@@ -247,18 +270,22 @@ class IngestionJobTracker:
+                     text("""
+                         UPDATE ingestion_jobs
+                            SET cursor_after = :cursor
+-                         WHERE id = :job_id
++                         WHERE id = :job_id AND tenant_id = :tenant_id
+                     """),
+-                    {"cursor": cursor, "job_id": job_id},
++                    {"cursor": cursor, "job_id": job_id, "tenant_id": tenant_id},
+                 )
+         except Exception as e:
+-            _log.debug("ingestion_cursor_persist_error: %s", e)
++            _log.warning("ingestion_cursor_persist_error source=%s: %s", source_id, e)
+ 
+     async def _persist_job_completed(self, job: IngestionJob) -> None:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, job.tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                         UPDATE ingestion_jobs
+@@ -270,7 +297,7 @@ class IngestionJobTracker:
+                                chunks_created = :chunks,
+                                error_message = :error,
+                                cursor_after = :cursor
+-                         WHERE id = :job_id
++                         WHERE id = :job_id AND tenant_id = :tenant_id
+                     """),
+                     {
+                         "status": job.status,
+@@ -281,13 +308,24 @@ class IngestionJobTracker:
+                         "error": job.error_message,
+                         "cursor": job.cursor_after,
+                         "job_id": job.job_id,
++                        "tenant_id": job.tenant_id,
+                     },
+                 )
+         except Exception as e:
+-            _log.debug("ingestion_job_complete_persist_error: %s", e)
++            _log.warning("ingestion_job_complete_persist_error job=%s: %s", job.job_id, e)
+ 
+     # ── Methods required by scheduler.py ────────────────────────────────────
+ 
++    def _system_factory(self) -> Any:
++        """Maintenance-role (BYPASSRLS) factory — for the cross-tenant beat scans
++        (``get_due_sources``, ``get_retryable_dlq_entries``) ONLY, never for
++        per-tenant work and never on a request path."""
++        if self._system_db is not None:
++            return self._system_db
++        from app.db.session import get_system_session_factory
++
++        return get_system_session_factory()
++
+     async def load_config(self, source_id: str, tenant_id: str) -> SourceConfig | None:
+         """Load a SourceConfig from DB or in-memory store. Returns None if not found."""
+         from app.ingestion.source_config import SourceConfig, SourceFamily
+@@ -306,59 +344,40 @@ class IngestionJobTracker:
+             )
+             config.cursor_value = self._source_cursors.get(source_id, "")
+             return config
++        if self._db is None:
++            return None
+         try:
+-            from sqlalchemy import text
++            # One tenant's Source: per-tenant RLS via the durable store, which
++            # owns the row → SourceConfig mapping. (This previously queried a
++            # ``source_id`` column that source_configs has never had — its key is
++            # ``id`` — and so always returned None.)
++            from app.ingestion.source_store import SourceConfigStore
+ 
+-            # load_config is scoped to one tenant — per-tenant RLS, not the
+-            # cross-tenant system_session that get_due_sources needs.
+-            async with (
+-                self._db() as session,
+-                sqlalchemy_rls_context(session, tenant_id),
+-            ):
+-                row = await session.execute(
+-                    text("SELECT * FROM source_configs WHERE source_id = :id AND tenant_id = :tid"),
+-                    {"id": source_id, "tid": tenant_id},
+-                )
+-                data = row.mappings().first()
+-                if data:
+-                    return SourceConfig(**dict(data))
++            return await SourceConfigStore(db=self._db).get(source_id, tenant_id)
+         except Exception as exc:
+-            _log.debug("load_config_error: %s", exc)
++            _log.warning("load_config_error source=%s: %s", source_id, exc)
+         return None
+ 
+     async def get_due_sources(self) -> list[tuple[str, str]]:
+-        """Return list of (source_id, tenant_id) tuples whose next sync is due."""
+-        try:
+-            from sqlalchemy import text
++        """Return list of (source_id, tenant_id) tuples whose next sync is due.
+ 
+-            async with (
+-                self._db() as session,
+-                session.begin(),
+-                system_session(session),
+-            ):
+-                result = await session.execute(
+-                    text("""
+-                        SELECT source_id, tenant_id
+-                          FROM source_configs
+-                         WHERE enabled = true
+-                           AND sync_mode != 'streaming'
+-                           AND (
+-                               last_synced_at IS NULL
+-                               OR last_synced_at + (sync_interval_seconds || ' seconds')::interval
+-                                  <= NOW()
+-                           )
+-                         ORDER BY last_synced_at ASC NULLS FIRST
+-                         LIMIT :lim
+-                    """),
+-                    {"lim": _DUE_SCAN_LIMIT},
+-                )
+-                return [(row.source_id, row.tenant_id) for row in result]
++        Cross-tenant beat scan: delegates to ``SourceConfigStore.list_due`` on the
++        maintenance-role factory (one implementation of the scan, one bound).
++        """
++        if self._db is None and self._system_db is None:
++            return []
++        try:
++            from app.ingestion.source_store import SourceConfigStore
++
++            return await SourceConfigStore(system_db=self._system_factory()).list_due()
+         except Exception as exc:
+-            _log.debug("get_due_sources_error: %s", exc)
++            _log.warning("get_due_sources_error: %s", exc)
+             return []
+ 
+     async def increment_failure_counter(self, source_id: str, tenant_id: str) -> None:
+         """Increment consecutive failure counter on a source."""
++        if self._db is None:
++            return
+         try:
+             from sqlalchemy import text
+ 
+@@ -367,17 +386,23 @@ class IngestionJobTracker:
+                 session.begin(),
+                 sqlalchemy_rls_context(session, tenant_id),
+             ):
++                # source_configs is keyed by ``id``; the old ``WHERE source_id``
++                # named a column that does not exist, so this never ran.
+                 await session.execute(
+                     text(
+-                        "UPDATE source_configs SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE source_id = :id AND tenant_id = :tid"  # noqa: E501
++                        "UPDATE source_configs "
++                        "SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 "
++                        "WHERE id = :id AND tenant_id = :tid"
+                     ),
+                     {"id": source_id, "tid": tenant_id},
+                 )
+         except Exception as exc:
+-            _log.debug("increment_failure_counter_error: %s", exc)
++            _log.warning("increment_failure_counter_error source=%s: %s", source_id, exc)
+ 
+     async def reset_failure_counter(self, source_id: str, tenant_id: str) -> None:
+         """Reset consecutive failure counter after a successful sync."""
++        if self._db is None:
++            return
+         try:
+             from sqlalchemy import text
+ 
+@@ -388,12 +413,13 @@ class IngestionJobTracker:
+             ):
+                 await session.execute(
+                     text(
+-                        "UPDATE source_configs SET consecutive_failures = 0 WHERE source_id = :id AND tenant_id = :tid"  # noqa: E501
++                        "UPDATE source_configs SET consecutive_failures = 0 "
++                        "WHERE id = :id AND tenant_id = :tid"
+                     ),
+                     {"id": source_id, "tid": tenant_id},
+                 )
+         except Exception as exc:
+-            _log.debug("reset_failure_counter_error: %s", exc)
++            _log.warning("reset_failure_counter_error source=%s: %s", source_id, exc)
+ 
+     async def add_to_dlq(
+         self,
+@@ -403,6 +429,9 @@ class IngestionJobTracker:
+         doc_id: str,
+         error: str,
+         raw_doc: object,
++        job_id: str | None = None,
++        failed_stage: str = "pipeline",
++        failure_type: str = "pipeline_failure",
+     ) -> None:
+         """Add a failed document to the DLQ.
+ 
+@@ -410,9 +439,16 @@ class IngestionJobTracker:
+         payload needed to retry (e.g. the repo-ingest parameters). It may be a
+         dataclass, a pydantic model, a mapping, or anything JSON-serializable;
+         non-serializable values fall back to a minimal ``{"doc_id": ...}`` record.
++        ``bytes`` (a ``RawDocument``'s content) are base64-encoded so the retry
++        job can rebuild the document exactly (``raw_document_from_dlq_json``).
++
++        The INSERT supplies every NOT NULL column of ``ingestion_dlq`` (``id``,
++        ``failed_stage``, ``failure_type``) — it used to omit all three, so it
++        could never succeed — and runs under the row's tenant RLS context.
+         """
++        if self._db is None:
++            return
+         import dataclasses as _dc
+-        import json as _json
+         import uuid as _uuid
+ 
+         def _serialize(obj: object) -> str:
+@@ -421,97 +457,200 @@ class IngestionJobTracker:
+                 if _dc.is_dataclass(obj) and not isinstance(obj, type):
+                     payload = _dc.asdict(obj)
+                 elif hasattr(obj, "model_dump"):
+-                    payload = obj.model_dump()  # type: ignore[attr-defined]
++                    payload = obj.model_dump()
+                 elif isinstance(obj, dict):
+                     payload = obj
+             try:
+-                return _json.dumps(payload, default=str)
++                return json.dumps(payload, default=_json_default)
+             except (TypeError, ValueError):
+-                return _json.dumps({"doc_id": doc_id})
++                return json.dumps({"doc_id": doc_id})
+ 
++        dlq_id = str(_uuid.uuid4())
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                         INSERT INTO ingestion_dlq
+-                            (dlq_id, source_id, tenant_id, doc_id, error_message,
++                            (id, dlq_id, source_id, tenant_id, job_id, doc_id,
++                             failed_stage, failure_type, error_message,
+                              raw_doc_json, retry_count, created_at)
+                         VALUES
+-                            (:dlq_id, :source_id, :tenant_id, :doc_id, :error,
++                            (:dlq_id, :dlq_id, :source_id, :tenant_id, :job_id, :doc_id,
++                             :failed_stage, :failure_type, :error,
+                              :raw_doc_json, 0, NOW())
+                     """),
+                     {
+-                        "dlq_id": str(_uuid.uuid4()),
++                        "dlq_id": dlq_id,
+                         "source_id": source_id,
+                         "tenant_id": tenant_id,
++                        "job_id": job_id,
+                         "doc_id": doc_id,
++                        "failed_stage": (failed_stage or "pipeline")[:32],
++                        "failure_type": (failure_type or "pipeline_failure")[:32],
+                         "error": error,
+                         "raw_doc_json": _serialize(raw_doc),
+                     },
+                 )
+         except Exception as exc:
+-            _log.debug("add_to_dlq_error: %s", exc)
++            _log.warning("add_to_dlq_error source=%s doc=%s: %s", source_id, doc_id, exc)
+ 
+-    async def get_retryable_dlq_entries(self, max_entries: int = 50) -> list[object]:
+-        """Return DLQ entries eligible for retry (retry_count < 5, not permanent)."""
++    async def get_retryable_dlq_entries(self, max_entries: int = 50) -> list[dict[str, Any]]:
++        """Return unresolved, non-permanent DLQ entries, oldest first.
++
++        Cross-tenant beat scan → maintenance role (``system_session`` on the
++        system factory). Under the application role it matched zero rows — and in
++        the worker, the tracker it ran on had no DB at all — so the retry job
++        never saw an entry. Entries at or past the retry cap are included so the
++        caller can flag them permanent instead of leaving them stranded. Every
++        per-entry follow-up (``resolve_dlq_entry`` …) is tenant-scoped.
++        """
++        if self._db is None and self._system_db is None:
++            return []
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session:
++            async with (
++                self._system_factory()() as session,
++                session.begin(),
++                system_session(session),
++            ):
+                 result = await session.execute(
+                     text("""
+-                        SELECT * FROM ingestion_dlq
+-                         WHERE retry_count < 5
+-                           AND permanent_failure IS NOT TRUE
++                        SELECT id AS dlq_id, tenant_id, source_id, job_id, doc_id,
++                               error_message, raw_doc_json, retry_count
++                          FROM ingestion_dlq
++                         WHERE permanent_failure IS NOT TRUE
++                           AND resolved_at IS NULL
+                          ORDER BY created_at ASC
+                          LIMIT :limit
+                     """),
+                     {"limit": max_entries},
+                 )
+-                return list(result.mappings())
++                return [dict(row) for row in result.mappings()]
+         except Exception as exc:
+-            _log.debug("get_retryable_dlq_entries_error: %s", exc)
++            _log.warning("get_retryable_dlq_entries_error: %s", exc)
+             return []
+ 
+-    async def resolve_dlq_entry(self, dlq_id: str) -> None:
+-        """Mark a DLQ entry as resolved (successfully retried)."""
+-        try:
+-            from sqlalchemy import text
++    async def resolve_dlq_entry(self, dlq_id: str, tenant_id: str) -> None:
++        """Mark a DLQ entry as resolved (successfully retried).
+ 
+-            async with self._db() as session, session.begin():
+-                await session.execute(
+-                    text("DELETE FROM ingestion_dlq WHERE dlq_id = :id"),
+-                    {"id": dlq_id},
+-                )
+-        except Exception as exc:
+-            _log.debug("resolve_dlq_entry_error: %s", exc)
++        Sets ``resolved_at`` rather than deleting, so the failure history stays
++        auditable; the retry scan skips resolved rows.
++        """
++        await self._update_dlq_entry(
++            "UPDATE ingestion_dlq SET resolved_at = NOW() "
++            "WHERE id = :id AND tenant_id = :tid",
++            {"id": dlq_id, "tid": tenant_id},
++            tenant_id=tenant_id,
++            op="resolve_dlq_entry",
++        )
+ 
+-    async def increment_dlq_retry(self, dlq_id: str, error: str = "") -> None:
++    async def increment_dlq_retry(self, dlq_id: str, tenant_id: str, error: str = "") -> None:
+         """Increment retry count on a DLQ entry."""
+-        try:
+-            from sqlalchemy import text
++        await self._update_dlq_entry(
++            "UPDATE ingestion_dlq SET retry_count = retry_count + 1, "
++            "last_error = :error, last_retried_at = NOW() "
++            "WHERE id = :id AND tenant_id = :tid",
++            {"id": dlq_id, "tid": tenant_id, "error": error},
++            tenant_id=tenant_id,
++            op="increment_dlq_retry",
++        )
+ 
+-            async with self._db() as session, session.begin():
+-                await session.execute(
+-                    text(
+-                        "UPDATE ingestion_dlq SET retry_count = retry_count + 1, last_error = :error, last_retried_at = NOW() WHERE dlq_id = :id"  # noqa: E501
+-                    ),
+-                    {"id": dlq_id, "error": error},
+-                )
+-        except Exception as exc:
+-            _log.debug("increment_dlq_retry_error: %s", exc)
+-
+-    async def mark_dlq_permanent_failure(self, dlq_id: str) -> None:
++    async def mark_dlq_permanent_failure(self, dlq_id: str, tenant_id: str) -> None:
+         """Mark a DLQ entry as permanently failed (no more retries)."""
++        await self._update_dlq_entry(
++            "UPDATE ingestion_dlq SET permanent_failure = true "
++            "WHERE id = :id AND tenant_id = :tid",
++            {"id": dlq_id, "tid": tenant_id},
++            tenant_id=tenant_id,
++            op="mark_dlq_permanent_failure",
++        )
++
++    async def _update_dlq_entry(
++        self, sql: str, params: dict[str, Any], *, tenant_id: str, op: str
++    ) -> None:
++        """Run one per-entry DLQ UPDATE under the entry's tenant RLS context.
++
++        The retry job found the entry with a cross-tenant scan, but acting on it
++        is one tenant's work — so it runs least-privilege on the application
++        factory, not on the maintenance role.
++        """
++        if self._db is None:
++            return
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
+-                await session.execute(
+-                    text("UPDATE ingestion_dlq SET permanent_failure = true WHERE dlq_id = :id"),
+-                    {"id": dlq_id},
+-                )
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
++                await session.execute(text(sql), params)
+         except Exception as exc:
+-            _log.debug("mark_dlq_permanent_failure_error: %s", exc)
++            _log.warning("%s_error dlq=%s: %s", op, params.get("id"), exc)
++
++
++def _json_default(obj: object) -> object:
++    """``json.dumps`` fallback: bytes round-trip as base64, anything else as str."""
++    if isinstance(obj, bytes | bytearray):
++        return {_BYTES_MARKER: base64.b64encode(bytes(obj)).decode("ascii")}
++    return str(obj)
++
++
++def raw_document_from_dlq_json(
++    raw_doc_json: str | None, *, source_id: str, tenant_id: str, doc_id: str = ""
++) -> RawDocument | None:
++    """Rebuild the ``RawDocument`` a DLQ row was written for, or None.
++
++    Returns None when the payload is not a connector document (e.g. the
++    repo-ingest parameters) — there is nothing the pipeline can replay. The
++    row's own ``tenant_id`` / ``source_id`` always win over whatever the JSON
++    says: the payload is data, the row is the authority.
++    """
++    import ast
++    import dataclasses as _dc
++
++    if not raw_doc_json:
++        return None
++    try:
++        payload = json.loads(raw_doc_json)
++    except (TypeError, ValueError):
++        return None
++    if not isinstance(payload, dict) or "content" not in payload:
++        return None
++
++    content = payload["content"]
++    if isinstance(content, dict) and _BYTES_MARKER in content:
++        try:
++            content = base64.b64decode(content[_BYTES_MARKER], validate=True)
++        except (TypeError, ValueError):
++            return None
++    elif isinstance(content, str):
++        # Rows written before bytes were base64-encoded hold ``str(b"...")``.
++        decoded: object = None
++        if content[:2] in ("b'", 'b"'):
++            try:
++                decoded = ast.literal_eval(content)
++            except (ValueError, SyntaxError):
++                decoded = None
++        content = decoded if isinstance(decoded, bytes) else content.encode("utf-8")
++    else:
++        return None
++
++    names = {f.name for f in _dc.fields(RawDocument)}
++    kwargs: dict[str, Any] = {k: v for k, v in payload.items() if k in names}
++    kwargs["content"] = content
++    kwargs["source_id"] = source_id
++    kwargs["tenant_id"] = tenant_id
++    kwargs["doc_id"] = str(kwargs.get("doc_id") or doc_id)
++    kwargs.setdefault("content_type", "application/octet-stream")
++    try:
++        return RawDocument(**kwargs)
++    except (TypeError, ValueError):
++        return None
+diff --git a/agent-verse-backend/app/ingestion/scheduler.py b/agent-verse-backend/app/ingestion/scheduler.py
+index f18fe2e7a..47d6c57ed 100644
+--- a/agent-verse-backend/app/ingestion/scheduler.py
++++ b/agent-verse-backend/app/ingestion/scheduler.py
+@@ -33,6 +33,8 @@ _MAX_JITTER_SECONDS = 30
+ _BACKOFF_BASE = 60
+ # Maximum backoff (10 minutes)
+ _BACKOFF_MAX = 600
++# DLQ entries retried this many times are flagged permanent by the retry job.
++_DLQ_MAX_RETRIES = 5
+ 
+ 
+ def _jitter(source_id: str) -> float:
+@@ -77,8 +79,12 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
+     with no deps silently skipped embedding — Stage 10 ``no_embedder`` — so no
+     scheduled document was ever indexed), and the source store must be DB-backed
+     so the config actually loads cross-process.
++
++    Everything here acts for ONE tenant at a time, so it all runs on the
++    application factory under that tenant's RLS context. The tracker also gets
++    the maintenance-role factory, which only its cross-tenant DLQ scan uses.
+     """
+-    from app.db.session import get_session_factory
++    from app.db.session import get_session_factory, get_system_session_factory
+     from app.ingestion.job_tracker import IngestionJobTracker
+     from app.ingestion.pipeline import IngestionPipeline
+     from app.ingestion.source_store import SourceConfigStore
+@@ -89,7 +95,7 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
+     provider = resolve_provider()
+     knowledge_store = KnowledgeStore(db_factory)
+     pipeline = IngestionPipeline(knowledge_store=knowledge_store, embedder=provider)
+-    tracker = IngestionJobTracker(db=db_factory)
++    tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
+     source_store = SourceConfigStore(db=db_factory)
+     return tracker, pipeline, source_store
+ 
+@@ -108,7 +114,11 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
+         return {"skipped": True, "reason": "already_running"}
+ 
+     # ── Load SourceConfig (durable, cross-process store) ─────────────────────
+-    config = await source_store.get_system(source_id, tenant_id)
++    # The task carries its tenant, so this is a tenant-scoped (RLS) read — not a
++    # system read. The previous ``get_system`` issued ``row_security = off`` on
++    # the application's NOBYPASSRLS connection, where every statement then fails
++    # ("query would be affected by row-level security"): no scheduled sync ran.
++    config = await source_store.get(source_id, tenant_id)
+     if config is None:
+         await tracker.release_lock(source_id, tenant_id)
+         return {"error": "source_not_found"}
+@@ -200,6 +210,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
+                         or getattr(result, "skip_reason", "")
+                         or "pipeline_failure",
+                         raw_doc=raw_doc,
++                        job_id=job.job_id,
+                     )
+ 
+                 new_cursor = next_cursor
+@@ -224,10 +235,13 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
+         job.docs_skipped = docs_skipped
+         job.docs_failed = docs_failed
+         await tracker.complete_job(job)
+-        # Reset failure counter on success
+-        await tracker.reset_failure_counter(source_id, tenant_id)
+         # Advance last_synced_at + cursor on the durable source row so the beat
+         # due-scan reschedules the next sync one interval out (item 6).
++        # mark_synced is the single owner of consecutive_failures (0 when no doc
++        # failed, +1 otherwise) — the same rule the manual-sync path uses. The
++        # tracker's separate reset/increment calls were dropped: their SQL named
++        # a nonexistent column and never ran, and once fixed they would have
++        # double-counted every failure against the backoff.
+         await source_store.mark_synced(
+             source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=docs_failed
+         )
+@@ -247,7 +261,6 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
+         job.docs_skipped = docs_skipped
+         job.docs_failed = docs_failed
+         await tracker.complete_job(job, error=str(exc))
+-        await tracker.increment_failure_counter(source_id, tenant_id)
+         await source_store.mark_synced(
+             source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=1
+         )
+@@ -272,12 +285,16 @@ async def _dispatch_due_sources_async() -> dict:
+     """Find sources whose next sync is due and enqueue sync tasks."""
+     import datetime
+ 
+-    from app.db.session import get_session_factory
++    from app.db.session import get_system_session_factory
+     from app.ingestion.source_store import SourceConfigStore
+ 
+     # DB-backed, cross-tenant scan of the durable source_configs table (the old
+     # in-memory IngestionJobTracker().get_due_sources() always returned []).
+-    source_store = SourceConfigStore(db=get_session_factory())
++    # Cross-tenant → the maintenance role. On the application's NOBYPASSRLS
++    # factory (which this used before) ``system_session`` makes every statement
++    # fail, so nothing was ever dispatched. Each enqueued sync then runs for its
++    # own tenant under RLS.
++    source_store = SourceConfigStore(system_db=get_system_session_factory())
+     due_sources = await source_store.list_due()
+ 
+     dispatched = 0
+@@ -303,45 +320,64 @@ def retry_dlq_entries_task(self) -> dict:
+ 
+ 
+ async def _retry_dlq_async() -> dict:
+-    """Pull eligible DLQ entries and resubmit through the pipeline."""
+-    from app.core.config import get_settings
+-    from app.ingestion.job_tracker import IngestionJobTracker
+-    from app.ingestion.pipeline import IngestionPipeline
+-    from app.tenancy.context import PlanTier, TenantContext
++    """Pull eligible DLQ entries and resubmit through the pipeline.
+ 
+-    settings = get_settings()
++    The scan is cross-tenant (maintenance role, inside the tracker); everything
++    done for one entry — loading its Source, re-ingesting, updating the row — is
++    that entry's tenant's work and runs under its RLS context.
+ 
+-    tracker = IngestionJobTracker()
+-    pipeline = IngestionPipeline()
++    This previously built ``IngestionJobTracker()`` with no DB (so the scan
++    always returned []), an ``IngestionPipeline()`` with no knowledge store or
++    embedder, read DB rows as attributes, and passed no SourceConfig — so even a
++    returned entry could only ever be skipped.
++    """
++    from app.ingestion.job_tracker import raw_document_from_dlq_json
++
++    tracker, pipeline, source_store = _build_worker_ingestion()
+ 
+     entries = await tracker.get_retryable_dlq_entries(max_entries=50)
+     retried = succeeded = still_failed = 0
+ 
+     for entry in entries:
+-        if entry.retry_count >= 5:
+-            await tracker.mark_dlq_permanent_failure(entry.dlq_id)
++        dlq_id = str(entry.get("dlq_id") or "")
++        tenant_id = str(entry.get("tenant_id") or "")
++        source_id = str(entry.get("source_id") or "")
++        if not dlq_id or not tenant_id:
++            continue
++
++        if int(entry.get("retry_count") or 0) >= _DLQ_MAX_RETRIES:
++            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
++            continue
++
++        raw_doc = raw_document_from_dlq_json(
++            entry.get("raw_doc_json"),
++            source_id=source_id,
++            tenant_id=tenant_id,
++            doc_id=str(entry.get("doc_id") or ""),
++        )
++        if raw_doc is None:
++            # Not a connector document (e.g. repo-ingest parameters) or an
++            # unreadable payload: no retry can replay it, so stop rescanning it.
++            _log.warning("retry_dlq: dlq=%s has no replayable document", dlq_id)
++            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+             continue
+ 
+         retried += 1
+         try:
+-            tenant_ctx = TenantContext(
+-                tenant_id=entry.tenant_id,
+-                api_key_id="dlq_retry",
+-                plan=getattr(settings, "DEFAULT_PLAN", PlanTier.FREE),
+-            )
+-            result = await pipeline.run(
+-                entry.raw_doc,
+-                tenant_context=tenant_ctx,
+-                source_config=getattr(entry, "source_config", None),
+-            )
++            config = await source_store.get(source_id, tenant_id)
++            result = await pipeline.run(raw_doc, source_config=config)
+             if result.success:
+-                await tracker.resolve_dlq_entry(entry.dlq_id)
++                await tracker.resolve_dlq_entry(dlq_id, tenant_id)
+                 succeeded += 1
+             else:
+-                await tracker.increment_dlq_retry(entry.dlq_id, error=result.error)
++                await tracker.increment_dlq_retry(
++                    dlq_id,
++                    tenant_id,
++                    error=result.error or result.skip_reason or result.status,
++                )
+                 still_failed += 1
+         except Exception as exc:
+-            await tracker.increment_dlq_retry(entry.dlq_id, error=str(exc))
++            await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc))
+             still_failed += 1
+ 
+     _log.info(
+diff --git a/agent-verse-backend/app/ingestion/source_store.py b/agent-verse-backend/app/ingestion/source_store.py
+index eb0928817..95dadfb16 100644
+--- a/agent-verse-backend/app/ingestion/source_store.py
++++ b/agent-verse-backend/app/ingestion/source_store.py
+@@ -6,9 +6,19 @@ API survives restarts and is visible to the Celery worker/scheduler process
+ Falls back to an in-memory dict when no DB session factory is wired (tests / dev
+ without Postgres), mirroring the other stores in this codebase.
+ 
+-Tenant isolation is enforced with RLS on every tenant-scoped call; the
+-system-scoped reads (``list_due`` / ``get_system``) used by the beat scan and
+-worker deliberately cross tenants via ``system_session``.
++Two session factories, never interchangeable:
++
++* ``db`` — the application's own (least-privilege, NOBYPASSRLS) factory. Every
++  per-tenant call — the ``/sources*`` API, the manual and scheduled sync of one
++  Source — runs inside a transaction with the ``app.tenant_id`` GUC set
++  (``sqlalchemy_rls_context``) *and* an explicit ``tenant_id`` predicate. The
++  Celery worker syncing one Source knows its tenant, so it goes through here too.
++* ``system_db`` — the maintenance-role (BYPASSRLS) factory, used ONLY by
++  ``list_due``: the Celery-beat scan for due Sources, which is genuinely
++  cross-tenant. ``system_session`` is useless on the application factory — under
++  the NOBYPASSRLS role every statement after it fails with "query would be
++  affected by row-level security" — which is exactly how the due-scan (and the
++  since-removed ``get_system``) broke once the API ran least-privilege.
+ """
+ 
+ from __future__ import annotations
+@@ -19,9 +29,10 @@ from typing import Any
+ from app.ingestion.source_config import SourceConfig, SourceFamily
+ from app.observability.logging import get_logger
+ 
+-# Bounded batch for the due-source beat scan (see IngestionJobTracker for the
+-# rationale): after an outage every source is due at once, and the scheduler
+-# must not be the thing that falls over at that moment.
++# Bounded batch for the due-source beat scan, most-overdue first. An unbounded
++# scan is fine in steady state but returns EVERY source at once after an outage,
++# when they are all simultaneously due — the one moment the scheduler must not
++# also be the thing that falls over. The remainder is picked up next tick.
+ _DUE_SCAN_LIMIT = 500
+ 
+ _log = get_logger(__name__)
+@@ -102,8 +113,12 @@ def _row_to_config(row: Any) -> SourceConfig:
+ 
+ 
+ class SourceConfigStore:
+-    def __init__(self, db: Any = None) -> None:
++    def __init__(self, db: Any = None, *, system_db: Any = None) -> None:
++        """``db`` serves every tenant-scoped call (RLS); ``system_db`` serves only
++        the cross-tenant ``list_due`` beat scan. With neither, the store is an
++        in-memory dict (tests / dev without Postgres)."""
+         self._db = db
++        self._system_db = system_db
+         self._mem: dict[str, SourceConfig] = {}
+ 
+     # ── writes ────────────────────────────────────────────────────────────────
+@@ -301,31 +316,17 @@ class SourceConfigStore:
+             ).mappings().all()
+         return [_row_to_config(r) for r in rows]
+ 
+-    async def get_system(self, source_id: str, tenant_id: str) -> SourceConfig | None:
+-        """Cross-tenant get for the worker/scheduler (bypasses RLS)."""
+-        if self._db is None:
+-            return await self.get(source_id, tenant_id)
+-        from sqlalchemy import text
+-
+-        from app.db.rls import system_session
+-
+-        async with self._db() as session, session.begin(), system_session(session):
+-            row = (
+-                await session.execute(
+-                    text(
+-                        "SELECT * FROM source_configs "
+-                        "WHERE id = :id AND tenant_id = :tid"
+-                    ),
+-                    {"id": source_id, "tid": tenant_id},
+-                )
+-            ).mappings().first()
+-        return _row_to_config(row) if row else None
+-
+     async def list_due(self) -> list[tuple[str, str]]:
+         """System-wide scan of enabled, non-streaming sources whose next sync is
+         due (never synced, or last_synced_at + interval <= now). Returns
+-        (source_id, tenant_id) pairs for the beat dispatcher."""
+-        if self._db is None:
++        (source_id, tenant_id) pairs for the beat dispatcher.
++
++        This is the one genuinely cross-tenant read in the store, so it runs on
++        the maintenance-role factory (``system_db``, falling back to
++        ``get_system_session_factory()``), never on the request factory. It is
++        called only by Celery beat — never on a request path.
++        """
++        if self._db is None and self._system_db is None:
+             now = datetime.now(UTC)
+             due: list[tuple[str, str]] = []
+             for c in self._mem.values():
+@@ -345,7 +346,13 @@ class SourceConfigStore:
+ 
+         from app.db.rls import system_session
+ 
+-        async with self._db() as session, session.begin(), system_session(session):
++        system_db = self._system_db
++        if system_db is None:
++            from app.db.session import get_system_session_factory
++
++            system_db = get_system_session_factory()
++
++        async with system_db() as session, session.begin(), system_session(session):
+             rows = await session.execute(
+                 text(
+                     "SELECT id AS source_id, tenant_id FROM source_configs "
+diff --git a/agent-verse-backend/tests/ingestion/test_dlq_payload_serialization.py b/agent-verse-backend/tests/ingestion/test_dlq_payload_serialization.py
+index e4742f257..dc31d077f 100644
+--- a/agent-verse-backend/tests/ingestion/test_dlq_payload_serialization.py
++++ b/agent-verse-backend/tests/ingestion/test_dlq_payload_serialization.py
+@@ -76,6 +76,50 @@ async def test_add_to_dlq_serializes_dataclass_payload() -> None:
+     assert payload == {"doc_id": "d1", "title": "Hello"}
+ 
+ 
++@pytest.mark.asyncio
++async def test_add_to_dlq_insert_is_complete_and_tenant_scoped() -> None:
++    """The INSERT must supply every NOT NULL column of ingestion_dlq and run with
++    the row's tenant GUC set (FORCE RLS). It omitted ``id``, ``failed_stage`` and
++    ``failure_type`` — so it could never succeed — and set no tenant context."""
++    statements: list[tuple[str, dict[str, Any]]] = []
++    session = AsyncMock()
++
++    async def _execute(query: Any, params: dict[str, Any] | None = None) -> Any:
++        statements.append((" ".join(str(query).split()), params or {}))
++        return MagicMock()
++
++    session.execute = AsyncMock(side_effect=_execute)
++    session.begin = MagicMock(return_value=AsyncMock())
++    cm = AsyncMock()
++    cm.__aenter__ = AsyncMock(return_value=session)
++
++    tracker = IngestionJobTracker(db=lambda: cm)
++    await tracker.add_to_dlq(
++        source_id="s1", tenant_id="t-a", doc_id="d1", error="e", raw_doc={}, job_id="job-9"
++    )
++
++    set_idx = next(
++        i for i, (s, p) in enumerate(statements) if "set_config" in s and p == {"tid": "t-a"}
++    )
++    ins_idx = next(i for i, (s, _) in enumerate(statements) if "INSERT INTO ingestion_dlq" in s)
++    assert set_idx < ins_idx
++    sql, params = statements[ins_idx]
++    for column in ("id", "failed_stage", "failure_type", "tenant_id", "job_id"):
++        assert f" {column}," in sql or f"({column}," in sql
++    assert params["dlq_id"]
++    assert params["tenant_id"] == "t-a"
++    assert params["job_id"] == "job-9"
++    assert params["failed_stage"] == "pipeline"
++    assert params["failure_type"] == "pipeline_failure"
++
++
++@pytest.mark.asyncio
++async def test_add_to_dlq_without_db_is_a_noop() -> None:
++    await IngestionJobTracker().add_to_dlq(
++        source_id="s1", tenant_id="t1", doc_id="d1", error="e", raw_doc={}
++    )
++
++
+ @pytest.mark.asyncio
+ async def test_add_to_dlq_falls_back_for_unserializable() -> None:
+     db, captured = _capturing_db()
+diff --git a/agent-verse-backend/tests/ingestion/test_ingestion_rls_integration.py b/agent-verse-backend/tests/ingestion/test_ingestion_rls_integration.py
+new file mode 100644
+index 000000000..2858d8fbb
+--- /dev/null
++++ b/agent-verse-backend/tests/ingestion/test_ingestion_rls_integration.py
+@@ -0,0 +1,368 @@
++"""Integration: ingestion under the production database posture.
++
++Production runs the API — and the Celery worker's per-tenant work — as a
++NOSUPERUSER, NOBYPASSRLS role, and the cross-tenant beat scans as a separate
++BYPASSRLS maintenance role. ``source_configs``, ``ingestion_jobs`` and
++``ingestion_dlq`` are all FORCE ROW LEVEL SECURITY, so under those roles:
++
++* a statement with no ``app.tenant_id`` GUC is rejected (INSERT) or matches
++  nothing (UPDATE/SELECT) — which is what happened to every ingestion job row,
++  DLQ insert and failure counter, silently, because the errors were swallowed;
++* ``system_session`` on the application role makes every statement fail
++  ("query would be affected by row-level security") — which is what broke the
++  beat due-scan, the worker's Source load and the DLQ retry scan.
++
++This drives the real stores/tracker/sync bodies against a real schema
++(``alembic upgrade head``) through exactly those two roles.
++
++Run with::
++
++    DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock \\
++    TESTCONTAINERS_RYUK_DISABLED=true \\
++        uv run pytest tests/ingestion/test_ingestion_rls_integration.py -q -m integration
++"""
++
++from __future__ import annotations
++
++import os
++import secrets
++import subprocess
++from collections.abc import AsyncIterator, Iterator
++from pathlib import Path
++from types import SimpleNamespace
++from typing import Any
++from unittest.mock import MagicMock, patch
++
++import pytest
++import pytest_asyncio
++from sqlalchemy import text
++from sqlalchemy.engine import make_url
++from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
++
++from app.api.ingestion import _run_sync
++from app.ingestion.job_tracker import IngestionJobTracker
++from app.ingestion.scheduler import _retry_dlq_async, _sync_source_async
++from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfig, SourceFamily
++from app.ingestion.source_store import SourceConfigStore
++
++pytestmark = pytest.mark.integration
++
++BACKEND_ROOT = Path(__file__).resolve().parents[2]
++TENANT_A = "tenant-ing-a"
++TENANT_B = "tenant-ing-b"
++_TABLES = ("source_configs", "ingestion_jobs", "ingestion_dlq")
++
++
++@pytest.fixture(scope="module")
++def postgres_url() -> Iterator[str]:
++    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as postgres:
++        admin_url = postgres.get_connection_url()
++        subprocess.run(
++            ["alembic", "upgrade", "head"],
++            cwd=BACKEND_ROOT,
++            env={**os.environ, "DATABASE_URL": admin_url},
++            check=True,
++            capture_output=True,
++            text=True,
++        )
++        yield admin_url
++
++
++async def _create_role(conn: Any, role: str, password: str, *, bypass_rls: bool) -> None:
++    quoted = (await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})).scalar_one()
++    await conn.execute(
++        text(
++            f"CREATE ROLE {role} LOGIN PASSWORD {quoted} NOSUPERUSER NOCREATEDB NOCREATEROLE "
++            + ("BYPASSRLS" if bypass_rls else "NOBYPASSRLS")
++        )
++    )
++    await conn.execute(text(f"GRANT CONNECT ON DATABASE test TO {role}"))
++    await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
++    await conn.execute(
++        text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {', '.join(_TABLES)} TO {role}")
++    )
++
++
++@pytest_asyncio.fixture(scope="function")
++async def dbs(postgres_url: str) -> AsyncIterator[SimpleNamespace]:
++    """admin (superuser; setup + verification), app (NOBYPASSRLS, the API and the
++    worker's per-tenant work) and maint (BYPASSRLS, non-superuser: beat scans)."""
++    suffix = secrets.token_hex(4)
++    app_role, maint_role = f"ing_app_{suffix}", f"ing_maint_{suffix}"
++    app_pw, maint_pw = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
++    admin_engine = create_async_engine(postgres_url)
++    async with admin_engine.begin() as conn:
++        await _create_role(conn, app_role, app_pw, bypass_rls=False)
++        await _create_role(conn, maint_role, maint_pw, bypass_rls=True)
++        for table in ("ingestion_dlq", "ingestion_jobs", "source_configs"):
++            await conn.execute(text(f"DELETE FROM {table}"))
++
++    def _url(role: str, password: str) -> str:
++        return (
++            make_url(postgres_url)
++            .set(username=role, password=password)
++            .render_as_string(hide_password=False)
++        )
++
++    app_engine = create_async_engine(_url(app_role, app_pw), pool_size=4, max_overflow=0)
++    maint_engine = create_async_engine(_url(maint_role, maint_pw), pool_size=2, max_overflow=0)
++    yield SimpleNamespace(
++        admin=async_sessionmaker(admin_engine, expire_on_commit=False),
++        app=async_sessionmaker(app_engine, expire_on_commit=False),
++        maint=async_sessionmaker(maint_engine, expire_on_commit=False),
++    )
++    await app_engine.dispose()
++    await maint_engine.dispose()
++    await admin_engine.dispose()
++
++
++def _source(tenant_id: str, source_id: str, **overrides: Any) -> SourceConfig:
++    fields: dict[str, Any] = dict(
++        source_id=source_id,
++        tenant_id=tenant_id,
++        name=f"src {source_id}",
++        family=SourceFamily.WEB,
++        source_type="http",
++    )
++    fields.update(overrides)
++    return SourceConfig(**fields)
++
++
++def _raw(doc_id: str, source_id: str, tenant_id: str) -> RawDocument:
++    return RawDocument(
++        doc_id=doc_id,
++        source_id=source_id,
++        tenant_id=tenant_id,
++        content=b"bytes \x00\xff",
++        content_type="text/plain",
++    )
++
++
++async def _row(admin: Any, sql: str, **params: Any) -> Any:
++    async with admin() as s:
++        return (await s.execute(text(sql), params)).mappings().first()
++
++
++# ── /sources* API store: tenant RLS ──────────────────────────────────────────
++
++
++@pytest.mark.asyncio
++async def test_source_crud_is_tenant_isolated_under_the_app_role(dbs: SimpleNamespace) -> None:
++    store = SourceConfigStore(db=dbs.app)
++    await store.create(_source(TENANT_A, "src-a"))
++    await store.create(_source(TENANT_B, "src-b"))
++
++    assert [s.source_id for s in await store.list(TENANT_A)] == ["src-a"]
++    assert await store.get("src-a", TENANT_A) is not None
++    assert await store.get("src-b", TENANT_A) is None
++    assert await store.update("src-b", TENANT_A, name="hijacked") is None
++    assert await store.delete("src-b", TENANT_A) is False
++
++    row = await _row(dbs.admin, "SELECT name FROM source_configs WHERE id = 'src-b'")
++    assert row["name"] == "src src-b"
++
++
++# ── manual sync (POST /sources/{id}/sync, POST /knowledge/collections/{id}/sync) ─
++
++
++class _FakePipeline:
++    def __init__(self, statuses: list[str]) -> None:
++        self._statuses = list(statuses)
++
++    async def ingest(self, raw_doc: Any, src: SourceConfig) -> Any:
++        return SimpleNamespace(
++            status=self._statuses.pop(0), chunks_created=2, tokens_consumed=3
++        )
++
++
++def _connector_cls(items: list[tuple[Any, str]]) -> Any:
++    class _Connector:
++        async def get_delta(self, src: SourceConfig, cursor: str | None) -> Any:
++            for raw_doc, new_cursor in items:
++                yield raw_doc, new_cursor
++
++    return _Connector
++
++
++@pytest.mark.asyncio
++async def test_manual_sync_persists_job_cursor_and_stats_under_the_app_role(
++    dbs: SimpleNamespace,
++) -> None:
++    store = SourceConfigStore(db=dbs.app)
++    tracker = IngestionJobTracker(db=dbs.app)
++    await store.create(_source(TENANT_A, "src-sync"))
++    source = await store.get("src-sync", TENANT_A)
++    assert source is not None
++    job_id = await tracker.acquire_lock("src-sync", TENANT_A)
++    assert job_id is not None
++
++    connector = _connector_cls([("d1", "c1"), ("d2", "c2")])
++    with patch("app.ingestion.connector_registry.get_connector", return_value=connector):
++        await _run_sync(source, _FakePipeline(["indexed", "failed"]), tracker, job_id, store)
++
++    job = await _row(dbs.admin, "SELECT * FROM ingestion_jobs WHERE id = :id", id=job_id)
++    assert job is not None, "job row never persisted (INSERT rejected by RLS)"
++    assert job["tenant_id"] == TENANT_A
++    assert job["status"] == "completed"
++    assert job["triggered_by"] == "manual"
++    assert (job["docs_indexed"], job["docs_failed"], job["chunks_created"]) == (1, 1, 4)
++    assert job["cursor_after"] == "c2"
++
++    src = await _row(dbs.admin, "SELECT * FROM source_configs WHERE id = 'src-sync'")
++    assert src["last_synced_at"] is not None
++    assert src["cursor_value"] == "c2"
++    assert src["total_docs_indexed"] == 1
++    assert src["consecutive_failures"] == 1  # a doc failed → mark_synced counts it
++    assert tracker._locks.get("src-sync") is None
++
++
++@pytest.mark.asyncio
++async def test_tracker_cannot_touch_another_tenants_job(dbs: SimpleNamespace) -> None:
++    store = SourceConfigStore(db=dbs.app)
++    tracker = IngestionJobTracker(db=dbs.app)
++    await store.create(_source(TENANT_B, "src-b-job"))
++    job = await tracker.create_job(_source(TENANT_B, "src-b-job"), job_id="job-b")
++
++    # Same job id, forged tenant: the UPDATE runs under tenant A's GUC and
++    # tenant predicate, so it cannot see tenant B's row.
++    job.tenant_id = TENANT_A
++    await tracker.complete_job(job, error="forged")
++
++    row = await _row(dbs.admin, "SELECT status, tenant_id FROM ingestion_jobs WHERE id = 'job-b'")
++    assert (row["status"], row["tenant_id"]) == ("running", TENANT_B)
++
++
++# ── beat due-scan: maintenance role ──────────────────────────────────────────
++
++
++@pytest.mark.asyncio
++async def test_due_scan_needs_the_maintenance_role(dbs: SimpleNamespace) -> None:
++    store = SourceConfigStore(db=dbs.app)
++    await store.create(_source(TENANT_A, "due-a"))
++    await store.create(_source(TENANT_B, "due-b"))
++    await store.create(_source(TENANT_B, "off-b", enabled=False))
++
++    # system_session on the application (NOBYPASSRLS) role fails loudly — the
++    # exact failure the beat dispatcher hit before it moved to the system factory.
++    with pytest.raises(Exception, match="row-level security"):
++        await SourceConfigStore(system_db=dbs.app).list_due()
++
++    due = await SourceConfigStore(system_db=dbs.maint).list_due()
++    assert set(due) == {("due-a", TENANT_A), ("due-b", TENANT_B)}
++    # The tracker's own due-scan delegates to the same maintenance-role scan.
++    tracker = IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
++    assert set(await tracker.get_due_sources()) == set(due)
++
++
++# ── scheduled sync worker: per-tenant RLS ────────────────────────────────────
++
++
++@pytest.mark.asyncio
++async def test_scheduled_sync_runs_under_tenant_rls(dbs: SimpleNamespace) -> None:
++    store = SourceConfigStore(db=dbs.app)
++    await store.create(_source(TENANT_A, "src-worker"))
++    tracker = IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
++
++    pipeline = MagicMock()
++    results = iter(
++        [
++            PipelineResult(doc_id="w1", source_id="src-worker", tenant_id=TENANT_A, status="indexed"),
++            PipelineResult(
++                doc_id="w2", source_id="src-worker", tenant_id=TENANT_A, status="failed", error="bad"
++            ),
++        ]
++    )
++
++    async def _ingest(raw_doc: Any, cfg: SourceConfig) -> PipelineResult:
++        return next(results)
++
++    pipeline.ingest = _ingest
++    connector = _connector_cls(
++        [(_raw("w1", "src-worker", TENANT_A), "k1"), (_raw("w2", "src-worker", TENANT_A), "k2")]
++    )
++    with (
++        patch(
++            "app.ingestion.scheduler._build_worker_ingestion",
++            return_value=(tracker, pipeline, store),
++        ),
++        patch("app.ingestion.connector_registry.load_all_connectors"),
++        patch("app.ingestion.connector_registry.get_connector", return_value=connector),
++    ):
++        result = await _sync_source_async(
++            task=MagicMock(), source_id="src-worker", tenant_id=TENANT_A, triggered_by="scheduler"
++        )
++
++    assert result["docs_indexed"] == 1 and result["docs_failed"] == 1, result
++    job = await _row(dbs.admin, "SELECT * FROM ingestion_jobs WHERE id = :id", id=result["job_id"])
++    assert job is not None and job["status"] == "completed" and job["cursor_after"] == "k2"
++    dlq = await _row(dbs.admin, "SELECT * FROM ingestion_dlq WHERE source_id = 'src-worker'")
++    assert dlq is not None, "DLQ INSERT never landed"
++    assert (dlq["tenant_id"], dlq["doc_id"], dlq["job_id"]) == (TENANT_A, "w2", result["job_id"])
++    assert dlq["id"] == dlq["dlq_id"]
++    src = await _row(dbs.admin, "SELECT * FROM source_configs WHERE id = 'src-worker'")
++    assert src["last_synced_at"] is not None and src["cursor_value"] == "k2"
++
++
++# ── DLQ retry: maintenance-role scan, per-tenant follow-ups ─────────────────
++
++
++@pytest.mark.asyncio
++async def test_dlq_retry_scans_as_maintenance_and_acts_per_tenant(dbs: SimpleNamespace) -> None:
++    store = SourceConfigStore(db=dbs.app)
++    app_tracker = IngestionJobTracker(db=dbs.app, system_db=dbs.maint)
++    for tenant, sid in ((TENANT_A, "dlq-a"), (TENANT_B, "dlq-b")):
++        await store.create(_source(tenant, sid))
++        await app_tracker.add_to_dlq(
++            source_id=sid, tenant_id=tenant, doc_id=f"doc-{sid}", error="e",
++            raw_doc=_raw(f"doc-{sid}", sid, tenant),
++        )
++    # One entry already at the retry cap.
++    await store.create(_source(TENANT_A, "dlq-cap"))
++    await app_tracker.add_to_dlq(
++        source_id="dlq-cap", tenant_id=TENANT_A, doc_id="doc-cap", error="e",
++        raw_doc=_raw("doc-cap", "dlq-cap", TENANT_A),
++    )
++    async with dbs.admin() as s, s.begin():
++        await s.execute(text("UPDATE ingestion_dlq SET retry_count = 5 WHERE source_id = 'dlq-cap'"))
++
++    # On the application role the cross-tenant scan cannot run.
++    assert await IngestionJobTracker(db=dbs.app, system_db=dbs.app).get_retryable_dlq_entries() == []
++    entries = await app_tracker.get_retryable_dlq_entries()
++    assert {e["source_id"] for e in entries} == {"dlq-a", "dlq-b", "dlq-cap"}
++
++    replayed: list[RawDocument] = []
++
++    class _Pipeline:
++        async def run(self, raw_doc: RawDocument, *, source_config: Any = None) -> PipelineResult:
++            assert source_config is not None and source_config.tenant_id == raw_doc.tenant_id
++            replayed.append(raw_doc)
++            return PipelineResult(
++                doc_id=raw_doc.doc_id, source_id=raw_doc.source_id,
++                tenant_id=raw_doc.tenant_id, status="indexed",
++            )
++
++    with patch(
++        "app.ingestion.scheduler._build_worker_ingestion",
++        return_value=(app_tracker, _Pipeline(), store),
++    ):
++        result = await _retry_dlq_async()
++
++    assert result == {"retried": 2, "succeeded": 2, "still_failed": 0}
++    assert {(d.tenant_id, d.doc_id) for d in replayed} == {
++        (TENANT_A, "doc-dlq-a"), (TENANT_B, "doc-dlq-b"),
++    }
++    assert all(d.content == b"bytes \x00\xff" for d in replayed)
++    async with dbs.admin() as s:
++        rows = {
++            r["source_id"]: r
++            for r in (
++                await s.execute(
++                    text("SELECT source_id, resolved_at, permanent_failure FROM ingestion_dlq")
++                )
++            ).mappings()
++        }
++    assert rows["dlq-a"]["resolved_at"] is not None
++    assert rows["dlq-b"]["resolved_at"] is not None  # tenant B's row, under B's context
++    assert rows["dlq-cap"]["permanent_failure"] is True
++    assert rows["dlq-cap"]["resolved_at"] is None
+diff --git a/agent-verse-backend/tests/ingestion/test_job_tracker.py b/agent-verse-backend/tests/ingestion/test_job_tracker.py
+index 73d4bee8e..acd1792d7 100644
+--- a/agent-verse-backend/tests/ingestion/test_job_tracker.py
++++ b/agent-verse-backend/tests/ingestion/test_job_tracker.py
+@@ -6,6 +6,10 @@ support methods (load_config, get_due_sources, failure counters, DLQ helpers),
+ and their exception-swallowing behaviour when the DB is present but the query
+ fails. ``add_to_dlq`` serialization is already covered by
+ ``test_dlq_payload_serialization.py`` — not duplicated here.
++
++The DB-path tests also pin the least-privilege posture: every per-tenant write
++runs after ``app.tenant_id`` is set, with a tenant predicate, and never disables
++RLS; the two cross-tenant beat scans run on the maintenance factory only.
+ """
+ from __future__ import annotations
+ 
+@@ -89,6 +93,52 @@ def _db_raises() -> Any:
+     return _factory
+ 
+ 
++class _Recorder:
++    """Session factory recording every statement as (sql, params), in order."""
++
++    def __init__(self, result: Any = None) -> None:
++        self.executed: list[tuple[str, dict]] = []
++        self.opened = 0
++        self._result = result if result is not None else _Result()
++
++    def __call__(self) -> Any:
++        self.opened += 1
++        return self
++
++    async def __aenter__(self) -> Any:
++        return self
++
++    async def __aexit__(self, *_exc: Any) -> bool:
++        return False
++
++    def begin(self) -> Any:
++        return self
++
++    async def execute(self, stmt: Any, params: dict | None = None) -> Any:
++        self.executed.append((" ".join(str(stmt).split()), params or {}))
++        return self._result
++
++    def sql(self, needle: str) -> tuple[str, dict]:
++        return next((s, p) for s, p in self.executed if needle in s)
++
++
++_SET_TENANT = "SELECT set_config('app.tenant_id', :tid, true)"
++
++
++def _assert_tenant_scoped(rec: _Recorder, tenant_id: str, needle: str) -> None:
++    """The statement containing ``needle`` ran AFTER the tenant GUC was set (and
++    before it was reset), carries a tenant predicate/value, and nothing disabled
++    RLS on the application connection."""
++    sqls = [s for s, _ in rec.executed]
++    set_idx = next(
++        i for i, (s, p) in enumerate(rec.executed) if s == _SET_TENANT and p == {"tid": tenant_id}
++    )
++    stmt_idx = next(i for i, s in enumerate(sqls) if needle in s)
++    assert set_idx < stmt_idx
++    assert tenant_id in rec.executed[stmt_idx][1].values()
++    assert not any("row_security" in s for s in sqls)
++
++
+ # ── Distributed locking ───────────────────────────────────────────────────────
+ 
+ 
+@@ -210,6 +260,40 @@ async def test_create_job_persists_when_db_present() -> None:
+     assert job.triggered_by == "webhook"
+ 
+ 
++async def test_create_job_insert_runs_under_tenant_rls() -> None:
++    # ingestion_jobs is FORCE RLS: without the GUC, the NOBYPASSRLS app role's
++    # INSERT is rejected (and was swallowed) — no job row ever existed.
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    await tracker.create_job(_config(tenant_id="t-a"), job_id="job-rls")
++    _assert_tenant_scoped(rec, "t-a", "INSERT INTO ingestion_jobs")
++
++
++async def test_update_cursor_scopes_both_updates_to_the_tenant() -> None:
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    cfg = _config(tenant_id="t-a")
++    job = await tracker.create_job(cfg, job_id="job-c")
++    rec.executed.clear()
++    await tracker.update_cursor(job, "cur-2", cfg)
++    _assert_tenant_scoped(rec, "t-a", "UPDATE source_configs")
++    _assert_tenant_scoped(rec, "t-a", "UPDATE ingestion_jobs")
++    jobs_sql, _ = rec.sql("UPDATE ingestion_jobs")
++    assert "tenant_id = :tenant_id" in jobs_sql
++
++
++async def test_complete_job_update_runs_under_tenant_rls() -> None:
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    job = await tracker.create_job(_config(tenant_id="t-a"), job_id="job-d")
++    rec.executed.clear()
++    await tracker.complete_job(job, error="boom")
++    _assert_tenant_scoped(rec, "t-a", "UPDATE ingestion_jobs")
++    sql, params = rec.sql("UPDATE ingestion_jobs")
++    assert "tenant_id = :tenant_id" in sql
++    assert params["status"] == "failed"
++
++
+ async def test_create_job_db_persist_error_is_swallowed() -> None:
+     tracker = IngestionJobTracker(db=_db_raises())
+     cfg = _config()
+@@ -323,21 +407,28 @@ async def test_load_config_uses_in_memory_job_when_present() -> None:
+ 
+ 
+ async def test_load_config_falls_back_to_db_when_not_in_memory() -> None:
++    # A real source_configs row: keyed by ``id`` (there is no source_id column),
++    # family stored as its string value.
+     row = {
+-        "source_id": "src-2",
++        "id": "src-2",
+         "tenant_id": "t1",
+         "name": "DB Source",
+-        "family": SourceFamily.WEB,
++        "family": "web",
+         "source_type": "http",
+         "enabled": True,
+         "sync_mode": "incremental",
+         "connection_config": {},
+     }
+-    factory = _db_ok(execute_result=_Result(mappings_first=row))
+-    tracker = IngestionJobTracker(db=factory)
++    rec = _Recorder(_Result(mappings_first=row))
++    tracker = IngestionJobTracker(db=rec)
+     loaded = await tracker.load_config("src-2", "t1")
+     assert loaded is not None
+     assert loaded.source_id == "src-2"
++    assert loaded.family == SourceFamily.WEB
++    sql, params = rec.sql("FROM source_configs")
++    assert "WHERE id = :id AND tenant_id = :tid" in sql
++    assert params == {"id": "src-2", "tid": "t1"}
++    _assert_tenant_scoped(rec, "t1", "FROM source_configs")
+ 
+ 
+ async def test_load_config_returns_none_when_db_empty() -> None:
+@@ -359,35 +450,62 @@ async def test_load_config_db_error_returns_none() -> None:
+     assert loaded is None
+ 
+ 
+-# ── get_due_sources ────────────────────────────────────────────────────────────
++# ── get_due_sources (cross-tenant beat scan → maintenance role) ───────────────
+ 
+ 
+-async def test_get_due_sources_returns_tuples() -> None:
+-    class _Row:
+-        def __init__(self, source_id, tenant_id):
+-            self.source_id = source_id
+-            self.tenant_id = tenant_id
++class _DueRow:
++    def __init__(self, source_id: str, tenant_id: str) -> None:
++        self.source_id = source_id
++        self.tenant_id = tenant_id
+ 
+-    rows = [_Row("s1", "t1"), _Row("s2", "t1")]
+-    factory = _db_ok(execute_result=_Result(rows=rows))
+-    tracker = IngestionJobTracker(db=factory)
++
++async def test_get_due_sources_returns_tuples_from_the_maintenance_factory() -> None:
++    app_db = _Recorder()
++    system_db = _Recorder(_Result(rows=[_DueRow("s1", "t1"), _DueRow("s2", "t2")]))
++    tracker = IngestionJobTracker(db=app_db, system_db=system_db)
+     due = await tracker.get_due_sources()
+-    assert due == [("s1", "t1"), ("s2", "t1")]
++    assert due == [("s1", "t1"), ("s2", "t2")]
++    # RLS is disabled only on the maintenance connection; the application
++    # (NOBYPASSRLS) factory is never opened for the scan.
++    assert any(s == "SET LOCAL row_security = off" for s, _ in system_db.executed)
++    sql, _ = system_db.sql("FROM source_configs")
++    assert "id AS source_id" in sql  # the table's key is ``id``
++    assert app_db.opened == 0
++
++
++async def test_get_due_sources_defaults_to_get_system_session_factory() -> None:
++    from unittest.mock import patch
++
++    app_db = _Recorder()
++    system_db = _Recorder(_Result(rows=[_DueRow("s1", "t1")]))
++    tracker = IngestionJobTracker(db=app_db)
++    with patch("app.db.session.get_system_session_factory", return_value=system_db):
++        assert await tracker.get_due_sources() == [("s1", "t1")]
++    assert app_db.opened == 0
+ 
+ 
+ async def test_get_due_sources_db_error_returns_empty_list() -> None:
+-    tracker = IngestionJobTracker(db=_db_raises())
++    tracker = IngestionJobTracker(db=_db_ok(), system_db=_db_raises())
+     due = await tracker.get_due_sources()
+     assert due == []
+ 
+ 
++async def test_get_due_sources_in_memory_returns_empty_list() -> None:
++    assert await IngestionJobTracker().get_due_sources() == []
++
++
+ # ── failure counters ──────────────────────────────────────────────────────────
+ 
+ 
+ async def test_increment_failure_counter_succeeds() -> None:
+-    factory = _db_ok()
+-    tracker = IngestionJobTracker(db=factory)
+-    await tracker.increment_failure_counter("src-1", "t1")  # must not raise
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    await tracker.increment_failure_counter("src-1", "t1")
++    sql, params = rec.sql("UPDATE source_configs")
++    # source_configs is keyed by ``id`` — ``WHERE source_id`` never matched a column.
++    assert "WHERE id = :id AND tenant_id = :tid" in sql
++    assert params == {"id": "src-1", "tid": "t1"}
++    _assert_tenant_scoped(rec, "t1", "UPDATE source_configs")
+ 
+ 
+ async def test_increment_failure_counter_db_error_is_swallowed() -> None:
+@@ -396,9 +514,13 @@ async def test_increment_failure_counter_db_error_is_swallowed() -> None:
+ 
+ 
+ async def test_reset_failure_counter_succeeds() -> None:
+-    factory = _db_ok()
+-    tracker = IngestionJobTracker(db=factory)
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
+     await tracker.reset_failure_counter("src-1", "t1")
++    sql, _ = rec.sql("UPDATE source_configs")
++    assert "consecutive_failures = 0" in sql
++    assert "WHERE id = :id AND tenant_id = :tid" in sql
++    _assert_tenant_scoped(rec, "t1", "UPDATE source_configs")
+ 
+ 
+ async def test_reset_failure_counter_db_error_is_swallowed() -> None:
+@@ -409,48 +531,152 @@ async def test_reset_failure_counter_db_error_is_swallowed() -> None:
+ # ── DLQ retry helpers ──────────────────────────────────────────────────────────
+ 
+ 
+-async def test_get_retryable_dlq_entries_returns_mappings() -> None:
+-    entries = [{"dlq_id": "d1"}, {"dlq_id": "d2"}]
+-    factory = _db_ok(execute_result=_Result(mappings_all=entries))
+-    tracker = IngestionJobTracker(db=factory)
++async def test_get_retryable_dlq_entries_scans_on_the_maintenance_factory() -> None:
++    entries = [{"dlq_id": "d1", "tenant_id": "t1"}, {"dlq_id": "d2", "tenant_id": "t2"}]
++    app_db = _Recorder()
++    system_db = _Recorder(_Result(mappings_all=entries))
++    tracker = IngestionJobTracker(db=app_db, system_db=system_db)
+     result = await tracker.get_retryable_dlq_entries(max_entries=10)
+     assert result == entries
++    assert all(isinstance(e, dict) for e in result)
++    assert any(s == "SET LOCAL row_security = off" for s, _ in system_db.executed)
++    sql, params = system_db.sql("FROM ingestion_dlq")
++    assert params == {"limit": 10}
++    assert "resolved_at IS NULL" in sql
++    # Entries past the retry cap are returned so the job can flag them permanent.
++    assert "retry_count <" not in sql
++    assert app_db.opened == 0
+ 
+ 
+ async def test_get_retryable_dlq_entries_db_error_returns_empty_list() -> None:
+-    tracker = IngestionJobTracker(db=_db_raises())
++    tracker = IngestionJobTracker(db=_db_ok(), system_db=_db_raises())
+     result = await tracker.get_retryable_dlq_entries()
+     assert result == []
+ 
+ 
++async def test_get_retryable_dlq_entries_in_memory_returns_empty_list() -> None:
++    assert await IngestionJobTracker().get_retryable_dlq_entries() == []
++
++
+ async def test_resolve_dlq_entry_succeeds() -> None:
+-    factory = _db_ok()
+-    tracker = IngestionJobTracker(db=factory)
+-    await tracker.resolve_dlq_entry("d1")
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    await tracker.resolve_dlq_entry("d1", "t1")
++    sql, params = rec.sql("ingestion_dlq")
++    # Resolved, not deleted — the failure history stays auditable.
++    assert sql.startswith("UPDATE ingestion_dlq SET resolved_at")
++    assert "WHERE id = :id AND tenant_id = :tid" in sql
++    assert params == {"id": "d1", "tid": "t1"}
++    _assert_tenant_scoped(rec, "t1", "ingestion_dlq")
+ 
+ 
+ async def test_resolve_dlq_entry_db_error_is_swallowed() -> None:
+     tracker = IngestionJobTracker(db=_db_raises())
+-    await tracker.resolve_dlq_entry("d1")  # must not raise
++    await tracker.resolve_dlq_entry("d1", "t1")  # must not raise
+ 
+ 
+ async def test_increment_dlq_retry_succeeds() -> None:
+-    factory = _db_ok()
+-    tracker = IngestionJobTracker(db=factory)
+-    await tracker.increment_dlq_retry("d1", error="retry failed")
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    await tracker.increment_dlq_retry("d1", "t1", error="retry failed")
++    sql, params = rec.sql("ingestion_dlq")
++    assert "retry_count = retry_count + 1" in sql
++    assert params == {"id": "d1", "tid": "t1", "error": "retry failed"}
++    _assert_tenant_scoped(rec, "t1", "ingestion_dlq")
+ 
+ 
+ async def test_increment_dlq_retry_db_error_is_swallowed() -> None:
+     tracker = IngestionJobTracker(db=_db_raises())
+-    await tracker.increment_dlq_retry("d1")  # must not raise
++    await tracker.increment_dlq_retry("d1", "t1")  # must not raise
+ 
+ 
+ async def test_mark_dlq_permanent_failure_succeeds() -> None:
+-    factory = _db_ok()
+-    tracker = IngestionJobTracker(db=factory)
+-    await tracker.mark_dlq_permanent_failure("d1")
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    await tracker.mark_dlq_permanent_failure("d1", "t1")
++    sql, params = rec.sql("ingestion_dlq")
++    assert "permanent_failure = true" in sql
++    assert params == {"id": "d1", "tid": "t1"}
++    _assert_tenant_scoped(rec, "t1", "ingestion_dlq")
+ 
+ 
+ async def test_mark_dlq_permanent_failure_db_error_is_swallowed() -> None:
+     tracker = IngestionJobTracker(db=_db_raises())
+-    await tracker.mark_dlq_permanent_failure("d1")  # must not raise
++    await tracker.mark_dlq_permanent_failure("d1", "t1")  # must not raise
++
++
++async def test_dlq_followups_are_noops_without_db() -> None:
++    tracker = IngestionJobTracker()
++    await tracker.resolve_dlq_entry("d1", "t1")
++    await tracker.increment_dlq_retry("d1", "t1")
++    await tracker.mark_dlq_permanent_failure("d1", "t1")
++
++
++# ── raw_document_from_dlq_json ────────────────────────────────────────────────
++
++
++async def test_raw_document_round_trips_through_add_to_dlq() -> None:
++    from app.ingestion.job_tracker import raw_document_from_dlq_json
++    from app.ingestion.source_config import RawDocument
++
++    rec = _Recorder()
++    tracker = IngestionJobTracker(db=rec)
++    original = RawDocument(
++        doc_id="d1",
++        source_id="src-1",
++        tenant_id="t1",
++        content=b"\x00\xffbinary \xe2\x9c\x93",
++        content_type="application/pdf",
++        title="T",
++        acl=["r1"],
++    )
++    await tracker.add_to_dlq(
++        source_id="src-1", tenant_id="t1", doc_id="d1", error="e", raw_doc=original
++    )
++    _, params = rec.sql("INSERT INTO ingestion_dlq")
++    rebuilt = raw_document_from_dlq_json(
++        params["raw_doc_json"], source_id="src-1", tenant_id="t1", doc_id="d1"
++    )
++    assert rebuilt == original
++
++
++def test_raw_document_from_legacy_bytes_repr() -> None:
++    import json
++
++    from app.ingestion.job_tracker import raw_document_from_dlq_json
++
++    # Rows written before bytes were base64-encoded hold str(b"...").
++    legacy = json.dumps(
++        {"doc_id": "d1", "content": str(b"hi \x01"), "content_type": "text/plain"}
++    )
++    rebuilt = raw_document_from_dlq_json(legacy, source_id="s", tenant_id="t1")
++    assert rebuilt is not None
++    assert rebuilt.content == b"hi \x01"
++
++
++def test_raw_document_row_identity_overrides_the_payload() -> None:
++    import json
++
++    from app.ingestion.job_tracker import raw_document_from_dlq_json
++
++    payload = json.dumps(
++        {"doc_id": "d1", "tenant_id": "someone-else", "source_id": "x", "content": "hi"}
++    )
++    rebuilt = raw_document_from_dlq_json(payload, source_id="src-1", tenant_id="t1")
++    assert rebuilt is not None
++    assert (rebuilt.tenant_id, rebuilt.source_id) == ("t1", "src-1")
++    assert rebuilt.content == b"hi"
++    assert rebuilt.content_type == "application/octet-stream"
++
++
++def test_raw_document_from_non_document_payload_is_none() -> None:
++    import json
++
++    from app.ingestion.job_tracker import raw_document_from_dlq_json
++
++    repo = json.dumps({"kind": "repository", "repo_url": "https://x/y"})
++    assert raw_document_from_dlq_json(repo, source_id="s", tenant_id="t") is None
++    assert raw_document_from_dlq_json(None, source_id="s", tenant_id="t") is None
++    assert raw_document_from_dlq_json("not json", source_id="s", tenant_id="t") is None
++    bad_b64 = json.dumps({"content": {"__bytes_b64__": "!!!"}})
++    assert raw_document_from_dlq_json(bad_b64, source_id="s", tenant_id="t") is None
+diff --git a/agent-verse-backend/tests/ingestion/test_scheduler_jobs.py b/agent-verse-backend/tests/ingestion/test_scheduler_jobs.py
+index 98f7c117b..3f5a13b2f 100644
+--- a/agent-verse-backend/tests/ingestion/test_scheduler_jobs.py
++++ b/agent-verse-backend/tests/ingestion/test_scheduler_jobs.py
+@@ -103,6 +103,7 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
+     from app.ingestion.scheduler import _build_worker_ingestion
+ 
+     fake_db_factory = MagicMock()
++    fake_system_factory = MagicMock()
+     fake_provider = MagicMock()
+     fake_knowledge_store = MagicMock()
+     fake_pipeline = MagicMock()
+@@ -111,6 +112,7 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
+ 
+     with (
+         patch("app.db.session.get_session_factory", return_value=fake_db_factory),
++        patch("app.db.session.get_system_session_factory", return_value=fake_system_factory),
+         patch("app.providers.registry.resolve_provider", return_value=fake_provider),
+         patch("app.rag.store.KnowledgeStore", return_value=fake_knowledge_store) as ks_cls,
+         patch(
+@@ -132,7 +134,10 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
+     pipeline_cls.assert_called_once_with(
+         knowledge_store=fake_knowledge_store, embedder=fake_provider
+     )
+-    tracker_cls.assert_called_once_with(db=fake_db_factory)
++    # Per-tenant work (job rows, cursors, the Source itself) runs on the
++    # application factory under RLS; only the tracker's cross-tenant DLQ scan
++    # gets the maintenance-role factory. The Source store gets no system access.
++    tracker_cls.assert_called_once_with(db=fake_db_factory, system_db=fake_system_factory)
+     store_cls.assert_called_once_with(db=fake_db_factory)
+ 
+ 
+@@ -158,7 +163,7 @@ async def test_sync_source_not_found() -> None:
+     tracker = AsyncMock()
+     tracker.acquire_lock = AsyncMock(return_value=True)
+     source_store = AsyncMock()
+-    source_store.get_system = AsyncMock(return_value=None)
++    source_store.get = AsyncMock(return_value=None)
+ 
+     with _worker_mocks(tracker=tracker, source_store=source_store):
+         result = await _sync_source_async(
+@@ -167,6 +172,8 @@ async def test_sync_source_not_found() -> None:
+ 
+     assert result == {"error": "source_not_found"}
+     tracker.release_lock.assert_called_once_with("src-1", "t1")
++    # The worker knows the tenant: a tenant-scoped (RLS) read, not a system read.
++    source_store.get.assert_awaited_once_with("src-1", "t1")
+ 
+ 
+ @pytest.mark.asyncio
+@@ -174,7 +181,7 @@ async def test_sync_source_disabled() -> None:
+     tracker = AsyncMock()
+     tracker.acquire_lock = AsyncMock(return_value=True)
+     source_store = AsyncMock()
+-    source_store.get_system = AsyncMock(return_value=_config(enabled=False))
++    source_store.get = AsyncMock(return_value=_config(enabled=False))
+ 
+     with _worker_mocks(tracker=tracker, source_store=source_store):
+         result = await _sync_source_async(
+@@ -193,7 +200,7 @@ async def test_sync_source_in_backoff() -> None:
+     source_store = AsyncMock()
+     # consecutive_failures=1 → backoff >= 60s; last_synced_at "now" → elapsed ~0.
+     now = datetime.datetime.now(datetime.UTC).isoformat()
+-    source_store.get_system = AsyncMock(
++    source_store.get = AsyncMock(
+         return_value=_config(consecutive_failures=1, last_synced_at=now)
+     )
+ 
+@@ -212,7 +219,7 @@ async def test_sync_no_connector_registered() -> None:
+     tracker = AsyncMock()
+     tracker.acquire_lock = AsyncMock(return_value=True)
+     source_store = AsyncMock()
+-    source_store.get_system = AsyncMock(return_value=_config(source_type="no_such_type"))
++    source_store.get = AsyncMock(return_value=_config(source_type="no_such_type"))
+ 
+     with (
+         _worker_mocks(tracker=tracker, source_store=source_store),
+@@ -233,7 +240,7 @@ async def test_sync_success_counts_indexed_skipped_failed_and_dlq() -> None:
+ 
+     source_store = AsyncMock()
+     cfg = _config(cursor_value="")
+-    source_store.get_system = AsyncMock(return_value=cfg)
++    source_store.get = AsyncMock(return_value=cfg)
+ 
+     pipeline = AsyncMock()
+     pipeline.ingest = AsyncMock(
+@@ -264,10 +271,15 @@ async def test_sync_success_counts_indexed_skipped_failed_and_dlq() -> None:
+     dlq_kwargs = tracker.add_to_dlq.call_args.kwargs
+     assert dlq_kwargs["doc_id"] == "d3"
+     assert dlq_kwargs["error"] == "boom"
++    assert dlq_kwargs["job_id"] == "job-1"
+     tracker.update_cursor.assert_called_once_with(tracker.create_job.return_value, "c3", cfg)
+     tracker.complete_job.assert_called_once()
+-    tracker.reset_failure_counter.assert_called_once_with("src-1", "t1")
+-    source_store.mark_synced.assert_called_once()
++    # mark_synced alone owns consecutive_failures (the tracker counter calls
++    # would double-count against the backoff).
++    tracker.reset_failure_counter.assert_not_called()
++    source_store.mark_synced.assert_called_once_with(
++        "src-1", "t1", docs_indexed=1, chunks=0, failed=1
++    )
+     source_store.update.assert_called_once_with("src-1", "t1", cursor_value="c3")
+     tracker.release_lock.assert_called_once_with("src-1", "t1")
+ 
+@@ -281,7 +293,7 @@ async def test_sync_commits_cursor_every_100_docs() -> None:
+     tracker.create_job = AsyncMock(return_value=_job())
+ 
+     source_store = AsyncMock()
+-    source_store.get_system = AsyncMock(return_value=_config())
++    source_store.get = AsyncMock(return_value=_config())
+ 
+     pipeline = AsyncMock()
+     pipeline.ingest = AsyncMock(
+@@ -312,7 +324,7 @@ async def test_sync_per_doc_exception_is_swallowed_and_counted_as_failed() -> No
+     tracker.create_job = AsyncMock(return_value=_job())
+ 
+     source_store = AsyncMock()
+-    source_store.get_system = AsyncMock(return_value=_config())
++    source_store.get = AsyncMock(return_value=_config())
+ 
+     pipeline = AsyncMock()
+     pipeline.ingest = AsyncMock(side_effect=RuntimeError("pipeline blew up"))
+@@ -341,7 +353,7 @@ async def test_sync_outer_exception_retries_and_releases_lock() -> None:
+     tracker.create_job = AsyncMock(return_value=_job())
+ 
+     source_store = AsyncMock()
+-    source_store.get_system = AsyncMock(return_value=_config())
++    source_store.get = AsyncMock(return_value=_config())
+ 
+     pipeline = AsyncMock()
+     connector_cls = _RaisingConnector
+@@ -360,8 +372,11 @@ async def test_sync_outer_exception_retries_and_releases_lock() -> None:
+ 
+     tracker.complete_job.assert_called_once()
+     assert tracker.complete_job.call_args.kwargs["error"]
+-    tracker.increment_failure_counter.assert_called_once_with("src-1", "t1")
+-    source_store.mark_synced.assert_called_once()
++    # Exactly one failure is counted — by mark_synced, not also by the tracker.
++    tracker.increment_failure_counter.assert_not_called()
++    source_store.mark_synced.assert_called_once_with(
++        "src-1", "t1", docs_indexed=0, chunks=0, failed=1
++    )
+     tracker.release_lock.assert_called_once_with("src-1", "t1")
+     task.retry.assert_called_once()
+ 
+@@ -373,10 +388,13 @@ async def test_sync_outer_exception_retries_and_releases_lock() -> None:
+ async def test_dispatch_due_sources_enqueues_each_source() -> None:
+     source_store = AsyncMock()
+     source_store.list_due = AsyncMock(return_value=[("src-1", "t1"), ("src-2", "t2")])
++    fake_system_factory = MagicMock()
+ 
+     with (
+-        patch("app.db.session.get_session_factory", return_value=MagicMock()),
+-        patch("app.ingestion.source_store.SourceConfigStore", return_value=source_store),
++        patch("app.db.session.get_system_session_factory", return_value=fake_system_factory),
++        patch(
++            "app.ingestion.source_store.SourceConfigStore", return_value=source_store
++        ) as store_cls,
+         patch.object(sync_source_task, "apply_async") as mock_apply_async,
+     ):
+         result = await _dispatch_due_sources_async()
+@@ -385,6 +403,12 @@ async def test_dispatch_due_sources_enqueues_each_source() -> None:
+     assert mock_apply_async.call_count == 2
+     kwargs_calls = [c.kwargs["kwargs"] for c in mock_apply_async.call_args_list]
+     assert {"src-1", "src-2"} == {k["source_id"] for k in kwargs_calls}
++    assert {("src-1", "t1"), ("src-2", "t2")} == {
++        (k["source_id"], k["tenant_id"]) for k in kwargs_calls
++    }
++    # The cross-tenant due-scan runs on the maintenance role ONLY — never on the
++    # application's NOBYPASSRLS factory, where system_session makes it fail.
++    store_cls.assert_called_once_with(system_db=fake_system_factory)
+ 
+ 
+ @pytest.mark.asyncio
+@@ -393,7 +417,7 @@ async def test_dispatch_due_sources_none_due() -> None:
+     source_store.list_due = AsyncMock(return_value=[])
+ 
+     with (
+-        patch("app.db.session.get_session_factory", return_value=MagicMock()),
++        patch("app.db.session.get_system_session_factory", return_value=MagicMock()),
+         patch("app.ingestion.source_store.SourceConfigStore", return_value=source_store),
+         patch.object(sync_source_task, "apply_async") as mock_apply_async,
+     ):
+@@ -406,90 +430,171 @@ async def test_dispatch_due_sources_none_due() -> None:
+ # ── _retry_dlq_async ──────────────────────────────────────────────────────────
+ 
+ 
+-def _dlq_entry(dlq_id, retry_count=0, tenant_id="t1", raw_doc=None, source_config=None):
+-    entry = MagicMock()
+-    entry.dlq_id = dlq_id
+-    entry.retry_count = retry_count
+-    entry.tenant_id = tenant_id
+-    entry.raw_doc = raw_doc or _raw_doc(dlq_id)
+-    entry.source_config = source_config
+-    return entry
++def _dlq_json(doc_id: str) -> str:
++    """A raw_doc_json exactly as IngestionJobTracker.add_to_dlq writes it."""
++    import dataclasses
++    import json
++
++    from app.ingestion.job_tracker import _json_default
++
++    return json.dumps(dataclasses.asdict(_raw_doc(doc_id)), default=_json_default)
++
++
++def _dlq_entry(dlq_id, retry_count=0, tenant_id="t1", source_id="src-1", raw_doc_json=None):
++    """A row as get_retryable_dlq_entries returns it: a plain dict."""
++    return {
++        "dlq_id": dlq_id,
++        "tenant_id": tenant_id,
++        "source_id": source_id,
++        "doc_id": dlq_id,
++        "job_id": None,
++        "error_message": "boom",
++        "raw_doc_json": _dlq_json(dlq_id) if raw_doc_json is None else raw_doc_json,
++        "retry_count": retry_count,
++    }
++
++
++def _retry_mocks(entries, pipeline=None, source_store=None):
++    tracker = AsyncMock()
++    tracker.get_retryable_dlq_entries = AsyncMock(return_value=entries)
++    pipeline = pipeline or AsyncMock()
++    if source_store is None:
++        source_store = AsyncMock()
++        source_store.get = AsyncMock(return_value=_config())
++    return tracker, pipeline, source_store
++
++
++@pytest.mark.asyncio
++async def test_retry_dlq_uses_the_db_backed_worker_services() -> None:
++    # It built IngestionJobTracker() with no DB (scan always []) and an
++    # IngestionPipeline() with no knowledge store/embedder.
++    tracker, pipeline, source_store = _retry_mocks([])
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store) as build:
++        result = await _retry_dlq_async()
++    build.assert_called_once_with()
++    tracker.get_retryable_dlq_entries.assert_awaited_once_with(max_entries=50)
++    assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
+ 
+ 
+ @pytest.mark.asyncio
+ async def test_retry_dlq_permanent_failure_over_max_retries() -> None:
+-    tracker = AsyncMock()
+-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e1", retry_count=5)])
+-    pipeline = AsyncMock()
++    tracker, pipeline, source_store = _retry_mocks([_dlq_entry("e1", retry_count=5)])
+ 
+-    with (
+-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
+-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
+-    ):
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
+         result = await _retry_dlq_async()
+ 
+-    tracker.mark_dlq_permanent_failure.assert_called_once_with("e1")
++    tracker.mark_dlq_permanent_failure.assert_called_once_with("e1", "t1")
+     assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
+     pipeline.run.assert_not_called()
+ 
+ 
+ @pytest.mark.asyncio
+ async def test_retry_dlq_success_resolves_entry() -> None:
+-    tracker = AsyncMock()
+-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e2", retry_count=1)])
+     pipeline = AsyncMock()
+     pipeline.run = AsyncMock(
+         return_value=PipelineResult(doc_id="e2", source_id="s", tenant_id="t1", status="indexed")
+     )
++    cfg = _config()
++    source_store = AsyncMock()
++    source_store.get = AsyncMock(return_value=cfg)
++    tracker, pipeline, source_store = _retry_mocks(
++        [_dlq_entry("e2", retry_count=1)], pipeline=pipeline, source_store=source_store
++    )
+ 
+-    with (
+-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
+-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
+-    ):
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
+         result = await _retry_dlq_async()
+ 
+-    tracker.resolve_dlq_entry.assert_called_once_with("e2")
++    tracker.resolve_dlq_entry.assert_called_once_with("e2", "t1")
+     assert result == {"retried": 1, "succeeded": 1, "still_failed": 0}
++    # The entry's Source is loaded for ITS tenant (RLS), and the replayed
++    # document is the one that was dead-lettered, with its bytes intact.
++    source_store.get.assert_awaited_once_with("src-1", "t1")
++    replayed = pipeline.run.await_args.args[0]
++    assert replayed == _raw_doc("e2")
++    assert pipeline.run.await_args.kwargs["source_config"] is cfg
+ 
+ 
+ @pytest.mark.asyncio
+ async def test_retry_dlq_still_failing_increments_retry_count() -> None:
+-    tracker = AsyncMock()
+-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e3", retry_count=2)])
+     pipeline = AsyncMock()
+     pipeline.run = AsyncMock(
+         return_value=PipelineResult(
+             doc_id="e3", source_id="s", tenant_id="t1", status="failed", error="still bad"
+         )
+     )
++    tracker, pipeline, source_store = _retry_mocks(
++        [_dlq_entry("e3", retry_count=2)], pipeline=pipeline
++    )
+ 
+-    with (
+-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
+-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
+-    ):
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
+         result = await _retry_dlq_async()
+ 
+-    tracker.increment_dlq_retry.assert_called_once_with("e3", error="still bad")
++    tracker.increment_dlq_retry.assert_called_once_with("e3", "t1", error="still bad")
+     assert result == {"retried": 1, "succeeded": 0, "still_failed": 1}
+ 
+ 
++@pytest.mark.asyncio
++async def test_retry_dlq_skip_reason_is_recorded_as_the_error() -> None:
++    pipeline = AsyncMock()
++    pipeline.run = AsyncMock(
++        return_value=PipelineResult(
++            doc_id="e5", source_id="s", tenant_id="t1", status="skipped", skip_reason="quality"
++        )
++    )
++    tracker, pipeline, source_store = _retry_mocks([_dlq_entry("e5")], pipeline=pipeline)
++
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
++        await _retry_dlq_async()
++
++    tracker.increment_dlq_retry.assert_called_once_with("e5", "t1", error="quality")
++
++
+ @pytest.mark.asyncio
+ async def test_retry_dlq_exception_counts_as_still_failed() -> None:
+-    tracker = AsyncMock()
+-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e4", retry_count=0)])
+     pipeline = AsyncMock()
+     pipeline.run = AsyncMock(side_effect=RuntimeError("kaboom"))
++    tracker, pipeline, source_store = _retry_mocks(
++        [_dlq_entry("e4", retry_count=0)], pipeline=pipeline
++    )
+ 
+-    with (
+-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
+-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
+-    ):
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
+         result = await _retry_dlq_async()
+ 
+-    tracker.increment_dlq_retry.assert_called_once()
++    tracker.increment_dlq_retry.assert_called_once_with("e4", "t1", error="kaboom")
+     assert result["still_failed"] == 1
+ 
+ 
++@pytest.mark.asyncio
++async def test_retry_dlq_unreplayable_payload_is_flagged_permanent() -> None:
++    # e.g. a repo-ingest DLQ entry: parameters, not a connector document.
++    import json
++
++    repo_payload = json.dumps({"kind": "repository", "repo_url": "https://x/y"})
++    pipeline = AsyncMock()
++    tracker, pipeline, source_store = _retry_mocks(
++        [_dlq_entry("e6", raw_doc_json=repo_payload)], pipeline=pipeline
++    )
++
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
++        result = await _retry_dlq_async()
++
++    tracker.mark_dlq_permanent_failure.assert_called_once_with("e6", "t1")
++    pipeline.run.assert_not_called()
++    assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
++
++
++@pytest.mark.asyncio
++async def test_retry_dlq_skips_rows_without_identity() -> None:
++    tracker, pipeline, source_store = _retry_mocks([_dlq_entry("e7", tenant_id="")])
++
++    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
++        result = await _retry_dlq_async()
++
++    pipeline.run.assert_not_called()
++    tracker.mark_dlq_permanent_failure.assert_not_called()
++    assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
++
++
+ # ── Celery task wrappers ──────────────────────────────────────────────────────
+ 
+ 
+diff --git a/agent-verse-backend/tests/ingestion/test_source_store.py b/agent-verse-backend/tests/ingestion/test_source_store.py
+index d99933045..bd2fc3579 100644
+--- a/agent-verse-backend/tests/ingestion/test_source_store.py
++++ b/agent-verse-backend/tests/ingestion/test_source_store.py
+@@ -114,12 +114,15 @@ class TestInMemoryStore:
+         store = SourceConfigStore()
+         await store.mark_synced("nope", "t1", docs_indexed=1, chunks=1, failed=0)  # no raise
+ 
+-    async def test_get_system_delegates_to_get_in_memory(self):
++    async def test_no_rls_bypassing_per_source_read(self):
++        # ``get_system`` read ONE tenant's Source with row_security off. The only
++        # caller (the sync worker) knows the tenant, so it now uses the RLS-scoped
++        # ``get``; a per-source bypass must not come back.
+         store = SourceConfigStore()
++        assert not hasattr(store, "get_system")
+         await store.create(_make_config())
+-        cfg = await store.get_system("src-1", "t1")
+-        assert cfg is not None
+-        assert cfg.source_id == "src-1"
++        assert (await store.get("src-1", "t1")) is not None
++        assert (await store.get("src-1", "other-tenant")) is None
+ 
+     async def test_list_due_never_synced(self):
+         store = SourceConfigStore()
+@@ -404,7 +407,7 @@ class TestDbBackedStore:
+         assert params["c"] == 9
+         assert params["f"] == 0
+ 
+-    async def test_get_system_bypasses_tenant_rls(self):
++    async def test_get_is_tenant_scoped_never_system(self):
+         row = {
+             "id": "src-1",
+             "tenant_id": "t1",
+@@ -414,23 +417,64 @@ class TestDbBackedStore:
+         }
+         session = _FakeSession(_FakeResult(rows=[row]))
+         store = SourceConfigStore(db=_db_factory(session))
+-        cfg = await store.get_system("src-1", "t1")
++        cfg = await store.get("src-1", "t1")
+         assert cfg is not None
+-        assert any("SET LOCAL row_security" in sql for sql, _ in session.executed)
++        # Tenant GUC set to the caller's tenant, explicit tenant predicate, and
++        # no RLS bypass on the application connection.
++        assert ("SELECT set_config('app.tenant_id', :tid, true)", {"tid": "t1"}) in [
++            (sql, params) for sql, params in session.executed
++        ]
++        select_sql, select_params = next(
++            (s, p) for s, p in session.executed if "FROM source_configs" in s
++        )
++        assert "tenant_id = :tid" in select_sql
++        assert select_params["tid"] == "t1"
++        assert not any("row_security" in sql for sql, _ in session.executed)
+ 
+-    async def test_list_due_returns_pairs(self):
++    @staticmethod
++    def _due_session() -> _FakeSession:
+         class _DueRow:
+             def __init__(self, source_id, tenant_id):
+                 self.source_id = source_id
+                 self.tenant_id = tenant_id
+ 
+-        session = _FakeSession()
+-
+         class _DueResult(_FakeResult):
+             def __iter__(self):
+                 return iter([_DueRow("s1", "t1"), _DueRow("s2", "t2")])
+ 
+-        session._result = _DueResult()
+-        store = SourceConfigStore(db=_db_factory(session))
++        return _FakeSession(_DueResult())
++
++    async def test_list_due_runs_on_the_maintenance_factory(self):
++        request_session = _FakeSession()
++        system_session_ = self._due_session()
++        store = SourceConfigStore(
++            db=_db_factory(request_session), system_db=_db_factory(system_session_)
++        )
+         due = await store.list_due()
+         assert due == [("s1", "t1"), ("s2", "t2")]
++        # The cross-tenant scan disables RLS on the maintenance connection only;
++        # the application (NOBYPASSRLS) factory is never touched.
++        assert any("SET LOCAL row_security = off" in sql for sql, _ in system_session_.executed)
++        assert request_session.executed == []
++
++    async def test_list_due_defaults_to_get_system_session_factory(self):
++        from unittest.mock import patch
++
++        request_session = _FakeSession()
++        system_session_ = self._due_session()
++        store = SourceConfigStore(db=_db_factory(request_session))
++        with patch(
++            "app.db.session.get_system_session_factory",
++            return_value=_db_factory(system_session_),
++        ):
++            due = await store.list_due()
++        assert due == [("s1", "t1"), ("s2", "t2")]
++        assert request_session.executed == []
++        assert any("row_security" in sql for sql, _ in system_session_.executed)
++
++    async def test_list_due_with_only_system_db_is_db_backed(self):
++        # The beat dispatcher builds the store with ONLY the maintenance factory;
++        # that must hit the DB, not the (empty) in-memory fallback.
++        system_session_ = self._due_session()
++        store = SourceConfigStore(system_db=_db_factory(system_session_))
++        assert await store.list_due() == [("s1", "t1"), ("s2", "t2")]

@@ -1,0 +1,330 @@
+diff --git a/agent-verse-backend/app/chat/service.py b/agent-verse-backend/app/chat/service.py
+index f8f3d7627..1cf2f3c64 100644
+--- a/agent-verse-backend/app/chat/service.py
++++ b/agent-verse-backend/app/chat/service.py
+@@ -397,8 +397,9 @@ class ChatService:
+         self._personalization: Any = InMemoryPersonalizationStore()
+         # clarify round tracking per session
+         self._clarify_rounds: dict[str, int] = {}
+-        # Phase 3: (tenant, channel, channel_user_id) -> session_id, so a channel
+-        # user's messages continue one conversation across turns/channels.
++        # Phase 3: (tenant, channel, channel_user_id) -> session_id — ONLY the no-DB
++        # fallback of aget_or_create_channel_session. With a repository wired the
++        # mapping is durable (chat_channel_sessions) and this map is unused.
+         self._channel_sessions: dict[tuple[str, str, str], str] = {}
+         # Per-(tenant, channel, channel_user_id) lock guarding the get-or-create in
+         # aget_or_create_channel_session, so two concurrent inbound messages from the
+@@ -462,30 +463,6 @@ class ChatService:
+         self._sessions[sid] = session
+         return session
+ 
+-    def get_or_create_channel_session(
+-        self,
+-        *,
+-        tenant_id: str,
+-        channel: str,
+-        channel_user_id: str,
+-        title: str | None = None,
+-    ) -> _Session:
+-        """Resolve the durable session for a channel user (Phase 3).
+-
+-        Returns the existing conversation for (channel, channel_user_id) so an
+-        inbound WhatsApp/Telegram message continues the same thread, creating one
+-        on first contact. This is what lets a conversation span channels/time.
+-        """
+-        key = (tenant_id, channel, channel_user_id)
+-        existing_id = self._channel_sessions.get(key)
+-        if existing_id is not None:
+-            existing = self.get_session(existing_id, tenant_id)
+-            if existing is not None:
+-                return existing
+-        session = self.create_session(tenant_id, title=title or f"{channel}:{channel_user_id}")
+-        self._channel_sessions[key] = session.id
+-        return session
+-
+     def get_session(self, session_id: str, tenant_id: str) -> _Session | None:
+         s = self._sessions.get(session_id)
+         if s and s.tenant_id == tenant_id:
+@@ -1653,35 +1630,6 @@ class ChatService:
+             return 1
+         return 0
+ 
+-    def handle_channel_message(
+-        self,
+-        *,
+-        tenant_id: str,
+-        channel: str,
+-        channel_user_id: str,
+-        text: str,
+-    ) -> dict[str, Any]:
+-        """Unified entry point for an inbound channel message (Phase 3).
+-
+-        Resolves the channel user's durable session and runs the SAME dispatch
+-        (save + intent classification + history) as web chat, so WhatsApp/Telegram/
+-        API and the web UI share one pipeline. Returns the dispatch metadata plus
+-        the resolved ``session_id`` and ``channel``.
+-
+-        NOTE (persistence): this path is still the sync/in-memory pipeline and is
+-        currently dormant (no inbound webhook wires it). Before exposing it on a
+-        live endpoint it MUST move to the async ``adispatch`` path AND gain a
+-        durable channel->session mapping (the in-memory ``_channel_sessions`` map
+-        does not survive restarts), otherwise channel writes would diverge from
+-        the Postgres-backed web/API reads.
+-        """
+-        session = self.get_or_create_channel_session(
+-            tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
+-        )
+-        result = self.dispatch(session.id, tenant_id, text)
+-        result["channel"] = channel
+-        return result
+-
+     async def aget_or_create_channel_session(
+         self,
+         *,
+diff --git a/agent-verse-backend/tests/chat/test_channel_message.py b/agent-verse-backend/tests/chat/test_channel_message.py
+deleted file mode 100644
+index 58d42f5b2..000000000
+--- a/agent-verse-backend/tests/chat/test_channel_message.py
++++ /dev/null
+@@ -1,28 +0,0 @@
+-"""Phase 3 — inbound channel messages run the unified ChatService pipeline."""
+-
+-from __future__ import annotations
+-
+-from app.chat.service import ChatService
+-
+-
+-def test_channel_message_dispatches_with_session_and_intent() -> None:
+-    svc = ChatService()
+-    res = svc.handle_channel_message(
+-        tenant_id="t1", channel="whatsapp", channel_user_id="+1", text="what is 2+2?"
+-    )
+-    assert res["channel"] == "whatsapp"
+-    assert res["intent"] in {"QA", "GOAL", "CLARIFY", "SCHEDULE"}
+-    assert res["session_id"] and res["message_id"]
+-
+-
+-def test_channel_messages_accumulate_in_one_conversation() -> None:
+-    svc = ChatService()
+-    r1 = svc.handle_channel_message(
+-        tenant_id="t1", channel="telegram", channel_user_id="99", text="hi"
+-    )
+-    r2 = svc.handle_channel_message(
+-        tenant_id="t1", channel="telegram", channel_user_id="99", text="how are you?"
+-    )
+-    assert r1["session_id"] == r2["session_id"]  # same continuing thread
+-    history = svc.list_messages(r1["session_id"], "t1")
+-    assert [m.content for m in history if m.role == "user"] == ["hi", "how are you?"]
+diff --git a/agent-verse-backend/tests/chat/test_channel_session.py b/agent-verse-backend/tests/chat/test_channel_session.py
+index 0e3f6fe5a..515df67c0 100644
+--- a/agent-verse-backend/tests/chat/test_channel_session.py
++++ b/agent-verse-backend/tests/chat/test_channel_session.py
+@@ -1,35 +1,60 @@
+-"""Phase 3 — channel user -> durable session continuity."""
++"""Phase 3 — channel user -> session continuity (no-DB fallback of the live async path).
++
++The sync ``get_or_create_channel_session`` / ``handle_channel_message`` pair kept
++the mapping in process memory and had no caller (CHAT-CHANNEL-DEAD); they were
++removed. Inbound channels use ``aget_or_create_channel_session``, whose
++repository path is covered by test_channel_session_durable.py and the
++real-Postgres test_channel_sessions_integration.py.
++"""
+ 
+ from __future__ import annotations
+ 
+ from app.chat.service import ChatService
+ 
+ 
+-def test_same_channel_user_reuses_session() -> None:
++async def test_same_channel_user_reuses_session() -> None:
+     svc = ChatService()
+-    s1 = svc.get_or_create_channel_session(tenant_id="t1", channel="whatsapp", channel_user_id="+15551234")
+-    s2 = svc.get_or_create_channel_session(tenant_id="t1", channel="whatsapp", channel_user_id="+15551234")
++    s1 = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="whatsapp", channel_user_id="+15551234"
++    )
++    s2 = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="whatsapp", channel_user_id="+15551234"
++    )
+     assert s1.id == s2.id  # same conversation continues
+ 
+ 
+-def test_different_users_and_channels_are_separate() -> None:
++async def test_different_users_and_channels_are_separate() -> None:
+     svc = ChatService()
+-    a = svc.get_or_create_channel_session(tenant_id="t1", channel="whatsapp", channel_user_id="+1")
+-    b = svc.get_or_create_channel_session(tenant_id="t1", channel="whatsapp", channel_user_id="+2")
+-    c = svc.get_or_create_channel_session(tenant_id="t1", channel="telegram", channel_user_id="+1")
++    a = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="whatsapp", channel_user_id="+1"
++    )
++    b = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="whatsapp", channel_user_id="+2"
++    )
++    c = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="telegram", channel_user_id="+1"
++    )
+     assert len({a.id, b.id, c.id}) == 3
+ 
+ 
+-def test_channel_session_is_tenant_scoped() -> None:
++async def test_channel_session_is_tenant_scoped() -> None:
+     svc = ChatService()
+-    a = svc.get_or_create_channel_session(tenant_id="t1", channel="whatsapp", channel_user_id="+1")
+-    b = svc.get_or_create_channel_session(tenant_id="t2", channel="whatsapp", channel_user_id="+1")
++    a = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="whatsapp", channel_user_id="+1"
++    )
++    b = await svc.aget_or_create_channel_session(
++        tenant_id="t2", channel="whatsapp", channel_user_id="+1"
++    )
+     assert a.id != b.id
+ 
+ 
+-def test_recreates_when_underlying_session_deleted() -> None:
++async def test_recreates_when_underlying_session_deleted() -> None:
+     svc = ChatService()
+-    a = svc.get_or_create_channel_session(tenant_id="t1", channel="whatsapp", channel_user_id="+1")
++    a = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="whatsapp", channel_user_id="+1"
++    )
+     svc.delete_session(a.id, "t1")
+-    b = svc.get_or_create_channel_session(tenant_id="t1", channel="whatsapp", channel_user_id="+1")
++    b = await svc.aget_or_create_channel_session(
++        tenant_id="t1", channel="whatsapp", channel_user_id="+1"
++    )
+     assert b.id != a.id and svc.get_session(b.id, "t1") is not None
+diff --git a/agent-verse-backend/tests/gateway/test_channel_chat_e2e.py b/agent-verse-backend/tests/gateway/test_channel_chat_e2e.py
+index 7645b7487..2d14da5c3 100644
+--- a/agent-verse-backend/tests/gateway/test_channel_chat_e2e.py
++++ b/agent-verse-backend/tests/gateway/test_channel_chat_e2e.py
+@@ -58,6 +58,18 @@ def _whatsapp_payload(from_number: str, text: str) -> dict:
+     }
+ 
+ 
++
++def _channel_session(chat, channel, channel_user_id):
++    """The session the inbound path mapped this channel user to (read-only).
++
++    The sync ``get_or_create_channel_session`` was removed (CHAT-CHANNEL-DEAD);
++    a KeyError here means the webhook never resolved a session for the user.
++    """
++    session_id = chat._channel_sessions[(TENANT, channel, channel_user_id)]
++    session = chat.get_session(session_id, TENANT)
++    assert session is not None
++    return session
++
+ def test_telegram_inbound_routes_through_chatservice() -> None:
+     app, chat, _ = _app()
+     client = SignedClient(app)
+@@ -67,9 +79,7 @@ def test_telegram_inbound_routes_through_chatservice() -> None:
+     assert body["status"] == "ok" and body["channel"] == "telegram"
+     assert body["reply"] and not body["reply"].lstrip().startswith("{")  # never raw JSON
+     # A durable voice/telegram session exists for this user with the turn persisted.
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="telegram", channel_user_id="42"
+-    )
++    session = _channel_session(chat, "telegram", "42")
+     assert any("what can you do" in m.content for m in chat.list_messages(session.id, TENANT))
+ 
+ 
+@@ -98,9 +108,7 @@ def test_repeat_telegram_messages_continue_one_session() -> None:
+     client = SignedClient(app)
+     client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=_telegram_payload("99", "first message"))
+     client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=_telegram_payload("99", "second message"))
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="telegram", channel_user_id="99"
+-    )
++    session = _channel_session(chat, "telegram", "99")
+     contents = [m.content for m in chat.list_messages(session.id, TENANT)]
+     assert any("first message" in c for c in contents)
+     assert any("second message" in c for c in contents)
+@@ -130,9 +138,7 @@ def test_a_redelivered_telegram_webhook_does_not_create_a_second_turn() -> None:
+     assert second.status_code == 200, second.text
+     assert second.json().get("reason") == "duplicate message ignored", second.json()
+ 
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="telegram", channel_user_id=user_id
+-    )
++    session = _channel_session(chat, "telegram", user_id)
+     user_turns = [
+         m for m in chat.list_messages(session.id, TENANT)
+         if m.role == "user" and "book me a meeting" in m.content
+@@ -151,9 +157,7 @@ def test_a_genuinely_new_message_from_the_same_user_still_goes_through() -> None
+         assert resp.status_code == 200
+         assert resp.json().get("reason") != "duplicate message ignored", resp.json()
+ 
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="telegram", channel_user_id=user_id
+-    )
++    session = _channel_session(chat, "telegram", user_id)
+     contents = [m.content for m in chat.list_messages(session.id, TENANT) if m.role == "user"]
+     assert any("first question" in c for c in contents), contents
+     assert any("second question" in c for c in contents), contents
+diff --git a/agent-verse-backend/tests/gateway/test_voice_incoming_e2e.py b/agent-verse-backend/tests/gateway/test_voice_incoming_e2e.py
+index 857d01aea..2b344002a 100644
+--- a/agent-verse-backend/tests/gateway/test_voice_incoming_e2e.py
++++ b/agent-verse-backend/tests/gateway/test_voice_incoming_e2e.py
+@@ -63,6 +63,18 @@ def _post(client: TestClient, **form: str):
+     )
+ 
+ 
++
++def _channel_session(chat, channel, channel_user_id):
++    """The session the inbound path mapped this channel user to (read-only).
++
++    The sync ``get_or_create_channel_session`` was removed (CHAT-CHANNEL-DEAD);
++    a KeyError here means the webhook never resolved a session for the user.
++    """
++    session_id = chat._channel_sessions[(TENANT, channel, channel_user_id)]
++    session = chat.get_session(session_id, TENANT)
++    assert session is not None
++    return session
++
+ def test_inbound_call_routes_through_chatservice_and_speaks_twiml() -> None:
+     app, chat = _app()
+     client = TestClient(app)
+@@ -77,9 +89,7 @@ def test_inbound_call_routes_through_chatservice_and_speaks_twiml() -> None:
+ 
+     # The caller's speech was persisted through the unified pipeline as a durable
+     # voice_phone conversation keyed on the caller number.
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
+-    )
++    session = _channel_session(chat, "voice_phone", CALLER)
+     history = chat.list_messages(session.id, TENANT)
+     assert any("dentist" in m.content for m in history)
+ 
+@@ -111,9 +121,7 @@ def test_repeat_calls_continue_same_session() -> None:
+     client = TestClient(app)
+     _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CA4", "SpeechResult": "first turn"})
+     _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CA4", "SpeechResult": "second turn"})
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
+-    )
++    session = _channel_session(chat, "voice_phone", CALLER)
+     contents = [m.content for m in chat.list_messages(session.id, TENANT)]
+     assert any("first turn" in c for c in contents)
+     assert any("second turn" in c for c in contents)
+@@ -173,9 +181,7 @@ def test_inbound_call_redacts_pii_from_the_persisted_transcript() -> None:
+     })
+     assert r.status_code == 200
+ 
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
+-    )
++    session = _channel_session(chat, "voice_phone", CALLER)
+     persisted = " ".join(m.content for m in chat.list_messages(session.id, TENANT))
+     assert "123-45-6789" not in persisted, f"SSN persisted verbatim: {persisted!r}"
+     assert "4111111111111111" not in persisted, f"card persisted verbatim: {persisted!r}"
+@@ -186,9 +192,7 @@ def test_inbound_call_redacts_pii_from_the_persisted_transcript() -> None:
+ 
+ 
+ def _history(chat: ChatService) -> list[str]:
+-    session = chat.get_or_create_channel_session(
+-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
+-    )
++    session = _channel_session(chat, "voice_phone", CALLER)
+     return [m.content for m in chat.list_messages(session.id, TENANT)]
+ 
+ 

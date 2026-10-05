@@ -1,0 +1,1825 @@
+diff --git a/agent-verse-backend/app/api/training_export.py b/agent-verse-backend/app/api/training_export.py
+index 40e303b7a..ba3d9d636 100644
+--- a/agent-verse-backend/app/api/training_export.py
++++ b/agent-verse-backend/app/api/training_export.py
+@@ -3,22 +3,42 @@
+ Exports high-scoring goal executions as JSONL suitable for:
+   - Anthropic Claude fine-tuning
+   - OpenAI GPT fine-tuning
++
++With a database (OPS-37) nothing is materialised in memory: the synchronous
++export streams JSONL straight from keyset batches (``app.training_export.stream``),
++preview is one aggregate query, and large exports run as durable jobs
++(``training_export_jobs`` + a Celery worker writing to object storage) that any
++replica can report on and serve.
+ """
+ 
+ from __future__ import annotations
+ 
+-import io
+ import json
++import logging
++from collections.abc import AsyncIterator
+ from datetime import UTC, datetime
+ from typing import Any
+ 
+ from fastapi import APIRouter, HTTPException, Query, Request
+-from fastapi.responses import StreamingResponse
++from fastapi.responses import JSONResponse, StreamingResponse
+ 
+-from app.db.rls import sqlalchemy_rls_context
++from app.training_export import jobs as export_jobs
++from app.training_export.stream import (
++    formatter,
++    iter_training_examples,
++    preview_aggregate,
++    to_anthropic_format,
++    to_openai_format,
++)
++
++_log = logging.getLogger(__name__)
+ 
+ router = APIRouter(prefix="/intelligence", tags=["intelligence"])
+ 
++# Kept for importers of the old private names.
++_to_openai_format = to_openai_format
++_to_anthropic_format = to_anthropic_format
++
+ 
+ def _require_tenant(request: Request) -> Any:
+     """Both export endpoints are tenant-scoped; neither used to resolve a tenant.
+@@ -34,7 +54,9 @@ def _require_tenant(request: Request) -> Any:
+         raise HTTPException(401, "Unauthorized")
+     return ctx
+ 
++
+ _MIN_EXPORT_SCORE = 0.8
++_STORE_UNAVAILABLE = "Training data store unavailable"
+ 
+ 
+ def _db_factory(request: Request, goal_service: Any) -> Any:
+@@ -50,38 +72,20 @@ def _db_factory(request: Request, goal_service: Any) -> Any:
+     return db
+ 
+ 
+-async def _collect(
+-    db: Any, goal_service: Any, min_score: float, limit: int, tenant_id: str
+-) -> list[dict[str, Any]]:
+-    if db is None:
+-        return _collect_training_examples_memory(goal_service, min_score, limit, tenant_id)
+-    try:
+-        return await _collect_training_examples_db(db, min_score, limit, tenant_id)
+-    except Exception as exc:
+-        # An export that silently comes back empty is indistinguishable from
+-        # "no qualifying goals"; fail loudly instead.
+-        raise HTTPException(503, "Training data store unavailable") from exc
++def _sample(example: dict[str, Any]) -> dict[str, Any]:
++    goal = example["goal"]
++    return {
++        "goal": goal[:120] + ("..." if len(goal) > 120 else ""),
++        "eval_score": example["eval_score"],
++        "steps": len(example.get("steps", [])),
++        "tools": list(
++            {s.get("tool_name", "") for s in example.get("steps", []) if s.get("tool_name")}
++        ),
++    }
+ 
+ 
+-@router.get("/export-training-data/preview")
+-async def preview_training_data(
+-    min_score: float = Query(_MIN_EXPORT_SCORE, ge=0.0, le=1.0),
+-    limit: int = Query(1000, ge=1, le=10000),
+-    request: Request = None,  # type: ignore[assignment]
+-) -> dict[str, Any]:
+-    """Preview training data stats without triggering a download.
+-
+-    Returns count, score distribution, and up to 3 sample records so the
+-    operator can verify the filter settings before exporting.
+-    """
+-    tenant = _require_tenant(request)
+-    goal_service = getattr(request.app.state, "goal_service", None)
+-    db = _db_factory(request, goal_service)
+-
+-    examples = await _collect(db, goal_service, min_score, limit, tenant.tenant_id)
+-
++def _memory_preview(examples: list[dict[str, Any]]) -> dict[str, Any]:
+     scores = [e["eval_score"] for e in examples]
+-    # Use ASCII hyphens in bucket keys (ruff RUF001)
+     buckets: dict[str, int] = {
+         "0.80-0.85": 0,
+         "0.85-0.90": 0,
+@@ -97,30 +101,58 @@ async def preview_training_data(
+             buckets["0.90-0.95"] += 1
+         else:
+             buckets["0.95-1.00"] += 1
+-
+-    samples = [
+-        {
+-            "goal": e["goal"][:120] + ("..." if len(e["goal"]) > 120 else ""),
+-            "eval_score": e["eval_score"],
+-            "steps": len(e.get("steps", [])),
+-            "tools": list(
+-                {s.get("tool_name", "") for s in e.get("steps", []) if s.get("tool_name")}
+-            ),
+-        }
+-        for e in examples[:3]
+-    ]
+-
+     return {
+         "count": len(examples),
+         "avg_score": round(sum(scores) / len(scores), 4) if scores else 0.0,
+         "min_score_found": round(min(scores), 4) if scores else 0.0,
+         "max_score_found": round(max(scores), 4) if scores else 0.0,
+         "score_distribution": buckets,
+-        "samples": samples,
+     }
+ 
+ 
+-@router.post("/export-training-data")
++@router.get("/export-training-data/preview")
++async def preview_training_data(
++    min_score: float = Query(_MIN_EXPORT_SCORE, ge=0.0, le=1.0),
++    limit: int = Query(1000, ge=1, le=10000),
++    request: Request = None,  # type: ignore[assignment]
++) -> dict[str, Any]:
++    """Preview training data stats without triggering a download.
++
++    Returns count, score distribution, and up to 3 sample records so the
++    operator can verify the filter settings before exporting. With a database
++    this is one aggregate query plus a 3-row sample — no examples are collected.
++    """
++    tenant = _require_tenant(request)
++    goal_service = getattr(request.app.state, "goal_service", None)
++    db = _db_factory(request, goal_service)
++
++    if db is None:
++        examples = _collect_training_examples_memory(
++            goal_service, min_score, limit, tenant.tenant_id
++        )
++        return {**_memory_preview(examples), "samples": [_sample(e) for e in examples[:3]]}
++
++    try:
++        stats = await preview_aggregate(db, tenant.tenant_id, min_score, limit)
++        samples = [
++            _sample(e)
++            async for e in iter_training_examples(
++                db, tenant.tenant_id, min_score, min(3, limit), batch_size=3
++            )
++        ]
++    except Exception as exc:
++        # An empty preview is indistinguishable from "no qualifying goals".
++        _log.warning("training_export_preview_failed tenant=%s: %s", tenant.tenant_id, exc)
++        raise HTTPException(503, _STORE_UNAVAILABLE) from exc
++    return {**stats, "samples": samples}
++
++
++def _filename(output_format: str) -> str:
++    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
++    return f"agentverse_training_{output_format}_{timestamp}.jsonl"
++
++
++@router.post("/export-training-data", response_model=None)
+ async def export_training_data(
+     min_score: float = Query(_MIN_EXPORT_SCORE, ge=0.0, le=1.0),
+     output_format: str = Query("openai", alias="format", pattern="^(openai|anthropic)$"),
+@@ -135,119 +167,175 @@ async def export_training_data(
+         limit:     Maximum number of examples to export.
+ 
+     Returns:
+-        Streaming JSONL download.
++        Streaming JSONL download. With a database the body is produced batch by
++        batch while it is sent (memory is bounded by one batch), so the example
++        count is not known up front: ``X-Training-Examples`` is only sent by the
++        DB-less build. For very large exports use the durable job API.
+     """
+     tenant = _require_tenant(request)
+     goal_service = getattr(request.app.state, "goal_service", None)
+     db = _db_factory(request, goal_service)
++    to_line = formatter(output_format)
++    headers = {"Content-Disposition": f'attachment; filename="{_filename(output_format)}"'}
+ 
+-    # DB is authoritative when configured; in-memory only for no-DB builds.
+-    examples = await _collect(db, goal_service, min_score, limit, tenant.tenant_id)
++    if db is None:
++        examples = _collect_training_examples_memory(
++            goal_service, min_score, limit, tenant.tenant_id
++        )
++        content = "\n".join(json.dumps(to_line(ex)) for ex in examples)
++        return StreamingResponse(
++            iter([content]),
++            media_type="application/x-ndjson",
++            headers={**headers, "X-Training-Examples": str(len(examples))},
++        )
+ 
+-    if output_format == "openai":
+-        jsonl_lines = [_to_openai_format(ex) for ex in examples]
+-    else:
+-        jsonl_lines = [_to_anthropic_format(ex) for ex in examples]
++    source = iter_training_examples(db, tenant.tenant_id, min_score, limit)
++    # Read the first batch before answering: a store that cannot be read is a
++    # 503, not a 200 with an empty (or silently truncated) file.
++    try:
++        first: dict[str, Any] | None = await anext(source)
++    except StopAsyncIteration:
++        first = None
++    except Exception as exc:
++        _log.warning("training_export_failed tenant=%s: %s", tenant.tenant_id, exc)
++        raise HTTPException(503, _STORE_UNAVAILABLE) from exc
+ 
+-    content = "\n".join(json.dumps(line) for line in jsonl_lines)
+-    timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+-    filename = f"agentverse_training_{output_format}_{timestamp}.jsonl"
++    async def _body() -> AsyncIterator[bytes]:
++        if first is None:
++            return
++        yield json.dumps(to_line(first)).encode()
++        try:
++            async for example in source:
++                yield b"\n" + json.dumps(to_line(example)).encode()
++        except Exception:
++            # Headers are gone; abort the transfer so the client sees an
++            # incomplete download instead of a file that looks whole.
++            _log.exception("training_export_stream_aborted tenant=%s", tenant.tenant_id)
++            raise
++
++    return StreamingResponse(_body(), media_type="application/x-ndjson", headers=headers)
++
++
++# ── durable export jobs ───────────────────────────────────────────────────────
++
++
++def _enqueue(job_id: str, tenant_id: str) -> None:
++    """Hand the job to a Celery worker (maintenance queue)."""
++    from app.training_export.tasks import run_training_export
++
++    run_training_export.apply_async(args=[job_id, tenant_id])
++
++
++def _jobs_db(request: Request) -> Any:
++    db = _db_factory(request, getattr(request.app.state, "goal_service", None))
++    if db is None:
++        raise HTTPException(503, "Durable export jobs need the database")
++    return db
++
++
++@router.post("/export-training-data/jobs", status_code=202)
++async def create_training_export_job(
++    min_score: float = Query(_MIN_EXPORT_SCORE, ge=0.0, le=1.0),
++    output_format: str = Query("openai", alias="format", pattern="^(openai|anthropic)$"),
++    limit: int = Query(10000, ge=1, le=1_000_000),
++    request: Request = None,  # type: ignore[assignment]
++) -> dict[str, Any]:
++    """Queue a background export; poll ``GET .../jobs/{job_id}`` then download."""
++    tenant = _require_tenant(request)
++    db = _jobs_db(request)
++    if export_jobs.object_store_from_env() is None:
++        raise HTTPException(503, "Object storage is not configured for export jobs")
++    try:
++        job = await export_jobs.create_job(db, tenant.tenant_id, output_format, min_score, limit)
++    except export_jobs.TrainingExportUnavailableError as exc:
++        raise HTTPException(503, _STORE_UNAVAILABLE) from exc
++    try:
++        _enqueue(job["job_id"], tenant.tenant_id)
++    except Exception as exc:
++        _log.warning("training_export_enqueue_failed job=%s: %s", job["job_id"], exc)
++        try:
++            await export_jobs.mark_failed(
++                db, tenant.tenant_id, job["job_id"], f"enqueue failed: {exc}"
++            )
++        except Exception as mark_exc:
++            _log.error("training_export_mark_failed_failed job=%s: %s", job["job_id"], mark_exc)
++        raise HTTPException(503, "Export queue unavailable; please retry") from exc
++    return job
++
++
++@router.get("/export-training-data/jobs")
++async def list_training_export_jobs(
++    request: Request = None,  # type: ignore[assignment]
++) -> dict[str, Any]:
++    tenant = _require_tenant(request)
++    try:
++        jobs = await export_jobs.list_jobs(_jobs_db(request), tenant.tenant_id)
++    except export_jobs.TrainingExportUnavailableError as exc:
++        raise HTTPException(503, _STORE_UNAVAILABLE) from exc
++    return {"jobs": jobs}
++
++
++@router.get("/export-training-data/jobs/{job_id}")
++async def get_training_export_job(
++    job_id: str,
++    request: Request = None,  # type: ignore[assignment]
++) -> dict[str, Any]:
++    tenant = _require_tenant(request)
++    try:
++        job = await export_jobs.get_job(_jobs_db(request), tenant.tenant_id, job_id)
++    except export_jobs.TrainingExportUnavailableError as exc:
++        raise HTTPException(503, _STORE_UNAVAILABLE) from exc
++    if job is None:
++        raise HTTPException(404, "Export job not found")
++    if job["has_file"]:
++        job["download_url"] = f"/intelligence/export-training-data/jobs/{job_id}/download"
++    return job
++
++
++@router.get("/export-training-data/jobs/{job_id}/download", response_model=None)
++async def download_training_export_job(
++    job_id: str,
++    request: Request = None,  # type: ignore[assignment]
++) -> StreamingResponse | JSONResponse:
++    """Stream a finished job's JSONL from object storage (owning tenant only)."""
++    tenant = _require_tenant(request)
++    try:
++        found = await export_jobs.get_job_object_key(_jobs_db(request), tenant.tenant_id, job_id)
++    except export_jobs.TrainingExportUnavailableError as exc:
++        raise HTTPException(503, _STORE_UNAVAILABLE) from exc
++    if found is None:
++        raise HTTPException(404, "Export job not found")
++    status, key = found
++    if status != "complete" or not key:
++        return JSONResponse(
++            status_code=409, content={"detail": f"Export job is {status}", "status": status}
++        )
++    store = export_jobs.object_store_from_env()
++    if store is None:
++        raise HTTPException(503, "Object storage is not configured for export jobs")
++    chunks = export_jobs.iter_object(store, key)
++    try:
++        first = await anext(chunks)
++    except StopAsyncIteration:
++        first = b""
++    except Exception as exc:
++        _log.warning("training_export_download_failed job=%s: %s", job_id, exc)
++        raise HTTPException(503, "Export file unavailable; please retry") from exc
++
++    async def _body() -> AsyncIterator[bytes]:
++        yield first
++        async for chunk in chunks:
++            yield chunk
+ 
+     return StreamingResponse(
+-        io.StringIO(content),
++        _body(),
+         media_type="application/x-ndjson",
+         headers={
+-            "Content-Disposition": f'attachment; filename="{filename}"',
+-            "X-Training-Examples": str(len(jsonl_lines)),
++            "Content-Disposition": f'attachment; filename="agentverse_training_{job_id}.jsonl"'
+         },
+     )
+ 
+ 
+-async def _collect_training_examples_db(
+-    db: Any,
+-    min_score: float,
+-    limit: int,
+-    tenant_id: str,
+-) -> list[dict[str, Any]]:
+-    """Completed, high-scoring goals from Postgres, under the tenant's RLS context.
+-
+-    The score is the goal's latest durable evaluation: ``evaluations.average_score``
+-    (EvalRunner.score_and_persist), falling back to ``eval_scorecards.overall_score``
+-    (the runtime scorecard). One latest row per goal (DISTINCT ON) so repeated
+-    evaluations do not duplicate examples. Steps are fetched in ONE query. Raises
+-    on DB failure (the caller turns it into a 503).
+-    """
+-    from sqlalchemy import text
+-
+-    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+-        rows = (
+-            await session.execute(
+-                text(
+-                    """
+-                    WITH ev AS (
+-                        SELECT DISTINCT ON (goal_id) goal_id, average_score AS score
+-                        FROM evaluations WHERE tenant_id = :tid
+-                        ORDER BY goal_id, created_at DESC
+-                    ), sc AS (
+-                        SELECT DISTINCT ON (goal_id) goal_id, overall_score AS score
+-                        FROM eval_scorecards WHERE tenant_id = :tid
+-                        ORDER BY goal_id, created_at DESC
+-                    )
+-                    SELECT g.id, g.goal_text, COALESCE(ev.score, sc.score) AS score
+-                    FROM goals g
+-                    LEFT JOIN ev ON ev.goal_id = g.id
+-                    LEFT JOIN sc ON sc.goal_id = g.id
+-                    WHERE g.tenant_id = :tid
+-                      AND g.status IN ('complete', 'completed')
+-                      AND COALESCE(ev.score, sc.score) >= :min_score
+-                    ORDER BY score DESC, g.id
+-                    LIMIT :limit
+-                    """
+-                ),
+-                {"min_score": min_score, "limit": limit, "tid": tenant_id},
+-            )
+-        ).fetchall()
+-        goal_ids = [str(r[0]) for r in rows]
+-        steps_by_goal: dict[str, list[dict[str, Any]]] = {gid: [] for gid in goal_ids}
+-        if goal_ids:
+-            step_rows = (
+-                await session.execute(
+-                    text(
+-                        "SELECT goal_id, output, tool_calls FROM goal_steps "
+-                        "WHERE tenant_id = :tid AND goal_id = ANY(:gids) "
+-                        "ORDER BY goal_id, step_index ASC"
+-                    ),
+-                    {"tid": tenant_id, "gids": goal_ids},
+-                )
+-            ).fetchall()
+-            for gid, output, tool_calls in step_rows:
+-                calls = tool_calls if isinstance(tool_calls, list) else []
+-                first = calls[0] if calls and isinstance(calls[0], dict) else {}
+-                steps_by_goal.setdefault(str(gid), []).append(
+-                    {
+-                        "type": "step_complete",
+-                        "tool_name": first.get("tool_name", ""),
+-                        "output": output or "",
+-                    }
+-                )
+-
+-    examples: list[dict[str, Any]] = []
+-    for goal_id, goal_text, score in rows:
+-        steps = steps_by_goal.get(str(goal_id), [])
+-        examples.append(
+-            {
+-                "goal": goal_text or "",
+-                # goals has no result column; the final step's output is the answer
+-                # (the old query exported error_message as the "result").
+-                "result": steps[-1]["output"] if steps else "",
+-                "steps": steps,
+-                "eval_score": float(score or 0.0),
+-                "model": "unknown",
+-            }
+-        )
+-    return examples
+-
+-
+ def _score_of(scorecard: Any) -> float | None:
+     if scorecard is None:
+         return None
+@@ -306,43 +394,3 @@ def _collect_training_examples_memory(
+             break
+ 
+     return examples
+-
+-
+-def _to_openai_format(example: dict[str, Any]) -> dict[str, Any]:
+-    """Convert a goal execution to OpenAI fine-tuning JSONL format."""
+-    _system = "You are an autonomous AI agent. Execute goals step by step."
+-    messages = [
+-        {"role": "system", "content": _system},
+-        {"role": "user", "content": example["goal"]},
+-    ]
+-    for step in example.get("steps", []):
+-        tool_name = step.get("tool_name", "")
+-        output = step.get("output", "")
+-        if tool_name:
+-            messages.append({"role": "assistant", "content": f"[{tool_name}] {output}"})
+-
+-    messages.append({"role": "assistant", "content": example.get("result", "")})
+-    return {"messages": messages, "metadata": {"eval_score": example.get("eval_score")}}
+-
+-
+-def _to_anthropic_format(example: dict[str, Any]) -> dict[str, Any]:
+-    """Convert a goal execution to Anthropic fine-tuning JSONL format."""
+-    turns = []
+-    for step in example.get("steps", []):
+-        tool_name = step.get("tool_name", "")
+-        output = step.get("output", "")
+-        if tool_name:
+-            turns.append({"role": "assistant", "content": f"[{tool_name}] {output}"})
+-
+-    return {
+-        "system": "You are an autonomous AI agent. Execute goals step by step.",
+-        "messages": [
+-            {"role": "user", "content": example["goal"]},
+-            *turns,
+-            {"role": "assistant", "content": example.get("result", "")},
+-        ],
+-        "metadata": {
+-            "eval_score": example.get("eval_score"),
+-            "model": example.get("model"),
+-        },
+-    }
+diff --git a/agent-verse-backend/app/db/migrations/versions/b8d5f0e3c2a4_training_export_jobs_and_indexes.py b/agent-verse-backend/app/db/migrations/versions/b8d5f0e3c2a4_training_export_jobs_and_indexes.py
+new file mode 100644
+index 000000000..469bfffdf
+--- /dev/null
++++ b/agent-verse-backend/app/db/migrations/versions/b8d5f0e3c2a4_training_export_jobs_and_indexes.py
+@@ -0,0 +1,85 @@
++"""training_export_jobs + indexes for the streamed training export (OPS-37)
++
++* ``training_export_jobs``: durable per-tenant export jobs (FORCE RLS) run by a
++  Celery worker that writes the JSONL to object storage.
++* ``ix_goals_tenant_completed_created``: partial index for the export's keyset
++  walk over a tenant's completed goals (newest first).
++* ``ix_evaluations_goal_created`` / ``ix_eval_scorecards_goal_created``: the
++  per-goal "latest score" lookup (``ORDER BY created_at DESC LIMIT 1``) instead
++  of DISTINCT ON over the tenant's whole evaluation ledger.
++
++The indexes are built CONCURRENTLY (no write lock on goals/evaluations).
++
++Revision ID: b8d5f0e3c2a4
++Revises: a7c4e9d2b1f3
++Create Date: 2026-10-02
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++
++import sqlalchemy as sa
++from alembic import op
++
++revision: str = "b8d5f0e3c2a4"
++down_revision: str | None = "a7c4e9d2b1f3"
++branch_labels: str | Sequence[str] | None = None
++depends_on: str | Sequence[str] | None = None
++
++_TABLE = "training_export_jobs"
++_INDEXES = (
++    (
++        "ix_goals_tenant_completed_created",
++        "ON goals (tenant_id, created_at DESC, id DESC) "
++        "WHERE status IN ('complete', 'completed')",
++    ),
++    ("ix_evaluations_goal_created", "ON evaluations (goal_id, created_at DESC)"),
++    ("ix_eval_scorecards_goal_created", "ON eval_scorecards (goal_id, created_at DESC)"),
++)
++
++
++def upgrade() -> None:
++    op.create_table(
++        _TABLE,
++        sa.Column("id", sa.String(32), primary_key=True),
++        sa.Column("tenant_id", sa.String(64), nullable=False),
++        sa.Column("status", sa.String(16), nullable=False),
++        sa.Column("output_format", sa.String(16), nullable=False),
++        sa.Column("min_score", sa.Float(), nullable=False),
++        sa.Column("row_limit", sa.Integer(), nullable=False),
++        sa.Column("example_count", sa.Integer(), nullable=True),
++        sa.Column("object_key", sa.Text(), nullable=True),
++        sa.Column("error", sa.Text(), nullable=True),
++        sa.Column(
++            "created_at",
++            sa.DateTime(timezone=True),
++            nullable=False,
++            server_default=sa.func.now(),
++        ),
++        sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
++        sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
++    )
++    op.create_index(
++        "ix_training_export_jobs_tenant_created",
++        _TABLE,
++        ["tenant_id", sa.text("created_at DESC"), "id"],
++    )
++    op.execute(f"ALTER TABLE {_TABLE} ENABLE ROW LEVEL SECURITY")
++    op.execute(f"ALTER TABLE {_TABLE} FORCE ROW LEVEL SECURITY")
++    op.execute(
++        f"CREATE POLICY {_TABLE}_tenant_isolation ON {_TABLE} "
++        "USING (tenant_id = current_setting('app.tenant_id', true)) "
++        "WITH CHECK (tenant_id = current_setting('app.tenant_id', true))"
++    )
++    with op.get_context().autocommit_block():
++        for name, spec in _INDEXES:
++            op.execute(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} {spec}")
++
++
++def downgrade() -> None:
++    with op.get_context().autocommit_block():
++        for name, _spec in _INDEXES:
++            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
++    op.execute(f"DROP POLICY IF EXISTS {_TABLE}_tenant_isolation ON {_TABLE}")
++    op.drop_table(_TABLE)
+diff --git a/agent-verse-backend/app/scaling/celery_app.py b/agent-verse-backend/app/scaling/celery_app.py
+index c90d81999..219250b96 100644
+--- a/agent-verse-backend/app/scaling/celery_app.py
++++ b/agent-verse-backend/app/scaling/celery_app.py
+@@ -94,6 +94,8 @@ celery_app = Celery(
+         "app.orchestration.evidence_maintenance",
+         # Coordination outbox delivery (beat: dispatch-coordination-outbox).
+         "app.coordination.outbox_tasks",
++        # Durable training-data export jobs (POST /intelligence/export-training-data/jobs).
++        "app.training_export.tasks",
+     ],
+ )
+ 
+@@ -135,6 +137,8 @@ celery_app.conf.update(
+         "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
+         # GDPR export — runs in background, long-running
+         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
++        # Training-data export jobs (OPS-37) — long-running, streamed to object storage.
++        "agentverse.training_export.run": {"queue": "maintenance"},
+         # Per-plan routing aliases (workers can subscribe to these specific queues)
+         "agentverse.goals.run_goal_free": {"queue": "goals.free"},
+         "agentverse.goals.run_goal_starter": {"queue": "goals.starter"},
+diff --git a/agent-verse-backend/app/training_export/__init__.py b/agent-verse-backend/app/training_export/__init__.py
+new file mode 100644
+index 000000000..c28acc516
+--- /dev/null
++++ b/agent-verse-backend/app/training_export/__init__.py
+@@ -0,0 +1 @@
++"""Fine-tuning data export: streamed JSONL and durable export jobs (OPS-37)."""
+diff --git a/agent-verse-backend/app/training_export/jobs.py b/agent-verse-backend/app/training_export/jobs.py
+new file mode 100644
+index 000000000..d389bba10
+--- /dev/null
++++ b/agent-verse-backend/app/training_export/jobs.py
+@@ -0,0 +1,328 @@
++"""Durable training-data export jobs (OPS-37).
++
++A large export is a ``training_export_jobs`` row (tenant-scoped, FORCE RLS) run
++by a Celery worker: the worker streams examples (``stream.iter_training_examples``)
++into a spooled temp file (memory-bounded; spills to disk) and uploads it to S3
++compatible object storage under ``tenants/<tenant>/training-exports/<job>.jsonl``.
++The API serves status and streams the finished object back to the owning tenant.
++
++State lives only in Postgres and object storage, so any replica can answer for
++any job. Every failure is recorded on the row (``status='failed'`` + error) —
++a job is never left looking queued after it died.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import datetime
++import json
++import logging
++import os
++import tempfile
++import uuid
++from collections.abc import AsyncIterator
++from typing import Any
++
++from app.db.rls import sqlalchemy_rls_context
++from app.training_export.stream import formatter, iter_training_examples
++
++_log = logging.getLogger(__name__)
++
++_SPOOL_BYTES = 8 * 1024 * 1024
++_READ_CHUNK = 1024 * 1024
++_JOB_COLUMNS = (
++    "id, tenant_id, status, output_format, min_score, row_limit, example_count, "
++    "object_key, error, created_at, started_at, completed_at"
++)
++MAX_LISTED_JOBS = 50
++
++
++class TrainingExportUnavailableError(RuntimeError):
++    """The job store or object storage could not be used (callers answer 503)."""
++
++
++# ── object storage ────────────────────────────────────────────────────────────
++
++
++class S3ObjectStore:
++    """Minimal S3/MinIO client (boto3 in a worker thread). Raises on any failure."""
++
++    def __init__(
++        self, *, endpoint_url: str, access_key: str, secret_key: str, bucket: str
++    ) -> None:
++        self._endpoint_url = endpoint_url
++        self._access_key = access_key
++        self._secret_key = secret_key
++        self.bucket = bucket
++
++    def _client(self) -> Any:
++        import boto3
++
++        return boto3.client(
++            "s3",
++            endpoint_url=self._endpoint_url,
++            aws_access_key_id=self._access_key,
++            aws_secret_access_key=self._secret_key,
++            region_name="us-east-1",
++        )
++
++    def _upload(self, key: str, fileobj: Any) -> None:
++        client = self._client()
++        try:
++            client.head_bucket(Bucket=self.bucket)
++        except Exception:
++            client.create_bucket(Bucket=self.bucket)
++        client.upload_fileobj(
++            fileobj, self.bucket, key, ExtraArgs={"ContentType": "application/x-ndjson"}
++        )
++
++    async def upload(self, key: str, fileobj: Any) -> None:
++        await asyncio.to_thread(self._upload, key, fileobj)
++
++    async def open_stream(self, key: str) -> Any:
++        def _get() -> Any:
++            return self._client().get_object(Bucket=self.bucket, Key=key)["Body"]
++
++        return await asyncio.to_thread(_get)
++
++
++def object_store_from_env() -> S3ObjectStore | None:
++    """The configured object store, or None when object storage is not configured.
++
++    No silent local-disk fallback: a replica-local file would be unreachable from
++    every other replica.
++    """
++    endpoint = os.getenv("TRAINING_EXPORT_S3_ENDPOINT") or os.getenv("MINIO_ENDPOINT")
++    access = os.getenv("TRAINING_EXPORT_S3_ACCESS_KEY") or os.getenv("MINIO_ACCESS_KEY")
++    secret = os.getenv("TRAINING_EXPORT_S3_SECRET_KEY") or os.getenv("MINIO_SECRET_KEY")
++    if not (endpoint and access and secret):
++        return None
++    bucket = os.getenv("TRAINING_EXPORT_BUCKET", "agentverse-training-exports")
++    return S3ObjectStore(endpoint_url=endpoint, access_key=access, secret_key=secret, bucket=bucket)
++
++
++def object_key(tenant_id: str, job_id: str) -> str:
++    return f"tenants/{tenant_id}/training-exports/{job_id}.jsonl"
++
++
++async def iter_object(store: Any, key: str) -> AsyncIterator[bytes]:
++    body = await store.open_stream(key)
++    try:
++        while True:
++            chunk = await asyncio.to_thread(body.read, _READ_CHUNK)
++            if not chunk:
++                return
++            yield chunk
++    finally:
++        close = getattr(body, "close", None)
++        if callable(close):
++            close()
++
++
++# ── job store ─────────────────────────────────────────────────────────────────
++
++
++def _job_dict(row: Any) -> dict[str, Any]:
++    (
++        job_id, tenant_id, status, output_format, min_score, row_limit,
++        example_count, key, error, created_at, started_at, completed_at,
++    ) = tuple(row)
++
++    def _iso(v: Any) -> str | None:
++        return v.isoformat() if isinstance(v, datetime.datetime) else (str(v) if v else None)
++
++    return {
++        "job_id": job_id,
++        "tenant_id": tenant_id,
++        "status": status,
++        "format": output_format,
++        "min_score": float(min_score) if min_score is not None else None,
++        "limit": row_limit,
++        "example_count": example_count,
++        "has_file": bool(key) and status == "complete",
++        "error": error,
++        "created_at": _iso(created_at),
++        "started_at": _iso(started_at),
++        "completed_at": _iso(completed_at),
++    }
++
++
++async def create_job(
++    db: Any, tenant_id: str, output_format: str, min_score: float, limit: int
++) -> dict[str, Any]:
++    from sqlalchemy import text
++
++    job_id = uuid.uuid4().hex
++    try:
++        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++            row = (
++                await session.execute(
++                    text(
++                        "INSERT INTO training_export_jobs (id, tenant_id, status, "
++                        "output_format, min_score, row_limit, created_at) VALUES "
++                        "(:id, :tid, 'queued', :fmt, :min_score, :lim, NOW()) "
++                        f"RETURNING {_JOB_COLUMNS}"
++                    ),
++                    {
++                        "id": job_id,
++                        "tid": tenant_id,
++                        "fmt": output_format,
++                        "min_score": min_score,
++                        "lim": limit,
++                    },
++                )
++            ).fetchone()
++    except Exception as exc:
++        raise TrainingExportUnavailableError(str(exc)) from exc
++    return _job_dict(row)
++
++
++async def get_job(db: Any, tenant_id: str, job_id: str) -> dict[str, Any] | None:
++    row = await _get_row(db, tenant_id, job_id)
++    return _job_dict(row) if row is not None else None
++
++
++async def _get_row(db: Any, tenant_id: str, job_id: str) -> Any:
++    from sqlalchemy import text
++
++    try:
++        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++            return (
++                await session.execute(
++                    text(
++                        f"SELECT {_JOB_COLUMNS} FROM training_export_jobs "
++                        "WHERE id = :id AND tenant_id = :tid"
++                    ),
++                    {"id": job_id, "tid": tenant_id},
++                )
++            ).fetchone()
++    except Exception as exc:
++        raise TrainingExportUnavailableError(str(exc)) from exc
++
++
++async def get_job_object_key(db: Any, tenant_id: str, job_id: str) -> tuple[str, str] | None:
++    """(status, object_key) for the tenant's job, or None when absent."""
++    row = await _get_row(db, tenant_id, job_id)
++    if row is None:
++        return None
++    return str(row[2]), str(row[7] or "")
++
++
++async def list_jobs(db: Any, tenant_id: str) -> list[dict[str, Any]]:
++    from sqlalchemy import text
++
++    try:
++        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++            rows = (
++                await session.execute(
++                    text(
++                        f"SELECT {_JOB_COLUMNS} FROM training_export_jobs "
++                        "WHERE tenant_id = :tid ORDER BY created_at DESC, id DESC LIMIT :lim"
++                    ),
++                    {"tid": tenant_id, "lim": MAX_LISTED_JOBS},
++                )
++            ).fetchall()
++    except Exception as exc:
++        raise TrainingExportUnavailableError(str(exc)) from exc
++    return [_job_dict(r) for r in rows]
++
++
++async def _update(
++    db: Any,
++    tenant_id: str,
++    job_id: str,
++    sql: str,
++    params: dict[str, Any],
++) -> int:
++    from sqlalchemy import text
++
++    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++        result = await session.execute(
++            text(
++                f"UPDATE training_export_jobs SET {sql} "
++                "WHERE id = :id AND tenant_id = :tid"
++            ),
++            {**params, "id": job_id, "tid": tenant_id},
++        )
++        return int(getattr(result, "rowcount", 0) or 0)
++
++
++async def mark_failed(db: Any, tenant_id: str, job_id: str, error: str) -> None:
++    await _update(
++        db,
++        tenant_id,
++        job_id,
++        "status = 'failed', error = :err, completed_at = NOW()",
++        {"err": error[:500]},
++    )
++
++
++# ── runner (Celery worker) ────────────────────────────────────────────────────
++
++
++async def run_export_job(db: Any, store: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
++    """Stream the job's examples to object storage and complete the row.
++
++    Claims the job atomically (``queued`` -> ``running``) so a redelivered task
++    does not run it twice. Any failure marks the job failed and re-raises.
++    """
++    claimed = await _claim(db, tenant_id, job_id)
++    if not claimed:
++        return {"job_id": job_id, "status": "skipped"}
++    row = await _get_row(db, tenant_id, job_id)
++    job = _job_dict(row)
++    try:
++        if store is None:
++            raise TrainingExportUnavailableError("object storage is not configured")
++        to_line = formatter(str(job["format"]))
++        count = 0
++        with tempfile.SpooledTemporaryFile(max_size=_SPOOL_BYTES, mode="w+b") as buf:
++            async for example in iter_training_examples(
++                db, tenant_id, float(job["min_score"] or 0.0), int(job["limit"] or 0)
++            ):
++                buf.write(json.dumps(to_line(example)).encode())
++                buf.write(b"\n")
++                count += 1
++            buf.seek(0)
++            key = object_key(tenant_id, job_id)
++            await store.upload(key, buf)
++        await _update(
++            db,
++            tenant_id,
++            job_id,
++            "status = 'complete', example_count = :n, object_key = :key, "
++            "completed_at = NOW(), error = NULL",
++            {"n": count, "key": key},
++        )
++    except Exception as exc:
++        try:
++            await mark_failed(db, tenant_id, job_id, f"{type(exc).__name__}: {exc}")
++        except Exception as mark_exc:
++            # The row stays 'running'; a redelivered task re-claims it once stale.
++            _log.error("training_export_mark_failed_failed job=%s: %s", job_id, mark_exc)
++        raise
++    return {"job_id": job_id, "status": "complete", "example_count": count}
++
++
++STALE_RUNNING_MINUTES = 30
++
++
++async def _claim(db: Any, tenant_id: str, job_id: str) -> bool:
++    """Atomically claim the job (one winner on redelivery).
++
++    A queued job is claimed; so is a ``running`` job whose worker died (started
++    longer than STALE_RUNNING_MINUTES ago) — Celery redelivers it
++    (acks_late + reject_on_worker_lost), and it must not stay 'running' forever.
++    """
++    from sqlalchemy import text
++
++    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++        result = await session.execute(
++            text(
++                "UPDATE training_export_jobs SET status = 'running', started_at = NOW() "
++                "WHERE id = :id AND tenant_id = :tid AND (status = 'queued' OR "
++                "(status = 'running' AND started_at < NOW() - make_interval(mins => :stale)))"
++            ),
++            {"id": job_id, "tid": tenant_id, "stale": STALE_RUNNING_MINUTES},
++        )
++        return int(getattr(result, "rowcount", 0) or 0) > 0
+diff --git a/agent-verse-backend/app/training_export/stream.py b/agent-verse-backend/app/training_export/stream.py
+new file mode 100644
+index 000000000..992964ac3
+--- /dev/null
++++ b/agent-verse-backend/app/training_export/stream.py
+@@ -0,0 +1,222 @@
++"""Streaming training-example source (OPS-37).
++
++The export used to materialise up to 10k goals (and every step output) in
++memory, from a query whose ``DISTINCT ON`` CTEs scanned all of the tenant's
++evaluations and scorecards. Now:
++
++* candidates are read in keyset batches over the tenant's completed goals
++  (``(created_at, id) DESC``, partial index ``ix_goals_tenant_completed_created``);
++* each goal's score is its latest evaluation (else latest scorecard), looked
++  up per candidate with a ``LIMIT 1`` on the ``(goal_id, created_at DESC)``
++  indexes — never a whole-ledger scan;
++* every batch runs in its own short RLS transaction, so a long download does
++  not pin a connection or a snapshot;
++* step outputs are truncated and capped per goal.
++
++``iter_training_examples`` is an async generator: memory is bounded by one
++batch whatever ``limit`` is. DB failures raise (callers turn the first one into
++a 503; a failure mid-stream aborts the download).
++"""
++
++from __future__ import annotations
++
++import datetime
++from collections.abc import AsyncIterator
++from typing import Any
++
++from app.db.rls import sqlalchemy_rls_context
++
++BATCH_SIZE = 200
++MAX_STEP_OUTPUT_CHARS = 4000
++MAX_STEPS_PER_GOAL = 50
++
++_SCORE_SQL = (
++    "COALESCE("
++    "(SELECT e.average_score FROM evaluations e "
++    " WHERE e.goal_id = g.id AND e.tenant_id = :tid "
++    " ORDER BY e.created_at DESC LIMIT 1), "
++    "(SELECT sc.overall_score FROM eval_scorecards sc "
++    " WHERE sc.goal_id = g.id AND sc.tenant_id = :tid "
++    " ORDER BY sc.created_at DESC LIMIT 1))"
++)
++
++# Candidate goals with their score; the caller appends keyset / LIMIT clauses.
++CANDIDATES_SQL = (
++    "SELECT g.id, g.goal_text, g.created_at, s.score "
++    "FROM goals g "
++    f"CROSS JOIN LATERAL (SELECT {_SCORE_SQL} AS score) s "
++    "WHERE g.tenant_id = :tid AND g.status IN ('complete', 'completed') "
++    "AND s.score >= :min_score"
++)
++
++
++async def _candidate_batch(
++    db: Any,
++    tenant_id: str,
++    min_score: float,
++    size: int,
++    after: tuple[datetime.datetime, str] | None,
++) -> tuple[list[Any], dict[str, list[dict[str, Any]]]]:
++    from sqlalchemy import text
++
++    keyset = " AND (g.created_at, g.id) < (:after_ts, :after_id)" if after else ""
++    params: dict[str, Any] = {"tid": tenant_id, "min_score": min_score, "lim": size}
++    if after:
++        params["after_ts"], params["after_id"] = after
++    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++        rows = (
++            await session.execute(
++                text(
++                    CANDIDATES_SQL
++                    + keyset
++                    + " ORDER BY g.created_at DESC, g.id DESC LIMIT :lim"
++                ),
++                params,
++            )
++        ).fetchall()
++        goal_ids = [str(r[0]) for r in rows]
++        steps: dict[str, list[dict[str, Any]]] = {gid: [] for gid in goal_ids}
++        if goal_ids:
++            step_rows = (
++                await session.execute(
++                    text(
++                        "SELECT goal_id, LEFT(output, :max_chars), tool_calls FROM ("
++                        " SELECT goal_id, output, tool_calls, step_index, "
++                        " ROW_NUMBER() OVER (PARTITION BY goal_id ORDER BY step_index) AS rn"
++                        " FROM goal_steps WHERE tenant_id = :tid AND goal_id = ANY(:gids)"
++                        ") st WHERE rn <= :max_steps ORDER BY goal_id, step_index ASC"
++                    ),
++                    {
++                        "tid": tenant_id,
++                        "gids": goal_ids,
++                        "max_chars": MAX_STEP_OUTPUT_CHARS,
++                        "max_steps": MAX_STEPS_PER_GOAL,
++                    },
++                )
++            ).fetchall()
++            for gid, output, tool_calls in step_rows:
++                calls = tool_calls if isinstance(tool_calls, list) else []
++                first = calls[0] if calls and isinstance(calls[0], dict) else {}
++                steps.setdefault(str(gid), []).append(
++                    {
++                        "type": "step_complete",
++                        "tool_name": first.get("tool_name", ""),
++                        "output": output or "",
++                    }
++                )
++    return rows, steps
++
++
++async def iter_training_examples(
++    db: Any,
++    tenant_id: str,
++    min_score: float,
++    limit: int,
++    *,
++    batch_size: int = BATCH_SIZE,
++) -> AsyncIterator[dict[str, Any]]:
++    """Yield up to *limit* qualifying examples, newest goal first, one batch in memory."""
++    emitted = 0
++    after: tuple[datetime.datetime, str] | None = None
++    while emitted < limit:
++        size = min(batch_size, limit - emitted)
++        rows, steps = await _candidate_batch(db, tenant_id, min_score, size, after)
++        for goal_id, goal_text, _created, score in rows:
++            goal_steps = steps.get(str(goal_id), [])
++            yield {
++                "goal_id": str(goal_id),
++                "goal": goal_text or "",
++                # goals has no result column; the final step's output is the answer.
++                "result": goal_steps[-1]["output"] if goal_steps else "",
++                "steps": goal_steps,
++                "eval_score": float(score or 0.0),
++                "model": "unknown",
++            }
++            emitted += 1
++        if len(rows) < size:
++            return
++        last = rows[-1]
++        after = (last[2], str(last[0]))
++
++
++async def preview_aggregate(
++    db: Any, tenant_id: str, min_score: float, limit: int
++) -> dict[str, Any]:
++    """Count / score stats of the first *limit* candidates in one aggregate query.
++
++    No example rows (or step outputs) are fetched.
++    """
++    from sqlalchemy import text
++
++    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
++        row = (
++            await session.execute(
++                text(
++                    "SELECT COUNT(*), AVG(score), MIN(score), MAX(score), "
++                    "COUNT(*) FILTER (WHERE score < 0.85), "
++                    "COUNT(*) FILTER (WHERE score >= 0.85 AND score < 0.90), "
++                    "COUNT(*) FILTER (WHERE score >= 0.90 AND score < 0.95), "
++                    "COUNT(*) FILTER (WHERE score >= 0.95) "
++                    f"FROM ({CANDIDATES_SQL} ORDER BY g.created_at DESC, g.id DESC "
++                    "LIMIT :lim) c"
++                ),
++                {"tid": tenant_id, "min_score": min_score, "lim": limit},
++            )
++        ).fetchone()
++    count, avg, lo, hi, b1, b2, b3, b4 = row if row is not None else (0,) * 8
++    return {
++        "count": int(count or 0),
++        "avg_score": round(float(avg), 4) if avg is not None else 0.0,
++        "min_score_found": round(float(lo), 4) if lo is not None else 0.0,
++        "max_score_found": round(float(hi), 4) if hi is not None else 0.0,
++        "score_distribution": {
++            "0.80-0.85": int(b1 or 0),
++            "0.85-0.90": int(b2 or 0),
++            "0.90-0.95": int(b3 or 0),
++            "0.95-1.00": int(b4 or 0),
++        },
++    }
++
++
++def to_openai_format(example: dict[str, Any]) -> dict[str, Any]:
++    """Convert a goal execution to OpenAI fine-tuning JSONL format."""
++    system = "You are an autonomous AI agent. Execute goals step by step."
++    messages = [
++        {"role": "system", "content": system},
++        {"role": "user", "content": example["goal"]},
++    ]
++    for step in example.get("steps", []):
++        tool_name = step.get("tool_name", "")
++        output = step.get("output", "")
++        if tool_name:
++            messages.append({"role": "assistant", "content": f"[{tool_name}] {output}"})
++
++    messages.append({"role": "assistant", "content": example.get("result", "")})
++    return {"messages": messages, "metadata": {"eval_score": example.get("eval_score")}}
++
++
++def to_anthropic_format(example: dict[str, Any]) -> dict[str, Any]:
++    """Convert a goal execution to Anthropic fine-tuning JSONL format."""
++    turns = []
++    for step in example.get("steps", []):
++        tool_name = step.get("tool_name", "")
++        output = step.get("output", "")
++        if tool_name:
++            turns.append({"role": "assistant", "content": f"[{tool_name}] {output}"})
++
++    return {
++        "system": "You are an autonomous AI agent. Execute goals step by step.",
++        "messages": [
++            {"role": "user", "content": example["goal"]},
++            *turns,
++            {"role": "assistant", "content": example.get("result", "")},
++        ],
++        "metadata": {
++            "eval_score": example.get("eval_score"),
++            "model": example.get("model"),
++        },
++    }
++
++
++def formatter(output_format: str) -> Any:
++    return to_openai_format if output_format == "openai" else to_anthropic_format
+diff --git a/agent-verse-backend/app/training_export/tasks.py b/agent-verse-backend/app/training_export/tasks.py
+new file mode 100644
+index 000000000..3a6f2f2c7
+--- /dev/null
++++ b/agent-verse-backend/app/training_export/tasks.py
+@@ -0,0 +1,28 @@
++"""Celery task running a durable training-data export job (OPS-37)."""
++
++from __future__ import annotations
++
++from typing import Any
++
++from app.scaling.celery_app import celery_app
++
++TASK_NAME = "agentverse.training_export.run"
++
++
++@celery_app.task(name=TASK_NAME, bind=True, max_retries=0)  # type: ignore[misc]
++def run_training_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
++    """Stream the job's examples into object storage (tenant RLS context).
++
++    Runs on the app role under the job's tenant GUC — never the maintenance
++    role: the job belongs to exactly one tenant.
++    """
++    from app.db.session import get_session_factory, run_in_fresh_loop
++    from app.training_export.jobs import object_store_from_env, run_export_job
++
++    async def _run() -> dict[str, Any]:
++        return await run_export_job(
++            get_session_factory(), object_store_from_env(), job_id, tenant_id
++        )
++
++    result: dict[str, Any] = run_in_fresh_loop(_run())
++    return result
+diff --git a/agent-verse-backend/tests/api/test_training_export_pg.py b/agent-verse-backend/tests/api/test_training_export_pg.py
+new file mode 100644
+index 000000000..981cb21f4
+--- /dev/null
++++ b/agent-verse-backend/tests/api/test_training_export_pg.py
+@@ -0,0 +1,252 @@
++"""OPS-37 (integration): streamed training export + durable export jobs on real
++Postgres under a NOBYPASSRLS application role.
++
++* 1200 qualifying goals export in keyset batches with no duplicates or gaps;
++* the per-goal latest-score lookup and the goal walk can use the new indexes;
++* a job created through the API is run by the worker function into object
++  storage (an in-memory S3 stand-in), then downloaded through the API by the
++  owning tenant only.
++
++Run with:
++    DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock \\
++    TESTCONTAINERS_RYUK_DISABLED=true \\
++        uv run pytest tests/api/test_training_export_pg.py -q -m integration
++"""
++
++from __future__ import annotations
++
++import asyncio
++import io
++import json
++import secrets
++from collections.abc import Iterator
++from typing import Any
++
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++from sqlalchemy import text
++from sqlalchemy.ext.asyncio import create_async_engine
++from sqlalchemy.pool import NullPool
++from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
++
++from app.tenancy.context import PlanTier, TenantContext
++from tests.memory._pg import alembic_upgrade, app_role_engine, sessionmaker_for
++
++pytestmark = pytest.mark.integration
++
++TENANT_A = "ops37a"
++TENANT_B = "ops37b"
++N_GOALS = 1200
++
++
++class _MemStore:
++    def __init__(self) -> None:
++        self.objects: dict[str, bytes] = {}
++
++    async def upload(self, key: str, fileobj: Any) -> None:
++        self.objects[key] = fileobj.read()
++
++    async def open_stream(self, key: str) -> Any:
++        return io.BytesIO(self.objects[key])
++
++
++async def _seed(admin_url: str) -> None:
++    eng = create_async_engine(admin_url, poolclass=NullPool)
++    async with eng.begin() as c:
++        for tid in (TENANT_A, TENANT_B):
++            await c.execute(
++                text("INSERT INTO tenants (id, name, email) VALUES (:id, 'T', :e)"),
++                {"id": tid, "e": f"{tid}@example.test"},
++            )
++        # Goals of A: every one completed; scores alternate around the threshold.
++        await c.execute(
++            text(
++                "INSERT INTO goals (id, tenant_id, goal_text, status, created_at) "
++                "SELECT 'ga' || lpad(i::text, 6, '0'), :t, 'goal ' || i, 'complete', "
++                "NOW() - (i || ' seconds')::interval FROM generate_series(1, :n) i"
++            ),
++            {"t": TENANT_A, "n": 2 * N_GOALS},
++        )
++        # Even goals qualify via evaluations (latest wins over an older low score),
++        # odd goals have only a low scorecard.
++        await c.execute(
++            text(
++                "INSERT INTO evaluations (id, goal_id, tenant_id, scores, average_score, "
++                "passed, strategy_execution_id, created_at) "
++                "SELECT md5('old' || i), 'ga' || lpad(i::text, 6, '0'), :t, '{}', 0.1, false, "
++                "'se-old', NOW() - interval '1 day' FROM generate_series(2, :n, 2) i"
++            ),
++            {"t": TENANT_A, "n": 2 * N_GOALS},
++        )
++        await c.execute(
++            text(
++                "INSERT INTO evaluations (id, goal_id, tenant_id, scores, average_score, "
++                "passed, strategy_execution_id, created_at) "
++                "SELECT md5('new' || i), 'ga' || lpad(i::text, 6, '0'), :t, '{}', 0.95, true, "
++                "'se-new', NOW() FROM generate_series(2, :n, 2) i"
++            ),
++            {"t": TENANT_A, "n": 2 * N_GOALS},
++        )
++        await c.execute(
++            text(
++                "INSERT INTO goal_steps (id, goal_id, tenant_id, step_index, description, output) "
++                "SELECT md5('s' || i), 'ga' || lpad(i::text, 6, '0'), :t, 0, 'd', "
++                "repeat('x', 10000) FROM generate_series(1, :n) i"
++            ),
++            {"t": TENANT_A, "n": 2 * N_GOALS},
++        )
++        await c.execute(text("ANALYZE goals"))
++        await c.execute(text("ANALYZE evaluations"))
++    await eng.dispose()
++
++
++@pytest.fixture(scope="module")
++def env() -> Iterator[tuple[Any, str]]:
++    with PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg:
++        url = pg.get_connection_url()
++        alembic_upgrade(url)
++        loop = asyncio.new_event_loop()
++        loop.run_until_complete(_seed(url))
++        engine = loop.run_until_complete(
++            app_role_engine(
++                url,
++                ["goals", "evaluations", "eval_scorecards", "goal_steps",
++                 "training_export_jobs"],
++            )
++        )
++        loop.close()
++        yield sessionmaker_for(create_async_engine(engine.url, poolclass=NullPool)), url
++
++
++def _client(db: Any, tenant: str) -> TestClient:
++    from app.api.training_export import router
++
++    app = FastAPI()
++    app.include_router(router)
++    app.state.db_session_factory = db
++
++    @app.middleware("http")
++    async def _inject(request: Any, call_next: Any) -> Any:
++        request.state.tenant = TenantContext(
++            tenant_id=tenant, plan=PlanTier.ENTERPRISE, api_key_id="k"
++        )
++        return await call_next(request)
++
++    return TestClient(app)
++
++
++def test_stream_export_is_complete_and_bounded(env: tuple[Any, str]) -> None:
++    db, _ = env
++    resp = _client(db, TENANT_A).post("/intelligence/export-training-data?limit=10000")
++    assert resp.status_code == 200
++    lines = [json.loads(x) for x in resp.text.split("\n")]
++    goals = [ln["messages"][1]["content"] for ln in lines]
++    assert len(goals) == N_GOALS == len(set(goals))  # every even goal once
++    assert all(int(g.split()[1]) % 2 == 0 for g in goals)
++    # Step outputs are truncated.
++    assert all(len(ln["messages"][-1]["content"]) <= 4000 for ln in lines)
++
++    preview = _client(db, TENANT_A).get(
++        "/intelligence/export-training-data/preview?limit=10000"
++    ).json()
++    assert preview["count"] == N_GOALS and len(preview["samples"]) == 3
++    # Tenant B sees nothing.
++    other = _client(db, TENANT_B).post("/intelligence/export-training-data")
++    assert other.status_code == 200 and other.text == ""
++
++
++def test_score_lookup_and_goal_walk_can_use_the_new_indexes(env: tuple[Any, str]) -> None:
++    from app.training_export.stream import CANDIDATES_SQL
++
++    _, url = env
++
++    async def _plan() -> str:
++        eng = create_async_engine(url, poolclass=NullPool)
++        async with eng.connect() as c:
++            await c.execute(text("SET enable_seqscan = off"))
++            rows = (
++                await c.execute(
++                    text(
++                        "EXPLAIN " + CANDIDATES_SQL
++                        + " ORDER BY g.created_at DESC, g.id DESC LIMIT 200"
++                    ),
++                    {"tid": TENANT_A, "min_score": 0.8},
++                )
++            ).fetchall()
++        await eng.dispose()
++        return "\n".join(r[0] for r in rows)
++
++    plan = asyncio.new_event_loop().run_until_complete(_plan())
++    assert "ix_evaluations_goal_created" in plan, plan
++    assert "ix_goals_tenant_completed_created" in plan, plan
++
++
++def test_durable_job_runs_to_object_storage_and_downloads(
++    env: tuple[Any, str], monkeypatch: pytest.MonkeyPatch
++) -> None:
++    from app.api import training_export as api
++    from app.training_export import jobs as export_jobs
++
++    db, _ = env
++    store = _MemStore()
++    monkeypatch.setattr(export_jobs, "object_store_from_env", lambda: store)
++    queued: list[tuple[str, str]] = []
++    monkeypatch.setattr(api, "_enqueue", lambda j, t: queued.append((j, t)))
++
++    a = _client(db, TENANT_A)
++    created = a.post("/intelligence/export-training-data/jobs?format=anthropic&limit=500")
++    assert created.status_code == 202, created.text
++    job_id = created.json()["job_id"]
++    assert queued == [(job_id, TENANT_A)]
++    assert a.get(f"/intelligence/export-training-data/jobs/{job_id}/download").status_code == 409
++
++    # The worker (another process in production) runs it.
++    result = asyncio.new_event_loop().run_until_complete(
++        export_jobs.run_export_job(db, store, job_id, TENANT_A)
++    )
++    assert result == {"job_id": job_id, "status": "complete", "example_count": 500}
++    # A redelivered task does not run it twice.
++    again = asyncio.new_event_loop().run_until_complete(
++        export_jobs.run_export_job(db, store, job_id, TENANT_A)
++    )
++    assert again["status"] == "skipped"
++
++    job = a.get(f"/intelligence/export-training-data/jobs/{job_id}").json()
++    assert job["status"] == "complete" and job["example_count"] == 500
++    body = a.get(job["download_url"])
++    assert body.status_code == 200
++    assert len(body.text.strip().split("\n")) == 500
++    assert [j["job_id"] for j in a.get("/intelligence/export-training-data/jobs").json()[
++        "jobs"
++    ]] == [job_id]
++
++    b = _client(db, TENANT_B)
++    assert b.get(f"/intelligence/export-training-data/jobs/{job_id}").status_code == 404
++    assert b.get(f"/intelligence/export-training-data/jobs/{job_id}/download").status_code == 404
++
++
++def test_failed_job_is_recorded_failed(
++    env: tuple[Any, str], monkeypatch: pytest.MonkeyPatch
++) -> None:
++    from app.api import training_export as api
++    from app.training_export import jobs as export_jobs
++
++    db, _ = env
++    monkeypatch.setattr(export_jobs, "object_store_from_env", lambda: _MemStore())
++    monkeypatch.setattr(api, "_enqueue", lambda j, t: None)
++    a = _client(db, TENANT_A)
++    job_id = a.post("/intelligence/export-training-data/jobs").json()["job_id"]
++
++    class _Broken(_MemStore):
++        async def upload(self, key: str, fileobj: Any) -> None:
++            raise OSError("bucket gone " + secrets.token_hex(2))
++
++    with pytest.raises(OSError):
++        asyncio.new_event_loop().run_until_complete(
++            export_jobs.run_export_job(db, _Broken(), job_id, TENANT_A)
++        )
++    job = a.get(f"/intelligence/export-training-data/jobs/{job_id}").json()
++    assert job["status"] == "failed" and "bucket gone" in job["error"]
++    assert "download_url" not in job
++
+diff --git a/agent-verse-backend/tests/api/test_training_export_sources.py b/agent-verse-backend/tests/api/test_training_export_sources.py
+index d9331c62b..94ffd4d24 100644
+--- a/agent-verse-backend/tests/api/test_training_export_sources.py
++++ b/agent-verse-backend/tests/api/test_training_export_sources.py
+@@ -8,6 +8,7 @@
+ 
+ from __future__ import annotations
+ 
++import datetime as _dt
+ from types import SimpleNamespace
+ from typing import Any
+ 
+@@ -42,8 +43,11 @@ def _client(goal_service: Any, *, db_state: Any = None) -> TestClient:
+ 
+ 
+ def _rows(sql: str, _p: dict[str, Any]) -> list[Any]:
++    if sql.startswith("SELECT COUNT(*)"):
++        # count, avg, min, max, then the four histogram buckets
++        return [(1, 0.93, 0.93, 0.93, 0, 0, 1, 0)]
+     if "FROM goals g" in sql:
+-        return [("g1", "Summarise the Q3 report", 0.93)]
++        return [("g1", "Summarise the Q3 report", _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC), 0.93)]
+     if "FROM goal_steps" in sql:
+         return [("g1", "report summary", [{"tool_name": "docs.read"}])]
+     return []
+@@ -56,9 +60,12 @@ def test_db_path_used_via_goal_service_db_attribute() -> None:
+     assert resp.status_code == 200
+     body = resp.json()
+     assert body["count"] == 1 and body["max_score_found"] == 0.93
+-    (q,) = db.touching("FROM goals g")
+-    assert q.tenant_guc == TENANT  # under tenant RLS
+-    assert "evaluations" in q.sql and "eval_scorecards" in q.sql
++    assert body["samples"][0]["goal"] == "Summarise the Q3 report"
++    queries = db.touching("FROM goals g")
++    assert queries and all(q.tenant_guc == TENANT for q in queries)  # under tenant RLS
++    assert all("evaluations" in q.sql and "eval_scorecards" in q.sql for q in queries)
++    # OPS-37: per-goal latest-score lookups, never DISTINCT ON over the ledger.
++    assert all("DISTINCT ON" not in q.sql for q in queries)
+ 
+ 
+ def test_db_failure_is_503_not_an_empty_export() -> None:
+diff --git a/agent-verse-backend/tests/api/test_training_export_streaming.py b/agent-verse-backend/tests/api/test_training_export_streaming.py
+new file mode 100644
+index 000000000..562fde1e7
+--- /dev/null
++++ b/agent-verse-backend/tests/api/test_training_export_streaming.py
+@@ -0,0 +1,156 @@
++"""OPS-37: the training export streams keyset batches and large exports are
++durable jobs — nothing materialises the whole export in memory."""
++
++from __future__ import annotations
++
++import datetime as dt
++import json
++from types import SimpleNamespace
++from typing import Any
++
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++
++from app.api import training_export as api
++from app.tenancy.context import PlanTier, TenantContext
++from app.training_export import jobs as export_jobs
++from app.training_export.stream import iter_training_examples
++from tests._rls_recorder import RlsRecordingDb
++
++TENANT = "t-stream"
++_T0 = dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
++
++
++def _goal_rows(n: int) -> list[tuple[Any, ...]]:
++    # newest first: (id, goal_text, created_at, score)
++    return [(f"g{i:04d}", f"goal {i}", _T0 - dt.timedelta(seconds=i), 0.9) for i in range(n)]
++
++
++def _paged_rows(all_rows: list[tuple[Any, ...]]) -> Any:
++    def rows_for(sql: str, p: dict[str, Any]) -> list[Any]:
++        if "FROM goals g" in sql and not sql.startswith("SELECT COUNT(*)"):
++            rows = all_rows
++            if "after_ts" in p:
++                rows = [r for r in rows if (r[2], r[0]) < (p["after_ts"], p["after_id"])]
++            return rows[: p["lim"]]
++        if "FROM goal_steps" in sql:
++            return [(gid, "out", [{"tool_name": "t"}]) for gid in p["gids"]]
++        return []
++
++    return rows_for
++
++
++async def test_iterator_reads_keyset_batches_and_holds_one_batch() -> None:
++    db = RlsRecordingDb(rows_for=_paged_rows(_goal_rows(25)))
++    seen = [e["goal_id"] async for e in iter_training_examples(db, TENANT, 0.8, 23, batch_size=10)]
++    assert seen == [f"g{i:04d}" for i in range(23)]
++    goal_queries = db.touching("FROM goals g")
++    # 10 + 10 + 3: three bounded batches, each its own query with a LIMIT.
++    assert [q.params["lim"] for q in goal_queries] == [10, 10, 3]
++    assert "after_ts" not in goal_queries[0].params
++    assert goal_queries[1].params["after_id"] == "g0009"
++    assert all(q.tenant_guc == TENANT for q in goal_queries)
++    steps = db.touching("FROM goal_steps")
++    assert all("LEFT(output" in q.sql and "rn <= :max_steps" in q.sql for q in steps)
++
++
++def _client(db: Any) -> TestClient:
++    app = FastAPI()
++    app.include_router(api.router)
++    app.state.db_session_factory = db
++    app.state.goal_service = SimpleNamespace(_goals={}, _eval_scores={})
++
++    @app.middleware("http")
++    async def _inject(request: Any, call_next: Any) -> Any:
++        request.state.tenant = TenantContext(
++            tenant_id=TENANT, plan=PlanTier.ENTERPRISE, api_key_id="k"
++        )
++        return await call_next(request)
++
++    return TestClient(app)
++
++
++def test_export_streams_every_line_from_batches() -> None:
++    db = RlsRecordingDb(rows_for=_paged_rows(_goal_rows(450)))
++    resp = _client(db).post("/intelligence/export-training-data?limit=450")
++    assert resp.status_code == 200
++    lines = resp.text.split("\n")
++    assert len(lines) == 450
++    assert json.loads(lines[0])["messages"][1]["content"] == "goal 0"
++    assert len(db.touching("FROM goals g")) == 3  # 200 + 200 + 50
++
++
++def test_preview_is_an_aggregate_not_a_collect() -> None:
++    def rows_for(sql: str, p: dict[str, Any]) -> list[Any]:
++        if sql.startswith("SELECT COUNT(*)"):
++            return [(5000, 0.9, 0.81, 0.99, 10, 20, 30, 40)]
++        return _paged_rows(_goal_rows(5000))(sql, p)
++
++    db = RlsRecordingDb(rows_for=rows_for)
++    body = _client(db).get("/intelligence/export-training-data/preview?limit=10000").json()
++    assert body["count"] == 5000
++    assert len(body["samples"]) == 3
++    sample_queries = [q for q in db.touching("FROM goals g") if "COUNT(*)" not in q.sql]
++    assert [q.params["lim"] for q in sample_queries] == [3]
++
++
++# ── jobs ──────────────────────────────────────────────────────────────────────
++
++
++class _FakeStore:
++    def __init__(self) -> None:
++        self.objects: dict[str, bytes] = {}
++
++
++def test_job_create_needs_object_storage(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setattr(export_jobs, "object_store_from_env", lambda: None)
++    resp = _client(RlsRecordingDb()).post("/intelligence/export-training-data/jobs")
++    assert resp.status_code == 503
++
++
++def test_job_create_enqueue_failure_is_503_and_job_marked_failed(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(export_jobs, "object_store_from_env", lambda: _FakeStore())
++
++    def _rows(sql: str, p: dict[str, Any]) -> list[Any]:
++        if sql.startswith("INSERT INTO training_export_jobs"):
++            return [(p["id"], TENANT, "queued", p["fmt"], p["min_score"], p["lim"],
++                     None, None, None, _T0, None, None)]
++        return []
++
++    def _boom(job_id: str, tenant_id: str) -> None:
++        raise RuntimeError("broker down")
++
++    monkeypatch.setattr(api, "_enqueue", _boom)
++    db = RlsRecordingDb(rows_for=_rows)
++    resp = _client(db).post("/intelligence/export-training-data/jobs?limit=50000")
++    assert resp.status_code == 503
++    (upd,) = db.touching("UPDATE training_export_jobs")
++    assert "status = 'failed'" in upd.sql and upd.tenant_guc == TENANT
++
++
++def test_job_create_queues_and_returns_202(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setattr(export_jobs, "object_store_from_env", lambda: _FakeStore())
++    queued: list[tuple[str, str]] = []
++    monkeypatch.setattr(api, "_enqueue", lambda j, t: queued.append((j, t)))
++
++    def _rows(sql: str, p: dict[str, Any]) -> list[Any]:
++        if sql.startswith("INSERT INTO training_export_jobs"):
++            return [(p["id"], TENANT, "queued", p["fmt"], p["min_score"], p["lim"],
++                     None, None, None, _T0, None, None)]
++        return []
++
++    resp = _client(RlsRecordingDb(rows_for=_rows)).post(
++        "/intelligence/export-training-data/jobs?format=anthropic&limit=200000"
++    )
++    assert resp.status_code == 202
++    body = resp.json()
++    assert body["status"] == "queued" and body["limit"] == 200000
++    assert queued == [(body["job_id"], TENANT)]
++
++
++def test_jobs_need_the_database() -> None:
++    app_client = _client(None)
++    assert app_client.post("/intelligence/export-training-data/jobs").status_code == 503
+diff --git a/agent-verse-backend/tests/integration/test_billing_dsr_rls_integration.py b/agent-verse-backend/tests/integration/test_billing_dsr_rls_integration.py
+index 2d434d512..48c639785 100644
+--- a/agent-verse-backend/tests/integration/test_billing_dsr_rls_integration.py
++++ b/agent-verse-backend/tests/integration/test_billing_dsr_rls_integration.py
+@@ -302,7 +302,12 @@ async def test_memory_v2_roundtrip_under_rls(dbs: tuple) -> None:
+ 
+ @pytest.mark.asyncio
+ async def test_training_export_db_query(dbs: tuple) -> None:
+-    from app.api.training_export import _collect_training_examples_db
++    from app.training_export.stream import iter_training_examples
++
++    async def _collect_training_examples_db(
++        db: Any, min_score: float, limit: int, tenant_id: str
++    ) -> list[dict[str, Any]]:
++        return [e async for e in iter_training_examples(db, tenant_id, min_score, limit)]
+ 
+     admin, app, _ = dbs
+     tid = _tid()
+diff --git a/agent-verse-frontend/src/lib/api/client.test.ts b/agent-verse-frontend/src/lib/api/client.test.ts
+index 9e60bcbe2..4e95af0f1 100644
+--- a/agent-verse-frontend/src/lib/api/client.test.ts
++++ b/agent-verse-frontend/src/lib/api/client.test.ts
+@@ -169,6 +169,39 @@ test('trainingApi.export downloads a blob + parses headers', async () => {
+   expect(res.blob).toBeInstanceOf(Blob);
+ });
+ 
++test('trainingApi.export counts JSONL lines when the streamed response has no count header', async () => {
++  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
++    new Response('{"a":1}\n{"b":2}\n{"c":3}', {
++      status: 200,
++      headers: { 'Content-Type': 'application/x-ndjson' },
++    })
++  );
++  const res = await trainingApi.export({ format: 'openai' });
++  expect(res.count).toBe(3);
++});
++
++test('trainingApi.export counts zero lines for an empty stream', async () => {
++  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
++  expect((await trainingApi.export({ format: 'openai' })).count).toBe(0);
++});
++
++test('trainingApi.createJob posts to the durable job endpoint', async () => {
++  const f = mockOk({ job_id: 'j1', status: 'queued' });
++  const job = await trainingApi.createJob({ format: 'anthropic', minScore: 0.9, limit: 50000 });
++  const url = String(f.mock.calls[0][0]);
++  expect(url).toContain('/intelligence/export-training-data/jobs?');
++  expect(url).toContain('format=anthropic');
++  expect(url).toContain('limit=50000');
++  expect((f.mock.calls[0][1] as RequestInit).method).toBe('POST');
++  expect(job.job_id).toBe('j1');
++});
++
++test('trainingApi.listJobs reads the job list', async () => {
++  const f = mockOk({ jobs: [] });
++  await trainingApi.listJobs();
++  expect(String(f.mock.calls[0][0])).toContain('/intelligence/export-training-data/jobs');
++});
++
+ // ── adminApi (server-side tenant pagination) ────────────────────────────────────
+ 
+ test('adminApi.listTenants sends limit + offset (server-side pagination)', async () => {
+diff --git a/agent-verse-frontend/src/lib/api/client.ts b/agent-verse-frontend/src/lib/api/client.ts
+index ec54eba0a..60f3ac30b 100644
+--- a/agent-verse-frontend/src/lib/api/client.ts
++++ b/agent-verse-frontend/src/lib/api/client.ts
+@@ -1787,6 +1787,20 @@ export interface TrainingPreview {
+   samples: Array<{ goal: string; eval_score: number; steps: number; tools: string[] }>;
+ }
+ 
++export interface TrainingExportJob {
++  job_id: string;
++  status: "queued" | "running" | "complete" | "failed";
++  format: "openai" | "anthropic";
++  min_score: number | null;
++  limit: number;
++  example_count: number | null;
++  has_file: boolean;
++  error: string | null;
++  created_at: string | null;
++  completed_at: string | null;
++  download_url?: string;
++}
++
+ export const trainingApi = {
+   export: async (opts: {
+     format: "openai" | "anthropic";
+@@ -1812,13 +1826,57 @@ export const trainingApi = {
+       throw new ApiError(res.status, res.statusText);
+     }
+     const blob = await res.blob();
++    // The DB-backed export is streamed, so the server cannot send a count
++    // header up front; count the JSONL lines instead.
++    const header = res.headers.get("X-Training-Examples");
++    let count = Number(header ?? 0);
++    if (header === null) {
++      const text = await blob.text();
++      count = text.split("\n").filter((line) => line.trim() !== "").length;
++    }
+     return {
+       blob,
+       filename: parseFilename(
+         res.headers.get("Content-Disposition"),
+         `training_${opts.format}.jsonl`
+       ),
+-      count: Number(res.headers.get("X-Training-Examples") ?? 0),
++      count,
++    };
++  },
++
++  /** Queue a durable background export (large exports; written to object storage). */
++  createJob: (opts: { format: "openai" | "anthropic"; minScore?: number; limit?: number }) => {
++    const params = new URLSearchParams();
++    params.set("format", opts.format);
++    params.set("min_score", String(opts.minScore ?? 0.8));
++    params.set("limit", String(opts.limit ?? 10000));
++    return request<TrainingExportJob>(
++      `/intelligence/export-training-data/jobs?${params.toString()}`,
++      { method: "POST" }
++    );
++  },
++
++  listJobs: () =>
++    request<{ jobs: TrainingExportJob[] }>("/intelligence/export-training-data/jobs"),
++
++  /** Download a finished job's JSONL through the API (owning tenant only). */
++  downloadJob: async (jobId: string): Promise<{ blob: Blob; filename: string }> => {
++    const apiKey = getApiKey();
++    const headers: Record<string, string> = { ...getMfaHeader() };
++    if (apiKey) headers["X-API-Key"] = apiKey;
++    const res = await fetch(
++      `${API_BASE_URL}/intelligence/export-training-data/jobs/${encodeURIComponent(jobId)}/download`,
++      { headers }
++    );
++    if (!res.ok) {
++      throw new ApiError(res.status, res.statusText);
++    }
++    return {
++      blob: await res.blob(),
++      filename: parseFilename(
++        res.headers.get("Content-Disposition"),
++        `agentverse_training_${jobId}.jsonl`
++      ),
+     };
+   },
+ 

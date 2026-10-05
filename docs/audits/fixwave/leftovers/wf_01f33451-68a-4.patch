@@ -1,0 +1,1332 @@
+diff --git a/agent-verse-backend/app/api/civilization.py b/agent-verse-backend/app/api/civilization.py
+index 7bb260f2f..7b7ce7749 100644
+--- a/agent-verse-backend/app/api/civilization.py
++++ b/agent-verse-backend/app/api/civilization.py
+@@ -428,7 +428,9 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
+     try:
+         from sqlalchemy import text
+ 
+-        async with db() as session:
++        # Tenant RLS transaction: without the GUC this INSERT violated the
++        # civilization_agents policy under the NOBYPASSRLS application role.
++        async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
+             await session.execute(
+                 text("""
+                     INSERT INTO civilization_agents
+@@ -443,6 +445,7 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
+                         status = 'active',
+                         budget_usd = EXCLUDED.budget_usd,
+                         last_active_at = NOW()
++                    WHERE civilization_agents.tenant_id = EXCLUDED.tenant_id
+                 """),
+                 {
+                     "id": member_id,
+@@ -453,7 +456,6 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
+                     "budget_usd": body.budget_usd,
+                 },
+             )
+-            await session.commit()
+     except Exception as exc:
+         logger.warning("add_member_failed", error=str(exc))
+         raise HTTPException(500, f"Failed to add member: {exc}") from exc
+@@ -490,7 +492,8 @@ async def list_civilization_members(request: Request, civ_id: str) -> list[dict]
+                             ca.spawned_at, ca.last_active_at,
+                             a.name AS agent_name, a.autonomy_mode, a.goal_template
+                         FROM civilization_agents ca
+-                        LEFT JOIN agents a ON a.id = ca.agent_id
++                        LEFT JOIN agents a
++                            ON a.id = ca.agent_id AND a.tenant_id = ca.tenant_id
+                         WHERE ca.civilization_id = :cid AND ca.tenant_id = :tid
+                           AND ca.status NOT IN ('retired')
+                         ORDER BY ca.reputation DESC
+@@ -534,7 +537,7 @@ async def remove_civilization_member(request: Request, civ_id: str, agent_id: st
+     try:
+         from sqlalchemy import text
+ 
+-        async with db() as session:
++        async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
+             await session.execute(
+                 text("""
+                     UPDATE civilization_agents
+@@ -543,7 +546,6 @@ async def remove_civilization_member(request: Request, civ_id: str, agent_id: st
+                 """),
+                 {"cid": civ_id, "aid": agent_id, "tid": tenant_ctx.tenant_id},
+             )
+-            await session.commit()
+     except Exception as exc:
+         raise HTTPException(500, str(exc)) from exc
+ 
+diff --git a/agent-verse-backend/app/api/governance.py b/agent-verse-backend/app/api/governance.py
+index 811c9578e..f86d81afe 100644
+--- a/agent-verse-backend/app/api/governance.py
++++ b/agent-verse-backend/app/api/governance.py
+@@ -968,7 +968,9 @@ async def create_notification_channel(
+         channel_type=body.channel_type,
+         config=body.config,
+     )
+-    svc.add_channel(channel)
++    # Awaited, RLS-scoped write: the row exists (for every replica) before the
++    # caller is told it was created.
++    await svc.add_channel_async(channel)
+     return {"channel_id": channel.channel_id, "type": channel.channel_type, "status": "created"}
+ 
+ 
+@@ -978,6 +980,7 @@ async def list_notification_channels(request: Request) -> list[dict[str, Any]]:
+     svc = getattr(request.app.state, "notification_service", None)
+     if svc is None:
+         return []
++    await svc.ensure_tenant_loaded(tenant.tenant_id)
+     return [
+         {"channel_id": c.channel_id, "type": c.channel_type, "enabled": c.enabled}
+         for c in svc.get_channels(tenant.tenant_id)
+@@ -991,7 +994,7 @@ async def delete_notification_channel(request: Request, channel_id: str) -> None
+     svc = getattr(request.app.state, "notification_service", None)
+     if svc is None:
+         raise HTTPException(404, "Notification channel not found")
+-    removed = svc.remove_channel(channel_id, tenant.tenant_id)
++    removed = await svc.remove_channel_async(channel_id, tenant.tenant_id)
+     if not removed:
+         raise HTTPException(404, "Notification channel not found")
+ 
+@@ -1003,6 +1006,7 @@ async def test_notification_channel(request: Request, channel_id: str) -> dict[s
+     svc = getattr(request.app.state, "notification_service", None)
+     if svc is None:
+         raise HTTPException(503, "Notification service unavailable")
++    await svc.ensure_tenant_loaded(tenant.tenant_id)
+     channels = svc.get_channels(tenant.tenant_id)
+     channel = next((c for c in channels if c.channel_id == channel_id), None)
+     if channel is None:
+diff --git a/agent-verse-backend/app/api/skills_runtime.py b/agent-verse-backend/app/api/skills_runtime.py
+index f3cb36040..eedf84260 100644
+--- a/agent-verse-backend/app/api/skills_runtime.py
++++ b/agent-verse-backend/app/api/skills_runtime.py
+@@ -113,22 +113,72 @@ def _dict_to_skill_def(skill_dict: dict[str, Any]) -> SkillDefinition:
+ # ── DB persistence helpers (write-through cache for custom tenant skills) ──────
+ 
+ 
++def _parse_ts(value: Any) -> datetime.datetime | None:
++    """ISO-8601 string (as kept in the in-memory cache) -> aware datetime.
++
++    asyncpg binds a ``timestamptz`` parameter only from a datetime; passing the
++    cached ISO string made every INSERT fail with a DataError.
++    """
++    if isinstance(value, datetime.datetime):
++        return value
++    if not value:
++        return None
++    try:
++        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
++    except ValueError:
++        return None
++
++
++def _request_db_factory(request: Request) -> Any:
++    """The request-path session factory (the NOBYPASSRLS application role).
++
++    Deliberately no fallback that builds a second engine: a request path must
++    use the app's own pool, and must never reach for the maintenance role.
++    """
++    return getattr(request.app.state, "db_session_factory", None)
++
++
++async def _tenant_skill_list(request: Request, tenant_id: str) -> list[dict[str, Any]]:
++    """This tenant's custom skills, lazily hydrated from Postgres once per process.
++
++    Without this the write-through cache was write-only: a skill created on one
++    replica (or before a restart) was never visible anywhere else.
++    """
++    await _load_tenant_skills_from_db(tenant_id, _request_db_factory(request))
++    return _tenant_skills.get(tenant_id, [])
++
++
+ async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
+     """Persist a custom tenant skill to the skills table.
+ 
+     Uses the real 0074 migration schema: id=String(32), visibility, is_active.
+     Fails silently — in-memory store is the source of truth.
++
++    Runs under the owning tenant's RLS context. This is a request path, so it
++    must never use ``system_session``: under the NOBYPASSRLS application role
++    ``SET LOCAL row_security = off`` makes every statement fail with "query
++    would be affected by row-level security policy for table skills" (so no
++    skill was ever persisted), and under a BYPASSRLS role it would be a
++    privilege escalation for a tenant-scoped write.
+     """
+     if db_factory is None:
+         return
++    tenant_id = str(skill_dict.get("tenant_id") or "")
++    if not tenant_id:
++        _log.warning("skill_db_persist_skipped_no_tenant skill_id=%s", skill_dict.get("skill_id"))
++        return
+     try:
+         from sqlalchemy import text
+ 
+-        from app.db.rls import system_session
++        from app.db.rls import sqlalchemy_rls_context
+ 
+         # The DB id column is String(32); strip UUID dashes.
+         db_id = skill_dict["skill_id"].replace("-", "")
+-        async with db_factory() as session, session.begin(), system_session(session):
++        async with (
++            db_factory() as session,
++            session.begin(),
++            sqlalchemy_rls_context(session, tenant_id),
++        ):
+             await session.execute(
+                 text("""
+                     INSERT INTO skills (
+@@ -138,22 +188,26 @@ async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
+                         visibility, is_active, created_by, created_at, updated_at
+                     ) VALUES (
+                         :id, :tenant_id, :name, :version, :description,
+-                        :trigger_hints, :instructions, :few_shot_examples,
+-                        :allowed_tools, :required_connectors, :token_estimate,
+-                        :visibility, :is_active, :created_by, :created_at, NOW()
++                        CAST(:trigger_hints AS json), :instructions,
++                        CAST(:few_shot_examples AS json), CAST(:allowed_tools AS json),
++                        CAST(:required_connectors AS json), :token_estimate,
++                        :visibility, :is_active, :created_by,
++                        COALESCE(CAST(:created_at AS timestamptz), NOW()), NOW()
+                     )
+                     ON CONFLICT (id) DO UPDATE SET
+                         name         = EXCLUDED.name,
++                        version      = EXCLUDED.version,
+                         description  = EXCLUDED.description,
+                         instructions = EXCLUDED.instructions,
+                         trigger_hints = EXCLUDED.trigger_hints,
+                         allowed_tools = EXCLUDED.allowed_tools,
+                         is_active    = EXCLUDED.is_active,
+                         updated_at   = NOW()
++                    WHERE skills.tenant_id = EXCLUDED.tenant_id
+                 """),
+                 {
+                     "id": db_id,
+-                    "tenant_id": skill_dict.get("tenant_id", ""),
++                    "tenant_id": tenant_id,
+                     "name": skill_dict["name"],
+                     "version": skill_dict.get("version", "1.0.0"),
+                     "description": skill_dict["description"],
+@@ -165,8 +219,8 @@ async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
+                     "token_estimate": 0,
+                     "visibility": "tenant",
+                     "is_active": True,
+-                    "created_by": skill_dict.get("tenant_id", ""),
+-                    "created_at": skill_dict.get("created_at"),
++                    "created_by": tenant_id,
++                    "created_at": _parse_ts(skill_dict.get("created_at")),
+                 },
+             )
+     except Exception as exc:
+@@ -187,7 +241,15 @@ async def _load_tenant_skills_from_db(tenant_id: str, db_factory: Any) -> None:
+     try:
+         from sqlalchemy import text
+ 
+-        async with db_factory() as session, session.begin():
++        from app.db.rls import sqlalchemy_rls_context
++
++        # Tenant GUC: without it the FORCE'd skill_access policy hides every
++        # tenant row from the NOBYPASSRLS application role (0 rows, no error).
++        async with (
++            db_factory() as session,
++            session.begin(),
++            sqlalchemy_rls_context(session, tenant_id),
++        ):
+             result = await session.execute(
+                 text(
+                     "SELECT id, tenant_id, name, version, description, "
+@@ -258,7 +320,7 @@ async def list_skills(
+             )
+ 
+     # Tenant skills
+-    for s in _tenant_skills.get(tenant.tenant_id, []):
++    for s in await _tenant_skill_list(request, tenant.tenant_id):
+         if status and s.get("status") != status:
+             continue
+         skills.append({**s, "enabled": True, "is_platform": False})
+@@ -296,7 +358,7 @@ async def execute_skill_by_id(
+ 
+     skill_dict = _platform_skills.get(body.skill_id)
+     if not skill_dict:
+-        tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
++        tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
+         skill_dict = next((s for s in tenant_skills if s["skill_id"] == body.skill_id), None)
+     if not skill_dict:
+         raise HTTPException(404, f"Skill {body.skill_id!r} not found")
+@@ -391,7 +453,7 @@ async def get_skill(request: Request, skill_id: str) -> dict[str, Any]:
+ 
+     skill = _platform_skills.get(skill_id)
+     if not skill:
+-        tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
++        tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
+         skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
+ 
+     if not skill:
+@@ -423,22 +485,16 @@ async def create_tenant_skill(request: Request, body: CreateSkillRequest) -> dic
+         "is_builtin": False,
+         "created_at": now,
+     }
++    # Hydrate first so a later lazy load cannot append a duplicate of this skill.
++    await _tenant_skill_list(request, tenant.tenant_id)
+     _tenant_skills.setdefault(tenant.tenant_id, []).append(skill)
+ 
+-    # Write-through: persist to DB (non-blocking, best-effort)
+-    db_factory = getattr(request.app.state, "db_session_factory", None)
+-    if db_factory is None:
+-        try:
+-            from app.db.session import get_session_factory
+-
+-            db_factory = get_session_factory()
+-        except Exception:
+-            db_factory = None
+-    import asyncio
+-
+-    _save_task = asyncio.create_task(_db_save_skill(skill, db_factory))
+-    # Suppress the task reference warning; fire-and-forget with best-effort error logging.
+-    _save_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
++    # Write-through: persist to DB under the tenant's RLS context (best-effort —
++    # a DB failure is logged, the in-memory cache stays authoritative). Awaited
++    # rather than fire-and-forget: an unreferenced asyncio task can be garbage
++    # collected mid-flight, and the caller should not get a 2xx before the row
++    # other replicas will read exists.
++    await _db_save_skill(skill, _request_db_factory(request))
+ 
+     return {"skill_id": skill_id, "status": "created"}
+ 
+@@ -449,7 +505,8 @@ async def enable_skill(request: Request, skill_id: str) -> dict[str, Any]:
+     tenant = _require_tenant(request)
+ 
+     if skill_id not in _platform_skills and not any(
+-        s["skill_id"] == skill_id for s in _tenant_skills.get(tenant.tenant_id, [])
++        s["skill_id"] == skill_id
++        for s in await _tenant_skill_list(request, tenant.tenant_id)
+     ):
+         raise HTTPException(404, f"Skill {skill_id} not found")
+ 
+@@ -476,7 +533,7 @@ async def execute_skill(
+ 
+     skill = _platform_skills.get(skill_id)
+     if not skill:
+-        tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
++        tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
+         skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
+ 
+     if not skill:
+@@ -567,7 +624,7 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
+     body = await request.json()
+ 
+     # Find existing skill
+-    tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
++    tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
+     skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
+     if not skill:
+         raise HTTPException(404, "Skill not found")
+@@ -593,6 +650,9 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
+     skill["version"] = ".".join(parts)
+     skill["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+ 
++    # Write-through (upsert) so the edit survives a restart / is seen by other replicas.
++    await _db_save_skill(skill, _request_db_factory(request))
++
+     return {"skill_id": skill_id, "version": skill["version"], "status": "updated"}
+ 
+ 
+@@ -600,7 +660,7 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
+ async def get_skill_versions(request: Request, skill_id: str) -> dict[str, Any]:
+     """List version history for a skill."""
+     tenant = _require_tenant(request)
+-    tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
++    tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
+     skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
+     if not skill:
+         # Check platform skills too
+@@ -638,7 +698,7 @@ async def match_skill_by_trigger(request: Request) -> dict[str, Any]:
+                 )
+                 break
+ 
+-    for skill in _tenant_skills.get(tenant.tenant_id, []):
++    for skill in await _tenant_skill_list(request, tenant.tenant_id):
+         for hint in skill.get("trigger_hints", []):
+             if hint.lower() in trigger or trigger in hint.lower():
+                 matches.append(
+diff --git a/agent-verse-backend/app/civilization/blackboard.py b/agent-verse-backend/app/civilization/blackboard.py
+index 4df4ed9b9..beedc45c1 100644
+--- a/agent-verse-backend/app/civilization/blackboard.py
++++ b/agent-verse-backend/app/civilization/blackboard.py
+@@ -13,6 +13,7 @@ import uuid
+ from datetime import UTC, datetime
+ from typing import Any
+ 
++from app.db.rls import sqlalchemy_rls_context
+ from app.observability.logging import get_logger
+ 
+ logger = get_logger(__name__)
+@@ -84,7 +85,11 @@ class Blackboard:
+             try:
+                 from sqlalchemy import text
+ 
+-                async with self._db() as session, session.begin():
++                async with (
++                    self._db() as session,
++                    session.begin(),
++                    sqlalchemy_rls_context(session, self._tenant_id),
++                ):
+                     await session.execute(
+                         text("""
+                             INSERT INTO blackboard_entries
+@@ -146,7 +151,11 @@ class Blackboard:
+                 from sqlalchemy import text
+ 
+                 # Atomic update with version check
+-                async with self._db() as session, session.begin():
++                async with (
++                    self._db() as session,
++                    session.begin(),
++                    sqlalchemy_rls_context(session, self._tenant_id),
++                ):
+                     result = await session.execute(
+                         text("""
+                             UPDATE blackboard_entries
+@@ -241,7 +250,11 @@ class Blackboard:
+                     conditions.append("author_agent_id = :author")
+                     params["author"] = author_agent_id
+                 where = " AND ".join(conditions)
+-                async with self._db() as session:
++                async with (
++                    self._db() as session,
++                    session.begin(),
++                    sqlalchemy_rls_context(session, self._tenant_id),
++                ):
+                     rows = (
+                         await session.execute(
+                             text(
+diff --git a/agent-verse-backend/app/civilization/bus.py b/agent-verse-backend/app/civilization/bus.py
+index 1b8a1741e..80e2bade1 100644
+--- a/agent-verse-backend/app/civilization/bus.py
++++ b/agent-verse-backend/app/civilization/bus.py
+@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator
+ from datetime import UTC, datetime
+ from typing import Any
+ 
++from app.db.rls import sqlalchemy_rls_context
+ from app.observability.logging import get_logger
+ 
+ logger = get_logger(__name__)
+@@ -143,7 +144,11 @@ class CivilizationBus:
+                 params["since"] = since_ts
+ 
+             where = " AND ".join(conditions)
+-            async with self._db() as session:
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 rows = (
+                     await session.execute(
+                         text(
+@@ -178,7 +183,11 @@ class CivilizationBus:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                         INSERT INTO bus_messages
+@@ -203,7 +212,11 @@ class CivilizationBus:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                         INSERT INTO civilization_events
+diff --git a/agent-verse-backend/app/civilization/events.py b/agent-verse-backend/app/civilization/events.py
+index 5d5d58e2e..2018bb1da 100644
+--- a/agent-verse-backend/app/civilization/events.py
++++ b/agent-verse-backend/app/civilization/events.py
+@@ -7,6 +7,7 @@ import uuid
+ from datetime import UTC, datetime
+ from typing import Any
+ 
++from app.db.rls import sqlalchemy_rls_context
+ from app.observability.logging import get_logger
+ 
+ logger = get_logger(__name__)
+@@ -56,7 +57,11 @@ async def emit_event(
+         try:
+             from sqlalchemy import text
+ 
+-            async with db() as session, session.begin():
++            async with (
++                db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                         INSERT INTO civilization_events
+@@ -113,7 +118,11 @@ async def get_events_since(
+             conditions.append("type = ANY(:types)")
+             params["types"] = event_types
+         where = " AND ".join(conditions)
+-        async with db() as session:
++        async with (
++            db() as session,
++            session.begin(),
++            sqlalchemy_rls_context(session, tenant_id),
++        ):
+             rows = (
+                 await session.execute(
+                     text(
+diff --git a/agent-verse-backend/app/civilization/governor.py b/agent-verse-backend/app/civilization/governor.py
+index 1d684b672..b6153db96 100644
+--- a/agent-verse-backend/app/civilization/governor.py
++++ b/agent-verse-backend/app/civilization/governor.py
+@@ -20,6 +20,7 @@ from app.civilization.models import (
+     SpawnDecision,
+     SpawnVerdict,
+ )
++from app.db.rls import sqlalchemy_rls_context
+ from app.observability.logging import get_logger
+ from app.observability.tracing import get_tracer
+ 
+@@ -222,7 +223,11 @@ class Governor:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session:
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 rows = (
+                     await session.execute(
+                         text("""
+@@ -344,7 +349,11 @@ class Governor:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session:
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 row = (
+                     await session.execute(
+                         text("""
+@@ -391,7 +400,11 @@ class Governor:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session:
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 row = (
+                     await session.execute(
+                         text(
+@@ -471,7 +484,11 @@ class Governor:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                     INSERT INTO civilization_agents
+@@ -503,7 +520,11 @@ class Governor:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                     UPDATE civilization_agents
+@@ -521,7 +542,11 @@ class Governor:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                     UPDATE civilization_agents
+@@ -585,7 +610,11 @@ class Governor:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text(
+                         "UPDATE civilizations SET status=:status, updated_at=NOW() "
+@@ -649,7 +678,11 @@ class Governor:
+ 
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                     INSERT INTO spawn_requests
+diff --git a/agent-verse-backend/app/civilization/learning.py b/agent-verse-backend/app/civilization/learning.py
+index 64501480e..9b9226ab5 100644
+--- a/agent-verse-backend/app/civilization/learning.py
++++ b/agent-verse-backend/app/civilization/learning.py
+@@ -11,6 +11,7 @@ import uuid
+ from typing import Any
+ 
+ from app.civilization.events import CivEventType, emit_event
++from app.db.rls import sqlalchemy_rls_context
+ from app.observability.logging import get_logger
+ 
+ logger = get_logger(__name__)
+@@ -59,7 +60,11 @@ class LearningPipeline:
+             try:
+                 from sqlalchemy import text
+ 
+-                async with self._db() as session, session.begin():
++                async with (
++                    self._db() as session,
++                    session.begin(),
++                    sqlalchemy_rls_context(session, self._tenant_id),
++                ):
+                     await session.execute(
+                         text("""
+                         INSERT INTO civilization_learnings
+@@ -275,7 +280,11 @@ class LearningPipeline:
+                 conditions.append("status = :status")
+                 params["status"] = status
+             where = " AND ".join(conditions)
+-            async with self._db() as session:
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 rows = (
+                     await session.execute(
+                         text(
+@@ -312,7 +321,11 @@ class LearningPipeline:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session:
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 rows = (
+                     await session.execute(
+                         text("""
+@@ -337,7 +350,11 @@ class LearningPipeline:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                     UPDATE civilization_learnings
+@@ -362,7 +379,11 @@ class LearningPipeline:
+         try:
+             from sqlalchemy import text
+ 
+-            async with self._db() as session, session.begin():
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, self._tenant_id),
++            ):
+                 await session.execute(
+                     text("""
+                     UPDATE civilization_learnings
+diff --git a/agent-verse-backend/app/main.py b/agent-verse-backend/app/main.py
+index 503935f34..b66391579 100644
+--- a/agent-verse-backend/app/main.py
++++ b/agent-verse-backend/app/main.py
+@@ -1676,8 +1676,10 @@ def create_app(
+             # Wire DB into NotificationService for persistent channel storage
+             _notif_svc = getattr(app.state, "notification_service", None)
+             if _notif_svc is not None:
++                # No startup warm-up: a cross-tenant scan cannot see RLS-protected
++                # rows under the NOBYPASSRLS role. Channels hydrate lazily per
++                # tenant (NotificationService.ensure_tenant_loaded).
+                 _notif_svc.set_db(db_factory)
+-                await _notif_svc.sync_from_db()
+                 logger.info("notification_service_db_wired")
+ 
+             # Wire DB into MFAStore for persistent TOTP secret + recovery-code storage
+diff --git a/agent-verse-backend/app/services/notification_service.py b/agent-verse-backend/app/services/notification_service.py
+index 1b222fe60..d15b76020 100644
+--- a/agent-verse-backend/app/services/notification_service.py
++++ b/agent-verse-backend/app/services/notification_service.py
+@@ -7,6 +7,7 @@ Uses only open-source libraries (httpx).
+ 
+ from __future__ import annotations
+ 
++import asyncio
+ import json
+ from dataclasses import dataclass, field
+ from typing import Any
+@@ -36,61 +37,116 @@ class NotificationService:
+     def __init__(self) -> None:
+         self._channels: dict[str, list[NotificationChannel]] = {}
+         self._db: Any = None
++        # Tenants whose persisted channels have been hydrated into the cache.
++        self._loaded_tenants: set[str] = set()
++        # Strong refs for the legacy fire-and-forget writes: asyncio only keeps
++        # weak refs to tasks, so an unreferenced write could be GC'd mid-flight.
++        self._bg_tasks: set[asyncio.Task[Any]] = set()
+ 
+     def set_db(self, db_factory: Any) -> None:
+-        """Wire in async SQLAlchemy session factory (called during lifespan)."""
+-        self._db = db_factory
++        """Wire in async SQLAlchemy session factory (called during lifespan).
+ 
+-    async def sync_from_db(self, tenant_id: str | None = None) -> None:
+-        """Load persisted channels from DB into the in-memory cache."""
+-        if self._db is None:
++        Only the request-path (tenant-RLS) factory belongs here. There is no
++        startup warm-up any more: channels are hydrated lazily, per tenant, under
++        that tenant's RLS context (see ``ensure_tenant_loaded``).
++        """
++        self._db = db_factory
++        self._loaded_tenants.clear()
++
++    async def ensure_tenant_loaded(self, tenant_id: str) -> None:
++        """Hydrate *tenant_id*'s persisted channels once per process (idempotent)."""
++        if self._db is None or not tenant_id or tenant_id in self._loaded_tenants:
+             return
++        if await self.sync_from_db(tenant_id):
++            self._loaded_tenants.add(tenant_id)
++
++    async def sync_from_db(self, tenant_id: str | None = None) -> bool:
++        """Load one tenant's persisted channels into the in-memory cache.
++
++        Runs inside a transaction with the tenant GUC set, plus an explicit
++        ``tenant_id`` predicate. The previous no-argument form was a cross-tenant
++        startup scan issued WITHOUT the GUC: under the NOBYPASSRLS application
++        role the FORCE'd ``notification_channels`` policy filtered it down to
++        zero rows, so no channel ever survived a restart. A call without a
++        tenant is now a no-op. Returns True when the load succeeded.
++        """
++        if self._db is None:
++            return False
++        if not tenant_id:
++            logger.debug("notification_sync_skipped_no_tenant")
++            return False
+         try:
+             from sqlalchemy import text as _t
+ 
+-            async with self._db() as session:
+-                if tenant_id:
+-                    await session.execute(
+-                        _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+-                    )
+-                query = (
+-                    "SELECT channel_id, tenant_id, channel_type, config, enabled"
+-                    " FROM notification_channels"
++            from app.db.rls import sqlalchemy_rls_context
++
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
++                result = await session.execute(
++                    _t(
++                        "SELECT channel_id, tenant_id, channel_type, config, enabled"
++                        " FROM notification_channels WHERE tenant_id = :tid"
++                    ),
++                    {"tid": tenant_id},
+                 )
+-                params: dict[str, Any] = {}
+-                if tenant_id:
+-                    query += " WHERE tenant_id = :tid"
+-                    params["tid"] = tenant_id
+-                result = await session.execute(_t(query), params)
+-                for row in result.fetchall():
+-                    ch = NotificationChannel(
+-                        channel_id=row[0],
+-                        tenant_id=row[1],
+-                        channel_type=row[2],
+-                        config=row[3] or {},
+-                        enabled=row[4],
+-                    )
+-                    self._channels.setdefault(row[1], [])
+-                    if not any(c.channel_id == ch.channel_id for c in self._channels[row[1]]):
+-                        self._channels[row[1]].append(ch)
++                rows = result.fetchall()
++            for row in rows:
++                if row[1] != tenant_id:  # defense in depth: never cache a foreign row
++                    continue
++                ch = NotificationChannel(
++                    channel_id=row[0],
++                    tenant_id=row[1],
++                    channel_type=row[2],
++                    config=row[3] or {},
++                    enabled=row[4],
++                )
++                cached = self._channels.setdefault(tenant_id, [])
++                if not any(c.channel_id == ch.channel_id for c in cached):
++                    cached.append(ch)
++            return True
+         except Exception as exc:
+-            logger.warning("notification_sync_failed", error=str(exc))
++            logger.warning("notification_sync_failed", tenant_id=tenant_id, error=str(exc))
++            return False
++
++    def _spawn(self, coro: Any) -> None:
++        task = asyncio.create_task(coro)
++        self._bg_tasks.add(task)
++        task.add_done_callback(self._bg_tasks.discard)
+ 
+     def add_channel(self, channel: NotificationChannel) -> None:
++        """Cache a channel and persist it in the background (legacy sync API).
++
++        Request paths should prefer ``add_channel_async`` so the row exists
++        before the caller is told it was created.
++        """
+         self._channels.setdefault(channel.tenant_id, []).append(channel)
+         if self._db is not None:
+-            import asyncio
++            self._spawn(self._persist_channel(channel))
+ 
+-            asyncio.create_task(self._persist_channel(channel))  # noqa: RUF006
++    async def add_channel_async(self, channel: NotificationChannel) -> None:
++        """Cache a channel and persist it before returning."""
++        await self.ensure_tenant_loaded(channel.tenant_id)
++        self._channels.setdefault(channel.tenant_id, []).append(channel)
++        if self._db is not None:
++            await self._persist_channel(channel)
+ 
+     async def _persist_channel(self, channel: NotificationChannel) -> None:
+-        """Persist a channel to the DB (fire-and-forget)."""
++        """Persist a channel to the DB under its tenant's RLS context."""
+         try:
+             import json as _json
+ 
+             from sqlalchemy import text as _t
+ 
+-            async with self._db() as session, session.begin():
++            from app.db.rls import sqlalchemy_rls_context
++
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, channel.tenant_id),
++            ):
+                 await session.execute(
+                     _t("""
+                     INSERT INTO notification_channels
+@@ -98,6 +154,7 @@ class NotificationService:
+                     VALUES (:cid, :tid, :ctype, CAST(:cfg AS jsonb), :enabled)
+                     ON CONFLICT (channel_id) DO UPDATE
+                         SET config = EXCLUDED.config, enabled = EXCLUDED.enabled
++                        WHERE notification_channels.tenant_id = EXCLUDED.tenant_id
+                 """),
+                     {
+                         "cid": channel.channel_id,
+@@ -114,28 +171,51 @@ class NotificationService:
+         return [c for c in self._channels.get(tenant_id, []) if c.enabled]
+ 
+     def remove_channel(self, channel_id: str, tenant_id: str) -> bool:
++        """Remove a cached channel and delete it in the background (legacy sync API)."""
+         channels = self._channels.get(tenant_id, [])
+         before = len(channels)
+         self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
+         removed = len(self._channels[tenant_id]) < before
+         if removed and self._db is not None:
+-            import asyncio
+-
+-            asyncio.create_task(self._delete_channel(channel_id))  # noqa: RUF006
++            self._spawn(self._delete_channel(channel_id, tenant_id))
+         return removed
+ 
+-    async def _delete_channel(self, channel_id: str) -> None:
+-        """Remove a channel from the DB (fire-and-forget)."""
++    async def remove_channel_async(self, channel_id: str, tenant_id: str) -> bool:
++        """Remove a channel from the cache and the DB; True if it existed for *tenant_id*."""
++        await self.ensure_tenant_loaded(tenant_id)
++        channels = self._channels.get(tenant_id, [])
++        before = len(channels)
++        self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
++        removed = len(self._channels[tenant_id]) < before
++        if self._db is not None:
++            deleted = await self._delete_channel(channel_id, tenant_id)
++            removed = removed or deleted
++        return removed
++
++    async def _delete_channel(self, channel_id: str, tenant_id: str) -> bool:
++        """Delete a channel row under its tenant's RLS context; True if a row went."""
+         try:
+             from sqlalchemy import text as _t
+ 
+-            async with self._db() as session, session.begin():
+-                await session.execute(
+-                    _t("DELETE FROM notification_channels WHERE channel_id = :cid"),
+-                    {"cid": channel_id},
++            from app.db.rls import sqlalchemy_rls_context
++
++            async with (
++                self._db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
++                result = await session.execute(
++                    _t(
++                        "DELETE FROM notification_channels"
++                        " WHERE channel_id = :cid AND tenant_id = :tid"
++                    ),
++                    {"cid": channel_id, "tid": tenant_id},
+                 )
++            rowcount = getattr(result, "rowcount", 0)
++            return isinstance(rowcount, int) and rowcount > 0
+         except Exception as exc:
+             logger.warning("notification_delete_failed", error=str(exc))
++            return False
+ 
+     async def notify_approval_required(
+         self,
+@@ -148,6 +228,7 @@ class NotificationService:
+         approval_token: str = "",
+     ) -> dict[str, Any]:
+         """Send notification to all tenant channels."""
++        await self.ensure_tenant_loaded(tenant_id)
+         channels = self.get_channels(tenant_id)
+         if not channels:
+             return {"sent": 0, "channels": []}
+@@ -208,6 +289,7 @@ class NotificationService:
+ 
+         Called from HITLGateway.expire_timed_out_requests() for each expired request.
+         """
++        await self.ensure_tenant_loaded(tenant_id)
+         channels = self.get_channels(tenant_id)
+         if not channels:
+             return {"sent": 0, "channels": []}
+@@ -239,6 +321,7 @@ class NotificationService:
+ 
+     async def notify_goal_complete(self, *, goal_id: str, status: str, tenant_id: str) -> None:
+         """Notify when a goal reaches a terminal state."""
++        await self.ensure_tenant_loaded(tenant_id)
+         channels = self.get_channels(tenant_id)
+         message = {
+             "type": "goal_terminal",
+diff --git a/agent-verse-backend/tests/api/test_governance_comprehensive2.py b/agent-verse-backend/tests/api/test_governance_comprehensive2.py
+index 5f1622ec3..ebf077f18 100644
+--- a/agent-verse-backend/tests/api/test_governance_comprehensive2.py
++++ b/agent-verse-backend/tests/api/test_governance_comprehensive2.py
+@@ -6,7 +6,7 @@ Targets: 60% → 80%+ coverage on app/api/governance.py
+ from __future__ import annotations
+ 
+ from typing import Any
+-from unittest.mock import MagicMock
++from unittest.mock import AsyncMock, MagicMock
+ 
+ from fastapi import FastAPI
+ from fastapi.testclient import TestClient
+@@ -226,14 +226,17 @@ def test_list_notifications_with_service() -> None:
+         config={},
+     )
+     svc.get_channels.return_value = [ch]
++    svc.ensure_tenant_loaded = AsyncMock()
+     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
+     resp = client.get("/governance/notifications", headers={"X-API-Key": _VALID_KEY})
+     assert resp.status_code == 200
++    # The listing hydrates the caller's persisted channels (RLS-scoped) first.
++    svc.ensure_tenant_loaded.assert_awaited_once_with(_CTX.tenant_id)
+ 
+ 
+ def test_create_notification_channel_with_service() -> None:
+     svc = MagicMock()
+-    svc.add_channel.return_value = None
++    svc.add_channel_async = AsyncMock(return_value=None)
+     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
+     resp = client.post(
+         "/governance/notifications",
+@@ -241,6 +244,9 @@ def test_create_notification_channel_with_service() -> None:
+         headers={"X-API-Key": _VALID_KEY},
+     )
+     assert resp.status_code == 201
++    # Persistence is awaited (not fire-and-forget) and scoped to the caller.
++    svc.add_channel_async.assert_awaited_once()
++    assert svc.add_channel_async.await_args.args[0].tenant_id == _CTX.tenant_id
+ 
+ 
+ def test_delete_notification_channel_no_service() -> None:
+diff --git a/agent-verse-backend/tests/api/test_governance_extra3.py b/agent-verse-backend/tests/api/test_governance_extra3.py
+index 4e4de787b..b9672f03c 100644
+--- a/agent-verse-backend/tests/api/test_governance_extra3.py
++++ b/agent-verse-backend/tests/api/test_governance_extra3.py
+@@ -303,7 +303,7 @@ def test_delete_notification_channel_no_service() -> None:
+ def test_delete_notification_channel_not_found() -> None:
+     """Lines 722-723: channel not found → 404."""
+     svc = MagicMock()
+-    svc.remove_channel = MagicMock(return_value=False)
++    svc.remove_channel_async = AsyncMock(return_value=False)
+ 
+     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
+     resp = client.delete("/governance/notifications/missing-id", headers=_headers())
+@@ -313,7 +313,7 @@ def test_delete_notification_channel_not_found() -> None:
+ def test_delete_notification_channel_success() -> None:
+     """Lines 722-723: channel found and removed → 204."""
+     svc = MagicMock()
+-    svc.remove_channel = MagicMock(return_value=True)
++    svc.remove_channel_async = AsyncMock(return_value=True)
+ 
+     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
+     resp = client.delete("/governance/notifications/ch-1", headers=_headers())
+@@ -884,7 +884,7 @@ def test_create_notification_channel_with_service() -> None:
+     added = []
+ 
+     svc = MagicMock()
+-    svc.add_channel = MagicMock(side_effect=lambda ch: added.append(ch))
++    svc.add_channel_async = AsyncMock(side_effect=lambda ch: added.append(ch))
+     svc.get_channels = MagicMock(return_value=added)
+ 
+     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
+diff --git a/agent-verse-backend/tests/api/test_skills_runtime.py b/agent-verse-backend/tests/api/test_skills_runtime.py
+index e036d0c59..17d0d7aae 100644
+--- a/agent-verse-backend/tests/api/test_skills_runtime.py
++++ b/agent-verse-backend/tests/api/test_skills_runtime.py
+@@ -704,9 +704,9 @@ async def test_db_save_skill_executes_insert() -> None:
+ 
+     await _db_save_skill(skill_dict, db_factory)
+ 
+-    # session.execute is called once for the RLS `system_session` context manager
+-    # (SET LOCAL) and once for the actual INSERT — assert the INSERT happened by
+-    # checking for the call carrying the bound INSERT params.
++    # session.execute is called for the tenant RLS context (set_config) and for
++    # the actual INSERT — assert the INSERT happened by checking for the call
++    # carrying the bound INSERT params.
+     assert session.execute.await_count >= 1
+     insert_calls = [
+         call
+@@ -715,6 +715,57 @@ async def test_db_save_skill_executes_insert() -> None:
+     ]
+     assert len(insert_calls) == 1
+     assert insert_calls[0].args[1]["name"] == "Persisted"
++    assert insert_calls[0].args[1]["tenant_id"] == "tenant-x"
++    # asyncpg binds timestamptz only from a datetime, never the cached ISO string.
++    import datetime as _dt
++
++    assert isinstance(insert_calls[0].args[1]["created_at"], _dt.datetime)
++
++
++async def test_db_save_skill_runs_under_tenant_rls_not_system_session() -> None:
++    """Request path: the write must set the owning tenant's GUC and must NEVER
++    switch RLS off (``system_session``) — under the NOBYPASSRLS role that made
++    every insert fail, and under a BYPASSRLS role it is a privilege escalation."""
++    from app.api.skills_runtime import _db_save_skill
++
++    session = AsyncMock()
++    session.__aenter__ = AsyncMock(return_value=session)
++    session.__aexit__ = AsyncMock(return_value=False)
++    session.begin = MagicMock()
++    session.begin.return_value.__aenter__ = AsyncMock(return_value=None)
++    session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
++    session.execute = AsyncMock()
++    db_factory = MagicMock(return_value=session)
++
++    await _db_save_skill(
++        {
++            "skill_id": str(uuid.uuid4()),
++            "tenant_id": "tenant-rls",
++            "name": "n",
++            "description": "d",
++            "created_at": "2024-01-01T00:00:00Z",
++        },
++        db_factory,
++    )
++
++    stmts = [str(c.args[0]) for c in session.execute.await_args_list]
++    assert not any("row_security" in st for st in stmts), stmts
++    guc = [c for c in session.execute.await_args_list if "set_config('app.tenant_id'" in str(c.args[0])]
++    assert guc and guc[0].args[1] == {"tid": "tenant-rls"}
++    # GUC is set BEFORE the insert.
++    first_insert = next(i for i, st in enumerate(stmts) if "INSERT INTO skills" in st)
++    first_guc = next(i for i, st in enumerate(stmts) if "set_config('app.tenant_id'" in st)
++    assert first_guc < first_insert
++    # Defense in depth: the upsert can never rewrite another tenant's row.
++    assert "WHERE skills.tenant_id = EXCLUDED.tenant_id" in stmts[first_insert]
++
++
++async def test_db_save_skill_without_tenant_is_skipped() -> None:
++    from app.api.skills_runtime import _db_save_skill
++
++    db_factory = MagicMock()
++    await _db_save_skill({"skill_id": "x", "name": "n", "description": "d"}, db_factory)
++    db_factory.assert_not_called()
+ 
+ 
+ async def test_db_save_skill_swallows_exception() -> None:
+@@ -767,6 +818,12 @@ async def test_load_tenant_skills_from_db_populates_cache() -> None:
+     await _load_tenant_skills_from_db(tenant_id, db_factory)
+ 
+     assert tenant_id in _loaded_tenants
++    # The SELECT runs under this tenant's RLS GUC.
++    guc = [
++        c for c in session.execute.await_args_list
++        if "set_config('app.tenant_id'" in str(c.args[0])
++    ]
++    assert guc and guc[0].args[1] == {"tid": tenant_id}
+     loaded = _tenant_skills.get(tenant_id, [])
+     assert any(s["name"] == "Loaded From DB" for s in loaded)
+ 
+diff --git a/agent-verse-backend/tests/services/test_notification_service_comprehensive.py b/agent-verse-backend/tests/services/test_notification_service_comprehensive.py
+index b72533c04..04225e2f3 100644
+--- a/agent-verse-backend/tests/services/test_notification_service_comprehensive.py
++++ b/agent-verse-backend/tests/services/test_notification_service_comprehensive.py
+@@ -307,10 +307,45 @@ class TestSendInternal:
+ 
+ # ── sync_from_db ──────────────────────────────────────────────────────────────
+ 
++
++def _fake_factory(session: AsyncMock):
++    """Session factory whose sessions support ``async with session.begin()``."""
++
++    @asynccontextmanager
++    async def _begin():
++        yield None
++
++    session.begin = MagicMock(side_effect=lambda: _begin())
++
++    @asynccontextmanager
++    async def factory():
++        yield session
++
++    return factory
++
++
++def _sql_calls(session: AsyncMock) -> list[tuple[str, dict]]:
++    out = []
++    for call in session.execute.await_args_list:
++        stmt = str(call.args[0])
++        params = call.args[1] if len(call.args) > 1 else {}
++        out.append((stmt, params))
++    return out
++
++
+ class TestSyncFromDb:
+     async def test_sync_no_db_noop(self) -> None:
+         svc = NotificationService()
+-        await svc.sync_from_db()  # no exception
++        assert await svc.sync_from_db("t1") is False  # no exception
++
++    async def test_sync_without_tenant_is_a_noop_not_a_cross_tenant_scan(self) -> None:
++        """The old startup form scanned every tenant WITHOUT the RLS GUC, which
++        the NOBYPASSRLS role filters to zero rows. It must not touch the DB."""
++        mock_session = AsyncMock()
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        assert await svc.sync_from_db() is False
++        mock_session.execute.assert_not_awaited()
+ 
+     async def test_sync_from_db_loads_channels(self) -> None:
+         rows = [("ch-db", "t1", "slack", {"webhook_url": "https://h.slack.com"}, True)]
+@@ -320,17 +355,34 @@ class TestSyncFromDb:
+         mock_session = AsyncMock()
+         mock_session.execute = AsyncMock(return_value=mock_result)
+ 
+-        @asynccontextmanager
+-        async def factory():
+-            yield mock_session
+-
+         svc = NotificationService()
+-        svc.set_db(factory)
+-        await svc.sync_from_db()
++        svc.set_db(_fake_factory(mock_session))
++        assert await svc.sync_from_db("t1") is True
+         channels = svc.get_channels("t1")
+         assert len(channels) == 1
+         assert channels[0].channel_id == "ch-db"
+ 
++        # Tenant GUC set before the SELECT, and the SELECT carries a tenant predicate.
++        calls = _sql_calls(mock_session)
++        assert "set_config('app.tenant_id'" in calls[0][0]
++        assert calls[0][1] == {"tid": "t1"}
++        select = next(c for c in calls if "FROM notification_channels" in c[0])
++        assert "WHERE tenant_id = :tid" in select[0]
++        assert select[1] == {"tid": "t1"}
++
++    async def test_sync_from_db_never_caches_a_foreign_row(self) -> None:
++        rows = [("ch-x", "someone-else", "slack", {}, True)]
++        mock_result = MagicMock()
++        mock_result.fetchall.return_value = rows
++        mock_session = AsyncMock()
++        mock_session.execute = AsyncMock(return_value=mock_result)
++
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        await svc.sync_from_db("t1")
++        assert svc.get_channels("t1") == []
++        assert svc.get_channels("someone-else") == []
++
+     async def test_sync_from_db_deduplicates(self) -> None:
+         rows = [("ch-db", "t1", "slack", {"webhook_url": "https://s.com"}, True)]
+         mock_result = MagicMock()
+@@ -339,14 +391,10 @@ class TestSyncFromDb:
+         mock_session = AsyncMock()
+         mock_session.execute = AsyncMock(return_value=mock_result)
+ 
+-        @asynccontextmanager
+-        async def factory():
+-            yield mock_session
+-
+         svc = NotificationService()
+-        svc.set_db(factory)
+-        await svc.sync_from_db()
+-        await svc.sync_from_db()  # second sync should not duplicate
++        svc.set_db(_fake_factory(mock_session))
++        await svc.sync_from_db("t1")
++        await svc.sync_from_db("t1")  # second sync should not duplicate
+         channels = svc.get_channels("t1")
+         assert len(channels) == 1
+ 
+@@ -354,10 +402,100 @@ class TestSyncFromDb:
+         mock_session = AsyncMock()
+         mock_session.execute = AsyncMock(side_effect=Exception("DB error"))
+ 
+-        @asynccontextmanager
+-        async def factory():
+-            yield mock_session
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        assert await svc.sync_from_db("t1") is False  # must not raise
++
++
++class TestLazyTenantHydration:
++    async def test_ensure_tenant_loaded_runs_once_per_tenant(self) -> None:
++        mock_result = MagicMock()
++        mock_result.fetchall.return_value = [("c1", "t1", "webhook", {}, True)]
++        mock_session = AsyncMock()
++        mock_session.execute = AsyncMock(return_value=mock_result)
+ 
+         svc = NotificationService()
+-        svc.set_db(factory)
+-        await svc.sync_from_db()  # must not raise
++        svc.set_db(_fake_factory(mock_session))
++        await svc.ensure_tenant_loaded("t1")
++        first = mock_session.execute.await_count
++        await svc.ensure_tenant_loaded("t1")
++        assert mock_session.execute.await_count == first  # cached
++        assert [c.channel_id for c in svc.get_channels("t1")] == ["c1"]
++
++    async def test_failed_load_is_retried(self) -> None:
++        mock_session = AsyncMock()
++        mock_session.execute = AsyncMock(side_effect=Exception("down"))
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        await svc.ensure_tenant_loaded("t1")
++        assert "t1" not in svc._loaded_tenants
++
++    async def test_notify_hydrates_the_tenant_before_dispatch(self) -> None:
++        """A channel persisted by another replica must still be notified."""
++        mock_result = MagicMock()
++        mock_result.fetchall.return_value = [
++            ("c1", "t1", "webhook", {"url": "https://hook.example.com"}, True)
++        ]
++        mock_session = AsyncMock()
++        mock_session.execute = AsyncMock(return_value=mock_result)
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        with patch.object(svc, "_send", new=AsyncMock()) as send:
++            result = await svc.notify_approval_required(
++                request_id="r1", goal_id="g1", action="deploy", risk_level="high",
++                tenant_id="t1",
++            )
++        assert result["sent"] == 1
++        send.assert_awaited_once()
++
++
++class TestPersistenceUnderRls:
++    async def test_add_channel_async_persists_under_tenant_guc(self) -> None:
++        mock_session = AsyncMock()
++        mock_session.execute = AsyncMock(return_value=MagicMock(fetchall=lambda: []))
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        await svc.add_channel_async(_webhook_channel(channel_id="c9", tenant_id="t1"))
++
++        calls = _sql_calls(mock_session)
++        insert_idx = next(i for i, c in enumerate(calls) if "INSERT INTO notification_channels" in c[0])
++        # The GUC for THIS tenant is the statement immediately before the INSERT.
++        assert "set_config('app.tenant_id'" in calls[insert_idx - 1][0]
++        assert calls[insert_idx - 1][1] == {"tid": "t1"}
++        assert calls[insert_idx][1]["tid"] == "t1"
++        assert "WHERE notification_channels.tenant_id = EXCLUDED.tenant_id" in calls[insert_idx][0]
++        assert [c.channel_id for c in svc.get_channels("t1")] == ["c9"]
++
++    async def test_remove_channel_async_deletes_with_tenant_predicate(self) -> None:
++        delete_result = MagicMock(rowcount=1)
++        load_result = MagicMock()
++        load_result.fetchall.return_value = []
++        mock_session = AsyncMock()
++
++        async def _execute(stmt, params=None):
++            return delete_result if "DELETE" in str(stmt) else load_result
++
++        mock_session.execute = AsyncMock(side_effect=_execute)
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        # Not in this replica's cache, but present in the DB → still removed.
++        assert await svc.remove_channel_async("c-remote", "t1") is True
++
++        calls = _sql_calls(mock_session)
++        delete_idx = next(i for i, c in enumerate(calls) if "DELETE FROM" in c[0])
++        assert "tenant_id = :tid" in calls[delete_idx][0]
++        assert calls[delete_idx][1] == {"cid": "c-remote", "tid": "t1"}
++        assert calls[delete_idx - 1][1] == {"tid": "t1"}  # GUC for this tenant
++
++    async def test_remove_channel_async_foreign_id_is_not_found(self) -> None:
++        mock_session = AsyncMock()
++        load_result = MagicMock()
++        load_result.fetchall.return_value = []
++
++        async def _execute(stmt, params=None):
++            return MagicMock(rowcount=0) if "DELETE" in str(stmt) else load_result
++
++        mock_session.execute = AsyncMock(side_effect=_execute)
++        svc = NotificationService()
++        svc.set_db(_fake_factory(mock_session))
++        assert await svc.remove_channel_async("someone-elses", "t1") is False

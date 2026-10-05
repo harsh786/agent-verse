@@ -1,0 +1,1216 @@
+diff --git a/agent-verse-backend/app/db/migrations/versions/e3d7f9b1c5a2_ingestion_live_listings.py b/agent-verse-backend/app/db/migrations/versions/e3d7f9b1c5a2_ingestion_live_listings.py
+new file mode 100644
+index 000000000..8e9e1ee28
+--- /dev/null
++++ b/agent-verse-backend/app/db/migrations/versions/e3d7f9b1c5a2_ingestion_live_listings.py
+@@ -0,0 +1,57 @@
++"""ingestion_live_listings: staged upstream listings for deletion reconciliation (KB-44).
++
++Every successful object-store sync listed the WHOLE bucket into a Python set
++and walked every indexed document against it: O(objects) memory per sync. The
++reconciler now streams the upstream listing into this table in bounded batches
++(one ``run_id`` per run) and lets Postgres find the indexed documents that are
++not listed (an indexed anti-join, keyset-paged), so process memory stays
++bounded at any bucket size. Rows live only for one run (deleted at its end;
++leftovers of a crashed run are purged by the next one).
++
++UNLOGGED: the rows are scratch data rebuilt on every run, so they skip WAL.
++RLS enabled and FORCEd with the standard tenant policy.
++
++Revision ID: e3d7f9b1c5a2
++Revises: e2c6d8a0b4f1
++Create Date: 2026-10-02
++"""
++
++from __future__ import annotations
++
++from collections.abc import Sequence
++
++from alembic import op
++
++revision: str = "e3d7f9b1c5a2"
++down_revision: str | None = "e2c6d8a0b4f1"
++branch_labels: str | Sequence[str] | None = None
++depends_on: str | Sequence[str] | None = None
++
++
++def upgrade() -> None:
++    op.execute(
++        """
++        CREATE UNLOGGED TABLE IF NOT EXISTS ingestion_live_listings (
++            tenant_id  VARCHAR(255) NOT NULL,
++            run_id     VARCHAR(64)  NOT NULL,
++            doc_id     TEXT         NOT NULL,
++            created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
++            PRIMARY KEY (tenant_id, run_id, doc_id)
++        )
++        """
++    )
++    op.execute(
++        "CREATE INDEX IF NOT EXISTS ix_ingestion_live_listings_created "
++        "ON ingestion_live_listings (tenant_id, created_at)"
++    )
++    op.execute("ALTER TABLE ingestion_live_listings ENABLE ROW LEVEL SECURITY")
++    op.execute("ALTER TABLE ingestion_live_listings FORCE ROW LEVEL SECURITY")
++    op.execute(
++        "CREATE POLICY ingestion_live_listings_tenant_isolation ON ingestion_live_listings "
++        "USING (tenant_id = current_setting('app.tenant_id', TRUE)) "
++        "WITH CHECK (tenant_id = current_setting('app.tenant_id', TRUE))"
++    )
++
++
++def downgrade() -> None:
++    op.execute("DROP TABLE IF EXISTS ingestion_live_listings")
+diff --git a/agent-verse-backend/app/ingestion/base_connector.py b/agent-verse-backend/app/ingestion/base_connector.py
+index 2830fc159..16b176da0 100644
+--- a/agent-verse-backend/app/ingestion/base_connector.py
++++ b/agent-verse-backend/app/ingestion/base_connector.py
+@@ -51,6 +51,10 @@ def row_identity(row: dict[str, Any], id_column: str | None = None) -> str:
+     return f"row-sha256={digest}"
+ 
+ 
++class LiveListingUnavailableError(RuntimeError):
++    """The connector cannot list what exists upstream: never delete anything."""
++
++
+ class ConnectorUnavailableError(RuntimeError):
+     """The connector cannot run at all (e.g. its SDK is not installed).
+ 
+@@ -228,6 +232,23 @@ class BaseConnector(ABC):
+         """
+         return None
+ 
++    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
++        """Stream every document id that currently exists upstream (any order).
++
++        The upstream-deletion reconciler consumes this page by page and stages
++        the ids in Postgres in bounded batches, so a million-object bucket never
++        sits in process memory. Object-store connectors override it to stream
++        their paginated key listing. The default adapts :meth:`list_live_doc_ids`
++        (fine for small listings) and raises :class:`LiveListingUnavailableError`
++        when the connector cannot know. Errors must propagate — a partial
++        listing must never look complete.
++        """
++        live = await self.list_live_doc_ids(config)
++        if live is None:
++            raise LiveListingUnavailableError(type(self).__name__)
++        for doc_id in live:
++            yield doc_id
++
+     def manages_doc_id(self, doc_id: str) -> bool:
+         """True for ids this connector's *current* id scheme produces.
+ 
+diff --git a/agent-verse-backend/app/ingestion/connectors/azure_blob_connector.py b/agent-verse-backend/app/ingestion/connectors/azure_blob_connector.py
+index 9eb1992c6..96d01d8bf 100644
+--- a/agent-verse-backend/app/ingestion/connectors/azure_blob_connector.py
++++ b/agent-verse-backend/app/ingestion/connectors/azure_blob_connector.py
+@@ -23,6 +23,7 @@ from app.ingestion.connector_egress import (
+     run_driver_call,
+ )
+ from app.ingestion.connector_registry import register
++from app.ingestion.sdk_executor import iterate_blocking
+ 
+ if TYPE_CHECKING:
+     from app.ingestion.source_config import RawDocument, SourceConfig
+@@ -181,8 +182,12 @@ class AzureBlobConnector(BaseConnector):
+             async for item in self._iter_blobs(config, cursor):
+                 yield item
+ 
+-    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+-        """Every blob under the configured prefix/patterns (upstream deletions)."""
++    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
++        """Stream every blob under the configured prefix/patterns (KB-44).
++
++        ``list_blobs`` pages lazily; each page is pulled egress-checked on the
++        SDK pool and yielded as it arrives — never the whole container at once.
++        """
+         from azure.storage.blob import BlobServiceClient
+ 
+         cc = config.connection_config
+@@ -198,15 +203,17 @@ class AzureBlobConnector(BaseConnector):
+                 )
+             container_client = service.get_container_client(container)
+ 
+-            def _names() -> list[str]:
+-                return [b.name for b in container_client.list_blobs(name_starts_with=prefix)]
++            async def _run(func: Any, *args: Any) -> Any:
++                return await run_driver_call(func, *args, context="azure_blob")
+ 
+-            names = await run_driver_call(_names, context="azure_blob")
+-        return {
+-            stable_doc_id(config, container, name)
+-            for name in names
+-            if self._matches(name, config.include_patterns, config.exclude_patterns)
+-        }
++            blobs = container_client.list_blobs(name_starts_with=prefix)
++            async for blob in iterate_blocking(blobs, chunk_size=1000, runner=_run):
++                if self._matches(blob.name, config.include_patterns, config.exclude_patterns):
++                    yield stable_doc_id(config, container, blob.name)
++
++    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
++        """The live listing as a set (small containers / tests; reconciliation streams)."""
++        return {doc_id async for doc_id in self.iter_live_doc_ids(config)}
+ 
+     async def _iter_blobs(
+         self, config: SourceConfig, cursor: str | None
+diff --git a/agent-verse-backend/app/ingestion/connectors/gcs_connector.py b/agent-verse-backend/app/ingestion/connectors/gcs_connector.py
+index e0b4b1fab..d67fc228c 100644
+--- a/agent-verse-backend/app/ingestion/connectors/gcs_connector.py
++++ b/agent-verse-backend/app/ingestion/connectors/gcs_connector.py
+@@ -82,24 +82,26 @@ class GCSConnector(BaseConnector):
+         except Exception as exc:
+             return ConnectionHealth(ok=False, error=str(exc))
+ 
+-    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+-        """Every blob under the configured prefix/patterns (upstream deletions)."""
++    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
++        """Stream every blob under the configured prefix/patterns (KB-44).
++
++        ``list_blobs`` pages lazily; pages are pulled on the SDK pool and yielded
++        as they arrive, so the bucket is never materialised in memory.
++        """
+         from google.cloud import storage
+ 
+         creds_json = config.connection_config.get("service_account_json")
+         bucket_name = config.connection_config.get("bucket", "")
+         prefix = config.connection_config.get("prefix", "")
++        client = await run_blocking(_make_client, storage, creds_json)
++        blobs = client.list_blobs(bucket_name, prefix=prefix)
++        async for blob in iterate_blocking(blobs, chunk_size=1000):
++            if self._matches(blob.name, config.include_patterns, config.exclude_patterns):
++                yield stable_doc_id(config, f"gs://{bucket_name}/{blob.name}")
+ 
+-        def _names() -> list[str]:
+-            client = _make_client(storage, creds_json)
+-            return [blob.name for blob in client.list_blobs(bucket_name, prefix=prefix)]
+-
+-        names = await run_blocking(_names)
+-        return {
+-            stable_doc_id(config, f"gs://{bucket_name}/{name}")
+-            for name in names
+-            if self._matches(name, config.include_patterns, config.exclude_patterns)
+-        }
++    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
++        """The live listing as a set (small buckets / tests; reconciliation streams)."""
++        return {doc_id async for doc_id in self.iter_live_doc_ids(config)}
+ 
+     async def get_delta(
+         self, config: SourceConfig, cursor: str | None
+diff --git a/agent-verse-backend/app/ingestion/connectors/s3_connector.py b/agent-verse-backend/app/ingestion/connectors/s3_connector.py
+index 61e32380b..2a47e05eb 100644
+--- a/agent-verse-backend/app/ingestion/connectors/s3_connector.py
++++ b/agent-verse-backend/app/ingestion/connectors/s3_connector.py
+@@ -319,8 +319,13 @@ class S3Connector(BaseConnector):
+ 
+                 yield raw, new_cursor
+ 
+-    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
+-        """Every object key under the configured prefix/patterns (upstream deletions)."""
++    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
++        """Stream every object key under the configured prefix/patterns (KB-44).
++
++        ListObjectsV2 pages (1,000 keys each) are pulled one at a time on the SDK
++        pool and yielded as they arrive — the whole bucket is never held in
++        memory. A listing error propagates (never a partial "complete" set).
++        """
+         import boto3
+ 
+         cc = config.connection_config
+@@ -328,26 +333,28 @@ class S3Connector(BaseConnector):
+         prefix = cc.get("prefix", "")
+         credentials = cc.get("credentials", {})
+         async with self._pinned_endpoint(config) as endpoint_url:
++            run = self._runner(endpoint_url)
+ 
+-            def _list() -> list[str]:
++            def _client() -> Any:
+                 session = boto3.Session(
+                     aws_access_key_id=credentials.get("access_key_id"),
+                     aws_secret_access_key=credentials.get("secret_access_key"),
+                     region_name=cc.get("region", "us-east-1"),
+                 )
+-                client = session.client("s3", **self._client_kwargs(endpoint_url))
+-                keys: list[str] = []
+-                paginator = client.get_paginator("list_objects_v2")
+-                for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+-                    keys.extend(obj["Key"] for obj in page.get("Contents", []))
+-                return keys
++                return session.client("s3", **self._client_kwargs(endpoint_url))
+ 
+-            keys = await self._runner(endpoint_url)(_list)
+-        return {
+-            f"s3://{bucket}/{key}"
+-            for key in keys
+-            if self._matches_patterns(key, config.include_patterns, config.exclude_patterns)
+-        }
++            client = await run(_client)
++            pages = client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
++            async for page in iterate_blocking(pages, chunk_size=1, runner=run):
++                include, exclude = config.include_patterns, config.exclude_patterns
++                for obj in page.get("Contents", []):
++                    key = obj["Key"]
++                    if self._matches_patterns(key, include, exclude):
++                        yield f"s3://{bucket}/{key}"
++
++    async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
++        """The live listing as a set (small buckets / tests; reconciliation streams)."""
++        return {doc_id async for doc_id in self.iter_live_doc_ids(config)}
+ 
+     def manages_doc_id(self, doc_id: str) -> bool:
+         return str(doc_id).startswith("s3://")
+diff --git a/agent-verse-backend/app/ingestion/scheduler.py b/agent-verse-backend/app/ingestion/scheduler.py
+index 4c12bb137..d222f8775 100644
+--- a/agent-verse-backend/app/ingestion/scheduler.py
++++ b/agent-verse-backend/app/ingestion/scheduler.py
+@@ -14,6 +14,7 @@ LAW-17: No silent data loss — all failures land in DLQ.
+ 
+ from __future__ import annotations
+ 
++import contextlib
+ import hashlib
+ import logging
+ import random
+@@ -185,90 +186,221 @@ def _bind_worker_guardrail_rules(db_factory: object) -> None:
+         )
+ 
+ 
+-def _build_worker_legal_holds() -> object | None:
+-    """The legal-hold checker for the worker (the API wires its own in lifespan)."""
+-    from app.db.session import get_session_factory
+-    from app.governance.legal_holds import LegalHoldManager
++# ── Upstream-deletion reconciliation (KB-44) ─────────────────────────────────
++# Runs as its OWN task, at most once per interval per Source (it used to run
++# after every delta sync, listing the whole bucket each time). The upstream
++# listing is streamed into Postgres in bounded batches and diffed there, so
++# memory stays bounded at any bucket size; deletes are capped per run (the next
++# run continues) and batched, with one legal-hold query per page.
+ 
+-    return LegalHoldManager(redis=None, db_factory=get_session_factory())
++_RECONCILE_PAGE = 1000  # indexed documents compared per query
++_RECONCILE_STAGE_BATCH = 1000  # upstream ids staged per INSERT
++_RECONCILE_MAX_DELETES = 10_000  # documents deleted per run at most
++_RECONCILE_INTERVAL_SECONDS = 24 * 3600
++_RECONCILE_MIN_INTERVAL_SECONDS = 3600
++_RECONCILE_GATE = "ingestion:reconcile:due:{tenant}:{source}"
+ 
+ 
+-_RECONCILE_PAGE = 500
++def _reconcile_interval(config: Any) -> int:
++    raw = (config.connection_config or {}).get("reconcile_interval_seconds")
++    try:
++        value = int(raw) if raw is not None else _RECONCILE_INTERVAL_SECONDS
++    except (TypeError, ValueError):
++        value = _RECONCILE_INTERVAL_SECONDS
++    return max(_RECONCILE_MIN_INTERVAL_SECONDS, value)
+ 
+ 
+-async def _reconcile_upstream_deletions(connector: Any, config: Any, pipeline: Any) -> int:
++def _gate_redis() -> Any:
++    """The shared Redis the reconcile due-gate lives in, or None when not configured."""
++    import os
++
++    if not any(
++        os.getenv(name) for name in ("REDIS_URL", "REDIS_SENTINEL_URLS", "REDIS_CLUSTER_NODES")
++    ):
++        return None
++    from app.net.redis_factory import get_redis_kwargs, make_async_redis
++
++    return make_async_redis(**get_redis_kwargs(), socket_timeout=5)
++
++
++async def _schedule_reconcile_if_due(connector: Any, config: Any) -> bool:
++    """Enqueue ``ingestion.reconcile_source`` when this Source's interval has passed.
++
++    The due-gate is a shared Redis ``SET NX EX <interval>`` (every worker sees
++    it). No Redis, or a connector that cannot list upstream: nothing is
++    scheduled — and nothing is ever deleted without a reconcile run.
++    """
++    if not config.collection_id:
++        return False
++    cls = type(connector)
++    from app.ingestion.base_connector import BaseConnector
++
++    streams = getattr(cls, "iter_live_doc_ids", BaseConnector.iter_live_doc_ids)
++    lists = getattr(cls, "list_live_doc_ids", BaseConnector.list_live_doc_ids)
++    if (
++        streams is BaseConnector.iter_live_doc_ids
++        and lists is BaseConnector.list_live_doc_ids
++    ):
++        return False  # cannot list upstream: never reconciles
++    client = _gate_redis()
++    if client is None:
++        return False
++    try:
++        key = _RECONCILE_GATE.format(tenant=config.tenant_id, source=config.source_id)
++        due = await client.set(key, "1", nx=True, ex=_reconcile_interval(config))
++    except Exception as exc:
++        _log.warning("reconcile_gate_unavailable source=%s: %s", config.source_id, exc)
++        return False
++    finally:
++        close = getattr(client, "aclose", None)
++        if close is not None:
++            with contextlib.suppress(Exception):
++                await close()
++    if not due:
++        return False
++    reconcile_source_task.apply_async(
++        kwargs={"source_id": config.source_id, "tenant_id": config.tenant_id},
++        queue="ingestion",
++    )
++    return True
++
++
++async def _reconcile_upstream_deletions(
++    connector: Any,
++    config: Any,
++    pipeline: Any,
++    *,
++    max_deletes: int = _RECONCILE_MAX_DELETES,
++    page_size: int = _RECONCILE_PAGE,
++    stage_batch: int = _RECONCILE_STAGE_BATCH,
++) -> dict[str, int]:
+     """Delete this Source's indexed documents that no longer exist upstream.
+ 
+-    Runs only for connectors whose ``list_live_doc_ids`` returns an authoritative
+-    set (``None`` = cannot know → nothing is deleted). Only documents stamped
+-    with this Source's id are candidates; a document (or its collection) under
+-    legal hold is kept, and a hold that cannot be verified keeps it too (fail
+-    closed). Any listing error skips reconciliation — the sync itself stands.
+-    """
+-    try:
+-        live = await connector.list_live_doc_ids(config)
+-    except Exception as exc:
+-        _log.warning(
+-            "upstream_deletion_listing_failed source=%s: %s", config.source_id, exc
+-        )
+-        return 0
+-    store = getattr(pipeline, "_kb", None)
+-    if live is None or store is None or not config.collection_id:
+-        return 0
++    1. Stream ``connector.iter_live_doc_ids`` into ``ingestion_live_listings``
++       (``stage_batch`` ids per INSERT). A connector that cannot know, or any
++       listing error, ends the run with nothing deleted.
++    2. Keyset-page the Source's indexed documents NOT in the staged listing
++       (Postgres anti-join, ``page_size`` per query). Only ids of the
++       connector's current scheme (``manages_doc_id``) are candidates.
++    3. Per page, ONE legal-hold query: held documents (document, collection or
++       tenant-wide hold) are kept; a failed check stops the run (fail closed).
++    4. At most ``max_deletes`` deletions per run; the next run continues.
+ 
++    Returns ``{"deleted", "kept_held", "stale_seen", "truncated"}``.
++    """
++    import uuid as _uuid
++
++    from app.ingestion.base_connector import LiveListingUnavailableError
++
++    counts = {"deleted": 0, "kept_held": 0, "stale_seen": 0, "truncated": 0}
++    store = getattr(pipeline, "_kb", None)
++    if store is None or not config.collection_id:
++        return counts
+     from app.tenancy.context import PlanTier, TenantContext
+ 
+     tenant_ctx = TenantContext(
+         tenant_id=config.tenant_id, plan=PlanTier.FREE, api_key_id="ingestion"
+     )
+-    stale: list[str] = []
+-    after: str | None = None
+-    while True:
+-        rows = await store.list_source_documents_async(
+-            tenant_ctx=tenant_ctx,
+-            collection_id=config.collection_id,
+-            source_id=config.source_id,
+-            limit=_RECONCILE_PAGE,
+-            after=after,
+-        )
+-        stale.extend(
+-            str(r["id"])
+-            for r in rows
+-            if str(r["id"]) not in live and connector.manages_doc_id(str(r["id"]))
+-        )
+-        if len(rows) < _RECONCILE_PAGE:
+-            break
+-        after = str(rows[-1]["id"])
+-    if not stale:
+-        return 0
++    run_id = _uuid.uuid4().hex
++    try:
++        batch: list[str] = []
++        try:
++            async for doc_id in connector.iter_live_doc_ids(config):
++                batch.append(str(doc_id))
++                if len(batch) >= stage_batch:
++                    await store.stage_live_doc_ids_async(run_id, batch, tenant_ctx=tenant_ctx)
++                    batch = []
++            await store.stage_live_doc_ids_async(run_id, batch, tenant_ctx=tenant_ctx)
++        except LiveListingUnavailableError:
++            return counts
++        except Exception as exc:
++            _log.warning(
++                "upstream_deletion_listing_failed source=%s: %s", config.source_id, exc
++            )
++            return counts
+ 
+-    holds: Any = _build_worker_legal_holds()
+-    deleted = 0
+-    for doc_id in stale:
+-        if holds is not None:
+-            try:
+-                held = await holds.is_under_hold(
+-                    tenant_id=config.tenant_id, resource_id=doc_id
+-                ) or await holds.is_under_hold(
+-                    tenant_id=config.tenant_id, resource_id=config.collection_id
+-                )
+-            except Exception as exc:
+-                _log.warning(
+-                    "upstream_deletion_hold_unverifiable source=%s doc=%s: %s",
+-                    config.source_id, doc_id, exc,
+-                )
+-                continue
+-            if held:
+-                continue
+-        if await store.delete_document_async(
+-            doc_id, collection_id=config.collection_id, tenant_ctx=tenant_ctx
+-        ):
+-            deleted += 1
++        after: str | None = None
++        while True:
++            page = await store.list_unlisted_source_documents_async(
++                run_id,
++                tenant_ctx=tenant_ctx,
++                collection_id=config.collection_id,
++                source_id=config.source_id,
++                after=after,
++                limit=page_size,
++            )
++            if not page:
++                break
++            after = page[-1]
++            candidates = [d for d in page if connector.manages_doc_id(d)]
++            counts["stale_seen"] += len(candidates)
++            if candidates:
++                try:
++                    held = await store.held_document_ids_async(
++                        config.collection_id, candidates, tenant_ctx=tenant_ctx
++                    )
++                except Exception as exc:
++                    _log.warning(
++                        "upstream_deletion_hold_unverifiable source=%s: %s",
++                        config.source_id, exc,
++                    )
++                    break
++                for doc_id in candidates:
++                    if doc_id in held:
++                        counts["kept_held"] += 1
++                        continue
++                    if counts["deleted"] >= max_deletes:
++                        counts["truncated"] = 1
++                        break
++                    if await store.delete_document_async(
++                        doc_id, collection_id=config.collection_id, tenant_ctx=tenant_ctx
++                    ):
++                        counts["deleted"] += 1
++            if counts["truncated"] or len(page) < page_size:
++                break
++    finally:
++        with contextlib.suppress(Exception):
++            await store.clear_live_listing_async(run_id, tenant_ctx=tenant_ctx)
+     _log.info(
+-        "upstream_deletions_applied source=%s deleted=%d stale=%d",
+-        config.source_id, deleted, len(stale),
++        "upstream_deletions_applied source=%s deleted=%d kept_held=%d stale=%d truncated=%d",
++        config.source_id, counts["deleted"], counts["kept_held"], counts["stale_seen"],
++        counts["truncated"],
+     )
+-    return deleted
++    return counts
++
++
++@shared_task(
++    name="ingestion.reconcile_source",
++    bind=True,
++    max_retries=12,
++    default_retry_delay=300,
++)
++def reconcile_source_task(self: Any, *, source_id: str, tenant_id: str) -> dict:
++    """Upstream-deletion reconciliation for one Source (scheduled by its syncs)."""
++    result = _run_task_loop(_reconcile_source_async(source_id=source_id, tenant_id=tenant_id))
++    if result.get("skipped") == "locked":
++        raise self.retry()  # a sync holds the Source: run once it is done
++    return result
++
++
++async def _reconcile_source_async(*, source_id: str, tenant_id: str) -> dict:
++    """Reconcile under the Source's sync lock (never concurrently with a sync:
++    a document indexed mid-listing must not look deleted)."""
++    from app.ingestion.connector_registry import get_connector, load_all_connectors
++
++    load_all_connectors()
++    tracker, pipeline, source_store = _build_worker_ingestion()
++    token = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
++    if not token:
++        return {"skipped": "locked"}
++    try:
++        config = await source_store.get(source_id, tenant_id)
++        if config is None or not config.enabled:
++            return {"skipped": "source_unavailable"}
++        connector = get_connector(config.source_type)()
++        return await _reconcile_upstream_deletions(connector, config, pipeline)
++    finally:
++        await tracker.release_lock(source_id, tenant_id)
+ 
+ 
+ async def _sync_source_async(
+@@ -471,18 +603,19 @@ async def _sync_source_async(
+         if new_cursor and new_cursor != (config.cursor_value or ""):
+             await source_store.update(source_id, tenant_id, cursor_value=new_cursor)
+ 
+-        # Upstream deletions: only after a complete, failure-free run, and only
+-        # for connectors that can list what exists upstream.
+-        docs_deleted = 0
++        # Upstream deletions: only after a complete, failure-free run, only for
++        # connectors that can list what exists upstream, and at most once per
++        # interval per Source — as its own task (KB-44).
++        reconcile_scheduled = False
+         if not docs_failed and not cancelled:
+-            docs_deleted = await _reconcile_upstream_deletions(connector, config, pipeline)
++            reconcile_scheduled = await _schedule_reconcile_if_due(connector, config)
+ 
+         return {
+             "job_id": job.job_id,
+             "docs_indexed": docs_indexed,
+             "docs_skipped": docs_skipped,
+             "docs_failed": docs_failed,
+-            "docs_deleted": docs_deleted,
++            "reconcile_scheduled": reconcile_scheduled,
+             "cancelled": cancelled,
+         }
+ 
+diff --git a/agent-verse-backend/app/rag/store.py b/agent-verse-backend/app/rag/store.py
+index b6a04f31d..725d1c7b3 100644
+--- a/agent-verse-backend/app/rag/store.py
++++ b/agent-verse-backend/app/rag/store.py
+@@ -233,6 +233,8 @@ class KnowledgeStore:
+         # Key: (tenant_id, collection_id) → _CollectionStore
+         self._data: dict[tuple[str, str], _CollectionStore] = {}
+         self._index_records: dict[tuple[str, str], list[RAGIndexRecord]] = {}
++        # No-DB (dev/test) staging of reconciliation listings, by (tenant, run).
++        self._live_listings: dict[tuple[str, str], set[str]] = {}
+         self._db = db_session_factory
+         # Called with the tenant id after the tenant's knowledge changed (chunks
+         # written or deleted) — e.g. SemanticCache.invalidate_tenant, so cached
+@@ -897,6 +899,127 @@ class KnowledgeStore:
+         return _document_page(documents, limit=limit, counted=min(len(grouped),
+                                                                   _DOCUMENT_COUNT_CAP + 1))
+ 
++    # ── Upstream-deletion reconciliation (KB-44) ─────────────────────────────
++    # The upstream listing is staged in ``ingestion_live_listings`` (one run id
++    # per run) in bounded batches; Postgres then finds the Source's indexed
++    # documents that are NOT listed. Process memory stays bounded at any bucket
++    # size. Without a database the staging lives in this (dev-only) store.
++
++    async def stage_live_doc_ids_async(
++        self, run_id: str, doc_ids: list[str], *, tenant_ctx: TenantContext
++    ) -> None:
++        """Stage one batch of upstream ids for reconciliation run ``run_id``."""
++        if not doc_ids:
++            return
++        if self._db is None:
++            self._live_listings.setdefault((tenant_ctx.tenant_id, run_id), set()).update(
++                doc_ids
++            )
++            return
++        from sqlalchemy import text
++
++        from app.db.rls import sqlalchemy_rls_context
++
++        async with (
++            self._db() as session,
++            session.begin(),
++            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
++        ):
++            await session.execute(
++                text(
++                    "INSERT INTO ingestion_live_listings (tenant_id, run_id, doc_id) "
++                    "SELECT :tid, :run, unnest(CAST(:ids AS text[])) "
++                    "ON CONFLICT DO NOTHING"
++                ),
++                {"tid": tenant_ctx.tenant_id, "run": run_id, "ids": list(doc_ids)},
++            )
++
++    async def list_unlisted_source_documents_async(
++        self,
++        run_id: str,
++        *,
++        tenant_ctx: TenantContext,
++        collection_id: str,
++        source_id: str,
++        after: str | None = None,
++        limit: int = 1000,
++    ) -> list[str]:
++        """The Source's indexed document ids NOT staged under ``run_id`` (keyset page).
++
++        Walks ``idx_knowledge_chunks_<dim>_source_doc`` in ``document_id`` order
++        once across all pages, probing the staged listing's primary key per row.
++        """
++        if self._db is None:
++            listed = self._live_listings.get((tenant_ctx.tenant_id, run_id), set())
++            cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
++            ids = {
++                c.document_id
++                for c in (cstore.chunks if cstore is not None else [])
++                if str((c.metadata or {}).get("source_id") or "") == source_id
++                and c.document_id not in listed
++                and (after is None or c.document_id > after)
++            }
++            return sorted(ids)[:limit]
++        dim = await self.get_collection_embedding_dim(collection_id, tenant_ctx=tenant_ctx)
++        if dim is None:
++            return []
++        from sqlalchemy import text
++
++        from app.db.rls import sqlalchemy_rls_context
++
++        table = _chunk_table(dim)
++        async with (
++            self._db() as session,
++            session.begin(),
++            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
++        ):
++            rows = (
++                await session.execute(
++                    text(
++                        f"SELECT DISTINCT c.document_id FROM {table} c "
++                        "WHERE c.tenant_id = :tid AND c.collection_id = :cid "
++                        "AND c.metadata->>'source_id' = :sid "
++                        "AND (CAST(:after AS text) IS NULL "
++                        "     OR c.document_id > CAST(:after AS text)) "
++                        "AND NOT EXISTS (SELECT 1 FROM ingestion_live_listings l "
++                        "  WHERE l.tenant_id = :tid AND l.run_id = :run "
++                        "  AND l.doc_id = c.document_id) "
++                        "ORDER BY c.document_id LIMIT :lim"
++                    ),
++                    {
++                        "tid": tenant_ctx.tenant_id,
++                        "cid": collection_id,
++                        "sid": source_id,
++                        "after": after,
++                        "run": run_id,
++                        "lim": limit,
++                    },
++                )
++            ).fetchall()
++        return [str(r[0]) for r in rows]
++
++    async def clear_live_listing_async(self, run_id: str, *, tenant_ctx: TenantContext) -> None:
++        """Drop run ``run_id``'s staged listing (and any crashed run's leftovers > 1 day)."""
++        if self._db is None:
++            self._live_listings.pop((tenant_ctx.tenant_id, run_id), None)
++            return
++        from sqlalchemy import text
++
++        from app.db.rls import sqlalchemy_rls_context
++
++        async with (
++            self._db() as session,
++            session.begin(),
++            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
++        ):
++            await session.execute(
++                text(
++                    "DELETE FROM ingestion_live_listings WHERE tenant_id = :tid "
++                    "AND (run_id = :run OR created_at < now() - interval '1 day')"
++                ),
++                {"tid": tenant_ctx.tenant_id, "run": run_id},
++            )
++
+     async def held_document_ids_async(
+         self, collection_id: str, document_ids: list[str], *, tenant_ctx: TenantContext
+     ) -> set[str]:
+diff --git a/agent-verse-backend/tests/ingestion/test_ingestion_framework.py b/agent-verse-backend/tests/ingestion/test_ingestion_framework.py
+index d74454486..ecfd692e4 100644
+--- a/agent-verse-backend/tests/ingestion/test_ingestion_framework.py
++++ b/agent-verse-backend/tests/ingestion/test_ingestion_framework.py
+@@ -293,7 +293,7 @@ async def test_pipeline_full_happy_path():
+ 
+     mock_embedder = MagicMock()
+ 
+-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
++    with patch("app.providers.base.embed_texts", AsyncMock(side_effect=lambda texts, **_: [[0.1] * 10 for _ in texts])):
+         pipeline = IngestionPipeline(knowledge_store=mock_kb, embedder=mock_embedder)
+         content = ("World-class ingestion pipeline test content. " * 20).encode()
+         raw = RawDocument(doc_id="d1", source_id="s1", tenant_id="t1",
+@@ -322,7 +322,7 @@ async def test_pipeline_populates_knowledge_graph_per_indexed_doc():
+     kg_hook = MagicMock()
+     kg_hook.process = AsyncMock(return_value={"entities": 3, "relations": 2})
+ 
+-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
++    with patch("app.providers.base.embed_texts", AsyncMock(side_effect=lambda texts, **_: [[0.1] * 10 for _ in texts])):
+         pipeline = IngestionPipeline(
+             knowledge_store=mock_kb, embedder=mock_embedder, kg_hook=kg_hook
+         )
+@@ -357,7 +357,7 @@ async def test_pipeline_kg_hook_failure_never_blocks_ingestion():
+     kg_hook = MagicMock()
+     kg_hook.process = AsyncMock(side_effect=RuntimeError("KG store down"))
+ 
+-    with patch("app.providers.base.embed_texts", AsyncMock(return_value=[[0.1] * 10, [0.2] * 10])):
++    with patch("app.providers.base.embed_texts", AsyncMock(side_effect=lambda texts, **_: [[0.1] * 10 for _ in texts])):
+         pipeline = IngestionPipeline(
+             knowledge_store=mock_kb, embedder=mock_embedder, kg_hook=kg_hook
+         )
+diff --git a/agent-verse-backend/tests/ingestion/test_reconcile_deletions_integration.py b/agent-verse-backend/tests/ingestion/test_reconcile_deletions_integration.py
+new file mode 100644
+index 000000000..1e9785098
+--- /dev/null
++++ b/agent-verse-backend/tests/ingestion/test_reconcile_deletions_integration.py
+@@ -0,0 +1,139 @@
++"""KB-44 on real Postgres (app role, RLS): the upstream listing is staged in
++``ingestion_live_listings`` in bounded batches and diffed in SQL; exactly the
++documents deleted upstream are removed (held ones kept), across capped runs.
++
++    DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock \\
++    TESTCONTAINERS_RYUK_DISABLED=true \\
++        uv run pytest tests/ingestion/test_reconcile_deletions_integration.py -m integration
++"""
++
++from __future__ import annotations
++
++import json
++import uuid
++from collections.abc import AsyncIterator
++from types import SimpleNamespace
++
++import pytest
++
++from app.ingestion.base_connector import BaseConnector, ConnectionHealth
++from app.ingestion.scheduler import _reconcile_upstream_deletions
++from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
++from app.rag.models import Chunk, KnowledgeCollection
++from app.rag.store import KnowledgeStore
++from app.tenancy.context import PlanTier, TenantContext
++from tests.rag._pg import admin_exec, app_engine, seed_tenant, sessions
++
++pytestmark = pytest.mark.integration
++
++
++class _Bucket(BaseConnector):
++    source_type = "fake-bucket"
++
++    def __init__(self, keys: list[str]) -> None:
++        self.keys = keys
++
++    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
++        return ConnectionHealth(ok=True)
++
++    async def get_delta(
++        self, config: SourceConfig, cursor: str | None
++    ) -> AsyncIterator[tuple[RawDocument, str]]:
++        return
++        yield  # pragma: no cover
++
++    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
++        for key in self.keys:  # listing order is irrelevant to the SQL diff
++            yield f"s3://b/{key}"
++
++    def manages_doc_id(self, doc_id: str) -> bool:
++        return doc_id.startswith("s3://")
++
++
++async def test_staged_listing_diff_deletes_exactly_the_gone_documents(pg_url: str) -> None:
++    tid, other = str(uuid.uuid4()), str(uuid.uuid4())
++    for t in (tid, other):
++        await seed_tenant(pg_url, t)
++    engine = await app_engine(pg_url)
++    try:
++        store = KnowledgeStore(sessions(engine), embedding_dim=768)
++        ctx = TenantContext(tid, PlanTier.FREE, "k")
++        cid = await store.create_collection_async(KnowledgeCollection(name="c"), tenant_ctx=ctx)
++        keys = [f"Doc-{i:03d}" for i in range(40)] + ["ünïcode-ü", "UPPER", "lower"]
++        for key in keys:
++            await store.ingest_chunks_async(
++                [
++                    Chunk(
++                        document_id=f"s3://b/{key}",
++                        content=f"body {key}",
++                        embedding=[0.01] * 768,
++                        chunk_index=0,
++                        metadata={"source_id": "src-1"},
++                    )
++                ],
++                collection_id=cid,
++                tenant_ctx=ctx,
++            )
++        gone = {"Doc-003", "Doc-017", "Doc-029", "ünïcode-ü", "UPPER"}
++        held = "s3://b/Doc-017"
++        await admin_exec(
++            pg_url,
++            "INSERT INTO legal_holds (tenant_id, name, resource_type, resource_ids) "
++            "VALUES (:t, 'm', 'document', CAST(:r AS jsonb))",
++            {"t": tid, "r": json.dumps([held])},
++        )
++        live = [k for k in reversed(keys) if k not in gone]
++        config = SourceConfig(
++            source_id="src-1",
++            tenant_id=tid,
++            name="s",
++            family=SourceFamily.OBJECT_STORAGE,
++            source_type="fake-bucket",
++            collection_id=cid,
++        )
++
++        # Run 1, capped at 2 deletions, small pages/batches to cross boundaries.
++        first = await _reconcile_upstream_deletions(
++            _Bucket(live),
++            config,
++            SimpleNamespace(_kb=store),
++            max_deletes=2,
++            page_size=3,
++            stage_batch=7,
++        )
++        assert first["deleted"] == 2 and first["truncated"] == 1
++        # Run 2 finishes the job; the held document survives every run.
++        second = await _reconcile_upstream_deletions(
++            _Bucket(live), config, SimpleNamespace(_kb=store), page_size=3, stage_batch=7
++        )
++        assert second["deleted"] == 2
++        assert second["kept_held"] == 1
++
++        rows = await admin_exec(
++            pg_url,
++            "SELECT DISTINCT document_id FROM knowledge_chunks_768 WHERE collection_id = :c",
++            {"c": cid},
++        )
++        remaining = {r[0] for r in rows}
++        assert remaining == {f"s3://b/{k}" for k in keys if k not in gone} | {held}
++        # Staging is cleaned up after each run.
++        left = await admin_exec(
++            pg_url,
++            "SELECT count(*) FROM ingestion_live_listings WHERE tenant_id = :t",
++            {"t": tid},
++        )
++        assert int(left[0][0]) == 0
++
++        # RLS: another tenant cannot see a run's staged ids.
++        await store.stage_live_doc_ids_async("run-x", ["s3://b/a"], tenant_ctx=ctx)
++        other_store = KnowledgeStore(sessions(engine), embedding_dim=768)
++        octx = TenantContext(other, PlanTier.FREE, "k")
++        await other_store.clear_live_listing_async("run-x", tenant_ctx=octx)
++        still = await admin_exec(
++            pg_url,
++            "SELECT count(*) FROM ingestion_live_listings WHERE tenant_id = :t AND run_id = 'run-x'",
++            {"t": tid},
++        )
++        assert int(still[0][0]) == 1
++    finally:
++        await engine.dispose()
+diff --git a/agent-verse-backend/tests/ingestion/test_upstream_deletions.py b/agent-verse-backend/tests/ingestion/test_upstream_deletions.py
+index ca1658127..b532ca4b4 100644
+--- a/agent-verse-backend/tests/ingestion/test_upstream_deletions.py
++++ b/agent-verse-backend/tests/ingestion/test_upstream_deletions.py
+@@ -1,9 +1,12 @@
+-"""STABLE-DOC-IDS: documents deleted upstream are removed after a complete sync.
++"""STABLE-DOC-IDS / KB-44: documents deleted upstream are removed by reconciliation.
+ 
+-Connectors that can list what exists upstream (``list_live_doc_ids``) let the
+-worker delete the Source's indexed documents that are gone — only after a
+-failure-free run, never for documents under legal hold (or when the hold cannot
+-be verified), and never for connectors that cannot know (``None``).
++Connectors that can list what exists upstream let the worker delete the
++Source's indexed documents that are gone — never for documents under legal hold
++(or when the hold cannot be verified), and never for connectors that cannot
++know. KB-44: reconciliation is its own task, scheduled by a failure-free sync
++at most once per interval; the upstream listing is streamed and staged in
++bounded batches (never a whole-bucket set in memory) and deletes are capped
++per run.
+ """
+ 
+ from __future__ import annotations
+@@ -17,7 +20,7 @@ import pytest
+ from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+ from app.ingestion.job_tracker import IngestionJobTracker
+ from app.ingestion.pipeline import IngestionPipeline
+-from app.ingestion.scheduler import _sync_source_async
++from app.ingestion.scheduler import _reconcile_upstream_deletions, _sync_source_async
+ from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
+ from app.ingestion.source_store import SourceConfigStore
+ from app.providers.fake import FakeProvider
+@@ -71,14 +74,20 @@ def _connector(upstream: _Upstream) -> type[BaseConnector]:
+ 
+ 
+ class _Holds:
++    """Stands in for the store's batched legal-hold query."""
++
+     def __init__(self, held: set[str] | None = None, broken: bool = False) -> None:
+         self.held = held or set()
+         self.broken = broken
+ 
+-    async def is_under_hold(self, *, tenant_id: str, resource_id: str) -> bool:
++    async def __call__(
++        self, collection_id: str, document_ids: list[str], *, tenant_ctx: Any
++    ) -> set[str]:
+         if self.broken:
+             raise RuntimeError("hold store down")
+-        return resource_id in self.held
++        if collection_id in self.held:
++            return set(document_ids)
++        return {d for d in document_ids if d in self.held}
+ 
+ 
+ _PIPELINES: list[IngestionPipeline] = []
+@@ -96,13 +105,19 @@ def world() -> Any:
+     store = SourceConfigStore()
+     tracker = IngestionJobTracker()
+     config = SourceConfig(
+-        source_id="src-del", tenant_id="t1", name="s", family=SourceFamily.OBJECT_STORAGE,
+-        source_type="fake-listing", collection_id="c1", min_quality_score=0.0,
++        source_id="src-del",
++        tenant_id="t1",
++        name="s",
++        family=SourceFamily.OBJECT_STORAGE,
++        source_type="fake-listing",
++        collection_id="c1",
++        min_quality_score=0.0,
+     )
+     upstream = _Upstream()
+     upstream.items = {"a.txt": "Alpha document body. ", "b.txt": "Bravo document body. "}
+ 
+     async def sync(holds: _Holds | None = None) -> dict[str, Any]:
++        """A sync, then (as its own run) the upstream-deletion reconciliation."""
+         if await store.get(config.source_id, "t1") is None:
+             await store.create(config)
+         with (
+@@ -114,12 +129,21 @@ def world() -> Any:
+                 "app.ingestion.connector_registry.get_connector",
+                 return_value=_connector(upstream),
+             ),
+-            patch("app.ingestion.scheduler._build_worker_legal_holds", return_value=holds),
+         ):
+-            return await _sync_source_async(
+-                task=MagicMock(), source_id=config.source_id, tenant_id="t1",
++            result = await _sync_source_async(
++                task=MagicMock(),
++                source_id=config.source_id,
++                tenant_id="t1",
+                 triggered_by="manual",
+             )
++        result["docs_deleted"] = 0
++        if not result.get("docs_failed"):
++            with patch.object(kb, "held_document_ids_async", holds or _Holds()):
++                counts = await _reconcile_upstream_deletions(
++                    _connector(upstream)(), config, pipeline
++                )
++            result["docs_deleted"] = counts["deleted"]
++        return result
+ 
+     def indexed() -> set[str]:
+         return {c.document_id for c in kb._data[("t1", "c1")].chunks}
+@@ -186,14 +210,22 @@ async def test_other_sources_documents_are_never_candidates(world: Any) -> None:
+     config, upstream, sync, indexed = world
+     await sync(_Holds())
+     other_cfg = SourceConfig(
+-        source_id="src-other", tenant_id="t1", name="o", family=SourceFamily.WEB,
+-        source_type="http", collection_id="c1", min_quality_score=0.0,
++        source_id="src-other",
++        tenant_id="t1",
++        name="o",
++        family=SourceFamily.WEB,
++        source_type="http",
++        collection_id="c1",
++        min_quality_score=0.0,
+     )
+     other_id = stable_doc_id(other_cfg, "x")
+     other = await _pipeline_of_world().ingest(
+         RawDocument(
+-            doc_id=other_id, source_id="src-other", tenant_id="t1",
+-            content=("Other source document. " * 30).encode(), content_type="text/plain",
++            doc_id=other_id,
++            source_id="src-other",
++            tenant_id="t1",
++            content=("Other source document. " * 30).encode(),
++            content_type="text/plain",
+         ),
+         other_cfg,
+     )
+@@ -217,8 +249,11 @@ async def test_documents_indexed_before_stable_ids_are_never_deleted(world: Any)
+     legacy_id = str(uuid.uuid4())
+     legacy = await _pipeline_of_world().ingest(
+         RawDocument(
+-            doc_id=legacy_id, source_id=config.source_id, tenant_id="t1",
+-            content=("Legacy random-id document. " * 30).encode(), content_type="text/plain",
++            doc_id=legacy_id,
++            source_id=config.source_id,
++            tenant_id="t1",
++            content=("Legacy random-id document. " * 30).encode(),
++            content_type="text/plain",
+         ),
+         config,
+     )
+@@ -228,3 +263,169 @@ async def test_documents_indexed_before_stable_ids_are_never_deleted(world: Any)
+ 
+     assert result["docs_deleted"] == 0
+     assert legacy_id in indexed()
++
++
++# ── KB-44: bounded, capped, scheduled ────────────────────────────────────────
++
++
++class _MillionBucket(BaseConnector):
++    """1,000,000 live ids, generated lazily (as a paginated listing streams them)."""
++
++    source_type = "fake-million"
++
++    async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
++        return ConnectionHealth(ok=True)
++
++    async def get_delta(
++        self, config: SourceConfig, cursor: str | None
++    ) -> AsyncIterator[tuple[RawDocument, str]]:
++        return
++        yield  # pragma: no cover
++
++    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
++        for i in range(1_000_000):
++            yield f"s3://b/key-{i:07d}"
++
++    def manages_doc_id(self, doc_id: str) -> bool:
++        return doc_id.startswith("s3://")
++
++
++class _CountingStore:
++    """Stages by counting (never keeping) ids; 5,000 indexed ids are stale."""
++
++    def __init__(self) -> None:
++        self.staged = 0
++        self.max_batch = 0
++        self.deleted: list[str] = []
++        self.cleared = False
++        self.stale = [f"s3://b/gone-{i:05d}" for i in range(5000)]
++
++    async def stage_live_doc_ids_async(self, run_id: str, ids: list[str], **_: Any) -> None:
++        self.staged += len(ids)
++        self.max_batch = max(self.max_batch, len(ids))
++
++    async def list_unlisted_source_documents_async(
++        self, run_id: str, *, after: str | None, limit: int, **_: Any
++    ) -> list[str]:
++        rest = [d for d in self.stale if after is None or d > after]
++        return rest[:limit]
++
++    async def held_document_ids_async(self, cid: str, ids: list[str], **_: Any) -> set[str]:
++        return {ids[0]}  # one held per page
++
++    async def delete_document_async(self, doc_id: str, **_: Any) -> int:
++        self.deleted.append(doc_id)
++        return 1
++
++    async def clear_live_listing_async(self, run_id: str, **_: Any) -> None:
++        self.cleared = True
++
++
++async def test_a_million_object_listing_is_streamed_in_bounded_batches_and_capped() -> None:
++    import tracemalloc
++
++    store = _CountingStore()
++    config = SourceConfig(
++        source_id="src-m",
++        tenant_id="t1",
++        name="m",
++        family=SourceFamily.OBJECT_STORAGE,
++        source_type="fake-million",
++        collection_id="c1",
++    )
++    tracemalloc.start()
++    try:
++        counts = await _reconcile_upstream_deletions(
++            _MillionBucket(), config, MagicMock(_kb=store), max_deletes=1500
++        )
++        _current, peak = tracemalloc.get_traced_memory()
++    finally:
++        tracemalloc.stop()
++    assert store.staged == 1_000_000
++    assert store.max_batch <= 1000
++    assert peak < 16 * 1024 * 1024, f"peak {peak / 1e6:.1f} MB"
++    assert counts["deleted"] == 1500 and len(store.deleted) == 1500
++    assert counts["truncated"] == 1
++    assert counts["kept_held"] == 2  # one per page compared (pages 1 and 2)
++    assert store.cleared
++
++
++async def test_a_listing_error_mid_stream_deletes_nothing() -> None:
++    class _Broken(_MillionBucket):
++        async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
++            yield "s3://b/a"
++            raise ConnectionError("page 2 failed")
++
++    store = _CountingStore()
++    config = SourceConfig(
++        source_id="src-m",
++        tenant_id="t1",
++        name="m",
++        family=SourceFamily.OBJECT_STORAGE,
++        source_type="fake-million",
++        collection_id="c1",
++    )
++    counts = await _reconcile_upstream_deletions(_Broken(), config, MagicMock(_kb=store))
++    assert counts["deleted"] == 0 and store.deleted == []
++    assert store.cleared  # the partial staging is dropped
++
++
++class _GateRedis:
++    def __init__(self) -> None:
++        self.keys: dict[str, int] = {}
++
++    async def set(self, key: str, value: str, *, nx: bool, ex: int) -> bool:
++        if key in self.keys:
++            return False
++        self.keys[key] = ex
++        return True
++
++    async def aclose(self) -> None:
++        return None
++
++
++async def test_a_sync_schedules_reconciliation_at_most_once_per_interval() -> None:
++    from app.ingestion import scheduler
++
++    gate = _GateRedis()
++    config = SourceConfig(
++        source_id="src-g",
++        tenant_id="t1",
++        name="g",
++        family=SourceFamily.OBJECT_STORAGE,
++        source_type="fake-million",
++        collection_id="c1",
++        connection_config={"reconcile_interval_seconds": 7200},
++    )
++    with (
++        patch.object(scheduler, "_gate_redis", return_value=gate),
++        patch.object(scheduler.reconcile_source_task, "apply_async") as enqueue,
++    ):
++        assert await scheduler._schedule_reconcile_if_due(_MillionBucket(), config) is True
++        assert await scheduler._schedule_reconcile_if_due(_MillionBucket(), config) is False
++    enqueue.assert_called_once()
++    assert enqueue.call_args.kwargs["queue"] == "ingestion"
++    assert enqueue.call_args.kwargs["kwargs"] == {"source_id": "src-g", "tenant_id": "t1"}
++    assert gate.keys == {"ingestion:reconcile:due:t1:src-g": 7200}
++
++
++async def test_no_reconciliation_without_redis_or_without_a_listing() -> None:
++    from app.ingestion import scheduler
++
++    class _NoListing(_MillionBucket):
++        iter_live_doc_ids = BaseConnector.iter_live_doc_ids  # type: ignore[assignment]
++
++    config = SourceConfig(
++        source_id="src-g",
++        tenant_id="t1",
++        name="g",
++        family=SourceFamily.OBJECT_STORAGE,
++        source_type="fake-million",
++        collection_id="c1",
++    )
++    with patch.object(scheduler.reconcile_source_task, "apply_async") as enqueue:
++        with patch.object(scheduler, "_gate_redis", return_value=None):
++            assert await scheduler._schedule_reconcile_if_due(_MillionBucket(), config) is False
++        with patch.object(scheduler, "_gate_redis", return_value=_GateRedis()):
++            assert await scheduler._schedule_reconcile_if_due(_NoListing(), config) is False
++    enqueue.assert_not_called()

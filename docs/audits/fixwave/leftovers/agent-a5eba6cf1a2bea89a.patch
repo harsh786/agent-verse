@@ -1,0 +1,873 @@
+diff --git a/agent-verse-backend/app/api/goals.py b/agent-verse-backend/app/api/goals.py
+index ffc1c4a7d..f23fca40b 100644
+--- a/agent-verse-backend/app/api/goals.py
++++ b/agent-verse-backend/app/api/goals.py
+@@ -837,7 +837,6 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
+         from app.core.errors import ServiceUnavailableError
+         from app.services.goal_service import SSE_HEARTBEAT_TYPE
+ 
+-        seq = 0
+         try:
+             async for event in svc.subscribe_events(
+                 goal_id=goal_id,
+@@ -851,9 +850,11 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
+                 if event.get("type") == SSE_HEARTBEAT_TYPE:
+                     yield ": ping\n\n"
+                     continue
+-                seq += 1
+-                event_seq = event.get("_seq", seq)
+-                yield f"id: {event_seq}\ndata: {json.dumps(event)}\n\n"
++                # The id is the event's durable sequence only: a per-connection
++                # counter made Last-Event-ID drift on every reconnect.
++                event_seq = event.get("_seq")
++                id_line = f"id: {event_seq}\n" if isinstance(event_seq, int) else ""
++                yield f"{id_line}data: {json.dumps(event)}\n\n"
+         except ServiceUnavailableError as exc:
+             # The headers are already sent: report a retryable stream error the
+             # client can reconnect on, instead of an empty / silently ended stream.
+diff --git a/agent-verse-backend/app/scaling/tasks.py b/agent-verse-backend/app/scaling/tasks.py
+index 595c17c76..2f6155d37 100644
+--- a/agent-verse-backend/app/scaling/tasks.py
++++ b/agent-verse-backend/app/scaling/tasks.py
+@@ -2334,24 +2334,41 @@ def run_goal(
+     _chain_published: set[str] = set()
+ 
+     async def append_submitted_goal_event(event: dict[str, Any]) -> None:
+-        # ── ALWAYS publish to Redis pub/sub first (SSE real-time feed) ────────
+-        # This must happen regardless of DB availability. Previously the function
+-        # returned early when event_store was None, silently dropping all events
+-        # from the SSE stream. Now Redis publish runs unconditionally.
++        # ── Persist first, so the live event carries its durable sequence ─────
++        # (SVC-05: the SSE id / Last-Event-ID resume cursor). A failed append is
++        # buffered in the Redis outbox (SVC-08) and the event is still published.
++        _seq: int | None = None
++        if event_store is not None:
++            try:
++                _, fresh_event_store, _ = _make_worker_goal_bridge()
++                _appended = await fresh_event_store.append_event(
++                    goal_id, event, tenant_ctx=tenant_ctx
++                )
++                _seq = _appended if isinstance(_appended, int) else None
++            except Exception as db_exc:
++                logger.warning("DB event append failed, buffering: %s", db_exc)
++                from app.services.event_store import buffer_failed_event_via_settings
++
++                await buffer_failed_event_via_settings(
++                    tenant_id=tenant_id, goal_id=goal_id, event=event
++                )
++
++        # ── ALWAYS publish to Redis pub/sub (SSE real-time feed) ──────────────
++        # This must happen regardless of DB availability.
+         try:
+             import json as _json
+ 
+             _r = _get_sync_redis()
+             if _r is not None:
+-                _event_data = _json.dumps(
+-                    {
+-                        "goal_id": goal_id,
+-                        "tenant_id": tenant_id,
+-                        "type": event.get("type", ""),
+-                        "payload": event,
+-                    }
+-                )
+-                _r.publish(f"goal_events:{tenant_id}:{goal_id}", _event_data)
++                _envelope: dict[str, Any] = {
++                    "goal_id": goal_id,
++                    "tenant_id": tenant_id,
++                    "type": event.get("type", ""),
++                    "payload": event,
++                }
++                if _seq is not None:
++                    _envelope["_seq"] = _seq
++                _r.publish(f"goal_events:{tenant_id}:{goal_id}", _json.dumps(_envelope))
+         except Exception as _pub_exc:
+             logger.debug("redis_event_publish_failed (non-fatal): %s", _pub_exc)
+ 
+@@ -2390,22 +2407,6 @@ def run_goal(
+                 _worker_usage_service(), tenant_id=tenant_id, goal_id=goal_id, event=event
+             )
+ 
+-        # ── Also persist to event store (DB) for the historical Dev Log ───────
+-        if event_store is None:
+-            return
+-        try:
+-            _, fresh_event_store, _ = _make_worker_goal_bridge()
+-            await fresh_event_store.append_event(goal_id, event, tenant_ctx=tenant_ctx)
+-        except Exception as db_exc:
+-            # SVC-08: buffered in the Redis outbox (replayed by the
+-            # drain-goal-event-outbox beat task), never silently dropped.
+-            logger.warning("DB event append failed, buffering: %s", db_exc)
+-            from app.services.event_store import buffer_failed_event_via_settings
+-
+-            await buffer_failed_event_via_settings(
+-                tenant_id=tenant_id, goal_id=goal_id, event=event
+-            )
+-
+     async def ensure_submitted_goal_row() -> None:
+         if goal_bridge is None:
+             return
+diff --git a/agent-verse-backend/app/services/goal_service.py b/agent-verse-backend/app/services/goal_service.py
+index 129cb4ac9..7a0d050ab 100644
+--- a/agent-verse-backend/app/services/goal_service.py
++++ b/agent-verse-backend/app/services/goal_service.py
+@@ -2676,12 +2676,14 @@ class GoalService:
+         event: dict[str, Any],
+         record: GoalRecord,
+         tenant_ctx: TenantContext | None,
+-    ) -> None:
++    ) -> int | None:
++        """Persist *event*; return its durable sequence (``None`` when unknown)."""
+         if self._event_store is None:
+-            return
++            return None
+         ctx = self._tenant_ctx_for_event_store(record, tenant_ctx)
+         try:
+-            await self._event_store.append_event(goal_id, event, tenant_ctx=ctx)
++            seq = await self._event_store.append_event(goal_id, event, tenant_ctx=ctx)
++            return seq if isinstance(seq, int) else None
+         except Exception as exc:
+             # Never silently dropped from the durable stream: park it in the
+             # Redis outbox, which the drain-goal-event-outbox beat task replays.
+@@ -2694,6 +2696,7 @@ class GoalService:
+                 event=event,
+                 redis=getattr(self, "_redis", None),
+             )
++            return None
+ 
+     async def _list_persisted_events(
+         self, goal_id: str, tenant_ctx: TenantContext
+@@ -2873,7 +2876,15 @@ class GoalService:
+         _is_ephemeral = sanitized_event.get("type") in _ephemeral_event_types
+         if not _is_ephemeral:
+             record.events.append(sanitized_event)
+-            await self._persist_event(goal_id, sanitized_event, record, tenant_ctx)
++            seq = await self._persist_event(goal_id, sanitized_event, record, tenant_ctx)
++            if seq is None and self._event_store is None:
++                # No durable store (dev / tests): the in-memory position is the
++                # sequence, so SSE ids still resume consistently.
++                seq = len(record.events)
++            if seq is not None:
++                # The SSE id: Last-Event-ID resumes from it (SVC-05). Stamped
++                # after persisting, so the stored payload stays unchanged.
++                sanitized_event["_seq"] = seq
+         # Reflect terminal status in the record and record metrics.
+         etype = sanitized_event.get("type")
+         if etype == "goal_complete":
+@@ -5748,6 +5759,45 @@ class GoalService:
+         # on the API server but events are durably stored in the event store.
+         return await self._events_for_replay(goal_id, record, tenant_ctx)
+ 
++    _REPLAY_PAGE = 500
++
++    async def _replay_events(
++        self,
++        goal_id: str,
++        record: GoalRecord | None,
++        tenant_ctx: TenantContext,
++        since_sequence: int,
++    ) -> AsyncGenerator[dict[str, Any], None]:
++        """Every event after *since_sequence*, oldest first, keyset-paged.
++
++        From the durable store when there is one (each event carries ``_seq``;
++        resume used to stop after 100 events), else from the in-memory record.
++        Raises ServiceUnavailableError when the store cannot be read.
++        """
++        if self._event_store is None:
++            events = list(record.events) if record is not None else []
++            for i, event in enumerate(events, start=1):
++                seq = event.get("_seq", i)
++                if isinstance(seq, int) and seq > since_sequence:
++                    yield {**event, "_seq": seq}
++            return
++        cursor = since_sequence
++        while True:
++            page = await self._event_store.list_events_since(
++                goal_id, after_sequence=cursor, limit=self._REPLAY_PAGE, tenant_ctx=tenant_ctx
++            )
++            for event in page:
++                cursor = max(cursor, int(event.get("_seq", cursor)))
++                yield event
++            if len(page) < self._REPLAY_PAGE:
++                break
++        if since_sequence == 0 and record is not None:
++            # Events this replica holds that never reached the store (their
++            # append failed and they sit in the outbox): still part of history.
++            for event in list(record.events):
++                if "_seq" not in event:
++                    yield event
++
+     async def subscribe_events(
+         self,
+         goal_id: str,
+@@ -5756,127 +5806,55 @@ class GoalService:
+     ) -> AsyncGenerator[dict[str, Any], None]:
+         """Async generator that yields SSE events for *goal_id* in real time.
+ 
+-        When *since_sequence* > 0 the initial replay is limited to events with
+-        sequence > since_sequence (SSE resume-from-cursor).  Each event yielded
+-        from the persisted replay path carries a ``_seq`` key for the SSE
+-        endpoint to emit as an ``id:`` line.
++        Every event carries ``_seq`` (its durable sequence) when known; the SSE
++        endpoint emits it as the ``id:`` line and *since_sequence* (from
++        Last-Event-ID) resumes after it. The live channel is always registered
++        BEFORE the replay, and live events already covered by the replay are
++        dropped by sequence, so nothing is lost or duplicated in between.
+ 
+         **Cross-replica delivery (P1-2):** when the goal record is not present
+         in this replica's in-memory ``_goals`` dict (it was submitted to a
+-        different replica), the method falls back to Redis pub/sub on the
+-        ``goal_events:{tenant_id}:{goal_id}`` channel that is published by
+-        ``_dispatch_event`` on the owning replica.
++        different replica or runs on a worker), live events come from Redis
++        pub/sub on ``goal_events:{tenant_id}:{goal_id}``.
+         """
+-        # ── Try local record first ─────────────────────────────────────────────
+         local_record: GoalRecord | None = None
+         with suppress(Exception):  # goal is on another replica — cross-replica path below
+             local_record = self._get_record(goal_id, tenant_ctx)
+ 
+-        # ── Cross-replica path: subscribe via Redis pub/sub ────────────────────
+         if local_record is None:
+-            # Validate the goal exists in DB and belongs to this tenant before
+-            # opening a long-lived pub/sub connection (avoids silent no-ops for
+-            # truly missing goal IDs).
+-            db_record = await self._db_get_goal_record(goal_id, tenant_ctx)
+-            if db_record is None:
+-                raise NotFoundError(f"Goal not found: {goal_id}")
+-
+-            # Replay historical events persisted by the owning replica.
+-            if since_sequence > 0:
+-                replay_events = await self._list_events_since_persisted(
+-                    goal_id, after_sequence=since_sequence, tenant_ctx=tenant_ctx
+-                )
+-            else:
+-                replay_events = await self._list_persisted_events(goal_id, tenant_ctx)
+-            for event in replay_events:
++            async for event in self._subscribe_remote(goal_id, tenant_ctx, since_sequence):
+                 yield event
+-
+-            # If the goal is already in a terminal state we're done — no need
+-            # to subscribe to live events.
+-            status_str = (
+-                db_record.status.value
+-                if hasattr(db_record.status, "value")
+-                else str(db_record.status)
+-            )
+-            if status_str in ("complete", "failed", "cancelled"):
+-                return
+-
+-            # Subscribe to Redis pub/sub for live events published by the
+-            # owning replica's _dispatch_event() and by workers.
+-            if not self._redis_url_for_pubsub:
+-                # It used to end the stream silently, as if the goal had no
+-                # further events.
+-                raise ServiceUnavailableError(
+-                    "Live delivery for this goal is unavailable on this replica.",
+-                    code="GOAL_STREAM_UNAVAILABLE",
+-                )
+-
+-            try:
+-                import redis.asyncio as _aioredis
+-
+-                async with (
+-                    _aioredis.from_url(
+-                        self._redis_url_for_pubsub, decode_responses=True
+-                    ) as _pubsub_client,
+-                    _pubsub_client.pubsub() as pubsub,
+-                ):
+-                    channel = f"goal_events:{tenant_ctx.tenant_id}:{goal_id}"
+-                    await pubsub.subscribe(channel)
+-                    while True:
+-                        message = await pubsub.get_message(
+-                            ignore_subscribe_messages=True, timeout=_SSE_HEARTBEAT_SECONDS
+-                        )
+-                        if message is None:
+-                            # Idle (e.g. waiting for approval): a heartbeat lets
+-                            # the endpoint notice a client that went away.
+-                            yield {"type": SSE_HEARTBEAT_TYPE}
+-                            continue
+-                        if message.get("type") != "message":
+-                            continue
+-                        try:
+-                            event = self._normalize_bus_event(json.loads(message["data"]))
+-                        except Exception:
+-                            continue
+-                        yield event
+-                        # Every terminal event ends the stream — worker_failed
+-                        # (timeout, crash, lock failure) used to leave it open.
+-                        if self._status_from_events([event]) is not None:
+-                            break
+-            except ServiceUnavailableError:
+-                raise
+-            except Exception as exc:
+-                _svc_logger.warning(
+-                    "cross_replica_sse_failed",
+-                    goal_id=goal_id,
+-                    error=str(exc)[:120],
+-                )
+-                raise ServiceUnavailableError(
+-                    "Live delivery for this goal was interrupted; reconnect.",
+-                    code="GOAL_STREAM_UNAVAILABLE",
+-                    cause=exc,
+-                ) from exc
+             return
+ 
+-        # ── Local replica path (unchanged) ────────────────────────────────────
+         record = local_record
+         queue: asyncio.Queue[dict[str, Any] | None] | None = None
+         if record.status not in _TERMINAL_STATUSES:
+             queue = asyncio.Queue(maxsize=512)
+             record.subscribers.append(queue)
+ 
++        last_seq = since_sequence
++        seen_unsequenced: set[str] = set()
++
++        def _fresh(event: dict[str, Any]) -> bool:
++            nonlocal last_seq
++            seq = event.get("_seq")
++            if isinstance(seq, int):
++                if seq <= last_seq:
++                    return False
++                last_seq = seq
++                return True
++            key = self._event_key(event)
++            if key in seen_unsequenced:
++                return False
++            seen_unsequenced.add(key)
++            return True
++
+         try:
+-            # Replay persisted events and in-memory events without duplicating events
+-            # already recovered from the durable stream. The live queue is registered
+-            # first so events emitted during replay are not missed by the SSE stream.
+-            if since_sequence > 0:
+-                replay_events = await self._list_events_since_persisted(
+-                    goal_id, after_sequence=since_sequence, tenant_ctx=tenant_ctx
+-                )
+-            else:
+-                replay_events = await self._events_for_replay(goal_id, record, tenant_ctx)
+-            seen = {self._event_key(event) for event in replay_events}
+-            for event in replay_events:
+-                yield event
++            replay_events: list[dict[str, Any]] = []
++            async for event in self._replay_events(goal_id, record, tenant_ctx, since_sequence):
++                if _fresh(event):
++                    replay_events.append(event)
++                    yield event
+ 
+             if queue is not None:
+                 while True:
+@@ -5886,17 +5864,13 @@ class GoalService:
+                         break
+                     if queued is None:
+                         return
+-                    key = self._event_key(queued)
+-                    if key in seen:
+-                        continue
+-                    seen.add(key)
+-                    yield queued
++                    if _fresh(queued):
++                        yield queued
+ 
+             replay_status = self._status_from_events(replay_events)
+             if replay_status is not None:
+                 record.status = replay_status
+ 
+-            # If goal is already terminal, nothing more to await
+             if record.status in _TERMINAL_STATUSES:
+                 return
+ 
+@@ -5914,11 +5888,99 @@ class GoalService:
+                     continue
+                 if item is None:  # end-of-stream
+                     break
+-                yield item
++                if _fresh(item):
++                    yield item
+         finally:
+             if queue is not None:
+                 with suppress(ValueError):
+-                    record.subscribers.remove(queue)
++                    local_record.subscribers.remove(queue)
++
++    async def _subscribe_remote(
++        self, goal_id: str, tenant_ctx: TenantContext, since_sequence: int
++    ) -> AsyncGenerator[dict[str, Any], None]:
++        """Cross-replica stream: subscribe, THEN replay, then drain live events
++        de-duplicated by ``_seq`` (replaying first lost whatever was published
++        in between)."""
++        db_record = await self._db_get_goal_record(goal_id, tenant_ctx)
++        if db_record is None:
++            raise NotFoundError(f"Goal not found: {goal_id}")
++        terminal = db_record.status in _TERMINAL_STATUSES
++
++        last_seq = since_sequence
++
++        def _fresh(event: dict[str, Any]) -> bool:
++            nonlocal last_seq
++            seq = event.get("_seq")
++            if isinstance(seq, int):
++                if seq <= last_seq:
++                    return False
++                last_seq = seq
++            return True
++
++        if terminal:
++            async for event in self._replay_events(goal_id, None, tenant_ctx, since_sequence):
++                if _fresh(event):
++                    yield event
++            return
++
++        if not self._redis_url_for_pubsub:
++            # It used to end the stream silently, as if the goal had no
++            # further events.
++            raise ServiceUnavailableError(
++                "Live delivery for this goal is unavailable on this replica.",
++                code="GOAL_STREAM_UNAVAILABLE",
++            )
++
++        try:
++            import redis.asyncio as _aioredis
++
++            async with (
++                _aioredis.from_url(self._redis_url_for_pubsub, decode_responses=True) as client,
++                client.pubsub() as pubsub,
++            ):
++                await pubsub.subscribe(f"goal_events:{tenant_ctx.tenant_id}:{goal_id}")
++                replayed: list[dict[str, Any]] = []
++                async for event in self._replay_events(goal_id, None, tenant_ctx, since_sequence):
++                    if _fresh(event):
++                        replayed.append(event)
++                        yield event
++                if self._status_from_events(replayed) is not None:
++                    return
++                while True:
++                    message = await pubsub.get_message(
++                        ignore_subscribe_messages=True, timeout=_SSE_HEARTBEAT_SECONDS
++                    )
++                    if message is None:
++                        # Idle (e.g. waiting for approval): a heartbeat lets
++                        # the endpoint notice a client that went away.
++                        yield {"type": SSE_HEARTBEAT_TYPE}
++                        continue
++                    if message.get("type") != "message":
++                        continue
++                    try:
++                        event = self._normalize_bus_event(json.loads(message["data"]))
++                    except Exception:
++                        continue
++                    if not _fresh(event):
++                        continue
++                    yield event
++                    # Every terminal event ends the stream — worker_failed
++                    # (timeout, crash, lock failure) used to leave it open.
++                    if self._status_from_events([event]) is not None:
++                        return
++        except (ServiceUnavailableError, NotFoundError):
++            raise
++        except Exception as exc:
++            _svc_logger.warning(
++                "cross_replica_sse_failed",
++                goal_id=goal_id,
++                error=str(exc)[:120],
++            )
++            raise ServiceUnavailableError(
++                "Live delivery for this goal was interrupted; reconnect.",
++                code="GOAL_STREAM_UNAVAILABLE",
++                cause=exc,
++            ) from exc
+ 
+     # ── governance delegations ────────────────────────────────────────────────
+ 
+diff --git a/agent-verse-backend/tests/services/test_goal_service.py b/agent-verse-backend/tests/services/test_goal_service.py
+index 87cd12f21..9db663b0d 100644
+--- a/agent-verse-backend/tests/services/test_goal_service.py
++++ b/agent-verse-backend/tests/services/test_goal_service.py
+@@ -54,6 +54,21 @@ class FakeEventStore:
+     ) -> list[dict[str, Any]]:
+         return list(self.events)
+ 
++    async def list_events_since(
++        self,
++        goal_id: str,
++        after_sequence: int,
++        limit: int = 100,
++        *,
++        tenant_ctx: TenantContext | None = None,
++    ) -> list[dict[str, Any]]:
++        rows = [{**e, "_seq": i} for i, e in enumerate(self.events, start=1)]
++        return [r for r in rows if r["_seq"] > after_sequence][:limit]
++
++
++def _unseq(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
++    return [{k: v for k, v in e.items() if k != "_seq"} for e in events]
++
+ 
+ async def test_submit_goal_returns_goal_id(svc: GoalService) -> None:
+     result = await svc.submit_goal(
+@@ -327,7 +342,8 @@ async def test_subscribe_events_replays_persisted_events_for_terminal_loaded_goa
+ 
+     received = [event async for event in svc.subscribe_events("goal-loaded", tenant_ctx=_CTX_A)]
+ 
+-    assert received == persisted
++    assert _unseq(received) == persisted
++    assert [e["_seq"] for e in received] == [1, 2]
+ 
+ 
+ async def test_subscribe_events_returns_when_stale_memory_has_persisted_terminal_event() -> None:
+@@ -348,7 +364,7 @@ async def test_subscribe_events_returns_when_stale_memory_has_persisted_terminal
+             event async for event in svc.subscribe_events("goal-stale", tenant_ctx=_CTX_A)
+         ]
+ 
+-    assert received == persisted
++    assert _unseq(received) == persisted
+ 
+ 
+ async def test_sync_from_db_loads_goals_under_tenant_rls_context() -> None:
+diff --git a/agent-verse-backend/tests/services/test_sse_resume_cursor.py b/agent-verse-backend/tests/services/test_sse_resume_cursor.py
+new file mode 100644
+index 000000000..236f874e7
+--- /dev/null
++++ b/agent-verse-backend/tests/services/test_sse_resume_cursor.py
+@@ -0,0 +1,161 @@
++"""SVC-05: SSE resume must not drift or lose events.
++
++* live and fully-replayed events carried no ``_seq``, so the SSE id fell back
++  to a per-connection counter and Last-Event-ID drifted;
++* resume replay was capped at 100 events with no paging;
++* the cross-replica path replayed BEFORE subscribing (events in between were
++  lost) and yielded the raw worker envelope.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++from datetime import UTC, datetime
++from typing import Any
++from unittest.mock import AsyncMock
++
++import fakeredis
++import fakeredis.aioredis
++import pytest
++
++from app.services.goal_service import GoalRecord, GoalService, GoalStatus
++from app.tenancy.context import PlanTier, TenantContext
++
++CTX = TenantContext(tenant_id="t-seq", plan=PlanTier.FREE, api_key_id="k")
++
++
++class _Store:
++    """Event store fake: sequences, keyset paging, honours ``limit``."""
++
++    def __init__(self, n: int = 0) -> None:
++        self.events: list[dict[str, Any]] = [{"type": "step", "i": i} for i in range(1, n + 1)]
++        self.on_list: Any = None
++
++    async def append_event(self, goal_id: str, event: dict[str, Any], *, tenant_ctx: Any) -> int:
++        self.events.append(dict(event))
++        return len(self.events)
++
++    async def list_events(self, goal_id: str, *, tenant_ctx: Any, **_: Any) -> list[dict[str, Any]]:
++        return [dict(e) for e in self.events]
++
++    async def list_events_since(
++        self, goal_id: str, after_sequence: int, limit: int = 100, *, tenant_ctx: Any = None
++    ) -> list[dict[str, Any]]:
++        if self.on_list is not None:
++            hook, self.on_list = self.on_list, None
++            await hook()
++        rows = [{**e, "_seq": i} for i, e in enumerate(self.events, start=1) if i > after_sequence]
++        return rows[:limit]
++
++
++def _record(goal_id: str, status: GoalStatus) -> GoalRecord:
++    return GoalRecord(
++        goal_id=goal_id,
++        goal_text="g",
++        status=status,
++        tenant_id=CTX.tenant_id,
++        priority="normal",
++        dry_run=False,
++        created_at=datetime.now(UTC).isoformat(),
++    )
++
++
++async def _drain(gen: Any) -> list[dict[str, Any]]:
++    return [e async for e in gen if e.get("type") != "_sse_heartbeat"]
++
++
++async def test_local_resume_pages_through_the_whole_history() -> None:
++    store = _Store(300)
++    store.events.append({"type": "goal_complete"})
++    svc = GoalService(event_store=store)
++    svc._goals["g"] = _record("g", GoalStatus.COMPLETE)
++    events = await _drain(svc.subscribe_events("g", CTX, since_sequence=50))
++    assert [e["_seq"] for e in events] == list(range(51, 302))
++
++
++async def test_remote_resume_pages_and_unwraps(monkeypatch: pytest.MonkeyPatch) -> None:
++    store = _Store(260)
++    store.events.append({"type": "goal_complete"})
++    svc = GoalService(event_store=store)
++    svc._db_get_goal_record = AsyncMock(return_value=_record("r", GoalStatus.COMPLETE))  # type: ignore[method-assign]
++    events = await _drain(svc.subscribe_events("r", CTX, since_sequence=10))
++    assert [e["_seq"] for e in events] == list(range(11, 262))
++
++
++async def test_live_dispatched_events_carry_their_sequence() -> None:
++    store = _Store()
++    svc = GoalService(event_store=store)
++    rec = _record("g2", GoalStatus.EXECUTING)
++    svc._goals["g2"] = rec
++    q: asyncio.Queue[Any] = asyncio.Queue()
++    rec.subscribers.append(q)
++    await svc._dispatch_event("g2", {"type": "step_started"}, tenant_ctx=CTX)
++    await svc._dispatch_event("g2", {"type": "step_complete"}, tenant_ctx=CTX)
++    got = [q.get_nowait(), q.get_nowait()]
++    assert [e["_seq"] for e in got] == [1, 2]
++
++
++async def test_remote_event_published_during_replay_is_delivered_once(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    import redis.asyncio as aioredis
++
++    server = fakeredis.FakeServer()
++    monkeypatch.setattr(
++        aioredis,
++        "from_url",
++        lambda *_a, **_k: fakeredis.aioredis.FakeRedis(server=server, decode_responses=True),
++    )
++    store = _Store(3)
++    svc = GoalService(event_store=store)
++    svc._redis_url_for_pubsub = "redis://fake"
++    svc._db_get_goal_record = AsyncMock(return_value=_record("x", GoalStatus.EXECUTING))  # type: ignore[method-assign]
++    channel = f"goal_events:{CTX.tenant_id}:x"
++    pub = fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
++
++    async def _arrives_during_replay() -> None:
++        # The owning replica persists seq 4 and publishes it while we replay.
++        store.events.append({"type": "step", "i": 4})
++        await pub.publish(channel, json.dumps({"type": "step", "i": 4, "_seq": 4}))
++
++    store.on_list = _arrives_during_replay
++
++    async def _finish() -> None:
++        await asyncio.sleep(0.3)
++        store.events.append({"type": "goal_complete"})
++        await pub.publish(channel, json.dumps({"type": "goal_complete", "_seq": 5}))
++
++    finisher = asyncio.create_task(_finish())
++    events = await asyncio.wait_for(_drain(svc.subscribe_events("x", CTX)), timeout=5)
++    await finisher
++    assert [e["_seq"] for e in events] == [1, 2, 3, 4, 5]
++
++
++def test_sse_endpoint_ids_come_only_from_the_server_sequence() -> None:
++    from fastapi import FastAPI
++    from fastapi.testclient import TestClient
++
++    from app.api.goals import router
++    from app.tenancy.middleware import TenantMiddleware
++
++    class _Svc:
++        async def get_goal(self, **_: Any) -> dict[str, Any]:
++            return {"tenant_id": CTX.tenant_id}
++
++        async def subscribe_events(self, **_: Any):  # type: ignore[no-untyped-def]
++            yield {"type": "step", "_seq": 41}
++            yield {"type": "unpersisted"}
++            yield {"type": "goal_complete", "_seq": 42}
++
++    app = FastAPI()
++
++    async def _resolve(key: str) -> TenantContext | None:
++        return CTX if key == "k" else None
++
++    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
++    app.include_router(router)
++    app.state.goal_service = _Svc()
++    body = TestClient(app).get("/goals/g/stream", headers={"X-API-Key": "k"}).text
++    ids = [line for line in body.splitlines() if line.startswith("id:")]
++    assert ids == ["id: 41", "id: 42"]
+diff --git a/agent-verse-backend/tests/services/test_sse_resume_cursor_integration.py b/agent-verse-backend/tests/services/test_sse_resume_cursor_integration.py
+new file mode 100644
+index 000000000..3d691de98
+--- /dev/null
++++ b/agent-verse-backend/tests/services/test_sse_resume_cursor_integration.py
+@@ -0,0 +1,94 @@
++"""SVC-05 integration (Postgres + Redis): a client reconnecting to ANOTHER replica
++with Last-Event-ID mid-run gets every later event exactly once.
++
++    DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock \\
++    TESTCONTAINERS_RYUK_DISABLED=true \\
++        uv run pytest tests/services/test_sse_resume_cursor_integration.py -m integration --no-cov
++"""
++
++from __future__ import annotations
++
++import asyncio
++import uuid
++from collections.abc import AsyncIterator
++from datetime import UTC, datetime
++from typing import Any
++
++import pytest
++from sqlalchemy import text
++from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
++from sqlalchemy.pool import NullPool
++
++from app.services.event_store import EventStore
++from app.services.goal_service import GoalRecord, GoalService, GoalStatus
++from app.tenancy.context import PlanTier, TenantContext
++
++pytestmark = pytest.mark.integration
++
++
++@pytest.fixture
++async def db(pg_url: str) -> AsyncIterator[Any]:
++    engine = create_async_engine(pg_url, poolclass=NullPool)
++    yield async_sessionmaker(engine, expire_on_commit=False)
++    await engine.dispose()
++
++
++async def test_reconnect_to_other_replica_with_last_event_id_loses_nothing(
++    db: Any, redis_url: str
++) -> None:
++    import redis.asyncio as aioredis
++
++    tid, gid = uuid.uuid4().hex, uuid.uuid4().hex
++    async with db() as s, s.begin():
++        await s.execute(
++            text("INSERT INTO tenants (id, name, email) VALUES (:t, 'T', :e)"),
++            {"t": tid, "e": f"{tid}@example.test"},
++        )
++        await s.execute(
++            text(
++                "INSERT INTO goals (id, tenant_id, goal_text, status, priority, "
++                "autonomy_mode, workflow_mode, execution_context, dry_run, iterations) "
++                "VALUES (:g, :t, 'x', 'executing', 'normal', 'supervised', 'single_agent', "
++                "'{}'::jsonb, false, 0)"
++            ),
++            {"g": gid, "t": tid},
++        )
++    ctx = TenantContext(tenant_id=tid, plan=PlanTier.PROFESSIONAL, api_key_id="k")
++    redis = aioredis.from_url(redis_url, decode_responses=True)
++
++    owner = GoalService(db_session_factory=db, event_store=EventStore(db))
++    owner._redis = redis
++    owner._goals[gid] = GoalRecord(
++        goal_id=gid,
++        goal_text="x",
++        status=GoalStatus.EXECUTING,
++        tenant_id=tid,
++        priority="normal",
++        dry_run=False,
++        created_at=datetime.now(UTC).isoformat(),
++    )
++    other = GoalService(db_session_factory=db, event_store=EventStore(db))
++    other._redis_url_for_pubsub = redis_url
++
++    try:
++        for i in range(1, 6):
++            await owner._dispatch_event(gid, {"type": "step_started", "i": i}, tenant_ctx=ctx)
++
++        # The client saw up to seq 3 on the owner, then reconnects to `other`.
++        async def _collect() -> list[dict[str, Any]]:
++            return [
++                e
++                async for e in other.subscribe_events(gid, ctx, since_sequence=3)
++                if e["type"] != "_sse_heartbeat"
++            ]
++
++        task = asyncio.create_task(_collect())
++        await asyncio.sleep(0.5)
++        for i in range(6, 8):
++            await owner._dispatch_event(gid, {"type": "step_started", "i": i}, tenant_ctx=ctx)
++        await owner._dispatch_event(gid, {"type": "worker_failed", "error": "x"}, tenant_ctx=ctx)
++        events = await asyncio.wait_for(task, timeout=15)
++    finally:
++        await redis.aclose()
++    assert [e["_seq"] for e in events] == [4, 5, 6, 7, 8]
++    assert [e.get("i") for e in events[:4]] == [4, 5, 6, 7]
+diff --git a/agent-verse-frontend/src/lib/sse/useGoalStream.test.ts b/agent-verse-frontend/src/lib/sse/useGoalStream.test.ts
+index bb0567e35..4e2d7ebed 100644
+--- a/agent-verse-frontend/src/lib/sse/useGoalStream.test.ts
++++ b/agent-verse-frontend/src/lib/sse/useGoalStream.test.ts
+@@ -238,6 +238,39 @@ describe('useGoalStream — reconnection, backoff, and resilience', () => {
+     await advance(0);
+   });
+ 
++  test('reconnect resumes from the server id and drops replayed events by sequence (SVC-05)', async () => {
++    vi.useFakeTimers();
++    const ctl1 = makeControllableStream();
++    const ctl2 = makeControllableStream();
++    const streams = [ctl1, ctl2];
++    let call = 0;
++    const fetchMock = vi.fn().mockImplementation(() =>
++      Promise.resolve(
++        new Response(streams[call++].stream, {
++          status: 200,
++          headers: { 'Content-Type': 'text/event-stream' },
++        })
++      )
++    );
++    vi.stubGlobal('fetch', fetchMock);
++
++    const { result } = renderHook(() => useGoalStream('goal-seq'));
++    ctl1.push(`id: 1\ndata: ${JSON.stringify({ type: 'step_started', _seq: 1 })}\n\n`);
++    ctl1.push(`id: 2\ndata: ${JSON.stringify({ type: 'step_complete', _seq: 2 })}\n\n`);
++    await advance(0);
++    ctl1.close();
++    await advance(1000);
++    expect(fetchMock).toHaveBeenCalledTimes(2);
++    const headers = (fetchMock.mock.calls[1][1] as RequestInit).headers as Record<string, string>;
++    expect(headers['Last-Event-ID']).toBe('2');
++
++    // The server replays seq 2 (overlap) before new events: shown once.
++    ctl2.push(`id: 2\ndata: ${JSON.stringify({ type: 'step_complete', _seq: 2 })}\n\n`);
++    ctl2.push(`id: 3\ndata: ${JSON.stringify({ type: 'goal_complete', _seq: 3 })}\n\n`);
++    await advance(0);
++    expect(result.current.events.map((e) => e._seq)).toEqual([1, 2, 3]);
++  });
++
+   test('worker_failed is terminal: no reconnect after it (SVC-06)', async () => {
+     vi.useFakeTimers();
+     const ctl = makeControllableStream();
+diff --git a/agent-verse-frontend/src/lib/sse/useGoalStream.ts b/agent-verse-frontend/src/lib/sse/useGoalStream.ts
+index 377a75a9d..199802105 100644
+--- a/agent-verse-frontend/src/lib/sse/useGoalStream.ts
++++ b/agent-verse-frontend/src/lib/sse/useGoalStream.ts
+@@ -75,6 +75,8 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
+   // lastEventId on the MessageEvent.  With a fetch-based reader we extract it
+   // from the raw frame ("id: " prefix) and store it here.
+   const lastEventIdRef = useRef<string>('');
++  // Highest server sequence (_seq) delivered; replays at or below it are dropped.
++  const maxSeqRef = useRef<number>(0);
+   const reconnectKey = opts?.reconnectKey;
+ 
+   onEventRef.current = opts?.onEvent;
+@@ -93,6 +95,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
+     // goal's live feed.
+     retryCountRef.current = 0;
+     lastEventIdRef.current = '';
++    maxSeqRef.current = 0;
+     setStreamingToken(null);
+     setEvents([]);
+ 
+@@ -219,6 +222,13 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
+                 }
+ 
+                 // Structural events — push to events array with dedup + cap
++                // The server sequence (also the SSE id) identifies an event across
++                // reconnects: a replay after Last-Event-ID never re-adds one.
++                const seq = typeof parsed._seq === "number" ? parsed._seq : null;
++                if (seq !== null) {
++                  if (seq <= maxSeqRef.current) continue;
++                  maxSeqRef.current = seq;
++                }
+                 setEvents((prev) => {
+                   const eventId = parsed["event_id"] as string | undefined;
+                   if (eventId && prev.some((e) => (e["event_id"] as string | undefined) === eventId)) {

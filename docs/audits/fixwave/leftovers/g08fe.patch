@@ -1,0 +1,365 @@
+diff --git a/agent-verse-backend/app/api/governance.py b/agent-verse-backend/app/api/governance.py
+index f0ec03623..a4ac4c88a 100644
+--- a/agent-verse-backend/app/api/governance.py
++++ b/agent-verse-backend/app/api/governance.py
+@@ -1331,6 +1331,9 @@ async def get_emergency_stop(request: Request) -> dict[str, Any]:
+         "activated_at": record.get("activated_at"),
+         "activated_by": record.get("activated_by"),
+         "reason": record.get("reason", ""),
++        # Outcome of the activation, recorded on the flag (None until recorded).
++        "cancelled_goals": record.get("cancelled_goals"),
++        "rejected_approvals": record.get("rejected_approvals"),
+     }
+ 
+ 
+@@ -1472,6 +1475,18 @@ async def emergency_stop(
+             _log.warning("emergency_stop_audit_failed: %s", exc)
+             errors.append(f"audit_failed: {type(exc).__name__}")
+ 
++    # 5. Record the outcome on the flag so GET reports it to every operator.
++    from app.governance.emergency_stop import record_stop_outcome
++
++    if not await record_stop_outcome(
++        _stop_redis(request),
++        tenant_stop_key(ctx.tenant_id),
++        record,
++        cancelled_goals=len(cancelled_goals),
++        rejected_approvals=len(rejected_approvals),
++    ):
++        _log.warning("emergency_stop_outcome_not_recorded")
++
+     partial = bool(failed_goals or failed_approvals or errors)
+     return {
+         "status": "emergency_stop_partial" if partial else "emergency_stop_activated",
+diff --git a/agent-verse-backend/app/governance/emergency_stop.py b/agent-verse-backend/app/governance/emergency_stop.py
+index e30248d30..e664e1c9b 100644
+--- a/agent-verse-backend/app/governance/emergency_stop.py
++++ b/agent-verse-backend/app/governance/emergency_stop.py
+@@ -155,6 +155,34 @@ async def activate_stop(
+     return record
+ 
+ 
++async def record_stop_outcome(
++    redis: Any,
++    key: str,
++    record: dict[str, Any],
++    *,
++    cancelled_goals: int,
++    rejected_approvals: int,
++) -> bool:
++    """Add the activation's outcome counts to the stored flag (best effort).
++
++    ``GET /governance/emergency-stop`` then reports them to every operator, not
++    just the browser that activated the stop. Written with ``SET XX`` so a stop
++    that was lifted in the meantime is never re-created. Returns whether the
++    counts were stored; a failure leaves the (already persisted) stop intact.
++    """
++    if redis is None:
++        return False
++    updated = {
++        **record,
++        "cancelled_goals": int(cancelled_goals),
++        "rejected_approvals": int(rejected_approvals),
++    }
++    try:
++        return bool(await redis.set(key, json.dumps(updated), xx=True))
++    except Exception:
++        return False
++
++
+ async def clear_stop(redis: Any, key: str) -> None:
+     if redis is None:
+         raise EmergencyStopUnavailableError("no shared control store (Redis) is configured")
+diff --git a/agent-verse-backend/tests/governance/test_emergency_stop_real.py b/agent-verse-backend/tests/governance/test_emergency_stop_real.py
+index 161329ced..b378a9ba5 100644
+--- a/agent-verse-backend/tests/governance/test_emergency_stop_real.py
++++ b/agent-verse-backend/tests/governance/test_emergency_stop_real.py
+@@ -118,6 +118,37 @@ def test_stop_cancels_goals_running_on_other_replicas() -> None:
+     assert resp.json()["cancelled_goals"] == 2
+ 
+ 
++def test_get_reports_the_stop_outcome_to_another_client() -> None:
++    """FE-01: the banner's counts come from the server, not the activating browser."""
++    server = fakeredis.FakeServer()
++    svc = _GoalServiceStub(["g-1", "g-2", "g-3"])
++    activating = TestClient(
++        _app(redis=fakeredis.aioredis.FakeRedis(server=server), goal_service=svc)
++    )
++    assert activating.post("/governance/emergency-stop", headers=H).status_code == 200
++
++    other = TestClient(_app(redis=fakeredis.aioredis.FakeRedis(server=server)))
++    state = other.get("/governance/emergency-stop", headers=H).json()
++    assert state["active"] is True
++    assert state["cancelled_goals"] == 3
++    assert state["rejected_approvals"] == 0
++    assert state["activated_by"] == "k-adm"
++
++
++def test_recording_the_outcome_never_resurrects_a_cleared_stop() -> None:
++    """The counts are written with SET XX: a stop lifted meanwhile stays lifted."""
++    import asyncio
++
++    from app.governance.emergency_stop import read_stop, record_stop_outcome
++
++    redis = fakeredis.aioredis.FakeRedis()
++    key = tenant_stop_key(TID)
++    record = asyncio.run(activate_stop(redis, key, activated_by="k"))
++    asyncio.run(redis.delete(key))  # cleared by another operator
++    asyncio.run(record_stop_outcome(redis, key, record, cancelled_goals=1, rejected_approvals=0))
++    assert asyncio.run(read_stop(redis, key)) is None
++
++
+ def test_stop_flag_write_failure_is_503() -> None:
+     redis = fakeredis.aioredis.FakeRedis()
+     redis.set = AsyncMock(side_effect=ConnectionError("down"))  # type: ignore[method-assign]
+diff --git a/agent-verse-frontend/src/components/ui/AppLayout.test.tsx b/agent-verse-frontend/src/components/ui/AppLayout.test.tsx
+index 7f5ddbcee..618f9d16c 100644
+--- a/agent-verse-frontend/src/components/ui/AppLayout.test.tsx
++++ b/agent-verse-frontend/src/components/ui/AppLayout.test.tsx
+@@ -58,6 +58,34 @@ function mockStopState(active: boolean) {
+ }
+ 
+ describe('AppLayout emergency banner follows the server', () => {
++  test('a failing status read shows "status unknown", never a remembered local value', async () => {
++    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
++      if (String(input).includes('/governance/emergency-stop') && (!init?.method || init.method === 'GET'))
++        return new Response(JSON.stringify({ detail: 'control store unavailable' }), {
++          status: 503, headers: { 'Content-Type': 'application/json' },
++        });
++      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
++    });
++    // A stale "active, 7 cancelled" from an earlier session in this browser.
++    useEmergencyStore.setState({ isActive: true, activatedAt: '2026-01-01T00:00:00Z', cancelledGoals: 7, rejectedApprovals: 0 });
++    renderLayout();
++    expect(await screen.findByText(/Emergency-stop status unknown/i)).toBeInTheDocument();
++    expect(screen.queryByText(/7 goals cancelled/i)).not.toBeInTheDocument();
++  });
++
++  test('the cancelled-goals count comes from the server (a stop activated elsewhere)', async () => {
++    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
++      if (String(input).includes('/governance/emergency-stop') && (!init?.method || init.method === 'GET'))
++        return new Response(
++          JSON.stringify({ active: true, activated_at: '2026-09-29T10:00:00+00:00', cancelled_goals: 5, rejected_approvals: 2 }),
++          { status: 200, headers: { 'Content-Type': 'application/json' } },
++        );
++      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
++    });
++    renderLayout();
++    expect(await screen.findByText(/5 goals cancelled/i)).toBeInTheDocument();
++  });
++
+   test('shows the banner when the server reports an active stop', async () => {
+     mockStopState(true);
+     renderLayout();
+diff --git a/agent-verse-frontend/src/components/ui/AppLayout.tsx b/agent-verse-frontend/src/components/ui/AppLayout.tsx
+index 20fcd4f32..07a38c229 100644
+--- a/agent-verse-frontend/src/components/ui/AppLayout.tsx
++++ b/agent-verse-frontend/src/components/ui/AppLayout.tsx
+@@ -20,26 +20,43 @@ import { API_BASE, errorMessageFromBody, governanceApi } from "@/lib/api/client"
+  */
+ function useEmergencyStopSync() {
+   const syncFromServer = useEmergencyStore((s) => s.syncFromServer);
+-  const { data } = useQuery({
++  const query = useQuery({
+     queryKey: ["governance", "emergency-stop"],
+     queryFn: () => governanceApi.getEmergencyStop(),
+     refetchInterval: 30_000,
+     retry: false,
+   });
++  const { data } = query;
+   useEffect(() => {
+     if (typeof data?.active === "boolean") {
+-      syncFromServer({ active: data.active, activatedAt: data.activated_at ?? null });
++      syncFromServer({
++        active: data.active,
++        activatedAt: data.activated_at ?? null,
++        cancelledGoals: data.cancelled_goals ?? null,
++        rejectedApprovals: data.rejected_approvals ?? null,
++      });
+     }
+   }, [data, syncFromServer]);
++  return query;
+ }
+ 
+ function EmergencyBanner() {
+-  useEmergencyStopSync();
++  const statusQuery = useEmergencyStopSync();
+   const { isActive, activatedAt, cancelledGoals, clear } = useEmergencyStore();
+   const qc = useQueryClient();
+   const [clearError, setClearError] = useState<string | null>(null);
+   const [clearing, setClearing] = useState(false);
+ 
++  // The status read failed (e.g. 503 while the control store is down): say so
++  // rather than showing — or hiding — a remembered value.
++  if (statusQuery.isError) {
++    return (
++      <div role="status" className="bg-amber-500 text-black px-4 py-1.5 text-sm font-medium shrink-0">
++        Emergency-stop status unknown — the server could not report it. Goals may be halted.
++      </div>
++    );
++  }
++
+   if (!isActive) return null;
+ 
+   // Only a successful DELETE lifts the stop. This used to ignore the response
+diff --git a/agent-verse-frontend/src/features/governance/GovernancePage.tsx b/agent-verse-frontend/src/features/governance/GovernancePage.tsx
+index cbf48bce4..cbcf54293 100644
+--- a/agent-verse-frontend/src/features/governance/GovernancePage.tsx
++++ b/agent-verse-frontend/src/features/governance/GovernancePage.tsx
+@@ -160,11 +160,13 @@ function BudgetGauge({
+ function EmergencyStopBanner() {
+   const { isActive, activatedAt, cancelledGoals, rejectedApprovals, setActive, clear } = useEmergencyStore();
+   const [confirming, setConfirming] = useState(false);
++  const qc = useQueryClient();
+ 
+   const stopMutation = useMutation({
+     mutationFn: () => governanceApi.emergencyStop(),
+     onSuccess: (d) => {
+       setActive({ cancelledGoals: d.cancelled_goals, rejectedApprovals: d.rejected_approvals });
++      void qc.invalidateQueries({ queryKey: ['governance', 'emergency-stop'] });
+       setConfirming(false);
+       toast({ kind: 'error', message: 'Emergency stop activated.' });
+     },
+@@ -174,6 +176,7 @@ function EmergencyStopBanner() {
+     mutationFn: () => governanceApi.clearEmergencyStop(),
+     onSuccess: () => {
+       clear();
++      void qc.invalidateQueries({ queryKey: ['governance', 'emergency-stop'] });
+       toast({ kind: 'success', message: 'Emergency stop cleared.' });
+     },
+   });
+diff --git a/agent-verse-frontend/src/lib/api/client.ts b/agent-verse-frontend/src/lib/api/client.ts
+index 4d72c98d3..75e423d15 100644
+--- a/agent-verse-frontend/src/lib/api/client.ts
++++ b/agent-verse-frontend/src/lib/api/client.ts
+@@ -1134,7 +1134,14 @@ export const governanceApi = {
+     ),
+   // Server-side stop state — the source of truth for the emergency banner.
+   getEmergencyStop: () =>
+-    request<{ active?: boolean; activated_at?: string | null; tenant_id?: string }>(
++    request<{
++      active?: boolean;
++      activated_at?: string | null;
++      tenant_id?: string;
++      activated_by?: string | null;
++      cancelled_goals?: number | null;
++      rejected_approvals?: number | null;
++    }>(
+       "/governance/emergency-stop"
+     ),
+ };
+diff --git a/agent-verse-frontend/src/stores/emergency.test.ts b/agent-verse-frontend/src/stores/emergency.test.ts
+index 15ced2439..0dc01b818 100644
+--- a/agent-verse-frontend/src/stores/emergency.test.ts
++++ b/agent-verse-frontend/src/stores/emergency.test.ts
+@@ -48,11 +48,17 @@ describe('useEmergencyStore', () => {
+     expect(s.rejectedApprovals).toBe(0);
+   });
+ 
+-  it('persists state under the agentverse-emergency key', () => {
++  it('is never persisted to browser storage (the server is the source of truth)', () => {
+     useEmergencyStore.getState().setActive({ cancelledGoals: 1, rejectedApprovals: 1 });
+-    const raw = localStorage.getItem('agentverse-emergency');
+-    expect(raw).not.toBeNull();
+-    const parsed = JSON.parse(raw as string);
+-    expect(parsed.state.isActive).toBe(true);
++    expect(localStorage.getItem('agentverse-emergency')).toBeNull();
++  });
++
++  it('syncFromServer takes the counts from the server payload', () => {
++    useEmergencyStore.getState().syncFromServer({
++      active: true, activatedAt: '2026-09-29T10:00:00Z', cancelledGoals: 5, rejectedApprovals: 2,
++    });
++    const s = useEmergencyStore.getState();
++    expect(s.cancelledGoals).toBe(5);
++    expect(s.rejectedApprovals).toBe(2);
+   });
+ });
+diff --git a/agent-verse-frontend/src/stores/emergency.ts b/agent-verse-frontend/src/stores/emergency.ts
+index 76fc98054..6f9d3ba01 100644
+--- a/agent-verse-frontend/src/stores/emergency.ts
++++ b/agent-verse-frontend/src/stores/emergency.ts
+@@ -1,6 +1,11 @@
+ import { create } from 'zustand';
+-import { persist } from 'zustand/middleware';
+ 
++/**
++ * Emergency-stop state for the banners. NOT persisted: the server
++ * (GET /governance/emergency-stop) is the source of truth, and a remembered
++ * browser-local value used to outlive the real stop (or show a stale count
++ * when the status read failed).
++ */
+ interface EmergencyState {
+   isActive: boolean;
+   activatedAt: string | null;
+@@ -8,38 +13,43 @@ interface EmergencyState {
+   rejectedApprovals: number;
+   setActive: (stats: { cancelledGoals: number; rejectedApprovals: number }) => void;
+   /** Apply the server's stop state (GET /governance/emergency-stop). */
+-  syncFromServer: (server: { active: boolean; activatedAt?: string | null }) => void;
++  syncFromServer: (server: {
++    active: boolean;
++    activatedAt?: string | null;
++    cancelledGoals?: number | null;
++    rejectedApprovals?: number | null;
++  }) => void;
+   clear: () => void;
+ }
+ 
+-export const useEmergencyStore = create<EmergencyState>()(
+-  persist(
+-    (set) => ({
++export const useEmergencyStore = create<EmergencyState>()((set) => ({
++  isActive: false,
++  activatedAt: null,
++  cancelledGoals: 0,
++  rejectedApprovals: 0,
++  setActive: (stats) =>
++    set({
++      isActive: true,
++      activatedAt: new Date().toISOString(),
++      cancelledGoals: stats.cancelledGoals,
++      rejectedApprovals: stats.rejectedApprovals,
++    }),
++  syncFromServer: ({ active, activatedAt, cancelledGoals, rejectedApprovals }) =>
++    set((s) =>
++      active
++        ? {
++            isActive: true,
++            activatedAt: activatedAt ?? s.activatedAt ?? null,
++            cancelledGoals: cancelledGoals ?? s.cancelledGoals,
++            rejectedApprovals: rejectedApprovals ?? s.rejectedApprovals,
++          }
++        : { isActive: false, activatedAt: null, cancelledGoals: 0, rejectedApprovals: 0 }
++    ),
++  clear: () =>
++    set({
+       isActive: false,
+       activatedAt: null,
+       cancelledGoals: 0,
+       rejectedApprovals: 0,
+-      setActive: (stats) =>
+-        set({
+-          isActive: true,
+-          activatedAt: new Date().toISOString(),
+-          cancelledGoals: stats.cancelledGoals,
+-          rejectedApprovals: stats.rejectedApprovals,
+-        }),
+-      syncFromServer: ({ active, activatedAt }) =>
+-        set((s) =>
+-          active
+-            ? { isActive: true, activatedAt: activatedAt ?? s.activatedAt ?? null }
+-            : { isActive: false, activatedAt: null, cancelledGoals: 0, rejectedApprovals: 0 }
+-        ),
+-      clear: () =>
+-        set({
+-          isActive: false,
+-          activatedAt: null,
+-          cancelledGoals: 0,
+-          rejectedApprovals: 0,
+-        }),
+     }),
+-    { name: 'agentverse-emergency' }
+-  )
+-);
++}));

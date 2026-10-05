@@ -1,0 +1,73 @@
+diff --git a/agent-verse-backend/app/db/migrations/versions/b5f8d2c0e3a4_user_sessions.py b/agent-verse-backend/app/db/migrations/versions/b5f8d2c0e3a4_user_sessions.py
+new file mode 100644
+index 000000000..23cd7f3d6
+--- /dev/null
++++ b/agent-verse-backend/app/db/migrations/versions/b5f8d2c0e3a4_user_sessions.py
+@@ -0,0 +1,53 @@
++"""user_sessions: platform sessions for SSO-authenticated users (SAML-01, SSO-01).
++
++A SAML or Google login verified the identity and then answered 501: nothing
++could carry a user principal past TenantMiddleware. A login now inserts a row
++here and returns a short-lived signed session token naming it; every request
++re-checks the row (and the user's membership) so logout and SCIM deprovisioning
++take effect cluster-wide. Tenant-isolated with FORCE RLS.
++
++Revision ID: b5f8d2c0e3a4
++Revises: a4e7c1b9d2f3
++"""
++
++from __future__ import annotations
++
++from alembic import op
++
++revision = "b5f8d2c0e3a4"
++down_revision = "a4e7c1b9d2f3"
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    op.execute(
++        """
++        CREATE TABLE IF NOT EXISTS user_sessions (
++            id               VARCHAR(64) PRIMARY KEY,
++            tenant_id        VARCHAR(64) NOT NULL,
++            user_id          VARCHAR(32) NOT NULL,
++            idp              VARCHAR(32) NOT NULL,
++            created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
++            expires_at       TIMESTAMPTZ NOT NULL,
++            revoked_at       TIMESTAMPTZ,
++            mfa_verified_at  TIMESTAMPTZ
++        )
++        """
++    )
++    op.execute(
++        "CREATE INDEX IF NOT EXISTS ix_user_sessions_tenant_user "
++        "ON user_sessions (tenant_id, user_id)"
++    )
++    op.execute("ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY")
++    op.execute("ALTER TABLE user_sessions FORCE ROW LEVEL SECURITY")
++    op.execute("DROP POLICY IF EXISTS user_sessions_tenant_isolation ON user_sessions")
++    op.execute(
++        "CREATE POLICY user_sessions_tenant_isolation ON user_sessions "
++        "USING (tenant_id = current_setting('app.tenant_id', true)) "
++        "WITH CHECK (tenant_id = current_setting('app.tenant_id', true))"
++    )
++
++
++def downgrade() -> None:
++    op.execute("DROP TABLE IF EXISTS user_sessions")
+diff --git a/agent-verse-backend/app/tenancy/context.py b/agent-verse-backend/app/tenancy/context.py
+index 5428b2533..f4fffccca 100644
+--- a/agent-verse-backend/app/tenancy/context.py
++++ b/agent-verse-backend/app/tenancy/context.py
+@@ -77,6 +77,9 @@ class TenantContext:
+     # It travels with the goal (goals.execution_context) so the worker's tool
+     # gate enforces the same restrictions.
+     agent_key: AgentKeyRestriction | None = None
++    # Set for a user principal (a platform session issued after SSO/SAML login):
++    # the users.id the request acts as. None for API keys and agents.
++    user_id: str | None = None
+ 
+ 
+ def _matches(names: tuple[str, ...], patterns: tuple[str, ...]) -> bool:

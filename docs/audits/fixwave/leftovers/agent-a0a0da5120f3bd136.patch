@@ -1,0 +1,1757 @@
+diff --git a/agent-verse-backend/app/api/auth.py b/agent-verse-backend/app/api/auth.py
+index f10b0f74b..0a1bf3fc6 100644
+--- a/agent-verse-backend/app/api/auth.py
++++ b/agent-verse-backend/app/api/auth.py
+@@ -15,6 +15,7 @@ from typing import Any
+ 
+ from fastapi import APIRouter, HTTPException, Request
+ from fastapi.responses import RedirectResponse
++from pydantic import BaseModel, Field
+ 
+ router = APIRouter(prefix="/auth", tags=["auth"])
+ 
+@@ -210,3 +211,33 @@ async def get_userinfo(request: Request) -> dict[str, Any]:
+         "roles": roles,
+         "email_verified": payload.get("email_verified", False),
+     }
++
++
++class SessionExchangeRequest(BaseModel):
++    code: str = Field(..., min_length=16, max_length=256)
++
++
++@router.post("/session/exchange")
++async def exchange_session_code(request: Request, body: SessionExchangeRequest) -> dict[str, Any]:
++    """Exchange a one-time SSO login code (SAML / Google) for a session token.
++
++    The SSO callback redirects the browser to the frontend with ``?code=``; the
++    token itself never travels in a URL. A code works once, for 60 seconds.
++    """
++    await _check_auth_rate_limit(request)
++    from app.auth.user_sessions import SessionStoreUnavailableError, get_user_session_store
++
++    try:
++        result = await get_user_session_store(request.app).exchange_code(body.code)
++    except SessionStoreUnavailableError as exc:
++        raise HTTPException(503, exc.message, headers={"Retry-After": "5"}) from exc
++    if result is None:
++        raise HTTPException(401, "Login code is invalid, expired or already used")
++    plan = "free"
++    svc = getattr(request.app.state, "tenant_service", None)
++    if svc is not None:
++        try:
++            plan = str((await svc.get_tenant(result["tenant_id"])).get("plan", "free"))
++        except Exception:
++            plan = "free"  # display only; the session resolves the real plan per request
++    return {**result, "plan": plan}
+diff --git a/agent-verse-backend/app/api/enterprise.py b/agent-verse-backend/app/api/enterprise.py
+index 78ee411de..18046280b 100644
+--- a/agent-verse-backend/app/api/enterprise.py
++++ b/agent-verse-backend/app/api/enterprise.py
+@@ -2214,87 +2214,153 @@ async def saml_login(request: Request) -> Response:
+         raise HTTPException(500, f"SAML login error: {exc}") from exc
+ 
+ 
+-@router.post("/saml/acs/{tenant_id}")
+-async def saml_acs(request: Request, tenant_id: str) -> JSONResponse:
+-    """SAML Assertion Consumer Service for *tenant_id* (the IdP's HTTP-POST target).
++async def _load_saml_config(db: Any, tenant_id: str) -> dict[str, Any] | None:
++    """The tenant's active SAML IdP configuration, or None when it has none."""
++    from sqlalchemy import text
+ 
+-    Public by design (TenantMiddleware bypass ``/enterprise/saml/acs/``): the
+-    signed assertion, validated against the tenant's configured IdP
+-    certificate in python3-saml strict mode, is the authentication. Replay
+-    protection (Redis) fails closed (503).
++    async with (
++        db() as session,
++        session.begin(),
++        sqlalchemy_rls_context(session, tenant_id),
++    ):
++        row = (
++            await session.execute(
++                text("""
++            SELECT idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
++                   attribute_mapping, default_role, jit_provisioning
++            FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
++        """),
++                {"tid": tenant_id},
++            )
++        ).fetchone()
++    if row is None:
++        return None
++    return {
++        "idp_entity_id": row[0],
++        "idp_sso_url": row[1],
++        "idp_cert": row[2],
++        "sp_entity_id": row[3],
++        "attribute_mapping": row[4] or {},
++        "default_role": row[5] or "viewer",
++        "jit_provisioning": bool(row[6]) if row[6] is not None else True,
++    }
+ 
+-    NOT IMPLEMENTED: turning a verified identity into an AgentVerse session (JIT
+-    user provisioning + a credential TenantMiddleware accepts). The endpoint
+-    used to answer 200 ``{"authenticated": true}`` with no session at all; it
+-    now answers 501 after verifying the assertion.
++
++def _saml_provider_for(request: Request, tenant_id: str, cfg: dict[str, Any]) -> Any:
++    from app.auth.saml_provider import SAMLProvider
++
++    return SAMLProvider(
++        tenant_id=tenant_id,
++        idp_entity_id=cfg["idp_entity_id"],
++        idp_sso_url=cfg["idp_sso_url"],
++        idp_cert=cfg["idp_cert"],
++        sp_entity_id=cfg["sp_entity_id"],
++        acs_url=_saml_acs_url(request, tenant_id),
++        attribute_mapping=cfg["attribute_mapping"],
++        # app.state.redis is never set (the runtime client is app.state._redis):
++        # reading it silently disabled replay protection.
++        redis=getattr(request.app.state, "_redis", None),
++    )
++
++
++@router.get("/saml/login/{tenant_id}")
++async def saml_login_public(request: Request, tenant_id: str) -> Response:
++    """SP-initiated SAML login for *tenant_id* — public: a person has no key yet.
++
++    (``GET /enterprise/saml/login`` needs a tenant API key, which someone who is
++    trying to log in does not hold.)
+     """
++    from fastapi.responses import RedirectResponse
++
+     db = _get_db(request)
+     if db is None:
+         raise HTTPException(503, "Database not configured")
+     try:
+-        form = await request.form()
+-        saml_response = form.get("SAMLResponse", "")
+-        if not saml_response:
+-            raise HTTPException(400, "Missing SAMLResponse in form data")
+-        from sqlalchemy import text
++        cfg = await _load_saml_config(db, tenant_id)
++    except Exception as exc:
++        raise HTTPException(503, "SAML configuration unavailable; retry") from exc
++    if cfg is None:
++        raise HTTPException(404, "SAML not configured")
++    try:
++        return RedirectResponse(url=_saml_provider_for(request, tenant_id, cfg).initiate_login())
++    except SAMLNotInstalledError as exc:
++        raise HTTPException(501, str(exc)) from exc
+ 
+-        from app.auth.saml_provider import SAMLProvider
+ 
+-        async with (
+-            db() as session,
+-            session.begin(),
+-            sqlalchemy_rls_context(session, tenant_id),
+-        ):
+-            row = (
+-                await session.execute(
+-                    text("""
+-                SELECT idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+-                       attribute_mapping
+-                FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
+-            """),
+-                    {"tid": tenant_id},
+-                )
+-            ).fetchone()
+-        if row is None:
+-            raise HTTPException(404, "SAML not configured")
+-        # app.state.redis is never set (the runtime client is app.state._redis):
+-        # reading it silently disabled replay protection.
+-        redis = getattr(request.app.state, "_redis", None)
+-        provider = SAMLProvider(
+-            tenant_id=tenant_id,
+-            idp_entity_id=row[0],
+-            idp_sso_url=row[1],
+-            idp_cert=row[2],
+-            sp_entity_id=row[3],
+-            acs_url=_saml_acs_url(request, tenant_id),
+-            attribute_mapping=row[4] or {},
+-            redis=redis,
++@router.post("/saml/acs/{tenant_id}")
++async def saml_acs(request: Request, tenant_id: str) -> Response:
++    """SAML Assertion Consumer Service for *tenant_id* (the IdP's HTTP-POST target).
++
++    Public by design (TenantMiddleware bypass ``/enterprise/saml/acs/``): the
++    signed assertion, validated against the tenant's configured IdP certificate
++    in python3-saml strict mode (signature, Destination, Audience, Recipient,
++    validity window), is the authentication. Replay protection (Redis) fails
++    closed (503).
++
++    On success the person is JIT-provisioned into the tenant (``users`` +
++    ``tenant_memberships`` with the config's ``default_role``; refused when JIT
++    is off and they were never provisioned, or when SCIM deactivated them), a
++    user session is recorded, and the browser is redirected (303) to the
++    frontend with a one-time login code it exchanges at
++    ``POST /auth/session/exchange`` for the session token.
++    """
++    from fastapi.responses import RedirectResponse
++
++    from app.auth.user_sessions import (
++        LoginRefusedError,
++        SessionStoreUnavailableError,
++        get_user_session_store,
++    )
++    from app.core.config import get_settings
++
++    db = _get_db(request)
++    if db is None:
++        raise HTTPException(503, "Database not configured")
++    form = await request.form()
++    saml_response = form.get("SAMLResponse", "")
++    if not saml_response:
++        raise HTTPException(400, "Missing SAMLResponse in form data")
++    try:
++        cfg = await _load_saml_config(db, tenant_id)
++    except Exception as exc:
++        raise HTTPException(503, "SAML configuration unavailable; retry") from exc
++    if cfg is None:
++        raise HTTPException(404, "SAML not configured")
++    try:
++        identity = await _saml_provider_for(request, tenant_id, cfg).process_acs(
++            str(saml_response)
+         )
+-        identity = await provider.process_acs(str(saml_response))
+-    except HTTPException:
+-        raise
+     except SAMLNotInstalledError as exc:
+-        # Was a 500 ("SAML ACS error: python3-saml is not installed").
+         raise HTTPException(501, str(exc)) from exc
+     except SAMLReplayCheckUnavailableError as exc:
+         raise HTTPException(503, str(exc)) from exc
+     except ValueError as exc:
+         raise HTTPException(401, str(exc)) from exc
+     except Exception as exc:
+-        raise HTTPException(500, f"SAML ACS error: {exc}") from exc
+-    return JSONResponse(
+-        status_code=501,
+-        content={
+-            "error": "NOT_IMPLEMENTED",
+-            "detail": (
+-                "The SAML assertion is valid, but issuing an AgentVerse session "
+-                "for SAML users is not implemented."
+-            ),
+-            "email": identity.email,
+-            "name_id": identity.name_id,
+-            "authenticated": False,
+-        },
+-    )
++        # An assertion python3-saml cannot even parse is a bad credential.
++        get_logger(__name__).warning("saml_acs_invalid_response", error=str(exc)[:200])
++        raise HTTPException(401, "Invalid SAML response") from exc
++
++    display = " ".join(p for p in (identity.first_name, identity.last_name) if p) or None
++    try:
++        store = get_user_session_store(request.app)
++        user_id = await store.provision_member(
++            tenant_id=tenant_id,
++            email=identity.email,
++            name=display,
++            default_role=str(cfg["default_role"]),
++            jit=bool(cfg["jit_provisioning"]),
++        )
++        code = await store.issue_login_code(
++            tenant_id=tenant_id, user_id=user_id, auth_method="saml"
++        )
++    except LoginRefusedError as exc:
++        raise HTTPException(403, exc.message) from exc
++    except SessionStoreUnavailableError as exc:
++        raise HTTPException(503, exc.message, headers={"Retry-After": "5"}) from exc
++    get_logger(__name__).info("saml_login_succeeded", tenant_id=tenant_id, user_id=user_id)
++    frontend = get_settings().frontend_url.rstrip("/")
++    return RedirectResponse(url=f"{frontend}/auth/sso/complete?code={code}", status_code=303)
+ 
+ 
+ @router.post("/saml/test")
+diff --git a/agent-verse-backend/app/auth/saml_provider.py b/agent-verse-backend/app/auth/saml_provider.py
+index 018ded12f..e6249ea91 100644
+--- a/agent-verse-backend/app/auth/saml_provider.py
++++ b/agent-verse-backend/app/auth/saml_provider.py
+@@ -11,8 +11,9 @@ Amendment 8.4: SAML replay protection via Redis assertion-ID cache.
+ Flow:
+   1. GET /enterprise/saml/login → redirect to IdP SSO URL
+   2. IdP authenticates → POST to /enterprise/saml/acs/{tenant_id}
+-  3. ACS validates assertion, checks replay, extracts attributes,
+-     (session issuance: NOT IMPLEMENTED — the ACS answers 501)
++  3. ACS validates assertion, checks replay, extracts attributes; the API then
++     JIT-provisions the person and issues a user session
++     (app.auth.user_sessions) via a one-time login code.
+ """
+ 
+ from __future__ import annotations
+@@ -126,10 +127,15 @@ class SAMLProvider:
+             raise SAMLNotInstalledError()
+ 
+         settings = self._build_saml_settings()
+-        # python3-saml version-compatible https flag
+-        https_val: Any = True if sys.version_info >= (3, 11) else "on"
++        # python3-saml rebuilds the URL the response was POSTed to from this
++        # request data and checks Destination / Recipient against it, so it must
++        # be the advertised ACS URL exactly — including its scheme (an http ACS
++        # used to be rebuilt as https and every assertion failed Destination).
++        acs = urlparse(self._acs_url)
++        # python3-saml treats any value other than "off" as https.
++        https_val = "on" if acs.scheme == "https" else "off"
+         request_data = {
+-            "http_host": self._acs_url.split("/")[2] if "/" in self._acs_url else "localhost",
++            "http_host": acs.netloc or "localhost",
+             # Must be the ACS path python3-saml checks Destination against.
+             "script_name": urlparse(self._acs_url).path or "/",
+             "post_data": {"SAMLResponse": saml_response},
+@@ -235,6 +241,9 @@ class SAMLProvider:
+             "security": {
+                 "wantAssertionsSigned": True,
+                 "requestedAuthnContext": False,
++                # The (signed) NameID identifies the person; IdPs that send no
++                # AttributeStatement are valid SAML and must not be rejected.
++                "wantAttributeStatement": False,
+             },
+             # MUST be strict. With strict=False python3-saml skips the
+             # "assertion must be signed" (wantAssertionsSigned), Destination,
+diff --git a/agent-verse-backend/app/auth/user_sessions.py b/agent-verse-backend/app/auth/user_sessions.py
+new file mode 100644
+index 000000000..e6f5a9fa7
+--- /dev/null
++++ b/agent-verse-backend/app/auth/user_sessions.py
+@@ -0,0 +1,532 @@
++"""User sessions: the credential a person holds after an SSO login (SAML, Google).
++
++Flow
++----
++1. An SSO callback (SAML ACS, Google callback) has verified an identity. It
++   JIT-provisions the person (``users`` + ``tenant_memberships``) through
++   :meth:`UserSessionStore.provision_member` and records a session row with a
++   one-time **login code** (:meth:`issue_login_code`, 60 s).
++2. The callback redirects the browser to the frontend with ``?code=``; the
++   frontend exchanges it (``POST /auth/session/exchange``) for an opaque bearer
++   token ``avs_…`` (:meth:`exchange_code`). The token never travels in a URL.
++3. ``TenantMiddleware`` resolves ``avs_`` tokens with :meth:`resolve` into a
++   ``TenantContext`` carrying ``user_id`` and the membership's roles.
++
++Storage and scale
++-----------------
++Postgres is the source of truth (``user_sessions``, FORCE RLS). Resolution is one
++indexed lookup by token digest; the resolved context is cached in the shared
++Redis for at most :data:`CACHE_TTL_SECONDS` and the cache entry is deleted on
++every revocation (logout, SCIM deprovisioning), so no replica holds session
++state in process memory and a revocation is honoured cluster-wide at once.
++Everything fails closed: an unreadable store is a 503, never "authenticated".
++"""
++
++from __future__ import annotations
++
++import hashlib
++import json
++import secrets
++from datetime import UTC, datetime, timedelta
++from typing import Any
++
++from app.core.errors import PlatformError
++from app.observability.logging import get_logger
++from app.tenancy.context import PlanTier, TenantContext
++
++logger = get_logger(__name__)
++
++SESSION_TOKEN_PREFIX = "avs_"
++LOGIN_CODE_TTL_SECONDS = 60
++CACHE_TTL_SECONDS = 60
++DEFAULT_SESSION_TTL_SECONDS = 8 * 3600
++_CACHE_PREFIX = "user_session:"
++
++# Membership status that may hold a session (SCIM deactivation sets "deactivated").
++MEMBERSHIP_ACTIVE = "active"
++
++
++class SessionStoreUnavailableError(PlatformError):
++    """The session store (Postgres / Redis) could not complete the operation (→ 503)."""
++
++    code = "SESSION_STORE_UNAVAILABLE"
++    http_status = 503
++    retryable = True
++
++
++class LoginRefusedError(PlatformError):
++    """A verified identity may not log in to this tenant (→ 403)."""
++
++    code = "LOGIN_REFUSED"
++    http_status = 403
++
++
++def is_session_token(raw: str) -> bool:
++    return raw.startswith(SESSION_TOKEN_PREFIX)
++
++
++def _digest(value: str) -> str:
++    return hashlib.sha256(value.encode()).hexdigest()
++
++
++def membership_roles(role: str | None) -> tuple[str, ...]:
++    """RBAC roles of a membership role (least privilege: unknown → viewer)."""
++    from app.tenancy.rbac import VALID_ROLES
++
++    if role == "owner":
++        return ("admin",)
++    if role in VALID_ROLES:
++        return (str(role),)
++    return ("viewer",)
++
++
++class UserSessionStore:
++    """Postgres-authoritative user sessions with a short shared Redis cache."""
++
++    def __init__(
++        self,
++        db_factory: Any = None,
++        redis: Any = None,
++        *,
++        session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS,
++    ) -> None:
++        self._db = db_factory
++        self._redis = redis
++        self._ttl = int(session_ttl_seconds)
++
++    def set_db(self, db_factory: Any) -> None:
++        self._db = db_factory
++
++    def set_redis(self, redis: Any) -> None:
++        self._redis = redis
++
++    def _require_db(self) -> Any:
++        if self._db is None:
++            raise SessionStoreUnavailableError("User sessions require the database.")
++        return self._db
++
++    # ── provisioning ─────────────────────────────────────────────────────────
++
++    async def provision_member(
++        self,
++        *,
++        tenant_id: str,
++        email: str,
++        name: str | None,
++        default_role: str = "viewer",
++        jit: bool = True,
++    ) -> str:
++        """Return the ``users.id`` of *email*'s ACTIVE membership in *tenant_id*.
++
++        JIT-creates the global user and the membership (with *default_role*)
++        when *jit* is on; refuses (:class:`LoginRefusedError`) an unknown person
++        when it is off, a deactivated membership (SCIM offboarding) always, and
++        an inactive / unknown tenant.
++        """
++        from sqlalchemy import func, select
++
++        from app.db.models.tenant import Tenant
++        from app.db.models.user import TenantMembership, User
++        from app.db.rls import sqlalchemy_rls_context
++        from app.tenancy.rbac import VALID_ROLES
++
++        email = email.strip()
++        if not email:
++            raise LoginRefusedError("The identity provider sent no e-mail / NameID.")
++        role = default_role if default_role in VALID_ROLES else "viewer"
++        db = self._require_db()
++        refused: str | None = None
++        user_id = ""
++        try:
++            async with db() as session, session.begin():
++                async with sqlalchemy_rls_context(session, tenant_id):
++                    tenant_active = (
++                        await session.execute(
++                            select(Tenant.id).where(
++                                Tenant.id == tenant_id,
++                                Tenant.is_active == True,  # noqa: E712
++                            )
++                        )
++                    ).scalar_one_or_none()
++                    user = (
++                        await session.execute(
++                            select(User).where(func.lower(User.email) == email.lower())
++                        )
++                    ).scalar_one_or_none()
++                    membership = None
++                    if user is not None:
++                        membership = (
++                            await session.execute(
++                                select(TenantMembership).where(
++                                    TenantMembership.user_id == user.id,
++                                    TenantMembership.tenant_id == tenant_id,
++                                )
++                            )
++                        ).scalar_one_or_none()
++                    if tenant_active is None:
++                        refused = "unknown or inactive tenant"
++                    elif membership is not None and membership.status != MEMBERSHIP_ACTIVE:
++                        refused = "membership deactivated"
++                    elif membership is None and not jit:
++                        refused = "not provisioned for this tenant (JIT provisioning is off)"
++                    else:
++                        if user is None:
++                            user = User(email=email, name=name or None)
++                            session.add(user)
++                            await session.flush()
++                        elif not user.name and name:
++                            user.name = name
++                        if membership is None:
++                            session.add(
++                                TenantMembership(
++                                    user_id=user.id,
++                                    tenant_id=tenant_id,
++                                    role=role,
++                                    status=MEMBERSHIP_ACTIVE,
++                                )
++                            )
++                        user.last_login_at = datetime.now(UTC)
++                        user_id = str(user.id)
++        except Exception as exc:
++            logger.warning("user_session_provision_failed", error=str(exc)[:200])
++            raise SessionStoreUnavailableError(
++                "Could not record the signed-in user; retry.", cause=exc
++            ) from exc
++        if refused is not None:
++            logger.info("sso_login_refused", tenant_id=tenant_id, reason=refused)
++            raise LoginRefusedError(f"Login refused: {refused}.")
++        return user_id
++
++    # ── login code → token ───────────────────────────────────────────────────
++
++    async def issue_login_code(self, *, tenant_id: str, user_id: str, auth_method: str) -> str:
++        """Record a new session and return its one-time login code (60 s)."""
++        from app.db.models.user_session import UserSession
++        from app.db.rls import sqlalchemy_rls_context
++
++        code = secrets.token_urlsafe(32)
++        now = datetime.now(UTC)
++        db = self._require_db()
++        try:
++            async with (
++                db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
++                session.add(
++                    UserSession(
++                        tenant_id=tenant_id,
++                        user_id=user_id,
++                        login_code_hash=_digest(code),
++                        login_code_expires_at=now + timedelta(seconds=LOGIN_CODE_TTL_SECONDS),
++                        auth_method=auth_method,
++                        expires_at=now + timedelta(seconds=self._ttl),
++                    )
++                )
++        except Exception as exc:
++            raise SessionStoreUnavailableError(
++                "Could not start the session; retry the login.", cause=exc
++            ) from exc
++        return code
++
++    async def exchange_code(self, code: str) -> dict[str, Any] | None:
++        """Single-use exchange of a login code for the bearer token.
++
++        ``None`` for an unknown, used, expired or revoked code. The UPDATE is
++        conditional on the code digest, so two concurrent exchanges of one code
++        cannot both succeed.
++        """
++        from sqlalchemy import select, text, update
++
++        from app.db.models.user_session import UserSession
++        from app.db.rls import sqlalchemy_rls_context
++
++        code_hash = _digest(code)
++        token = SESSION_TOKEN_PREFIX + secrets.token_urlsafe(32)
++        db = self._require_db()
++        try:
++            async with db() as session, session.begin():
++                await session.execute(
++                    text("SELECT set_config('app.session_code_hash', :h, true)"), {"h": code_hash}
++                )
++                row = (
++                    await session.execute(
++                        select(UserSession.id, UserSession.tenant_id, UserSession.user_id).where(
++                            UserSession.login_code_hash == code_hash
++                        )
++                    )
++                ).first()
++                await session.execute(text("SELECT set_config('app.session_code_hash', '', true)"))
++                if row is None:
++                    return None
++                session_id, tenant_id, user_id = str(row[0]), str(row[1]), str(row[2])
++                async with sqlalchemy_rls_context(session, tenant_id):
++                    expires_at = (
++                        await session.execute(
++                            update(UserSession)
++                            .where(
++                                UserSession.id == session_id,
++                                UserSession.tenant_id == tenant_id,
++                                UserSession.login_code_hash == code_hash,
++                                UserSession.login_code_expires_at > datetime.now(UTC),
++                                UserSession.revoked_at.is_(None),
++                            )
++                            .values(token_hash=_digest(token), login_code_hash=None)
++                            .returning(UserSession.expires_at)
++                        )
++                    ).scalar_one_or_none()
++        except Exception as exc:
++            raise SessionStoreUnavailableError(
++                "Could not complete the login; retry.", cause=exc
++            ) from exc
++        if expires_at is None:
++            return None
++        expires_in = max(0, int((expires_at - datetime.now(UTC)).total_seconds()))
++        return {
++            "access_token": token,
++            "token_type": "Bearer",
++            "expires_in": expires_in,
++            "tenant_id": tenant_id,
++            "user_id": user_id,
++        }
++
++    # ── resolution ───────────────────────────────────────────────────────────
++
++    async def resolve(self, token: str) -> TenantContext | None:
++        """``TenantContext`` for a live session token, ``None`` when it is not one.
++
++        Raises :class:`SessionStoreUnavailableError` when the store cannot be
++        read (the middleware answers 503 — never a silent pass or fail).
++        """
++        if not is_session_token(token):
++            return None
++        token_hash = _digest(token)
++        cached = await self._cache_get(token_hash)
++        if cached is not None:
++            return cached
++        rec = await self._db_resolve(token_hash)
++        if rec is None:
++            return None
++        ctx = TenantContext(
++            tenant_id=rec["tenant_id"],
++            plan=rec["plan"],
++            api_key_id=f"user:{rec['user_id']}",
++            roles=rec["roles"],
++            user_id=rec["user_id"],
++        )
++        await self._cache_set(token_hash, ctx, rec["expires_at"])
++        return ctx
++
++    async def _db_resolve(self, token_hash: str) -> dict[str, Any] | None:
++        from sqlalchemy import select, text
++
++        from app.db.models.tenant import Tenant
++        from app.db.models.user import TenantMembership
++        from app.db.models.user_session import UserSession
++        from app.db.rls import sqlalchemy_rls_context
++
++        db = self._require_db()
++        now = datetime.now(UTC)
++        try:
++            async with db() as session, session.begin():
++                await session.execute(
++                    text("SELECT set_config('app.session_token_hash', :h, true)"),
++                    {"h": token_hash},
++                )
++                row = (
++                    await session.execute(
++                        select(
++                            UserSession.tenant_id,
++                            UserSession.user_id,
++                            UserSession.expires_at,
++                            UserSession.revoked_at,
++                        ).where(UserSession.token_hash == token_hash)
++                    )
++                ).first()
++                await session.execute(text("SELECT set_config('app.session_token_hash', '', true)"))
++                if row is None or row[3] is not None or row[2] <= now:
++                    return None
++                tenant_id, user_id, expires_at = str(row[0]), str(row[1]), row[2]
++                async with sqlalchemy_rls_context(session, tenant_id):
++                    member = (
++                        await session.execute(
++                            select(TenantMembership.role, TenantMembership.status).where(
++                                TenantMembership.tenant_id == tenant_id,
++                                TenantMembership.user_id == user_id,
++                            )
++                        )
++                    ).first()
++                    tenant = (
++                        await session.execute(
++                            select(Tenant.plan_tier).where(
++                                Tenant.id == tenant_id,
++                                Tenant.is_active == True,  # noqa: E712
++                            )
++                        )
++                    ).first()
++        except Exception as exc:
++            logger.warning("user_session_resolve_failed", error=str(exc)[:200])
++            raise SessionStoreUnavailableError(
++                "Could not verify the session; retry shortly.", cause=exc
++            ) from exc
++        if member is None or member[1] != MEMBERSHIP_ACTIVE or tenant is None:
++            return None
++        try:
++            plan = PlanTier(str(tenant[0]))
++        except ValueError:
++            plan = PlanTier.FREE
++        return {
++            "tenant_id": tenant_id,
++            "user_id": user_id,
++            "plan": plan,
++            "roles": membership_roles(member[0]),
++            "expires_at": expires_at,
++        }
++
++    async def _cache_get(self, token_hash: str) -> TenantContext | None:
++        if self._redis is None:
++            return None
++        try:
++            raw = await self._redis.get(_CACHE_PREFIX + token_hash)
++        except Exception:
++            return None  # cache miss: Postgres decides
++        if not raw:
++            return None
++        try:
++            data = json.loads(raw)
++            if float(data["exp"]) <= datetime.now(UTC).timestamp():
++                return None
++            return TenantContext(
++                tenant_id=str(data["tenant_id"]),
++                plan=PlanTier(str(data["plan"])),
++                api_key_id=f"user:{data['user_id']}",
++                roles=tuple(str(r) for r in data["roles"]),
++                user_id=str(data["user_id"]),
++            )
++        except (KeyError, TypeError, ValueError):
++            return None
++
++    async def _cache_set(self, token_hash: str, ctx: TenantContext, expires_at: datetime) -> None:
++        if self._redis is None:
++            return
++        remaining = int((expires_at - datetime.now(UTC)).total_seconds())
++        ttl = min(CACHE_TTL_SECONDS, remaining)
++        if ttl <= 0:
++            return
++        payload = {
++            "tenant_id": ctx.tenant_id,
++            "plan": ctx.plan.value,
++            "user_id": ctx.user_id,
++            "roles": list(ctx.roles),
++            "exp": expires_at.timestamp(),
++        }
++        try:
++            await self._redis.set(_CACHE_PREFIX + token_hash, json.dumps(payload), ex=ttl)
++        except Exception as exc:  # caching is an optimisation; Postgres stays authoritative
++            logger.debug("user_session_cache_write_failed", error=str(exc)[:200])
++
++    async def _purge_cache(self, token_hashes: list[str]) -> None:
++        """Delete cached contexts; a failure is a 503 (the revocation must take)."""
++        if self._redis is None or not token_hashes:
++            return
++        try:
++            await self._redis.delete(*(_CACHE_PREFIX + h for h in token_hashes))
++        except Exception as exc:
++            raise SessionStoreUnavailableError(
++                "Session revoked in the database but the shared cache could not be "
++                "purged; retry.",
++                cause=exc,
++            ) from exc
++
++    # ── revocation ───────────────────────────────────────────────────────────
++
++    async def revoke_token(self, token: str) -> bool:
++        """Revoke the session holding *token* (logout). True when one was live."""
++        from sqlalchemy import select, text, update
++
++        from app.db.models.user_session import UserSession
++        from app.db.rls import sqlalchemy_rls_context
++
++        if not is_session_token(token):
++            return False
++        token_hash = _digest(token)
++        db = self._require_db()
++        try:
++            async with db() as session, session.begin():
++                await session.execute(
++                    text("SELECT set_config('app.session_token_hash', :h, true)"),
++                    {"h": token_hash},
++                )
++                tenant_id = (
++                    await session.execute(
++                        select(UserSession.tenant_id).where(UserSession.token_hash == token_hash)
++                    )
++                ).scalar_one_or_none()
++                await session.execute(text("SELECT set_config('app.session_token_hash', '', true)"))
++                revoked = None
++                if tenant_id is not None:
++                    async with sqlalchemy_rls_context(session, str(tenant_id)):
++                        revoked = (
++                            await session.execute(
++                                update(UserSession)
++                                .where(
++                                    UserSession.token_hash == token_hash,
++                                    UserSession.tenant_id == str(tenant_id),
++                                    UserSession.revoked_at.is_(None),
++                                )
++                                .values(revoked_at=datetime.now(UTC))
++                                .returning(UserSession.id)
++                            )
++                        ).scalar_one_or_none()
++        except Exception as exc:
++            raise SessionStoreUnavailableError(
++                "Could not revoke the session; retry.", cause=exc
++            ) from exc
++        await self._purge_cache([token_hash])
++        return revoked is not None
++
++    async def revoke_user_sessions(self, tenant_id: str, user_id: str) -> int:
++        """Revoke every live session of *user_id* in *tenant_id* (offboarding)."""
++        from sqlalchemy import update
++
++        from app.db.models.user_session import UserSession
++        from app.db.rls import sqlalchemy_rls_context
++
++        db = self._require_db()
++        try:
++            async with (
++                db() as session,
++                session.begin(),
++                sqlalchemy_rls_context(session, tenant_id),
++            ):
++                hashes = (
++                    (
++                        await session.execute(
++                            update(UserSession)
++                            .where(
++                                UserSession.tenant_id == tenant_id,
++                                UserSession.user_id == user_id,
++                                UserSession.revoked_at.is_(None),
++                            )
++                            .values(revoked_at=datetime.now(UTC), login_code_hash=None)
++                            .returning(UserSession.token_hash)
++                        )
++                    )
++                    .scalars()
++                    .all()
++                )
++        except Exception as exc:
++            raise SessionStoreUnavailableError(
++                "Could not revoke the user's sessions; retry.", cause=exc
++            ) from exc
++        live = [str(h) for h in hashes if h]
++        await self._purge_cache(live)
++        return len(hashes)
++
++
++def get_user_session_store(app: Any) -> UserSessionStore:
++    """The app's store (created in ``create_app``, DB/Redis wired in the lifespan)."""
++    store = getattr(getattr(app, "state", None), "user_session_store", None)
++    if store is None:
++        raise SessionStoreUnavailableError("User sessions are not configured.")
++    return store  # type: ignore[no-any-return]
+diff --git a/agent-verse-backend/app/db/migrations/versions/a7c3e9f1b2d4_user_sessions.py b/agent-verse-backend/app/db/migrations/versions/a7c3e9f1b2d4_user_sessions.py
+new file mode 100644
+index 000000000..7b35704f0
+--- /dev/null
++++ b/agent-verse-backend/app/db/migrations/versions/a7c3e9f1b2d4_user_sessions.py
+@@ -0,0 +1,81 @@
++"""user_sessions: Postgres-authoritative browser SSO sessions (SAML-01).
++
++A SAML (or Google) login ends in a session row; the browser exchanges a one-time
++login code for an opaque ``avs_…`` bearer token. Only SHA-256 digests are stored.
++
++RLS: FORCE, tenant isolation on ``tenant_id``. Authentication runs before any
++tenant context exists, so — like ``api_keys_by_presented_hash`` — a SELECT-only
++permissive policy makes exactly the row whose token / login-code digest the
++caller presents (``app.session_token_hash`` / ``app.session_code_hash``)
++visible. Knowing a token's SHA-256 is equivalent to holding the token; an empty
++GUC matches nothing. Writes always run under the tenant GUC.
++
++Revision ID: a7c3e9f1b2d4
++Revises: cf87de8eae52
++"""
++
++from __future__ import annotations
++
++import sqlalchemy as sa
++from alembic import op
++
++revision = "a7c3e9f1b2d4"
++down_revision = "cf87de8eae52"
++branch_labels = None
++depends_on = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "user_sessions",
++        sa.Column("id", sa.String(32), primary_key=True),
++        sa.Column("tenant_id", sa.String(36), nullable=False),
++        sa.Column(
++            "user_id",
++            sa.String(32),
++            sa.ForeignKey("users.id", ondelete="CASCADE"),
++            nullable=False,
++        ),
++        sa.Column("token_hash", sa.String(64), nullable=True, unique=True),
++        sa.Column("login_code_hash", sa.String(64), nullable=True, unique=True),
++        sa.Column("login_code_expires_at", sa.DateTime(timezone=True), nullable=True),
++        sa.Column("auth_method", sa.String(32), nullable=False),
++        sa.Column(
++            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
++        ),
++        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
++        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
++    )
++    op.create_index("ix_user_sessions_tenant_user", "user_sessions", ["tenant_id", "user_id"])
++    op.create_index("ix_user_sessions_user_id", "user_sessions", ["user_id"])
++    op.execute("ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY")
++    op.execute("ALTER TABLE user_sessions FORCE ROW LEVEL SECURITY")
++    op.execute(
++        """
++        CREATE POLICY tenant_isolation ON user_sessions
++            USING (tenant_id = current_setting('app.tenant_id', true))
++            WITH CHECK (tenant_id = current_setting('app.tenant_id', true))
++        """
++    )
++    op.execute(
++        """
++        CREATE POLICY user_sessions_by_presented_hash ON user_sessions
++            AS PERMISSIVE FOR SELECT
++            USING (
++                (
++                    COALESCE(current_setting('app.session_token_hash', true), '') <> ''
++                    AND token_hash = current_setting('app.session_token_hash', true)
++                )
++                OR (
++                    COALESCE(current_setting('app.session_code_hash', true), '') <> ''
++                    AND login_code_hash = current_setting('app.session_code_hash', true)
++                )
++            )
++        """
++    )
++
++
++def downgrade() -> None:
++    op.execute("DROP POLICY IF EXISTS user_sessions_by_presented_hash ON user_sessions")
++    op.execute("DROP POLICY IF EXISTS tenant_isolation ON user_sessions")
++    op.drop_table("user_sessions")
+diff --git a/agent-verse-backend/app/db/models/user_session.py b/agent-verse-backend/app/db/models/user_session.py
+new file mode 100644
+index 000000000..d90edff2e
+--- /dev/null
++++ b/agent-verse-backend/app/db/models/user_session.py
+@@ -0,0 +1,44 @@
++"""User login sessions (SAML / Google / other browser SSO).
++
++A session is the credential a person holds after an interactive SSO login. The
++raw bearer token (``avs_…``) is never stored — only its SHA-256 — and the row is
++created *before* the token exists: the login flow first records a one-time
++``login_code_hash`` (60 s) that the browser exchanges for the token, so the
++token itself never travels in a redirect URL.
++
++Postgres is the source of truth (FORCE RLS on ``tenant_id``); Redis only caches
++resolved contexts for a short TTL and is purged on revocation.
++"""
++
++from __future__ import annotations
++
++import uuid
++from datetime import datetime
++
++from sqlalchemy import DateTime, ForeignKey, String, func
++from sqlalchemy.orm import Mapped, mapped_column
++
++from app.db.models import Base
++
++
++class UserSession(Base):
++    __tablename__ = "user_sessions"
++
++    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
++    tenant_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
++    user_id: Mapped[str] = mapped_column(
++        String(32), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
++    )
++    # SHA-256 of the bearer token; NULL until the login code is exchanged.
++    token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
++    # SHA-256 of the one-time login code; cleared when exchanged.
++    login_code_hash: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
++    login_code_expires_at: Mapped[datetime | None] = mapped_column(
++        DateTime(timezone=True), nullable=True
++    )
++    auth_method: Mapped[str] = mapped_column(String(32), nullable=False)
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), nullable=False, server_default=func.now()
++    )
++    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
++    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+diff --git a/agent-verse-backend/app/main.py b/agent-verse-backend/app/main.py
+index 50501dbee..fe2ce9726 100644
+--- a/agent-verse-backend/app/main.py
++++ b/agent-verse-backend/app/main.py
+@@ -1824,6 +1824,9 @@ def create_app(
+             except Exception as _acs_db_exc:
+                 logger.warning("agent_credentials_db_wire_failed", error=str(_acs_db_exc))
+ 
++            # SSO user sessions (SAML / Google): Postgres-authoritative.
++            app.state.user_session_store.set_db(db_factory)
++
+             # Wire DB into department memory (durable + cross-pod).
+             try:
+                 from app.memory.dept_memory import get_dept_memory
+@@ -2163,6 +2166,8 @@ def create_app(
+                     _acs.set_redis(redis_for_runtime)
+                 except Exception as _acs_exc:
+                     logger.warning("agent_credentials_redis_wire_failed", error=str(_acs_exc))
++                # User sessions: short shared cache, purged on every revocation.
++                app.state.user_session_store.set_redis(redis_for_runtime)
+ 
+                 # ── PromptOptimizer: wire Redis for cross-replica cache invalidation ──
+                 try:
+@@ -2725,6 +2730,11 @@ def create_app(
+     app.state.model_router = _model_router
+     # Core services
+     app.state.tenant_service = _tenant_svc
++    # SSO user sessions — no DB yet (every operation is a 503); the lifespan
++    # wires Postgres + Redis.
++    from app.auth.user_sessions import UserSessionStore
++
++    app.state.user_session_store = UserSessionStore()
+     app.state.goal_service = _goal_svc
+     # Wire chat GOAL turns to the real engine + QA to the real provider.
+     if getattr(app.state, "chat_service", None) is not None:
+diff --git a/agent-verse-backend/app/tenancy/context.py b/agent-verse-backend/app/tenancy/context.py
+index 5428b2533..bdb5f89c6 100644
+--- a/agent-verse-backend/app/tenancy/context.py
++++ b/agent-verse-backend/app/tenancy/context.py
+@@ -77,6 +77,9 @@ class TenantContext:
+     # It travels with the goal (goals.execution_context) so the worker's tool
+     # gate enforces the same restrictions.
+     agent_key: AgentKeyRestriction | None = None
++    # Set when the request authenticated as a PERSON (an SSO user session):
++    # the global ``users.id``. ``None`` for API keys / agent credentials.
++    user_id: str | None = None
+ 
+ 
+ def _matches(names: tuple[str, ...], patterns: tuple[str, ...]) -> bool:
+diff --git a/agent-verse-backend/app/tenancy/middleware.py b/agent-verse-backend/app/tenancy/middleware.py
+index 6e06f0899..a802fc30d 100644
+--- a/agent-verse-backend/app/tenancy/middleware.py
++++ b/agent-verse-backend/app/tenancy/middleware.py
+@@ -84,6 +84,8 @@ _BYPASS_PREFIXES = (
+     "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
+     "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
+     "/wf-hooks/",  # workflow webhook triggers — authenticated by the signed token in the path
++    "/auth/session/exchange",  # one-time SSO login code → session token (the code is the auth)
++    "/enterprise/saml/login/",  # SP-initiated SAML login for /{tenant_id}: a person has no key yet
+     "/enterprise/saml/acs/",  # SAML ACS: the IdP's signed assertion is the auth
+     # (validated per tenant in app.api.enterprise.saml_acs); an IdP POST never
+     # carries a tenant API key, so this was unreachable.
+@@ -325,6 +327,27 @@ async def _try_resolve_agent_jwt(request: Request, token: str) -> TenantContext
+     )
+ 
+ 
++async def _resolve_user_session(request: Request, raw_key: str) -> TenantContext | None:
++    """Resolve an ``avs_*`` user-session token; raises SessionStoreUnavailableError."""
++    from app.auth.user_sessions import get_user_session_store
++
++    return await get_user_session_store(request.app).resolve(raw_key)
++
++
++def _session_unavailable_response() -> JSONResponse:
++    return JSONResponse(
++        content={
++            "error": {
++                "code": "SESSION_STORE_UNAVAILABLE",
++                "message": "Could not verify the session; retry shortly.",
++                "retryable": True,
++            }
++        },
++        status_code=503,
++        headers={"Retry-After": "5"},
++    )
++
++
+ async def _resolve_agent_key(request: Request, raw_key: str) -> TenantContext | None:
+     """Resolve an ``av_agent_*`` key; None (→ 401) when unknown or unverifiable."""
+     from app.auth import agent_credentials
+@@ -470,8 +493,18 @@ class TenantMiddleware(BaseHTTPMiddleware):
+         # Try agent JWTs, then SSO JWTs, when the token looks like a JWT (2+ dots)
+         tenant_ctx: TenantContext | None = None
+         from app.auth.agent_credentials import is_agent_key
++        from app.auth.user_sessions import SessionStoreUnavailableError, is_session_token
+ 
+-        if is_agent_key(raw_key):
++        if is_session_token(raw_key):
++            # SSO user session (SAML / Google login): resolved ONLY by the
++            # Postgres-authoritative session store; an unreadable store is a 503.
++            try:
++                tenant_ctx = await _resolve_user_session(request, raw_key)
++            except SessionStoreUnavailableError:
++                return _session_unavailable_response()
++            if tenant_ctx is None:
++                return _auth_error_response()
++        elif is_agent_key(raw_key):
+             # Agent-scoped key: resolved ONLY by the agent-key store (never the
+             # tenant-key resolver) into an agent-bound, tool-restricted context.
+             tenant_ctx = await _resolve_agent_key(request, raw_key)
+diff --git a/agent-verse-backend/tests/auth/test_saml_session.py b/agent-verse-backend/tests/auth/test_saml_session.py
+new file mode 100644
+index 000000000..51c2a6e25
+--- /dev/null
++++ b/agent-verse-backend/tests/auth/test_saml_session.py
+@@ -0,0 +1,200 @@
++"""SAML-01: a valid SAML assertion logs the person in (it used to end in 501).
++
++The ACS validates the signed assertion (python3-saml strict mode, local fixture
++IdP), JIT-provisions the person through the user-session store, records a
++session and redirects (303) the browser to the frontend with a one-time login
++code; ``POST /auth/session/exchange`` turns the code into an ``avs_`` token
++that TenantMiddleware accepts. Postgres behaviour of the store is covered in
++tests/integration/test_user_sessions_pg.py.
++"""
++
++from __future__ import annotations
++
++from typing import Any
++from urllib.parse import parse_qs, urlparse
++
++import fakeredis.aioredis
++import pytest
++from fastapi.testclient import TestClient
++
++from app.auth.user_sessions import LoginRefusedError, SessionStoreUnavailableError
++from app.tenancy.context import PlanTier, TenantContext
++from tests.auth._saml_idp import IDP_ENTITY, IDP_SSO, make_idp, signed_response
++
++TENANT = "t-saml"
++SP = "https://sp.test/saml/metadata"
++ACS = f"http://sp.test/enterprise/saml/acs/{TENANT}"
++TOKEN = "avs_" + "x" * 43
++
++
++class FakeSessionStore:
++    def __init__(self) -> None:
++        self.provisioned: list[dict[str, Any]] = []
++        self.refuse: str | None = None
++        self.unavailable = False
++
++    async def provision_member(self, **kw: Any) -> str:
++        if self.unavailable:
++            raise SessionStoreUnavailableError("down")
++        if self.refuse:
++            raise LoginRefusedError(self.refuse)
++        self.provisioned.append(kw)
++        return "user-1"
++
++    async def issue_login_code(self, *, tenant_id: str, user_id: str, auth_method: str) -> str:
++        assert (tenant_id, user_id, auth_method) == (TENANT, "user-1", "saml")
++        return "login-code-1234567890"
++
++    async def exchange_code(self, code: str) -> dict[str, Any] | None:
++        if code != "login-code-1234567890":
++            return None
++        return {
++            "access_token": TOKEN,
++            "token_type": "Bearer",
++            "expires_in": 3600,
++            "tenant_id": TENANT,
++            "user_id": "user-1",
++        }
++
++    async def resolve(self, token: str) -> TenantContext | None:
++        if self.unavailable:
++            raise SessionStoreUnavailableError("down")
++        if token != TOKEN:
++            return None
++        return TenantContext(
++            tenant_id=TENANT,
++            plan=PlanTier.FREE,
++            api_key_id="user:user-1",
++            roles=("viewer",),
++            user_id="user-1",
++        )
++
++
++@pytest.fixture
++def app_and_store(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, FakeSessionStore]:
++    from app.api import enterprise
++    from app.main import create_app
++
++    app = create_app()
++    store = FakeSessionStore()
++    app.state.user_session_store = store
++    app.state._redis = fakeredis.aioredis.FakeRedis()
++    app.state.db_session_factory = object()  # never opened: config loader is patched
++
++    async def _cfg(_db: Any, tenant_id: str) -> dict[str, Any] | None:
++        if tenant_id != TENANT:
++            return None
++        return {
++            "idp_entity_id": IDP_ENTITY,
++            "idp_sso_url": IDP_SSO,
++            "idp_cert": make_idp().cert_b64,
++            "sp_entity_id": SP,
++            "attribute_mapping": {},
++            "default_role": "operator",
++            "jit_provisioning": True,
++        }
++
++    monkeypatch.setattr(enterprise, "_load_saml_config", _cfg)
++    return app, store
++
++
++def _post_acs(client: TestClient, resp: str, tenant: str = TENANT) -> Any:
++    return client.post(
++        f"/enterprise/saml/acs/{tenant}",
++        data={"SAMLResponse": resp},
++        follow_redirects=False,
++    )
++
++
++def test_valid_assertion_provisions_and_redirects_with_login_code(
++    app_and_store: tuple[Any, FakeSessionStore],
++) -> None:
++    app, store = app_and_store
++    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
++    resp = signed_response(
++        acs_url=ACS,
++        sp_entity=SP,
++        name_id="alice@corp.test",
++        attributes={"email": ["alice@corp.test"], "firstName": ["Alice"], "lastName": ["Liddell"]},
++    )
++    r = _post_acs(client, resp)
++    assert r.status_code == 303, r.text
++    loc = urlparse(r.headers["location"])
++    assert loc.path == "/auth/sso/complete"
++    assert parse_qs(loc.query)["code"] == ["login-code-1234567890"]
++    assert store.provisioned == [
++        {
++            "tenant_id": TENANT,
++            "email": "alice@corp.test",
++            "name": "Alice Liddell",
++            "default_role": "operator",
++            "jit": True,
++        }
++    ]
++
++    # The code becomes a session token TenantMiddleware accepts.
++    r = client.post("/auth/session/exchange", json={"code": "login-code-1234567890"})
++    assert r.status_code == 200, r.text
++    assert r.json()["access_token"] == TOKEN
++    me = client.get("/tenants/me", headers={"Authorization": f"Bearer {TOKEN}"})
++    assert me.status_code != 401, me.text
++
++
++def test_replayed_assertion_is_rejected(app_and_store: tuple[Any, FakeSessionStore]) -> None:
++    app, _ = app_and_store
++    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
++    resp = signed_response(acs_url=ACS, sp_entity=SP, name_id="bob@corp.test")
++    assert _post_acs(client, resp).status_code == 303
++    assert _post_acs(client, resp).status_code == 401
++
++
++def test_wrong_recipient_or_audience_is_401(app_and_store: tuple[Any, FakeSessionStore]) -> None:
++    app, store = app_and_store
++    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
++    other_acs = "http://sp.test/enterprise/saml/acs/other-tenant"
++    assert (
++        _post_acs(client, signed_response(acs_url=other_acs, sp_entity=SP, name_id="c@x.t"))
++    ).status_code == 401
++    assert (
++        _post_acs(client, signed_response(acs_url=ACS, sp_entity="https://evil", name_id="c@x.t"))
++    ).status_code == 401
++    assert store.provisioned == []
++
++
++def test_refused_login_is_403_and_store_outage_is_503(
++    app_and_store: tuple[Any, FakeSessionStore],
++) -> None:
++    app, store = app_and_store
++    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
++    store.refuse = "membership deactivated"
++    r = _post_acs(client, signed_response(acs_url=ACS, sp_entity=SP, name_id="d@corp.test"))
++    assert r.status_code == 403
++    store.refuse = None
++    store.unavailable = True
++    r = _post_acs(client, signed_response(acs_url=ACS, sp_entity=SP, name_id="e@corp.test"))
++    assert r.status_code == 503
++
++
++def test_session_token_auth_fails_closed(app_and_store: tuple[Any, FakeSessionStore]) -> None:
++    app, store = app_and_store
++    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
++    bad = {"Authorization": "Bearer avs_" + "y" * 43}
++    assert client.get("/tenants/me", headers=bad).status_code == 401
++    store.unavailable = True
++    r = client.get("/tenants/me", headers={"Authorization": f"Bearer {TOKEN}"})
++    assert r.status_code == 503
++
++
++def test_exchange_rejects_unknown_code(app_and_store: tuple[Any, FakeSessionStore]) -> None:
++    app, _ = app_and_store
++    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
++    r = client.post("/auth/session/exchange", json={"code": "not-a-real-code-at-all"})
++    assert r.status_code == 401
++
++
++def test_sessions_need_a_database() -> None:
++    from app.main import create_app
++
++    client = TestClient(create_app(), raise_server_exceptions=False)
++    r = client.post("/auth/session/exchange", json={"code": "whatever-code-123456"})
++    assert r.status_code == 503
+diff --git a/agent-verse-backend/tests/integration/test_user_sessions_pg.py b/agent-verse-backend/tests/integration/test_user_sessions_pg.py
+new file mode 100644
+index 000000000..e034ac9d2
+--- /dev/null
++++ b/agent-verse-backend/tests/integration/test_user_sessions_pg.py
+@@ -0,0 +1,201 @@
++"""SAML-01 on real Postgres (least-privilege role, FORCE RLS) + real Redis.
++
++The user-session store JIT-provisions a person, records a session behind a
++one-time login code, exchanges it exactly once for a token, resolves the token
++on another "pod" (a second store instance) and stops resolving it everywhere
++the moment the session is revoked or the membership is deactivated. The full
++SAML flow (signed assertion → 303 → exchange → authenticated request) runs
++against the same database.
++"""
++
++from __future__ import annotations
++
++import asyncio
++import json
++import uuid
++from typing import Any
++from urllib.parse import parse_qs, urlparse
++
++import pytest
++from sqlalchemy import text
++
++from app.auth.user_sessions import LoginRefusedError, UserSessionStore
++from tests._auth_pg import app_role_url, session_factory
++
++pytestmark = pytest.mark.integration
++
++
++async def _seed_tenant(owner: Any, tenant_id: str) -> None:
++    async with owner() as s, s.begin():
++        await s.execute(
++            text("INSERT INTO tenants (id, name, email, plan_tier) VALUES (:t, 'S', :e, 'starter')"),
++            {"t": tenant_id, "e": f"{tenant_id}@sess.test"},
++        )
++
++
++async def _cleanup(owner: Any, tenant_id: str, emails: list[str]) -> None:
++    async with owner() as s, s.begin():
++        await s.execute(text("DELETE FROM user_sessions WHERE tenant_id = :t"), {"t": tenant_id})
++        await s.execute(
++            text("DELETE FROM tenant_memberships WHERE tenant_id = :t"), {"t": tenant_id}
++        )
++        await s.execute(text("DELETE FROM saml_configs WHERE tenant_id = :t"), {"t": tenant_id})
++        for e in emails:
++            await s.execute(text("DELETE FROM users WHERE lower(email) = lower(:e)"), {"e": e})
++        await s.execute(text("DELETE FROM tenants WHERE id = :t"), {"t": tenant_id})
++
++
++async def test_session_lifecycle_cross_pod(pg_url: str, redis_url: str) -> None:
++    import redis.asyncio as aioredis
++
++    owner_engine, owner = session_factory(pg_url)
++    app_engine, app_factory = session_factory(await app_role_url(pg_url))
++    redis = aioredis.from_url(redis_url, decode_responses=True)
++    tenant_id = uuid.uuid4().hex
++    email = f"Alice.{tenant_id[:6]}@Corp.test"
++    try:
++        await _seed_tenant(owner, tenant_id)
++        pod_a = UserSessionStore(app_factory, redis)
++        pod_b = UserSessionStore(app_factory, redis)
++
++        user_id = await pod_a.provision_member(
++            tenant_id=tenant_id, email=email, name="Alice", default_role="operator"
++        )
++        # Idempotent and case-insensitive on e-mail.
++        assert (
++            await pod_b.provision_member(tenant_id=tenant_id, email=email.lower(), name=None)
++            == user_id
++        )
++        code = await pod_a.issue_login_code(
++            tenant_id=tenant_id, user_id=user_id, auth_method="saml"
++        )
++
++        # Exactly one of two concurrent exchanges wins.
++        results = await asyncio.gather(pod_a.exchange_code(code), pod_b.exchange_code(code))
++        winners = [r for r in results if r is not None]
++        assert len(winners) == 1
++        token = winners[0]["access_token"]
++        assert token.startswith("avs_") and winners[0]["tenant_id"] == tenant_id
++
++        ctx = await pod_b.resolve(token)
++        assert ctx is not None and ctx.tenant_id == tenant_id and ctx.user_id == user_id
++        assert ctx.roles == ("operator",) and ctx.plan.value == "starter"
++        cached = await redis.keys("user_session:*")
++        assert cached, "the resolution is cached in the shared Redis"
++        assert json.loads(await redis.get(cached[0]))["user_id"] == user_id
++
++        # Logout on pod A: pod B refuses the token at once (cache purged).
++        assert await pod_a.revoke_token(token)
++        assert await pod_b.resolve(token) is None
++
++        # A deactivated membership (SCIM offboarding) cannot log in again.
++        second = await pod_a.exchange_code(
++            await pod_a.issue_login_code(tenant_id=tenant_id, user_id=user_id, auth_method="saml")
++        )
++        assert second is not None
++        async with owner() as s, s.begin():
++            await s.execute(
++                text("UPDATE tenant_memberships SET status = 'deactivated' WHERE tenant_id = :t"),
++                {"t": tenant_id},
++            )
++        await redis.flushdb()
++        assert await pod_b.resolve(second["access_token"]) is None
++        with pytest.raises(LoginRefusedError):
++            await pod_a.provision_member(tenant_id=tenant_id, email=email, name=None)
++
++        # JIT off: a person never provisioned is refused.
++        with pytest.raises(LoginRefusedError):
++            await pod_a.provision_member(
++                tenant_id=tenant_id, email=f"nobody{tenant_id[:4]}@x.test", name=None, jit=False
++            )
++        # revoke_user_sessions revokes every live session of the person.
++        async with owner() as s, s.begin():
++            await s.execute(
++                text("UPDATE tenant_memberships SET status = 'active' WHERE tenant_id = :t"),
++                {"t": tenant_id},
++            )
++        third = await pod_a.exchange_code(
++            await pod_a.issue_login_code(tenant_id=tenant_id, user_id=user_id, auth_method="saml")
++        )
++        assert third is not None and await pod_b.resolve(third["access_token"]) is not None
++        assert await pod_a.revoke_user_sessions(tenant_id, user_id) >= 1
++        assert await pod_b.resolve(third["access_token"]) is None
++    finally:
++        await _cleanup(owner, tenant_id, [email])
++        await redis.aclose()
++        await app_engine.dispose()
++        await owner_engine.dispose()
++
++
++async def test_saml_login_end_to_end(pg_url: str, redis_url: str) -> None:
++    import httpx
++    import redis.asyncio as aioredis
++
++    from app.main import create_app
++    from tests.auth._saml_idp import IDP_ENTITY, IDP_SSO, make_idp, signed_response
++
++    owner_engine, owner = session_factory(pg_url)
++    app_engine, app_factory = session_factory(await app_role_url(pg_url))
++    redis = aioredis.from_url(redis_url, decode_responses=True)
++    tenant_id = uuid.uuid4().hex
++    email = f"saml.{tenant_id[:6]}@corp.test"
++    sp = "https://sp.test/saml/metadata"
++    try:
++        await _seed_tenant(owner, tenant_id)
++        async with owner() as s, s.begin():
++            await s.execute(
++                text(
++                    "INSERT INTO saml_configs (id, tenant_id, idp_entity_id, idp_sso_url, "
++                    "idp_cert, sp_entity_id, attribute_mapping, default_role, jit_provisioning, "
++                    "is_active, created_at, updated_at) VALUES (:id, :t, :ie, :iu, :c, :sp, "
++                    "'{}'::jsonb, 'approver', TRUE, TRUE, NOW(), NOW())"
++                ),
++                {
++                    "id": uuid.uuid4().hex,
++                    "t": tenant_id,
++                    "ie": IDP_ENTITY,
++                    "iu": IDP_SSO,
++                    "c": make_idp().cert_b64,
++                    "sp": sp,
++                },
++            )
++        app = create_app()
++        app.state.db_session_factory = app_factory
++        app.state._redis = redis
++        app.state.user_session_store.set_db(app_factory)
++        app.state.user_session_store.set_redis(redis)
++        transport = httpx.ASGITransport(app=app)
++        async with httpx.AsyncClient(transport=transport, base_url="http://sp.test") as client:
++            resp = signed_response(
++                acs_url=f"http://sp.test/enterprise/saml/acs/{tenant_id}",
++                sp_entity=sp,
++                name_id=email,
++            )
++            r = await client.post(
++                f"/enterprise/saml/acs/{tenant_id}", data={"SAMLResponse": resp}
++            )
++            assert r.status_code == 303, r.text
++            code = parse_qs(urlparse(r.headers["location"]).query)["code"][0]
++            r = await client.post("/auth/session/exchange", json={"code": code})
++            assert r.status_code == 200, r.text
++            token = r.json()["access_token"]
++            r = await client.get(
++                "/auth/mfa/status", headers={"Authorization": f"Bearer {token}"}
++            )
++            assert r.status_code == 200, r.text
++            # The code is single use.
++            r = await client.post("/auth/session/exchange", json={"code": code})
++            assert r.status_code == 401
++        async with owner() as s, s.begin():
++            role = (
++                await s.execute(
++                    text("SELECT role FROM tenant_memberships WHERE tenant_id = :t"),
++                    {"t": tenant_id},
++                )
++            ).scalar_one()
++        assert role == "approver"
++    finally:
++        await _cleanup(owner, tenant_id, [email])
++        await redis.aclose()
++        await app_engine.dispose()
++        await owner_engine.dispose()
+diff --git a/agent-verse-frontend/src/app/App.tsx b/agent-verse-frontend/src/app/App.tsx
+index 40429dc2e..c873d9656 100644
+--- a/agent-verse-frontend/src/app/App.tsx
++++ b/agent-verse-frontend/src/app/App.tsx
+@@ -120,6 +120,7 @@ const CompliancePage = lazy(() => import('@/features/compliance/CompliancePage')
+ import { LandingPage } from "@/features/landing/LandingPage";
+ import { AuthPage } from "@/features/auth/AuthPage";
+ import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
++import { SSOCompletePage } from "@/features/auth/SSOCompletePage";
+ import MFAVerifyPage from "@/features/auth/MFAVerifyPage";
+ import { StatusPage } from "@/features/status/StatusPage";
+ 
+@@ -206,6 +207,7 @@ export default function App() {
+       <Route path="/auth" element={<AuthPage />} />
+       <Route path="/login" element={<AuthPage />} />
+       <Route path="/auth/callback" element={<SSOCallbackPage />} />
++      <Route path="/auth/sso/complete" element={<SSOCompletePage />} />
+       <Route path="/auth/mfa" element={<MFAVerifyPage />} />
+       <Route path="/status" element={<StatusPage />} />
+       {/* OAuth popup callback — must be public so the provider redirect works without auth */}
+diff --git a/agent-verse-frontend/src/features/auth/AuthPage.test.tsx b/agent-verse-frontend/src/features/auth/AuthPage.test.tsx
+index 87034c5e2..5caaf02c4 100644
+--- a/agent-verse-frontend/src/features/auth/AuthPage.test.tsx
++++ b/agent-verse-frontend/src/features/auth/AuthPage.test.tsx
+@@ -251,6 +251,26 @@ describe('AuthPage', () => {
+     expect(screen.getByLabelText(/^api key$/i)).toBeInTheDocument();
+   });
+ 
++  test('company SSO (SAML) starts the SP-initiated login for the tenant', async () => {
++    mockFetchByUrl({});
++    const originalLocation = window.location;
++    Object.defineProperty(window, 'location', {
++      configurable: true,
++      value: { ...originalLocation, href: originalLocation.href },
++    });
++    try {
++      renderAuthPage();
++      const samlButton = screen.getByRole('button', { name: /company sso \(saml\)/i });
++      await userEvent.click(samlButton);
++      expect(await screen.findByRole('alert')).toHaveTextContent(/tenant id/i);
++      await userEvent.type(screen.getByLabelText(/tenant id/i), 'acme');
++      await userEvent.click(samlButton);
++      expect(window.location.href).toMatch(/\/enterprise\/saml\/login\/acme$/);
++    } finally {
++      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
++    }
++  });
++
+   test('does not show the Keycloak SSO button when SSO is disabled', async () => {
+     mockFetchByUrl({
+       '/auth/config': () => jsonResponse({ sso_enabled: false, authorization_endpoint: null }),
+diff --git a/agent-verse-frontend/src/features/auth/AuthPage.tsx b/agent-verse-frontend/src/features/auth/AuthPage.tsx
+index 54d0451e6..ee3ef4fea 100644
+--- a/agent-verse-frontend/src/features/auth/AuthPage.tsx
++++ b/agent-verse-frontend/src/features/auth/AuthPage.tsx
+@@ -92,6 +92,17 @@ export function AuthPage() {
+     }
+   }
+ 
++  function handleSAMLLogin() {
++    // SP-initiated SAML: the backend redirects to the tenant's IdP; the ACS
++    // later sends the browser to /auth/sso/complete with a one-time code.
++    const trimmedTenantId = tenantId.trim();
++    if (!trimmedTenantId) {
++      setError("Enter your tenant ID to sign in with company SSO.");
++      return;
++    }
++    window.location.href = `${API_BASE}/enterprise/saml/login/${encodeURIComponent(trimmedTenantId)}`;
++  }
++
+   function handleSSOLogin() {
+     // Generate CSRF state token and persist so the callback page can validate it
+     const state = crypto.randomUUID();
+@@ -209,6 +220,13 @@ export function AuthPage() {
+             >
+               {isSubmitting ? 'Signing in…' : 'Sign in'}
+             </button>
++            <button
++              type="button"
++              onClick={handleSAMLLogin}
++              className="w-full py-2 px-4 bg-card border border-input text-sm font-medium rounded-md hover:bg-muted/50 transition-colors"
++            >
++              Use company SSO (SAML)
++            </button>
+           </form>
+ 
+           <p className="mt-4 text-xs text-muted-foreground text-center">
+diff --git a/agent-verse-frontend/src/features/auth/SSOCompletePage.test.tsx b/agent-verse-frontend/src/features/auth/SSOCompletePage.test.tsx
+new file mode 100644
+index 000000000..2b076fa59
+--- /dev/null
++++ b/agent-verse-frontend/src/features/auth/SSOCompletePage.test.tsx
+@@ -0,0 +1,56 @@
++import { render, screen, waitFor } from "@testing-library/react";
++import { MemoryRouter, Route, Routes } from "react-router-dom";
++import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
++import { useAuthStore } from "@/stores/auth";
++import { SSOCompletePage } from "./SSOCompletePage";
++
++function renderPage(search: string) {
++  render(
++    <MemoryRouter initialEntries={[`/auth/sso/complete${search}`]}>
++      <Routes>
++        <Route path="/auth/sso/complete" element={<SSOCompletePage />} />
++        <Route path="/auth" element={<div>Auth Page</div>} />
++        <Route path="/dashboard" element={<div>Dashboard</div>} />
++      </Routes>
++    </MemoryRouter>
++  );
++}
++
++describe("SSOCompletePage", () => {
++  beforeEach(() => {
++    useAuthStore.getState().logout();
++    vi.restoreAllMocks();
++  });
++  afterEach(() => vi.restoreAllMocks());
++
++  test("exchanges the one-time code for a session token", async () => {
++    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
++      new Response(
++        JSON.stringify({ access_token: "avs_tok", expires_in: 3600, tenant_id: "t1", plan: "starter" }),
++        { status: 200 }
++      )
++    );
++    renderPage("?code=abc123");
++    expect(await screen.findByText("Dashboard")).toBeInTheDocument();
++    const [url, init] = fetchMock.mock.calls[0];
++    expect(String(url)).toMatch(/\/auth\/session\/exchange$/);
++    expect(init?.method).toBe("POST");
++    expect(JSON.parse(String(init?.body))).toEqual({ code: "abc123" });
++    const s = useAuthStore.getState();
++    expect(s.ssoMode).toBe(true);
++    expect(s.accessToken).toBe("avs_tok");
++    expect(s.tenantId).toBe("t1");
++  });
++
++  test("an expired or used code shows an error and stores nothing", async () => {
++    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 401 }));
++    renderPage("?code=used");
++    expect(await screen.findByRole("alert")).toHaveTextContent(/expired or was already used/i);
++    await waitFor(() => expect(useAuthStore.getState().isAuthenticated).toBe(false));
++  });
++
++  test("no code is an error", async () => {
++    renderPage("");
++    expect(await screen.findByRole("alert")).toHaveTextContent(/no login code/i);
++  });
++});
+diff --git a/agent-verse-frontend/src/features/auth/SSOCompletePage.tsx b/agent-verse-frontend/src/features/auth/SSOCompletePage.tsx
+new file mode 100644
+index 000000000..acfdc906a
+--- /dev/null
++++ b/agent-verse-frontend/src/features/auth/SSOCompletePage.tsx
+@@ -0,0 +1,91 @@
++/**
++ * SSO login completion (SAML / Google) at /auth/sso/complete.
++ *
++ * The backend's SSO callback (SAML ACS, Google callback) verifies the identity,
++ * records a session and redirects here with a one-time `?code=` (60 s). This
++ * page exchanges it via POST /auth/session/exchange for the session token —
++ * the token itself never travels in a URL — and stores it as the Bearer
++ * credential.
++ */
++
++import { useEffect, useRef, useState } from "react";
++import { useNavigate, useSearchParams } from "react-router-dom";
++import { AlertCircle, Loader2 } from "lucide-react";
++import { useAuthStore } from "@/stores/auth";
++
++const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
++
++interface SessionResponse {
++  access_token: string;
++  expires_in: number;
++  tenant_id: string;
++  plan?: string;
++}
++
++export function SSOCompletePage() {
++  const [searchParams] = useSearchParams();
++  const navigate = useNavigate();
++  const { setSSOCredentials } = useAuthStore();
++  const [error, setError] = useState("");
++  const handled = useRef(false);
++
++  useEffect(() => {
++    if (handled.current) return;
++    handled.current = true;
++    const code = searchParams.get("code");
++    if (!code) {
++      setError("No login code received. Please sign in again.");
++      return;
++    }
++    void (async () => {
++      try {
++        const res = await fetch(`${API_BASE}/auth/session/exchange`, {
++          method: "POST",
++          headers: { "Content-Type": "application/json" },
++          body: JSON.stringify({ code }),
++        });
++        if (!res.ok) {
++          setError(
++            res.status === 401
++              ? "This sign-in link has expired or was already used. Please sign in again."
++              : "Sign-in could not be completed. Please try again."
++          );
++          return;
++        }
++        const data = (await res.json()) as SessionResponse;
++        // Session tokens have no refresh token: the user signs in again at expiry.
++        setSSOCredentials(data.access_token, "", data.expires_in, data.tenant_id, data.plan ?? "free");
++        navigate("/dashboard", { replace: true });
++      } catch {
++        setError("Unable to reach the backend. Please try again.");
++      }
++    })();
++  }, []); // eslint-disable-line react-hooks/exhaustive-deps
++
++  return (
++    <div className="min-h-screen flex items-center justify-center bg-background px-4">
++      <div className="w-full max-w-md bg-card border border-border rounded-xl p-8 shadow-sm text-center space-y-4">
++        {error ? (
++          <>
++            <AlertCircle className="h-10 w-10 text-red-500 mx-auto" />
++            <h1 className="text-lg font-semibold">Sign-in failed</h1>
++            <p role="alert" className="text-sm text-muted-foreground">
++              {error}
++            </p>
++            <button
++              onClick={() => navigate("/auth", { replace: true })}
++              className="mt-2 px-6 py-2 bg-[#00D4FF] text-primary-foreground text-sm font-medium rounded-md hover:opacity-90"
++            >
++              Back to Sign In
++            </button>
++          </>
++        ) : (
++          <>
++            <Loader2 className="h-10 w-10 animate-spin text-[#00D4FF] mx-auto" aria-label="Signing in" />
++            <h1 className="text-lg font-semibold">Signing you in</h1>
++          </>
++        )}
++      </div>
++    </div>
++  );
++}
