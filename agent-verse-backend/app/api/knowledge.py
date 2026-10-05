@@ -156,6 +156,56 @@ def stable_url_document_id(tenant_id: str, collection_id: str, url: str) -> str:
     return _uuid.uuid5(_uuid.NAMESPACE_URL, f"{tenant_id}:{collection_id}:{normalised}").hex
 
 
+def stable_upload_document_id(tenant_id: str, collection_id: str, filename: str) -> str:
+    """The document id of an uploaded file in one collection: stable per file name,
+    so uploading a new version replaces the old one (P1a-4) instead of adding a copy."""
+    return _uuid.uuid5(
+        _uuid.NAMESPACE_URL, f"upload:{tenant_id}:{collection_id}:{filename.strip()}"
+    ).hex
+
+
+def _stable_chunk_ids(document_id: str, contents: list[str]) -> list[str]:
+    """Chunk ids derived from (document, chunk content, occurrence): re-ingesting an
+    edited document keeps the ids of every chunk whose text did not change."""
+    seen: dict[str, int] = {}
+    ids: list[str] = []
+    for content in contents:
+        digest = hashlib.sha256(content.encode()).hexdigest()
+        n = seen.get(digest, 0)
+        seen[digest] = n + 1
+        ids.append(_uuid.uuid5(_uuid.NAMESPACE_OID, f"{document_id}:{digest}:{n}").hex)
+    return ids
+
+
+async def _previous_upload_document_ids(
+    store: KnowledgeStore,
+    *,
+    filename: str,
+    document_id: str,
+    collection_id: str,
+    tenant_ctx: TenantContext,
+) -> list[str]:
+    """Documents a new upload of ``filename`` replaces: its stable id when indexed,
+    plus copies of the same file stored under random ids by older versions."""
+    try:
+        page = await store.list_collection_documents_async(
+            tenant_ctx=tenant_ctx, collection_id=collection_id, limit=100, search=filename
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Knowledge persistence is unavailable"
+        ) from exc
+    found: list[str] = []
+    for doc in page.get("documents") or []:
+        doc_id = str(doc.get("document_id") or doc.get("id") or "")
+        names = {str(doc.get("source_file") or ""), str(doc.get("title") or "")}
+        if doc_id and (doc_id == document_id or filename in names):
+            found.append(doc_id)
+    return sorted(set(found), key=lambda d: (d != document_id, d))
+
+
 class RpaUrlIngestRequest(BaseModel):
     """Ingest one or more URLs scraped via the RPA executor (browser or httpx)."""
 
@@ -1096,8 +1146,14 @@ async def ingest_file(
     request: Request,
     file: UploadFile = File(...),
     collection_id: str = Form(...),
+    replace_existing: bool = Form(True),
 ) -> dict[str, Any]:
     """Ingest a file into a knowledge collection.
+
+    A file is one document per (collection, file name): uploading a new
+    version under the same name replaces the previous one in the same
+    transaction (unchanged chunks keep their ids; a document under legal hold is
+    refused with 409). ``replace_existing=false`` stores it as another document.
 
     PDF (chunked per page, page citations), DOCX (paragraphs and tables), XLSX,
     PPTX (slide text, tables and speaker notes), images (PNG/JPEG/WebP, via OCR),
@@ -1132,6 +1188,21 @@ async def ingest_file(
             "deduplicated": True,
             "document_id": None,
         }
+
+    # Re-uploading a file replaces it: a stable document id per file name.
+    document_id = (
+        stable_upload_document_id(tenant.tenant_id, collection_id, filename)
+        if replace_existing
+        else _uuid.uuid4().hex
+    )
+    previous: list[str] = []
+    if replace_existing:
+        previous = await _previous_upload_document_ids(
+            store, filename=filename, document_id=document_id,
+            collection_id=collection_id, tenant_ctx=tenant,
+        )
+        if previous:
+            await _refuse_if_under_legal_hold(request, tenant, collection_id, *previous)
 
     archive_report: dict[str, Any] | None = None
     if ext in ARCHIVE_EXTS:
@@ -1169,15 +1240,17 @@ async def ingest_file(
     if not pieces:
         raise HTTPException(422, "File is empty or could not be parsed")
 
-    document_id = _uuid.uuid4().hex
     embeddings = await _embed_texts_or_http(
         [c for _, c, _, _ in pieces], embedder, request=request
     )
+    # Content-derived chunk ids: an edit keeps the ids of the chunks it did not change.
+    chunk_ids = _stable_chunk_ids(document_id, [c for _, c, _, _ in pieces])
     rag_chunks: list[Chunk] = []
     for idx, ((unit, content, page, offset), embedding) in enumerate(
         zip(pieces, embeddings, strict=True)
     ):
         metadata = {
+            "doc_title": filename,
             "source_file": unit.source_file,
             "ext": unit.ext,
             "char_offset": str(offset),
@@ -1200,6 +1273,7 @@ async def ingest_file(
                 content=content,
                 embedding=embedding,
                 chunk_index=idx,
+                chunk_id=chunk_ids[idx],
                 metadata=metadata,
             )
         )
@@ -1208,7 +1282,19 @@ async def ingest_file(
         rag_chunks,
         collection_id=collection_id,
         tenant_ctx=tenant,
+        replace_document=replace_existing,
     )
+    warnings = [w for u in units for w in u.warnings]
+    legacy = [d for d in previous if d != document_id]
+    if stored and legacy:
+        # Copies of this file stored under random ids before uploads had stable ids.
+        for legacy_id in legacy:
+            try:
+                await store.delete_document_async(
+                    document_id=legacy_id, collection_id=collection_id, tenant_ctx=tenant
+                )
+            except Exception:
+                warnings.append(f"an older copy ({legacy_id}) could not be removed")
 
     single = units[0] if archive_report is None else None
     response: dict[str, Any] = {
@@ -1221,7 +1307,9 @@ async def ingest_file(
         "pages": single.total_pages if single else None,
         "ocr_pages": sorted(single.page_ocr_engines) if single else [],
         "pages_without_text": single.pages_without_text if single else [],
-        "warnings": [w for u in units for w in u.warnings],
+        "replaced": bool(stored) and bool(previous),
+        "replaced_document_ids": legacy if stored else [],
+        "warnings": warnings,
         # A workbook past the row / sheet caps was indexed only in part.
         "truncated": any(u.report.get("excel_truncated") for u in units),
         "truncated_sheets": [
