@@ -1,0 +1,8 @@
+passed test_db_first_and_incremental_sync[postgresql] 453.7
+failed test_db_first_and_incremental_sync[mysql] 479.5
+     E       AssertionError: sync 2 indexed 0, expected 7 changed rows
+passed test_db_failed_table_is_not_skipped_later[postgresql] 12.8
+failed test_db_failed_table_is_not_skipped_later[mysql] 12.4
+     E       AssertionError: the reason does not say access was denied: 'mysql: 1 unit(s) could not be read: table payroll: ConnectorFetchError: table payroll does not exist or this user has no SELECT privilege on it'
+passed test_db_honest_failures[postgresql] 15.4
+passed test_db_honest_failures[mysql] 15.6

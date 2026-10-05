@@ -1,0 +1,10 @@
+passed test_obj_mixed_first_and_incremental[minio] 67.1
+passed test_obj_honest_failures[minio] 31.6
+passed test_obj_honest_failures[s3] 24.1
+passed test_obj_session_token 6.5
+passed test_obj_internal_address_refusal 0.1
+passed test_obj_duplicate_bytes_and_shared_prefix 36.9
+passed test_db_failed_table_is_not_skipped_later[postgresql] 12.7
+passed test_db_failed_table_is_not_skipped_later[mysql] 12.5
+passed test_db_honest_failures[postgresql] 15.4
+passed test_db_honest_failures[mysql] 15.5

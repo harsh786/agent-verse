@@ -1,0 +1,8 @@
+failed test_obj_failed_object_retry 607.7
+     E               AssertionError: timed out after 600s waiting for sync job 5238d13b3bab4e9c85e2feae6ac512f7; last=null
+passed test_obj_honest_failures[minio] 25.3
+failed test_obj_honest_failures[s3] 28.6
+     E       AssertionError: missing_bucket: error does not say why ("s3: HTTPClientError: An HTTP Client raised an unhandled exception: SSRF guard [s3]: cannot resolve allowlisted host 'rw-missing-a97df20a.rw-s3' — fail closed")
+passed test_obj_session_token 6.7
+passed test_obj_internal_address_refusal 0.1
+passed test_obj_duplicate_bytes_and_shared_prefix 37.0
