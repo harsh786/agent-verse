@@ -149,3 +149,33 @@ def test_a_legacy_remote_row_with_a_mongodb_uri_is_the_builtin() -> None:
     )
     assert legacy.builtin_type == "builtin-mongodb"
 
+
+def test_tenant_b_cannot_reach_tenant_a_connection(
+    world: dict[str, Any],
+) -> None:
+    """TG-11: another tenant's MongoDB server_id is a 404 / 'not found' everywhere."""
+    import asyncio
+
+    client = world["client"]
+    sid = _register_like_the_ui(client, "orders-db").json()["server_id"]
+
+    assert client.post(f"/connectors/{sid}/test", headers=HB).status_code == 404
+    assert client.get(f"/connectors/{sid}/tools", headers=HB).status_code == 404
+    assert client.get(f"/connectors/{sid}", headers=HB).status_code == 404
+    assert (
+        client.put(
+            f"/connectors/{sid}",
+            headers=HB,
+            json={"name": "x", "url": "builtin://", "auth_type": "none", "auth_config": {}},
+        ).status_code
+        == 404
+    )
+    assert client.delete(f"/connectors/{sid}", headers=HB).status_code == 404
+    result = asyncio.run(
+        world["app"].state.mcp_client.call_tool(
+            server_id=sid, tool_name="mongodb_count", arguments={"collection": "o"}, tenant_ctx=B
+        )
+    )
+    assert not result.success
+    assert "not found" in (result.error or "").lower()
+    assert _Mongo.dsns == []  # tenant B's call never reached tenant A's database
