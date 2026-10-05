@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
 import { ApiError, connectorsApi, type ConnectorResponse, type CatalogAuthField, type ConnectorTestResult } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
+import { friendlyConnectionError } from '@/lib/friendlyError';
 import { connectorLabel, connectorTypeLabel, isDsn, isHttpUrl, isMaskedSecret, maskDsn } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -944,9 +946,12 @@ function TestResultCell({ result }: { result: TestResult }) {
         {ok ? `OK · ${result.latency_ms ?? '?'}ms` : 'Failed'}
       </span>
       {!ok && (
-        <p data-testid="test-error" className="text-xs text-destructive max-w-xs break-words">
-          {result.error || `Test failed (${result.http_status ?? result.status})`}
-        </p>
+        <FriendlyErrorMessage
+          data-testid="test-error"
+          className="text-xs text-destructive max-w-xs"
+          error={result.error}
+          fallback={`Test failed (${result.http_status ?? result.status})`}
+        />
       )}
     </div>
   );
@@ -1019,7 +1024,8 @@ export function ConnectorsRegisteredPage() {
       setForm(EMPTY_FORM);
       setFormError('');
     },
-    onError: (e: Error) => setFormError(e.message ?? 'Registration failed'),
+    // Backend refusals may quote the URI/host they rejected — show the reason only.
+    onError: (e: Error) => setFormError(friendlyConnectionError(e, 'Registration failed').message),
   });
 
   const unregisterMutation = useMutation({

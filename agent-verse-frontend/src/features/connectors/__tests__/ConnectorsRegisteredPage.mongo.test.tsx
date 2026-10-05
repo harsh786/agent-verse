@@ -354,3 +354,55 @@ describe('A6 table Test Connection shows every outcome', () => {
     expect(within(row()).queryByTestId('test-error')).not.toBeInTheDocument();
   });
 });
+
+// ── A9: friendly messages, raw (sanitised) text behind a details toggle ──────
+
+describe('A9 friendly test errors with details', () => {
+  const ROW = { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', url: 'builtin://', auth_type: 'connection_string', has_builtin: true, auth_config: { uri: '<redacted>' } };
+  const RAW =
+    "db-1.internal.example.com:27017: [Errno 61] Connection refused, Timeout: 5.0s, Topology Description: <TopologyDescription " +
+    "servers: [<ServerDescription ('db-1.internal.example.com', 27017) error=AutoReconnect('mongodb://alice:S3cretPw@10.0.0.7:27017')>]>";
+  const row = () => screen.getByRole('link', { name: 'orders-db' }).closest('tr') as HTMLElement;
+
+  it('maps a driver dump to a short reason; details are sanitised', async () => {
+    mockFetch([listOf([ROW]), {
+      match: (u, i) => u.endsWith('/test') && i?.method === 'POST',
+      response: { server_id: ROW.server_id, reachable: false, status: 'failed', error: RAW },
+    }]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    await userEvent.click(within(row()).getByRole('button', { name: /^test$/i }));
+    const err = await within(row()).findByTestId('test-error');
+    expect(err).toHaveTextContent(/refused the connection/i);
+    expect(err).not.toHaveTextContent(/TopologyDescription/);
+    await userEvent.click(within(err).getByRole('button', { name: /details/i }));
+    expect(err).toHaveTextContent(/Errno 61/);
+    for (const leak of ['internal.example.com', 'S3cretPw', 'alice', '10.0.0.7']) expect(row()).not.toHaveTextContent(leak);
+  });
+
+  it('a 400 SSRF refusal reads as a blocked address', async () => {
+    mockFetch([listOf([ROW]), {
+      match: (u, i) => u.endsWith('/test') && i?.method === 'POST', response: { detail: 'SSRF protection: disallowed URL' }, status: 400,
+    }]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    await userEvent.click(within(row()).getByRole('button', { name: /^test$/i }));
+    expect(await within(row()).findByTestId('test-error')).toHaveTextContent(/address is blocked/i);
+  });
+});
+
+describe('A9 register errors never echo the refused URI', () => {
+  it('an SSRF refusal on register shows the reason, not the host', async () => {
+    mockFetch([
+      listOf([]),
+      { match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { detail: 'Connector URL rejected by SSRF guard: mongodb://alice:pw@10.0.0.7:27017 resolves to a private address' }, status: 400 },
+    ]);
+    renderPage(mongoPrefill);
+    await screen.findByTestId('register-modal');
+    await userEvent.type(screen.getByLabelText(/connection uri/i), 'mongodb://alice:pw@10.0.0.7:27017');
+    await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/address is blocked/i);
+    expect(alert).not.toHaveTextContent('10.0.0.7');
+  });
+});

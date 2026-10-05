@@ -230,10 +230,11 @@ describe('ConnectorDetailPage', () => {
     renderPage();
     await screen.findByRole('heading', { name: 'GitHub' });
     await userEvent.click(screen.getByRole('button', { name: /Test connector connection/i }));
-    const banner = await screen.findByText(/Unreachable: timeout contacting host/i);
+    // Raw driver text is mapped to a short reason (mongo re-audit A9).
+    const banner = await screen.findByText(/Unreachable: Timed out reaching the server/i);
     expect(banner.className).toContain('bg-red-50');
     expect(
-      useToastStore.getState().toasts.some((t) => t.kind === 'error' && t.message.includes('timeout contacting host')),
+      useToastStore.getState().toasts.some((t) => t.kind === 'error' && /timed out reaching the server/i.test(t.message)),
     ).toBe(true);
   });
 
