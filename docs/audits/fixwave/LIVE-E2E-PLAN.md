@@ -61,3 +61,15 @@ for that final push once everything is green).
 4. Helm workers: 4 processes per pod, 3.5Gi limit, explicit per-child memory cap (matches prod compose/k8s); scale with pods.
 5. RPA: no plan limit; remove the unused `rpa` plan-feature flag.
 6. Channels C1–C5: **un-parked by the owner** — Telegram, WhatsApp, Slack, Teams, generic webhook are in scope (live item 14).
+
+## Re-ordering (owner, 2026-10-05, night)
+Deferred to the very end, after everything else is done, committed and pushed:
+A7 (Drive/SharePoint/Confluence/Notion), B3 (GitHub/Stripe/Jira/Teams webhooks), B8 (conversational),
+C1–C5 (Telegram, WhatsApp, Slack, Teams, webhook), A6 (Kafka).
+
+New order: A2 S3/MinIO → A3 PostgreSQL/MySQL → findings NF-10..18 → A5 MongoDB/Redis/Elasticsearch →
+A10 HTTP/web crawl → A12 agent-generated → B1 time triggers → B2 webhook/rest/event → B7 platform events →
+P2 retrieval/grounding → P4 workflows/HITL → P5 agent core (live) → P6 memories/self-improvement → P7 evals →
+P8 guardrails → P9 scale → P10 frontend e2e → P11 full rerun → push →
+then deferred: A7 → B3 → B8 → C1–C5 → A6 → final full rerun → push.
+Every completion: merge to main, commit, full test, push.
