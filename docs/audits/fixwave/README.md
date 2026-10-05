@@ -98,3 +98,9 @@ EXIT 0
  FAIL  src/features/org/OrgPage.test.tsx > OrgPage — no organization selected > renders a placeholder when orgId is missing
 
 ```
+
+## Handoff 2026-10-06 (usage limit)
+- origin/main = 077303128 (pushed, green). Local main = P8b merged (fast-forward of fix/p8-guardrail-gaps): NOT yet full-suite tested or pushed — run the 4-chunk suite (see /private/tmp/claude-501/vsuite/run.sh pattern) + vitest, then push.
+- Running when cut off: live P1c (A5 MongoDB/Redis/Elasticsearch) on branch live/p1c-nosql (worktree .claude/worktrees/p1c) — resume, `git merge main`, finish, merge, test, push.
+- Next per LIVE-E2E-PLAN.md "Re-ordering": A10 HTTP/crawl → A12 agent-generated → B1 → B2 → B7 → live re-checks P2/P4/P5/P7/P8 → P6 → P9 → P10 → P11 → deferred A7, B3, B8, C1–C5, A6.
+- New findings: p8b.progress.json (raw exception text with bearer token in worker log), p478code.progress.json.
