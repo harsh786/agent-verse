@@ -4,8 +4,10 @@
   tester, and a goal whose answer would carry a personal email and phone number
   never returns them raw; the violation (or a pii_redacted event) is recorded.
 * GOV-GRANT-DENY: with grant enforcement on (RW_GRANTS_ENFORCED=1 — the stack's
-  ENFORCE_AGENT_GRANTS), an agent granted only web_search is refused http_request
-  (tool_call_blocked_by_grant + a denied audit row; the fixture is never called).
+  ENFORCE_AGENT_GRANTS), an agent granted only web_search never reaches http_request:
+  it is withheld from the model (tools_withheld_by_grant) or, if called anyway,
+  refused by the grant gate (tool_call_blocked_by_grant + a denied audit row); the
+  fixture is never called.
 * GOV-POLICY-APPROVAL: a require_approval policy on web_search makes the policy
   engine answer require_approval, and a supervised goal using web_search stops for
   approval; a deny policy answers deny; rows are audited.
@@ -105,12 +107,26 @@ def test_grant_denies_tool(api: LiveAPI, cleanup: Any, fixture_server: FixtureSe
     assert fixture_server.count("GET", f"/inventory/{key}") == 0, (
         "the ungranted http_request tool reached the fixture server"
     )
-    assert "tool_call_blocked_by_grant" in types, (
-        f"no tool_call_blocked_by_grant event (events: {sorted(set(types))})"
-    )
-    assert any("denied" in o or "blocked" in o for o in evidence["audit"]), (
-        "no denied audit row for the blocked tool call"
-    )
+    # The ungranted tool is withheld from the models (recorded once per goal as
+    # tools_withheld_by_grant); a call to it anyway — hallucinated or injected —
+    # is refused by the dispatch-time grant gate with an event and a denied
+    # audit row (P8-2). Either way it must be recorded, never silent.
+    def _body(e: dict[str, Any]) -> dict[str, Any]:  # timeline items carry it in "data"
+        inner = e.get("data") or e.get("payload")
+        return inner if isinstance(inner, dict) else e
+
+    withheld = [e for e in events if e.get("type") == "tools_withheld_by_grant"]
+    withheld_tools = {t for e in withheld for t in (_body(e).get("tools") or [])}
+    evidence["withheld_tools"] = sorted(withheld_tools)
+    if "tool_call_blocked_by_grant" in types:
+        assert any("denied" in o or "blocked" in o for o in evidence["audit"]), (
+            "no denied audit row for the blocked tool call"
+        )
+    else:
+        assert "http_request" in withheld_tools, (
+            "http_request was neither withheld from the model (tools_withheld_by_grant) "
+            f"nor refused by the grant gate (events: {sorted(set(types))})"
+        )
 
 
 @pytest.mark.scenario("GOV-POLICY-APPROVAL")
