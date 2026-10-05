@@ -146,7 +146,7 @@ async def test_a_tenant_cannot_append_to_or_read_another_tenants_goal(
 ) -> None:
     from sqlalchemy import text
 
-    from app.services.event_store import EventStore
+    from app.services.event_store import EventAppendError, EventStore
 
     owner_tenant, intruder = uuid.uuid4().hex, uuid.uuid4().hex
     goal_id = await _seed_goal(roles.owner, owner_tenant)
@@ -154,7 +154,10 @@ async def test_a_tenant_cannot_append_to_or_read_another_tenants_goal(
     store = EventStore(roles.app)
 
     await store.append_event(goal_id, {"type": "mine"}, tenant_ctx=_ctx(owner_tenant))
-    await store.append_event(goal_id, {"type": "forged"}, tenant_ctx=_ctx(intruder))
+    # SVC-08: an append with no goal row for the caller's tenant is refused loudly
+    # (never a silent drop), and nothing is written.
+    with pytest.raises(EventAppendError):
+        await store.append_event(goal_id, {"type": "forged"}, tenant_ctx=_ctx(intruder))
 
     async with roles.owner() as s:
         types = [
