@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { ConnectorsCatalogPage } from '../ConnectorsCatalogPage';
+import { MONGODB_CATALOG_ENTRY } from './fixtures/mongodbCatalog';
 
 // Module-level mock: vi.mock is hoisted by Vitest so the factory must only
 // reference module-level variables, not variables declared inside tests.
@@ -148,7 +149,7 @@ describe('ConnectorsCatalogPage', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       const body = url.includes('/connectors/catalog')
-        ? [{ ...RICH_CATALOG_ENTRIES[1], name: 'mongodb', display_name: 'MongoDB', connector_type: 'mongodb', has_builtin: true, builtin_server_id: 'builtin-mongodb', auth_type: 'api_key' }]
+        ? [MONGODB_CATALOG_ENTRY] // the real payload (A10), not a faked api_key entry
         : [
             { server_id: 'builtin-mongodb:orders-db', name: 'orders-db', builtin_type: 'builtin-mongodb', url: 'builtin://' },
             { server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', builtin_type: 'builtin-mongodb', url: 'builtin://' },
@@ -156,12 +157,14 @@ describe('ConnectorsCatalogPage', () => {
       return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
     renderPage();
-    await screen.findByText('MongoDB');
+    await screen.findByText('Mongodb');
     expect(await screen.findByRole('link', { name: /manage \(2\)/i })).toHaveAttribute('href', '/connectors');
     await userEvent.click(screen.getByRole('button', { name: /add another/i }));
     expect(mockNavigate).toHaveBeenCalledWith('/connectors', expect.objectContaining({
       state: expect.objectContaining({
-        prefill: expect.objectContaining({ type: 'builtin-mongodb', type_name: 'MongoDB', name: '' }),
+        prefill: expect.objectContaining({
+          type: 'builtin-mongodb', type_name: 'Mongodb', name: '', auth_type: 'connection_string',
+        }),
       }),
     }));
   });
