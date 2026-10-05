@@ -722,9 +722,14 @@ export interface CatalogAuthField {
   key: string;
   label: string;
   placeholder: string;
-  field_type: 'text' | 'password' | 'url' | 'email';
+  /** Renderer types the UI knows ('text' | 'password' | 'url' | 'email' |
+   *  'textarea' | 'checkbox' | 'file' | 'select'); any other value a newer
+   *  backend sends renders as text. */
+  field_type: string;
   required: boolean;
   hint: string;
+  /** Choices for a `select` field (optional; not every backend sends it). */
+  options?: Array<string | { value: string; label: string }>;
 }
 
 export interface CatalogEntry {

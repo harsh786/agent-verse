@@ -11,14 +11,30 @@ import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Auth-type field definitions ─────────────────────────────────────────────
 
+type AuthFieldType = 'text' | 'password' | 'textarea' | 'email' | 'url' | 'checkbox' | 'file' | 'select';
+
+const AUTH_FIELD_TYPES: readonly AuthFieldType[] = ['text', 'password', 'textarea', 'email', 'url', 'checkbox', 'file', 'select'];
+
 interface AuthField {
   key: string;
   label: string;
   placeholder: string;
-  type: 'text' | 'password' | 'textarea' | 'email' | 'url';
+  /** checkbox stores 'true' / '' ; file reads the chosen file's text (or accepts a paste). */
+  type: AuthFieldType;
   required: boolean;
   hint?: string;
+  /** Choices for a `select` field. */
+  options?: { value: string; label: string }[];
+  /** File-picker filter for a `file` field. */
+  accept?: string;
+  /** Render the field only when this holds for the current values (e.g. TLS-only options). */
+  visibleWhen?: (values: Record<string, string>) => boolean;
+  /** Warning shown while a checkbox is on (a security-weakening switch). */
+  warning?: string;
 }
+
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const isTruthy = (v: string | undefined) => TRUE_VALUES.has(String(v ?? '').trim().toLowerCase());
 
 interface AuthTypeConfig {
   label: string;
@@ -268,6 +284,51 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
   },
 };
 
+// ── MongoDB connection fields (the built-in handler's credential keys) ───────
+// Keys match app/mcp/servers/mongodb_server.py: uri, username, password,
+// auth_source, auth_mechanism, database, tls, tls_ca_pem,
+// tls_allow_invalid_certificates.
+
+const mongoTlsOn = (v: Record<string, string>) =>
+  isTruthy(v.tls) || !!v.tls_ca_pem?.trim() || isTruthy(v.tls_allow_invalid_certificates);
+
+const MONGODB_AUTH_FIELDS: AuthField[] = [
+  AUTH_TYPE_CONFIGS.connection_string.fields[0], // uri (masked)
+  { key: 'username', label: 'Username', placeholder: 'app-user', type: 'text', required: false },
+  { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password', required: false },
+  {
+    key: 'auth_source', label: 'Auth source', placeholder: 'admin', type: 'text', required: false,
+    hint: 'Database that holds the user (usually admin).',
+  },
+  {
+    key: 'auth_mechanism', label: 'Auth mechanism', placeholder: '', type: 'select', required: false,
+    options: [
+      { value: '', label: 'Default (SCRAM)' },
+      { value: 'SCRAM-SHA-256', label: 'SCRAM-SHA-256' },
+      { value: 'SCRAM-SHA-1', label: 'SCRAM-SHA-1' },
+      { value: 'PLAIN', label: 'PLAIN (LDAP)' },
+    ],
+  },
+  AUTH_TYPE_CONFIGS.connection_string.fields[3], // database
+  {
+    key: 'tls', label: 'Use TLS', placeholder: '', type: 'checkbox', required: false,
+    hint: 'mongodb+srv:// URIs (Atlas) use TLS automatically.',
+  },
+  {
+    key: 'tls_ca_pem', label: 'CA certificate (PEM, optional)', placeholder: '-----BEGIN CERTIFICATE-----',
+    type: 'file', required: false, accept: '.pem,.crt,.cer,text/plain', visibleWhen: mongoTlsOn,
+    hint: 'Verify the server against this CA instead of the system trust store. Paste it or choose a file.',
+  },
+  {
+    key: 'tls_allow_invalid_certificates', label: 'Allow invalid certificates', placeholder: '',
+    type: 'checkbox', required: false, visibleWhen: mongoTlsOn,
+    warning: 'This disables server certificate verification: anyone on the network path can impersonate the database. Use it only for local development.',
+  },
+];
+
+/** auth_config keys that hold a connection URI (the handler accepts any of them). */
+const URI_KEYS = ['uri', 'connection_string', 'url', 'mongodb_uri', 'dsn'];
+
 // ── Connector-specific URL hints ────────────────────────────────────────────
 
 const CONNECTOR_URL_MAP: Record<string, { url: string; hint: string; label: string }> = {
@@ -414,19 +475,18 @@ function HintText({ id, text }: { id: string; text: string }) {
 
 function SmartAuthFields({
   authType,
+  fields,
   authValues,
   connectorName,
   onChange,
 }: {
   authType: string;
+  /** Resolved fields for this auth type (see resolveAuthFields). */
+  fields: AuthField[];
   authValues: Record<string, string>;
   connectorName: string;
   onChange: (values: Record<string, string>) => void;
 }) {
-  // An auth type this UI doesn't know (a newer backend, a legacy row): still show
-  // the stored credential keys — masked — so editing never silently drops them.
-  const config: AuthTypeConfig = AUTH_TYPE_CONFIGS[authType] ?? unknownAuthTypeConfig(authType, authValues);
-
   const setField = (key: string, value: string) =>
     onChange({ ...authValues, [key]: value });
 
@@ -501,7 +561,7 @@ function SmartAuthFields({
   }
 
   // none
-  if (!config.fields.length) {
+  if (!fields.length) {
     return (
       <div className="rounded-lg bg-muted/40 border border-border px-4 py-3 text-sm text-muted-foreground">
         No authentication required for this connector type.
@@ -511,49 +571,144 @@ function SmartAuthFields({
 
   return (
     <div className="space-y-3">
-      {config.fields.map((field) => {
-        const fieldHint = getFieldHint(connectorName, field.key, field.hint);
-        const hintId = `hint-${field.key}`;
-        const inputId = `auth-${field.key}`;
-        return (
-          <div key={field.key}>
-            <label htmlFor={inputId} className="block text-sm font-medium mb-1">
-              {field.label}
-              {field.required && <span className="text-destructive ml-1">*</span>}
-            </label>
-            {field.type === 'password' ? (
-              <PasswordInput
-                id={inputId}
-                value={authValues[field.key] ?? ''}
-                onChange={(v) => setField(field.key, v)}
-                placeholder={field.placeholder}
-                aria-describedby={fieldHint ? hintId : undefined}
-              />
-            ) : field.type === 'textarea' ? (
-              <textarea
-                id={inputId}
-                value={authValues[field.key] ?? ''}
-                onChange={(e) => setField(field.key, e.target.value)}
-                placeholder={field.placeholder}
-                rows={4}
-                aria-describedby={fieldHint ? hintId : undefined}
-                className="w-full border border-input rounded-lg px-3 py-2 text-sm font-mono bg-background focus:ring-2 focus:ring-primary outline-none resize-none"
-              />
-            ) : (
-              <input
-                id={inputId}
-                type={field.type}
-                value={authValues[field.key] ?? ''}
-                onChange={(e) => setField(field.key, e.target.value)}
-                placeholder={field.placeholder}
-                aria-describedby={fieldHint ? hintId : undefined}
-                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
-              />
-            )}
-            {fieldHint && <HintText id={hintId} text={fieldHint} />}
-          </div>
-        );
-      })}
+      {fields
+        .filter((field) => !field.visibleWhen || field.visibleWhen(authValues))
+        .map((field) => (
+          <AuthFieldInput
+            key={field.key}
+            field={field}
+            value={authValues[field.key] ?? ''}
+            hint={getFieldHint(connectorName, field.key, field.hint)}
+            onChange={(v) => setField(field.key, v)}
+          />
+        ))}
+    </div>
+  );
+}
+
+/** A chosen file's text (FileReader: Blob.text() is missing in some runtimes). */
+function readFileText(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the file'));
+    reader.readAsText(file);
+  });
+}
+
+const INPUT_CLS =
+  'w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none';
+
+/** One credential field — text/password/email/url/textarea/checkbox/file/select. */
+function AuthFieldInput({
+  field,
+  value,
+  hint,
+  onChange,
+}: {
+  field: AuthField;
+  value: string;
+  hint: string;
+  onChange: (v: string) => void;
+}) {
+  const hintId = `hint-${field.key}`;
+  const inputId = `auth-${field.key}`;
+  const describedBy = hint ? hintId : undefined;
+
+  if (field.type === 'checkbox') {
+    const checked = isTruthy(value);
+    return (
+      <div>
+        <label htmlFor={inputId} className="flex items-center gap-2 text-sm font-medium">
+          <input
+            id={inputId}
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => onChange(e.target.checked ? 'true' : '')}
+            aria-describedby={describedBy}
+            className="h-4 w-4 rounded border-input accent-primary"
+          />
+          {field.label}
+        </label>
+        {hint && <HintText id={hintId} text={hint} />}
+        {checked && field.warning && (
+          <p className="mt-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+            {field.warning}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label htmlFor={inputId} className="block text-sm font-medium mb-1">
+        {field.label}
+        {field.required && <span className="text-destructive ml-1">*</span>}
+      </label>
+      {field.type === 'password' ? (
+        <PasswordInput
+          id={inputId}
+          value={value}
+          onChange={onChange}
+          placeholder={field.placeholder}
+          aria-describedby={describedBy}
+        />
+      ) : field.type === 'textarea' || field.type === 'file' ? (
+        <>
+          <textarea
+            id={inputId}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={field.placeholder}
+            rows={4}
+            spellCheck={false}
+            aria-describedby={describedBy}
+            className={`${INPUT_CLS} font-mono resize-y`}
+          />
+          {field.type === 'file' && (
+            <input
+              type="file"
+              accept={field.accept}
+              aria-label={`Upload ${field.label}`}
+              onChange={async (e) => {
+                const input = e.currentTarget;
+                const file = input.files?.[0];
+                if (file) onChange(await readFileText(file));
+                input.value = '';
+              }}
+              className="mt-1 block text-xs text-muted-foreground file:mr-2 file:rounded file:border file:border-border file:bg-muted file:px-2 file:py-1 file:text-xs"
+            />
+          )}
+        </>
+      ) : field.type === 'select' ? (
+        <select
+          id={inputId}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-describedby={describedBy}
+          className={INPUT_CLS}
+        >
+          {(field.options ?? []).map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+          {/* A stored value not in the list stays selectable. */}
+          {value && !(field.options ?? []).some((o) => o.value === value) && (
+            <option value={value}>{value}</option>
+          )}
+        </select>
+      ) : (
+        <input
+          id={inputId}
+          type={field.type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={field.placeholder}
+          aria-describedby={describedBy}
+          className={INPUT_CLS}
+        />
+      )}
+      {hint && <HintText id={hintId} text={hint} />}
     </div>
   );
 }
@@ -569,9 +724,57 @@ function unknownAuthTypeConfig(authType: string, authValues: Record<string, stri
   };
 }
 
-/** Field keys an auth type collects (catalog-provided fields included). */
-function authFieldKeys(authType: string, extra: { key: string }[] = []): Set<string> {
-  return new Set([...(AUTH_TYPE_CONFIGS[authType]?.fields ?? []), ...extra].map((f) => f.key));
+function isMongoConnector(connectorName: string, values: Record<string, string>): boolean {
+  return (
+    getConnectorKey(connectorName).includes('mongo') ||
+    Object.values(values).some((v) => /^mongodb(\+srv)?:\/\//i.test(String(v ?? '')))
+  );
+}
+
+/** A GET /connectors/catalog auth field as a renderable field (unknown types render as text). */
+function catalogFieldToAuthField(f: CatalogAuthField): AuthField {
+  const type = AUTH_FIELD_TYPES.includes(f.field_type as AuthFieldType) ? (f.field_type as AuthFieldType) : 'text';
+  return {
+    key: f.key,
+    label: f.label || f.key,
+    placeholder: f.placeholder ?? '',
+    type,
+    required: Boolean(f.required),
+    hint: f.hint || undefined,
+    options: f.options?.map((o) => (typeof o === 'string' ? { value: o, label: o } : o)),
+  };
+}
+
+/**
+ * The credential fields to collect for an auth type.
+ *
+ * - connection_string to MongoDB gets every option the built-in handler reads.
+ * - Catalog fields (from the catalog entry the form was opened from) win for
+ *   ordinary types; for connection_string they only ADD keys — the catalog's
+ *   generic `url` field is the same URI and is never collected twice.
+ * - The URI field binds to whichever URI key the stored config already uses
+ *   (an older registration may hold it under `url`), so edit shows it.
+ * - An auth type this UI doesn't know shows its stored keys, masked.
+ */
+function resolveAuthFields(
+  authType: string,
+  connectorName: string,
+  authValues: Record<string, string>,
+  catalogFields: CatalogAuthField[] = [],
+): AuthField[] {
+  let base: AuthField[] =
+    authType === 'connection_string' && isMongoConnector(connectorName, authValues)
+      ? MONGODB_AUTH_FIELDS
+      : AUTH_TYPE_CONFIGS[authType]?.fields ?? unknownAuthTypeConfig(authType, authValues).fields;
+  if (authType === 'connection_string') {
+    const uriKey = URI_KEYS.find((k) => k in authValues) ?? 'uri';
+    base = base.map((f) => (f.key === 'uri' ? { ...f, key: uriKey } : f));
+  }
+  if (!catalogFields.length) return base;
+  const fromCatalog = catalogFields.map(catalogFieldToAuthField);
+  if (authType !== 'connection_string') return fromCatalog;
+  const have = new Set(base.map((f) => f.key));
+  return [...base, ...fromCatalog.filter((f) => !have.has(f.key) && !URI_KEYS.includes(f.key))];
 }
 
 // ── Auth type selector with colored badge ────────────────────────────────────
@@ -796,8 +999,12 @@ export function ConnectorsRegisteredPage() {
 
   // Fields the CURRENT auth type collects, including catalog-provided ones.
   const prefillAuthType: string | undefined = prefill?.auth_type;
+  const connectorNameForHints = form.connector_type || form.name;
+  const fieldsFor = (authType: string, values: Record<string, string>) =>
+    resolveAuthFields(authType, connectorNameForHints, values, authType === prefillAuthType ? authFieldOverrides : []);
   const currentFieldKeys = (authType: string) =>
-    authFieldKeys(authType, authType === prefillAuthType ? authFieldOverrides : []);
+    new Set(fieldsFor(authType, form.auth_values).map((f) => f.key));
+  const authFields = fieldsFor(form.auth_type, form.auth_values);
 
   const applyAuthType = useCallback((type: string, keep: Set<string>) => {
     setForm((f) => ({
@@ -1109,52 +1316,23 @@ export function ConnectorsRegisteredPage() {
                 onChange={requestAuthTypeChange}
               />
 
-              {/* Auth Fields — type-aware (from catalog) or generic */}
-              {authFieldOverrides.length > 0 ? (
-                <div className="space-y-3">
-                  <label className="block text-sm font-semibold">Credentials</label>
-                  {authFieldOverrides.map((field) => {
-                    const inputId = `prefill-field-${field.key}`;
-                    return (
-                      <div key={field.key}>
-                        <label htmlFor={inputId} className="block text-xs font-medium text-muted-foreground mb-1">
-                          {field.label}
-                          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-                        </label>
-                        <input
-                          id={inputId}
-                          type={field.field_type === 'password' ? 'password' : field.field_type === 'email' ? 'email' : 'text'}
-                          placeholder={field.placeholder}
-                          className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
-                          onChange={(e) => {
-                            setForm((f) => ({ ...f, auth_values: { ...f.auth_values, [field.key]: e.target.value } }));
-                          }}
-                        />
-                        {field.hint && (
-                          <p className="mt-1 text-xs text-muted-foreground">{field.hint}</p>
-                        )}
-                      </div>
-                    );
-                  })}
+              {/* Auth Fields — type-aware, with the catalog entry's own fields */}
+              {(form.auth_type !== 'none' || authFields.length > 0) && (
+                <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-1">
+                  <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${
+                      AUTH_TYPE_CONFIGS[form.auth_type]?.color?.split(' ')[0] ?? 'bg-primary'
+                    }`} />
+                    {AUTH_TYPE_CONFIGS[form.auth_type]?.label ?? (form.auth_type || 'Authentication')}
+                  </h3>
+                  <SmartAuthFields
+                    authType={form.auth_type}
+                    fields={authFields}
+                    authValues={form.auth_values}
+                    connectorName={connectorNameForHints}
+                    onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
+                  />
                 </div>
-              ) : (
-                /* Generic Smart Auth Fields */
-                form.auth_type !== 'none' && (
-                  <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-1">
-                    <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${
-                        AUTH_TYPE_CONFIGS[form.auth_type]?.color?.split(' ')[0] ?? 'bg-primary'
-                      }`} />
-                      {AUTH_TYPE_CONFIGS[form.auth_type]?.label ?? 'Authentication'}
-                    </h3>
-                    <SmartAuthFields
-                      authType={form.auth_type}
-                      authValues={form.auth_values}
-                      connectorName={form.connector_type || form.name}
-                      onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
-                    />
-                  </div>
-                )
               )}
 
               {/* Autonomous execution opt-in */}
