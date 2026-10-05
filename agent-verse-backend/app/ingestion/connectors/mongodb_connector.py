@@ -74,6 +74,7 @@ from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
 )
 from app.ingestion.connector_egress import (
@@ -888,9 +889,23 @@ class MongoDBConnector(BaseConnector):
                 metadata={"host": settings.display_host, "database": settings.database},
             )
         except Exception as exc:
-            return ConnectionHealth(ok=False, error=str(exc) or type(exc).__name__)
+            return ConnectionHealth(ok=False, error=_public_error(exc))
 
     async def get_delta(
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        """The sync. A failure is raised as :class:`ConnectorFetchError` with the
+        sanitised message (MDB-20): the job shows a classified reason and an error
+        id, never pymongo's topology / host text (logged under that id)."""
+        try:
+            async for item in self._delta(config, cursor):
+                yield item
+        except ConnectorFetchError:
+            raise
+        except Exception as exc:
+            raise ConnectorFetchError(f"mongodb: {_public_error(exc)}") from exc
+
+    async def _delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument

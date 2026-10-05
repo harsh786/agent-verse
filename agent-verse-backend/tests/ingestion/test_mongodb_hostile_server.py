@@ -291,3 +291,51 @@ async def test_timeoutms_zero_in_the_uri_does_not_hang_on_a_stalled_server(
     assert health.ok is False
     assert "timed out" in (health.error or "").lower()
     assert time.monotonic() - t0 < 15
+
+
+# ── MDB-20 on the sync path: job errors never carry raw driver text ──────────
+
+
+async def test_sync_job_errors_are_sanitised_with_an_error_id(
+    stalled: FakeMongod, caplog: pytest.LogCaptureFixture
+) -> None:
+    from app.ingestion.scheduler import _sync_source_async
+
+    store, tracker = SourceConfigStore(), IngestionJobTracker()
+    config = _config(f"mongodb://{stalled.me}/")
+    await store.create(config)
+    task = MagicMock()
+    task.retry.side_effect = lambda exc, **_kw: exc
+    with (
+        patch(
+            "app.ingestion.scheduler._build_worker_ingestion",
+            return_value=(tracker, _Pipeline(), store),
+        ),
+        pytest.raises(Exception, match=r"error id [0-9a-f]{12}"),
+    ):
+        await _sync_source_async(
+            task=task, source_id=config.source_id, tenant_id="t1", triggered_by="manual"
+        )
+    (job,) = tracker.list_jobs_for_source(config.source_id)
+    message = job.error_message
+    assert "timed out" in message.lower()
+    assert str(stalled.port) not in message and "topology" not in message.lower()
+    error_id = message.rsplit("error id ", 1)[1].rstrip(")")
+    # The full driver detail is in the server log under that id.
+    assert any(error_id in r.getMessage() and str(stalled.port) in r.getMessage()
+               for r in caplog.records)
+
+
+async def test_health_check_errors_are_sanitised() -> None:
+    import socket
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()  # nothing listens there: server selection fails with the topology
+    health = await mc.MongoDBConnector().health_check(_config(f"mongodb://127.0.0.1:{port}/"))
+    assert health.ok is False
+    assert "Could not reach the MongoDB server" in (health.error or "")
+    assert "error id" in (health.error or "")
+    assert str(port) not in (health.error or "")
+    assert "topology" not in (health.error or "").lower()
