@@ -1,7 +1,7 @@
 # P1c: MongoDB, Redis and Elasticsearch on the live stack (A5, 2026-10-05/06)
 
-Branch `live/p1c-nosql` (from `main` @ `8965f46ca`, `main` @ `077303128` merged in): 13 fixes, 4 test commits, a
-README update and a test follow-up. Nothing was pushed.
+Branch `live/p1c-nosql` (from `main` @ `8965f46ca`; `main` merged in at `077303128` and again at `3bcd9cc80`, one alembic head
+`e7b1c4d9a2f6`): 13 fixes, 4 test commits, a README update and a test follow-up. Nothing was pushed.
 
 The raw output of the live runs is in `p1c-nosql/` next to this file (`results.jsonl` + `summary.txt` per run). The copies
 were scanned for the tenant keys, every throwaway password (MongoDB, Redis, Elasticsearch, test CA) and the
@@ -104,7 +104,8 @@ The two kill-switch scenarios need a stack started with the flags off; they pass
 - **Stack built from this worktree**, as in P1b: `docker-compose -f .claude/worktrees/p1c/agent-verse-backend/infra/docker-compose.yml build`
   (db-migrate, backend, worker, subgoal-worker, beat, workflow-worker, frontend), the one-shot `db-migrate`, then `up -d --no-deps`
   for the app services and the frontend. Migrations ran to `c3f9a1d7e5b2` at the start and to `f6a9d4e2b8c5` (single head) after
-  merging `main`. No volume was dropped. The worktree `.env` is an untracked symlink to the main checkout's `.env`. The containers now
+  merging `main` (`077303128`). The second merge (`3bcd9cc80`, P8b, migration head `e7b1c4d9a2f6`) came after the final run and is not
+  deployed; after it the touched unit suites (8,192 + 630), ruff and mypy (1,918 files) were re-run clean. No volume was dropped. The worktree `.env` is an untracked symlink to the main checkout's `.env`. The containers now
   run images built from this branch; redeploy from `main` after merging.
 - **Dev iteration only:** `/private/tmp/claude-501/rw/p1c/p1c-dev-override.yml` (never committed) mounted the worktree's `app/`.
   The final run used rebuilt images without it (checked: no `app/` bind mount).
