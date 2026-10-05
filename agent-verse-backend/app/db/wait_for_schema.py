@@ -94,7 +94,9 @@ def main() -> int:
         print("wait-for-schema: DATABASE_URL is not set", file=sys.stderr)
         return 2
     timeout = float(os.environ.get("SCHEMA_WAIT_TIMEOUT_SECONDS") or DEFAULT_TIMEOUT_SECONDS)
-    ok = asyncio.run(wait_for_schema(url, expected=expected_heads(), timeout_s=timeout))
+    from app.db.session import run_in_fresh_loop
+
+    ok = run_in_fresh_loop(wait_for_schema(url, expected=expected_heads(), timeout_s=timeout))
     return 0 if ok else 1
 
 
