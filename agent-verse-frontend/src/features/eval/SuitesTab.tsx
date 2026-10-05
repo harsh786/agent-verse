@@ -11,6 +11,7 @@ import {
 } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
+import { runStatusText, runsRefetchInterval } from './runStatus';
 
 function Card({ children, className = '', onClick }: {
   children: React.ReactNode;
@@ -23,6 +24,14 @@ function Card({ children, className = '', onClick }: {
     </div>
   );
 }
+
+// ── Run lifecycle (MEM-53: durable, worker-executed runs) ───────────────────
+
+const RUN_TONE: Record<string, string> = {
+  running: 'text-sky-500',
+  abandoned: 'text-amber-500',
+  failed: 'text-red-500',
+};
 
 // ── Golden task form ─────────────────────────────────────────────────────────
 
@@ -201,6 +210,7 @@ export function SuitesTab({ apiKey }: { apiKey: string }) {
     queryKey: ['suite-results', activeSuiteId],
     queryFn: () => evalSuitesApi.getSuiteResults(activeSuiteId!),
     enabled: !!activeSuiteId,
+    refetchInterval: (q) => runsRefetchInterval(q.state.data),
   });
 
   useEffect(() => {
@@ -411,9 +421,14 @@ export function SuitesTab({ apiKey }: { apiKey: string }) {
                 <div className="border-t border-border p-4">
                   <h4 className="text-xs font-semibold text-muted-foreground mb-2">Recent Runs</h4>
                   <div className="space-y-1.5">
-                    {(suiteResultsMap.get(suite.suite_id) ?? []).slice(-5).map((r, i) => {
+                    {/* The API returns runs newest first. */}
+                    {(suiteResultsMap.get(suite.suite_id) ?? []).slice(0, 5).map((r, i) => {
                       const tasks = r.task_results ?? [];
                       const unscored = tasks.filter((t) => t.status && t.status !== 'scored');
+                      const running = r.status === 'running' && r.progress;
+                      const barPct = running
+                        ? (r.progress!.done / Math.max(r.progress!.total, 1)) * 100
+                        : ((r.passed ?? 0) / Math.max((r.passed ?? 0) + (r.failed ?? 0), 1)) * 100;
                       return (
                         <div key={r.run_id ?? i} className="space-y-1">
                           <div className="flex items-center gap-3 text-xs">
@@ -423,13 +438,23 @@ export function SuitesTab({ apiKey }: { apiKey: string }) {
                                 dataset v{r.dataset_version}
                               </span>
                             )}
+                            {r.agent_id && (
+                              <span className="text-muted-foreground/60" data-testid={`run-agent-${r.run_id}`}>
+                                on {r.agent_id}
+                              </span>
+                            )}
                             <div className="flex-1 bg-muted rounded-full h-1.5">
                               <div
-                                className="bg-emerald-500 h-1.5 rounded-full"
-                                style={{ width: `${((r.passed ?? 0) / Math.max((r.passed ?? 0) + (r.failed ?? 0), 1)) * 100}%` }}
+                                className={`${running ? 'bg-sky-500' : 'bg-emerald-500'} h-1.5 rounded-full`}
+                                style={{ width: `${barPct}%` }}
                               />
                             </div>
-                            <span className="text-muted-foreground">{r.passed ?? 0}/{(r.passed ?? 0) + (r.failed ?? 0)} pass</span>
+                            <span
+                              data-testid={`run-status-${r.run_id}`}
+                              className={RUN_TONE[r.status ?? ''] ?? 'text-muted-foreground'}
+                            >
+                              {runStatusText(r)}
+                            </span>
                             {unscored.length > 0 && (
                               <span className="text-amber-500">{unscored.length} not scored</span>
                             )}

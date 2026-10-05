@@ -71,6 +71,14 @@ def _expired(row: dict[str, Any], now: datetime) -> bool:
     return row.get("lease_expires_at") is not None and row["lease_expires_at"] < now
 
 
+_LAST_RUN_KEYS = ("run_id", "status", "total", "passed", "failed", "pass_rate", "run_at",
+                  "finished_at", "dataset_version", "agent_id", "progress")
+
+
+def _last_run_public(run: dict[str, Any]) -> dict[str, Any]:
+    return {k: run[k] for k in _LAST_RUN_KEYS if k in run}
+
+
 def _run_task_public(row: dict[str, Any]) -> dict[str, Any]:
     task = row.get("task") or {}
     return {
@@ -261,26 +269,56 @@ class EvalSuiteStore:
         }
 
     async def list(self) -> list[dict[str, Any]]:
+        """The tenant's suites, each with its latest run (``last_run``, ``None`` when it
+        never ran); a running one carries live ``progress``."""
         if self._db is None:
-            return [self._summary(v) for v in _MEM_SUITES.get(self._tenant_id, {}).values()]
+            out = []
+            for v in _MEM_SUITES.get(self._tenant_id, {}).values():
+                item = self._summary(v)
+                runs = await self.list_runs(item["suite_id"], limit=1)
+                item["last_run"] = _last_run_public(runs[0]) if runs else None
+                out.append(item)
+            return out
+        stale = datetime.now(UTC) - timedelta(seconds=_stalled_after_seconds())
         async with _scoped(self._db, self._tenant_id) as s:
             rows = (
                 await s.execute(
                     sa_text(
                         "SELECT s.id, s.name, s.description, s.dataset_version, s.created_at, "
                         " (SELECT count(*) FROM golden_tasks g WHERE g.tenant_id = s.tenant_id "
-                        "   AND g.eval_suite_id = s.id AND g.valid_to IS NULL) AS n "
-                        "FROM eval_suites s WHERE s.tenant_id = :tid "
+                        "   AND g.eval_suite_id = s.id AND g.valid_to IS NULL) AS n, "
+                        " r.id, CASE WHEN r.status = 'running' "
+                        "  AND COALESCE(r.last_progress_at, r.run_at) < :stale "
+                        "  THEN 'abandoned' ELSE r.status END, r.total_tasks, r.passed_tasks, "
+                        " r.failed_tasks, r.pass_rate, r.run_at, r.finished_at, "
+                        " r.dataset_version, r.agent_id, r.status "
+                        "FROM eval_suites s "
+                        "LEFT JOIN LATERAL (SELECT * FROM eval_suite_results x "
+                        "  WHERE x.tenant_id = s.tenant_id AND x.suite_id = s.id "
+                        "  ORDER BY x.run_at DESC, x.id LIMIT 1) r ON true "
+                        "WHERE s.tenant_id = :tid "
                         "ORDER BY s.created_at DESC, s.id LIMIT 500"
                     ),
-                    {"tid": self._tenant_id},
+                    {"tid": self._tenant_id, "stale": stale},
                 )
             ).all()
-        return [
-            {"suite_id": r[0], "name": r[1], "description": r[2] or "",
-             "dataset_version": int(r[3] or 0), "created_at": _iso(r[4]), "task_count": int(r[5])}
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            last: dict[str, Any] | None = None
+            if r[6] is not None:
+                last = {
+                    "run_id": r[6], "status": r[7], "total": r[8], "passed": r[9],
+                    "failed": r[10], "pass_rate": r[11], "run_at": _iso(r[12]),
+                    "finished_at": _iso(r[13]), "dataset_version": r[14], "agent_id": r[15],
+                }
+                if r[16] == "running":
+                    last["progress"] = await self.run_progress(str(r[6]))
+            out.append({
+                "suite_id": r[0], "name": r[1], "description": r[2] or "",
+                "dataset_version": int(r[3] or 0), "created_at": _iso(r[4]),
+                "task_count": int(r[5]), "last_run": last,
+            })
+        return out
 
     async def get(
         self, suite_id: str, *, task_limit: int = GET_TASK_LIMIT

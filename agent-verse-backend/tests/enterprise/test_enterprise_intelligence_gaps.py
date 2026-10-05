@@ -140,6 +140,31 @@ def test_get_suite_results_returns_persisted_runs(monkeypatch: pytest.MonkeyPatc
     assert body[0]["total"] == 1 and body[0]["passed"] == 1
 
 
+def test_running_an_empty_suite_is_refused_and_records_no_run() -> None:
+    """A suite without golden tasks fails closed (422) instead of a vacuous pass.
+
+    Durable runs with tasks are covered in tests/intelligence/test_eval_suite_durable_runs.py.
+    """
+    from app.intelligence.eval_suite import EvalSuiteResult
+
+    runner = MagicMock()
+    runner.run_suite = AsyncMock(
+        return_value=EvalSuiteResult(suite_id="suite-xyz", total_tasks=0)
+    )
+    app = _make_app(eval_suite_runner=runner)
+    app.state.goal_service = MagicMock()
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.post(
+        "/intelligence/eval-suites", json={"suite_id": "suite-xyz"}, headers=_HDR
+    ).status_code == 201
+    started = client.post("/intelligence/eval-suites/suite-xyz/run", headers=_HDR)
+    assert started.status_code == 422, started.text
+    assert "no golden tasks" in started.json()["detail"]
+
+    body = client.get("/intelligence/eval-suites/suite-xyz/results", headers=_HDR).json()
+    assert body == []
+
+
 # ── GET /intelligence/experiments ────────────────────────────────────────────
 
 

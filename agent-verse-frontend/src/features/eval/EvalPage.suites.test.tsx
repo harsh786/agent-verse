@@ -191,7 +191,7 @@ describe('EvalPage SuitesTab handlers', () => {
     await waitFor(() => {
       expect(screen.getByText('Recent Runs')).toBeInTheDocument();
     });
-    expect(screen.getByText('4/4 pass')).toBeInTheDocument();
+    expect(screen.getByText(/· 4\/4 pass$/)).toBeInTheDocument();
 
     // Collapse again -> results section disappears (activeSuiteId no longer matches)
     await userEvent.click(screen.getByText('Regression Suite'));
@@ -237,7 +237,7 @@ describe('EvalPage SuitesTab handlers', () => {
     await waitFor(() => {
       expect(screen.getByText('Recent Runs')).toBeInTheDocument();
     });
-    expect(screen.getByText('2/2 pass')).toBeInTheDocument();
+    expect(screen.getByText(/· 2\/2 pass$/)).toBeInTheDocument();
   });
 
   // ─── Add Task modal ─────────────────────────────────────────────────────────

@@ -300,3 +300,17 @@ def test_the_celery_step_reschedules_itself_only_while_running(
     if rescheduled:
         assert sent[0]["args"] == ["t1", "free", "r1", 0]
         assert sent[0]["queue"] == "maintenance" and sent[0]["countdown"] > 0
+
+
+async def test_the_suite_list_carries_each_suites_latest_run_with_progress() -> None:
+    ctx = _ctx()
+    store, run_id = await _seed(ctx, 6)
+    await store.create("empty", name="empty", description="")
+    await run_step(store=store, run_id=run_id, goal_service=FakeGoals(running_polls=10_000),
+                   tenant_ctx=ctx, cfg=_cfg())
+    suites = {s["suite_id"]: s for s in await store.list()}
+    assert suites["empty"]["last_run"] is None
+    last = suites["s"]["last_run"]
+    assert last["run_id"] == run_id and last["status"] == "running"
+    assert last["dataset_version"] == 1 and last["total"] == 6
+    assert last["progress"]["running"] == 4 and last["progress"]["pending"] == 2

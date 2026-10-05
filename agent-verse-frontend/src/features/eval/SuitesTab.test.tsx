@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { SuitesTab } from './SuitesTab';
+import { runsRefetchInterval } from './runStatus';
 
 vi.mock('framer-motion', async (importOriginal) => {
   const actual = await importOriginal<typeof import('framer-motion')>();
@@ -129,5 +130,64 @@ describe('SuitesTab — versioned golden datasets', () => {
     await waitFor(() => {
       expect(calls.some((c) => c.method === 'DELETE' && c.url.endsWith('/tasks/task-a'))).toBe(true);
     });
+  });
+});
+
+describe('SuitesTab — durable run progress (MEM-53)', () => {
+  beforeEach(() => {
+    useAuthStore.setState({ apiKey: 'k', tenantId: 't', plan: 'free', isAuthenticated: true });
+    useToastStore.setState({ toasts: [] });
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const PROGRESS = { total: 10, done: 3, passed: 2, failed: 1, unscored: 0, running: 4, pending: 3 };
+
+  function mockRuns(runs: unknown[]) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/intelligence/eval-suites')) {
+        return json([{ suite_id: 's1', name: 'Regression', task_count: 10, dataset_version: 2 }]);
+      }
+      if (url.endsWith('/intelligence/eval-suites/s1')) {
+        return json({ suite_id: 's1', name: 'Regression', task_count: 1, dataset_version: 2, tasks: [TASK] });
+      }
+      if (url.endsWith('/results')) return json(runs);
+      return json({});
+    }) as unknown as typeof fetch);
+  }
+
+  test('a running run shows its live per-task progress, newest run first', async () => {
+    mockRuns([
+      { run_id: 'new', status: 'running', passed: 0, failed: 0, total: 10, dataset_version: 2,
+        agent_id: 'agent-7', progress: PROGRESS, task_results: [] },
+      { run_id: 'old', status: 'completed', passed: 9, failed: 1, total: 10, dataset_version: 1,
+        task_results: [] },
+    ]);
+    renderTab();
+    await userEvent.click(await screen.findByText('Regression'));
+    const status = await screen.findByTestId('run-status-new');
+    expect(status).toHaveTextContent('running · 3/10 done · 4 in flight');
+    expect(screen.getByTestId('run-agent-new')).toHaveTextContent('agent-7');
+    expect(screen.getByTestId('run-status-old')).toHaveTextContent('completed · 9/10 pass');
+    const order = screen.getAllByTestId(/^run-status-/).map((el) => el.dataset.testid);
+    expect(order).toEqual(['run-status-new', 'run-status-old']);
+  });
+
+  test('a stalled run is shown as stalled, a failed run with its error', async () => {
+    mockRuns([
+      { run_id: 'st', status: 'abandoned', passed: 0, failed: 0, total: 10, task_results: [] },
+      { run_id: 'er', status: 'failed', passed: 0, failed: 0, total: 0, error: 'no tasks',
+        task_results: [] },
+    ]);
+    renderTab();
+    await userEvent.click(await screen.findByText('Regression'));
+    expect(await screen.findByTestId('run-status-st')).toHaveTextContent(/stalled/i);
+    expect(screen.getByTestId('run-status-er')).toHaveTextContent('failed · no tasks');
+  });
+
+  test('results are polled only while a run is in progress', () => {
+    expect(runsRefetchInterval([{ run_id: 'a', status: 'running', passed: 0, failed: 0 }])).toBe(5000);
+    expect(runsRefetchInterval([{ run_id: 'a', status: 'completed', passed: 1, failed: 0 }])).toBe(false);
+    expect(runsRefetchInterval(undefined)).toBe(false);
   });
 });

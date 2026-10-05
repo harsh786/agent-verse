@@ -58,6 +58,10 @@ async def test_durable_runs_on_postgres(monkeypatch: Any) -> None:
             assert probe is not None
             assert (await store.run_progress(run_id))["running"] == 1
             assert len(await store.claim_due(run_id, "probe", 30, 10)) == 0
+            (listed,) = await store.list()
+            assert listed["last_run"]["run_id"] == run_id
+            assert listed["last_run"]["status"] == "running"
+            assert listed["last_run"]["progress"]["running"] == 1
             async with admin() as s, s.begin():
                 await s.execute(
                     text("UPDATE eval_suite_task_results SET state = 'pending', attempts = 0, "
@@ -83,6 +87,9 @@ async def test_durable_runs_on_postgres(monkeypatch: Any) -> None:
             (run,) = await store.list_runs("big")
             assert run["status"] == "completed" and run["passed"] == 2000
             assert len(run["task_results"]) == 200  # summary on the row; the rest paged
+            (listed,) = await store.list()
+            assert listed["last_run"]["status"] == "completed"
+            assert listed["last_run"]["passed"] == 2000 and "progress" not in listed["last_run"]
             page = await store.list_run_tasks(run_id, limit=500, offset=1900)
             assert len(page) == 100
 

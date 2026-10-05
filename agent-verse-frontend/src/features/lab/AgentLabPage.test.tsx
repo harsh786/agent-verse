@@ -43,10 +43,11 @@ function setupDefaultFetch() {
           {
             run_id: 'run1',
             suite_id: 's1',
-            overall_score: 0.85,
+            status: 'completed',
+            pass_rate: 0.8,
             passed: 4,
             failed: 1,
-            completed_at: '2026-01-01',
+            run_at: '2026-01-01T00:00:00Z',
           },
         ]),
         { status: 200 }
@@ -335,10 +336,11 @@ describe('AgentLabPage', () => {
             {
               run_id: 'run2',
               suite_id: 's2',
-              overall_score: 0.92,
+              status: 'completed',
+              pass_rate: 1,
               passed: 3,
               failed: 0,
-              completed_at: '2026-01-02',
+              run_at: '2026-01-02T00:00:00Z',
             },
           ]),
           { status: 200 }

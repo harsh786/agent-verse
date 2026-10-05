@@ -1,19 +1,8 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { FlaskConical, Play, Plus, CheckCircle2, XCircle, Clock, AlertCircle } from 'lucide-react';
-import { apiFetch } from '@/lib/api/client';
+import { evalSuitesApi, type EvalSuite, type EvalSuiteRunSummary } from '@/lib/api/client';
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
-
-interface EvalSuite {
-  id: string;
-  name: string;
-  description?: string;
-  task_count: number;
-  last_run_at?: string;
-  last_run_status?: 'passed' | 'failed' | 'running' | 'pending';
-  pass_rate?: number;
-  created_at: string;
-}
 
 interface CreateSuiteBody {
   name: string;
@@ -21,14 +10,28 @@ interface CreateSuiteBody {
 }
 
 const STATUS_STYLES: Record<string, { label: string; color: string; icon: React.ElementType }> = {
-  passed:  { label: 'Passed',  color: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20', icon: CheckCircle2 },
-  failed:  { label: 'Failed',  color: 'text-rose-400 bg-rose-400/10 border-rose-400/20',         icon: XCircle      },
-  running: { label: 'Running', color: 'text-[#00D4FF] bg-[#00D4FF]/10 border-[#00D4FF]/20',     icon: Clock        },
-  pending: { label: 'Pending', color: 'text-[#64748B] bg-[#64748B]/10 border-[#64748B]/20',     icon: Clock        },
+  completed: { label: 'Completed', color: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20', icon: CheckCircle2 },
+  failed:    { label: 'Failed',    color: 'text-rose-400 bg-rose-400/10 border-rose-400/20',         icon: XCircle      },
+  running:   { label: 'Running',   color: 'text-[#00D4FF] bg-[#00D4FF]/10 border-[#00D4FF]/20',     icon: Clock        },
+  abandoned: { label: 'Stalled',   color: 'text-amber-400 bg-amber-400/10 border-amber-400/20',     icon: AlertCircle  },
 };
 
+/** What the suite's newest run says, e.g. "Running · 2/5 done" or "Completed · 83% pass". */
+function lastRunText(run: EvalSuiteRunSummary): string {
+  const label = STATUS_STYLES[run.status ?? '']?.label ?? run.status ?? 'Unknown';
+  if (run.status === 'running') {
+    return run.progress ? `${label} · ${run.progress.done}/${run.progress.total} done` : label;
+  }
+  if (run.status === 'abandoned') return `${label} · no worker progress, being resumed`;
+  if (run.status === 'completed' && typeof run.pass_rate === 'number') {
+    return `${label} · ${Math.round(run.pass_rate * 100)}% pass`;
+  }
+  return label;
+}
+
 function SuiteCard({ suite, onRun }: { suite: EvalSuite; onRun: (id: string) => void }) {
-  const st = suite.last_run_status ? STATUS_STYLES[suite.last_run_status] : null;
+  const run = suite.last_run ?? null;
+  const st = run ? STATUS_STYLES[run.status ?? ''] : null;
   const StatusIcon = st?.icon ?? Clock;
   return (
     <JARVISStaggerItem interactive>
@@ -43,26 +46,28 @@ function SuiteCard({ suite, onRun }: { suite: EvalSuite; onRun: (id: string) => 
               <p className="text-xs text-[#64748B] line-clamp-2 mb-2">{suite.description}</p>
             )}
             <div className="flex items-center gap-3 text-xs text-[#475569]">
-              <span>{suite.task_count} tasks</span>
-              {suite.pass_rate !== undefined && (
-                <span className="text-emerald-400">{Math.round(suite.pass_rate * 100)}% pass</span>
-              )}
-              {suite.last_run_at && (
-                <span>Last: {new Date(suite.last_run_at).toLocaleDateString()}</span>
-              )}
+              <span>
+                {suite.task_count} tasks
+                {typeof suite.dataset_version === 'number' && ` · dataset v${suite.dataset_version}`}
+              </span>
+              {run?.run_at && <span>Last: {new Date(run.run_at).toLocaleDateString()}</span>}
             </div>
           </div>
           <div className="flex flex-col items-end gap-2 shrink-0">
-            {st && (
-              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${st.color}`}>
+            {run && (
+              <span
+                data-testid={`suite-run-${suite.suite_id}`}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border ${st?.color ?? 'text-[#64748B] border-[#64748B]/20'}`}
+              >
                 <StatusIcon className="h-3 w-3" aria-hidden />
-                {st.label}
+                {lastRunText(run)}
               </span>
             )}
             <button
-              onClick={() => onRun(suite.id)}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 hover:bg-violet-500/30 text-xs font-medium transition-colors"
-              title="Run suite"
+              onClick={() => onRun(suite.suite_id)}
+              disabled={run?.status === 'running'}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-500/20 text-violet-400 hover:bg-violet-500/30 text-xs font-medium transition-colors disabled:opacity-50"
+              title={run?.status === 'running' ? 'A run is in progress' : 'Run suite'}
             >
               <Play className="h-3 w-3" /> Run
             </button>
@@ -80,12 +85,14 @@ export function EvalSuitesPage() {
 
   const { data: suites = [], isLoading, isError } = useQuery<EvalSuite[]>({
     queryKey: ['eval-suites'],
-    queryFn: () => apiFetch<EvalSuite[]>('/intelligence/eval-suites'),
+    queryFn: () => evalSuitesApi.listSuites(),
+    // Durable runs execute on workers: poll while one is in progress.
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some((s) => s.last_run?.status === 'running') ? 5000 : false,
   });
 
   const createSuite = useMutation({
-    mutationFn: (body: CreateSuiteBody) =>
-      apiFetch('/intelligence/eval-suites', { method: 'POST', body: JSON.stringify(body) }),
+    mutationFn: (body: CreateSuiteBody) => evalSuitesApi.createSuite(body.name, body.description),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['eval-suites'] });
       setShowCreate(false);
@@ -94,14 +101,15 @@ export function EvalSuitesPage() {
   });
 
   const runSuite = useMutation({
-    mutationFn: (id: string) =>
-      apiFetch(`/intelligence/eval-suites/${id}/run`, { method: 'POST' }),
+    mutationFn: (id: string) => evalSuitesApi.runSuite(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['eval-suites'] }),
   });
 
   const totalSuites = suites.length;
-  const passedSuites = suites.filter((s) => s.last_run_status === 'passed').length;
-  const failedSuites = suites.filter((s) => s.last_run_status === 'failed').length;
+  const runningSuites = suites.filter((s) => s.last_run?.status === 'running').length;
+  const attentionSuites = suites.filter(
+    (s) => s.last_run?.status === 'failed' || s.last_run?.status === 'abandoned',
+  ).length;
 
   return (
     <JARVISPageShell>
@@ -128,13 +136,13 @@ export function EvalSuitesPage() {
         {/* KPI row */}
         <div className="grid grid-cols-3 gap-3">
           {[
-            { label: 'Total Suites', value: totalSuites, color: 'text-[#00D4FF]' },
-            { label: 'Passed',       value: passedSuites,  color: 'text-emerald-400' },
-            { label: 'Failed',       value: failedSuites,  color: 'text-rose-400' },
-          ].map(({ label, value, color }) => (
-            <div key={label} className="rounded-xl border border-[#1E2535] bg-[#1A1F2E] p-4">
+            { id: 'total',     label: 'Total Suites',      value: totalSuites,     color: 'text-[#00D4FF]' },
+            { id: 'running',   label: 'Running',           value: runningSuites,   color: 'text-[#00D4FF]' },
+            { id: 'attention', label: 'Failed or stalled', value: attentionSuites, color: 'text-rose-400' },
+          ].map(({ id, label, value, color }) => (
+            <div key={id} className="rounded-xl border border-[#1E2535] bg-[#1A1F2E] p-4">
               <p className="text-xs text-[#64748B] mb-1">{label}</p>
-              <p className={`text-2xl font-bold tabular-nums ${color}`}>{isLoading ? '—' : value}</p>
+              <p data-testid={`kpi-${id}`} className={`text-2xl font-bold tabular-nums ${color}`}>{isLoading ? '—' : value}</p>
             </div>
           ))}
         </div>
@@ -163,7 +171,7 @@ export function EvalSuitesPage() {
         ) : (
           <JARVISStagger className="space-y-3">
             {suites.map((suite) => (
-              <SuiteCard key={suite.id} suite={suite} onRun={(id) => runSuite.mutate(id)} />
+              <SuiteCard key={suite.suite_id} suite={suite} onRun={(id) => runSuite.mutate(id)} />
             ))}
           </JARVISStagger>
         )}

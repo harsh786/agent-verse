@@ -830,9 +830,10 @@ function ScoreTab(): JSX.Element {
     enabled: !!effectiveSuiteId,
   });
 
-  const chartData = (suiteResults ?? []).slice(-10).map((r) => ({
+  // The API returns runs newest first; chart the latest 10, oldest on the left.
+  const chartData = (suiteResults ?? []).slice(0, 10).reverse().map((r) => ({
     run: r.run_id.slice(0, 8),
-    score: r.overall_score,
+    score: r.pass_rate ?? 0,
     passed: r.passed,
     failed: r.failed,
   }));

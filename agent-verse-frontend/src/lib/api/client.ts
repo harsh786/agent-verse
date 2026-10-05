@@ -2272,6 +2272,41 @@ export interface EvalSuite {
   created_at: string;
   /** Bumped by every golden-task add / edit / delete / import (MEM-54). */
   dataset_version?: number;
+  /** The suite's newest run (null when it never ran); a running one has live progress. */
+  last_run?: EvalSuiteRunSummary | null;
+}
+
+/**
+ * Lifecycle of a durable suite run (MEM-53). "abandoned": no worker has made
+ * progress for a while (the stalled-run sweeper re-dispatches it); "failed":
+ * the run itself errored (not a task verdict).
+ */
+export type EvalSuiteRunStatus = "running" | "completed" | "failed" | "abandoned";
+
+/** Per-task progress of a run, from its persisted task rows. */
+export interface EvalSuiteRunProgress {
+  total: number;
+  done: number;
+  passed: number;
+  failed: number;
+  unscored: number;
+  running: number;
+  pending: number;
+}
+
+export interface EvalSuiteRunSummary {
+  run_id: string;
+  status?: EvalSuiteRunStatus | string;
+  total?: number | null;
+  passed?: number | null;
+  failed?: number | null;
+  pass_rate?: number | null;
+  run_at?: string | null;
+  finished_at?: string | null;
+  dataset_version?: number | null;
+  /** The agent the golden goals ran on (the one being promoted), if any. */
+  agent_id?: string | null;
+  progress?: EvalSuiteRunProgress;
 }
 
 export interface GoldenTask {
@@ -2302,16 +2337,14 @@ export interface GoldenDatasetExport {
   tasks: GoldenTask[];
 }
 
-export interface EvalSuiteResult {
-  run_id: string;
-  suite_id: string;
-  overall_score: number;
+export interface EvalSuiteResult extends EvalSuiteRunSummary {
+  suite_id?: string;
   passed: number;
   failed: number;
-  completed_at: string;
-  status?: string;
+  error?: string | null;
   /** The golden dataset version the run executed. */
   dataset_version?: number | null;
+  /** A summary (failures first); page the rest via getRunTasks. */
   task_results?: Array<EvalSuiteTaskResult>;
 }
 
@@ -2373,6 +2406,7 @@ export const evalSuitesApi = {
       `/intelligence/eval-suites/${id}/run`,
       { method: "POST", body: JSON.stringify(agentId ? { agent_id: agentId } : {}) },
     ),
+  /** Newest first. */
   getSuiteResults: (id: string) =>
     request<EvalSuiteResult[]>(`/intelligence/eval-suites/${id}/results`),
   deleteSuite: (suiteId: string) =>
