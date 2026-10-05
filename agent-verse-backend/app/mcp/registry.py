@@ -41,6 +41,9 @@ class AuthType(enum.StrEnum):
     CUSTOM_HEADER = "custom_header"
     MTLS = "mtls"
     HMAC = "hmac"
+    # A database connection string (MongoDB, ...): the credentials are inside the
+    # URI, sealed as a connector secret (MDB-01); no HTTP auth header is sent.
+    CONNECTION_STRING = "connection_string"
     NONE = "none"
 
 
