@@ -8,7 +8,10 @@ Supports any file format via ParserRegistry dispatch.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
+import datetime
 import functools
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import TYPE_CHECKING, Any
@@ -16,10 +19,12 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
     fetch_failure_document,
 )
 from app.ingestion.connector_egress import (
+    ConnectorEgressBlockedError,
     pin_source_urls,
     pin_source_urls_sync,
     run_driver_call,
@@ -31,6 +36,20 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _describe(exc: BaseException) -> str:
+    """An honest one-line reason (S3 error code + message, or the exception)."""
+    try:
+        from botocore import exceptions as boto_exc  # type: ignore[import-not-found]
+    except ImportError:  # pragma: no cover
+        boto_exc = None
+    if boto_exc is not None and isinstance(exc, boto_exc.ClientError):
+        error = exc.response.get("Error", {}) or {}
+        status = (exc.response.get("ResponseMetadata", {}) or {}).get("HTTPStatusCode", "")
+        code = error.get("Code") or status
+        return f"{code} {error.get('Message', '')} (HTTP {status})".strip()
+    return f"{type(exc).__name__}: {exc}"[:500]
 
 
 # CONNECTOR_REPLAY_KEY "kind" of a failed S3 object fetch (see replay_event).
@@ -91,6 +110,97 @@ def _classify_fetch_error(exc: BaseException) -> tuple[str, bool]:
     return f"s3 fetch failed: {type(exc).__name__}: {exc}", True
 
 
+# Objects modified up to this long before a run's listing started are listed
+# again by the next run (re-fetched, then skipped by content-hash dedup when
+# unchanged): it absorbs clock differences between the store's nodes and the
+# second-precision Date header the watermark comes from.
+_DEFAULT_LOOKBACK_SECONDS = 60
+_ADDRESSING_STYLES = frozenset({"path", "virtual", "auto"})
+
+
+@dataclasses.dataclass(frozen=True)
+class _ListingCursor:
+    """Incremental position of an S3 source (P1b-3).
+
+    ``since``: objects with ``LastModified >= since`` are this run's delta.
+    ``after``: the last key a run handed to the pipeline (keys are listed in
+    lexicographic order); a resumed run lists from there (``StartAfter``).
+    ``run``: when the interrupted run's listing started (server time), carried
+    over so the watermark a resumed run ends with still covers changes made
+    while the first part ran.
+
+    The old cursor was the newest ``LastModified`` seen. Keys are listed by
+    name, not by time, so a run cancelled or crashed after its periodic
+    commit had already recorded a newer time than objects it had not reached
+    yet — they were skipped forever; and an object changed during a run, at a
+    time older than another object's, was never picked up.
+    """
+
+    since: str = ""
+    after: str = ""
+    run: str = ""
+    # A pre-P1b-3 cursor: the newest LastModified already ingested (exclusive).
+    legacy: bool = False
+
+    @classmethod
+    def parse(cls, raw: str | None) -> _ListingCursor:
+        text = (raw or "").strip()
+        if not text:
+            return cls()
+        if text.startswith("{"):
+            try:
+                data = json.loads(text)
+            except ValueError:
+                return cls()
+            return cls(
+                since=str(data.get("since") or ""),
+                after=str(data.get("after") or ""),
+                run=str(data.get("run") or ""),
+            )
+        return cls(since=text, legacy=True)  # the newest LastModified seen
+
+    def dump(self) -> str:
+        return json.dumps(
+            {"v": 2, "since": self.since, "after": self.after, "run": self.run},
+            separators=(",", ":"),
+        )
+
+
+def _as_utc(value: str) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.UTC)
+    return parsed.astimezone(datetime.UTC)
+
+
+def _server_time(page: dict[str, Any]) -> datetime.datetime | None:
+    """The store's own clock: the HTTP ``Date`` header of a listing response."""
+    from email.utils import parsedate_to_datetime
+
+    headers = (page.get("ResponseMetadata") or {}).get("HTTPHeaders") or {}
+    raw = headers.get("date") or headers.get("Date")
+    if not raw:
+        return None
+    try:
+        return parsedate_to_datetime(str(raw)).astimezone(datetime.UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def _lookback_seconds(config: SourceConfig) -> int:
+    try:
+        raw = config.connection_config.get("cursor_lookback_seconds", _DEFAULT_LOOKBACK_SECONDS)
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_LOOKBACK_SECONDS
+    return max(0, min(value, 7 * 86400))
+
+
 @register("s3", feature_flag="ingestion_connector_s3_enabled")
 class S3Connector(BaseConnector):
     """AWS S3 and S3-compatible object storage ingestion."""
@@ -147,15 +257,55 @@ class S3Connector(BaseConnector):
         return functools.partial(run_driver_call, context=self.source_type)
 
     @staticmethod
-    def _client_kwargs(endpoint_url: str | None) -> dict[str, Any]:
-        """boto3 client kwargs. A custom endpoint is addressed path-style, so every
-        request goes to the checked host — never ``<bucket>.<host>``, a name the
-        egress check never saw."""
-        if endpoint_url is None:
+    def _client_kwargs(
+        endpoint_url: str | None, config: SourceConfig | None = None
+    ) -> dict[str, Any]:
+        """boto3 client kwargs.
+
+        A custom endpoint is addressed path-style by default (MinIO and most
+        S3-compatible stores); ``connection_config.addressing_style`` may ask for
+        ``virtual`` (``<bucket>.<host>``, AWS-style) or ``auto``. Every host boto3
+        then resolves — the virtual-hosted name included — is egress-checked by
+        the driver runner (:func:`run_driver_call`).
+        """
+        style = str((config.connection_config if config else {}).get("addressing_style") or "")
+        style = style.strip().lower()
+        if style and style not in _ADDRESSING_STYLES:
+            raise ValueError(
+                f"addressing_style must be one of {sorted(_ADDRESSING_STYLES)}, got {style!r}"
+            )
+        if endpoint_url is None and not style:
             return {}
         from botocore.config import Config  # type: ignore[import-not-found]
 
-        return {"endpoint_url": endpoint_url, "config": Config(s3={"addressing_style": "path"})}
+        kwargs: dict[str, Any] = {"config": Config(s3={"addressing_style": style or "path"})}
+        if endpoint_url is not None:
+            kwargs["endpoint_url"] = endpoint_url
+        return kwargs
+
+    def _credential_kwargs(self, config: SourceConfig) -> dict[str, Any]:
+        """The source's credentials (incl. an STS session token) and region."""
+        cc = config.connection_config
+        credentials = cc.get("credentials", {}) or {}
+        kwargs: dict[str, Any] = {
+            "aws_access_key_id": credentials.get("access_key_id"),
+            "aws_secret_access_key": credentials.get("secret_access_key"),
+            "region_name": cc.get("region", "us-east-1"),
+        }
+        if credentials.get("session_token"):
+            kwargs["aws_session_token"] = credentials["session_token"]
+        return kwargs
+
+    def _make_client(self, boto3: Any, config: SourceConfig, endpoint_url: str | None) -> Any:
+        """A listing client: a boto3 Session with the source's credentials."""
+        session = boto3.Session(**self._credential_kwargs(config))
+        return session.client("s3", **self._client_kwargs(endpoint_url, config))
+
+    def _object_client(self, boto3: Any, config: SourceConfig, endpoint_url: str | None) -> Any:
+        """A one-off client (single-object fetch, count estimate)."""
+        return boto3.client(
+            "s3", **self._credential_kwargs(config), **self._client_kwargs(endpoint_url, config)
+        )
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
@@ -164,18 +314,12 @@ class S3Connector(BaseConnector):
         try:
             bucket = config.connection_config.get("bucket", "")
             region = config.connection_config.get("region", "us-east-1")
-            credentials = config.connection_config.get("credentials", {})
 
             async with self._pinned_endpoint(config) as endpoint_url:
                 import boto3  # type: ignore[import-not-found]
 
                 def _probe() -> tuple[float, Any]:
-                    session = boto3.Session(
-                        aws_access_key_id=credentials.get("access_key_id"),
-                        aws_secret_access_key=credentials.get("secret_access_key"),
-                        region_name=region,
-                    )
-                    s3 = session.client("s3", **self._client_kwargs(endpoint_url))
+                    s3 = self._make_client(boto3, config, endpoint_url)
                     # Quick check: head bucket
                     s3.head_bucket(Bucket=bucket)
                     latency = (time.perf_counter() - t0) * 1000
@@ -197,13 +341,19 @@ class S3Connector(BaseConnector):
         except ImportError:
             return ConnectionHealth(ok=False, error="boto3 not installed — pip install boto3")
         except Exception as exc:
-            return ConnectionHealth(ok=False, error=str(exc))
+            return ConnectionHealth(ok=False, error=_describe(exc))
 
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        """List S3 objects sorted by LastModified, yield those newer than cursor."""
+        """Objects changed since the last run, in key order (see :class:`_ListingCursor`).
 
+        Every yielded document carries a cursor that resumes after its key; when
+        the listing completes, :attr:`completed_cursor` holds the next run's
+        watermark (when this run's listing started, by the store's clock, minus
+        the look-back).
+        """
+        self.completed_cursor: str | None = None
         try:
             import boto3  # type: ignore[import-not-found]
         except ImportError as exc:
@@ -213,30 +363,19 @@ class S3Connector(BaseConnector):
             ) from exc
 
         bucket = config.connection_config.get("bucket", "")
-        prefix = config.connection_config.get("prefix", "")
-        region = config.connection_config.get("region", "us-east-1")
-        credentials = config.connection_config.get("credentials", {})
-        include_patterns = config.include_patterns
-        exclude_patterns = config.exclude_patterns
-
         try:
             async with self._pinned_endpoint(config) as endpoint_url:
                 async for raw, new_cursor in self._iter_objects(
-                    boto3,
-                    endpoint_url,
-                    config,
-                    bucket=bucket,
-                    prefix=prefix,
-                    region=region,
-                    credentials=credentials,
-                    cursor=cursor,
-                    include_patterns=include_patterns,
-                    exclude_patterns=exclude_patterns,
+                    boto3, endpoint_url, config, cursor=_ListingCursor.parse(cursor)
                 ):
                     yield raw, new_cursor
-        except Exception as exc:
-            _log.error("s3_connector_error bucket=%s: %s", bucket, exc)
+        except (ConnectorUnavailableError, ConnectorFetchError, ConnectorEgressBlockedError):
             raise
+        except Exception as exc:
+            # USR-1: a listing / auth / endpoint failure fails the sync with the
+            # store's own reason (code + message), never a bare exception name.
+            _log.error("s3_connector_error bucket=%s: %s", bucket, exc)
+            raise ConnectorFetchError(f"{self.source_type}: {_describe(exc)}") from exc
 
     async def _iter_objects(
         self,
@@ -244,71 +383,69 @@ class S3Connector(BaseConnector):
         endpoint_url: str | None,
         config: SourceConfig,
         *,
-        bucket: str,
-        prefix: str,
-        region: str,
-        credentials: dict[str, Any],
-        cursor: str | None,
-        include_patterns: list[str],
-        exclude_patterns: list[str],
+        cursor: _ListingCursor,
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
+        cc = config.connection_config
+        bucket = cc.get("bucket", "")
+        prefix = cc.get("prefix", "")
+        include_patterns, exclude_patterns = config.include_patterns, config.exclude_patterns
+        cap = int(config.max_doc_size_bytes)
+        since = _as_utc(cursor.since)
+        run_started = _as_utc(cursor.run)
         run = self._runner(endpoint_url)
-
-        def _client() -> Any:
-            session = boto3.Session(
-                aws_access_key_id=credentials.get("access_key_id"),
-                aws_secret_access_key=credentials.get("secret_access_key"),
-                region_name=region,
-            )
-            return session.client("s3", **self._client_kwargs(endpoint_url))
 
         def _download(key: str) -> tuple[bytes, str]:
             response = s3.get_object(Bucket=bucket, Key=key)
-            body = response["Body"].read()
+            body = response["Body"].read(cap + 1)
+            if len(body) > cap:  # replaced by a bigger object since the listing
+                raise _OversizedObjectError(f"object exceeds the {cap}-byte size cap")
             return body, response.get("ContentType", "application/octet-stream")
 
         # boto3 is blocking: client setup, each page and each download run on
         # the SDK pool (see app.ingestion.sdk_executor), never on the loop.
-        s3 = await run(_client)
-        pages = s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
+        s3 = await run(self._make_client, boto3, config, endpoint_url)
+        params: dict[str, Any] = {"Bucket": bucket, "Prefix": prefix}
+        if cursor.after:
+            params["StartAfter"] = cursor.after
+        pages = s3.get_paginator("list_objects_v2").paginate(**params)
 
-        new_cursor = cursor or ""
         async for page in iterate_blocking(pages, chunk_size=1, runner=run):
-            objects = sorted(
-                page.get("Contents", []),
-                key=lambda o: o["LastModified"].isoformat(),
-            )
-            for obj in objects:
+            if run_started is None:
+                run_started = _server_time(page) or datetime.datetime.now(datetime.UTC)
+            for obj in page.get("Contents", []):  # lexicographic key order
                 key = obj["Key"]
-                last_modified = obj["LastModified"].isoformat()
-
-                # Skip objects older than cursor (already ingested)
-                if cursor and last_modified <= cursor:
-                    continue
-
-                # Apply include/exclude patterns
+                modified = obj["LastModified"]
+                if since is not None and (
+                    modified <= since if cursor.legacy else modified < since
+                ):
+                    continue  # unchanged since the last run's watermark
                 if not self._matches_patterns(key, include_patterns, exclude_patterns):
                     continue
-
-                # Check file size
-                if obj.get("Size", 0) > config.max_doc_size_bytes:
+                position = dataclasses.replace(
+                    cursor, after=key, run=run_started.isoformat(), legacy=False
+                ).dump()
+                uri = f"s3://{bucket}/{key}"
+                meta = {
+                    "s3_key": key,
+                    "s3_bucket": bucket,
+                    "size": obj.get("Size", 0),
+                    "etag": str(obj.get("ETag") or "").strip('"'),
+                }
+                if obj.get("Size", 0) > cap:
                     _log.info("s3_too_large key=%s size=%d", key, obj["Size"])
-                    new_cursor = max(new_cursor, last_modified)
                     # USR-1: reported (a counted, permanent failure), not dropped.
                     yield fetch_failure_document(
                         config,
-                        doc_id=f"s3://{bucket}/{key}",
-                        reason=f"object exceeds the {config.max_doc_size_bytes}-byte size cap",
+                        doc_id=uri,
+                        reason=f"object exceeds the {cap}-byte size cap",
                         retryable=False,
-                        source_url=f"s3://{bucket}/{key}",
+                        source_url=uri,
                         title=key.split("/")[-1],
-                        metadata={"s3_key": key, "s3_bucket": bucket, "size": obj["Size"]},
-                    ), new_cursor
+                        metadata=meta,
+                    ), position
                     continue
-
-                # Download object
                 try:
                     content_bytes, content_type = await run(_download, key)
                 except ConnectorUnavailableError:
@@ -316,36 +453,37 @@ class S3Connector(BaseConnector):
                 except Exception as e:
                     reason, retryable = _classify_fetch_error(e)
                     _log.warning("s3_download_error key=%s retryable=%s: %s", key, retryable, e)
-                    new_cursor = max(new_cursor, last_modified)
                     # USR-1/USR-4: a counted failure (→ DLQ); the retry re-fetches
-                    # the object (replay_event), so the cursor may pass it.
+                    # the object (replay_event).
                     yield fetch_failure_document(
                         config,
-                        doc_id=f"s3://{bucket}/{key}",
+                        doc_id=uri,
                         reason=reason,
                         retryable=retryable,
-                        source_url=f"s3://{bucket}/{key}",
+                        source_url=uri,
                         title=key.split("/")[-1],
                         replay={"kind": _REPLAY_KIND, "bucket": bucket, "key": key},
-                        metadata={"s3_key": key, "s3_bucket": bucket},
-                    ), new_cursor
+                        metadata=meta,
+                    ), position
                     continue
-
-                raw = RawDocument(
-                    doc_id=f"s3://{bucket}/{key}",
+                yield RawDocument(
+                    doc_id=uri,
                     source_id=config.source_id,
                     tenant_id=config.tenant_id,
                     content=content_bytes,
                     content_type=content_type,
-                    source_url=f"s3://{bucket}/{key}",
+                    source_url=uri,
                     title=key.split("/")[-1],
-                    modified_at=last_modified,
-                    metadata={"s3_key": key, "s3_bucket": bucket, "size": obj["Size"]},
-                )
-                if last_modified > new_cursor:
-                    new_cursor = last_modified
+                    modified_at=modified.isoformat(),
+                    metadata=meta,
+                ), position
 
-                yield raw, new_cursor
+        if run_started is None:  # an empty listing still has a start
+            run_started = datetime.datetime.now(datetime.UTC)
+        watermark = run_started - datetime.timedelta(seconds=_lookback_seconds(config))
+        if since is not None and since > watermark:
+            watermark = since  # never move backwards
+        self.completed_cursor = _ListingCursor(since=watermark.isoformat()).dump()
 
     async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
         """Stream every object key under the configured prefix/patterns (KB-44).
@@ -359,19 +497,9 @@ class S3Connector(BaseConnector):
         cc = config.connection_config
         bucket = cc.get("bucket", "")
         prefix = cc.get("prefix", "")
-        credentials = cc.get("credentials", {})
         async with self._pinned_endpoint(config) as endpoint_url:
             run = self._runner(endpoint_url)
-
-            def _client() -> Any:
-                session = boto3.Session(
-                    aws_access_key_id=credentials.get("access_key_id"),
-                    aws_secret_access_key=credentials.get("secret_access_key"),
-                    region_name=cc.get("region", "us-east-1"),
-                )
-                return session.client("s3", **self._client_kwargs(endpoint_url))
-
-            client = await run(_client)
+            client = await run(self._make_client, boto3, config, endpoint_url)
             pages = client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix)
             async for page in iterate_blocking(pages, chunk_size=1, runner=run):
                 include, exclude = config.include_patterns, config.exclude_patterns
@@ -463,17 +591,10 @@ class S3Connector(BaseConnector):
         try:
             import boto3
 
-            credentials = config.connection_config.get("credentials", {})
             async with self._pinned_endpoint(config) as endpoint_url:
 
                 def _fetch() -> tuple[bytes, str]:
-                    s3 = boto3.client(
-                        "s3",
-                        aws_access_key_id=credentials.get("access_key_id"),
-                        aws_secret_access_key=credentials.get("secret_access_key"),
-                        region_name=config.connection_config.get("region", "us-east-1"),
-                        **self._client_kwargs(endpoint_url),
-                    )
+                    s3 = self._object_client(boto3, config, endpoint_url)
                     response = s3.get_object(Bucket=bucket, Key=key)
                     size = response.get("ContentLength")
                     if isinstance(size, int) and size > cap:
@@ -511,15 +632,8 @@ class S3Connector(BaseConnector):
         try:
             import boto3
 
-            credentials = config.connection_config.get("credentials", {})
             with self._pinned_endpoint_sync(config) as endpoint_url:
-                s3 = boto3.client(
-                    "s3",
-                    aws_access_key_id=credentials.get("access_key_id"),
-                    aws_secret_access_key=credentials.get("secret_access_key"),
-                    region_name=config.connection_config.get("region", "us-east-1"),
-                    **self._client_kwargs(endpoint_url),
-                )
+                s3 = self._object_client(boto3, config, endpoint_url)
                 resp = s3.list_objects_v2(
                     Bucket=config.connection_config.get("bucket", ""),
                     Prefix=config.connection_config.get("prefix", ""),

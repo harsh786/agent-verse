@@ -6,6 +6,7 @@ sys.modules["boto3"] = None (mirrors the pypdf pattern used elsewhere)."""
 from __future__ import annotations
 
 import datetime
+import json
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -109,7 +110,11 @@ class TestGetDelta:
         assert doc0.content == b"content"
         assert doc0.title == "a.txt"
         doc1, cursor1 = results[1]
-        assert cursor1 == t2.isoformat()
+        # P1b-3: a document's cursor resumes after its key; the completed
+        # listing publishes the next run's watermark separately.
+        assert json.loads(cursor1)["after"] == doc1.metadata["s3_key"]
+        assert connector.completed_cursor is not None
+        assert json.loads(connector.completed_cursor)["after"] == ""
 
     async def test_skips_objects_older_than_cursor(self):
         t1 = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)

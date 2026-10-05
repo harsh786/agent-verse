@@ -749,6 +749,12 @@ async def _sync_with(
                 )
 
         # ── Final cursor commit ───────────────────────────────────────────────
+        # A connector whose per-document cursor is a resume position (S3: the
+        # last key handed over) publishes the next run's watermark once its
+        # listing is complete (P1b-3); a cancelled run keeps the resume position.
+        completed = getattr(connector, "completed_cursor", None)
+        if not cancelled and isinstance(completed, str) and completed:
+            new_cursor = completed
         await tracker.update_cursor(job, new_cursor or "", config)
         # Sync the loop's tallies onto the job before completing it — complete_job
         # records the job's own counters. This path previously called an API that
