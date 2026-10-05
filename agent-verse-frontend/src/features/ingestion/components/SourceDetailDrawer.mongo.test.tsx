@@ -144,6 +144,24 @@ describe('B6 friendly health / sync / job errors with details', () => {
     expect(document.body.innerHTML).not.toContain('10.0.0.5');
   });
 
+  test('USR-5 after the merge: a completed job keeps its moved-URL notice verbatim, incl. the new URL', async () => {
+    mockFetch({ syncStatus: { status: 'completed', sync_mode: 'incremental', docs_indexed: 1, error_message: 'https://feeds.example.org/old.xml moved permanently to https://feeds.example.org/v2/new.xml — the new URL is recorded on the source' } });
+    renderDrawer();
+    await userEvent.click(screen.getByRole('button', { name: /^history$/i }));
+    const notice = await screen.findByTestId('sync-job-message');
+    expect(notice).toHaveTextContent('moved permanently to https://feeds.example.org/v2/new.xml');
+    expect(notice.className).toContain('amber');
+    expect(screen.queryByTestId('job-error')).not.toBeInTheDocument();
+  });
+
+  test('USR-1 after the merge: a partial sync keeps its badge and reason', async () => {
+    mockFetch({ syncStatus: { status: 'partial', sync_mode: 'incremental', docs_indexed: 4, docs_failed: 2, error_message: '2 document(s) failed to sync; the failures are in the ingestion DLQ and are retried automatically' } });
+    renderDrawer();
+    await userEvent.click(screen.getByRole('button', { name: /^history$/i }));
+    expect(await screen.findByTestId('sync-job-status')).toHaveTextContent('partially failed');
+    expect(screen.getByTestId('job-error')).toHaveTextContent(/2 document\(s\) failed to sync/);
+  });
+
   test('a failed job shows a friendly reason in History', async () => {
     mockFetch({ syncStatus: { status: 'failed', sync_mode: 'incremental', docs_indexed: 0, error_message: "Authentication failed., full error: {'ok': 0.0, 'errmsg': 'Authentication failed.', 'code': 18}" } });
     renderDrawer();
