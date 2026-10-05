@@ -11,7 +11,8 @@ evaluations and scorecards. Now:
   indexes — never a whole-ledger scan;
 * every batch runs in its own short RLS transaction, so a long download does
   not pin a connection or a snapshot;
-* step outputs are truncated and capped per goal.
+* step outputs are truncated and capped per goal (the final step, which is
+  the exported answer, is always kept).
 
 ``iter_training_examples`` is an async generator: memory is bounded by one
 batch whatever ``limit`` is. DB failures raise (callers turn the first one into
@@ -66,11 +67,7 @@ async def _candidate_batch(
     async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
         rows = (
             await session.execute(
-                text(
-                    CANDIDATES_SQL
-                    + keyset
-                    + " ORDER BY g.created_at DESC, g.id DESC LIMIT :lim"
-                ),
+                text(CANDIDATES_SQL + keyset + " ORDER BY g.created_at DESC, g.id DESC LIMIT :lim"),
                 params,
             )
         ).fetchall()
@@ -82,9 +79,14 @@ async def _candidate_batch(
                     text(
                         "SELECT goal_id, LEFT(output, :max_chars), tool_calls FROM ("
                         " SELECT goal_id, output, tool_calls, step_index, "
-                        " ROW_NUMBER() OVER (PARTITION BY goal_id ORDER BY step_index) AS rn"
+                        " ROW_NUMBER() OVER (PARTITION BY goal_id ORDER BY step_index) AS rn,"
+                        " ROW_NUMBER() OVER (PARTITION BY goal_id ORDER BY step_index DESC)"
+                        " AS rn_desc"
                         " FROM goal_steps WHERE tenant_id = :tid AND goal_id = ANY(:gids)"
-                        ") st WHERE rn <= :max_steps ORDER BY goal_id, step_index ASC"
+                        # The first steps up to the cap, plus always the last one:
+                        # its output is the exported answer.
+                        ") st WHERE rn < :max_steps OR rn_desc = 1"
+                        " ORDER BY goal_id, step_index ASC"
                     ),
                     {
                         "tid": tenant_id,

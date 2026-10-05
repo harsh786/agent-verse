@@ -247,6 +247,8 @@ async def create_training_export_job(
         raise HTTPException(503, "Object storage is not configured for export jobs")
     try:
         job = await export_jobs.create_job(db, tenant.tenant_id, output_format, min_score, limit)
+    except export_jobs.TooManyActiveExportJobsError as exc:
+        raise HTTPException(429, str(exc)) from exc
     except export_jobs.TrainingExportUnavailableError as exc:
         raise HTTPException(503, _STORE_UNAVAILABLE) from exc
     try:

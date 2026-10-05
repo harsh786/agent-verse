@@ -52,7 +52,7 @@ async def test_iterator_reads_keyset_batches_and_holds_one_batch() -> None:
     assert goal_queries[1].params["after_id"] == "g0009"
     assert all(q.tenant_guc == TENANT for q in goal_queries)
     steps = db.touching("FROM goal_steps")
-    assert all("LEFT(output" in q.sql and "rn <= :max_steps" in q.sql for q in steps)
+    assert all("LEFT(output" in q.sql and "rn < :max_steps OR rn_desc = 1" in q.sql for q in steps)
 
 
 def _client(db: Any) -> TestClient:

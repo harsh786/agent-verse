@@ -250,3 +250,180 @@ def test_failed_job_is_recorded_failed(
     assert job["status"] == "failed" and "bucket gone" in job["error"]
     assert "download_url" not in job
 
+
+
+def _run(coro: Any) -> Any:
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def test_training_export_jobs_rls_isolates_tenants_on_the_app_role(
+    env: tuple[Any, str],
+) -> None:
+    """FORCE RLS on training_export_jobs binds the NOBYPASSRLS app role even
+    when a query forgets its tenant predicate."""
+    from app.db.rls import sqlalchemy_rls_context
+    from app.training_export import jobs as export_jobs
+
+    db, url = env
+    job = _run(export_jobs.create_job(db, TENANT_A, "openai", 0.8, 10))
+
+    async def _probe() -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        async with db() as s, s.begin(), sqlalchemy_rls_context(s, TENANT_B):
+            out["b_sees"] = (
+                await s.execute(text("SELECT COUNT(*) FROM training_export_jobs"))
+            ).scalar_one()
+            out["b_updates"] = (
+                await s.execute(
+                    text("UPDATE training_export_jobs SET error = 'x' WHERE id = :id"),
+                    {"id": job["job_id"]},
+                )
+            ).rowcount
+        async with db() as s, s.begin():
+            out["no_guc_sees"] = (
+                await s.execute(text("SELECT COUNT(*) FROM training_export_jobs"))
+            ).scalar_one()
+        async with db() as s, s.begin(), sqlalchemy_rls_context(s, TENANT_A):
+            out["a_sees"] = (
+                await s.execute(
+                    text("SELECT COUNT(*) FROM training_export_jobs WHERE id = :id"),
+                    {"id": job["job_id"]},
+                )
+            ).scalar_one()
+        try:
+            async with db() as s, s.begin(), sqlalchemy_rls_context(s, TENANT_B):
+                await s.execute(
+                    text(
+                        "INSERT INTO training_export_jobs (id, tenant_id, status, "
+                        "output_format, min_score, row_limit) "
+                        "VALUES ('forged', :a, 'queued', 'openai', 0.8, 1)"
+                    ),
+                    {"a": TENANT_A},
+                )
+            out["forged_insert"] = "allowed"
+        except Exception as exc:
+            out["forged_insert"] = type(exc).__name__
+        eng = create_async_engine(url, poolclass=NullPool)
+        async with eng.connect() as c:
+            out["force"] = (
+                await c.execute(
+                    text(
+                        "SELECT relrowsecurity AND relforcerowsecurity FROM pg_class "
+                        "WHERE relname = 'training_export_jobs'"
+                    )
+                )
+            ).scalar_one()
+        await eng.dispose()
+        return out
+
+    out = _run(_probe())
+    assert out["a_sees"] == 1
+    assert out["b_sees"] == 0 and out["b_updates"] == 0 and out["no_guc_sees"] == 0
+    assert out["forged_insert"] != "allowed"
+    assert out["force"] is True
+
+
+def test_a_stalled_workers_claim_is_fenced_after_takeover(env: tuple[Any, str]) -> None:
+    from app.training_export import jobs as export_jobs
+
+    db, url = env
+    job_id = _run(export_jobs.create_job(db, TENANT_A, "openai", 0.8, 5))["job_id"]
+    first = _run(export_jobs._claim(db, TENANT_A, job_id))
+    assert first is not None
+    # A live claim cannot be taken.
+    assert _run(export_jobs._claim(db, TENANT_A, job_id)) is None
+
+    async def _stall() -> None:
+        eng = create_async_engine(url, poolclass=NullPool)
+        async with eng.begin() as c:
+            await c.execute(
+                text(
+                    "UPDATE training_export_jobs SET heartbeat_at = NOW() - interval '1 hour' "
+                    "WHERE id = :id"
+                ),
+                {"id": job_id},
+            )
+        await eng.dispose()
+
+    _run(_stall())
+    second = _run(export_jobs._claim(db, TENANT_A, job_id))
+    assert second is not None and second != first
+    with pytest.raises(export_jobs.ExportClaimLostError):
+        _run(export_jobs._heartbeat(db, TENANT_A, job_id, first))
+    assert _run(export_jobs.mark_failed(db, TENANT_A, job_id, "late", claim_token=first)) is False
+    _run(export_jobs._heartbeat(db, TENANT_A, job_id, second))  # the new owner is alive
+    assert _run(export_jobs.get_job(db, TENANT_A, job_id))["status"] == "running"
+
+
+def test_final_step_survives_the_step_cap(env: tuple[Any, str]) -> None:
+    from app.training_export.stream import MAX_STEPS_PER_GOAL, iter_training_examples
+
+    db, url = env
+    tenant = "ops37d"
+
+    async def _seed_long_goal() -> None:
+        eng = create_async_engine(url, poolclass=NullPool)
+        async with eng.begin() as c:
+            await c.execute(
+                text("INSERT INTO tenants (id, name, email) VALUES (:id, 'T', :e)"),
+                {"id": tenant, "e": f"{tenant}@example.test"},
+            )
+            await c.execute(
+                text(
+                    "INSERT INTO goals (id, tenant_id, goal_text, status) "
+                    "VALUES ('glong', :t, 'long goal', 'complete')"
+                ),
+                {"t": tenant},
+            )
+            await c.execute(
+                text(
+                    "INSERT INTO evaluations (id, goal_id, tenant_id, scores, average_score, "
+                    "passed, strategy_execution_id) "
+                    "VALUES ('evlong', 'glong', :t, '{}', 0.99, true, 'se-long')"
+                ),
+                {"t": tenant},
+            )
+            await c.execute(
+                text(
+                    "INSERT INTO goal_steps (id, goal_id, tenant_id, step_index, description, "
+                    "output) SELECT 'sl' || i, 'glong', :t, i, 'd', "
+                    "CASE WHEN i = 79 THEN 'final answer' ELSE 'step ' || i END "
+                    "FROM generate_series(0, 79) i"
+                ),
+                {"t": tenant},
+            )
+        await eng.dispose()
+
+    async def _collect() -> list[dict[str, Any]]:
+        return [e async for e in iter_training_examples(db, tenant, 0.8, 10)]
+
+    _run(_seed_long_goal())
+    (example,) = _run(_collect())
+    assert example["result"] == "final answer"
+    assert len(example["steps"]) == MAX_STEPS_PER_GOAL
+    assert example["steps"][0]["output"] == "step 0"
+
+
+def test_active_job_cap_is_enforced_per_tenant(
+    env: tuple[Any, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.api import training_export as api
+    from app.training_export import jobs as export_jobs
+
+    db, _ = env
+    monkeypatch.setattr(export_jobs, "object_store_from_env", lambda: _MemStore())
+    monkeypatch.setattr(api, "_enqueue", lambda j, t: None)
+    c = _client(db, "ops37c")
+    codes = [
+        c.post("/intelligence/export-training-data/jobs").status_code
+        for _ in range(export_jobs.MAX_ACTIVE_JOBS_PER_TENANT + 1)
+    ]
+    assert codes == [202] * export_jobs.MAX_ACTIVE_JOBS_PER_TENANT + [429]
+    # Another tenant is not affected by ops37c's cap.
+    assert _client(db, TENANT_B).post(
+        "/intelligence/export-training-data/jobs"
+    ).status_code == 202
