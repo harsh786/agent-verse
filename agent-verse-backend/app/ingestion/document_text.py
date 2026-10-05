@@ -10,6 +10,7 @@ healthy. These helpers either return the document's real text or raise.
 from __future__ import annotations
 
 import io
+import os
 from typing import Any
 
 
@@ -21,11 +22,15 @@ class ParserUnavailableError(RuntimeError):
     """The parser library for this format is not installed on this host."""
 
 
-def extract_pdf_pages(data: bytes, *, filename: str = "document.pdf") -> list[str]:
+def extract_pdf_pages(
+    data: bytes, *, filename: str = "document.pdf", allow_textless: bool = False
+) -> list[str]:
     """Return the text of each page (``""`` for pages without a text layer).
 
     Raises DocumentParseError for a corrupt/encrypted PDF or one with no text
     at all (e.g. a scan, which needs OCR), ParserUnavailableError without pypdf.
+    ``allow_textless=True`` returns the (all empty) pages of a scan instead, for
+    a caller that OCRs them (:func:`ocr_pdf_pages`).
     """
     try:
         from pypdf import PdfReader
@@ -34,18 +39,117 @@ def extract_pdf_pages(data: bytes, *, filename: str = "document.pdf") -> list[st
         raise ParserUnavailableError("PDF parsing requires pypdf") from exc
     try:
         reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            raise DocumentParseError(f"{filename}: encrypted PDFs are not supported")
+        if reader.is_encrypted and not _decrypt_without_password(reader):
+            raise DocumentParseError(
+                f"{filename}: the PDF is encrypted and needs a password to open; upload an "
+                "unprotected copy"
+            )
         pages = [page.extract_text() or "" for page in reader.pages]
     except DocumentParseError:
         raise
     except (PdfReadError, ValueError, KeyError, TypeError, OSError) as exc:
         raise DocumentParseError(f"{filename}: not a readable PDF ({exc})") from exc
-    if not any(p.strip() for p in pages):
+    if not allow_textless and not any(p.strip() for p in pages):
         raise DocumentParseError(
             f"{filename}: the PDF has no extractable text (scanned images need OCR)"
         )
     return pages
+
+
+def _decrypt_without_password(reader: Any) -> bool:
+    """Open a permissions-only encrypted PDF (empty user password), as every viewer
+    does; False when a real password is needed."""
+    from pypdf import PasswordType
+
+    try:
+        return bool(reader.decrypt("") != PasswordType.NOT_DECRYPTED)
+    except Exception as exc:  # e.g. an AES PDF without the cryptography package
+        raise DocumentParseError(f"the PDF's encryption could not be opened ({exc})") from exc
+
+
+# Pages of one upload OCR'd in the request (each is ~1-3 s of Tesseract at 300 dpi).
+OCR_MAX_PDF_PAGES = int(os.getenv("KNOWLEDGE_OCR_MAX_PAGES", "60"))
+OCR_PDF_DPI = 300
+
+
+def render_pdf_page(data: bytes, page_number: int, *, dpi: int = OCR_PDF_DPI) -> Any:
+    """Page ``page_number`` (1-based) of a PDF as a grayscale PIL image (poppler)."""
+    try:
+        from pdf2image import convert_from_bytes
+        from pdf2image.exceptions import PDFInfoNotInstalledError
+    except ImportError as exc:
+        raise ParserUnavailableError(
+            "scanned-PDF OCR needs pdf2image and poppler (the 'ocr' extra)"
+        ) from exc
+    try:
+        images = convert_from_bytes(
+            data, dpi=dpi, first_page=page_number, last_page=page_number, grayscale=True
+        )
+    except PDFInfoNotInstalledError as exc:
+        raise ParserUnavailableError(
+            "scanned-PDF OCR needs poppler (pdftoppm), which is not installed"
+        ) from exc
+    except Exception as exc:
+        raise DocumentParseError(
+            f"page {page_number} could not be rendered for OCR ({exc})"
+        ) from exc
+    if not images:
+        raise DocumentParseError(f"page {page_number} could not be rendered for OCR")
+    return images[0]
+
+
+def _require_ocr(filename: str, vision_provider: Any) -> bool:
+    """True when the vision provider will be used; raise when no OCR is possible."""
+    has_vision = is_vision_provider(vision_provider)
+    if not has_vision and not tesseract_available():
+        raise OcrUnavailableError(
+            f"{filename}: this file needs OCR, but no OCR engine is available: install "
+            "Tesseract (the tesseract binary plus the 'ocr' extra) or configure a "
+            "vision-capable model provider"
+        )
+    return has_vision
+
+
+async def ocr_pdf_pages(
+    data: bytes,
+    *,
+    filename: str,
+    page_numbers: list[int],
+    vision_provider: Any = None,
+    ocr_engine: Any = None,
+) -> dict[int, tuple[str, str]]:
+    """OCR the given 1-based pages of a PDF: ``{page: (text, engine_used)}``.
+
+    Each page is rendered on its own (so one page's text never lands on
+    another page's citation). Raises OcrUnavailableError without an OCR engine,
+    DocumentParseError when more pages need OCR than one request may run.
+    """
+    import asyncio
+
+    if len(page_numbers) > OCR_MAX_PDF_PAGES:
+        raise DocumentParseError(
+            f"{filename}: {len(page_numbers)} pages have no text layer and need OCR, but at "
+            f"most {OCR_MAX_PDF_PAGES} scanned pages are OCR'd per upload; split the PDF"
+        )
+    has_vision = _require_ocr(filename, vision_provider)
+    if ocr_engine is None:
+        from app.ocr.engine import OcrEngine
+
+        ocr_engine = OcrEngine()
+    out: dict[int, tuple[str, str]] = {}
+    for number in page_numbers:
+        image = await asyncio.to_thread(render_pdf_page, data, number)
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        result = await ocr_engine.extract(
+            image_bytes=buf.getvalue(),
+            provider=vision_provider if has_vision else None,
+            extract_fields=False,
+            vision_fallback=has_vision,
+        )
+        text = (getattr(result, "raw_text", "") or "").strip()
+        out[number] = (text, str(getattr(result, "engine_used", "") or ""))
+    return out
 
 
 def extract_docx_text(data: bytes, *, filename: str = "document.docx") -> str:
@@ -58,14 +162,55 @@ def extract_docx_text(data: bytes, *, filename: str = "document.docx") -> str:
         document = docx.Document(io.BytesIO(data))
     except Exception as exc:  # python-docx raises several unrelated types
         raise DocumentParseError(f"{filename}: not a readable .docx ({exc})") from exc
-    text = "\n".join(_docx_blocks(document))
+    headers, footers = _docx_header_footer_lines(document)
+    # Page headers / footers are their own sections (a heading each), so the
+    # upload chunker keeps the footer out of the last body chunk, where its
+    # contract number / revision / approver drowned in the body text.
+    lines = (
+        (["## Page header", *headers] if headers else [])
+        + _docx_blocks(document, document.element.body)
+        + (["## Page footer", *footers] if footers else [])
+    )
+    text = "\n".join(lines)
     if not text.strip():
         raise DocumentParseError(f"{filename}: the document has no text")
     return text
 
 
-def _docx_blocks(document: object) -> list[str]:
-    """Paragraphs AND tables in document order.
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_DOCX_REMOVED = frozenset({f"{_W}del", f"{_W}moveFrom"})
+
+
+def _docx_paragraph_text(p_element: Any) -> str:
+    """A paragraph's text as Word shows it with tracked changes accepted.
+
+    python-docx's ``Paragraph.text`` reads only runs that are direct children of
+    the paragraph, so text inserted with Track Changes (runs inside ``w:ins`` /
+    ``w:moveTo``) and hyperlink / text-box runs were lost. Deleted text
+    (``w:delText``, runs inside ``w:del`` / ``w:moveFrom``) stays out.
+    """
+    parts: list[str] = []
+    for el in p_element.iter(f"{_W}t", f"{_W}tab", f"{_W}br", f"{_W}cr"):
+        if any(a.tag in _DOCX_REMOVED for a in el.iterancestors()):
+            continue
+        if el.tag == f"{_W}t":
+            parts.append(el.text or "")
+        elif el.tag == f"{_W}tab":
+            if el.getparent() is not None and el.getparent().tag != f"{_W}tabs":
+                parts.append("\t")  # a tab character, not a tab-stop definition
+        else:
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _docx_cell_text(tc: Any) -> str:
+    return "\n".join(
+        t for t in (_docx_paragraph_text(p) for p in tc.iterchildren(f"{_W}p")) if t.strip()
+    ).strip()
+
+
+def _docx_blocks(document: object, container: Any) -> list[str]:
+    """Paragraphs AND tables of a body / header / footer, in document order.
 
     ``document.paragraphs`` skips tables entirely, so the figures a policy or a
     price list keeps in a table never reached the index. Each table row is
@@ -74,17 +219,17 @@ def _docx_blocks(document: object) -> list[str]:
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
-    body = document.element.body  # type: ignore[attr-defined]
     out: list[str] = []
-    for child in body.iterchildren():
+    for child in container.iterchildren():
         tag = child.tag.rsplit("}", 1)[-1]
         if tag == "p":
-            text = Paragraph(child, document).text  # type: ignore[arg-type]
+            text = _docx_paragraph_text(child)
             if text.strip():
-                out.append(text)
+                level = _docx_heading_level(Paragraph(child, document))  # type: ignore[arg-type]
+                out.append(f"{'#' * level} {text.strip()}" if level else text)
         elif tag == "tbl":
             table = Table(child, document)  # type: ignore[arg-type]
-            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+            rows = [[_docx_cell_text(cell._tc) for cell in row.cells] for row in table.rows]
             if not rows:
                 continue
             header, *data_rows = rows
@@ -100,6 +245,41 @@ def _docx_blocks(document: object) -> list[str]:
                 if pairs:
                     out.append("; ".join(pairs))
     return out
+
+
+def _docx_header_footer_lines(document: Any) -> tuple[list[str], list[str]]:
+    """Distinct header and footer lines of every section (default, first-page and
+    even-page variants); a header linked to the previous section is not re-read."""
+    headers: list[str] = []
+    footers: list[str] = []
+    for section in document.sections:
+        for kind, out in (("header", headers), ("footer", footers)):
+            for variant in (kind, f"first_page_{kind}", f"even_page_{kind}"):
+                part = getattr(section, variant, None)
+                try:
+                    if part is None or part.is_linked_to_previous:
+                        continue
+                    lines = _docx_blocks(document, part._element)
+                except Exception:  # a broken header part must not lose the body
+                    continue
+                out.extend(line for line in lines if line.strip() and line not in out)
+    return headers, footers
+
+
+def _docx_heading_level(paragraph: Any) -> int:
+    """Markdown level of a Word heading paragraph (Title = 1, Heading N = N), else 0,
+    so the upload chunker can start a chunk per section."""
+    try:
+        name = str(paragraph.style.name or "")
+    except Exception:
+        return 0
+    if name == "Title":
+        return 1
+    if name.startswith("Heading "):
+        digits = name.removeprefix("Heading ").strip()
+        if digits.isdigit():
+            return max(1, min(6, int(digits)))
+    return 0
 
 
 class UnsupportedDocumentError(ValueError):
@@ -307,13 +487,15 @@ def extract_upload_text(
             f"{filename}: unsupported binary file; upload PDF, DOCX, XLSX or text"
         )
     raw = decode_text(data)
-    text = _extract_structured_text(raw, ext=ext, filename=filename)
+    text = _extract_structured_text(raw, ext=ext, filename=filename, report=report)
     if not text.strip():
         raise DocumentParseError(f"{filename}: no extractable text")
     return text
 
 
-def _extract_structured_text(raw: str, *, ext: str, filename: str) -> str:
+def _extract_structured_text(
+    raw: str, *, ext: str, filename: str, report: dict[str, Any] | None = None
+) -> str:
     if ext in {"html", "htm", "xhtml"}:
         from app.ingestion.parsers.html_parser import HTMLParser
 
@@ -321,7 +503,9 @@ def _extract_structured_text(raw: str, *, ext: str, filename: str) -> str:
     if ext in {"csv", "tsv"}:
         from app.ingestion.parsers.csv_parser import CSVParser
 
-        return CSVParser().parse(raw, filename=filename, delimiter="\t" if ext == "tsv" else "")
+        return CSVParser().parse(
+            raw, filename=filename, delimiter="\t" if ext == "tsv" else "", report=report
+        )
     if ext in {"json", "jsonl", "ndjson"}:
         from app.ingestion.parsers.json_parser import JSONParser
 

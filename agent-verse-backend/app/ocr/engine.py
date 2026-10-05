@@ -32,6 +32,48 @@ def _ocr_model() -> str:
     return resolve_vision_model("")
 
 CONFIDENCE_THRESHOLD = 0.6
+# Below this English confidence a page may be Hindi: the hin+eng model is tried.
+HINDI_RETRY_CONFIDENCE = 0.85
+# Share of letters that must be Devanagari for the hin+eng reading to be kept.
+DEVANAGARI_MIN_SHARE = 0.15
+# OSD orientation confidence needed before a page is rotated.
+OSD_MIN_CONFIDENCE = 1.5
+
+
+def _tesseract_text_conf(data: Any) -> tuple[str, float]:
+    """Text and mean word confidence (0-1) of a pytesseract ``image_to_data`` dict."""
+    pairs = [
+        (str(t), float(c))
+        for t, c in zip(data.get("text", []), data.get("conf", []), strict=False)
+        if isinstance(c, (int, float)) and c >= 0
+    ]
+    confs = [c for _, c in pairs]
+    text = " ".join(t for t, _ in pairs if t.strip())
+    return text, (sum(confs) / len(confs) / 100.0) if confs else 0.0
+
+
+def _tesseract_osd(pytesseract: Any, img: Any) -> dict[str, Any] | None:
+    """Orientation / script detection, or None (no osd data, too little text)."""
+    try:
+        osd = pytesseract.image_to_osd(img, output_type=pytesseract.Output.DICT)
+    except Exception:
+        return None
+    return osd if isinstance(osd, dict) else None
+
+
+def _tesseract_languages(pytesseract: Any) -> set[str]:
+    try:
+        langs = pytesseract.get_languages(config="")
+    except Exception:
+        return set()
+    return {str(lang) for lang in langs} if isinstance(langs, (list, tuple, set)) else set()
+
+
+def _devanagari_share(text: str) -> float:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return 0.0
+    return sum(1 for ch in letters if "\u0900" <= ch <= "\u097f") / len(letters)
 
 OcrFormat = Literal["image", "pdf", "office", "text", "unsupported"]
 
@@ -298,36 +340,12 @@ class OcrEngine:
         try:
             import pytesseract
 
+            plain = img
             img = self._preprocess_image(img)
-            data = None
-            for tess_lang in ("hin+eng", "eng"):
-                try:
-                    data = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda _lang=tess_lang: pytesseract.image_to_data(
-                            img, lang=_lang, output_type=pytesseract.Output.DICT
-                        ),
-                    )
-                    break
-                except Exception as tess_exc:
-                    if tess_lang == "eng":
-                        raise
-                    _log.debug(
-                        "Tesseract lang '%s' unavailable, trying 'eng': %s",
-                        tess_lang,
-                        tess_exc,
-                    )
-                    data = None
-                    continue
-            assert data is not None
-            confs = [c for c in data.get("conf", []) if isinstance(c, (int, float)) and c >= 0]
-            avg_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
-
-            text = " ".join(
-                t
-                for t, c in zip(data.get("text", []), data.get("conf", []), strict=False)
-                if isinstance(c, (int, float)) and c >= 0 and t.strip()
-            )
+            text, avg_conf = await self._tesseract_best(pytesseract, img)
+            if not text.strip():
+                # Never trust preprocessing blindly: it once blacked out sparse pages.
+                text, avg_conf = await self._tesseract_best(pytesseract, plain)
             if avg_conf >= CONFIDENCE_THRESHOLD:
                 return text, avg_conf, "tesseract"
             low_conf = (text, avg_conf, "tesseract")
@@ -341,6 +359,45 @@ class OcrEngine:
         if not vision_fallback:
             return low_conf
         return await self._llm_vision_ocr(img, provider=provider)
+
+    async def _tesseract_best(self, pytesseract: Any, img: Any) -> tuple[str, float]:
+        """The best Tesseract reading of one page: ``(text, mean confidence)``.
+
+        English first. A weak page (below CONFIDENCE_THRESHOLD) is re-read after
+        OSD orientation correction (a photo taken sideways). The Devanagari model
+        (``hin+eng``) runs only when the English pass is below
+        HINDI_RETRY_CONFIDENCE (the page may be Hindi) and is kept only when its
+        text really is Devanagari: on Latin pages it misreads digits with high
+        confidence (TJ-5531 -> TJ-5534).
+        """
+        loop = asyncio.get_running_loop()
+
+        def _read(image: Any, lang: str) -> tuple[str, float]:
+            data = pytesseract.image_to_data(
+                image, lang=lang, output_type=pytesseract.Output.DICT
+            )
+            return _tesseract_text_conf(data)
+
+        best = await loop.run_in_executor(None, _read, img, "eng")
+        if best[1] >= HINDI_RETRY_CONFIDENCE:
+            return best  # a confident English reading: no OSD / Hindi pass needed
+        osd = await loop.run_in_executor(None, _tesseract_osd, pytesseract, img)
+        if best[1] < CONFIDENCE_THRESHOLD and osd is not None:
+            rotate = int(osd.get("rotate") or 0) % 360
+            if rotate and float(osd.get("orientation_conf") or 0) >= OSD_MIN_CONFIDENCE:
+                rotated = img.rotate(-rotate, expand=True, fillcolor=255)
+                again = await loop.run_in_executor(None, _read, rotated, "eng")
+                if again[1] > best[1]:
+                    best, img = again, rotated
+        if "hin" in _tesseract_languages(pytesseract):
+            try:
+                hindi = await loop.run_in_executor(None, _read, img, "hin+eng")
+            except Exception as exc:
+                _log.debug("Tesseract hin+eng unavailable: %s", exc)
+            else:
+                if _devanagari_share(hindi[0]) >= DEVANAGARI_MIN_SHARE:
+                    best = hindi
+        return best
 
     async def _llm_vision_ocr(
         self,
@@ -435,8 +492,10 @@ class OcrEngine:
                 img = img.convert("L")
             # Apply slight sharpening to improve character edges
             img = img.filter(ImageFilter.SHARPEN)
-            # Auto-contrast to improve binarization
-            img = ImageOps.autocontrast(img, cutoff=2)
+            # Auto-contrast to improve binarization. Clip only the bright end: on a
+            # sparse page the ink is under 2 % of the pixels, and clipping 2 % at the
+            # dark end landed on the paper's grey and turned the page black.
+            img = ImageOps.autocontrast(img, cutoff=(0, 2))
             return img
         except Exception:
             return img  # graceful fallback: return original if preprocessing fails

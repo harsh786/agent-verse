@@ -1708,15 +1708,39 @@ class KnowledgeStore:
             collection_id: when given, restrict the search to that collection;
                 otherwise search every collection in the tenant.
         """
+        return (
+            await self.document_id_by_hash(
+                content_hash=content_hash, tenant_id=tenant_id, collection_id=collection_id
+            )
+            is not None
+        )
+
+    async def document_id_by_hash(
+        self,
+        *,
+        content_hash: str,
+        tenant_id: str,
+        collection_id: str | None = None,
+    ) -> str | None:
+        """The id of a document already holding this content (see :meth:`exists_by_hash`),
+        or None. A deduplicated upload reports it, so the caller learns where the
+        content lives instead of getting ``document_id: null``."""
         if not content_hash:
-            return False
+            return None
         if self._db is None:
-            return self._exists_by_hash_memory(content_hash, tenant_id, collection_id)
-        return await self._db_exists_by_hash(content_hash, tenant_id, collection_id)
+            return self._document_id_by_hash_memory(content_hash, tenant_id, collection_id)
+        return await self._db_document_id_by_hash(content_hash, tenant_id, collection_id)
 
     def _exists_by_hash_memory(
         self, content_hash: str, tenant_id: str, collection_id: str | None
     ) -> bool:
+        return (
+            self._document_id_by_hash_memory(content_hash, tenant_id, collection_id) is not None
+        )
+
+    def _document_id_by_hash_memory(
+        self, content_hash: str, tenant_id: str, collection_id: str | None
+    ) -> str | None:
         for (tid, cid), store in self._data.items():
             if tid != tenant_id:
                 continue
@@ -1728,12 +1752,12 @@ class KnowledgeStore:
                     meta.get("doc_content_hash") == content_hash
                     or meta.get("content_hash") == content_hash
                 ):
-                    return True
-        return False
+                    return chunk.document_id
+        return None
 
-    async def _db_exists_by_hash(
+    async def _db_document_id_by_hash(
         self, content_hash: str, tenant_id: str, collection_id: str | None
-    ) -> bool:
+    ) -> str | None:
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
@@ -1768,7 +1792,7 @@ class KnowledgeStore:
                     found = (
                         await session.execute(
                             text(
-                                f"SELECT 1 FROM {table} "
+                                f"SELECT document_id FROM {table} "
                                 "WHERE tenant_id = :tid "
                                 f"{collection_clause} "
                                 "AND (content_hash = :h "
@@ -1779,11 +1803,11 @@ class KnowledgeStore:
                         )
                     ).scalar_one_or_none()
                 if found is not None:
-                    return True
+                    return str(found)
             except Exception as exc:  # missing table / transient DB error
                 _log.debug("exists_by_hash_probe_error table=%s: %s", table, exc)
                 continue
-        return False
+        return None
 
     async def _db_ingest_chunk(self, chunk: Chunk, collection_id: str, tenant_id: str) -> None:
         if self._db is None:

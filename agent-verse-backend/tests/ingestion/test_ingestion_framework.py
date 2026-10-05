@@ -601,11 +601,15 @@ def test_csv_parser_empty():
 
 
 def test_csv_parser_truncates_large():
+    from unittest.mock import patch
+
     from app.ingestion.parsers.csv_parser import CSVParser
-    # 15000 rows
-    rows = ["id,value"] + [f"{i},{i*2}" for i in range(15000)]
-    result = CSVParser().parse("\n".join(rows))
+    rows = ["id,value"] + [f"{i},{i*2}" for i in range(150)]
+    report: dict[str, object] = {}
+    with patch.object(CSVParser, "MAX_ROWS", 100):  # the real cap is 100,000 rows
+        result = CSVParser().parse("\n".join(rows), report=report)
     assert "Truncated" in result
+    assert report == {"csv_truncated": True, "csv_max_rows": 100}
 
 
 def test_json_parser_object():

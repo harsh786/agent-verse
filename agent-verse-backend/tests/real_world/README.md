@@ -37,6 +37,8 @@ scoring/report code; `uv run pytest tests/real_world --collect-only` checks coll
 |---|---|---|
 | KB-COMPLEX-CORPUS (per format: pdf, docx, pptx, xlsx, csv, html, md, scan_pdf, png, zip) | `test_kb_complex.py` | OCR formats skip only when the stack reports no OCR engine (503) |
 | KB-COMPLEX-EMBEDDINGS, KB-COMPLEX-LIFECYCLE (dedup / update-on-edit / delete), KB-COMPLEX-CSV-SCALE | `test_kb_complex.py` | – |
+| KB-UPLOAD-HARD (19 difficult uploads: 2-column / table / owner-encrypted / CJK / partly scanned / 3-page scanned PDFs, DOCX with tracked changes + headers/footers + merged table cells, Hindi DOCX, PPTX notes + tables + groups, XLSX with title rows + merged cells + formulas, 20,000-row CSV, cp1252 CSV, HTML with page chrome, Arabic RTL HTML, MD with code, mixed-language MD, sideways and low-quality PNGs, nested mixed ZIP) | `test_kb_upload_hard.py` | – |
+| KB-UPLOAD-REFUSALS (password PDF, truncated PDF / PNG, garbage DOCX, empty file, zip bomb, nested zip bomb), KB-UPLOAD-SIZE-LIMIT (exactly the limit / one byte over), KB-UPLOAD-DUPLICATES | `test_kb_upload_hard.py` | – |
 | KB-RETRIEVAL-HARD (29 known-answer questions) | `test_kb_retrieval.py` | – |
 | KB-TENANT-ISOLATION | `test_kb_retrieval.py` | `RW_SECOND_TENANT_API_KEY` / `RW_SECOND_TENANT_FILE` |
 | KB-STRATEGIES (every RAG strategy incl. ColBERT when ready) | `test_kb_retrieval.py` | – |
@@ -63,7 +65,8 @@ Small fixtures are committed under `fixtures/`: `kb_questions.json` (known-answe
 questions: expected document, the chunk text that proves the right chunk, accepted answer
 variants), `eval_golden_v1.json` (10 checked golden tasks + the v2 edit) and
 `orders.json` (the fixture server's order batch). Large ones are generated at runtime and
-deterministically by `corpus.py` (the 60–120 page PDF, 5,000-row CSV, scans, ZIP, …) and
+deterministically by `corpus.py` (the 60–120 page PDF, 5,000-row CSV, scans, ZIP, …),
+`corpus_hard.py` (the KB-UPLOAD-* documents, refusals, the at-limit DOCX) and
 `wf_complex.py` (workflow YAML). `fixture_server.py` is the local HTTP server the stack
 calls back into (side-effect counters, a flaky endpoint, a failure switch, publish
 capture, changing RSS feeds).
@@ -89,6 +92,8 @@ Credentials are never printed; every key is registered with the masker.
 | `RW_FIXTURE_PUBLIC_URL` | – | public URL (e.g. a tunnel) of the fixture server; needed by workflow HTTP steps and connectors, whose SSRF / egress guards refuse private addresses |
 | `RW_FIXTURE_REACHABLE` | – | `1` when the operator allowlisted the fixture host for connectors |
 | `RW_PDF_PAGES` | `72` | pages of the generated policy manual (60–120) |
+| `RW_LARGE_CSV_ROWS` | `20000` | rows of the KB-UPLOAD-HARD gate-transaction CSV |
+| `RW_UPLOAD_LIMIT_BYTES` | `52428800` | the stack's `KNOWLEDGE_MAX_UPLOAD_BYTES` (KB-UPLOAD-SIZE-LIMIT) |
 | `RW_HEADING_ALIGN_MIN` | `0.5` | min share of facts chunked with their section heading |
 | `RW_HIT5_MIN`, `RW_ANSWER_ACC_MIN`, `RW_CITATION_ACC_MIN` | `0.8`, `0.7`, `0.7` | KB-RETRIEVAL-HARD thresholds |
 | `RW_STRATEGIES` | all listed | comma-separated RAG strategies for KB-STRATEGIES |

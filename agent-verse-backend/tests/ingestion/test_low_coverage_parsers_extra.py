@@ -408,7 +408,8 @@ class TestHTMLParser:
         fake_trafilatura.extract.return_value = (
             "Clean article text that is long enough here to pass the length threshold."
         )
-        with patch.dict("sys.modules", {"trafilatura": fake_trafilatura}):
+        # The trafilatura -> bs4 -> regex chain runs on hosts without lxml (P1a-12).
+        with patch.dict("sys.modules", {"trafilatura": fake_trafilatura, "lxml.html": None}):
             result = HTMLParser().parse("<html><body>ignored</body></html>")
         assert result == (
             "Clean article text that is long enough here to pass the length threshold."
@@ -545,7 +546,7 @@ class TestHTMLParser:
         # The ultimate regex fallback does not decode entities — documents
         # current (best-effort) behaviour rather than asserting decoding.
         html = "<p>Fish &amp; Chips &lt;tag&gt;</p>"
-        with patch.dict("sys.modules", {"trafilatura": None, "bs4": None}):
+        with patch.dict("sys.modules", {"trafilatura": None, "bs4": None, "lxml.html": None}):
             result = HTMLParser().parse(html)
         assert "Fish &amp; Chips &lt;tag&gt;" in result
 
