@@ -225,3 +225,19 @@ def test_source_type_and_registration() -> None:
 
     assert MongoDBConnector().source_type == "mongodb"
     assert get_connector("mongodb") is MongoDBConnector
+
+
+class TestStableDocIds:
+    """TG-13: ids are Source + collection + _id, never the URI host."""
+
+    def test_same_source_collection_and_id_is_the_same_document(self) -> None:
+        from app.ingestion.connectors.mongodb_connector import _doc_id
+
+        oid = ObjectId()
+        a = _make_config({"uri": "mongodb://a.example/", "database": "db"})
+        b = _make_config({"uri": "mongodb://b.example:27018/", "database": "db"})
+        assert _doc_id(a, "orders", oid) == _doc_id(b, "orders", oid)
+        assert _doc_id(a, "orders", oid) != _doc_id(a, "customers", oid)
+        assert _doc_id(a, "orders", oid) != _doc_id(a, "orders", str(oid))  # types differ
+        other = SourceConfig(**{**a.__dict__, "source_id": "src-other"})
+        assert _doc_id(a, "orders", oid) != _doc_id(other, "orders", oid)

@@ -55,7 +55,6 @@ import logging
 import os
 import shutil
 import tempfile
-import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -65,6 +64,7 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
+    stable_doc_id,
 )
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
@@ -627,6 +627,20 @@ def _fetch_page(
     )
 
 
+def _doc_id(config: SourceConfig, collection: str, oid: Any) -> str:
+    """Stable id: the Source + collection + the document's ``_id`` (TG-13).
+
+    It used to hash the URI host, so pointing the Source at the same server by
+    another name (a new replica-set seed, an Atlas SRV name, an IP) re-ided —
+    duplicated — every document. ``_id`` is keyed in canonical Extended JSON,
+    so an ObjectId and the string of its hex are different documents.
+    """
+    from bson import json_util
+
+    key = json_util.dumps({"_id": oid}, json_options=json_util.CANONICAL_JSON_OPTIONS)
+    return stable_doc_id(config, "mongodb", collection, key)
+
+
 def _dotted_get(doc: dict[str, Any], path: str) -> Any:
     value: Any = doc
     for part in path.split("."):
@@ -683,7 +697,7 @@ class MongoDBConnector(BaseConnector):
                         text = _flatten_doc({**doc, "_id": doc_key})
                         url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
                         raw_doc = RawDocument(
-                            doc_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{url}/{doc_key}")),
+                            doc_id=_doc_id(config, collection, oid),
                             source_id=config.source_id,
                             tenant_id=config.tenant_id,
                             source_url=f"{url}/{quote(doc_key, safe='')}",

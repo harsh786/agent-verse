@@ -437,3 +437,29 @@ async def test_tls_with_custom_ca_and_client_certificate(
     health = h.health(trusted["source_id"])
     assert health["ok"] is True, health
     assert trusted["connection_config"]["tls_client_private_key"] == "********"
+
+
+async def test_a_uri_change_re_ids_nothing(mongo: tuple[str, int]) -> None:
+    """TG-13: ids came from the URI host, so pointing the Source at the same
+    server by another name re-ided (duplicated) every document."""
+    host, port = mongo
+    h = _Harness()
+    source = h.create(_ui_payload(host, port, collections_csv="customers"))
+    _first, pipeline1 = await h.sync(source["source_id"])
+    first = {d.doc_id for d in pipeline1.docs}
+    assert len(first) == 3
+
+    other_host = "127.0.0.1" if host != "127.0.0.1" else "localhost"
+    sid, tid = source["source_id"], source["tenant_id"]
+    stored = await h.store.get(sid, tid)
+    assert stored is not None
+    await h.store.update(
+        sid,
+        tid,
+        connection_config={**stored.connection_config, "uri": f"mongodb://{other_host}:{port}/shop"},
+        cursor_value="",  # a full re-read, as after a reindex
+    )
+    _second, pipeline2 = await h.sync(source["source_id"])
+
+    assert {d.doc_id for d in pipeline2.docs} == first  # 0 new documents
+    assert all(d.source_url.startswith(f"mongodb://{other_host}:{port}/") for d in pipeline2.docs)
