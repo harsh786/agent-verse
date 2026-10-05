@@ -348,19 +348,16 @@ class WebCrawlConnector(BaseConnector):
 
     @staticmethod
     def _extract_text(html: str, url: str = "") -> str:
-        try:
-            import trafilatura
+        """Article text of a crawled page, page chrome removed.
 
-            text = trafilatura.extract(html, favor_recall=True, include_tables=True)
-            return text or ""
-        except Exception:
-            import re
+        Same extractor as HTML uploads and ``/knowledge/ingest/url`` (lxml:
+        script/style/nav/header/footer and consent/sidebar blocks dropped,
+        ``<main>``/``<article>`` preferred). The image ships no trafilatura, so
+        the old regex fallback indexed every page's navigation with it.
+        """
+        from app.ingestion.parsers.html_parser import HTMLParser
 
-            # Strip script/style *content* first — not just their tags — so
-            # raw JS/CSS source doesn't leak into the crawled document text.
-            text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
-            text = re.sub(r"<[^>]+>", " ", text)
-            return re.sub(r"\s+", " ", text).strip()[:50000]
+        return HTMLParser().parse(html, url=url).strip()[:50000]
 
     @staticmethod
     def _extract_title(html: str) -> str:

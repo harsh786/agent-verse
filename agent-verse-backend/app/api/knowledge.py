@@ -2228,6 +2228,37 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
 # ---------------------------------------------------------------------------
 
 
+# Characters of extracted page text kept for one URL document.
+_MAX_URL_TEXT_CHARS = 50_000
+
+
+def _web_page_text(raw: str, content_type: str) -> tuple[str, str | None]:
+    """(article text, <title>) of a fetched web page.
+
+    HTML goes through the upload HTML extractor (P1a-12): script/style bodies,
+    navigation, header/footer and consent/sidebar chrome are dropped and
+    ``<main>``/``<article>`` is preferred. The old regex tag-strip kept inline
+    JavaScript and the whole nav, which diluted the document's embedding so
+    much that it fell out of the results after re-embedding (P0 KB-REEMBED).
+    A non-HTML response (plain text, markdown, JSON) is kept verbatim.
+    """
+    import html as _html
+    import re
+
+    # Servers mislabel HTML as text/plain: a body that opens with a tag is HTML.
+    looks_html = "html" in content_type.lower() or bool(
+        re.match(r"\s*<(?:!doctype|[a-z][a-z0-9]*)[\s/>]", raw, re.IGNORECASE)
+    )
+    if not looks_html:
+        return raw.strip()[:_MAX_URL_TEXT_CHARS], None
+    from app.ingestion.parsers.html_parser import HTMLParser
+
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+    title = " ".join(_html.unescape(title_match.group(1)).split()) if title_match else None
+    text = HTMLParser().parse(raw)
+    return text.strip()[:_MAX_URL_TEXT_CHARS], title or None
+
+
 async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str, Any]]:
     """SSRF-check and fetch a web/github URL; return (text content, metadata).
 
@@ -2260,13 +2291,8 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
                     headers={"User-Agent": "AgentVerse/1.0"},
                 )
                 resp.raise_for_status()
-                raw = resp.text
-                import re
-
-                content = re.sub(r"<[^>]+>", " ", raw)
-                content = re.sub(r"\s+", " ", content).strip()[:50000]
-                title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE)
-                metadata["title"] = title_match.group(1) if title_match else url
+                content, title = _web_page_text(resp.text, resp.headers.get("content-type", ""))
+                metadata["title"] = title or url
 
         elif source_type == "github":
             raw_url = url.replace("github.com", "raw.githubusercontent.com").replace(

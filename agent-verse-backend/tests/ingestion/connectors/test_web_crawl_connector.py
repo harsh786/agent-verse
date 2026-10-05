@@ -336,6 +336,18 @@ class TestExtractTextEdgeCases:
         assert "super-secret" not in text
         assert "color: red" not in text
 
+    def test_page_chrome_is_dropped(self):
+        """P2-5: crawled pages lose nav/header/footer like uploads and /ingest/url."""
+        html = (
+            "<html><body><header><nav><a href='/'>Home</a> <a href='/x'>Index</a></nav>"
+            "</header><main><article><h1>Zen</h1><p>Simple is better than complex.</p>"
+            "</article></main><footer>Copyright footer</footer></body></html>"
+        )
+        text = WebCrawlConnector._extract_text(html)
+        assert "Simple is better than complex." in text
+        assert "Index" not in text
+        assert "Copyright footer" not in text
+
     def test_non_ascii_encoding_preserved(self):
         html = "<html><body><p>Café naïve 日本語 emoji 🎉</p></body></html>"
         text = WebCrawlConnector._extract_text(html)
