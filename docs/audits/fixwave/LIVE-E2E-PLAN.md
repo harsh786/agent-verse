@@ -47,3 +47,9 @@ Strictly sequential, one item at a time, in the priority order above. For each i
 live stack first; if it already passes every scenario, mark it **COMPLETE** (evidence: scenario names + run
 date) and move on without code changes; otherwise fix at the root, re-run live, then mark COMPLETE.
 Per-item status is tracked in `docs/audits/fixwave/live/STATUS.md`.
+
+## Owner instruction (2026-10-05, later)
+Complete ALL line items (13-item live sequence + the three MongoDB tracks + every finding routed to them),
+fix and verify each e2e, merge every branch/worktree/feature into `main`, run the full suite (unit, frontend,
+integration, e2e_full both modes, live real-world), and **then push `main` to origin** (authorized by the owner
+for that final push once everything is green).
