@@ -40,7 +40,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
-from app.api.ingestion import _run_sync
 from app.db.app_role import AppRoleSpec, ensure_app_role
 from app.ingestion.job_tracker import IngestionJobTracker
 from app.ingestion.scheduler import _retry_dlq_async, _sync_source_async
@@ -204,9 +203,26 @@ async def test_manual_sync_persists_job_cursor_and_stats_under_the_app_role(
     job_id = await tracker.acquire_lock("src-sync", TENANT_A)
     assert job_id is not None
 
-    connector = _connector_cls([("d1", "c1"), ("d2", "c2")])
-    with patch("app.ingestion.connector_registry.get_connector", return_value=connector):
-        await _run_sync(source, _FakePipeline(["indexed", "failed"]), tracker, job_id, store)
+    # NF-18: a manual sync runs on the worker path (the API's in-process
+    # _run_sync, which bypassed the lease and fence, is gone).
+    connector = _connector_cls(
+        [(_raw("d1", "src-sync", TENANT_A), "c1"), (_raw("d2", "src-sync", TENANT_A), "c2")]
+    )
+    with (
+        patch(
+            "app.ingestion.scheduler._build_worker_ingestion",
+            return_value=(tracker, _FakePipeline(["indexed", "failed"]), store),
+        ),
+        patch("app.ingestion.connector_registry.load_all_connectors"),
+        patch("app.ingestion.connector_registry.get_connector", return_value=connector),
+    ):
+        await _sync_source_async(
+            task=MagicMock(),
+            source_id="src-sync",
+            tenant_id=TENANT_A,
+            triggered_by="manual",
+            job_id=job_id,
+        )
 
     job = await _row(dbs.admin, "SELECT * FROM ingestion_jobs WHERE id = :id", id=job_id)
     assert job is not None, "job row never persisted (INSERT rejected by RLS)"

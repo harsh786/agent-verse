@@ -368,6 +368,23 @@ class IngestionJobTracker:
         lease.start()
         return lease
 
+    async def hold_without_fence(
+        self, source_id: str, tenant_id: str, *, ttl_seconds: int
+    ) -> SyncLease | None:
+        """Take the lock (new token) and keep it renewed — no fencing token (NF-18).
+
+        For runs that commit no cursor and have no ``source_configs`` row to
+        fence on (the webhook re-ingest of a synthetic source). None when the
+        lock is held; raises :class:`SyncLockUnavailableError` when it cannot be
+        checked. The caller must :meth:`SyncLease.release` it.
+        """
+        token = await self.acquire_lock(source_id, tenant_id, ttl_seconds=ttl_seconds)
+        if token is None:
+            return None
+        lease = SyncLease(self, source_id, tenant_id, token, 0, ttl_seconds)
+        lease.start()
+        return lease
+
     # ── Cancellation (KB-15) ──────────────────────────────────────────────────
     # A cancel request is a Redis flag keyed by job id, so the API replica that
     # receives it and the worker running the sync need not be the same process.

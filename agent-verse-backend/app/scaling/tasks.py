@@ -8892,6 +8892,13 @@ with contextlib.suppress(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _webhook_reingest_lock_ttl() -> int:
+    """TTL of the webhook re-ingest's sync lock (renewed every third of it)."""
+    from app.core.config import get_settings
+
+    return max(5, int(get_settings().ingestion_sync_lock_ttl_seconds))
+
+
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="agentverse.maintenance.delta_reingest_files",
     queue="maintenance",
@@ -8956,13 +8963,29 @@ def delta_reingest_files(
         # every document was skipped (``no_embedder``) while this reported
         # ``status: ok``. Use the worker's fully-wired pipeline (store, embedder,
         # PII, quota) like the scheduled sync does.
+        from app.ingestion.job_tracker import SyncLockLostError, SyncLockUnavailableError
         from app.ingestion.scheduler import _build_worker_ingestion
 
-        _tracker, pipeline, _store = _build_worker_ingestion()
+        tracker, pipeline, _store = _build_worker_ingestion()
+        base = {"source_type": source_type, "tenant_id": tenant_id, "collection_id": collection_id}
+
+        # NF-18: the same shared (Redis, cross-process) per-source lock every
+        # sync takes — a burst of webhooks used to run full re-reads of the same
+        # source concurrently on every worker. Fail closed when it cannot be
+        # checked; skip (honestly) while another run holds it.
+        try:
+            lease = await tracker.hold_without_fence(
+                config.source_id, tenant_id, ttl_seconds=_webhook_reingest_lock_ttl()
+            )
+        except SyncLockUnavailableError as exc:
+            return {**base, "status": "error", "error": f"sync lock unavailable: {exc}"[:300]}
+        if lease is None:
+            return {**base, "status": "skipped", "reason": "already_running"}
 
         indexed = skipped = failed = 0
         try:
             async for raw_doc, _cursor in connector.get_delta(config, None):
+                lease.check()  # stop at once if this run lost the lock
                 result = await pipeline.ingest(raw_doc, config)
                 if result.success:
                     indexed += 1
@@ -8970,6 +8993,17 @@ def delta_reingest_files(
                     skipped += 1
                 else:
                     failed += 1
+            lease.check()
+        except SyncLockLostError as exc:
+            return {
+                **base,
+                "status": "error",
+                "reason": "lock_lost",
+                "error": str(exc)[:300],
+                "docs_indexed": indexed,
+                "docs_skipped": skipped,
+                "docs_failed": failed,
+            }
         except Exception as exc:
             return {
                 "status": "error",
@@ -8981,6 +9015,8 @@ def delta_reingest_files(
                 "tenant_id": tenant_id,
                 "collection_id": collection_id,
             }
+        finally:
+            await lease.release()
         return {
             "status": "ok",
             "source_type": source_type,

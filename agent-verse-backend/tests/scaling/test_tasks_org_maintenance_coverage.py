@@ -15,6 +15,8 @@ All DB/Redis/LLM boundaries are faked in-process — no real Postgres/Redis.
 
 from __future__ import annotations
 
+from app.ingestion.job_tracker import IngestionJobTracker
+
 import uuid
 from types import SimpleNamespace
 from typing import Any
@@ -1392,7 +1394,11 @@ class TestDeltaReingestFiles:
                 "app.ingestion.connector_registry.get_connector",
                 return_value=mock_connector_cls,
             ),
-            patch("app.ingestion.pipeline.IngestionPipeline", return_value=mock_pipeline),
+            patch(
+                "app.ingestion.scheduler._build_worker_ingestion",
+                # NF-18: an in-memory tracker holds the shared sync lock.
+                return_value=(IngestionJobTracker(), mock_pipeline, SimpleNamespace()),
+            ),
         ):
             result = delta_reingest_files.run(
                 tenant_id="t1",
@@ -1436,7 +1442,11 @@ class TestDeltaReingestFiles:
                 "app.ingestion.connector_registry.get_connector",
                 return_value=mock_connector_cls,
             ),
-            patch("app.ingestion.pipeline.IngestionPipeline", return_value=mock_pipeline),
+            patch(
+                "app.ingestion.scheduler._build_worker_ingestion",
+                # NF-18: an in-memory tracker holds the shared sync lock.
+                return_value=(IngestionJobTracker(), mock_pipeline, SimpleNamespace()),
+            ),
         ):
             result = delta_reingest_files.run(
                 tenant_id="t1",
