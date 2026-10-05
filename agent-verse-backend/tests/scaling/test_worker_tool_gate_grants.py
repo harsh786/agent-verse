@@ -68,17 +68,31 @@ class _FakePgGrantStore(InMemoryGrantStore):
             if g.tenant_id == tenant_id and g.grantee_agent_id == agent_id
         )
 
+    # GRANT-08: the per-tool-call lookup reads only active grants (plus an
+    # existence probe); both read "the table" like the Postgres store.
+    async def active_for_agent(
+        self, tenant_id: str, agent_id: str, *, now: datetime
+    ) -> tuple[Grant, ...]:
+        return tuple(g for g in await self.list_for_agent(tenant_id, agent_id) if g.is_active(now))
+
+    async def has_any_for_agent(self, tenant_id: str, agent_id: str) -> bool:
+        return bool(await self.list_for_agent(tenant_id, agent_id))
+
 
 @pytest.fixture
 def grants_on(monkeypatch: pytest.MonkeyPatch) -> type[_FakePgGrantStore]:
     import app.db.session as session_mod
     import app.governance.agent_permissions as perms_mod
+    import app.governance.compliance_bundles as bundles_mod
     import app.governance.grants.postgres_store as pg_mod
     import app.governance.policy_rules as rules_mod
     from app.core.config import get_settings
 
     async def _no_rules(*_a: Any, **_k: Any) -> list[Any]:
         return []
+
+    async def _no_bundle(*_a: Any, **_k: Any) -> None:
+        return None
 
     _FakePgGrantStore.instances = []
     _FakePgGrantStore.seed = []
@@ -89,6 +103,8 @@ def grants_on(monkeypatch: pytest.MonkeyPatch) -> type[_FakePgGrantStore]:
     # The other DB-backed gate steps are covered elsewhere; keep them neutral.
     monkeypatch.setattr(perms_mod, "load_agent_permissions", _no_rules)
     monkeypatch.setattr(rules_mod, "load_active_policy_rules", _no_rules)
+    # TRUST-02 compliance bundles (fail closed when unreadable): this tenant has none.
+    monkeypatch.setattr(bundles_mod, "bundle_hitl_requirement", _no_bundle)
     return _FakePgGrantStore
 
 
