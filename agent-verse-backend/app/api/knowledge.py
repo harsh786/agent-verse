@@ -1149,6 +1149,20 @@ async def ingest_file(
             request, content_bytes, filename=filename
         )
         segments = [(None, image_text)]
+    # PDF pages without a text layer (a scan, or a scanned annex) are OCR'd.
+    page_ocr_engines: dict[int, str] = {}
+    pages_without_text: list[int] = []
+    warnings: list[str] = []
+    if ext == "pdf":
+        textless = [p for p, t in segments if p is not None and not t.strip()]
+        if textless:
+            segments, page_ocr_engines, pages_without_text, warnings = (
+                await _ocr_textless_pdf_pages_or_http(
+                    request, content_bytes, filename=filename, segments=segments,
+                    textless=textless,
+                )
+            )
+        segments = [(p, t) for p, t in segments if t.strip()]
 
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
 
@@ -1183,9 +1197,10 @@ async def ingest_file(
         if page is not None:
             metadata["page"] = str(page)
             metadata["total_pages"] = str(total_pages)
-        if ocr_engine_used:
+        page_engine = page_ocr_engines.get(page) if page is not None else None
+        if ocr_engine_used or page_engine is not None:
             metadata["ocr_used"] = "true"
-            metadata["ocr_engine"] = ocr_engine_used
+            metadata["ocr_engine"] = ocr_engine_used or page_engine or ""
         rag_chunks.append(
             Chunk(
                 document_id=document_id,
@@ -1210,6 +1225,9 @@ async def ingest_file(
         "deduplicated": bool(rag_chunks) and not stored,
         "document_id": document_id if stored else None,
         "pages": total_pages,
+        "ocr_pages": sorted(page_ocr_engines),
+        "pages_without_text": pages_without_text,
+        "warnings": warnings,
         # A workbook past the row / sheet caps was indexed only in part.
         "truncated": bool(parse_report.get("excel_truncated")),
         "truncated_sheets": list(parse_report.get("excel_row_truncated_sheets", [])),
@@ -1247,6 +1265,61 @@ async def _extract_image_text_or_http(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ParserUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+async def _ocr_textless_pdf_pages_or_http(
+    request: Request,
+    content_bytes: bytes,
+    *,
+    filename: str,
+    segments: list[tuple[int | None, str]],
+    textless: list[int],
+) -> tuple[list[tuple[int | None, str]], dict[int, str], list[int], list[str]]:
+    """OCR the PDF pages that have no text layer.
+
+    Returns ``(segments with OCR text filled in, {page: engine}, pages still
+    without text, warnings)``. A fully scanned PDF with no OCR engine is a 503
+    and one where OCR finds nothing a 422; a partly scanned PDF without OCR is
+    indexed from its text pages and the unread pages are reported, never
+    dropped silently.
+    """
+    from app.ingestion.document_text import (
+        DocumentParseError,
+        ParserUnavailableError,
+        ocr_pdf_pages,
+    )
+
+    has_text_layer = any(t.strip() for _, t in segments)
+    try:
+        async with _upload_parse_slot():  # OCR is bounded like parsing
+            ocr = await ocr_pdf_pages(
+                content_bytes,
+                filename=filename,
+                page_numbers=textless,
+                vision_provider=getattr(request.app.state, "llm_provider", None),
+            )
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ParserUnavailableError as exc:  # incl. OcrUnavailableError
+        if not has_text_layer:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        pages = ", ".join(str(p) for p in textless)
+        return segments, {}, list(textless), [
+            f"page(s) {pages} have no text layer and were not indexed: {exc}"
+        ]
+    filled = [
+        (page, ocr[page][0] if page in ocr and ocr[page][0] else text)
+        for page, text in segments
+    ]
+    engines = {page: engine for page, (text, engine) in ocr.items() if text}
+    unread = [p for p in textless if p not in engines]
+    if not any(t.strip() for _, t in filled):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{filename}: no text could be extracted (the PDF has no text layer "
+            "and OCR found no text)",
+        )
+    return filled, engines, unread, []
 
 
 def _upload_source_type(ext: str) -> str:
@@ -1305,12 +1378,13 @@ def _extract_upload_segments(
         )
 
         try:
-            pages = extract_pdf_pages(content_bytes, filename=filename)
+            pages = extract_pdf_pages(content_bytes, filename=filename, allow_textless=True)
         except DocumentParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ParserUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return [(i + 1, t) for i, t in enumerate(pages) if t.strip()], len(pages)
+        # Every page, textless ones included: ingest_file OCRs those.
+        return [(i + 1, t) for i, t in enumerate(pages)], len(pages)
     text = _extract_upload_text(content_bytes, ext=ext, filename=filename, report=report)
     return [(None, text)], None
 

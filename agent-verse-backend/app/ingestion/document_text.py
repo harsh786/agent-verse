@@ -10,6 +10,7 @@ healthy. These helpers either return the document's real text or raise.
 from __future__ import annotations
 
 import io
+import os
 from typing import Any
 
 
@@ -21,11 +22,15 @@ class ParserUnavailableError(RuntimeError):
     """The parser library for this format is not installed on this host."""
 
 
-def extract_pdf_pages(data: bytes, *, filename: str = "document.pdf") -> list[str]:
+def extract_pdf_pages(
+    data: bytes, *, filename: str = "document.pdf", allow_textless: bool = False
+) -> list[str]:
     """Return the text of each page (``""`` for pages without a text layer).
 
     Raises DocumentParseError for a corrupt/encrypted PDF or one with no text
     at all (e.g. a scan, which needs OCR), ParserUnavailableError without pypdf.
+    ``allow_textless=True`` returns the (all empty) pages of a scan instead, for
+    a caller that OCRs them (:func:`ocr_pdf_pages`).
     """
     try:
         from pypdf import PdfReader
@@ -41,11 +46,96 @@ def extract_pdf_pages(data: bytes, *, filename: str = "document.pdf") -> list[st
         raise
     except (PdfReadError, ValueError, KeyError, TypeError, OSError) as exc:
         raise DocumentParseError(f"{filename}: not a readable PDF ({exc})") from exc
-    if not any(p.strip() for p in pages):
+    if not allow_textless and not any(p.strip() for p in pages):
         raise DocumentParseError(
             f"{filename}: the PDF has no extractable text (scanned images need OCR)"
         )
     return pages
+
+
+# Pages of one upload OCR'd in the request (each is ~1-3 s of Tesseract at 300 dpi).
+OCR_MAX_PDF_PAGES = int(os.getenv("KNOWLEDGE_OCR_MAX_PAGES", "60"))
+OCR_PDF_DPI = 300
+
+
+def render_pdf_page(data: bytes, page_number: int, *, dpi: int = OCR_PDF_DPI) -> Any:
+    """Page ``page_number`` (1-based) of a PDF as a grayscale PIL image (poppler)."""
+    try:
+        from pdf2image import convert_from_bytes
+        from pdf2image.exceptions import PDFInfoNotInstalledError
+    except ImportError as exc:
+        raise ParserUnavailableError(
+            "scanned-PDF OCR needs pdf2image and poppler (the 'ocr' extra)"
+        ) from exc
+    try:
+        images = convert_from_bytes(
+            data, dpi=dpi, first_page=page_number, last_page=page_number, grayscale=True
+        )
+    except PDFInfoNotInstalledError as exc:
+        raise ParserUnavailableError(
+            "scanned-PDF OCR needs poppler (pdftoppm), which is not installed"
+        ) from exc
+    except Exception as exc:
+        raise DocumentParseError(
+            f"page {page_number} could not be rendered for OCR ({exc})"
+        ) from exc
+    if not images:
+        raise DocumentParseError(f"page {page_number} could not be rendered for OCR")
+    return images[0]
+
+
+def _require_ocr(filename: str, vision_provider: Any) -> bool:
+    """True when the vision provider will be used; raise when no OCR is possible."""
+    has_vision = is_vision_provider(vision_provider)
+    if not has_vision and not tesseract_available():
+        raise OcrUnavailableError(
+            f"{filename}: this file needs OCR, but no OCR engine is available: install "
+            "Tesseract (the tesseract binary plus the 'ocr' extra) or configure a "
+            "vision-capable model provider"
+        )
+    return has_vision
+
+
+async def ocr_pdf_pages(
+    data: bytes,
+    *,
+    filename: str,
+    page_numbers: list[int],
+    vision_provider: Any = None,
+    ocr_engine: Any = None,
+) -> dict[int, tuple[str, str]]:
+    """OCR the given 1-based pages of a PDF: ``{page: (text, engine_used)}``.
+
+    Each page is rendered on its own (so one page's text never lands on
+    another page's citation). Raises OcrUnavailableError without an OCR engine,
+    DocumentParseError when more pages need OCR than one request may run.
+    """
+    import asyncio
+
+    if len(page_numbers) > OCR_MAX_PDF_PAGES:
+        raise DocumentParseError(
+            f"{filename}: {len(page_numbers)} pages have no text layer and need OCR, but at "
+            f"most {OCR_MAX_PDF_PAGES} scanned pages are OCR'd per upload; split the PDF"
+        )
+    has_vision = _require_ocr(filename, vision_provider)
+    if ocr_engine is None:
+        from app.ocr.engine import OcrEngine
+
+        ocr_engine = OcrEngine()
+    out: dict[int, tuple[str, str]] = {}
+    for number in page_numbers:
+        image = await asyncio.to_thread(render_pdf_page, data, number)
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        result = await ocr_engine.extract(
+            image_bytes=buf.getvalue(),
+            provider=vision_provider if has_vision else None,
+            extract_fields=False,
+            vision_fallback=has_vision,
+        )
+        text = (getattr(result, "raw_text", "") or "").strip()
+        out[number] = (text, str(getattr(result, "engine_used", "") or ""))
+    return out
 
 
 def extract_docx_text(data: bytes, *, filename: str = "document.docx") -> str:
