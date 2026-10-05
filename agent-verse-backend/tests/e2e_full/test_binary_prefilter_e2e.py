@@ -32,8 +32,10 @@ async def _pgvector_version(kb: object) -> tuple[int, ...]:
     return tuple(int(p) for p in str(v).split(".")[:3]) if v else (0, 0, 0)
 
 
-@pytest_asyncio.fixture(scope="module", loop_scope="session")
-async def _seeded_tenant(client: object) -> str:
+@pytest_asyncio.fixture(loop_scope="session")
+async def _seeded_tenant(client: object, _reset_signup_rate_limit: None) -> str:
+    """A fresh FREE tenant per test: each test creates its own collection, and the
+    free plan's knowledge-collection limit (1, RATE-01) is enforced on create."""
     email = f"binq-{uuid.uuid4().hex[:12]}@example.com"
     resp = await client.post(  # type: ignore[attr-defined]
         "/tenants/signup", json={"name": "Binary Prefilter", "email": email}
