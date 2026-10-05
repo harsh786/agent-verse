@@ -16,8 +16,9 @@ covered even if nobody remembered to list it per connector:
   (``urls``, ``seed_urls`` …) — :func:`assert_source_url`;
 * DSN / URI fields (``dsn``, ``uri`` …) — :func:`assert_source_dsn` (every host
   the driver could dial, SRV targets included);
-* ``host`` (+ ``port``) and host lists (``bootstrap_servers``, ``cluster_nodes``,
-  ``sentinels`` …) — :func:`assert_source_host`;
+* ``host`` (+ ``port``; a comma-separated multi-host value is checked host by
+  host) and host lists (``bootstrap_servers``, ``cluster_nodes``, ``sentinels`` …)
+  — :func:`assert_source_host`;
 * any other string value that *is* a URL / DSN (``scheme://…``), at any depth;
 * connector-built destinations (Azure connection strings, ServiceNow
   instances, Zendesk subdomains) through the connector's own builder.
@@ -178,7 +179,12 @@ def _walk(node: Any, context: str, *, key: str = "", port: Any = None) -> None:
         else:  # a libpq keyword DSN ("host=... port=...")
             assert_source_dsn(node, context=context)
     elif key in _HOST_KEYS:
-        _check_host_entry(node, port, context)
+        # A host field may list several hosts ("h1:27017,h2:27017" — MongoDB
+        # replica-set seeds): each is validated on its own, so legitimate seeds
+        # are accepted and any internal member is still refused.
+        for entry in (part.strip() for part in node.split(",")):
+            if entry:
+                _check_host_entry(entry, port, context)
     elif key in _HOST_LIST_KEYS:
         for entry in _split_hosts(node):
             _check_host_entry(entry, None, context)

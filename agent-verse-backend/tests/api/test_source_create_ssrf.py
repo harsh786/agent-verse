@@ -144,3 +144,90 @@ def test_update_without_connection_config_does_not_reresolve() -> None:
     resp = client.patch(f"/sources/{sid}", json={"name": "renamed"}, headers=_AUTH)
     assert resp.status_code == 200, resp.text
     assert resp.json()["name"] == "renamed"
+
+
+# ── Multi-host fields (USR-2 follow-up) ─────────────────────────────────────────
+# MongoDB documents ``host: "h1:27017,h2:27017"`` for replica-set seeds: every
+# host is validated on its own — public seeds are saved, any internal one refused.
+
+_PUBLIC_2 = "93.184.216.35"
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        f"{_PUBLIC}:27017,{_PUBLIC_2}:27017",
+        f"{_PUBLIC}:27017, {_PUBLIC_2}:27018",
+        f"{_PUBLIC},{_PUBLIC_2}",
+        f"[2606:2800:220:1:248:1893:25c8:1946]:27017,{_PUBLIC}:27017",
+        "2606:2800:220:1:248:1893:25c8:1946",
+    ],
+)
+def test_public_multi_host_seeds_are_accepted(host: str) -> None:
+    client = _client()
+    resp = client.post(
+        "/sources",
+        json=_body("mongodb", {"host": host, "database": "app", "collections": ["c"]}),
+        headers=_AUTH,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["connection_config"]["host"] == host  # stored verbatim
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        f"{_PUBLIC}:27017,10.0.0.5:27017",
+        f"127.0.0.1:27017,{_PUBLIC}:27017",
+        f"{_PUBLIC}:27017,[::1]:27017",
+        f"{_PUBLIC}:27017,[::ffff:169.254.169.254]:27017",
+        f"{_PUBLIC},169.254.169.254",
+        f"{_PUBLIC}:27017,localhost:27017",
+    ],
+)
+def test_an_internal_member_in_a_multi_host_field_is_refused(host: str) -> None:
+    client = _client()
+    resp = client.post(
+        "/sources",
+        json=_body("mongodb", {"host": host, "database": "app", "collections": ["c"]}),
+        headers=_AUTH,
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_multi_host_update_is_validated_per_host() -> None:
+    client = _client()
+    created = client.post(
+        "/sources", json=_body("mongodb", {"host": f"{_PUBLIC}:27017"}), headers=_AUTH
+    )
+    sid = created.json()["source_id"]
+    ok = client.patch(
+        f"/sources/{sid}",
+        json={"connection_config": {"host": f"{_PUBLIC}:27017,{_PUBLIC_2}:27017"}},
+        headers=_AUTH,
+    )
+    assert ok.status_code == 200, ok.text
+    bad = client.patch(
+        f"/sources/{sid}",
+        json={"connection_config": {"host": f"{_PUBLIC}:27017,192.168.1.9:27017"}},
+        headers=_AUTH,
+    )
+    assert bad.status_code == 422, bad.text
+
+
+def test_uri_query_options_are_stored_untouched() -> None:
+    """The check only reads the URI: options (order included) are saved as sent."""
+    uri = (
+        f"mongodb://u:p@{_PUBLIC}:27017,{_PUBLIC_2}:27017/app"
+        "?replicaSet=rs0&tls=true&authSource=admin&readPreference=secondary"
+    )
+    client = _client()
+    resp = client.post(
+        "/sources",
+        json=_body("mongodb", {"uri": uri, "collections": ["c"]}),
+        headers=_AUTH,
+    )
+    assert resp.status_code == 201, resp.text
+    sid = resp.json()["source_id"]
+    stored = ingestion_mod._SOURCES[sid].connection_config["uri"]
+    assert stored == uri
