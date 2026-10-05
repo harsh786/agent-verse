@@ -72,6 +72,28 @@ def test_headers_and_footers_are_extracted_once() -> None:
     assert text.count("CONFIDENTIAL - Agreement HSA-4471") == 1
     assert text.count("Revision 7 approved by Amara Nwosu") == 1
     assert text.index("HSA-4471") < text.index("Demurrage") < text.index("Amara Nwosu")
+    lines = text.splitlines()
+    assert lines[:2] == ["## Page header", "CONFIDENTIAL - Agreement HSA-4471"]
+    assert lines[-2:] == ["## Page footer", "Revision 7 approved by Amara Nwosu"]
+
+
+def test_the_footer_is_chunked_apart_from_a_long_body() -> None:
+    """The footer section starts its own chunk once the body chunk before it holds a
+    quarter of the budget (small trailing sections are packed together)."""
+    import docx
+
+    from app.knowledge.chunker_v2 import chunk_structured
+
+    d = docx.Document()
+    d.sections[0].footer.paragraphs[0].text = "Revision 7 approved by Amara Nwosu"
+    d.add_heading("Services", level=1)
+    for i in range(30):
+        d.add_paragraph(f"Clause {i}: the operator records every vessel call in the log.")
+    buf = io.BytesIO()
+    d.save(buf)
+    chunks = [c for c, _ in chunk_structured(extract_docx_text(buf.getvalue()))]
+    footer = [c for c in chunks if "Amara Nwosu" in c]
+    assert len(footer) == 1 and "Clause" not in footer[0]
 
 
 def test_heading_is_a_markdown_heading() -> None:

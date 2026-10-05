@@ -163,10 +163,13 @@ def extract_docx_text(data: bytes, *, filename: str = "document.docx") -> str:
     except Exception as exc:  # python-docx raises several unrelated types
         raise DocumentParseError(f"{filename}: not a readable .docx ({exc})") from exc
     headers, footers = _docx_header_footer_lines(document)
+    # Page headers / footers are their own sections (a heading each), so the
+    # upload chunker keeps the footer out of the last body chunk, where its
+    # contract number / revision / approver drowned in the body text.
     lines = (
-        [f"Header: {h}" for h in headers]
+        (["## Page header", *headers] if headers else [])
         + _docx_blocks(document, document.element.body)
-        + [f"Footer: {f}" for f in footers]
+        + (["## Page footer", *footers] if footers else [])
     )
     text = "\n".join(lines)
     if not text.strip():
