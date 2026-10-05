@@ -104,3 +104,5 @@ EXIT 0
 - Running when cut off: live P1c (A5 MongoDB/Redis/Elasticsearch) on branch live/p1c-nosql (worktree .claude/worktrees/p1c) — resume, `git merge main`, finish, merge, test, push.
 - Next per LIVE-E2E-PLAN.md "Re-ordering": A10 HTTP/crawl → A12 agent-generated → B1 → B2 → B7 → live re-checks P2/P4/P5/P7/P8 → P6 → P9 → P10 → P11 → deferred A7, B3, B8, C1–C5, A6.
 - New findings: p8b.progress.json (raw exception text with bearer token in worker log), p478code.progress.json.
+
+- 2026-10-06: P1c (A5 MongoDB ingestion+MCP, Redis, Elasticsearch) COMPLETE (33/33 live) and fast-forwarded into local main; NOT yet full-suite tested or pushed (together with P8b). Open: MCP delete re-asks approval 19-22x (P4/P5), workflow tool steps skip approval gate (P4), Redis doc ids include host (owner decision), reranker weighting (P2).
