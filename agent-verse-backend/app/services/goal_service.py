@@ -692,6 +692,11 @@ _DOWNGRADE_DETAIL = {
 }
 
 
+# POST /goals workflow modes that are strategies of their own: on the strategy
+# runtime v2 they become the profile's primary strategy (P5-2).
+_PROFILE_WORKFLOW_MODES = frozenset({"supervisor", "debate"})
+
+
 def _strategy_downgrade(
     goal_id: str, tenant_id: str, requested: Any, reason: str
 ) -> dict[str, Any]:
@@ -2099,8 +2104,18 @@ class GoalService:
         goal_id: str,
         tenant_ctx: Any,
         agent_config: dict[str, Any] | None = None,
+        workflow_mode: str | None = None,
     ) -> dict[str, Any]:
         """Build the goal's GoalRuntimeProfile and decide whether it drives execution.
+
+        ``workflow_mode`` ``supervisor`` / ``debate`` (POST /goals) becomes the
+        profile's primary strategy unless an explicit ``strategy_override`` names
+        another one (P5-2). It used to set only the legacy agent pattern flags,
+        which the v2 GraphFactory may switch off but never on — the goal silently
+        ran as plain ReAct. When the profile cannot host the mode (no coordination
+        runtime) the legacy kernel runs it from the pattern flags, recorded as a
+        ``runtime_profile_fallback``; a conflict with an explicit override is
+        recorded as a downgrade.
 
         Returns ``{}`` when dynamic orchestration is off, else a dict with:
 
@@ -2121,11 +2136,15 @@ class GoalService:
         if not flags.dynamic_orchestration:
             return {}
         requested_primary = (agent_config or {}).get("primary_strategy")
+        mode = workflow_mode if workflow_mode in _PROFILE_WORKFLOW_MODES else None
+        mode_conflict = bool(mode and requested_primary and str(requested_primary) != mode)
         try:
             from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
 
             builder = RuntimeProfileBuilder(llm_provider=self._classifier_provider())
             _builder_config = dict(agent_config or {})
+            if mode and not requested_primary:
+                _builder_config["primary_strategy"] = mode
             # DISTRIBUTED strategies are admitted only when a StrategyRunner with a real
             # executor is wired to run them (see _try_build_distributed_strategy_loop).
             _builder_config.setdefault("coordination_ready", self._coordination_ready())
@@ -2182,6 +2201,9 @@ class GoalService:
                 "detail": str(exc)[:300],
                 "fallback": "legacy",
             }
+            if mode and not requested_primary:
+                # The legacy kernel runs the mode from the goal's pattern flags.
+                fallback["requested_workflow_mode"] = mode
             context_fb: dict[str, Any] = {
                 "runtime_profile_fallback": fallback,
                 "strategy_runtime_path": "legacy",
@@ -2223,6 +2245,26 @@ class GoalService:
                     context["runtime_profile_fallback"]["reason"],
                 )
             )
+        if mode_conflict and rollout.path == "v2":
+            # The explicit override drives the v2 profile; the mode cannot co-run.
+            detail = (
+                f"workflow_mode '{mode}' cannot run alongside strategy_override "
+                f"'{requested_primary}'; the override runs"
+            )
+            _svc_logger.warning(
+                "workflow_mode_downgraded",
+                goal_id=goal_id,
+                tenant_id=tenant_ctx.tenant_id,
+                requested_mode=mode,
+                runs=str(requested_primary),
+            )
+            context["strategy_downgraded"] = True
+            context["strategy_downgrade"] = {
+                "requested_strategy": mode,
+                "reason": "workflow_mode_conflicts_with_strategy_override",
+                "runs": str(requested_primary),
+                "detail": detail,
+            }
         columns = {
             "runtime_profile_id": profile.profile_id,
             "runtime_profile_version": profile.profile_version,
@@ -4618,6 +4660,7 @@ class GoalService:
                 goal_id=goal_id,
                 tenant_ctx=tenant_ctx,
                 agent_config=record.execution_context.get("strategy_runtime"),
+                workflow_mode=workflow_mode,
             )
             if _profile_data:
                 record.runtime_profile = _profile_data.get("profile_object")
