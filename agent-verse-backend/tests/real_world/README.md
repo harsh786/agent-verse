@@ -44,6 +44,9 @@ scoring/report code; `uv run pytest tests/real_world --collect-only` checks coll
 | KB-STRATEGIES (every RAG strategy incl. ColBERT when ready) | `test_kb_retrieval.py` | – |
 | KB-SOURCES-SYNC-RSS | `test_kb_sources_sync.py` | `RW_FIXTURE_PUBLIC_URL` or `RW_FIXTURE_REACHABLE=1` |
 | SRC-REDIS-INCREMENTAL / SRC-MONGO-INCREMENTAL / SRC-S3-INCREMENTAL | `test_kb_sources_sync.py` | `RW_REDIS_URL` / `RW_MONGO_URI` / `RW_S3_*` |
+| SRC-OBJ-MIXED (first + incremental sync: add / modify / touch / delete + reconcile, 12 formats), SRC-OBJ-LARGE (multipart objects, size cap), SRC-OBJ-FAILURES (bad secret / unknown key / missing bucket / unreachable endpoint) — each for `minio` (path-style) and `s3` (virtual-hosted, custom region) | `test_src_object_store.py` | `RW_S3_*` (MinIO) / `RW_AWS_*` (AWS-like S3) |
+| SRC-OBJ-PAGINATION (1,050 objects, cancel + resume), SRC-OBJ-FILTERS, SRC-OBJ-RETRY (denied + corrupt objects, DLQ, operator retry), SRC-OBJ-STS (session token), SRC-OBJ-REFUSAL (internal endpoints), SRC-OBJ-DUPLICATES (same bytes under two keys, two sources on one prefix) | `test_src_object_store.py` | as above; SRC-OBJ-RETRY changes MinIO policies via `docker exec` (`RW_MINIO_CONTAINER`) |
+| SRC-DB-SYNC (realistic schema, view, JSON / NULL / UTF-8, a bulk load larger than a batch; inserted / updated / deleted rows + reconcile), SRC-DB-TABLE-RETRY (an ungranted table is synced once granted), SRC-DB-FAILURES (bad password / unknown user / unreachable port / missing database / missing table / internal hosts) — PostgreSQL and MySQL | `test_src_oltp.py` | `RW_PG_ROOT_PASSWORD` / `RW_MYSQL_ROOT_PASSWORD` |
 | KB-REEMBED-MIGRATION | `test_kb_reembed_scale.py` | – |
 | KB-SCALE-SMOKE (~5,000 docs) | `test_kb_reembed_scale.py` | `RW_SCALE=1` (best with `RW_ENTERPRISE_API_KEY`) |
 | WF-COMPLEX-PIPELINE, WF-FAILURE-RECOVERY | `test_wf_complex.py` | the stack must reach the fixture server (`RW_FIXTURE_PUBLIC_URL`) — skipped when the HTTP step's SSRF guard refuses it |
@@ -75,6 +78,10 @@ capture, changing RSS feeds).
 
 Credentials are never printed; every key is registered with the masker.
 
+Run one real-world session at a time per tenant: the session-end sweep deletes the
+tenant's leftover workflows, collections and sources — including those of a
+concurrently running session.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGENTVERSE_REAL_WORLD` | – | `1` enables the suite (the runner sets it) |
@@ -105,6 +112,11 @@ Credentials are never printed; every key is registered with the masker.
 | `RW_MONGO_COLLECTION`, `RW_MONGO_FACT` | `articles`, – | (SRC-MONGO-SYNC) existing collection / searchable fact |
 | `RW_S3_ENDPOINT`, `RW_S3_BUCKET`, `RW_S3_ACCESS_KEY`, `RW_S3_SECRET_KEY` | – | S3 / MinIO source |
 | `RW_S3_SEED_ENDPOINT`, `RW_S3_SOURCE_TYPE`, `RW_S3_REGION` | endpoint, `minio`, `us-east-1` | seeding endpoint, connector type, region |
+| `RW_S3_ACCESS_KEY`, `RW_S3_SECRET_KEY`, `RW_S3_SEED_ACCESS_KEY`, `RW_S3_SEED_SECRET_KEY`, `RW_S3_BUCKET`, `RW_MINIO_CONTAINER` | –, –, –, –, `rw-p1b`, `agentverse-backend-minio-1` | SRC-OBJ-* (minio): read-only connector user, seeding user, bucket, container for `mc admin policy` |
+| `RW_AWS_ACCESS_KEY`, `RW_AWS_SECRET_KEY`, `RW_AWS_ROOT_USER`, `RW_AWS_ROOT_PASSWORD`, `RW_AWS_ENDPOINT`, `RW_AWS_SEED_ENDPOINT`, `RW_AWS_BUCKET`, `RW_AWS_REGION` | –, –, –, –, `http://rw-s3:9000`, `http://localhost:59000`, `rw-aws-docs`, `ap-south-1` | SRC-OBJ-* (s3): an S3 endpoint with virtual-hosted buckets (MinIO with `MINIO_DOMAIN`), STS for SRC-OBJ-STS |
+| `RW_OBJ_PAGINATION_OBJECTS`, `RW_OBJ_CANCEL_AFTER`, `RW_OBJ_LARGE_OK_BYTES`, `RW_OBJ_LARGE_OVER_BYTES` | `1050`, `250`, 9 MiB, 14 MiB | SRC-OBJ-PAGINATION / SRC-OBJ-LARGE sizes |
+| `RW_PG_ROOT_PASSWORD`, `RW_PG_HOST`, `RW_PG_SEED_PORT`; `RW_MYSQL_ROOT_PASSWORD`, `RW_MYSQL_HOST`, `RW_MYSQL_SEED_PORT` | –, `rw-pg`, `56432`; –, `rw-mysql`, `53306` | SRC-DB-*: admin passwords (seeding from this host) and the hosts the stack reaches |
+| `RW_DB_CUSTOMERS`, `RW_DB_SHIPMENTS`, `RW_DB_EVENTS`, `RW_DB_BATCH` | `30`, `120`, `1500`, `500` | SRC-DB-SYNC table sizes and connector batch size |
 | `RW_REEMBED_TIMEOUT`, `RW_REEMBED_STABILITY_MIN` | `600`/`300`, `0.9` | re-embed wait; share of questions keeping their top document |
 | `RW_SCALE`, `RW_SCALE_DOCS`, `RW_SCALE_CONCURRENCY` | –, `5000`, `8` | scale smoke opt-in, size, parallelism |
 | `RW_SCALE_MIN_DOCS_PER_S`, `RW_SCALE_MAX_P95_MS` | `5`, `5000` | throughput floor, search p95 bound during ingest |
