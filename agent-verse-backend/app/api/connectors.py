@@ -453,7 +453,12 @@ def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data["connector_type"] = _connector_type_for(builtin_type) if builtin_type else ""
     # The stored url is "builtin://" for built-in connectors (a dispatch marker);
     # surface the real upstream API endpoint separately so the UI can show it.
-    if (cfg.url or "").startswith("builtin://"):
+    if data.get("display_url"):
+        # A8: the configured host (masked: no credentials), not a catalog default.
+        data["upstream_url"] = data["display_url"]
+    elif builtin_type == _MONGODB_BUILTIN:
+        data["upstream_url"] = ""  # nothing configured to show (never localhost)
+    elif (cfg.url or "").startswith("builtin://"):
         data["upstream_url"] = _upstream_url_for(data["builtin_type_name"] or cfg.name)
     return {"server_id": server_id, **data}
 

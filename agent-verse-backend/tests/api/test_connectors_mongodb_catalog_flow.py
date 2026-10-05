@@ -212,3 +212,17 @@ async def test_test_connection_on_a_legacy_remote_row(world: dict[str, Any]) -> 
     resp = world["client"].post("/connectors/legacy1/test", headers=HA)
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "passed", resp.json()
+
+
+def test_upstream_is_the_configured_host_masked(world: dict[str, Any]) -> None:
+    """A8: the real (masked) host, never the catalog default mongodb://localhost:27017."""
+    sid = _register_like_the_ui(world["client"], "orders-db").json()["server_id"]
+    row = world["client"].get(f"/connectors/{sid}", headers=HA).json()
+    listed = next(
+        r for r in world["client"].get("/connectors", headers=HA).json() if r["server_id"] == sid
+    )
+    for r in (row, listed):
+        assert r["display_url"] == "mongodb://8.8.8.8:27017/shop"
+        assert r["upstream_url"] == "mongodb://8.8.8.8:27017/shop"
+        assert "localhost" not in json.dumps(r)
+        assert "alice" not in json.dumps(r) and "S3cretPw" not in json.dumps(r)
