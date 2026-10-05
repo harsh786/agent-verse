@@ -88,6 +88,7 @@ class _Options:
     include_subgoals: bool
     learning_classes: tuple[str, ...]
     max_items: int
+    since: datetime | None
 
 
 def _str_list(cfg: dict[str, Any], key: str) -> tuple[str, ...]:
@@ -133,7 +134,18 @@ def parse_options(cfg: dict[str, Any] | None) -> _Options:
         raise AgentGeneratedConfigError(
             f"learning_classifications {bad} unknown; use {sorted(_LEARNING_CLASSES)}"
         )
+    since_raw = cfg.get("since")
+    since: datetime | None = None
+    if since_raw not in (None, ""):
+        try:
+            since = _parse_ts(str(since_raw))
+        except ValueError as exc:
+            raise AgentGeneratedConfigError(
+                "since must be an ISO-8601 date-time (records produced before it are "
+                "not indexed)"
+            ) from exc
     return _Options(
+        since=since,
         kinds=tuple(dict.fromkeys(kinds)),
         agent_ids=_str_list(cfg, "agent_ids"),
         workflow_ids=_str_list(cfg, "workflow_ids"),
@@ -314,11 +326,10 @@ class AgentGeneratedConnector(BaseConnector):
         budget = opts.max_items
         for stream in self._streams(opts):
             position = state.get(stream.key)
-            if position is None:
-                start_ts, start_id = _EPOCH, (_ZERO_UUID if stream.uuid_ids else "")
-            else:
-                start_ts = _parse_ts(position[0]) - _OVERLAP
-                start_id = _ZERO_UUID if stream.uuid_ids else ""
+            start_id = _ZERO_UUID if stream.uuid_ids else ""
+            start_ts = _EPOCH if position is None else _parse_ts(position[0]) - _OVERLAP
+            if opts.since is not None and opts.since > start_ts:
+                start_ts = opts.since
             while budget > 0:
                 try:
                     rows = await stream.page(
@@ -453,9 +464,21 @@ class AgentGeneratedConnector(BaseConnector):
 
     # ── HITL decisions: goal approvals ───────────────────────────────────────
 
+    @staticmethod
+    def _approval_agent_filter(opts: _Options, params: dict[str, Any]) -> str:
+        """Decisions on goals of the listed agents only (when ``agent_ids`` is set)."""
+        if not opts.agent_ids:
+            return ""
+        params["agents"] = list(opts.agent_ids)
+        return (
+            " AND EXISTS (SELECT 1 FROM goals ag WHERE ag.id = a.goal_id "
+            "AND ag.tenant_id = a.tenant_id AND ag.agent_id = ANY(CAST(:agents AS text[])))"
+        )
+
     async def _page_approvals(
         self, tenant_id: str, opts: _Options, ts: datetime, after: str, limit: int
     ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"tid": tenant_id, "ts": ts, "id": after, "lim": limit}
         rows = await self._query(
             tenant_id,
             "SELECT a.id, a.goal_id, a.action, a.risk_level, a.status, a.approver, a.note, "
@@ -463,9 +486,10 @@ class AgentGeneratedConnector(BaseConnector):
             "FROM approval_requests a LEFT JOIN goals g "
             "  ON g.id = a.goal_id AND g.tenant_id = a.tenant_id "
             "WHERE a.tenant_id = :tid AND a.status IN ('approved', 'rejected') "
-            "AND a.resolved_at IS NOT NULL AND (a.resolved_at, a.id) > (:ts, :id) "
-            "ORDER BY a.resolved_at, a.id LIMIT :lim",
-            {"tid": tenant_id, "ts": ts, "id": after, "lim": limit},
+            "AND a.resolved_at IS NOT NULL AND (a.resolved_at, a.id) > (:ts, :id)"
+            + self._approval_agent_filter(opts, params)
+            + " ORDER BY a.resolved_at, a.id LIMIT :lim",
+            params,
         )
         return [
             {
@@ -482,11 +506,14 @@ class AgentGeneratedConnector(BaseConnector):
     async def _live_approvals(
         self, tenant_id: str, opts: _Options, after: str, limit: int
     ) -> list[Any]:
+        params: dict[str, Any] = {"tid": tenant_id, "id": after, "lim": limit}
         return await self._query(
             tenant_id,
             "SELECT a.id FROM approval_requests a WHERE a.tenant_id = :tid "
-            "AND a.status IN ('approved', 'rejected') AND a.id > :id ORDER BY a.id LIMIT :lim",
-            {"tid": tenant_id, "id": after, "lim": limit},
+            "AND a.status IN ('approved', 'rejected') AND a.id > :id"
+            + self._approval_agent_filter(opts, params)
+            + " ORDER BY a.id LIMIT :lim",
+            params,
         )
 
     # ── HITL decisions: workflow approval gates ──────────────────────────────
@@ -713,8 +740,6 @@ def _render_goal(config: SourceConfig, row: dict[str, Any]) -> RawDocument | Non
         f"- Agent: {row['agent_id'] or 'default'}",
         f"- Completed: {row['completed_at']}",
     ]
-    if row.get("eval_score") is not None:
-        lines.append(f"- Evaluation score: {row['eval_score']:.2f}")
     lines += ["", "## Goal", row["goal_text"], "", "## Answer", answer]
     return _doc(
         config, KIND_GOAL_OUTPUT, gid,
@@ -723,7 +748,10 @@ def _render_goal(config: SourceConfig, row: dict[str, Any]) -> RawDocument | Non
         url=f"agentverse://goals/{gid}",
         modified_at=row["completed_at"],
         author=row["agent_id"] or "agent",
-        origin=_origin(KIND_GOAL_OUTPUT, goal_id=gid, agent_id=row["agent_id"]),
+        origin=_origin(
+            KIND_GOAL_OUTPUT, goal_id=gid, agent_id=row["agent_id"],
+            eval_score=None if row.get("eval_score") is None else f"{row['eval_score']:.2f}",
+        ),
     )
 
 

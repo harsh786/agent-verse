@@ -318,10 +318,43 @@ async def test_eval_score_floor(pg_url: str) -> None:
         docs, _ = await _drain(connector, _config(tid, min_eval_score=0.7), None)
         urls = {d.source_url for d in docs}
         assert urls == {f"agentverse://goals/{good}", f"agentverse://goals/{unscored}"}
-        assert "Evaluation score: 0.92" in next(
-            d for d in docs if good in d.source_url).content.decode()
+        assert next(d for d in docs if good in d.source_url).metadata["origin"][
+            "eval_score"] == "0.92"
         strict = _config(tid, min_eval_score=0.7, require_eval_score=True)
         docs, _ = await _drain(connector, strict, None)
         assert {d.source_url for d in docs} == {f"agentverse://goals/{good}"}
+    finally:
+        await engine.dispose()
+
+
+async def test_agent_filter_and_since(pg_url: str) -> None:
+    tid = await _tenant(pg_url)
+    agent_a, agent_b = (f"agent-{uuid.uuid4().hex[:8]}" for _ in range(2))
+    for agent in (agent_a, agent_b):
+        await admin_exec(pg_url, "INSERT INTO agents (id, tenant_id, name) VALUES (:a, :t, :a)",
+                         {"a": agent, "t": tid})
+    goals = {}
+    for i, agent in enumerate((agent_a, agent_b, agent_a)):
+        gid = uuid.uuid4().hex
+        goals[gid] = agent
+        await _goal(pg_url, tid, gid, f"goal {i}", f"answer {i}", at=T0 + timedelta(hours=i))
+        await admin_exec(pg_url, "UPDATE goals SET agent_id = :a WHERE id = :g",
+                         {"a": agent, "g": gid})
+        await _approval(pg_url, tid, uuid.uuid4().hex, gid, f"action {i}", "approved",
+                        at=T0 + timedelta(hours=i))
+    engine = await app_engine(pg_url)
+    try:
+        connector = AgentGeneratedConnector(db_factory=sessions(engine))
+        cfg = _config(tid, agent_ids=[agent_a])
+        docs, _ = await _drain(connector, cfg, None)
+        assert len(docs) == 4  # 2 goals + 2 decisions of agent A
+        assert all(goals[d.metadata["origin"]["goal_id"]] == agent_a for d in docs)
+        live = {x async for x in connector.iter_live_doc_ids(cfg)}
+        assert live == {d.doc_id for d in docs}
+        since = _config(tid, since=(T0 + timedelta(minutes=90)).isoformat())
+        docs, _ = await _drain(connector, since, None)
+        assert sorted(d.content.decode().count("answer 2") for d in docs if
+                      "goals/" in d.source_url) == [1]
+        assert len(docs) == 2  # goal 2 + its decision, both after "since"
     finally:
         await engine.dispose()
