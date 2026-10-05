@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime
 import uuid
 from typing import Any
@@ -155,6 +156,35 @@ class _MemoryRunStore:
                 return
         rows.append(payload)
 
+    async def claim_run(
+        self, tenant_id: str, result_id: str, owner: str, lease_seconds: float
+    ) -> dict[str, Any] | None:
+        from app.evals.ai_ops_jobs import MemoryRunLease
+
+        row = MemoryRunLease.claim(
+            await self.get_eval_result(tenant_id, result_id), owner, lease_seconds
+        )
+        return copy.deepcopy(row) if row is not None else None
+
+    async def save_run(
+        self,
+        tenant_id: str,
+        result_id: str,
+        owner: str,
+        payload: dict[str, Any],
+        lease_seconds: float,
+        *,
+        release: bool = False,
+    ) -> bool:
+        from app.evals.ai_ops_jobs import MemoryRunLease
+
+        if not MemoryRunLease.fenced(await self.get_eval_result(tenant_id, result_id), owner):
+            return False
+        stored = copy.deepcopy(payload)
+        MemoryRunLease.stamp(stored, owner, lease_seconds, release)
+        await self.update_eval_result(tenant_id=tenant_id, result_id=result_id, payload=stored)
+        return True
+
     async def get_dataset(self, tenant_id: str, dataset_id: str) -> dict[str, Any] | None:
         return _datasets.get(f"{tenant_id}:{dataset_id}")
 
@@ -173,15 +203,18 @@ class _MemoryRunStore:
         _baselines.setdefault(tenant_id, {}).setdefault(metric_name, value)
 
 
+def _plan_of(tenant: Any) -> str:
+    return str(
+        getattr(getattr(tenant, "plan", None), "value", None) or getattr(tenant, "plan", "free")
+    )
+
+
 def _enqueue_worker_run(tenant: Any, result_id: str) -> None:
-    """Hand a dataset run to a Celery worker (survives API restarts/deploys)."""
+    """Hand a dataset run to Celery: its first non-blocking step (P7-1)."""
     from app.scaling.tasks import run_ai_ops_dataset
 
-    plan = getattr(getattr(tenant, "plan", None), "value", None) or str(
-        getattr(tenant, "plan", "free")
-    )
     run_ai_ops_dataset.apply_async(
-        kwargs={"tenant_id": tenant.tenant_id, "plan": plan, "result_id": result_id}
+        kwargs={"tenant_id": tenant.tenant_id, "plan": _plan_of(tenant), "result_id": result_id}
     )
 
 
@@ -237,7 +270,10 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
         "tenant_id": tenant.tenant_id,
         "goal_id": body.goal_id,
         "agent_id": body.agent_id,
-        "status": "queued" if use_worker else "running",
+        # The plan the run's worker steps execute under (the beat sweeper
+        # re-dispatches a stalled run with it).
+        "plan": _plan_of(tenant),
+        "status": "queued",
         "passed": False,
         "total_cases": len(dataset["golden_tasks"]),
         "judge_model": (judge or {}).get("model", ""),
@@ -290,6 +326,7 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
             result_id=result_id,
             goal_service=goal_service,
             provider=provider,
+            cfg=getattr(request.app.state, "ai_ops_run_config", None),
         )
     )
     running.add(task)  # strong reference until it finishes

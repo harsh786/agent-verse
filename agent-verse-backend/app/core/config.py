@@ -667,6 +667,17 @@ class Settings(BaseSettings):
     # beat sweeper; reads report it "abandoned" after eval_suite_stalled_after_seconds.
     eval_suite_resume_after_seconds: float = Field(default=180.0, ge=10.0, le=86_400.0)
     eval_suite_stalled_after_seconds: float = Field(default=1800.0, ge=30.0, le=604_800.0)
+    # AI-Ops dataset runs (P7-1): the same non-blocking design. A run is advanced
+    # by short worker steps that submit up to ai_ops_run_concurrency case goals
+    # and POLL them every ai_ops_poll_seconds under a lease on the run row; a
+    # step never waits inline on a goal (the goals need worker slots too). A
+    # case's goal may run ai_ops_case_timeout_seconds from submission; a run
+    # whose steps stopped for ai_ops_resume_after_seconds is re-dispatched.
+    ai_ops_run_concurrency: int = Field(default=4, ge=1, le=64)
+    ai_ops_poll_seconds: float = Field(default=5.0, ge=0.01, le=300.0)
+    ai_ops_lease_seconds: float = Field(default=300.0, ge=5.0, le=3600.0)
+    ai_ops_case_timeout_seconds: float = Field(default=900.0, ge=1.0, le=86_400.0)
+    ai_ops_resume_after_seconds: float = Field(default=600.0, ge=10.0, le=86_400.0)
     # A supervisor's sub-goals run under the parent's concurrent-goal slot
     # (a parent at the tenant limit can never starve its own children). False
     # makes each sub-goal take, and release, a slot of its own.

@@ -9,7 +9,10 @@ This module is the honest version:
 
 * every case is submitted as a real goal through ``GoalService`` (tenant-scoped,
   same path as the eval-suite runner) and its output is read from the goal's
-  event stream — ``expected_output`` is never substituted for ``actual_output``;
+  events — ``expected_output`` is never substituted for ``actual_output``.
+  Cases are submitted and POLLED by short, non-blocking steps
+  (:mod:`app.evals.ai_ops_jobs`, P7-1): nothing waits inline on a worker slot
+  that the case goals themselves need;
 * a case whose goal does not complete (failed, cancelled, timed out, submit
   rejected) fails with that reason and scores 0;
 * when a judge is configured, the case is scored by LLM-as-judge through the
@@ -23,20 +26,15 @@ This module is the honest version:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
-import time
-from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: Seconds each case's goal may run before the case fails as timed out.
-CASE_TIMEOUT_SECONDS = 120.0
-#: Cases executed concurrently per run.
+#: Cases executed concurrently per run (default; ``ai_ops_run_concurrency``).
 CASE_CONCURRENCY = 4
 #: Average case score a run needs to pass.
 PASS_THRESHOLD = 0.7
@@ -44,9 +42,6 @@ PASS_THRESHOLD = 0.7
 LEXICAL_FAIL_FLOOR = 0.3
 
 DEFAULT_JUDGE_DIMENSIONS = ["accuracy", "relevance", "completeness"]
-
-_TERMINAL = {"goal_complete", "goal_failed", "goal_cancelled", "goal_rejected"}
-
 
 def _extract_output(events: list[dict[str, Any]]) -> str:
     """The goal's final answer, read from its own event stream (never the expectation).
@@ -58,83 +53,6 @@ def _extract_output(events: list[dict[str, Any]]) -> str:
     from app.services.result_artifacts import final_answer_text
 
     return final_answer_text(events)
-
-
-async def execute_case(
-    *,
-    goal_service: Any,
-    tenant_ctx: Any,
-    goal: str,
-    agent_id: str | None,
-    timeout: float = CASE_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
-    """Run one golden task as a real goal. Returns status/output/tools/error."""
-    t0 = time.monotonic()
-    events: list[dict[str, Any]] = []
-    try:
-        sub = await goal_service.submit_goal(
-            goal=goal,
-            priority="normal",
-            dry_run=False,
-            tenant_ctx=tenant_ctx,
-            agent_id=agent_id,
-        )
-        goal_id = str(sub["goal_id"])
-    except Exception as exc:
-        return {
-            "goal_id": None,
-            "goal_status": "submit_failed",
-            "actual_output": "",
-            "tools_called": [],
-            "error": str(exc)[:500],
-            "duration_seconds": round(time.monotonic() - t0, 3),
-        }
-
-    status = "timeout"
-    error = ""
-    try:
-        async with asyncio.timeout(timeout):
-            async for evt in goal_service.subscribe_events(goal_id=goal_id, tenant_ctx=tenant_ctx):
-                events.append(evt)
-                etype = evt.get("type")
-                if etype in _TERMINAL:
-                    status = {
-                        "goal_complete": "complete",
-                        "goal_failed": "failed",
-                        "goal_cancelled": "cancelled",
-                        "goal_rejected": "rejected",
-                    }[str(etype)]
-                    if status != "complete":
-                        error = str(evt.get("reason") or evt.get("error") or etype)[:500]
-                    break
-            else:
-                status = "stream_ended"
-                error = "event stream ended before the goal reached a terminal state"
-    except TimeoutError:
-        error = f"goal did not finish within {timeout:.0f}s"
-    except Exception as exc:
-        status = "stream_error"
-        error = str(exc)[:500]
-    if status in {"timeout", "stream_error", "stream_ended"}:
-        # The case is not scored; the real goal must not keep running (and
-        # spending) after the run moved on.
-        from app.intelligence.eval_suite import cancel_unscored_goal
-
-        await cancel_unscored_goal(goal_service, goal_id, tenant_ctx)
-
-    tools_called = [
-        str(e.get("tool_name") or e.get("tool") or "")
-        for e in events
-        if e.get("type") == "tool_call_complete"
-    ]
-    return {
-        "goal_id": goal_id,
-        "goal_status": status,
-        "actual_output": _extract_output(events) if status == "complete" else "",
-        "tools_called": tools_called,
-        "error": error,
-        "duration_seconds": round(time.monotonic() - t0, 3),
-    }
 
 
 def lexical_similarity(expected: str, actual: str) -> float:
@@ -232,115 +150,71 @@ async def judge_case(
     }
 
 
-async def run_dataset(
+def new_case(idx: int, task: dict[str, Any]) -> dict[str, Any]:
+    """The record of one golden task before it runs."""
+    task_input = str(task.get("input") or task.get("goal") or "").strip()
+    expected = str(task.get("expected_output") or "")
+    return {"index": idx, "input": task_input[:500], "expected": expected[:500]}
+
+
+def task_input_of(task: dict[str, Any]) -> str:
+    return str(task.get("input") or task.get("goal") or "").strip()
+
+
+async def score_case(
+    case: dict[str, Any],
     *,
-    dataset: dict[str, Any],
-    goal_service: Any,
-    tenant_ctx: Any,
-    agent_id: str | None,
+    task: dict[str, Any],
+    actual: str,
     judge: dict[str, Any] | None,
     provider: Any,
-    timeout: float = CASE_TIMEOUT_SECONDS,
-    concurrency: int = CASE_CONCURRENCY,
-    done_cases: Mapping[int, dict[str, Any]] | None = None,
-    on_case: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    tenant_ctx: Any,
+    goal_id: str | None,
 ) -> dict[str, Any]:
-    """Execute and score every golden task. Returns the result fields to merge.
-
-    ``done_cases`` (by case index) are cases a previous attempt of this run
-    already finished and persisted: they are reused, not executed again, so a
-    run resumed after a worker restart only runs what is left. ``on_case`` is
-    awaited with each newly finished case (the caller persists progress).
-    """
-    tasks: list[dict[str, Any]] = list(dataset.get("golden_tasks") or [])
-    gate = asyncio.Semaphore(max(1, concurrency))
-    reuse: Mapping[int, dict[str, Any]] = done_cases or {}
-
-    async def _one(idx: int, task: dict[str, Any]) -> dict[str, Any]:
-        if idx in reuse:
-            return reuse[idx]
-        case = await _score_one(idx, task)
-        if on_case is not None:
-            await on_case(case)
-        return case
-
-    async def _score_one(idx: int, task: dict[str, Any]) -> dict[str, Any]:
-        task_input = str(task.get("input") or task.get("goal") or "").strip()
-        expected = str(task.get("expected_output") or "")
-        case: dict[str, Any] = {"index": idx, "input": task_input[:500], "expected": expected[:500]}
-        if not task_input:
-            case.update(status="invalid", score=0.0, passed=False, error="golden task has no input")
-            return case
-        async with gate:
-            exec_res = await execute_case(
-                goal_service=goal_service,
-                tenant_ctx=tenant_ctx,
-                goal=task_input,
-                agent_id=str(task.get("agent_id") or agent_id or "") or None,
-                timeout=timeout,
-            )
-        actual = str(exec_res["actual_output"])
-        case.update(
-            goal_id=exec_res["goal_id"],
-            goal_status=exec_res["goal_status"],
-            actual=actual[:1000],
-            tools_called=exec_res["tools_called"],
-            duration_seconds=exec_res["duration_seconds"],
+    """Score a case whose goal COMPLETED with ``actual`` as its final answer."""
+    task_input = task_input_of(task)
+    expected = str(task.get("expected_output") or "")
+    case["actual"] = actual[:1000]
+    case["lexical_similarity"] = round(lexical_similarity(expected, actual), 3)
+    if judge is not None:
+        verdict = await judge_case(
+            provider=provider,
+            judge=judge,
+            task_input=task_input,
+            expected=expected,
+            actual=actual,
+            tenant_ctx=tenant_ctx,
+            goal_id=goal_id,
         )
-        if exec_res["goal_status"] != "complete":
-            case.update(
-                status="execution_failed", score=0.0, passed=False, error=exec_res["error"]
-            )
+        if "error" in verdict:
+            case.update(status="judge_error", score=0.0, passed=False, error=verdict["error"])
             return case
-
-        case["lexical_similarity"] = round(lexical_similarity(expected, actual), 3)
-        if judge is not None:
-            verdict = await judge_case(
-                provider=provider,
-                judge=judge,
-                task_input=task_input,
-                expected=expected,
-                actual=actual,
-                tenant_ctx=tenant_ctx,
-                goal_id=exec_res["goal_id"],
-            )
-            if "error" in verdict:
-                case.update(status="judge_error", score=0.0, passed=False, error=verdict["error"])
-                return case
-            score = float(verdict["score"])
-            case.update(
-                status="scored",
-                judge_scores={k: round(v, 3) for k, v in verdict["scores"].items()},
-                judge_reasoning=verdict["reasoning"],
-                score=round(score, 3),
-                passed=score >= PASS_THRESHOLD,
-            )
-            return case
-
-        if not expected.strip():
-            case.update(
-                status="unscorable",
-                score=0.0,
-                passed=False,
-                error="no expected_output and no judge configured",
-            )
-            return case
-        sim = float(case["lexical_similarity"])
-        case.update(status="scored", score=round(sim, 3), passed=sim >= LEXICAL_FAIL_FLOOR)
+        score = float(verdict["score"])
+        case.update(
+            status="scored",
+            judge_scores={k: round(v, 3) for k, v in verdict["scores"].items()},
+            judge_reasoning=verdict["reasoning"],
+            score=round(score, 3),
+            passed=score >= PASS_THRESHOLD,
+        )
         return case
+    if not expected.strip():
+        case.update(
+            status="unscorable",
+            score=0.0,
+            passed=False,
+            error="no expected_output and no judge configured",
+        )
+        return case
+    sim = float(case["lexical_similarity"])
+    case.update(status="scored", score=round(sim, 3), passed=sim >= LEXICAL_FAIL_FLOOR)
+    return case
 
-    pending = [asyncio.ensure_future(_one(i, t)) for i, t in enumerate(tasks)]
-    try:
-        cases = list(await asyncio.gather(*pending))
-    except BaseException:
-        # Stop the sibling cases: a failed/aborted run must not keep executing
-        # goals and writing progress behind the caller's back.
-        for fut in pending:
-            fut.cancel()
-        raise
 
+def aggregate(cases: list[dict[str, Any]], judge: dict[str, Any] | None) -> dict[str, Any]:
+    """The run outcome from its finished cases (unscored cases count as 0)."""
     n = max(len(cases), 1)
-    avg_score = sum(float(c["score"]) for c in cases) / n
+    avg_score = sum(float(c.get("score", 0.0)) for c in cases) / n
     scores: dict[str, float] = {}
     scored = [c for c in cases if c.get("status") == "scored"]
     if judge is not None:

@@ -13,7 +13,6 @@ from typing import Any
 
 import pytest
 
-from app.evals.ai_ops_runner import execute_case
 from app.intelligence.eval_suite import EvalSuiteRunner, GoldenTask
 
 
@@ -68,20 +67,5 @@ async def test_suite_task_stream_failure_is_an_error_not_a_score(mode: str) -> N
     assert svc.cancelled == ["g-slow"]
 
 
-async def test_ai_ops_case_timeout_cancels_the_goal() -> None:
-    svc = _GoalService("hang")
-    out = await execute_case(
-        goal_service=svc, tenant_ctx=object(), goal="find it", agent_id=None, timeout=0.05
-    )
-    assert out["goal_status"] == "timeout"
-    assert svc.cancelled == ["g-slow"]
-
-
-@pytest.mark.parametrize(("mode", "status"), [("error", "stream_error"), ("ended", "stream_ended")])
-async def test_ai_ops_case_stream_failure_cancels_the_goal(mode: str, status: str) -> None:
-    svc = _GoalService(mode)
-    out = await execute_case(
-        goal_service=svc, tenant_ctx=object(), goal="find it", agent_id=None, timeout=5
-    )
-    assert out["goal_status"] == status
-    assert svc.cancelled == ["g-slow"]
+# The AI-Ops dataset runner no longer waits on a goal stream (P7-1): its case
+# timeout / cancel behaviour is covered by tests/evals/test_ai_ops_two_slot_worker.py.

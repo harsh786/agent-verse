@@ -124,6 +124,77 @@ class AIOpsStore:
             )
             await s.commit()
 
+    async def claim_run(
+        self, tenant_id: str, result_id: str, owner: str, lease_seconds: float
+    ) -> dict[str, Any] | None:
+        """Lease an active run to one step (P7-1); None when another step holds it.
+
+        Compare-and-set on the run row with the DB clock, so steps on any replica
+        or worker agree: the lease is taken when it is free, expired, or already
+        ``owner``'s. Returns the run's payload (with the lease) to work on.
+        """
+        async with self._db() as s, sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                await s.execute(
+                    text(
+                        "UPDATE ai_ops_eval_results SET payload = payload || "
+                        "  jsonb_build_object('lease_owner', CAST(:o AS text), "
+                        "    'lease_until', extract(epoch FROM clock_timestamp()) "
+                        "                   + CAST(:lease AS float8)) "
+                        "WHERE tenant_id = :t AND id = :id "
+                        "  AND payload->>'status' IN ('queued', 'running') "
+                        "  AND (COALESCE(CAST(payload->>'lease_until' AS float8), 0) "
+                        "         < extract(epoch FROM clock_timestamp()) "
+                        "       OR payload->>'lease_owner' = CAST(:o AS text)) "
+                        "RETURNING payload"
+                    ),
+                    {"t": tenant_id, "id": result_id, "o": owner, "lease": float(lease_seconds)},
+                )
+            ).fetchone()
+            await s.commit()
+        return dict(row[0] or {}) if row is not None else None
+
+    async def save_run(
+        self,
+        tenant_id: str,
+        result_id: str,
+        owner: str,
+        payload: dict[str, Any],
+        lease_seconds: float,
+        *,
+        release: bool = False,
+    ) -> bool:
+        """Write a run's progress, fenced on the lease (False: the lease was lost).
+
+        Renews the lease, or frees it (``release``) when the step is done with
+        the run.
+        """
+        async with self._db() as s, sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                await s.execute(
+                    text(
+                        "UPDATE ai_ops_eval_results SET payload = CAST(:p AS jsonb) || "
+                        "  jsonb_build_object('lease_owner', CAST(:o AS text), "
+                        "    'lease_until', CASE WHEN CAST(:release AS boolean) THEN 0 "
+                        "      ELSE extract(epoch FROM clock_timestamp()) "
+                        "           + CAST(:lease AS float8) END) "
+                        "WHERE tenant_id = :t AND id = :id "
+                        "  AND payload->>'lease_owner' = CAST(:o AS text) "
+                        "RETURNING id"
+                    ),
+                    {
+                        "t": tenant_id,
+                        "id": result_id,
+                        "o": owner,
+                        "p": json.dumps(payload),
+                        "lease": float(lease_seconds),
+                        "release": bool(release),
+                    },
+                )
+            ).fetchone()
+            await s.commit()
+        return row is not None
+
     async def get_eval_result(self, tenant_id: str, result_id: str) -> dict[str, Any] | None:
         async with self._db() as s, sqlalchemy_rls_context(s, tenant_id):
             row = (
