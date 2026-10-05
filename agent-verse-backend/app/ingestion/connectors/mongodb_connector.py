@@ -766,7 +766,9 @@ def _read_changes(
             resume_after=token,
             max_await_time_ms=50,
         ) as stream:
-            while len(changes) < limit:
+            # Bounded by events READ (not only documents kept): events whose
+            # document is gone since still count, so the loop always ends.
+            for _ in range(limit):
                 change = stream.try_next()
                 if change is None:
                     break
@@ -804,13 +806,23 @@ def _dotted_get(doc: dict[str, Any], path: str) -> Any:
     return value
 
 
+def _is_own_error(exc: BaseException) -> bool:
+    """Our own policy / egress / availability errors (never driver text)."""
+    try:
+        from pymongo.errors import PyMongoError
+    except ImportError:
+        return True  # no driver: nothing of its can be in the error
+    if isinstance(exc, PyMongoError):
+        return False
+    return isinstance(
+        exc,
+        ValueError | ConnectorEgressBlockedError | ConnectorUnavailableError | ConnectorFetchError,
+    )
+
+
 def _public_error(exc: BaseException) -> str:
     """MDB-20: our own policy / egress messages as-is; driver text never."""
-    from pymongo.errors import PyMongoError
-
-    if not isinstance(exc, PyMongoError) and isinstance(
-        exc, ValueError | ConnectorEgressBlockedError | ConnectorUnavailableError
-    ):
+    if _is_own_error(exc):
         return str(exc) or type(exc).__name__
     from app.net.mongodb_errors import public_mongo_error
 
@@ -900,9 +912,9 @@ class MongoDBConnector(BaseConnector):
         try:
             async for item in self._delta(config, cursor):
                 yield item
-        except ConnectorFetchError:
-            raise
         except Exception as exc:
+            if _is_own_error(exc):
+                raise  # policy / egress / unavailable: already honest, keep the type
             raise ConnectorFetchError(f"mongodb: {_public_error(exc)}") from exc
 
     async def _delta(

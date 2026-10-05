@@ -179,6 +179,12 @@ async def test_mongodb_driver_dials_the_checked_address(rebinding: _RebindingRes
             db = MagicMock()
             db.list_collection_names.return_value = ["c"]
             db.__getitem__.return_value.find.return_value = []
+            # A standalone server: no change streams.
+            from pymongo.errors import OperationFailure
+
+            db.__getitem__.return_value.watch.side_effect = OperationFailure(
+                "The $changeStream stage is only supported on replica sets", code=40573
+            )
             return db
 
         def close(self) -> None: ...

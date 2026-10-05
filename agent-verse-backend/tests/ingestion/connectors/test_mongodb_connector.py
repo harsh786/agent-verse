@@ -357,3 +357,20 @@ class TestChangeStreamHistoryLost:
         assert [d.metadata["_id"] for d, _c in out] == ["1", "2", "3"]
         final = json_util.loads(out[-1][1])["positions"]["col"]
         assert final["_id"] == 3 and final["cs"] == {"t": 2}
+
+
+def test_reading_changes_is_bounded_by_events_read() -> None:
+    """A stream of events whose documents are all gone must still end."""
+    from unittest.mock import MagicMock
+
+    from app.ingestion.connectors.mongodb_connector import _read_changes
+
+    stream = MagicMock()
+    stream.__enter__.return_value = stream
+    stream.try_next.return_value = {"operationType": "update", "fullDocument": None}
+    client = MagicMock()
+    client.__getitem__.return_value.__getitem__.return_value.watch.return_value = stream
+    settings = _settings({"uri": "mongodb://h/", "database": "d"})
+    changes, _token, lost = _read_changes(client, settings, "c", {"t": 1}, 25)
+    assert changes == [] and lost is False
+    assert stream.try_next.call_count == 25
