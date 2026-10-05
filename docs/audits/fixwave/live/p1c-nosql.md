@@ -31,7 +31,7 @@ SRC-DB-FAILURES[pg, mysql]. The same set passes again in `final/`. No regression
 **Final verification** (`final/` + `final-es/`, images rebuilt from the merged branch, no dev mount): **33 of 33 passed** in 26 min —
 SRC-MONGO-SYNC (230 documents, every probe ranked 1st, MRR 1.0), -HOST-CHANGE, -D2, -TLS, -STALL, -REFUSAL, -FAILURES; MCP-MONGO-REGISTER,
 -TOOLS, -ERRORS, -ISOLATION, -HITL; SRC-REDIS-TYPES, -INCREMENTAL-RESUME, -TLS-AUTH; SRC-ES-SYNC (700 documents, both probes 1st),
--MAPPINGS, -AUTH-FAILURES; SRC-REDIS-INCREMENTAL, SRC-MONGO-INCREMENTAL; and the 14 P1b runs above (SRC-OBJ-MIXED[minio, s3] included).
+-MAPPINGS, -AUTH-FAILURES; SRC-REDIS-INCREMENTAL, SRC-MONGO-INCREMENTAL; and 13 P1b scenarios (the 12 above plus SRC-OBJ-MIXED[s3]).
 The two kill-switch scenarios need a stack started with the flags off; they passed in `kill1/` on the same connector code.
 
 ### MongoDB ingestion: the owner's checklist (each line verified live)
