@@ -278,21 +278,27 @@ class AgentGeneratedConnector(BaseConnector):
     # ── Streams ──────────────────────────────────────────────────────────────
 
     def _streams(self, opts: _Options) -> list[_Stream]:
+        """The streams to read. ``agent_ids`` scopes what goals produce, ``workflow_ids``
+        what workflows produce; a Source scoped to one of them reads nothing of the
+        other kind of producer (an agent's Source never indexes every workflow run)."""
+        goals = not opts.workflow_ids or bool(opts.agent_ids)
+        workflows = not opts.agent_ids or bool(opts.workflow_ids)
         streams: list[_Stream] = []
-        if KIND_GOAL_OUTPUT in opts.kinds:
+        if KIND_GOAL_OUTPUT in opts.kinds and goals:
             streams.append(
                 _Stream(
                     "goal_output", KIND_GOAL_OUTPUT, False,
                     self._page_goals, _render_goal, self._live_goals,
                 )
             )
-        if KIND_HITL_DECISION in opts.kinds:
+        if KIND_HITL_DECISION in opts.kinds and goals:
             streams.append(
                 _Stream(
                     "hitl_decision", KIND_HITL_DECISION, False,
                     self._page_approvals, _render_approval, self._live_approvals,
                 )
             )
+        if KIND_HITL_DECISION in opts.kinds and workflows:
             streams.append(
                 _Stream(
                     "workflow_decision", KIND_HITL_DECISION, False,
@@ -300,14 +306,14 @@ class AgentGeneratedConnector(BaseConnector):
                     self._live_workflow_approvals,
                 )
             )
-        if KIND_WORKFLOW_OUTPUT in opts.kinds:
+        if KIND_WORKFLOW_OUTPUT in opts.kinds and workflows:
             streams.append(
                 _Stream(
                     "workflow_output", KIND_WORKFLOW_OUTPUT, True,
                     self._page_runs, _render_run, self._live_runs,
                 )
             )
-        if KIND_LEARNING in opts.kinds:
+        if KIND_LEARNING in opts.kinds and goals:
             streams.append(
                 _Stream(
                     "learning", KIND_LEARNING, False,
@@ -591,15 +597,48 @@ class AgentGeneratedConnector(BaseConnector):
             + " ORDER BY r.completed_at, r.id LIMIT :lim",
             params,
         )
+        steps = await self._step_outputs(
+            tenant_id, [str(r[0]) for r in rows if _as_obj(r[5]) in (None, {}, [], "")]
+        )
         return [
             {
                 "_ts": r[6], "_id": str(r[0]), "run_id": str(r[0]),
                 "workflow_id": str(r[1] or ""), "workflow_name": str(r[2] or ""),
                 "trigger_type": str(r[3] or ""), "inputs": _as_obj(r[4]),
-                "outputs": _as_obj(r[5]), "completed_at": _iso(r[6]),
+                "outputs": _as_obj(r[5]), "steps": steps.get(str(r[0]), []),
+                "completed_at": _iso(r[6]),
             }
             for r in rows
         ]
+
+    async def _step_outputs(
+        self, tenant_id: str, run_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The completed steps' outputs of runs whose ``outputs`` column is empty.
+
+        A run without declared workflow outputs keeps its results per step
+        (``workflow_step_results``); the latest attempt of each step counts.
+        """
+        if not run_ids:
+            return {}
+        rows = await self._query(
+            tenant_id,
+            "SELECT run_id, step_id, step_name, step_type, output FROM ("
+            " SELECT DISTINCT ON (run_id, step_id) run_id, step_id, step_name, step_type,"
+            " output, completed_at FROM workflow_step_results"
+            " WHERE tenant_id = CAST(:tid AS uuid) AND run_id = ANY(CAST(:rids AS uuid[]))"
+            " AND status = 'complete' AND output IS NOT NULL"
+            " ORDER BY run_id, step_id, completed_at DESC NULLS LAST"
+            ") s ORDER BY run_id, completed_at NULLS LAST, step_id",
+            {"tid": tenant_id, "rids": run_ids},
+        )
+        out: dict[str, list[dict[str, Any]]] = {}
+        for run_id, step_id, step_name, step_type, output in rows:
+            out.setdefault(str(run_id), []).append(
+                {"step_id": str(step_id), "name": str(step_name or step_id),
+                 "type": str(step_type or ""), "output": _as_obj(output)}
+            )
+        return out
 
     async def _live_runs(
         self, tenant_id: str, opts: _Options, after: str, limit: int
@@ -836,7 +875,8 @@ def _render_workflow_approval(config: SourceConfig, row: dict[str, Any]) -> RawD
 
 def _render_run(config: SourceConfig, row: dict[str, Any]) -> RawDocument | None:
     outputs = row["outputs"]
-    if outputs in (None, {}, [], ""):
+    steps = [s for s in row.get("steps") or [] if s["output"] not in (None, {}, [], "")]
+    if outputs in (None, {}, [], "") and not steps:
         return None
     name = row["workflow_name"] or row["workflow_id"] or "workflow"
     lines = [
@@ -849,7 +889,13 @@ def _render_run(config: SourceConfig, row: dict[str, Any]) -> RawDocument | None
     ]
     if row["inputs"] not in (None, {}, [], ""):
         lines += ["", "## Inputs", _compact_json(row["inputs"], 4000)]
-    lines += ["", "## Outputs", _compact_json(outputs, _MAX_TEXT_CHARS)]
+    if outputs not in (None, {}, [], ""):
+        lines += ["", "## Outputs", _compact_json(outputs, _MAX_TEXT_CHARS)]
+    else:
+        lines += ["", "## Step results"]
+        for step in steps:
+            lines += ["", f"### {step['name']} ({step['type']})",
+                      _compact_json(step["output"], _MAX_JSON_CHARS)]
     return _doc(
         config, KIND_WORKFLOW_OUTPUT, row["run_id"],
         title=f"Workflow result: {name} (run {row['run_id']})",

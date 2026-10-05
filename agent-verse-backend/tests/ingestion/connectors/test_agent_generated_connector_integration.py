@@ -358,3 +358,46 @@ async def test_agent_filter_and_since(pg_url: str) -> None:
         assert len(docs) == 2  # goal 2 + its decision, both after "since"
     finally:
         await engine.dispose()
+
+
+async def test_run_step_results_and_producer_scoping(pg_url: str) -> None:
+    """A run without declared outputs is indexed from its step results; a Source
+    scoped to workflows reads no goals and one scoped to agents reads no runs."""
+    tid = await _tenant(pg_url)
+    wid = await _workflow(pg_url, tid, "vendor-onboarding")
+    run_id = await _run(pg_url, tid, wid, {}, at=T0)
+    for step_id, name, stype, output, minute in (
+        ("finance_signoff", "Finance sign-off", "hitl", {"action": "approve"}, 1),
+        ("onboarding_record", "Onboarding record", "code", {"status": "onboarded",
+                                                             "credit_limit_inr": "450000"}, 2),
+        ("onboarding_record", "Onboarding record", "code", {"status": "draft"}, 0),
+    ):
+        await admin_exec(
+            pg_url,
+            "INSERT INTO workflow_step_results (run_id, tenant_id, step_id, step_type, "
+            "step_name, status, output, completed_at) VALUES (CAST(:r AS uuid), "
+            "CAST(:t AS uuid), :s, :ty, :n, 'complete', CAST(:o AS jsonb), :c)",
+            {"r": run_id, "t": tid, "s": step_id, "ty": stype, "n": name,
+             "o": json.dumps(output), "c": T0 + timedelta(minutes=minute)},
+        )
+    await _goal(pg_url, tid, uuid.uuid4().hex, "a goal", "an answer", at=T0)
+    engine = await app_engine(pg_url)
+    try:
+        connector = AgentGeneratedConnector(db_factory=sessions(engine))
+        wf_only = _config(tid, source_types=["goal_output", "workflow_output"],
+                          workflow_ids=[wid])
+        docs, _ = await _drain(connector, wf_only, None)
+        assert [d.source_url for d in docs] == [f"agentverse://workflow-runs/{run_id}"]
+        text = docs[0].content.decode()
+        assert "Onboarding record (code)" in text and "450000" in text
+        assert '"draft"' not in text  # only the latest attempt of a step
+        assert text.index("Finance sign-off") < text.index("Onboarding record")
+        agents_only = _config(tid, source_types=["goal_output", "workflow_output"],
+                              agent_ids=["agent-x"])
+        docs, _ = await _drain(connector, agents_only, None)
+        assert docs == []  # no goal of agent-x, and runs are out of scope
+        unscoped = _config(tid, source_types=["goal_output", "workflow_output"])
+        docs, _ = await _drain(connector, unscoped, None)
+        assert len(docs) == 2
+    finally:
+        await engine.dispose()
