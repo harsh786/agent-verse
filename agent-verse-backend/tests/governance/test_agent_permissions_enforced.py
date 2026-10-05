@@ -64,6 +64,10 @@ def _executor(db: Any, hitl: Any = None) -> Any:
     ex._db_session_factory = db
     ex._hitl_gateway = hitl
     ex._hitl_timeout = 1.0
+    # Real executors always set this (AgentGraph); approval-level permissions wait
+    # for a human only in supervised mode, and OI-1 reads it to reuse approvals.
+    ex._autonomy_mode = "supervised"
+    ex._app_state = None  # no shared Redis: the OI-1 ledger uses the goal state only
     ex._logger = MagicMock()
     ex._emit = AsyncMock()  # type: ignore[method-assign]
     return ex
