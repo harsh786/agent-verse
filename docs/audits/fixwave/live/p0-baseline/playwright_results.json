@@ -1,0 +1,148 @@
+{
+  "config": {
+    "configFile": "/Users/harsh/Documents/Learning/agent-verse/agent-verse-frontend/playwright.real-world.config.ts",
+    "rootDir": "/Users/harsh/Documents/Learning/agent-verse/agent-verse-frontend/e2e/real-world",
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": null,
+    "globalTeardown": null,
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "/Users/harsh/Documents/Learning/agent-verse/docs/audits/fixwave/live/p0-baseline/playwright_results.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 15000
+    },
+    "quiet": false,
+    "projects": [
+      {
+        "outputDir": "/Users/harsh/Documents/Learning/agent-verse/agent-verse-frontend/test-results",
+        "repeatEach": 1,
+        "retries": 0,
+        "metadata": {},
+        "id": "chromium-real-world",
+        "name": "chromium-real-world",
+        "testDir": "/Users/harsh/Documents/Learning/agent-verse/agent-verse-frontend/e2e/real-world",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.spec.ts"
+        ],
+        "timeout": 420000
+      }
+    ],
+    "shard": null,
+    "updateSnapshots": "missing",
+    "version": "1.49.1",
+    "workers": 1,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "real-world.spec.ts",
+      "file": "real-world.spec.ts",
+      "column": 0,
+      "line": 0,
+      "specs": [],
+      "suites": [
+        {
+          "title": "real-world UI",
+          "file": "real-world.spec.ts",
+          "line": 113,
+          "column": 6,
+          "specs": [
+            {
+              "title": "UI-APPROVALS-LIVE: pending workflow approval appears live, approve, run finishes",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 420000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-real-world",
+                  "projectName": "chromium-real-world",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "status": "passed",
+                      "duration": 11653,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-05T09:43:34.974Z",
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "96704823df095adfaad5-dad82f627c24495d14f8",
+              "file": "real-world.spec.ts",
+              "line": 121,
+              "column": 3
+            },
+            {
+              "title": "UI-KB-DOCS: knowledge page lists uploaded documents as indexed",
+              "ok": true,
+              "tags": [],
+              "tests": [
+                {
+                  "timeout": 180000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium-real-world",
+                  "projectName": "chromium-real-world",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "status": "passed",
+                      "duration": 2527,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-05T09:43:46.960Z",
+                      "attachments": []
+                    }
+                  ],
+                  "status": "expected"
+                }
+              ],
+              "id": "96704823df095adfaad5-cc0043f6bccea960cf85",
+              "file": "real-world.spec.ts",
+              "line": 185,
+              "column": 3
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-05T09:43:34.584Z",
+    "duration": 14943.364,
+    "expected": 2,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}
