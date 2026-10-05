@@ -231,6 +231,9 @@ async def test_dlq_listing_backoff_and_monthly_usage(dbs: SimpleNamespace) -> No
     src = SourceConfig(
         source_id=f"dlq-{uuid.uuid4().hex[:8]}", tenant_id=dbs.a.tenant_id, name="s",
         family=SourceFamily.WEB, source_type="http",
+        # A Source without a target collection is parked (needs_configuration)
+        # and the DLQ retry scan rightly skips it.
+        collection_id="kb-dlq",
     )
     await sources.create(src)
     await tracker.add_to_dlq(

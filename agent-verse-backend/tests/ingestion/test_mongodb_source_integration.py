@@ -126,6 +126,9 @@ class _Harness:
                 "family": "nosql_database",
                 "source_type": "mongodb",
                 "connection_config": connection_config,
+                # A Source with no target knowledge collection is parked as
+                # "needs configuration" and refuses to sync (L-02).
+                "collection_id": "kb-orders",
                 **extra,
             },
         )
