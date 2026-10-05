@@ -196,6 +196,39 @@ class MongoCredentialError(ValueError):
     """The connector's MongoDB credentials are missing or not allowed."""
 
 
+class MongoArgumentError(ValueError):
+    """A tool argument is malformed (refused before any connection)."""
+
+
+def _bounds() -> tuple[int, int, int]:
+    """(default find limit, max documents, operation timeout ms) from Settings."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    max_docs = max(1, int(settings.mongodb_tool_max_documents))
+    default = min(max(1, int(settings.mongodb_tool_default_limit)), max_docs)
+    return default, max_docs, max(100, int(settings.mongodb_tool_timeout_ms))
+
+
+def _find_limit(arguments: dict[str, Any]) -> int:
+    """The find limit, clamped: none -> default; 0 / negative / above max -> max.
+
+    MongoDB treats ``limit 0`` as "no limit" (the whole collection) and a negative
+    limit as a single batch of ``abs(n)`` — neither may escape the maximum.
+    """
+    default, max_docs, _ = _bounds()
+    raw = arguments.get("limit")
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, int | str):
+        raise MongoArgumentError("limit must be an integer")
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise MongoArgumentError("limit must be an integer") from exc
+    return max_docs if limit <= 0 or limit > max_docs else limit
+
+
 def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in _TRUE
 
@@ -397,6 +430,8 @@ async def call_tool(
         return {"error": str(exc), "status": "tls_refused"}
     except MongoCredentialError as exc:
         return {"error": str(exc), "status": "credentials_required"}
+    except MongoArgumentError as exc:
+        return {"error": str(exc), "tool": tool_name, "status": "invalid_arguments"}
     except Exception as exc:
         logger.warning("mongodb_call_tool_error tool=%s error=%s", tool_name, str(exc)[:200])
         return {"error": str(exc)}
@@ -412,13 +447,36 @@ def _serialize(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _run_tool(
     db: Any, db_name: str, coll_name: str, tool_name: str, arguments: dict[str, Any]
 ) -> dict[str, Any]:
+    """Run one tool under the per-call operation timeout (MDB-08).
+
+    ``pymongo.timeout`` (client-side operation timeout) bounds the whole call —
+    server selection, retries, every round trip — and makes the driver send
+    ``maxTimeMS`` with every command, writes included.
+    """
+    import pymongo
+
+    _, _, timeout_ms = _bounds()
+    with pymongo.timeout(timeout_ms / 1000.0):
+        return _run_tool_bounded(db, db_name, coll_name, tool_name, arguments)
+
+
+def _run_tool_bounded(
+    db: Any, db_name: str, coll_name: str, tool_name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     coll = db[coll_name]
     if tool_name == "mongodb_find":
-        limit = int(arguments.get("limit", 100))
-        docs = list(
-            coll.find(arguments.get("query") or {}, arguments.get("projection")).limit(limit)
+        limit = _find_limit(arguments)
+        cursor = coll.find(
+            arguments.get("query") or {},
+            arguments.get("projection"),
+            limit=limit,
+            batch_size=min(limit, 500),
         )
-        return {"documents": _serialize(docs), "count": len(docs)}
+        try:
+            docs = list(cursor)
+        finally:
+            cursor.close()
+        return {"documents": _serialize(docs), "count": len(docs), "limit": limit}
     if tool_name == "mongodb_find_one":
         doc = coll.find_one(arguments.get("query") or {}, arguments.get("projection"))
         if doc:
@@ -442,14 +500,40 @@ def _run_tool(
         deleted = coll.delete_one(arguments["filter"])
         return {"deleted": deleted.deleted_count}
     if tool_name == "mongodb_aggregate":
-        docs = list(coll.aggregate(arguments["pipeline"]))[:1000]
-        return {"results": _serialize(docs), "count": len(docs)}
+        return _aggregate(coll, arguments)
     if tool_name == "mongodb_list_collections":
         return {"collections": db.list_collection_names(), "database": db_name}
     if tool_name == "mongodb_count":
         count = coll.count_documents(arguments.get("query") or {})
         return {"count": count, "collection": coll_name}
     return {"error": f"Unknown tool: {tool_name}"}
+
+
+def _aggregate(coll: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    """A bounded aggregate: final ``$limit``, no disk spill, streamed cursor.
+
+    The pipeline gets a final ``{$limit: max + 1}`` (the server stops producing
+    after it; the extra document only tells whether the result was cut) and
+    ``allowDiskUse: false``; the cursor streams in small batches and is read to
+    at most ``max`` documents — it used to be materialised whole, then sliced.
+    """
+    _, max_docs, _ = _bounds()
+    pipeline = arguments.get("pipeline")
+    if not isinstance(pipeline, list) or not all(isinstance(st, dict) for st in pipeline):
+        raise MongoArgumentError("pipeline must be a list of stage documents")
+    bounded = [*pipeline, {"$limit": max_docs + 1}]
+    cursor = coll.aggregate(bounded, allowDiskUse=False, batchSize=min(max_docs + 1, 101))
+    docs: list[dict[str, Any]] = []
+    truncated = False
+    try:
+        for doc in cursor:
+            if len(docs) >= max_docs:
+                truncated = True
+                break
+            docs.append(doc)
+    finally:
+        cursor.close()
+    return {"results": _serialize(docs), "count": len(docs), "truncated": truncated}
 
 
 # The driver's own socket factory, wrapped once by _install_member_guard().

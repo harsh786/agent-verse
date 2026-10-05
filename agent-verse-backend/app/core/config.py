@@ -571,6 +571,13 @@ class Settings(BaseSettings):
     # switch additionally lets a connection run WITHOUT TLS (tls=false /
     # ssl=false). Production ignores it.
     mongodb_allow_non_tls: bool = False
+    # MongoDB MCP builtin bounds (MDB-08): documents a find returns without a
+    # limit, the most any find / aggregate returns (limit 0 / negative / larger
+    # is clamped to it), and the per-call operation timeout (CSOT: every command
+    # carries maxTimeMS; a stalled server cannot hold the call longer).
+    mongodb_tool_default_limit: int = 100
+    mongodb_tool_max_documents: int = 1000
+    mongodb_tool_timeout_ms: int = 15000
     ingestion_internal_source_allowlist: str = ""  # comma-separated hostnames
     # Connector drivers are pinned to the addresses the egress check validated
     # (no DNS-rebinding window). A driver that resolves hosts outside Python and
