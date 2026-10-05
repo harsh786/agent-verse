@@ -200,6 +200,25 @@ def _keep_scaling_tasks_bound():
 
 
 @pytest.fixture(autouse=True)
+def _close_pooled_mongodb_clients():
+    """Pooled MongoDB MCP clients (C2) never leak from one test into the next.
+
+    A test that swaps ``pymongo.MongoClient`` for a recorder would otherwise be
+    handed a client an earlier test cached under the same key.
+    """
+    import sys
+
+    def _close() -> None:
+        pool = sys.modules.get("app.mcp.mongodb_clients")
+        if pool is not None:
+            pool.close_all()
+
+    _close()
+    yield
+    _close()
+
+
+@pytest.fixture(autouse=True)
 def _reset_worker_deployment_provider_cache():
     """Drop the Celery worker's once-per-process deployment provider after each test.
 

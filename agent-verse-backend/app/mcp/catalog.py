@@ -14,13 +14,66 @@ class AuthFieldSpec:
     key: str
     label: str
     placeholder: str
-    field_type: str  # "text" | "password" | "url" | "email"
+    field_type: str  # "text" | "password" | "url" | "email" | "textarea" | "checkbox"
     required: bool = True
     hint: str = ""
 
 
 # Per-connector auth field overrides (richer hints than generic)
 _CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
+    # The MongoDB built-in (app/mcp/servers/mongodb_server.py). The connection
+    # string and every secret are sealed in the connector secret store and come
+    # back masked ('<redacted>'; GET returns display_url without credentials).
+    "mongodb": [
+        AuthFieldSpec(
+            "url",
+            "Connection string",
+            "mongodb+srv://user:password@cluster0.example.mongodb.net/mydb",
+            "password",
+            hint="mongodb:// or mongodb+srv://. Stored encrypted, never shown again. "
+            "Options that weaken TLS or read files on the server are refused.",
+        ),
+        AuthFieldSpec("database", "Default database", "mydb", "text", required=False),
+        AuthFieldSpec("username", "Username", "app_user", "text", required=False),
+        AuthFieldSpec("password", "Password", "", "password", required=False),
+        AuthFieldSpec("auth_source", "Auth source", "admin", "text", required=False),
+        AuthFieldSpec(
+            "auth_mechanism",
+            "Auth mechanism",
+            "SCRAM-SHA-256",
+            "text",
+            required=False,
+            hint="SCRAM-SHA-256, SCRAM-SHA-1, PLAIN, or MONGODB-X509 (needs a client "
+            "certificate).",
+        ),
+        AuthFieldSpec("tls", "Require TLS", "", "checkbox", required=False),
+        AuthFieldSpec(
+            "tls_ca_pem",
+            "CA certificate (PEM)",
+            "-----BEGIN CERTIFICATE-----",
+            "textarea",
+            required=False,
+            hint="The CA that signed the server certificate, if not a public CA.",
+        ),
+        AuthFieldSpec(
+            "tls_client_cert",
+            "Client certificate (PEM)",
+            "-----BEGIN CERTIFICATE-----",
+            "textarea",
+            required=False,
+            hint="For mutual TLS or MONGODB-X509.",
+        ),
+        AuthFieldSpec(
+            "tls_client_private_key",
+            "Client private key (PEM)",
+            "-----BEGIN PRIVATE KEY-----",
+            "textarea",
+            required=False,
+        ),
+        AuthFieldSpec(
+            "tls_client_key_password", "Client key passphrase", "", "password", required=False
+        ),
+    ],
     "jira": [
         AuthFieldSpec(
             "url",
@@ -397,6 +450,10 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         auth_type="connection_string",
         default_url="mongodb://localhost:27017",
         icon="mongodb",
+        category="database",
+        # A3: the built-in handler — a renamed connection ("orders-db") stays MongoDB.
+        builtin_server_id="builtin-mongodb",
+        display_name="MongoDB",
     ),
     ConnectorSpec(
         name="snowflake",

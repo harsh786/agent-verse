@@ -372,7 +372,8 @@ async def test_replica_set_member_hosts_are_egress_checked(
     # The seed host is allowlisted, but the member it advertises is not: the
     # driver must not be allowed to dial it.
     assert health["ok"] is False
-    assert "mongo-rs-internal" in health["error"]
+    # MDB-20: the internal name the server advertised is never echoed to the tenant.
+    assert "mongo-rs-internal" not in health["error"]
     # Refused by the egress check before the driver dialled it — not a driver
     # timeout that merely happens to mention the name.
     assert "not allowed by the egress policy" in health["error"]

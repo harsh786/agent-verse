@@ -1381,6 +1381,21 @@ def create_app(
                     "connector_store_backfill",
                     lambda: ensure_connector_backfill(real_redis, db_factory),
                 )
+            # MDB-01: connection strings stored in clear by older releases are
+            # sealed in the connector secret store (idempotent, one replica).
+            from app.mcp.dsn_secret_migration import ensure_dsn_secret_migration
+
+            _dsn_store = app.state.connector_secret_store
+            _scan_db = app.state.system_db_session_factory
+            _startup.spawn(
+                "connector_dsn_secret_migration",
+                lambda: ensure_dsn_secret_migration(
+                    db_factory=db_factory,
+                    scan_db_factory=_scan_db,
+                    secret_store=_dsn_store,
+                    redis=real_redis,
+                ),
+            )
 
             # Two-phase wiring: per-goal cost breakdowns and simulation runs were
             # process-local (another replica / the worker never saw them; a restart
@@ -2709,6 +2724,10 @@ def create_app(
                 yield
             finally:
                 await _startup.cancel_all()
+                # C2: pooled MongoDB MCP clients (sockets, monitor threads, pins).
+                from app.mcp import mongodb_clients as _mongo_pool
+
+                _mongo_pool.close_all()
                 await stop_voice_runtime()
                 # HITL rejection subscriber + Celery event bridge (Redis pub/sub).
                 _gs_stop = getattr(app.state, "goal_service", None)
@@ -2780,6 +2799,10 @@ def create_app(
                 yield
             finally:
                 await _startup.cancel_all()
+                # C2: pooled MongoDB MCP clients (sockets, monitor threads, pins).
+                from app.mcp import mongodb_clients as _mongo_pool
+
+                _mongo_pool.close_all()
                 await stop_voice_runtime()
                 await close_retrieval_gateways()
                 await close_process_rerankers()

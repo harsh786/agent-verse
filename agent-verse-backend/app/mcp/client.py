@@ -179,6 +179,11 @@ def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     for key, value in (cfg.auth_config or {}).items():
         if isinstance(value, str):
             result[key] = value
+        elif isinstance(value, bool):
+            # A5: a checkbox ({"tls": true}) used to be dropped entirely.
+            result[key] = "true" if value else "false"
+        elif isinstance(value, int | float):
+            result[key] = str(value)
     # Only add server-level URL if auth_config does not already have a url.
     # This preserves the Jira Cloud URL from auth_config when the server URL
     # is an MCP endpoint (not the actual API base URL).
@@ -850,9 +855,11 @@ class MCPClient:
                 sig = inspect.signature(handler)
                 accepts_credentials = "credentials" in sig.parameters
                 accepts_tenant = "tenant_ctx" in sig.parameters
+                accepts_server_id = "server_id" in sig.parameters
             except (ValueError, TypeError):
                 accepts_credentials = False
                 accepts_tenant = False
+                accepts_server_id = False
 
             extra: dict[str, Any] = {}
             if accepts_credentials:
@@ -861,6 +868,10 @@ class MCPClient:
                 # Tenant-bound built-ins (e.g. builtin-memory, MEM-16) act only
                 # for the calling tenant.
                 extra["tenant_ctx"] = tenant_ctx
+            if accepts_server_id:
+                # Handlers that pool per-connection resources (MongoDB, C2) key them
+                # by (tenant, connection).
+                extra["server_id"] = server.server_id
             output = await handler(tool_name, arguments, **extra)
         except Exception as exc:
             return ToolCallResult(

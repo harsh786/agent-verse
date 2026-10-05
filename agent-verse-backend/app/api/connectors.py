@@ -19,6 +19,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.connector_store import ConnectorConflictError
+from app.mcp.dsn_secrets import is_dsn, mask_dsn, seal_connector_dsns
 from app.mcp.oauth import (
     OAuthExchangeError,
     OAuthFlowManager,
@@ -241,9 +242,11 @@ def _is_sensitive_auth_key(key: str) -> bool:
     return any(part in normalized for part in _SENSITIVE_AUTH_KEY_PARTS)
 
 
-def _auth_config_requires_secret_storage(auth_config: dict[str, Any]) -> bool:
-    return any(
-        _is_sensitive_auth_key(key)
+def _auth_config_requires_secret_storage(auth_config: dict[str, Any], url: str = "") -> bool:
+    # A database connection string carries its password in the userinfo: it is a
+    # secret whatever key holds it (MDB-01).
+    return is_dsn(url) or any(
+        (_is_sensitive_auth_key(key) or is_dsn(value))
         and value not in (None, "", _REDACTED)
         and not is_connector_secret_ref(value)
         for key, value in auth_config.items()
@@ -341,7 +344,9 @@ def _is_mcp_endpoint(url: str) -> bool:
 
 def _mask_auth_config(auth_config: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: _REDACTED if _is_sensitive_auth_key(key) or is_connector_secret_ref(value) else value
+        key: _REDACTED
+        if _is_sensitive_auth_key(key) or is_connector_secret_ref(value) or is_dsn(value)
+        else value
         for key, value in auth_config.items()
     }
 
@@ -418,6 +423,16 @@ def _upstream_url_for(name: str) -> str:
 def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data = cfg.model_dump(exclude={"server_id"})
     data["auth_config"] = _mask_auth_config(dict(cfg.auth_config))
+    # A row written before MDB-01 may still hold a connection string in clear.
+    for field in ("url", "base_url", "ws_url"):
+        if is_dsn(data.get(field)):
+            data["display_url"] = data.get("display_url") or mask_dsn(str(data[field]))
+            data[field] = "builtin://" if cfg.builtin_type else mask_dsn(str(data[field]))
+    if not data.get("display_url"):
+        for value in cfg.auth_config.values():
+            if is_dsn(value):
+                data["display_url"] = mask_dsn(str(value))
+                break
     # Expose whether this connector has a native builtin Python handler
     # so the frontend can show the ⚡ Built-in badge on registered connectors.
     from app.mcp.registry import MCPRegistry as _MCPReg
@@ -438,7 +453,12 @@ def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data["connector_type"] = _connector_type_for(builtin_type) if builtin_type else ""
     # The stored url is "builtin://" for built-in connectors (a dispatch marker);
     # surface the real upstream API endpoint separately so the UI can show it.
-    if (cfg.url or "").startswith("builtin://"):
+    if data.get("display_url"):
+        # A8: the configured host (masked: no credentials), not a catalog default.
+        data["upstream_url"] = data["display_url"]
+    elif builtin_type == _MONGODB_BUILTIN:
+        data["upstream_url"] = ""  # nothing configured to show (never localhost)
+    elif (cfg.url or "").startswith("builtin://"):
         data["upstream_url"] = _upstream_url_for(data["builtin_type_name"] or cfg.name)
     return {"server_id": server_id, **data}
 
@@ -589,16 +609,7 @@ async def list_connectors(request: Request) -> list[dict[str, Any]]:
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def register_connector(request: Request, body: RegisterConnectorRequest) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
-    # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time
-    # (the connector URL and endpoint-like auth_config keys).
-    await _assert_connector_urls_public(
-        body.url, body.auth_config, context="connector registration"
-    )
     reg = _registry(request)
-    secret_store = _connector_secret_store(
-        request,
-        needs_secret_storage=_auth_config_requires_secret_storage(body.auth_config),
-    )
     pending_secrets: dict[str, str] = {}
 
     # Display names are unique per tenant: they are how a user, an agent's
@@ -618,9 +629,22 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
                 detail=f"Unknown connector type '{body.builtin_type}'",
             )
     else:
-        _inferred = _infer_builtin_type(body.name, body.url)
+        # A3: a mongodb:// connection string IS the MongoDB built-in, whatever
+        # the connection is called ("orders-db" used to become a remote MCP server).
+        _inferred = _dsn_builtin_type(body.url, body.auth_config) or _infer_builtin_type(
+            body.name, body.url
+        )
         _builtin_cfg = _builtin_config_for_type(_inferred) if _inferred else None
     _canonical_id = str(_builtin_cfg.get("server_id")) if _builtin_cfg else ""
+    url = _effective_url(body.url, body.auth_config, _canonical_id)
+    _assert_mongodb_policy(url, body.auth_config, _canonical_id)
+    # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time
+    # (the connector URL and endpoint-like auth_config keys).
+    await _assert_connector_urls_public(url, body.auth_config, context="connector registration")
+    secret_store = _connector_secret_store(
+        request,
+        needs_secret_storage=_auth_config_requires_secret_storage(body.auth_config, url),
+    )
     _builtin_tool_defs = list(_builtin_cfg.get("tool_definitions", [])) if _builtin_cfg else []
     _connection_id = (
         await _new_connection_id(reg, _canonical_id, body.name, tenant_ctx=tenant_ctx)
@@ -636,12 +660,14 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
                 f"{_canonical_id}:{_connection_slug(body.name)}-{uuid.uuid4().hex[:6]}"
             )
 
+    built: dict[str, MCPServerConfig] = {}
+
     def _config_for(server_id: str) -> MCPServerConfig:
         sid = connection["id"] or server_id
-        return MCPServerConfig(
+        cfg = MCPServerConfig(
             server_id=sid,
             name=body.name,
-            url=body.url,
+            url=url,
             auth_type=body.auth_type,
             auth_config=_store_sensitive_auth_refs(
                 sid,
@@ -654,6 +680,9 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             auto_approve=body.auto_approve,
             builtin_type=_canonical_id,
         )
+        # MDB-01 / A7: one sealed copy of a connection string, never in clear.
+        built["cfg"] = seal_connector_dsns(cfg, pending_secrets)
+        return built["cfg"]
 
     server_id = await _create_connector(
         reg,
@@ -680,11 +709,13 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="connector secret storage failed",
         ) from exc
+    stored = built.get("cfg")
     return {
         "server_id": server_id,
         "name": body.name,
         "display_name": body.name,
-        "url": body.url,
+        "url": stored.url if stored is not None else url,
+        "display_url": stored.display_url if stored is not None else "",
         "builtin_type": _canonical_id,
     }
 
@@ -704,14 +735,46 @@ async def update_connector(
     if _name_key(body.name) != _name_key(existing.name):
         await _assert_unique_name(reg, body.name, tenant_ctx=tenant_ctx, exclude_id=server_id)
     auth_config = _preserve_redacted_auth_config(body.auth_config, dict(existing.auth_config))
+    # The edit form sends back the masked display form (or the builtin marker) it
+    # was shown: that is "unchanged", never a new connection string (MDB-01).
+    url = body.url
+    shown = {existing.display_url, mask_dsn(existing.url) if is_dsn(existing.url) else ""}
+    if url and url in shown - {""}:
+        url = existing.url
+    url = _effective_url(
+        url, auth_config, existing.builtin_type or _declared_type_on_update(body)
+    )
+    _assert_mongodb_policy(
+        url, auth_config, existing.builtin_type or _declared_type_on_update(body)
+    )
     # Update had no SSRF guard at all (only registration did).
-    await _assert_connector_urls_public(body.url, auth_config, context="connector update")
+    await _assert_connector_urls_public(url, auth_config, context="connector update")
     secret_store = _connector_secret_store(
         request,
-        needs_secret_storage=_auth_config_requires_secret_storage(auth_config),
+        needs_secret_storage=_auth_config_requires_secret_storage(auth_config, url),
     )
     pending_secrets: dict[str, str] = {}
     stored_auth_config = _store_sensitive_auth_refs(server_id, auth_config, pending_secrets)
+    cfg = seal_connector_dsns(
+        MCPServerConfig(
+            name=body.name,
+            url=url,
+            auth_type=body.auth_type,
+            auth_config=stored_auth_config,
+            description=body.description,
+            priority=body.priority,
+            auto_approve=body.auto_approve,
+            # Preserve the canonical builtin id + tool defs on update so the connector
+            # keeps its tools (a fresh UUID would strip them after a restart).
+            server_id=existing.server_id,
+            tool_definitions=list(existing.tool_definitions or []),
+            # The connection's built-in type never changes on update (a legacy
+            # connector without one may have it declared now).
+            builtin_type=existing.builtin_type or _declared_type_on_update(body),
+        ),
+        pending_secrets,
+        previous_display=existing.display_url,
+    )
     try:
         await _persist_connector_secrets(
             pending_secrets,
@@ -723,23 +786,8 @@ async def update_connector(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="connector secret storage failed",
         ) from exc
-    cfg = MCPServerConfig(
-        name=body.name,
-        url=body.url,
-        auth_type=body.auth_type,
-        auth_config=stored_auth_config,
-        description=body.description,
-        priority=body.priority,
-        auto_approve=body.auto_approve,
-        # Preserve the canonical builtin id + tool defs on update so the connector
-        # keeps its tools (a fresh UUID would strip them after a restart).
-        server_id=existing.server_id,
-        tool_definitions=list(existing.tool_definitions or []),
-        # The connection's built-in type never changes on update (a legacy
-        # connector without one may have it declared now).
-        builtin_type=existing.builtin_type or _declared_type_on_update(body),
-    )
     updated = await reg.update(server_id, cfg, tenant_ctx=tenant_ctx)
+    _close_pooled_clients(tenant_ctx.tenant_id, server_id)
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1187,7 +1235,9 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     if mcp_client is None:
         from app.mcp.client import MCPClient
 
-        mcp_client = MCPClient(registry=registry)
+        # Tenant-scoped secret resolution: sealed credentials (connection
+        # strings, tokens) are resolved from this app's connector secret store.
+        mcp_client = MCPClient(registry=registry, secret_resolver=_secret_resolver(request))
 
     test_entry = _CONNECTOR_TEST_TOOLS.get(connector_name)
     if test_entry:
@@ -1665,6 +1715,78 @@ async def _purge_connector_rows(db: Any, tenant_id: str, server_id: str) -> None
         )
 
 
+_MONGODB_SCHEMES = ("mongodb://", "mongodb+srv://")
+_MONGODB_BUILTIN = "builtin-mongodb"
+_URI_AUTH_KEYS = ("uri", "connection_string", "url", "base_url", "mongodb_uri", "dsn")
+
+
+def _is_mongodb_uri(value: object) -> bool:
+    return isinstance(value, str) and value.strip().lower().startswith(_MONGODB_SCHEMES)
+
+
+def _dsn_builtin_type(url: str, auth_config: dict[str, Any]) -> str | None:
+    """'builtin-mongodb' when the connection is a MongoDB connection string (A3)."""
+    if _is_mongodb_uri(url) or any(_is_mongodb_uri(v) for v in auth_config.values()):
+        return _MONGODB_BUILTIN
+    return None
+
+
+def _effective_url(url: str, auth_config: dict[str, Any], builtin_type: str) -> str:
+    """A7: for a MongoDB connection the URI in auth_config is the ONE source of truth.
+
+    The catalog form also sends its ``default_url`` (``mongodb://localhost:27017``)
+    as the top-level url; that copy is never used, so it is neither stored nor
+    egress-checked. A sealed URI (``<redacted>`` / a vault reference) counts too.
+    """
+    if builtin_type != _MONGODB_BUILTIN:
+        return url
+    has_uri = any(
+        _is_mongodb_uri(auth_config.get(k))
+        or is_connector_secret_ref(auth_config.get(k))
+        or auth_config.get(k) == _REDACTED
+        for k in _URI_AUTH_KEYS
+    )
+    return "builtin://" if has_uri else url
+
+
+def _assert_mongodb_policy(url: str, auth_config: dict[str, Any], builtin_type: str) -> None:
+    """422 at SAVE time for a MongoDB connection the call-time policy refuses (NF-2).
+
+    The same shared policy the MCP handler and the ingestion connector apply:
+    URI options read like the driver (no file paths / proxies / ambient-identity
+    mechanisms) and nothing that weakens TLS — on every connection string and on
+    the connector's own fields (also when the URI itself is kept sealed).
+    """
+    dsns = [
+        v.strip()
+        for v in (url, *auth_config.values())
+        if isinstance(v, str) and v.strip().lower().startswith(_MONGODB_SCHEMES)
+    ]
+    if not dsns and builtin_type != "builtin-mongodb":
+        return
+    from app.net.mongodb_policy import assert_mongo_connection_allowed
+
+    try:
+        for dsn in dsns or [""]:
+            assert_mongo_connection_allowed(dsn, auth_config)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+
+
+def _close_pooled_clients(tenant_id: str, server_id: str) -> None:
+    """Close the pooled driver clients of a connector that changed or went away.
+
+    This replica's clients close now; other replicas never reuse them for new
+    credentials (the credential fingerprint is part of the pool key) and close
+    them by idle TTL.
+    """
+    from app.mcp import mongodb_clients
+
+    mongodb_clients.evict(tenant_id, server_id)
+
+
 @router.delete("/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def unregister_connector(request: Request, server_id: str) -> None:
     """Remove a connector AND everything it holds (MCPREG-05).
@@ -1701,6 +1823,7 @@ async def unregister_connector(request: Request, server_id: str) -> None:
     if drop is not None:
         drop((tenant_ctx.tenant_id, server_id))
     removed = await reg.unregister(server_id, tenant_ctx=tenant_ctx)
+    _close_pooled_clients(tenant_ctx.tenant_id, server_id)
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
