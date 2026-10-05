@@ -179,6 +179,11 @@ def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     for key, value in (cfg.auth_config or {}).items():
         if isinstance(value, str):
             result[key] = value
+        elif isinstance(value, bool):
+            # A5: a checkbox ({"tls": true}) used to be dropped entirely.
+            result[key] = "true" if value else "false"
+        elif isinstance(value, int | float):
+            result[key] = str(value)
     # Only add server-level URL if auth_config does not already have a url.
     # This preserves the Jira Cloud URL from auth_config when the server URL
     # is an MCP endpoint (not the actual API base URL).
