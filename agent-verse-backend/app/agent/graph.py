@@ -1019,6 +1019,7 @@ class AgentGraph(
             await on_token(chunk)
 
         from app.providers import circuit_breaker as _cb
+        from app.providers.rate_limit import is_rate_limit_error, with_rate_limit_retry
 
         for i, model in enumerate(models):
             attempt = request if i == 0 else dataclasses.replace(request, model=model)
@@ -1029,18 +1030,39 @@ class AgentGraph(
                 last_exc = _cb.ProviderCircuitOpenError(f"circuit open for {_key}")
                 self._logger.warning("executor_model_circuit_open", model=model)
                 continue
-            _cb._provider_cb.before_call(_key)
             emitted[0] = 0
+
+            async def _stream_once(_attempt: Any = attempt, _key: str = _key) -> Any:
+                _cb._provider_cb.before_call(_key)
+                recorded = False
+                try:
+                    out = await asyncio.wait_for(
+                        self._executor.stream_tokens(_attempt, _counting_on_token),
+                        timeout=timeout,
+                    )
+                    _cb._provider_cb.record_success(_key)
+                    recorded = True
+                    return out
+                except Exception as exc:
+                    # A 429 is throttling, not a failure: it never trips the
+                    # circuit (P5-1); it is retried below with backoff.
+                    if getattr(exc, "provider_failure", True) and not is_rate_limit_error(exc):
+                        _cb._provider_cb.record_failure(_key)
+                        recorded = True
+                    raise
+                finally:
+                    if not recorded:
+                        _cb._provider_cb.release_probe(_key)
+
             try:
-                resp = await asyncio.wait_for(
-                    self._executor.stream_tokens(attempt, _counting_on_token), timeout=timeout
+                # Retry a throttled attempt only while no token of it reached the
+                # client (a 429 arrives before the stream starts).
+                resp = await with_rate_limit_retry(
+                    _stream_once, label=_key, should_retry=lambda: emitted[0] == 0
                 )
-                _cb._provider_cb.record_success(_key)
                 self._last_served_model = model
                 return resp
             except Exception as exc:
-                if getattr(exc, "provider_failure", True):
-                    _cb._provider_cb.record_failure(_key)
                 last_exc = exc
                 self._failed_models.append(model)
                 token_buffer.clear()

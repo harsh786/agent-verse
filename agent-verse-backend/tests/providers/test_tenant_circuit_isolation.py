@@ -77,7 +77,7 @@ def test_breaker_key_sees_scope_through_traced_wrapper() -> None:
     p = _Provider(fail=False)
     p._circuit_scope = "tenant:t2"  # type: ignore[attr-defined]
     traced = TracedProvider(p, provider_system="openai", default_role="planner")
-    assert cb.breaker_key(traced, _req()) == "tenant:t2:llm:shared-model"
+    assert cb.breaker_key(traced, _req()) == "tenant:t2:llm:openai/shared-model"
 
 
 # ── POST /models/test ─────────────────────────────────────────────────────────

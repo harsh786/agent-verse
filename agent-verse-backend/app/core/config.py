@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # (600 s), so no caller can hang for ten minutes on a stuck endpoint.
     llm_client_timeout_seconds: float = 300.0
     llm_client_max_retries: int = 2
+    # Provider throttling (HTTP 429) on top of the SDK's own short retries (P5-1):
+    # exponential backoff with jitter, Retry-After honoured, the total wait capped
+    # here AND by the goal's remaining time budget. 429s never trip the breaker.
+    llm_rate_limit_max_retries: int = Field(default=4, ge=0, le=20)
+    llm_rate_limit_base_delay_seconds: float = Field(default=1.0, gt=0.0)
+    llm_rate_limit_max_delay_seconds: float = Field(default=30.0, gt=0.0)
+    llm_rate_limit_max_total_wait_seconds: float = Field(default=120.0, ge=0.0)
 
     # --- goal / step watchdog (GOAL-STALL) ---
     # A step that has not finished after this much ACTIVE time (time spent waiting

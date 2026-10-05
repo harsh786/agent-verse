@@ -3976,13 +3976,19 @@ class GoalService:
             )
 
             try:
+                from app.providers.rate_limit import run_with_llm_deadline
+
                 final_state = await asyncio.wait_for(
-                    loop.run(
-                        goal=goal_text,
-                        tenant_ctx=tenant_ctx,
-                        initial_context=initial_context or None,
-                        event_callback=callback,
-                        goal_id=goal_id,
+                    # P5-1: throttling backoff never waits past the goal budget.
+                    run_with_llm_deadline(
+                        loop.run(
+                            goal=goal_text,
+                            tenant_ctx=tenant_ctx,
+                            initial_context=initial_context or None,
+                            event_callback=callback,
+                            goal_id=goal_id,
+                        ),
+                        float(_goal_timeout_s),
                     ),
                     timeout=float(_goal_timeout_s),
                 )

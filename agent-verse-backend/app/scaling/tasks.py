@@ -3969,16 +3969,22 @@ def run_goal(
                     retrieval_gateway=_retrieval_gateway_worker,
                 )
 
+            from app.providers.rate_limit import run_with_llm_deadline
+
             _goal_run = _asyncio.wait_for(
-                _run_with_signals(
-                    _agent_runner,
-                    effective_goal,
-                    tenant_ctx,
-                    worker_event_callback,
-                    goal_id,
-                    initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
-                    org_id=_goal_org_id or _worker_exec_ctx.get("org_id"),
-                    org_unverified=_worker_ctx_unreadable and not _goal_org_id,
+                # P5-1: provider-throttling backoff never waits past the goal budget.
+                run_with_llm_deadline(
+                    _run_with_signals(
+                        _agent_runner,
+                        effective_goal,
+                        tenant_ctx,
+                        worker_event_callback,
+                        goal_id,
+                        initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
+                        org_id=_goal_org_id or _worker_exec_ctx.get("org_id"),
+                        org_unverified=_worker_ctx_unreadable and not _goal_org_id,
+                    ),
+                    float(goal_timeout_s),
                 ),
                 timeout=float(goal_timeout_s),
             )

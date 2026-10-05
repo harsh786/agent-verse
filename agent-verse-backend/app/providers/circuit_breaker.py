@@ -9,6 +9,8 @@ import time
 from collections import defaultdict
 from typing import Any
 
+from app.providers.rate_limit import is_rate_limit_error, with_rate_limit_retry
+
 logger = logging.getLogger(__name__)
 
 
@@ -131,8 +133,10 @@ async def call_with_circuit_breaker(
         ) from exc
     except Exception as exc:
         # A caller-side refusal (a budget denial raised by a metering wrapper) is
-        # not a provider failure and must not open the circuit for everyone.
-        if getattr(exc, "provider_failure", True):
+        # not a provider failure and must not open the circuit for everyone. Nor is
+        # throttling (HTTP 429): the provider is healthy and asked us to slow down;
+        # counting it opened the circuit for every caller for 60 s (P5-1).
+        if getattr(exc, "provider_failure", True) and not is_rate_limit_error(exc):
             _provider_cb.record_failure(provider_name)
             recorded = True
         raise
@@ -142,6 +146,22 @@ async def call_with_circuit_breaker(
         # reported open until the process restarted.
         if not recorded:
             _provider_cb.release_probe(provider_name)
+
+
+def _provider_identity(provider: Any) -> str:
+    """The vendor behind ``provider`` ("openai", "nvidia_nim", ...), or "".
+
+    The same model name served by two vendors (or two endpoints) has independent
+    health, so the circuit is keyed per provider + model (P5-1).
+    """
+    for attr in ("_system", "provider_name"):
+        try:
+            val = getattr(provider, attr, None)
+        except Exception:
+            val = None
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
 
 
 def breaker_key(provider: Any, request: Any = None) -> str:
@@ -158,7 +178,11 @@ def breaker_key(provider: Any, request: Any = None) -> str:
     purpose: it is shared infrastructure, so its failures ARE everyone's failures.
     """
     model = (getattr(request, "model", "") or getattr(provider, "_default_model", "") or "").strip()
-    key = f"llm:{model}" if model else f"llm:{type(provider).__name__}"
+    vendor = _provider_identity(provider)
+    if model:
+        key = f"llm:{vendor}/{model}" if vendor else f"llm:{model}"
+    else:
+        key = f"llm:{vendor or type(provider).__name__}"
     scope = getattr(provider, "_circuit_scope", None)
     return f"{scope}:{key}" if isinstance(scope, str) and scope else key
 
@@ -179,6 +203,12 @@ async def complete_with_failover(
     that is down, an empty completion — no longer fails the goal while another
     configured model is healthy. The last error is re-raised unchanged, so
     callers keep their existing error handling.
+
+    Throttling (HTTP 429) is retried on the same model with backoff + jitter,
+    honouring Retry-After and the goal's time budget (P5-1); it never counts
+    against the circuit. A model still throttled after that fails over like any
+    other error; if every model was throttled the caller gets
+    :class:`ProviderRateLimitedError` (a ``RuntimeError``).
     """
     import dataclasses
 
@@ -189,14 +219,19 @@ async def complete_with_failover(
     last_exc: BaseException | None = None
     for i, model in enumerate(models):
         req = request if i == 0 else dataclasses.replace(request, model=model)
-        try:
+        key = breaker_key(provider, req)
+
+        async def _attempt(_req: Any = req, _key: str = key) -> Any:
             return await call_with_circuit_breaker(
                 provider,
                 "complete",
-                req,
-                provider_name=breaker_key(provider, req),
+                _req,
+                provider_name=_key,
                 timeout_seconds=timeout_seconds,
             )
+
+        try:
+            return await with_rate_limit_retry(_attempt, label=key)
         except Exception as exc:
             last_exc = exc
             if i + 1 < len(models):
