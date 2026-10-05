@@ -4952,7 +4952,16 @@ class GoalService:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session:
+                from app.db.rls import sqlalchemy_rls_context
+
+                # a09-F223-02: ``goals`` is FORCE RLS and the app role is
+                # NOBYPASSRLS — without the tenant GUC this aggregate matched no
+                # rows and the dashboards showed 0. The explicit tenant predicate
+                # stays too (never rely on the GUC alone).
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
                     row = (
                         await session.execute(
                             text("""
