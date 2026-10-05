@@ -12,6 +12,8 @@ import type {
   DLQEntry,
   IngestionQuota,
   ConnectorMeta,
+  SourcePreview,
+  SourceValidation,
 } from './types';
 
 // ── Query keys ────────────────────────────────────────────────────────────────
@@ -61,6 +63,14 @@ export function useCreateSource() {
     mutationFn: (data: Partial<SourceConfig>) =>
       apiFetch<SourceConfig>('/sources', { method: 'POST', body: JSON.stringify(data) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: INGESTION_KEYS.sources() }),
+  });
+}
+
+/** POST /sources/validate — check an UNSAVED config (and its connection) before create. */
+export function useValidateSource() {
+  return useMutation({
+    mutationFn: (data: Partial<SourceConfig>) =>
+      apiFetch<SourceValidation>('/sources/validate?check_connection=true', { method: 'POST', body: JSON.stringify(data) }),
   });
 }
 
@@ -143,12 +153,11 @@ export function useReindexSource() {
 
 // ── Preview ───────────────────────────────────────────────────────────────────
 
+/** POST /sources/{id}/preview — dry-run parse + chunk of the first documents (needs a saved source). */
 export function useSourcePreview() {
   return useMutation({
     mutationFn: (sourceId: string) =>
-      apiFetch<{ docs_previewed: number; sample: unknown[] }>(
-        `/sources/${sourceId}/preview`, { method: 'POST' }
-      ),
+      apiFetch<SourcePreview>(`/sources/${sourceId}/preview`, { method: 'POST' }),
   });
 }
 

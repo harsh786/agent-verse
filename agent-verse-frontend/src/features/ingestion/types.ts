@@ -69,6 +69,21 @@ export interface IngestionJob {
   created_at:       string;
 }
 
+/** POST /sources/validate answer (app/api/ingestion.py validate_source). */
+export interface SourceValidation {
+  valid:      boolean;
+  errors:     string[];
+  /** null when the connection was not checked. */
+  connection: { ok: boolean; latency_ms: number | null; error: string | null } | null;
+}
+
+/** POST /sources/{id}/preview answer: a sample, or `error` (still HTTP 200). */
+export interface SourcePreview {
+  docs_previewed: number;
+  sample?: Array<{ doc_id: string; status: string; chunks_would_create?: number; tokens_estimate?: number }>;
+  error?: string;
+}
+
 export interface ConnectionHealth {
   ok:         boolean;
   latency_ms: number;
