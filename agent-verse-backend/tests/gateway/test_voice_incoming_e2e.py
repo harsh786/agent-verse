@@ -63,6 +63,18 @@ def _post(client: TestClient, **form: str):
     )
 
 
+def _channel_session(chat, channel, channel_user_id):
+    """The session the inbound path mapped this channel user to (read-only).
+
+    The sync ``get_or_create_channel_session`` was removed (CHAT-CHANNEL-DEAD);
+    a KeyError here means the webhook never resolved a session for the user.
+    """
+    session_id = chat._channel_sessions[(TENANT, channel, channel_user_id)]
+    session = chat.get_session(session_id, TENANT)
+    assert session is not None
+    return session
+
+
 def test_inbound_call_routes_through_chatservice_and_speaks_twiml() -> None:
     app, chat = _app()
     client = TestClient(app)
@@ -77,9 +89,7 @@ def test_inbound_call_routes_through_chatservice_and_speaks_twiml() -> None:
 
     # The caller's speech was persisted through the unified pipeline as a durable
     # voice_phone conversation keyed on the caller number.
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
-    )
+    session = _channel_session(chat, "voice_phone", CALLER)
     history = chat.list_messages(session.id, TENANT)
     assert any("dentist" in m.content for m in history)
 
@@ -111,9 +121,7 @@ def test_repeat_calls_continue_same_session() -> None:
     client = TestClient(app)
     _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CA4", "SpeechResult": "first turn"})
     _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CA4", "SpeechResult": "second turn"})
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
-    )
+    session = _channel_session(chat, "voice_phone", CALLER)
     contents = [m.content for m in chat.list_messages(session.id, TENANT)]
     assert any("first turn" in c for c in contents)
     assert any("second turn" in c for c in contents)
@@ -173,9 +181,7 @@ def test_inbound_call_redacts_pii_from_the_persisted_transcript() -> None:
     })
     assert r.status_code == 200
 
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
-    )
+    session = _channel_session(chat, "voice_phone", CALLER)
     persisted = " ".join(m.content for m in chat.list_messages(session.id, TENANT))
     assert "123-45-6789" not in persisted, f"SSN persisted verbatim: {persisted!r}"
     assert "4111111111111111" not in persisted, f"card persisted verbatim: {persisted!r}"
@@ -186,9 +192,10 @@ def test_inbound_call_redacts_pii_from_the_persisted_transcript() -> None:
 
 
 def _history(chat: ChatService) -> list[str]:
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
-    )
+    """Everything persisted for the caller; nothing when no session was ever made."""
+    if (TENANT, "voice_phone", CALLER) not in chat._channel_sessions:
+        return []
+    session = _channel_session(chat, "voice_phone", CALLER)
     return [m.content for m in chat.list_messages(session.id, TENANT)]
 
 

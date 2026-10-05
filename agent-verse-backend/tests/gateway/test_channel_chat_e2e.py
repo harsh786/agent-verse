@@ -58,6 +58,18 @@ def _whatsapp_payload(from_number: str, text: str) -> dict:
     }
 
 
+def _channel_session(chat, channel, channel_user_id):
+    """The session the inbound path mapped this channel user to (read-only).
+
+    The sync ``get_or_create_channel_session`` was removed (CHAT-CHANNEL-DEAD);
+    a KeyError here means the webhook never resolved a session for the user.
+    """
+    session_id = chat._channel_sessions[(TENANT, channel, channel_user_id)]
+    session = chat.get_session(session_id, TENANT)
+    assert session is not None
+    return session
+
+
 def test_telegram_inbound_routes_through_chatservice() -> None:
     app, chat, _ = _app()
     client = SignedClient(app)
@@ -67,9 +79,7 @@ def test_telegram_inbound_routes_through_chatservice() -> None:
     assert body["status"] == "ok" and body["channel"] == "telegram"
     assert body["reply"] and not body["reply"].lstrip().startswith("{")  # never raw JSON
     # A durable voice/telegram session exists for this user with the turn persisted.
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="telegram", channel_user_id="42"
-    )
+    session = _channel_session(chat, "telegram", "42")
     assert any("what can you do" in m.content for m in chat.list_messages(session.id, TENANT))
 
 
@@ -98,9 +108,7 @@ def test_repeat_telegram_messages_continue_one_session() -> None:
     client = SignedClient(app)
     client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=_telegram_payload("99", "first message"))
     client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=_telegram_payload("99", "second message"))
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="telegram", channel_user_id="99"
-    )
+    session = _channel_session(chat, "telegram", "99")
     contents = [m.content for m in chat.list_messages(session.id, TENANT)]
     assert any("first message" in c for c in contents)
     assert any("second message" in c for c in contents)
@@ -130,9 +138,7 @@ def test_a_redelivered_telegram_webhook_does_not_create_a_second_turn() -> None:
     assert second.status_code == 200, second.text
     assert second.json().get("reason") == "duplicate message ignored", second.json()
 
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="telegram", channel_user_id=user_id
-    )
+    session = _channel_session(chat, "telegram", user_id)
     user_turns = [
         m for m in chat.list_messages(session.id, TENANT)
         if m.role == "user" and "book me a meeting" in m.content
@@ -151,9 +157,7 @@ def test_a_genuinely_new_message_from_the_same_user_still_goes_through() -> None
         assert resp.status_code == 200
         assert resp.json().get("reason") != "duplicate message ignored", resp.json()
 
-    session = chat.get_or_create_channel_session(
-        tenant_id=TENANT, channel="telegram", channel_user_id=user_id
-    )
+    session = _channel_session(chat, "telegram", user_id)
     contents = [m.content for m in chat.list_messages(session.id, TENANT) if m.role == "user"]
     assert any("first question" in c for c in contents), contents
     assert any("second question" in c for c in contents), contents

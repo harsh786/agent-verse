@@ -404,8 +404,9 @@ class ChatService:
         self._personalization: Any = InMemoryPersonalizationStore()
         # clarify round tracking per session
         self._clarify_rounds: dict[str, int] = {}
-        # Phase 3: (tenant, channel, channel_user_id) -> session_id, so a channel
-        # user's messages continue one conversation across turns/channels.
+        # Phase 3: (tenant, channel, channel_user_id) -> session_id — ONLY the no-DB
+        # fallback of aget_or_create_channel_session. With a repository wired the
+        # mapping is durable (chat_channel_sessions) and this map is unused.
         self._channel_sessions: dict[tuple[str, str, str], str] = {}
         # Per-(tenant, channel, channel_user_id) lock guarding the get-or-create in
         # aget_or_create_channel_session, so two concurrent inbound messages from the
@@ -467,30 +468,6 @@ class ChatService:
             folder_id=folder_id,
         )
         self._sessions[sid] = session
-        return session
-
-    def get_or_create_channel_session(
-        self,
-        *,
-        tenant_id: str,
-        channel: str,
-        channel_user_id: str,
-        title: str | None = None,
-    ) -> _Session:
-        """Resolve the durable session for a channel user (Phase 3).
-
-        Returns the existing conversation for (channel, channel_user_id) so an
-        inbound WhatsApp/Telegram message continues the same thread, creating one
-        on first contact. This is what lets a conversation span channels/time.
-        """
-        key = (tenant_id, channel, channel_user_id)
-        existing_id = self._channel_sessions.get(key)
-        if existing_id is not None:
-            existing = self.get_session(existing_id, tenant_id)
-            if existing is not None:
-                return existing
-        session = self.create_session(tenant_id, title=title or f"{channel}:{channel_user_id}")
-        self._channel_sessions[key] = session.id
         return session
 
     def get_session(self, session_id: str, tenant_id: str) -> _Session | None:
@@ -1666,35 +1643,6 @@ class ChatService:
             await self._memory_writer(summary, tenant_id)
             return 1
         return 0
-
-    def handle_channel_message(
-        self,
-        *,
-        tenant_id: str,
-        channel: str,
-        channel_user_id: str,
-        text: str,
-    ) -> dict[str, Any]:
-        """Unified entry point for an inbound channel message (Phase 3).
-
-        Resolves the channel user's durable session and runs the SAME dispatch
-        (save + intent classification + history) as web chat, so WhatsApp/Telegram/
-        API and the web UI share one pipeline. Returns the dispatch metadata plus
-        the resolved ``session_id`` and ``channel``.
-
-        NOTE (persistence): this path is still the sync/in-memory pipeline and is
-        currently dormant (no inbound webhook wires it). Before exposing it on a
-        live endpoint it MUST move to the async ``adispatch`` path AND gain a
-        durable channel->session mapping (the in-memory ``_channel_sessions`` map
-        does not survive restarts), otherwise channel writes would diverge from
-        the Postgres-backed web/API reads.
-        """
-        session = self.get_or_create_channel_session(
-            tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
-        )
-        result = self.dispatch(session.id, tenant_id, text)
-        result["channel"] = channel
-        return result
 
     async def aget_or_create_channel_session(
         self,
