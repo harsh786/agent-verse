@@ -138,11 +138,20 @@ def _index_path(index: str) -> str:
 
 
 async def _field_type(client: Any, s: _Settings) -> str:
-    """The sort field's mapped type across the indices, or raise when none maps it."""
+    """The sort field's mapped type across the indices, or raise when none maps it.
+
+    ``""`` when the user may not read mappings (``read`` without
+    ``view_index_metadata`` is a common read-only role): the sync goes on without
+    the type (no ``unmapped_type``, no look-back window) and the search itself
+    reports what it may not do.
+    """
     r = await client.get(
         f"{s.url}/{_index_path(s.index)}/_mapping/field/{quote(s.sort_field, safe='@._-')}",
         **_kwargs(s),
     )
+    if r.status_code == 403:
+        _log.info("elasticsearch_mapping_forbidden index=%s — syncing without the type", s.index)
+        return ""
     ensure_success(r, source_type="elasticsearch", what=f"mapping of {s.index!r}")
     types: set[str] = set()
     for body in (r.json() or {}).values():

@@ -113,6 +113,10 @@ def _seed(url: str) -> None:
                      "privileges": ["read", "view_index_metadata"]}]})
     _req(url, "PUT", "/_security/user/reader", {"password": "reader-pw-2026",
                                                 "roles": ["kb_reader"]})
+    _req(url, "PUT", "/_security/role/read_only", {
+        "indices": [{"names": ["kb"], "privileges": ["read"]}]})
+    _req(url, "PUT", "/_security/user/plainreader", {"password": "plain-pw-2026",
+                                                     "roles": ["read_only"]})
 
 
 @pytest.fixture(autouse=True)
@@ -231,3 +235,13 @@ async def test_live_listing_names_every_document_for_reconciliation(es: str) -> 
             and d.metadata["_id"] == "d-50"}
     assert len(gone) == 1 and not (gone & live2)
     assert len(live2) == 139
+
+
+async def test_a_reader_with_only_the_read_privilege_can_sync(es: str) -> None:
+    """Many read-only roles have ``read`` but not ``view_index_metadata``: the sort
+    field's mapping cannot be looked up then (403), which must not stop a sync
+    that can read the documents."""
+    cfg = _config(es, index="kb", sort_field="updated_at", username="plainreader",
+                  password="plain-pw-2026")
+    docs, _ = await _drain(cfg)
+    assert {d.metadata["_id"] for d in docs} >= {"kb-0", "kb-4", "kb-draft"}
