@@ -122,10 +122,11 @@ class TestIsPausedSync:
         mock_redis.get = MagicMock(return_value=None)
         assert is_paused_sync("goal-1", mock_redis) is False
 
-    def test_redis_error_returns_false(self) -> None:
+    def test_redis_error_fails_closed(self) -> None:
+        # a08-F193-03: an unreadable pause flag keeps the goal paused.
         mock_redis = MagicMock()
         mock_redis.get = MagicMock(side_effect=Exception("Redis down"))
-        assert is_paused_sync("goal-1", mock_redis) is False
+        assert is_paused_sync("goal-1", mock_redis) is True
 
     def test_calls_correct_key(self) -> None:
         mock_redis = MagicMock()
@@ -147,10 +148,11 @@ class TestIsCancelledSync:
         mock_redis.get = MagicMock(return_value=None)
         assert is_cancelled_sync("goal-1", mock_redis) is False
 
-    def test_redis_error_returns_false(self) -> None:
+    def test_redis_error_fails_closed(self) -> None:
+        # a08-F193-03: an unreadable cancel flag counts as cancelled.
         mock_redis = MagicMock()
         mock_redis.get = MagicMock(side_effect=Exception("Redis down"))
-        assert is_cancelled_sync("goal-1", mock_redis) is False
+        assert is_cancelled_sync("goal-1", mock_redis) is True
 
     def test_calls_correct_key(self) -> None:
         mock_redis = MagicMock()

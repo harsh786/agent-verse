@@ -128,36 +128,52 @@ async def clear_signals(goal_id: str, redis: Any) -> None:
         )
 
 
+# a08-F193-03: every flag read FAILS CLOSED. A read error used to count as
+# "no flag", so one Redis blip hid a cancel from the runner and, inside the
+# pause wait loops, ended an operator's pause (the goal resumed and emitted
+# goal_execution_resumed with no resume_goal call). An unreadable cancel flag
+# now counts as cancelled and an unreadable pause flag as still paused — the
+# same stance as the emergency stop (UNVERIFIABLE_REASON) on a Redis error.
+
+
+def _read_failed(flag: str, goal_id: str, exc: Exception) -> bool:
+    logger.warning(f"goal_{flag}_flag_read_failed", goal_id=goal_id, error=str(exc))
+    return True
+
+
 async def is_paused(goal_id: str, redis: Any) -> bool:
-    """Async check of the cross-process pause flag (API-server / in-process runs)."""
+    """Async check of the cross-process pause flag (API-server / in-process runs).
+
+    True on a read error (fail closed: the goal stays paused).
+    """
     try:
         return bool(await redis.get(_PAUSE_FLAG.format(goal_id=goal_id)))
-    except Exception:
-        return False
+    except Exception as exc:
+        return _read_failed("pause", goal_id, exc)
 
 
 async def is_cancelled(goal_id: str, redis: Any) -> bool:
-    """Async check of the cross-process cancel flag."""
+    """Async check of the cross-process cancel flag. True on a read error."""
     try:
         return bool(await redis.get(_CANCEL_FLAG.format(goal_id=goal_id)))
-    except Exception:
-        return False
+    except Exception as exc:
+        return _read_failed("cancel", goal_id, exc)
 
 
 def is_paused_sync(goal_id: str, redis_sync: Any) -> bool:
-    """Synchronous check — use from Celery task context."""
+    """Synchronous check — use from Celery task context. True on a read error."""
     try:
         return bool(redis_sync.get(_PAUSE_FLAG.format(goal_id=goal_id)))
-    except Exception:
-        return False
+    except Exception as exc:
+        return _read_failed("pause", goal_id, exc)
 
 
 def is_cancelled_sync(goal_id: str, redis_sync: Any) -> bool:
-    """Synchronous check — use from Celery task context."""
+    """Synchronous check — use from Celery task context. True on a read error."""
     try:
         return bool(redis_sync.get(_CANCEL_FLAG.format(goal_id=goal_id)))
-    except Exception:
-        return False
+    except Exception as exc:
+        return _read_failed("cancel", goal_id, exc)
 
 
 async def check_pause_cancel(goal_id: str, redis_sync: Any) -> None:
