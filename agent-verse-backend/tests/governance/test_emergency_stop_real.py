@@ -203,10 +203,31 @@ async def test_worker_pause_gate_fails_closed_on_redis_error() -> None:
 
     from app.scaling.tasks import _make_worker_pause_gate
 
+    def _get(key: str) -> Any:
+        # Only the emergency-stop flag is unreadable; the goal's own flags read fine.
+        if key.startswith("emergency_stop:"):
+            raise ConnectionError("down")
+        return None
+
+    sync_r = MagicMock()
+    sync_r.get = MagicMock(side_effect=_get)
+    gate = _make_worker_pause_gate("g-w", sync_r, None, tenant_id=TID)
+    with pytest.raises(GoalCancelledError, match=UNVERIFIABLE_REASON):
+        await gate()
+
+
+@pytest.mark.asyncio
+async def test_worker_pause_gate_stops_when_redis_is_down() -> None:
+    """With every read failing, the gate stops at its first check: a08-F193-03
+    makes an unreadable cancel flag count as cancelled (fail closed)."""
+    from unittest.mock import MagicMock
+
+    from app.scaling.tasks import _make_worker_pause_gate
+
     sync_r = MagicMock()
     sync_r.get = MagicMock(side_effect=ConnectionError("down"))
     gate = _make_worker_pause_gate("g-w", sync_r, None, tenant_id=TID)
-    with pytest.raises(GoalCancelledError, match=UNVERIFIABLE_REASON):
+    with pytest.raises(GoalCancelledError):
         await gate()
 
 
