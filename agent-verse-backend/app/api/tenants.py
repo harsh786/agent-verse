@@ -337,7 +337,11 @@ def _safe_llm_view(tenant_id: str, cfg: dict[str, Any] | None) -> dict[str, Any]
     if cfg is None:
         return {"tenant_id": tenant_id, "provider": None, "configured": False}
     # Never return the raw key or the vault-encrypted ciphertext.
-    safe = {k: v for k, v in cfg.items() if k not in {"api_key", "encrypted_key"}}
+    safe = {
+        k: v
+        for k, v in cfg.items()
+        if k not in {"api_key", "encrypted_key", "vault_key_fingerprint"}
+    }
     safe.setdefault("default_model", safe.get("model"))
     return {"tenant_id": tenant_id, **safe, "configured": True}
 
@@ -397,6 +401,7 @@ async def _save_llm_config(
     model: str,
     base_url: str | None,
     masked_key: str | None,
+    vault_key_fingerprint: str | None = None,
 ) -> None:
     from app.services.llm_config_store import LLMConfigPersistError
 
@@ -410,6 +415,7 @@ async def _save_llm_config(
                 model=model,
                 base_url=base_url,
                 masked_key=masked_key,
+                vault_key_fingerprint=vault_key_fingerprint,
             )
         except LLMConfigPersistError as exc:
             raise HTTPException(
@@ -425,6 +431,7 @@ async def _save_llm_config(
         "default_model": model,
         "masked_key": masked_key,
         "encrypted_key": encrypted_key,
+        "vault_key_fingerprint": vault_key_fingerprint,
     }
 
 
@@ -466,6 +473,8 @@ async def set_llm_config(
     except TenantVaultError as exc:
         raise HTTPException(503, f"Tenant vault key could not be read: {exc}") from exc
     masked_key = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "****"
+    from app.providers.vault import get_vault
+
     await _save_llm_config(
         request,
         ctx.tenant_id,
@@ -474,6 +483,9 @@ async def set_llm_config(
         model=body.default_model or "",
         base_url=body.base_url,
         masked_key=masked_key,
+        # BYOK-2: which platform key sealed it (or wraps the tenant key) — a
+        # non-secret fingerprint, so a worker with another key can say so.
+        vault_key_fingerprint=get_vault().fingerprint(),
     )
     _audit_llm_change(
         request, ctx, provider=body.provider, base_url=body.base_url, key_changed=True
@@ -543,6 +555,7 @@ async def save_tenant_llm_config(
         model=model,
         base_url=base_url,
         masked_key=current.get("masked_key"),
+        vault_key_fingerprint=current.get("vault_key_fingerprint"),
     )
     _audit_llm_change(request, tenant, provider=provider, base_url=base_url, key_changed=False)
     saved = await _read_llm_config(request, tenant.tenant_id)
@@ -1116,6 +1129,46 @@ async def delete_ip_allowlist_entry(
 
 
 # ── Notification preferences ──────────────────────────────────────────────────
+
+
+class A2ADirectorySetting(BaseModel):
+    enabled: bool
+
+
+@router.get("/me/a2a-directory")
+async def get_a2a_directory(
+    request: Request, ctx: TenantContext = Depends(_require_tenant)
+) -> dict[str, bool]:
+    """Whether this tenant's opted-in agents are listed in the public A2A
+    directory (``/.well-known/agents``). Off by default (D3)."""
+    from app.services.a2a_directory import DirectoryUnavailableError, directory_for
+
+    try:
+        enabled = await directory_for(request.app.state).tenant_enabled(ctx.tenant_id)
+    except DirectoryUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": enabled}
+
+
+@router.put("/me/a2a-directory")
+async def set_a2a_directory(
+    body: A2ADirectorySetting,
+    request: Request,
+    ctx: TenantContext = Depends(_require_tenant),
+    _: None = Depends(require_role("admin")),
+) -> dict[str, bool]:
+    """Turn the tenant's public A2A directory listing on or off (admin only).
+
+    Only agents that also opted in (``a2a_public``) and are active are listed;
+    turning it off hides every card at once.
+    """
+    from app.services.a2a_directory import DirectoryUnavailableError, directory_for
+
+    try:
+        await directory_for(request.app.state).set_tenant_enabled(ctx.tenant_id, body.enabled)
+    except DirectoryUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"enabled": body.enabled}
 
 
 _NOTIFICATION_KEYS = frozenset(

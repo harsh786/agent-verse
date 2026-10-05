@@ -1,0 +1,13 @@
+{
+  "BYOK-1": {"status": "done", "commit": "e538d01a8", "note": "helm worker/subgoal-worker/beat lacked VAULT_MASTER_KEY; k8s beat+blue/green had no secretRef (and nonexistent database-url/redis-url keys), the rest got it only as AGENTVERSE_VAULT_KEY; prod compose defaulted the key to ''; dev beat had no env_file. Fixed + manifest/helm/compose parsing test"},
+  "BYOK-2": {"status": "done", "commit": "b82a8017b", "note": "empty/conflicting key names refused; worker+beat refuse to start without a key; fingerprint stored with tenant LLM ciphertext (kept current by rotation); decrypt errors name both fingerprints and the misconfigured side; vault_key_canary written by API, checked by workers at startup, API /health/ready vault_key check"},
+  "BYOK-3": {"status": "done", "commit": "4eb2e1ca6", "note": "shared resolver tenant BYOK -> platform -> 'no LLM provider configured for tenant'; llm/rag/ocr/rpa steps + NL trigger resolve per run; every FakeProvider fallback gated on dev/test ENVIRONMENT (was !=production)"},
+  "BYOK-4": {"status": "done", "commit": "d8cd116ea", "note": "e2e_full: API-saved key decrypted by a real celery worker for a goal and a workflow llm step (Bearer header asserted at fake LLM); mismatched worker key -> 'vault key mismatch' with both fingerprints; production worker refuses to start"},
+  "_new_findings": [
+    "helm worker/subgoal-worker/beat also lack JWT_SECRET, GOAL_TOKEN_SECRET, MANIFEST_SIGNING_SECRET, MINIO_* that the backend gets (only the vault key was in scope)",
+    "k8s/helm set no MAINTENANCE_DATABASE_URL, so system_session jobs run on the app role",
+    "GET /goals/{id} does not expose the goal's error_message (the BYOK failure reason is only in the goal row / worker_failed event)",
+    "owner decision: create_app still refuses to start in ENVIRONMENT=production without a platform LLM key, which blocks BYOK-only production deployments (staging now starts with the failing UnconfiguredLLMProvider)",
+    "workers have no HTTP readiness endpoint, so the canary result is a startup refusal / log line rather than a /health/ready check"
+  ]
+}

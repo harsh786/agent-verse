@@ -85,9 +85,10 @@ class TestGroundingTraceEvent:
         assert result.trace_event is not None
         assert result.trace_event["type"] == SSEEventType.GROUNDING_CHECK_FAILED
         assert result.trace_event["goal_id"] == "goal-abc"
-        # "JIRA-999" extracts as both a jira_id claim and a bare "999" number claim.
-        assert result.trace_event["ungrounded_count"] == 2
-        assert result.trace_event["checked_claims"] == 2
+        # "JIRA-999" is one jira_id claim: its "999" is part of it, not a second
+        # number claim (P5-6 — the split claim spliced markers mid-token).
+        assert result.trace_event["ungrounded_count"] == 1
+        assert result.trace_event["checked_claims"] == 1
         assert "JIRA-999" in result.trace_event["ungrounded_samples"]
 
     def test_trace_event_is_none_on_success(self) -> None:

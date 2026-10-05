@@ -4,6 +4,11 @@ Answers: "Can tenant T use feature F at volume V?"
 
 This replaces scattered `if plan == "enterprise"` checks scattered throughout
 the codebase with a single, testable, auditable place.
+
+Owner decision D5 (2026-10-05): RPA (browser automation) has no plan limit. It is
+available on every plan, including FREE, so there is deliberately no ``rpa`` plan
+feature flag here — do not add one back. Browser usage is bounded by the
+per-tenant browser-session caps in ``app.rpa.session_manager``, not by plan tier.
 """
 
 from __future__ import annotations
@@ -37,7 +42,6 @@ _PLAN_FEATURES: dict[PlanTier, set[str]] = {
         "byo_api_key",
         "byo_endpoints",
         "simulations",
-        "rpa",
         "a2a",
         "advanced_guardrails",
         "audit_export",
@@ -53,7 +57,6 @@ _PLAN_FEATURES: dict[PlanTier, set[str]] = {
         "byo_api_key",
         "byo_endpoints",
         "simulations",
-        "rpa",
         "a2a",
         "advanced_guardrails",
         "audit_export",

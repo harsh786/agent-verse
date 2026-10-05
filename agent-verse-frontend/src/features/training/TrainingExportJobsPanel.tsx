@@ -65,6 +65,13 @@ function JobStatus({ job }: { job: TrainingExportJob }) {
           <span className="break-all">Failed: {job.error || 'no reason recorded'}</span>
         </span>
       );
+    case 'expired':
+      // NF-17: the server deletes finished files after its retention period.
+      return (
+        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+          <Clock className="h-3.5 w-3.5" /> Expired: file deleted after the retention period
+        </span>
+      );
     default:
       return <span className="text-xs text-muted-foreground">{String(job.status)}</span>;
   }

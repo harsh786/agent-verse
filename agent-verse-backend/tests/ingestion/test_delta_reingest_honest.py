@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from app.ingestion.job_tracker import IngestionJobTracker
 from app.ingestion.source_config import PipelineResult
 from app.scaling.tasks import delta_reingest_files
 
@@ -37,7 +38,7 @@ class _RecordingPipeline:
 def _worker(pipeline: Any) -> Any:
     return patch(
         "app.ingestion.scheduler._build_worker_ingestion",
-        return_value=(SimpleNamespace(), pipeline, SimpleNamespace()),
+        return_value=(IngestionJobTracker(), pipeline, SimpleNamespace()),
     )
 
 

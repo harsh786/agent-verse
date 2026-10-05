@@ -452,6 +452,10 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    # Same ../.env as backend and the workers (BYOK-1): a VAULT_MASTER_KEY set
+    # there must reach every process that touches the vault.
+    env_file:
+      - ../.env
     restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "beat", "--loglevel=info"]
     environment:

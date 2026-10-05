@@ -125,6 +125,7 @@ from app.reliability.goal_lifecycle import GoalCancelledError
 
 # Sub-module imports — part of ongoing decomposition to reduce God-class size
 # See: app/services/goal_events.py, goal_metrics.py, goal_lifecycle.py
+from app.services.failure_reason import public_failure_reason, terminal_reason_code
 from app.services.goal_queue import GoalTaskQueue
 from app.services.result_artifacts import build_result_artifact
 from app.tenancy.context import PlanTier, TenantContext
@@ -417,11 +418,14 @@ def _make_agent_loop() -> Any:
     Configure ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY to avoid this.
     """
     from app.core.config import get_settings as _get_cfg
+    from app.providers.llm_resolution import FAKE_LLM_ENVIRONMENTS
 
-    _cfg = _get_cfg()
-    if getattr(_cfg, "environment", "development") == "production":
+    # BYOK-3: canned answers only in an explicit development/test environment
+    # (it used to be every ENVIRONMENT except exactly "production").
+    _env = str(getattr(_get_cfg(), "environment", "development") or "")
+    if _env.strip().lower() not in FAKE_LLM_ENVIRONMENTS:
         raise RuntimeError(
-            "Cannot use FakeProvider in production mode. "
+            f"Cannot use FakeProvider outside development/test (ENVIRONMENT={_env!r}). "
             "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY "
             "to configure a real LLM provider."
         )
@@ -456,17 +460,6 @@ def _make_agent_loop() -> Any:
             f"Failed to construct AgentGraph: {exc}. "
             "Check provider configuration (ANTHROPIC_API_KEY or OPENAI_API_KEY)."
         ) from exc
-
-
-def _fake_provider() -> Any:
-    """Return a cycling FakeProvider suitable for use as planner, executor, and verifier."""
-    return FakeProvider(
-        responses=[
-            '{"steps": ["Complete the requested task"]}',
-            "Task executed successfully",
-            '{"success": true, "reason": "Goal achieved"}',
-        ]
-    )
 
 
 def _failed_goal_state(
@@ -690,6 +683,11 @@ _DOWNGRADE_DETAIL = {
     "invalid_strategy_override": "the requested strategy cannot run as a goal",
     "profile_build_failed": "the runtime profile could not be built",
 }
+
+
+# POST /goals workflow modes that are strategies of their own: on the strategy
+# runtime v2 they become the profile's primary strategy (P5-2).
+_PROFILE_WORKFLOW_MODES = frozenset({"supervisor", "debate"})
 
 
 def _strategy_downgrade(
@@ -1669,13 +1667,14 @@ class GoalService:
         # 4. Final fallback: FakeProvider — development only, and always flagged.
         simulated = provider is None
         if simulated:
-            import os as _os
+            from app.providers.llm_resolution import fake_llm_allowed, no_provider_message
 
-            if _os.getenv("ENVIRONMENT", "development").lower() == "production":
-                # Never fabricate a "successful" goal in production.
+            if not fake_llm_allowed():
+                # Never fabricate a "successful" goal outside development/test
+                # (it used to be every ENVIRONMENT except exactly "production").
                 raise RuntimeError(
-                    "No LLM provider is configured; refusing to simulate goal execution "
-                    "in production."
+                    f"{no_provider_message(tenant_ctx.tenant_id)}; refusing to simulate "
+                    "goal execution"
                 )
             from app.providers.fake import FakeProvider as _FakeProvider
 
@@ -2099,8 +2098,18 @@ class GoalService:
         goal_id: str,
         tenant_ctx: Any,
         agent_config: dict[str, Any] | None = None,
+        workflow_mode: str | None = None,
     ) -> dict[str, Any]:
         """Build the goal's GoalRuntimeProfile and decide whether it drives execution.
+
+        ``workflow_mode`` ``supervisor`` / ``debate`` (POST /goals) becomes the
+        profile's primary strategy unless an explicit ``strategy_override`` names
+        another one (P5-2). It used to set only the legacy agent pattern flags,
+        which the v2 GraphFactory may switch off but never on — the goal silently
+        ran as plain ReAct. When the profile cannot host the mode (no coordination
+        runtime) the legacy kernel runs it from the pattern flags, recorded as a
+        ``runtime_profile_fallback``; a conflict with an explicit override is
+        recorded as a downgrade.
 
         Returns ``{}`` when dynamic orchestration is off, else a dict with:
 
@@ -2121,11 +2130,15 @@ class GoalService:
         if not flags.dynamic_orchestration:
             return {}
         requested_primary = (agent_config or {}).get("primary_strategy")
+        mode = workflow_mode if workflow_mode in _PROFILE_WORKFLOW_MODES else None
+        mode_conflict = bool(mode and requested_primary and str(requested_primary) != mode)
         try:
             from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
 
             builder = RuntimeProfileBuilder(llm_provider=self._classifier_provider())
             _builder_config = dict(agent_config or {})
+            if mode and not requested_primary:
+                _builder_config["primary_strategy"] = mode
             # DISTRIBUTED strategies are admitted only when a StrategyRunner with a real
             # executor is wired to run them (see _try_build_distributed_strategy_loop).
             _builder_config.setdefault("coordination_ready", self._coordination_ready())
@@ -2182,6 +2195,9 @@ class GoalService:
                 "detail": str(exc)[:300],
                 "fallback": "legacy",
             }
+            if mode and not requested_primary:
+                # The legacy kernel runs the mode from the goal's pattern flags.
+                fallback["requested_workflow_mode"] = mode
             context_fb: dict[str, Any] = {
                 "runtime_profile_fallback": fallback,
                 "strategy_runtime_path": "legacy",
@@ -2223,6 +2239,26 @@ class GoalService:
                     context["runtime_profile_fallback"]["reason"],
                 )
             )
+        if mode_conflict and rollout.path == "v2":
+            # The explicit override drives the v2 profile; the mode cannot co-run.
+            detail = (
+                f"workflow_mode '{mode}' cannot run alongside strategy_override "
+                f"'{requested_primary}'; the override runs"
+            )
+            _svc_logger.warning(
+                "workflow_mode_downgraded",
+                goal_id=goal_id,
+                tenant_id=tenant_ctx.tenant_id,
+                requested_mode=mode,
+                runs=str(requested_primary),
+            )
+            context["strategy_downgraded"] = True
+            context["strategy_downgrade"] = {
+                "requested_strategy": mode,
+                "reason": "workflow_mode_conflicts_with_strategy_override",
+                "runs": str(requested_primary),
+                "detail": detail,
+            }
         columns = {
             "runtime_profile_id": profile.profile_id,
             "runtime_profile_version": profile.profile_version,
@@ -3976,13 +4012,19 @@ class GoalService:
             )
 
             try:
+                from app.providers.rate_limit import run_with_llm_deadline
+
                 final_state = await asyncio.wait_for(
-                    loop.run(
-                        goal=goal_text,
-                        tenant_ctx=tenant_ctx,
-                        initial_context=initial_context or None,
-                        event_callback=callback,
-                        goal_id=goal_id,
+                    # P5-1: throttling backoff never waits past the goal budget.
+                    run_with_llm_deadline(
+                        loop.run(
+                            goal=goal_text,
+                            tenant_ctx=tenant_ctx,
+                            initial_context=initial_context or None,
+                            event_callback=callback,
+                            goal_id=goal_id,
+                        ),
+                        float(_goal_timeout_s),
                     ),
                     timeout=float(_goal_timeout_s),
                 )
@@ -4612,6 +4654,7 @@ class GoalService:
                 goal_id=goal_id,
                 tenant_ctx=tenant_ctx,
                 agent_config=record.execution_context.get("strategy_runtime"),
+                workflow_mode=workflow_mode,
             )
             if _profile_data:
                 record.runtime_profile = _profile_data.get("profile_object")
@@ -4918,6 +4961,14 @@ class GoalService:
             "event_count": event_count,
             "provider_warning": record.execution_context.get("provider_warning"),
             "result_artifact": result_artifact,
+            # NF-14: why a failed / cancelled goal ended — sanitized (no
+            # credentials, URLs, hosts or addresses); None for any other status.
+            "failure_reason": (
+                public_failure_reason(record.error_message)
+                if record.status.value in {"failed", "cancelled"}
+                else None
+            ),
+            "terminal_reason": terminal_reason_code(record.status.value, record.error_message),
             **_downgrade_fields(record.execution_context),
         }
 
@@ -6448,6 +6499,8 @@ class GoalService:
             workflow_mode=row.workflow_mode,
             execution_context=row.execution_context or {},
             completed_at=_row_completed_at(row, status),
+            # NF-14: the durable failure reason (it was dropped on every DB load).
+            error_message=str(getattr(row, "error_message", "") or ""),
         )
         # A refresh must not orphan live SSE subscribers: subscribe_events
         # registers its queue on the cached record, and the Celery bridge /

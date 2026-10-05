@@ -270,6 +270,17 @@ def resolve_provider(
         except Exception as e:
             logger.warning("provider_init_failed", type=cfg.provider_type, error=str(e)[:200])
 
+    # BYOK-3: outside an explicit development/test environment there is NO
+    # canned fallback — a stand-in that fails every call with "no LLM provider
+    # configured" (a tenant's own BYOK key is resolved per goal / workflow run).
+    # It used to be the FakeProvider below everywhere but "production", so
+    # staging workflows answered with canned text as if a model had.
+    from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
+
+    if not fake_llm_allowed():
+        logger.error("no_platform_llm_provider_configured")
+        return UnconfiguredLLMProvider()
+
     # Fallback: FakeProvider for dev/test — uses realistic cycling responses so
     # the AgentGraph fully executes (plan → execute → verify → complete) even
     # without an LLM API key.

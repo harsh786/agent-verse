@@ -56,7 +56,7 @@ class _RaisingAgentGraph:
         pass
 
     async def run(self, **kwargs: Any) -> Any:
-        raise RuntimeError("transient LLM provider error")
+        raise ConnectionResetError("transient LLM provider error")
 
 
 @pytest.fixture
@@ -113,7 +113,7 @@ def test_transient_failure_does_not_finalize_mission_or_touch_dlq(
     # of a real task body that the worker will reschedule.
     tasks.run_goal.push_request(retries=0, called_directly=True)
     try:
-        with pytest.raises(RuntimeError, match="transient LLM provider error"):
+        with pytest.raises(ConnectionResetError, match="transient LLM provider error"):
             tasks.run_goal.run("goal-transient-1", "tenant-1", "do the thing")
     finally:
         tasks.run_goal.pop_request()

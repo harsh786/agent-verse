@@ -15,10 +15,10 @@ backend:
   resources:
     requests:
       cpu: 200m
-      memory: 512Mi
+      memory: 1Gi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 3.5Gi  # D4 / L-03 budget
   autoscaling:
     enabled: true
     minReplicas: 2
@@ -33,22 +33,36 @@ backend:
     DEFAULT_LLM_PROVIDER: anthropic
 
 # ── Celery Worker ─────────────────────────────────────────────────────────────
+# Worker memory budget (owner decision D4, same numbers as L-03 in
+# infra/docker-compose.prod.yml and infra/k8s/worker-deployment.yaml):
+#   concurrency 4 processes per pod; scale throughput with replicas (pods), not
+#   with concurrency.
+#   maxMemoryPerChildKb 700000 (700 MB) -- Celery recycles a child after a task
+#   once its RSS passes this; a child that has reranked needs ~600 MB, so it is
+#   not recycled after every search.
+#   limit 3.5Gi (3584 Mi) >= parent ~300 MB + 4 x (700 MB cap + ~100 MB one-task
+#   overshoot) = 3500 MB. Enforced by tests/scaling/test_worker_memory_budget.py.
+#   preloadRetrievalModels false -- children load torch/the cross-encoder lazily
+#   on first use instead of every child paying ~450 MB at start (L-03).
 worker:
   image:
     name: backend
     tag: "latest"
   replicas: 2
   concurrency: 4
+  maxTasksPerChild: 100
+  maxMemoryPerChildKb: 700000
+  preloadRetrievalModels: false
   # Must cover every queue celery_app.py routes to (plan-routed goals.* and
   # workflows.*), or those tasks sit unconsumed. Mirrors infra/helm/agentverse.
   queues: "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
   resources:
     requests:
       cpu: 300m
-      memory: 512Mi
+      memory: 1Gi
     limits:
       cpu: 2000m
-      memory: 2Gi
+      memory: 3.5Gi  # D4 / L-03 budget, see the comment above `worker:`
   autoscaling:
     enabled: true
     minReplicas: 2
@@ -65,14 +79,17 @@ subgoalWorker:
     tag: "latest"
   replicas: 1
   concurrency: 4
+  maxTasksPerChild: 100
+  maxMemoryPerChildKb: 700000
+  preloadRetrievalModels: false
   queues: "goals.subgoals.free,goals.subgoals.starter,goals.subgoals.professional,goals.subgoals.enterprise"
   resources:
     requests:
       cpu: 200m
-      memory: 512Mi
+      memory: 1Gi
     limits:
       cpu: 1000m
-      memory: 1Gi
+      memory: 3.5Gi  # D4 / L-03 budget, see the comment above `worker:`
 
 # ── Celery Beat ───────────────────────────────────────────────────────────────
 beat:
@@ -131,6 +148,22 @@ externalSecrets:
     masterEncryptionKey:
       remoteRef:
         key: agentverse/master-encryption-key
+    # NF-16 (three roles, see the repo-root CLAUDE.md): database-url should be the
+    # least-privilege app role; the BYPASSRLS maintenance role serves the
+    # cross-tenant system jobs; the owner DSN + app role credentials let the
+    # API's start-up migration provision that app role. Remove an entry to skip it.
+    maintenanceDatabaseUrl:
+      remoteRef:
+        key: agentverse/maintenance-database-url
+    migrationDatabaseUrl:
+      remoteRef:
+        key: agentverse/migration-database-url
+    appDbUser:
+      remoteRef:
+        key: agentverse/app-db-user
+    appDbPassword:
+      remoteRef:
+        key: agentverse/app-db-password
 
 # ── Non-secret config ─────────────────────────────────────────────────────────
 config:

@@ -17,30 +17,63 @@ spec:
     spec:
       containers:
         - name: pgbouncer
-          image: bitnami/pgbouncer:latest
+          # NF-16: the image compose runs, wrapped by the same add-app-user.sh, so
+          # the auth file knows BOTH the owner (DB_USER: migrations, maintenance)
+          # and the least-privilege app role every app pod connects as
+          # (APP_DB_USER). bitnami's image knew neither app nor owner credentials.
+          image: edoburu/pgbouncer:v1.25.2-p0
+          command: ["/bin/sh", "/opt/agentverse/add-app-user.sh"]
+          args: ["/usr/bin/pgbouncer", "/etc/pgbouncer/pgbouncer.ini"]
           ports:
             - containerPort: 5432
+          volumeMounts:
+            - name: scripts
+              mountPath: /opt/agentverse
+              readOnly: true
           env:
-            - name: POSTGRESQL_HOST
+            - name: DB_HOST
               value: "postgres"  # K8s service name
-            - name: POSTGRESQL_PORT
+            - name: DB_PORT
               value: "5432"
-            - name: POSTGRESQL_DATABASE
-              valueFrom:
-                configMapKeyRef:
-                  name: agentverse-config
-                  key: POSTGRES_DB
-                  optional: true
-            - name: PGBOUNCER_DATABASE
+            - name: DB_NAME
               value: "agentverse"
-            - name: PGBOUNCER_MAX_CLIENT_CONN
-              value: "200"
-            - name: PGBOUNCER_DEFAULT_POOL_SIZE
-              value: "20"
-            - name: PGBOUNCER_POOL_MODE
+            - name: DB_USER
+              value: "agentverse"
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: POSTGRES_PASSWORD
+            # The app role's credentials: the SAME Secret keys the migration Job
+            # creates the role with and the apps' DATABASE_URL carries.
+            - name: APP_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: APP_DB_USER
+            - name: APP_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: APP_DB_PASSWORD
+            - name: AUTH_TYPE
+              value: "scram-sha-256"
+            - name: LISTEN_PORT
+              value: "5432"
+            - name: POOL_MODE
               value: "transaction"
-            - name: PGBOUNCER_IGNORE_STARTUP_PARAMETERS
-              value: "extra_float_digits"
+            - name: MAX_CLIENT_CONN
+              value: "200"
+            - name: DEFAULT_POOL_SIZE
+              value: "20"
+            # Two (database, user) pools (app role + owner) share Postgres's
+            # default 100 connections.
+            - name: MAX_DB_CONNECTIONS
+              value: "80"
+            # Every startup parameter asyncpg sends (app/db/session.py), or
+            # PgBouncer refuses the connection.
+            - name: IGNORE_STARTUP_PARAMETERS
+              value: "extra_float_digits,statement_timeout,idle_in_transaction_session_timeout"
           resources:
             requests:
               memory: "64Mi"
@@ -59,6 +92,10 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 30
             failureThreshold: 3
+      volumes:
+        - name: scripts
+          configMap:
+            name: pgbouncer-scripts
 ---
 apiVersion: v1
 kind: Service
@@ -72,3 +109,35 @@ spec:
     - port: 5432
       targetPort: 5432
   type: ClusterIP
+---
+# Byte-identical copy of infra/pgbouncer/add-app-user.sh (kustomize cannot load
+# files outside this directory); tests/infra/test_vault_key_distribution.py
+# fails if the two drift.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-scripts
+  namespace: agentverse
+data:
+  add-app-user.sh: |
+    #!/bin/sh
+    # PgBouncer entrypoint wrapper: register the least-privilege application role.
+    #
+    # The edoburu image writes ONE user (DB_USER, the owner `agentverse`) into its
+    # auth file. The API and workers now connect as APP_DB_USER (NOSUPERUSER,
+    # NOBYPASSRLS), so that role's credentials are added here too — scram-sha-256
+    # with a plain-text auth file, as the image does for DB_USER — before handing
+    # over to the image's own entrypoint.
+    set -eu
+
+    : "${APP_DB_USER:?APP_DB_USER must be set}"
+    : "${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}"
+
+    auth_file="${AUTH_FILE:-/etc/pgbouncer/userlist.txt}"
+    touch "$auth_file"
+    if ! grep -q "^\"${APP_DB_USER}\" " "$auth_file"; then
+      printf '"%s" "%s"\n' "$APP_DB_USER" "$APP_DB_PASSWORD" >> "$auth_file"
+      echo "Wrote authentication credentials for '${APP_DB_USER}' to ${auth_file}"
+    fi
+
+    exec /entrypoint.sh "$@"

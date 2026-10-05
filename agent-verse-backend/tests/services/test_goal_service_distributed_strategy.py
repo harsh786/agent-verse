@@ -189,7 +189,7 @@ async def test_distributed_loop_run_emits_goal_complete_on_success() -> None:
         goal_id="goal-dist-1",
     )
 
-    assert result["terminal_state"] == ExecutionTerminalState.SUCCEEDED.value
+    assert result.terminal_state == ExecutionTerminalState.SUCCEEDED.value
     assert events[-1]["type"] == "goal_complete"
     assert events[-1]["answer"]
     # the per-goal context must not leak past the call
@@ -224,7 +224,48 @@ async def test_distributed_loop_run_emits_goal_failed_when_strategy_is_denied() 
         goal_id="goal-dist-2",
     )
 
-    assert result["terminal_state"] == ExecutionTerminalState.POLICY_DENIED.value
+    assert result.terminal_state == ExecutionTerminalState.POLICY_DENIED.value
     assert events[-1]["type"] == "goal_failed"
     reason = str(events[-1]["reason"])
     assert "strategy_execution_not_implemented" in reason
+
+
+@pytest.mark.asyncio
+async def test_distributed_loop_run_returns_an_agent_state_contract() -> None:
+    """P5-3: the loop is a drop-in for AgentGraph.run — callers (the Celery worker,
+    GoalService) read ``.status`` / ``.iterations``; a dict crashed the worker."""
+    from app.agent.state import AgentState, GoalStatus
+
+    context_store = StrategyGoalContextStore()
+    runner = StrategyRunner(
+        build_default_registry(),
+        executor=DistributedStrategyExecutor(context_store=context_store),
+        admission=default_distributed_admission,
+    )
+    ok_loop = DistributedStrategyLoop(
+        strategy_runner=runner,
+        context_store=context_store,
+        profile=_distributed_profile(),
+        provider=FakeProvider(
+            responses=['{"steps": [{"id": "s1", "summary": "do it"}]}', "sub", "final answer"]
+        ),
+        agent_id="agent-1",
+    )
+    ok = await ok_loop.run(goal="coordinate", tenant_ctx=T, goal_id="goal-dist-3")
+    assert isinstance(ok, AgentState)
+    assert ok.status is GoalStatus.COMPLETE and ok.status.value == "complete"
+    assert ok.iterations >= 1
+    assert ok.terminal_state == ExecutionTerminalState.SUCCEEDED.value
+    assert ok.answer and ok.cited_answer == ok.answer
+
+    denied_loop = DistributedStrategyLoop(
+        strategy_runner=runner,
+        context_store=context_store,
+        profile=_distributed_profile("autogpt"),
+        provider=FakeProvider(),
+        agent_id="agent-1",
+    )
+    denied = await denied_loop.run(goal="x", tenant_ctx=T, goal_id="goal-dist-4")
+    assert isinstance(denied, AgentState)
+    assert denied.status is GoalStatus.FAILED
+    assert "strategy_execution_not_implemented" in denied.error_message

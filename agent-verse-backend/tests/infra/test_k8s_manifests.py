@@ -94,7 +94,7 @@ def test_external_secret_replaces_raw_secret_placeholder() -> None:
     assert "secretStoreRef:" in manifest
     assert "stringData:" not in manifest
     assert "CHANGE_ME" not in manifest
-    assert "secretKey: AGENTVERSE_VAULT_KEY" in manifest
+    assert "secretKey: VAULT_MASTER_KEY" in manifest
 
     dev_secret = K8S_DIR / "secrets.yaml"
     if dev_secret.exists():

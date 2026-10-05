@@ -97,7 +97,6 @@ async def test_a_sync_resolves_open_dlq_entries_of_documents_it_indexed() -> Non
     with (
         patch("app.ingestion.scheduler._build_worker_ingestion",
               return_value=(tracker, pipeline, store)),
-        patch("app.ingestion.scheduler._shared_redis", return_value=None),
         patch("app.ingestion.connector_registry.load_all_connectors"),
         patch("app.ingestion.connector_registry.get_connector", return_value=_Docs),
         patch("app.ingestion.scheduler._schedule_reconcile_if_due", AsyncMock()),

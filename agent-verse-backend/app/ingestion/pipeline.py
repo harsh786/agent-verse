@@ -156,8 +156,14 @@ class IngestionPipeline:
         source_config: SourceConfig,
         *,
         dry_run: bool | None = None,
+        supersedes: str | None = None,
     ) -> PipelineResult:
         """Run all 13 pipeline stages for one document.
+
+        ``supersedes`` (D2): the id of a document this one takes over — a
+        MongoDB document stored under its pre-v8 id. Stage 3 then dedups only
+        against content held by a THIRD document, and Stage 12 deletes the
+        superseded document in the same transaction that writes this one.
 
         LAW-17: correlation_id set if not already present.
         All exceptions are caught and returned in PipelineResult.status="failed".
@@ -241,7 +247,19 @@ class IngestionPipeline:
 
             # ── Stage 3: CONTENT HASH (LAW-02: idempotency) ──────────────────
             content_hash = raw_doc.compute_hash()
-            if self._kb is not None and not dry:
+            if self._kb is not None and not dry and supersedes:
+                # Errors propagate (outer handler -> failed): the caller deletes
+                # the superseded copy only after a confirmed write.
+                holder = await self._kb.document_id_by_hash(
+                    content_hash=content_hash,
+                    tenant_id=source_config.tenant_id,
+                    collection_id=source_config.collection_id,
+                )
+                if holder is not None and holder != supersedes:
+                    result.status = "skipped"
+                    result.skip_reason = "dedup"
+                    return result
+            elif self._kb is not None and not dry:
                 existing = await self._check_existing_hash(
                     content_hash, source_config, doc_id=raw_doc.doc_id
                 )
@@ -427,6 +445,7 @@ class IngestionPipeline:
                     quality_score,
                     pii_detected,
                     provenance,
+                    supersedes=supersedes,
                 )
             except DuplicateContentError:
                 # Lost the race against a concurrent identical ingestion (a retry
@@ -857,6 +876,8 @@ class IngestionPipeline:
         quality_score: float,
         pii_detected: bool,
         provenance: dict[str, Any] | None = None,
+        *,
+        supersedes: str | None = None,
     ) -> list[str]:
         """Write chunks to KnowledgeStore (pgvector + BM25).
 
@@ -926,14 +947,18 @@ class IngestionPipeline:
             # Connector document ids are stable per upstream item, so the same
             # id arriving again with new content is an edit: replace the old
             # version atomically (unchanged content was skipped at Stage 3).
+            extra: dict[str, Any] = {}
+            if supersedes:
+                extra["supersedes_document_id"] = supersedes
             chunk_ids = await self._kb.ingest_chunks_async(
                 rag_chunks,
                 collection_id=config.collection_id,
                 tenant_ctx=tenant_ctx,
                 replace_document=True,
                 duplicates_within_document=True,
+                **extra,
             )
-            return chunk_ids
+            return list(chunk_ids)
         except Exception as e:
             _log.error("pipeline_index_error doc=%s: %s", raw_doc.doc_id, e)
             raise

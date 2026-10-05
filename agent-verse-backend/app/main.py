@@ -194,13 +194,24 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
 
     # Production safety guard: refuse to start with FakeProvider in production.
     if isinstance(_app_provider, FakeProvider):
+        from app.providers.llm_resolution import platform_key_required
+
         env = os.getenv("ENVIRONMENT", "development").lower()
-        if env == "production":
+        # LLM_REQUIRE_PLATFORM_KEY=false: a BYOK-only deployment starts without a
+        # platform key (tenants without their own key get an honest error).
+        if env == "production" and platform_key_required():
             raise RuntimeError(
                 "FATAL: No LLM provider configured for production. "
                 "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
                 "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
             )
+        from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
+
+        if not fake_llm_allowed():
+            # BYOK-3: never canned answers outside development/test. Tenants
+            # with their own key still run (resolved per goal / workflow run).
+            logger.error("no_platform_llm_provider_configured")
+            return UnconfiguredLLMProvider()
         logger.warning(
             "fake_provider_active_dev_only",
             message=(
@@ -733,23 +744,36 @@ def create_app(
         if isinstance(_app_provider, FakeProvider):
             import os as _os
 
-            if _os.getenv("ENVIRONMENT", "development").lower() == "production":
+            from app.providers.llm_resolution import platform_key_required
+
+            if (
+                _os.getenv("ENVIRONMENT", "development").lower() == "production"
+                and platform_key_required()
+            ):
                 raise RuntimeError(
                     "FATAL: No LLM provider configured for production. "
                     "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, "
                     "GROQ_API_KEY, or OLLAMA_BASE_URL environment variable."
                 )
-            logger.warning(
-                "fake_provider_active_dev_only",
-                message="FakeProvider active — set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
-            )
-            _app_provider = FakeProvider(
-                responses=[
-                    '{"steps": ["Complete the requested task"]}',
-                    "Task executed successfully",
-                    '{"success": true, "reason": "Goal achieved"}',
-                ]
-            )
+            from app.providers.llm_resolution import UnconfiguredLLMProvider, fake_llm_allowed
+
+            if not fake_llm_allowed():
+                # BYOK-3: no canned answers outside development/test; keep the
+                # failing stand-in (tenants with their own key still run).
+                logger.error("no_platform_llm_provider_configured")
+                _app_provider = UnconfiguredLLMProvider()
+            else:
+                logger.warning(
+                    "fake_provider_active_dev_only",
+                    message="FakeProvider active — set ANTHROPIC_API_KEY or OPENAI_API_KEY.",
+                )
+                _app_provider = FakeProvider(
+                    responses=[
+                        '{"steps": ["Complete the requested task"]}',
+                        "Task executed successfully",
+                        '{"success": true, "reason": "Goal achieved"}',
+                    ]
+                )
         logger.info("provider_resolved_via_registry")
     except Exception as _reg_exc:
         logger.warning("provider_registry_failed_fallback", error=str(_reg_exc)[:60])
@@ -818,6 +842,11 @@ def create_app(
         _tool_cache_inmem = None
     _fake_redis = _FakeRedis()
     _mcp_registry = mcp_registry or MCPRegistry(redis=_fake_redis)
+    # BYOK-2: refuse to build the API without a usable vault key outside
+    # development/test (same check the Celery worker / beat run at startup).
+    from app.providers.vault import assert_vault_key_configured
+
+    assert_vault_key_configured("api")
     # With no vault the manager stored/persisted OAuth access + refresh tokens
     # in plaintext; always give it the credential vault.
     _oauth_manager = OAuthFlowManager(vault=get_vault())
@@ -1356,6 +1385,16 @@ def create_app(
             from app.db.session import get_system_session_factory
 
             app.state.system_db_session_factory = get_system_session_factory()
+            # BYOK-2: establish / verify the vault key canary the workers check
+            # at startup; /health/ready is down while this API's key cannot open it.
+            from app.providers.vault_canary import publish_vault_canary, vault_key_health_check
+
+            _canary = await publish_vault_canary(db_factory, role="api")
+            if _canary.status == "mismatch":
+                logger.error("vault_canary_mismatch", message=_canary.message)
+            elif not _canary.ok:
+                logger.warning("vault_canary_unverified", message=_canary.message)
+            registry.register(vault_key_health_check(db_factory))
             event_store = EventStore(db_factory)
 
             # MCPREG-01: Postgres is the connector registry's source of truth;
@@ -1814,12 +1853,6 @@ def create_app(
             if _ing_tracker is not None and getattr(_ing_tracker, "_db", None) is None:
                 _ing_tracker._db = db_factory
                 logger.info("ingestion_job_tracker_db_wired")
-            # P1b-1: the sync lock + cancel flags live in the shared Redis, where
-            # the Celery worker that runs the sync releases / reads them.
-            from app.ingestion.job_tracker import attach_shared_redis as _attach_ing_redis
-
-            if _attach_ing_redis(_ing_tracker, redis_for_runtime):
-                logger.info("ingestion_job_tracker_redis_wired")
 
             # WT-3: wire the TriggerDispatcher so trigger fires actually create
             # goals (previously never instantiated -> every fire returned 503).
@@ -1864,14 +1897,27 @@ def create_app(
                 # (node_class(step, ctx, **compiler._services)), so the real
                 # llm/ocr/knowledge services must be wired here — otherwise steps
                 # fall back to FakeProvider and degraded OCR.
+                from app.providers.llm_resolution import (
+                    TenantLLMProviderResolver as _WFLLMResolver,
+                )
+                from app.providers.llm_resolution import (
+                    is_placeholder_provider as _wf_is_placeholder,
+                )
+
+                # BYOK-3: never the canned FakeProvider; LLM steps resolve the
+                # run tenant's provider per execution (tenant BYOK → platform).
+                _wf_platform = None if _wf_is_placeholder(_app_provider) else _app_provider
                 _wf_compiler_db = _WFCompiler(
                     context_resolver=_WFCtx(),
                     checkpointer=_wf_checkpointer,
                     mcp_client=_wf_mcp_client,
                     run_store=_wf_run_store,
                     hitl_workflow_gateway=_wf_hitl_gw_existing,
-                    llm_provider=_app_provider,
-                    provider=_app_provider,
+                    llm_provider=_wf_platform,
+                    provider=_wf_platform,
+                    llm_provider_resolver=_WFLLMResolver(
+                        platform_provider=_wf_platform, db_factory=db_factory
+                    ),
                     ocr_engine=_WFOcrEngine(),
                     knowledge_store=getattr(app.state, "knowledge_store", None),
                     # Durable timer waits: woken by the Celery beat task
@@ -2385,6 +2431,15 @@ def create_app(
                     logger.info("approval_chain_engine_redis_wired")
                 except Exception as _ace_exc:
                     logger.warning("approval_chain_engine_wire_failed", error=str(_ace_exc))
+
+                # ── TG-12: the ingestion sync lock lives in the shared Redis ──────────
+                # (it was process-local: two replicas / workers could sync one
+                # Source at once, and the worker's release of the API's lock
+                # was a no-op). The worker's tracker gets the same Redis.
+                _ing_tracker_redis = getattr(app.state, "ingestion_job_tracker", None)
+                if _ing_tracker_redis is not None:
+                    _ing_tracker_redis._redis = redis_for_runtime
+                    logger.info("ingestion_job_tracker_redis_wired")
 
                 # ── CRDT manager: wire Redis for multi-process Yjs sync ───────────────
                 try:
@@ -3222,8 +3277,15 @@ def create_app(
         # actually finds it — previously it was never passed at all, so every
         # HITL step silently took the no-gateway "test mode" fallback branch
         # and no approval request was ever created for a real workflow run.
+        from app.providers.llm_resolution import TenantLLMProviderResolver
+
         _wf_compiler = WorkflowCompiler(
-            context_resolver=_wf_ctx, hitl_workflow_gateway=_hitl_wf_gateway
+            context_resolver=_wf_ctx,
+            hitl_workflow_gateway=_hitl_wf_gateway,
+            # BYOK-3: tenant BYOK → platform → "no LLM provider configured".
+            llm_provider_resolver=TenantLLMProviderResolver(
+                platform_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
+            ),
         )
         _wf_runner = WorkflowRunner(compiler=_wf_compiler)
         # In-memory (no-DB) engine: sub_workflow runs its child inline via this
@@ -3237,7 +3299,11 @@ def create_app(
         # WF-09: the regex fast path alone 422'd every other phrase; give the
         # resolver the real LLM (never the canned no-key FakeProvider).
         _nl_trigger_resolver = NLTriggerResolver(
-            llm_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
+            llm_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider,
+            # BYOK-3: the calling tenant's own key first, then the platform's.
+            llm_provider_resolver=TenantLLMProviderResolver(
+                platform_provider=None if isinstance(_app_provider, FakeProvider) else _app_provider
+            ),
         )
         _system_template_store = SystemTemplateStore()
 

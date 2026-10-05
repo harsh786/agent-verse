@@ -14,6 +14,16 @@ from app.workflow.steps import StepServiceUnavailableError
 _log = get_logger(__name__)
 
 
+def _default_model_for(provider: Any) -> str:
+    """"" for a tenant's own provider (BYOK-3: its configured default_model applies),
+    else the system-configured model."""
+    from app.providers.model_defaults import configured_default_model
+
+    if getattr(provider, "_byok_tenant_id", None):
+        return ""
+    return configured_default_model("gpt-4o")
+
+
 class LLMStepNode:
     def __init__(
         self,
@@ -24,6 +34,9 @@ class LLMStepNode:
         self.step = step
         self.ctx = context_resolver
         self.llm_provider = services.get("llm_provider")
+        # BYOK-3: resolves the run tenant's provider per execution (tenant BYOK →
+        # platform → error). Preferred over the process-wide ``llm_provider``.
+        self.llm_provider_resolver = services.get("llm_provider_resolver")
         self.knowledge_store = services.get("knowledge_store")
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
@@ -35,6 +48,18 @@ class LLMStepNode:
 
         # Resolve prompt template
         prompt_text = self.ctx.resolve(self.step.prompt, state)
+
+        from app.workflow.llm_provider import step_llm_provider
+
+        # A test run may simulate when nothing is configured (provider None);
+        # a configured but broken tenant BYOK still fails it.
+        provider: Any = await step_llm_provider(
+            resolver=self.llm_provider_resolver,
+            fallback=self.llm_provider,
+            state=state,
+            step_id=self.step.id,
+            required=not state.get("is_test_run"),
+        )
 
         # Optional RAG context injection
         rag_context = ""
@@ -48,7 +73,7 @@ class LLMStepNode:
                     # The chat provider also embeds (NVIDIA/OpenAI-compatible),
                     # so the query is embedded for semantic retrieval; without it
                     # retrieve() degrades to lexical rather than silently failing.
-                    embedder=self.llm_provider,
+                    embedder=provider,
                 )
                 if results:
                     rag_context = "\n\nRelevant context:\n" + "\n---\n".join(
@@ -63,7 +88,7 @@ class LLMStepNode:
         tokens_in = tokens_out = 0
         cost_usd = 0.0
 
-        if self.llm_provider is None:
+        if provider is None:
             # Old bug: a REAL run with no provider wired returned the placeholder
             # "[FakeProvider: <id>]" as if the model had answered, so downstream
             # steps consumed fabricated output. Only test/simulation runs may
@@ -79,7 +104,6 @@ class LLMStepNode:
             }
         else:
             from app.providers.base import CompletionRequest, Message
-            from app.providers.model_defaults import configured_default_model
 
             req = CompletionRequest(
                 messages=[
@@ -91,7 +115,9 @@ class LLMStepNode:
                 ],
                 # Use the step's model, else the system-configured model — never a
                 # hardcoded cloud slug that a self-hosted/NVIDIA endpoint 404s on.
-                model=self.step.model or configured_default_model("gpt-4o"),
+                # A tenant's own provider (BYOK) uses the tenant's configured model
+                # ("" → its default_model), never the platform's slug.
+                model=self.step.model or _default_model_for(provider),
                 temperature=self.step.temperature,
                 max_tokens=self.step.max_tokens,
                 # JSON-object mode for structured steps → clean JSON out even from
@@ -109,7 +135,7 @@ class LLMStepNode:
             # policy applies), like any other provider error.
             run_id = str(state.get("run_id") or "")
             response = await complete_decision(
-                self.llm_provider,
+                provider,
                 req,
                 role="workflow_llm_step",
                 tenant_id=str(state.get("tenant_id") or "") or None,

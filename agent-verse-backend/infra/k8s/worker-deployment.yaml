@@ -17,6 +17,17 @@ spec:
         prometheus.io/port: "9540"
         prometheus.io/path: "/metrics"
     spec:
+      # NF-16: wait in Init — not CrashLoopBackOff — until the migration Job has
+      # brought the schema (read as the app role) to this image's alembic head.
+      initContainers:
+        - name: wait-for-schema
+          image: agentverse-backend:latest
+          command: ["python", "-m", "app.db.wait_for_schema"]
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
       containers:
         - name: worker
           image: agentverse-backend:latest
@@ -83,6 +94,17 @@ spec:
         prometheus.io/port: "9540"
         prometheus.io/path: "/metrics"
     spec:
+      # NF-16: wait in Init — not CrashLoopBackOff — until the migration Job has
+      # brought the schema (read as the app role) to this image's alembic head.
+      initContainers:
+        - name: wait-for-schema
+          image: agentverse-backend:latest
+          command: ["python", "-m", "app.db.wait_for_schema"]
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
       containers:
         - name: subgoal-worker
           image: agentverse-backend:latest

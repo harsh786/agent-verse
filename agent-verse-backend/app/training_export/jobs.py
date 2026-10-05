@@ -102,6 +102,28 @@ class S3ObjectStore:
 
         return await asyncio.to_thread(_get)
 
+    def _delete(self, keys: list[str]) -> set[str]:
+        from botocore.exceptions import ClientError
+
+        client = self._client()
+        try:
+            out = client.delete_objects(
+                Bucket=self.bucket,
+                Delete={"Objects": [{"Key": k} for k in keys], "Quiet": False},
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") == "NoSuchBucket":
+                return set(keys)  # nothing stored, nothing left to delete
+            raise
+        # S3 deletes are idempotent: a key that no longer exists is "Deleted".
+        return {str(d["Key"]) for d in out.get("Deleted", [])}
+
+    async def delete_objects(self, keys: list[str]) -> set[str]:
+        """Delete ``keys`` (one request, at most 1000); return the keys now gone."""
+        if not keys:
+            return set()
+        return await asyncio.to_thread(self._delete, keys)
+
 
 def object_store_from_env() -> S3ObjectStore | None:
     """The configured object store, or None when object storage is not configured.
@@ -420,3 +442,94 @@ async def _claim(db: Any, tenant_id: str, job_id: str) -> str | None:
         {"tok": token, "stale": STALE_HEARTBEAT_SECONDS},
     )
     return token if claimed else None
+
+
+# ── retention (NF-17) ─────────────────────────────────────────────────────────
+
+# S3 DeleteObjects accepts at most 1000 keys per request.
+_MAX_DELETE_BATCH = 1000
+
+
+async def expire_finished_exports(
+    system_db: Any,
+    store: Any,
+    *,
+    retention_hours: int,
+    batch_size: int = 100,
+    max_batches: int = 10,
+) -> dict[str, Any]:
+    """Delete the files of exports finished over ``retention_hours`` ago; mark them expired.
+
+    Cross-tenant system work: ``system_db`` is the maintenance (BYPASSRLS)
+    factory. Each batch locks at most ``batch_size`` due rows (``FOR UPDATE SKIP
+    LOCKED`` — concurrent runs on several workers take disjoint rows, served by
+    ``ix_training_export_jobs_complete_completed``), deletes their objects in one
+    request, and marks ``expired`` ONLY the jobs whose object is really gone; a
+    job whose delete failed stays ``complete`` (retried next run) and is skipped
+    for the rest of this run so it never blocks the jobs behind it. At most
+    ``max_batches`` batches per run. ``retention_hours <= 0`` disables expiry.
+    Raises :class:`TrainingExportUnavailableError` when object storage is not
+    configured — files could not be deleted, so no job is marked expired.
+    """
+    if retention_hours <= 0:
+        return {"status": "disabled", "expired": 0, "delete_failed": 0, "batches": 0}
+    if store is None:
+        raise TrainingExportUnavailableError(
+            "object storage is not configured; finished exports cannot be expired"
+        )
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+
+    batch = max(1, min(int(batch_size), _MAX_DELETE_BATCH))
+    expired = 0
+    failed_ids: list[str] = []
+    batches = 0
+    for _ in range(max(1, int(max_batches))):
+        async with system_db() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, tenant_id, object_key FROM training_export_jobs "
+                        "WHERE status = 'complete' "
+                        "AND completed_at < NOW() - make_interval(hours => :h) "
+                        "AND NOT (id = ANY(CAST(:skip AS varchar[]))) "
+                        "ORDER BY completed_at LIMIT :lim FOR UPDATE SKIP LOCKED"
+                    ),
+                    {"h": int(retention_hours), "skip": failed_ids, "lim": batch},
+                )
+            ).fetchall()
+            if not rows:
+                break
+            batches += 1
+            keys = [str(r[2]) for r in rows if r[2]]
+            try:
+                gone = await store.delete_objects(keys)
+            except Exception as exc:
+                _log.error("training_export_expiry_delete_failed keys=%d: %s", len(keys), exc)
+                gone = set()
+            done = [r for r in rows if not r[2] or str(r[2]) in gone]
+            failed_ids.extend(str(r[0]) for r in rows if r[2] and str(r[2]) not in gone)
+            if done:
+                result = await session.execute(
+                    text(
+                        "UPDATE training_export_jobs AS j SET status = 'expired', "
+                        "object_key = NULL "
+                        "FROM unnest(CAST(:ids AS varchar[]), CAST(:tids AS varchar[])) "
+                        "AS d(id, tenant_id) "
+                        "WHERE j.id = d.id AND j.tenant_id = d.tenant_id "
+                        "AND j.status = 'complete'"
+                    ),
+                    {"ids": [str(r[0]) for r in done], "tids": [str(r[1]) for r in done]},
+                )
+                expired += int(getattr(result, "rowcount", 0) or 0)
+        if len(rows) < batch:
+            break
+    if failed_ids:
+        _log.warning("training_export_expiry_incomplete failed=%d", len(failed_ids))
+    return {
+        "status": "ok",
+        "expired": expired,
+        "delete_failed": len(failed_ids),
+        "batches": batches,
+    }

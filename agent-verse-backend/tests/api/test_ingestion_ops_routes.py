@@ -18,7 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.ingestion as ingestion_mod
-from app.api.ingestion import _run_sync, documents_router, router
+from app.api.ingestion import documents_router, router
 from app.ingestion.base_connector import ConnectionHealth
 from app.ingestion.job_tracker import IngestionJobTracker
 from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfig, SourceFamily
@@ -145,7 +145,11 @@ def test_cancel_unknown_source_is_404() -> None:
     assert resp.status_code == 404
 
 
-async def test_api_side_sync_stops_when_cancelled() -> None:
+async def test_worker_sync_stops_when_cancelled() -> None:
+    # NF-18: the API-side in-process sync (_run_sync) is gone; the cancel is
+    # honoured by the one sync path, the worker's (under the shared lock).
+    from app.ingestion.scheduler import _sync_source_async
+
     tracker = IngestionJobTracker()
     source = _source()
     job_id = await tracker.acquire_lock(source.source_id, _CTX.tenant_id)
@@ -172,8 +176,23 @@ async def test_api_side_sync_stops_when_cancelled() -> None:
                               status="indexed", chunks_created=1)
 
     pipeline.ingest = _ingest
-    with patch("app.ingestion.connector_registry.get_connector", return_value=_Connector):
-        await _run_sync(source, pipeline, tracker, job_id)
+    source_store = AsyncMock()
+    source_store.get = AsyncMock(return_value=source)
+    with (
+        patch("app.ingestion.connector_registry.get_connector", return_value=_Connector),
+        patch(
+            "app.ingestion.scheduler._build_worker_ingestion",
+            return_value=(tracker, pipeline, source_store),
+        ),
+    ):
+        result = await _sync_source_async(
+            task=None,
+            source_id=source.source_id,
+            tenant_id=_CTX.tenant_id,
+            triggered_by="manual",
+            job_id=job_id,
+        )
+    assert result["cancelled"] is True
     assert ingested == ["d0", "d1"]
     job = tracker.get_job(job_id)
     assert job is not None and job.status == "cancelled"

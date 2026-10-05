@@ -195,3 +195,135 @@ def test_only_the_main_dev_worker_preloads_retrieval_models() -> None:
         for name, _argv, _limit, env in _compose_workers(INFRA / "docker-compose.yml")
     }
     assert preload == {"worker": True, "subgoal-worker": False, "workflow-worker": False}
+
+
+# ── D4: Helm charts use the same per-pod budget as compose/k8s ──────────────
+# Owner decision D4 (2026-10-05): 4 worker processes per pod, a 3.5Gi limit, an
+# explicit 700 MB per-child cap and lazy model loading; capacity scales with pods.
+# ``helm template`` renders the charts when helm is installed; otherwise the
+# worker command lines are rendered from the values files by substituting the
+# ``{{ .Values.<pool>.<key> }}`` placeholders (every overlay merged on values.yaml).
+
+_MAINTAINED_CHART = INFRA / "helm" / "agentverse"
+_LEGACY_CHART = BACKEND / "helm" / "agentverse"
+_HELM_POOLS = ("worker", "subgoalWorker")
+_PLACEHOLDER = re.compile(r"\{\{-?\s*\.Values\.(\w+)\.(\w+)\s*(\|\s*quote\s*)?-?\}\}")
+
+
+def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _chart_values(chart: Path) -> list[tuple[str, dict[str, Any]]]:
+    base = yaml.safe_load((chart / "values.yaml").read_text()) or {}
+    out = [("values.yaml", base)]
+    for overlay in sorted(chart.glob("values-*.yaml")):
+        out.append((overlay.name, _merge(base, yaml.safe_load(overlay.read_text()) or {})))
+    return out
+
+
+def _subst(text: str, values: dict[str, Any]) -> str:
+    def _one(m: re.Match[str]) -> str:
+        value = values[m.group(1)][m.group(2)]
+        if isinstance(value, bool):
+            value = str(value).lower()
+        return json.dumps(str(value)) if m.group(3) else str(value)
+
+    return _PLACEHOLDER.sub(_one, text)
+
+
+def _maintained_pool(values: dict[str, Any], pool: str) -> tuple[list[str], str, dict[str, str]]:
+    """Render one pool's argv / memory limit / env from app-workloads.yaml."""
+    template = (_MAINTAINED_CHART / "templates" / "app-workloads.yaml").read_text()
+    block = template.split(f"{{{{- if .Values.{pool}.enabled }}}}", 1)[1].split("{{- end }}")[0]
+    args_line = next(ln for ln in block.splitlines() if ln.strip().startswith("args:"))
+    argv = ["celery", *yaml.safe_load(_subst(args_line.split("args:", 1)[1], values))]
+    env: dict[str, str] = {}
+    lines = block.splitlines()
+    for i, ln in enumerate(lines):
+        m = re.match(r"\s*- name: (WORKER_\w+)$", ln)
+        if m:
+            env[m.group(1)] = yaml.safe_load(_subst(lines[i + 1].split("value:", 1)[1], values))
+    return argv, str(values[pool]["resources"]["limits"]["memory"]), env
+
+
+def _legacy_pool(values: dict[str, Any], pool: str) -> tuple[list[str], str, dict[str, str]]:
+    name = "worker-deployment.yaml" if pool == "worker" else "subgoal-worker-deployment.yaml"
+    text = (_LEGACY_CHART / "templates" / name).read_text()
+    command = text.split("command:", 1)[1].split("envFrom:", 1)[0]
+    argv = [str(a) for a in yaml.safe_load(_subst(command, values))]
+    env: dict[str, str] = {}
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        m = re.match(r"\s*- name: (WORKER_\w+)$", ln)
+        if m:
+            env[m.group(1)] = yaml.safe_load(_subst(lines[i + 1].split("value:", 1)[1], values))
+    return argv, str(values[pool]["resources"]["limits"]["memory"]), env
+
+
+def _helm_rendered(chart: Path, values_file: str) -> list[tuple[str, list[str], str, dict[str, str]]]:
+    files = ["-f", str(chart / "values.yaml")]
+    if values_file != "values.yaml":
+        files += ["-f", str(chart / values_file)]
+    out = subprocess.run(
+        ["helm", "template", "d4", str(chart), *files],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=True,
+    ).stdout
+    pools = []
+    for doc in yaml.safe_load_all(out):
+        if not doc or doc.get("kind") != "Deployment":
+            continue
+        for c in doc["spec"]["template"]["spec"]["containers"]:
+            argv = [str(a) for a in c.get("command", []) + c.get("args", [])]
+            if "worker" in argv:
+                env = {e["name"]: str(e.get("value")) for e in c.get("env", []) if "value" in e}
+                pools.append((c["name"], argv, str(c["resources"]["limits"]["memory"]), env))
+    return pools
+
+
+def _helm_pools(chart: Path) -> list[tuple[str, list[str], str, dict[str, str]]]:
+    import shutil
+
+    render = _maintained_pool if chart == _MAINTAINED_CHART else _legacy_pool
+    pools = []
+    for values_file, values in _chart_values(chart):
+        if shutil.which("helm"):
+            for name, argv, limit, env in _helm_rendered(chart, values_file):
+                pools.append((f"{values_file}:{name}", argv, limit, env))
+            continue
+        for pool in _HELM_POOLS:
+            if (values.get(pool) or {}).get("enabled", True) is False:
+                continue
+            argv, limit, env = render(values, pool)
+            pools.append((f"{values_file}:{pool}", argv, limit, env))
+    return pools
+
+
+@pytest.mark.parametrize("chart", [_MAINTAINED_CHART, _LEGACY_CHART], ids=["infra", "legacy"])
+def test_helm_worker_pools_fit_their_memory_limit(chart: Path) -> None:
+    pools = _helm_pools(chart)
+    assert pools
+    for where, argv, limit, env in pools:
+        _assert_fits(f"helm {chart.parent.parent.name}/{where}", argv, limit)
+        assert _flag(argv, "--concurrency") == "4", f"{where}: D4 runs 4 processes per pod"
+        assert int(_flag(argv, "--max-memory-per-child") or 0) == 700_000, where
+        assert _flag(argv, "--max-tasks-per-child") == "100", where
+        assert _mb(limit) == 3.5 * 1024, f"{where}: D4 sets a 3.5Gi limit, got {limit}"
+        # L-03: production pools load the reranker lazily (no per-child preload).
+        assert env.get("WORKER_PRELOAD_RETRIEVAL_MODELS") == "false", where
+
+
+@pytest.mark.parametrize("chart", [_MAINTAINED_CHART, _LEGACY_CHART], ids=["infra", "legacy"])
+def test_helm_values_document_the_worker_budget(chart: Path) -> None:
+    text = (chart / "values.yaml").read_text()
+    for needle in ("D4", "L-03", "3.5Gi", "700"):
+        assert needle in text, f"{chart}/values.yaml: worker budget comment lacks {needle!r}"

@@ -69,6 +69,17 @@ class Agent(Base):
     )
     cloned_from: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # D3: opt-in to the public A2A directory, with the card text the owner wrote
+    # for it (never derived from prompts / tools / connectors).
+    a2a_public: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    a2a_description: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    a2a_skills: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list, server_default=text("'[]'")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

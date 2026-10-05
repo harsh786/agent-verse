@@ -328,14 +328,16 @@ def test_run_goal_records_duration_metric_on_worker_failure(monkeypatch: Any) ->
         ),
     )
 
-    with pytest.raises(RuntimeError, match="worker failed"):
-        run_goal.run(
-            goal_id="goal-fail",
-            tenant_id="tenant-1",
-            goal_text="Run deployment verification",
-            priority="critical",
-        )
+    # NF-10: a non-transient error fails the goal once instead of retrying.
+    result = run_goal.run(
+        goal_id="goal-fail",
+        tenant_id="tenant-1",
+        goal_text="Run deployment verification",
+        priority="critical",
+    )
 
+    assert result["status"] == "failed"
+    assert result["retryable"] is False
     assert duration_metrics == [
         {"status": "failed", "duration_seconds": 3.25, "priority": "critical"}
     ]

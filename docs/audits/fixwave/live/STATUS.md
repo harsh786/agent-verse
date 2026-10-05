@@ -15,3 +15,4 @@
 | 11 | B3 github, stripe, jira, teams_webhook | PENDING | |
 | 12 | B7 Platform events | PENDING | |
 | 13 | B8 Conversational | PENDING | |
+| 14 | C1–C5 Channels: Telegram, WhatsApp, Slack, Teams, generic webhook (inbound → tenant binding → goal/chat → outbound reply) | PENDING — known: Teams routes by shared serviceUrl (cross-tenant), Slack slash commands single-tenant, channel→tenant binding only via CHANNEL_TENANT_MAP env, per-org gateway config 501, Telegram/WhatsApp have no e2e | |

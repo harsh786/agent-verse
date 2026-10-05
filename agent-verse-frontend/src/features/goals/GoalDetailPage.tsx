@@ -142,11 +142,14 @@ function RichResultPanel({
   events,
   goal,
   status,
+  apiFailureReason,
 }: {
   artifact: any;
   events: StreamGoalEvent[];
   goal: string;
   status: string;
+  /** NF-14: the goal resource's sanitized failure_reason (durable, any replica). */
+  apiFailureReason?: string | null;
 }) {
   const verificationFeedback = artifact?.evidence?.verification;
   const summary = artifact?.summary ? unwrapToolResult(artifact.summary) : artifact?.summary;
@@ -184,7 +187,11 @@ function RichResultPanel({
   // Why the goal failed — e.g. a step denied because it needs a human approval
   // the goal's autonomy mode never waits for. The API path emits goal_failed,
   // the worker path worker_failed; both carry the reason.
+  // NF-14: the API's sanitized failure_reason is preferred — it is durable and
+  // present even when no failure event reached this stream (e.g. a parked goal
+  // failed by the beat, or a page opened after the events were trimmed).
   const failureReason = useMemo(() => {
+    if (apiFailureReason) return apiFailureReason;
     for (let i = events.length - 1; i >= 0; i--) {
       const e = events[i];
       if (e.type === "goal_failed" || e.type === "worker_failed") {
@@ -193,7 +200,7 @@ function RichResultPanel({
       }
     }
     return null;
-  }, [events]);
+  }, [events, apiFailureReason]);
 
   // Determine if goal actually produced output despite being marked empty
   const hasRealOutput = finalOutput || (toolResults.length > 0);
@@ -1206,6 +1213,7 @@ export function GoalDetailPage() {
             events={events}
             goal={goal.goal}
             status={goal.status}
+            apiFailureReason={goal.failure_reason}
           />
           {goalId && <GoalFeedback goalId={goalId} status={goal.status} />}
         </div>

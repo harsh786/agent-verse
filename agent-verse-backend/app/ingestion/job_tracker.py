@@ -17,9 +17,12 @@ Database posture (the API runs as a NOBYPASSRLS role):
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 import logging
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -33,33 +36,141 @@ _BYTES_MARKER = "__bytes_b64__"
 _log = logging.getLogger(__name__)
 
 
+class SyncLockUnavailableError(RuntimeError):
+    """The shared sync lock cannot be taken or checked (Redis unreachable)."""
+
+
+class SyncLockLostError(RuntimeError):
+    """This run no longer holds its Source's sync lock (expired, or taken over).
+
+    Raised by the lease check between documents and by a fenced cursor commit
+    that matched no row; the run stops without committing anything more.
+    """
+
+
+class IngestionPersistenceError(RuntimeError):
+    """A job row or cursor could not be written to Postgres (NF-12).
+
+    These writes used to be logged at WARNING and dropped, so a job that was
+    never recorded — or a cursor that was never committed — looked successful.
+    The run stops instead; a cursor is never advanced past a failed write.
+    """
+
+
+def _db_error(exc: BaseException) -> str:
+    """The error class only: driver messages can name hosts/ports (tenant-visible)."""
+    return type(exc).__name__
+
+
+# Hold KEYS[1] under ARGV[1] for ARGV[2] ms: extend it if ours, take it if free.
+_ADOPT_LUA = """
+local v = redis.call('GET', KEYS[1])
+if v == ARGV[1] then
+  redis.call('PEXPIRE', KEYS[1], ARGV[2])
+  return 1
+end
+if not v then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+  return 1
+end
+return 0
+"""
+# Extend KEYS[1] only while ARGV[1] holds it.
+_RENEW_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
+# Delete KEYS[1] only while ARGV[1] holds it.
+_RELEASE_LUA = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+def _text(value: Any) -> str:
+    return value.decode() if isinstance(value, bytes | bytearray) else str(value)
+
+
+class SyncLease:
+    """A held Source sync lock: its token, its fencing token, and its renewal.
+
+    A background task renews the lock every third of its TTL. When a renewal
+    finds the lock gone (or Redis has not confirmed it for a whole TTL) the
+    lease is ``lost`` and :meth:`check` raises :class:`SyncLockLostError`, so
+    the sync stops between documents instead of running on unlocked.
+    """
+
+    def __init__(
+        self,
+        tracker: IngestionJobTracker,
+        source_id: str,
+        tenant_id: str,
+        token: str,
+        fence: int,
+        ttl_seconds: int,
+    ) -> None:
+        self.tracker = tracker
+        self.source_id = source_id
+        self.tenant_id = tenant_id
+        self.token = token
+        self.fence = fence
+        self.ttl_seconds = ttl_seconds
+        self.lost = False
+        self.reason = ""
+        self._task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        self._task = asyncio.get_running_loop().create_task(self._renew_forever())
+
+    async def _renew_forever(self) -> None:
+        interval = max(0.05, self.ttl_seconds / 3)
+        confirmed = time.monotonic()
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                held = await self.tracker.renew_lock(
+                    self.source_id, self.tenant_id, self.token, self.ttl_seconds
+                )
+            except Exception as exc:
+                _log.warning("ingestion_lock_renew_error source=%s: %s", self.source_id, exc)
+                if time.monotonic() - confirmed >= self.ttl_seconds:
+                    self._lose(f"the lock could not be renewed for {self.ttl_seconds}s: {exc}")
+                    return
+                continue
+            if not held:
+                self._lose("the lock expired or was taken by another sync")
+                return
+            confirmed = time.monotonic()
+
+    def _lose(self, reason: str) -> None:
+        self.lost = True
+        self.reason = reason
+        _log.warning("ingestion_lock_lost source=%s job=%s: %s", self.source_id, self.token, reason)
+
+    def check(self) -> None:
+        if self.lost:
+            raise SyncLockLostError(
+                f"sync of source {self.source_id} stopped: it no longer holds the source's "
+                f"sync lock ({self.reason}); nothing more was committed"
+            )
+
+    async def release(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._task
+        await self.tracker.release_lock(self.source_id, self.tenant_id, self.token)
+
+
 def _orphan_reason(older_than_seconds: int) -> str:
     return (
         f"orphaned: no worker finished this job within {older_than_seconds}s "
         "(the worker was lost or restarted); trigger the sync again"
     )
-
-
-def _as_text(value: object) -> str:
-    return value.decode() if isinstance(value, bytes | bytearray) else str(value)
-
-
-def attach_shared_redis(tracker: object, redis: object) -> bool:
-    """Give a tracker that has no Redis the shared client (P1b-1).
-
-    The sync lock and the cancel flag must be visible to every process: the API
-    takes the lock and the Celery worker releases it, the API sets the cancel
-    flag and the worker reads it. With a per-process (in-memory) tracker the
-    worker could never release the API's lock — every later manual sync was
-    ``already_running`` — and a scheduled sync ran beside a manual one. Returns
-    True when the client was attached.
-    """
-    if tracker is None or redis is None or not hasattr(tracker, "_redis"):
-        return False
-    if getattr(tracker, "_redis", None) is not None:
-        return False
-    setattr(tracker, "_redis", redis)  # noqa: B010 - private slot of the tracker
-    return True
 
 
 class IngestionJobTracker:
@@ -78,59 +189,124 @@ class IngestionJobTracker:
         self._source_cursors: dict[str, str] = {}  # source_id → cursor
         self._locks: dict[str, str] = {}  # source_id → job_id
         self._cancelled: set[str] = set()  # job ids with a cancel request
+        self._fences: dict[str, int] = {}  # source_id → last fence (no DB)
 
-    # ── Distributed locking (LAW-14) ─────────────────────────────────────────
+    # ── Distributed locking (LAW-14 / TG-12) ─────────────────────────────────
+    #
+    # One sync per Source across every API replica and Celery worker: the lock
+    # is a Redis key (``SET NX`` + TTL) whose value is the holder's token (the
+    # job id). Renewal, adoption and release are compare-and-set Lua scripts,
+    # so a holder can only extend or free its OWN lock. With Redis configured,
+    # a Redis failure refuses the lock (SyncLockUnavailableError) — it never
+    # falls back to this process's memory, which another replica cannot see.
+    #
+    # A lock can still be lost (TTL expired while a worker was stalled). The
+    # fencing token makes that harmless: each run that takes a Source's lock
+    # bumps ``source_configs.sync_fence`` and gets the new value; its cursor
+    # commits only apply while the row still carries that value, so a stale
+    # holder's write matches nothing and it stops (SyncLockLostError).
+
+    @staticmethod
+    def _lock_key(tenant_id: str, source_id: str) -> str:
+        return f"ingestion_lock:{tenant_id}:{source_id}"
 
     async def acquire_lock(
         self, source_id: str, tenant_id: str, ttl_seconds: int = 3600
     ) -> str | None:
-        """Acquire exclusive ingestion lock for a source.
+        """Take the Source's sync lock; its token (the job id), or None when held.
 
-        Returns job_id if lock acquired, None if already held by another worker.
+        Raises :class:`SyncLockUnavailableError` when the shared Redis cannot
+        answer (fail closed: "already running" would be a lie, and a
+        process-local lock is no lock across replicas).
         """
-        lock_key = f"ingestion_lock:{tenant_id}:{source_id}"
         job_id = uuid.uuid4().hex
-
         if self._redis is not None:
+            lock_key = self._lock_key(tenant_id, source_id)
             try:
                 acquired = await self._redis.set(lock_key, job_id, nx=True, ex=ttl_seconds)
                 if not acquired:
-                    existing = await self._redis.get(lock_key)
                     _log.info(
                         "ingestion_lock_held source=%s existing_job=%s",
                         source_id,
-                        existing,
+                        _text(await self._redis.get(lock_key)),
                     )
                     return None
                 return job_id
-            except Exception as e:
-                _log.warning("ingestion_lock_redis_error source=%s: %s", source_id, e)
-                # Fall through to in-memory
+            except Exception as exc:
+                _log.warning("ingestion_lock_redis_error source=%s: %s", source_id, exc)
+                raise SyncLockUnavailableError(
+                    f"the sync lock for source {source_id} is unavailable: {exc}"
+                ) from exc
 
-        # In-memory fallback
+        # Process-local (no Redis configured: a single-process dev setup).
         if source_id in self._locks:
             return None
         self._locks[source_id] = job_id
         return job_id
 
-    async def release_lock(self, source_id: str, tenant_id: str, job_id: str | None = None) -> None:
-        """Release the distributed ingestion lock."""
-        lock_key = f"ingestion_lock:{tenant_id}:{source_id}"
+    async def adopt_lock(
+        self, source_id: str, tenant_id: str, token: str, ttl_seconds: int
+    ) -> bool:
+        """Hold the lock under ``token`` for ``ttl_seconds`` more: True when it is ours.
+
+        A worker adopts the lock the API took for its job. If that lock expired
+        while the task waited in the queue and nobody took it, the worker takes
+        it again under the same token; if another run holds it, False.
+        """
         if self._redis is not None:
             try:
-                if job_id:
-                    stored = await self._redis.get(lock_key)
-                    # The API's pooled client decodes responses (str); others
-                    # return bytes. ``stored.decode()`` on a str raised here and
-                    # the lock was never released (P1b-1).
-                    if stored is not None and _as_text(stored) == job_id:
-                        await self._redis.delete(lock_key)
-                else:
-                    await self._redis.delete(lock_key)
+                result = await self._redis.eval(
+                    _ADOPT_LUA,
+                    1,
+                    self._lock_key(tenant_id, source_id),
+                    token,
+                    str(int(ttl_seconds * 1000)),
+                )
+            except Exception as exc:
+                raise SyncLockUnavailableError(
+                    f"the sync lock for source {source_id} is unavailable: {exc}"
+                ) from exc
+            return int(result) == 1
+        holder = self._locks.get(source_id)
+        if holder is None:
+            self._locks[source_id] = token
+            return True
+        return holder == token
+
+    async def renew_lock(
+        self, source_id: str, tenant_id: str, token: str, ttl_seconds: int
+    ) -> bool:
+        """Extend the lock's TTL if ``token`` still holds it; False when it was lost."""
+        if self._redis is not None:
+            result = await self._redis.eval(
+                _RENEW_LUA,
+                1,
+                self._lock_key(tenant_id, source_id),
+                token,
+                str(int(ttl_seconds * 1000)),
+            )
+            return int(result) == 1
+        return self._locks.get(source_id) == token
+
+    async def release_lock(self, source_id: str, tenant_id: str, job_id: str | None = None) -> None:
+        """Release the Source's lock — only if ``job_id`` (the token) still holds it.
+
+        Without a token nothing is released from Redis: an unowned release could
+        free a lock another run holds (the old behaviour), letting a second sync
+        start alongside it.
+        """
+        if self._redis is not None:
+            if not job_id:
+                _log.warning("ingestion_lock_release_without_token source=%s", source_id)
                 return
-            except Exception as e:
-                _log.warning("ingestion_lock_release_error source=%s: %s", source_id, e)
-        # In-memory fallback
+            try:
+                await self._redis.eval(
+                    _RELEASE_LUA, 1, self._lock_key(tenant_id, source_id), job_id
+                )
+            except Exception as exc:
+                # The TTL frees it; nothing else may.
+                _log.warning("ingestion_lock_release_error source=%s: %s", source_id, exc)
+            return
         if job_id:
             if self._locks.get(source_id) == job_id:
                 del self._locks[source_id]
@@ -140,11 +316,74 @@ class IngestionJobTracker:
     async def running_job_id(self, source_id: str, tenant_id: str) -> str | None:
         """The job id holding the source's sync lock (a sync is running), or None."""
         if self._redis is not None:
-            value = await self._redis.get(f"ingestion_lock:{tenant_id}:{source_id}")
-            if value is None:
-                return None
-            return value.decode() if isinstance(value, bytes | bytearray) else str(value)
+            value = await self._redis.get(self._lock_key(tenant_id, source_id))
+            return None if value is None else _text(value)
         return self._locks.get(source_id)
+
+    async def take_fence(self, source_id: str, tenant_id: str) -> int:
+        """Issue this run's fencing token: bump and return ``source_configs.sync_fence``.
+
+        Called once the run holds the lock. Any later holder bumps it again, so
+        :meth:`update_cursor` with an older fence matches no row.
+        """
+        if self._db is None:
+            self._fences[source_id] = self._fences.get(source_id, 0) + 1
+            return self._fences[source_id]
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            fence = (
+                await session.execute(
+                    text(
+                        "UPDATE source_configs SET sync_fence = sync_fence + 1 "
+                        "WHERE id = :sid AND tenant_id = :tid RETURNING sync_fence"
+                    ),
+                    {"sid": source_id, "tid": tenant_id},
+                )
+            ).scalar_one_or_none()
+        if fence is None:
+            raise SyncLockLostError(f"source {source_id} no longer exists")
+        return int(fence)
+
+    async def hold(
+        self, source_id: str, tenant_id: str, token: str, *, ttl_seconds: int
+    ) -> SyncLease | None:
+        """Adopt the lock under ``token``, take a fence and keep the lock renewed.
+
+        Returns None when another run holds the lock. The caller must
+        :meth:`SyncLease.release` it (in a ``finally``).
+        """
+        if not await self.adopt_lock(source_id, tenant_id, token, ttl_seconds):
+            return None
+        try:
+            fence = await self.take_fence(source_id, tenant_id)
+        except BaseException:
+            await self.release_lock(source_id, tenant_id, token)
+            raise
+        lease = SyncLease(self, source_id, tenant_id, token, fence, ttl_seconds)
+        lease.start()
+        return lease
+
+    async def hold_without_fence(
+        self, source_id: str, tenant_id: str, *, ttl_seconds: int
+    ) -> SyncLease | None:
+        """Take the lock (new token) and keep it renewed — no fencing token (NF-18).
+
+        For runs that commit no cursor and have no ``source_configs`` row to
+        fence on (the webhook re-ingest of a synthetic source). None when the
+        lock is held; raises :class:`SyncLockUnavailableError` when it cannot be
+        checked. The caller must :meth:`SyncLease.release` it.
+        """
+        token = await self.acquire_lock(source_id, tenant_id, ttl_seconds=ttl_seconds)
+        if token is None:
+            return None
+        lease = SyncLease(self, source_id, tenant_id, token, 0, ttl_seconds)
+        lease.start()
+        return lease
 
     # ── Cancellation (KB-15) ──────────────────────────────────────────────────
     # A cancel request is a Redis flag keyed by job id, so the API replica that
@@ -194,10 +433,10 @@ class IngestionJobTracker:
             cursor_before=cursor_before,
             created_at=datetime.now(UTC).isoformat(),
         )
-        self._jobs[job_id] = job
-
         if self._db is not None:
+            # Raises IngestionPersistenceError: an unrecorded job never runs.
             await self._persist_job_created(job)
+        self._jobs[job_id] = job
 
         return job
 
@@ -206,22 +445,35 @@ class IngestionJobTracker:
         job: IngestionJob,
         new_cursor: str,
         source_config: SourceConfig,
+        *,
+        fence: int | None = None,
     ) -> None:
         """Commit the new cursor position — the key to resumability (LAW-03).
 
         Called after each batch of documents is successfully indexed.
         If the worker crashes after this point, the next run starts from here.
-        """
-        job.cursor_after = new_cursor
-        source_config.cursor_value = new_cursor
 
+        With ``fence`` (the run's fencing token, TG-12) the commit applies only
+        while the Source still carries that fence; otherwise a newer run owns the
+        Source and :class:`SyncLockLostError` is raised — nothing is written.
+        """
+        if fence is not None and self._db is None:
+            current = self._fences.get(source_config.source_id)
+            if current is not None and current != fence:
+                raise SyncLockLostError(
+                    f"cursor of source {source_config.source_id} not committed: a newer "
+                    "sync holds its lock"
+                )
         if self._db is not None:
             await self._persist_cursor_update(
                 source_config.source_id,
                 source_config.tenant_id,
                 new_cursor,
                 job.job_id,
+                fence=fence,
             )
+        job.cursor_after = new_cursor
+        source_config.cursor_value = new_cursor
 
     async def increment_counters(
         self,
@@ -298,7 +550,15 @@ class IngestionJobTracker:
         )
 
         if self._db is not None:
-            await self._persist_job_completed(job)
+            try:
+                await self._persist_job_completed(job)
+            except IngestionPersistenceError as exc:
+                # Never report a result that was not recorded: the job is failed
+                # here, the caller gets the error, and the stale-job reaper fails
+                # the still-"running" row if no later write lands.
+                job.status = "failed"
+                job.error_message = str(exc)[:2048]
+                raise
 
     def get_job(self, job_id: str) -> IngestionJob | None:
         return self._jobs.get(job_id)
@@ -459,7 +719,10 @@ class IngestionJobTracker:
                     },
                 )
         except Exception as e:
-            _log.warning("ingestion_job_persist_error job=%s: %s", job.job_id, e)
+            _log.error("ingestion_job_persist_error job=%s: %s", job.job_id, e)
+            raise IngestionPersistenceError(
+                f"ingestion job {job.job_id} could not be recorded ({_db_error(e)})"
+            ) from e
 
     async def _persist_cursor_update(
         self,
@@ -467,6 +730,8 @@ class IngestionJobTracker:
         tenant_id: str,
         cursor: str,
         job_id: str,
+        *,
+        fence: int | None = None,
     ) -> None:
         try:
             from sqlalchemy import text
@@ -476,14 +741,24 @@ class IngestionJobTracker:
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
-                await session.execute(
-                    text("""
-                        UPDATE source_configs
-                           SET cursor_value = :cursor, updated_at = NOW()
-                         WHERE id = :source_id AND tenant_id = :tenant_id
-                    """),
-                    {"cursor": cursor, "source_id": source_id, "tenant_id": tenant_id},
+                updated = await session.execute(
+                    text(
+                        "UPDATE source_configs SET cursor_value = :cursor, updated_at = NOW() "
+                        "WHERE id = :source_id AND tenant_id = :tenant_id"
+                        + ("" if fence is None else " AND sync_fence = :fence")
+                    ),
+                    {
+                        "cursor": cursor,
+                        "source_id": source_id,
+                        "tenant_id": tenant_id,
+                        **({} if fence is None else {"fence": fence}),
+                    },
                 )
+                if fence is not None and getattr(updated, "rowcount", 1) == 0:
+                    raise SyncLockLostError(
+                        f"cursor of source {source_id} not committed: a newer sync holds "
+                        "its lock (or the source was deleted)"
+                    )
                 await session.execute(
                     text("""
                         UPDATE ingestion_jobs
@@ -492,8 +767,14 @@ class IngestionJobTracker:
                     """),
                     {"cursor": cursor, "job_id": job_id, "tenant_id": tenant_id},
                 )
+        except SyncLockLostError:
+            raise
         except Exception as e:
-            _log.warning("ingestion_cursor_persist_error source=%s: %s", source_id, e)
+            _log.error("ingestion_cursor_persist_error source=%s: %s", source_id, e)
+            raise IngestionPersistenceError(
+                f"cursor of source {source_id} could not be saved ({_db_error(e)}); "
+                "the sync stopped without advancing it"
+            ) from e
 
     async def _persist_job_completed(self, job: IngestionJob) -> None:
         try:
@@ -538,7 +819,10 @@ class IngestionJobTracker:
                     },
                 )
         except Exception as e:
-            _log.warning("ingestion_job_complete_persist_error job=%s: %s", job.job_id, e)
+            _log.error("ingestion_job_complete_persist_error job=%s: %s", job.job_id, e)
+            raise IngestionPersistenceError(
+                f"result of ingestion job {job.job_id} could not be recorded ({_db_error(e)})"
+            ) from e
 
     # ── Methods required by scheduler.py ────────────────────────────────────
 

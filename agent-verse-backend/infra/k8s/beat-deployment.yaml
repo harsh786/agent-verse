@@ -18,6 +18,17 @@ spec:
         app: agentverse-beat
     spec:
       terminationGracePeriodSeconds: 30
+      # NF-16: wait in Init — not CrashLoopBackOff — until the migration Job has
+      # brought the schema (read as the app role) to this image's alembic head.
+      initContainers:
+        - name: wait-for-schema
+          image: ghcr.io/agentverse/backend:latest
+          command: ["python", "-m", "app.db.wait_for_schema"]
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
       containers:
         - name: beat
           image: ghcr.io/agentverse/backend:latest
@@ -28,17 +39,15 @@ spec:
             - beat
             - --scheduler=redbeat.RedBeatScheduler
             - --loglevel=info
-          env:
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: redis-url
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: database-url
+          # Same config + Secret as the API and workers (BYOK-1): beat runs the
+          # app's startup checks, which refuse to start without the vault key
+          # outside development. The `redis-url` / `database-url` keys this used
+          # to reference do not exist in agentverse-secrets.
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
           resources:
             requests:
               cpu: 50m

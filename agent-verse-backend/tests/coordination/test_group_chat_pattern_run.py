@@ -83,7 +83,7 @@ async def test_goal_selecting_group_chat_runs_on_a_goal_linked_session() -> None
         tenant_ctx=TENANT,
         provider=provider,
     )
-    assert result["terminal_state"] == "succeeded", events[-1]
-    assert result["answer"] == "GROUP CHAT ANSWER"
+    assert result.terminal_state == "succeeded", events[-1]
+    assert result.answer == "GROUP CHAT ANSWER"
     assert events[-1]["type"] == "goal_complete"
     assert any(e["type"] == "coordination_progress" for e in events)

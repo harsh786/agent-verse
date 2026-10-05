@@ -210,21 +210,26 @@ async def test_acquire_lock_redis_already_held() -> None:
     assert job_id is None
 
 
-async def test_acquire_lock_redis_error_falls_back_to_in_memory() -> None:
+async def test_acquire_lock_redis_error_is_refused_not_process_local() -> None:
+    # TG-12: a process-local fallback is no lock across replicas (fail closed).
+    from app.ingestion.job_tracker import SyncLockUnavailableError
+
     redis = AsyncMock()
     redis.set = AsyncMock(side_effect=RuntimeError("redis down"))
     tracker = IngestionJobTracker(redis=redis)
-    job_id = await tracker.acquire_lock("src-1", "t1")
-    assert job_id is not None
+    with pytest.raises(SyncLockUnavailableError):
+        await tracker.acquire_lock("src-1", "t1")
+    assert tracker._locks == {}
 
 
-async def test_release_lock_redis_matching_job_id_deletes() -> None:
+async def test_release_lock_redis_is_an_atomic_compare_and_delete() -> None:
+    from app.ingestion.job_tracker import _RELEASE_LUA
+
     redis = AsyncMock()
-    redis.get = AsyncMock(return_value=b"job-123")
-    redis.delete = AsyncMock()
     tracker = IngestionJobTracker(redis=redis)
     await tracker.release_lock("src-1", "t1", "job-123")
-    redis.delete.assert_awaited_once()
+    redis.eval.assert_awaited_once_with(_RELEASE_LUA, 1, "ingestion_lock:t1:src-1", "job-123")
+    redis.delete.assert_not_awaited()  # never a bare DEL (could free another run's lock)
 
 
 async def test_release_lock_redis_non_matching_job_id_skips_delete() -> None:
@@ -236,19 +241,19 @@ async def test_release_lock_redis_non_matching_job_id_skips_delete() -> None:
     redis.delete.assert_not_awaited()
 
 
-async def test_release_lock_redis_without_job_id_deletes_unconditionally() -> None:
+async def test_release_lock_redis_without_job_id_frees_nothing() -> None:
     redis = AsyncMock()
-    redis.delete = AsyncMock()
     tracker = IngestionJobTracker(redis=redis)
     await tracker.release_lock("src-1", "t1")
-    redis.delete.assert_awaited_once()
+    redis.delete.assert_not_awaited()
+    redis.eval.assert_not_awaited()
 
 
 async def test_release_lock_redis_error_is_swallowed() -> None:
     redis = AsyncMock()
-    redis.delete = AsyncMock(side_effect=RuntimeError("boom"))
+    redis.eval = AsyncMock(side_effect=RuntimeError("boom"))
     tracker = IngestionJobTracker(redis=redis)
-    await tracker.release_lock("src-1", "t1")  # must not raise
+    await tracker.release_lock("src-1", "t1", "job-1")  # must not raise (the TTL frees it)
 
 
 # ── Job lifecycle ─────────────────────────────────────────────────────────────
@@ -307,11 +312,15 @@ async def test_complete_job_update_runs_under_tenant_rls() -> None:
     assert params["status"] == "failed"
 
 
-async def test_create_job_db_persist_error_is_swallowed() -> None:
+async def test_create_job_db_persist_error_raises() -> None:
+    # NF-12: an unrecorded job never looks created.
+    from app.ingestion.job_tracker import IngestionPersistenceError
+
     tracker = IngestionJobTracker(db=_db_raises())
     cfg = _config()
-    job = await tracker.create_job(cfg, job_id="job-3")
-    assert job.status == "running"  # still created in-memory
+    with pytest.raises(IngestionPersistenceError):
+        await tracker.create_job(cfg, job_id="job-3")
+    assert tracker.get_job("job-3") is None
 
 
 async def test_update_cursor_updates_job_and_config() -> None:
@@ -332,11 +341,19 @@ async def test_update_cursor_persists_when_db_present() -> None:
     assert job.cursor_after == "cursor-9"
 
 
-async def test_update_cursor_db_error_is_swallowed() -> None:
-    tracker = IngestionJobTracker(db=_db_raises())
+async def test_update_cursor_db_error_raises_without_advancing() -> None:
+    # NF-12: the cursor never advances past a failed write.
+    from app.ingestion.job_tracker import IngestionPersistenceError
+
+    tracker = IngestionJobTracker()
     cfg = _config()
     job = await tracker.create_job(cfg, job_id="job-1")
-    await tracker.update_cursor(job, "cursor-9", cfg)  # must not raise
+    tracker._db = _db_raises()
+    before = cfg.cursor_value
+    with pytest.raises(IngestionPersistenceError):
+        await tracker.update_cursor(job, "cursor-9", cfg)
+    assert cfg.cursor_value == before
+    assert job.cursor_after != "cursor-9"
 
 
 async def test_increment_counters_accumulates() -> None:
@@ -383,11 +400,17 @@ async def test_complete_job_persists_when_db_present() -> None:
     await tracker.complete_job(job)
 
 
-async def test_complete_job_db_error_is_swallowed() -> None:
-    tracker = IngestionJobTracker(db=_db_raises())
+async def test_complete_job_db_error_raises_and_fails_the_job() -> None:
+    # NF-12: a result that was not recorded is never reported as completed.
+    from app.ingestion.job_tracker import IngestionPersistenceError
+
+    tracker = IngestionJobTracker()
     cfg = _config()
     job = await tracker.create_job(cfg, job_id="job-1")
-    await tracker.complete_job(job)  # must not raise
+    tracker._db = _db_raises()
+    with pytest.raises(IngestionPersistenceError):
+        await tracker.complete_job(job)
+    assert job.status == "failed"
 
 
 def test_get_job_returns_none_when_missing() -> None:

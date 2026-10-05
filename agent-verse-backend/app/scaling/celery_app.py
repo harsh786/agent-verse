@@ -6,7 +6,11 @@ import os
 
 from celery import Celery  # type: ignore[import-untyped]
 from celery.schedules import crontab  # type: ignore[import-untyped]
-from celery.signals import worker_process_init  # type: ignore[import-untyped]
+from celery.signals import (  # type: ignore[import-untyped]
+    beat_init,
+    worker_init,
+    worker_process_init,
+)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 _SENTINEL_URLS = os.getenv("REDIS_SENTINEL_URLS", "")
@@ -155,6 +159,7 @@ celery_app.conf.update(
         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
         # Training-data export jobs (OPS-37) — long-running, streamed to object storage.
         "agentverse.training_export.run": {"queue": "maintenance"},
+        "agentverse.training_export.expire": {"queue": "maintenance"},
         # Per-plan routing aliases (workers can subscribe to these specific queues)
         "agentverse.goals.run_goal_free": {"queue": "goals.free"},
         "agentverse.goals.run_goal_starter": {"queue": "goals.starter"},
@@ -198,6 +203,12 @@ celery_app.conf.update(
         "agentverse.workflows.run_enterprise": {"queue": "workflows.enterprise"},
     },
     beat_schedule={
+        # NF-17: finished training-export files are deleted after their retention.
+        "expire-training-exports-hourly": {
+            "task": "agentverse.training_export.expire",
+            "schedule": 3600.0,
+            "options": {"queue": "maintenance"},
+        },
         # MEM-53: re-dispatch eval-suite runs whose workers died.
         "resume-stalled-eval-suite-runs-every-60s": {
             "task": "app.scaling.tasks.resume_stalled_eval_suite_runs",
@@ -553,3 +564,70 @@ def _on_worker_process_init(**_kwargs: object) -> None:
 
     if bool(getattr(get_settings(), "worker_preload_retrieval_models", False)):
         _preload_retrieval_models()
+
+
+# ── Vault key startup checks (BYOK-2) ────────────────────────────────────────
+# Workers decrypt the tenant BYOK keys the API encrypted. A worker started
+# without VAULT_MASTER_KEY (the helm worker had none) used to come up normally
+# and fail every BYOK goal with "Tenant LLM API key could not be decrypted".
+# Outside development/test it now refuses to start, and it refuses when its key
+# cannot open the API's vault canary. Celery swallows Exceptions raised by signal
+# handlers (logged, start continues), so the refusal is a SystemExit.
+
+
+def _vault_startup_refuse(role: str, reason: str) -> None:
+    import logging
+
+    message = f"agentverse {role} refuses to start: {reason}"
+    logging.getLogger(__name__).critical("vault_startup_check_failed role=%s: %s", role, reason)
+    raise SystemExit(message)
+
+
+def _vault_startup_check(role: str, *, canary: bool) -> None:
+    import logging
+
+    from app.providers import vault as vault_mod
+    from app.providers import vault_canary
+
+    log = logging.getLogger(__name__)
+    try:
+        vault = vault_mod.assert_vault_key_configured(role)
+    except RuntimeError as exc:
+        _vault_startup_refuse(role, f"{exc} (VAULT_MASTER_KEY must be set on every process)")
+        return
+    log.info("vault_key_configured role=%s fingerprint=%s", role, vault.fingerprint())
+    if not canary:
+        return
+    try:
+        result = vault_canary.run_vault_self_check(role)
+    except Exception as exc:  # the check itself broke: not evidence of a wrong key
+        log.warning("vault_canary_check_failed role=%s: %s", role, type(exc).__name__)
+        return
+    if result.status == "mismatch":
+        if vault_mod._dev_key_allowed():
+            log.error("vault_canary_mismatch role=%s: %s", role, result.message)
+            return
+        _vault_startup_refuse(role, result.message)
+    elif result.ok:
+        log.info("vault_canary_ok role=%s fingerprint=%s", role, result.local_fingerprint)
+    else:
+        log.warning("vault_canary_unverified role=%s: %s", role, result.message)
+
+
+def _vault_startup_check_worker() -> None:
+    _vault_startup_check("worker", canary=True)
+
+
+def _vault_startup_check_beat() -> None:
+    # beat only schedules; it decrypts nothing itself, so the key check suffices.
+    _vault_startup_check("beat", canary=False)
+
+
+@worker_init.connect  # type: ignore[untyped-decorator]
+def _on_worker_init_vault_check(**_kwargs: object) -> None:
+    _vault_startup_check_worker()
+
+
+@beat_init.connect  # type: ignore[untyped-decorator]
+def _on_beat_init_vault_check(**_kwargs: object) -> None:
+    _vault_startup_check_beat()

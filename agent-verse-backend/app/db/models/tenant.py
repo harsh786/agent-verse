@@ -24,6 +24,10 @@ class Tenant(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
     # Keycloak subject of a JIT-provisioned tenant (migration a9d3e5f7b1c2).
     sso_sub: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # D3: the tenant's opted-in agents appear in the public A2A directory.
+    a2a_directory_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

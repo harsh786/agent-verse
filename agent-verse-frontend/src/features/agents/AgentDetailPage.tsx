@@ -24,6 +24,7 @@ import {
   emptyPatternFlags,
   type PatternFlags,
 } from './ReasoningPatterns';
+import { A2APublishPanel } from './A2APublishPanel';
 import { ConnectorPicker, useRegisteredConnectors } from './ConnectorPicker';
 import { connectorLabel, connectorTypeLabel } from '@/lib/connectors';
 
@@ -630,6 +631,7 @@ export function AgentDetailPage() {
       {/* Overview tab */}
       {tab === 'overview' && (
         <>
+          <A2APublishPanel agent={agent} />
           <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
             {[
               { label: "Status", value: agent.status ?? "active" },

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.core.errors import PlatformError
 from app.net.ssrf_guard import (
@@ -377,6 +377,9 @@ class A2ATaskRequest(BaseModel):
     callback_url: str | None = None
     requester_agent_id: str | None = None
     priority: str = "normal"
+    # D3: run the task on this agent. It must be publicly listed (tenant
+    # directory on, agent opted in, active) and belong to the caller's tenant.
+    agent_id: str | None = Field(default=None, max_length=64)
 
 
 @router.get("/.well-known/agent.json")
@@ -418,6 +421,8 @@ async def agent_card(request: Request) -> dict[str, Any]:
             "streaming",
         ],
         "supported_task_types": ["goal", "query", "action"],
+        # D3: tenants may list opted-in agents; a task may name one ("agent_id").
+        "agent_directory": str(request.base_url).rstrip("/") + "/.well-known/agents",
     }
 
 
@@ -453,6 +458,23 @@ async def receive_a2a_task(
         except SSRFError as exc:
             raise HTTPException(status_code=400, detail="Callback URL is not permitted") from exc
 
+    target_agent_id: str | None = None
+    if body.agent_id is not None:
+        from app.services.a2a_directory import DirectoryUnavailableError, directory_for
+
+        try:
+            target = await directory_for(request.app.state).get_public_for_tenant(
+                str(caller.tenant_id), body.agent_id
+            )
+        except DirectoryUnavailableError as exc:
+            raise HTTPException(
+                503, "Agent directory unavailable; the task was not accepted"
+            ) from exc
+        if target is None:
+            # Private, inactive, another tenant's or unknown: all the same answer.
+            raise HTTPException(404, "Agent not found or not publicly available")
+        target_agent_id = target.agent_id
+
     goal_service = getattr(request.app.state, "goal_service", None)
     if goal_service is None:
         # A2A-05: the task used to be stored and answered 202 "accepted" with
@@ -471,6 +493,7 @@ async def receive_a2a_task(
         "status": "accepted",
         "callback_url": body.callback_url or "",
         "requester_agent_id": body.requester_agent_id or "",
+        "agent_id": target_agent_id or "",
         "tenant_id": a2a_tenant_id,
         "created_at": datetime.now(UTC).isoformat(),
     }
@@ -482,11 +505,15 @@ async def receive_a2a_task(
     # "accepted" with no goal, and a refused submission was invisible to the
     # caller). The goal service queues it durably; the task records its id.
     try:
+        submit_kwargs: dict[str, Any] = {}
+        if target_agent_id is not None:
+            submit_kwargs["agent_id"] = target_agent_id
         submitted = await goal_service.submit_goal(
             goal=body.goal,
             priority=body.priority,
             dry_run=False,
             tenant_ctx=tenant_ctx,
+            **submit_kwargs,
         )
         goal_id = str(submitted["goal_id"])
     except (HTTPException, PlatformError) as exc:
@@ -518,6 +545,7 @@ async def receive_a2a_task(
     return {
         "task_id": task_id,
         "goal_id": goal_id,
+        "agent_id": target_agent_id,
         "status": "working",
         "message": f"Task accepted. Track at /a2a/tasks/{task_id}",
     }

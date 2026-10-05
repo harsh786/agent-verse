@@ -18,7 +18,6 @@ import contextlib
 import hashlib
 import logging
 import random
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from celery import shared_task  # type: ignore[import-not-found]
@@ -130,7 +129,11 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
         quota_enforcer=IngestionQuotaEnforcer(db_factory),
         kg_hook=_build_worker_kg_hook(db_factory),
     )
-    tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
+    # TG-12: the shared Redis holds the per-Source sync lock, so a sync here
+    # excludes one in any other worker and adopts the lock the API took.
+    tracker = IngestionJobTracker(
+        db=db_factory, system_db=get_system_session_factory(), redis=_reconcile_redis()
+    )
     source_store = SourceConfigStore(db=db_factory)
     return tracker, pipeline, source_store
 
@@ -198,38 +201,6 @@ async def _close(client: Any) -> None:
     if close is not None:
         with contextlib.suppress(Exception):
             await close()
-
-
-def _shared_redis() -> Any:
-    """The shared Redis holding every source's sync lock and cancel flag, or None."""
-    return _reconcile_redis()
-
-
-@contextlib.asynccontextmanager
-async def _coordinated(tracker: Any) -> AsyncIterator[None]:
-    """Run with the worker's tracker on the shared Redis (P1b-1).
-
-    The API takes a source's sync lock (and sets cancel flags) in Redis; a
-    worker tracker without Redis kept its own per-process lock, so it never
-    released the API's lock (every later manual sync was ``already_running``),
-    ran a scheduled sync beside a manual one, and never saw a cancel.
-    """
-    from app.ingestion.job_tracker import attach_shared_redis
-
-    client = None
-    if getattr(tracker, "_redis", "") is None:  # a real tracker without a client
-        client = _shared_redis()
-        if client is None:
-            _log.warning("ingestion_lock_not_shared: no shared Redis; the lock is per-process")
-        elif not attach_shared_redis(tracker, client):
-            await _close(client)
-            client = None
-    try:
-        yield
-    finally:
-        if client is not None:
-            tracker._redis = None
-            await _close(client)
 
 
 async def _enqueue_reconcile(
@@ -498,18 +469,17 @@ async def _reconcile_source_async(*, source_id: str, tenant_id: str) -> dict[str
     load_all_connectors()
     tracker: Any
     tracker, pipeline, source_store = _build_worker_ingestion()
-    async with _coordinated(tracker):
-        token = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
-        if not token:
-            return {"skipped": "locked"}
-        try:
-            config = await source_store.get(source_id, tenant_id)  # type: ignore[attr-defined]
-            if config is None or not config.enabled:
-                return {"skipped": "source_unavailable"}
-            connector = get_connector(config.source_type)()
-            return dict(await _reconcile_upstream_deletions(connector, config, pipeline))
-        finally:
-            await tracker.release_lock(source_id, tenant_id, token)
+    token = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
+    if not token:
+        return {"skipped": "locked"}
+    try:
+        config = await source_store.get(source_id, tenant_id)  # type: ignore[attr-defined]
+        if config is None or not config.enabled:
+            return {"skipped": "source_unavailable"}
+        connector = get_connector(config.source_type)()
+        return dict(await _reconcile_upstream_deletions(connector, config, pipeline))
+    finally:
+        await tracker.release_lock(source_id, tenant_id, token)
 
 
 async def _sync_source_async(
@@ -530,41 +500,72 @@ async def _sync_source_async(
     from app.ingestion.connector_registry import load_all_connectors
 
     load_all_connectors()  # ensure the @register registry is populated in the worker
+    tracker: Any
     tracker, pipeline, source_store = _build_worker_ingestion()
-    async with _coordinated(tracker):
-        return await _sync_with(
-            tracker,
-            pipeline,
-            source_store,
+
+    # ── Distributed lock (LAW-14 / TG-12) ────────────────────────────────────
+    # One sync per Source across every API replica and worker: the shared
+    # Redis lock (the API took it for a manual sync; its token is the job id),
+    # held under a short TTL that a background task renews, plus a fencing
+    # token that stops this run's cursor commits if it ever loses the lock.
+    token = job_id or await tracker.acquire_lock(
+        source_id, tenant_id, ttl_seconds=_QUEUED_LOCK_TTL_SECONDS
+    )
+    if not token:
+        _log.info("source=%s already locked — skipping duplicate sync", source_id)
+        await _close(getattr(tracker, "_redis", None))
+        return {"skipped": True, "reason": "already_running"}
+    lease = await tracker.hold(source_id, tenant_id, token, ttl_seconds=_sync_lock_ttl())
+    if lease is None:
+        # The lock this task was queued under expired and another run holds it.
+        _log.info("source=%s locked by another run — skipping duplicate sync", source_id)
+        await _close(getattr(tracker, "_redis", None))
+        return {"skipped": True, "reason": "already_running"}
+    try:
+        return await _sync_locked(
             task=task,
+            tracker=tracker,
+            pipeline=pipeline,
+            source_store=source_store,
+            lease=lease,
             source_id=source_id,
             tenant_id=tenant_id,
             triggered_by=triggered_by,
             job_id=job_id,
             reindex=reindex,
         )
+    finally:
+        await lease.release()
+        await _close(getattr(tracker, "_redis", None))
 
 
-async def _sync_with(
+# The lock a manual sync takes in the API covers the task's wait in the queue;
+# the worker then holds it under the (renewed) run TTL.
+_QUEUED_LOCK_TTL_SECONDS = 3600
+
+
+def _sync_lock_ttl() -> int:
+    from app.core.config import get_settings
+
+    return max(5, int(get_settings().ingestion_sync_lock_ttl_seconds))
+
+
+async def _sync_locked(
+    *,
+    task: Any,
     tracker: Any,
     pipeline: Any,
     source_store: Any,
-    *,
-    task: Any,
+    lease: Any,
     source_id: str,
     tenant_id: str,
     triggered_by: str,
     job_id: str | None,
     reindex: bool,
 ) -> dict:
-    """The sync itself, on a tracker that shares the API's lock / cancel flags."""
+    """The sync itself, run while ``lease`` holds the Source's lock (released by the caller)."""
     from app.ingestion.connector_registry import get_connector
-
-    # ── Distributed lock (LAW-14) ────────────────────────────────────────────
-    lock_acquired = job_id or await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
-    if not lock_acquired:
-        _log.info("source=%s already locked — skipping duplicate sync", source_id)
-        return {"skipped": True, "reason": "already_running"}
+    from app.ingestion.job_tracker import IngestionPersistenceError, SyncLockLostError
 
     # ── Load SourceConfig (durable, cross-process store) ─────────────────────
     # The task carries its tenant, so this is a tenant-scoped (RLS) read — not a
@@ -573,11 +574,9 @@ async def _sync_with(
     # ("query would be affected by row-level security"): no scheduled sync ran.
     config = await source_store.get(source_id, tenant_id)
     if config is None:
-        await tracker.release_lock(source_id, tenant_id)
         return {"error": "source_not_found"}
 
     if not config.enabled:
-        await tracker.release_lock(source_id, tenant_id)
         return {"skipped": True, "reason": "source_disabled"}
 
     # ── Configuration health (L-02) ──────────────────────────────────────────
@@ -590,17 +589,14 @@ async def _sync_with(
     problem = configuration_problem(config)
     if problem is not None or config.config_status != CONFIG_STATUS_OK:
         reason = problem or config.config_status_reason or "source needs configuration"
-        try:
-            if config.config_status == CONFIG_STATUS_OK:
-                _log.warning(
-                    "source=%s tenant=%s needs configuration; parked: %s",
-                    source_id,
-                    tenant_id,
-                    reason,
-                )
-                await source_store.mark_needs_configuration(source_id, tenant_id, reason=reason)
-        finally:
-            await tracker.release_lock(source_id, tenant_id)
+        if config.config_status == CONFIG_STATUS_OK:
+            _log.warning(
+                "source=%s tenant=%s needs configuration; parked: %s",
+                source_id,
+                tenant_id,
+                reason,
+            )
+            await source_store.mark_needs_configuration(source_id, tenant_id, reason=reason)
         return {"skipped": True, "reason": "needs_configuration", "detail": reason}
 
     # ── Backoff check (LAW-09) ───────────────────────────────────────────────
@@ -619,7 +615,6 @@ async def _sync_with(
             last = datetime.datetime.fromisoformat(config.last_synced_at.replace("Z", "+00:00"))
             elapsed = time.time() - last.timestamp()
             if elapsed < backoff:
-                await tracker.release_lock(source_id, tenant_id)
                 _log.info(
                     "source=%s in backoff (failures=%d, wait=%.0fs, elapsed=%.0fs)",
                     source_id,
@@ -641,16 +636,11 @@ async def _sync_with(
         from app.ingestion.connector_registry import connector_error_message
 
         message = connector_error_message(exc)
-        try:
-            failed_job = await tracker.create_job(
-                config, job_id=job_id or str(_uuid.uuid4()), triggered_by=triggered_by
-            )
-            await tracker.complete_job(failed_job, error=message)
-            await source_store.mark_synced(
-                source_id, tenant_id, docs_indexed=0, chunks=0, failed=1
-            )
-        finally:
-            await tracker.release_lock(source_id, tenant_id)
+        failed_job = await tracker.create_job(
+            config, job_id=job_id or str(_uuid.uuid4()), triggered_by=triggered_by
+        )
+        await tracker.complete_job(failed_job, error=message)
+        await source_store.mark_synced(source_id, tenant_id, docs_indexed=0, chunks=0, failed=1)
         return {"error": message}
 
     connector = connector_cls()
@@ -688,6 +678,10 @@ async def _sync_with(
             config.cursor_value = ""
             await source_store.update(source_id, tenant_id, cursor_value="")
 
+        # D2: the first sync after the upgrade (and each later one, until it is
+        # done) moves documents still under pre-v8 MongoDB ids — bounded per run.
+        await _migrate_legacy_ids(connector, config, pipeline, source_store, lease)
+
         # ── Delta loop ───────────────────────────────────────────────────────
         cursor = config.cursor_value or None
         new_cursor = cursor
@@ -698,6 +692,7 @@ async def _sync_with(
             if await tracker.is_cancel_requested(tenant_id, job.job_id) is True:
                 cancelled = True
                 break
+            lease.check()  # TG-12: stop at once if this run lost the Source's lock
             try:
                 from app.core.config import get_settings
                 from app.tenancy.context import PlanTier, TenantContext
@@ -747,10 +742,16 @@ async def _sync_with(
 
                 new_cursor = next_cursor
 
-                # Commit cursor every 100 docs (LAW-14 atomicity)
+                # Commit cursor every 100 docs (LAW-14 atomicity), fenced (TG-12).
                 if (docs_indexed + docs_skipped + docs_failed) % 100 == 0:
-                    await tracker.update_cursor(job, new_cursor or "", config)
+                    await tracker.update_cursor(
+                        job, new_cursor or "", config, fence=lease.fence
+                    )
 
+            except (SyncLockLostError, IngestionPersistenceError):
+                # NF-12: a failed cursor commit stops the run; it is not a
+                # document failure (that path used to swallow it into the DLQ).
+                raise
             except Exception as doc_exc:
                 docs_failed += 1
                 _log.exception(
@@ -775,7 +776,8 @@ async def _sync_with(
         completed = getattr(connector, "completed_cursor", None)
         if not cancelled and isinstance(completed, str) and completed:
             new_cursor = completed
-        await tracker.update_cursor(job, new_cursor or "", config)
+        lease.check()
+        await tracker.update_cursor(job, new_cursor or "", config, fence=lease.fence)
         # Sync the loop's tallies onto the job before completing it — complete_job
         # records the job's own counters. This path previously called an API that
         # does not exist (job_id=/docs_*/status= kwargs), raising TypeError on
@@ -819,6 +821,16 @@ async def _sync_with(
             "cancelled": cancelled,
         }
 
+    except SyncLockLostError as exc:
+        # Another run owns the Source now: record why this one stopped, and
+        # leave the Source's cursor and counters to that run (no retry).
+        _log.warning("sync stopped for source=%s: %s", source_id, exc)
+        job.docs_indexed = docs_indexed
+        job.docs_skipped = docs_skipped
+        job.docs_failed = docs_failed
+        await tracker.complete_job(job, error=str(exc), notices=_move_notices(moves))
+        return {"job_id": job.job_id, "error": "lock_lost", "detail": str(exc)}
+
     except Exception as exc:
         from app.ingestion.base_connector import ConnectorPartialFailureError
 
@@ -853,9 +865,6 @@ async def _sync_with(
             countdown=int(_backoff_seconds(1)),
             kwargs={"source_id": source_id, "tenant_id": tenant_id, "triggered_by": triggered_by},
         ) from exc
-
-    finally:
-        await tracker.release_lock(source_id, tenant_id)
 
 
 # Syncs an operator asked for (POST /sources/{id}/sync or /reindex): never backed off.
@@ -1183,6 +1192,182 @@ async def _retry_dlq_entry_async(*, dlq_id: str, tenant_id: str) -> dict:
 
 
 _REINDEX_PAGE = 200
+
+
+# ── D2: one-time reindex of MongoDB documents under pre-v8 ids ───────────────
+
+
+async def _migrate_legacy_ids(
+    connector: Any,
+    config: Any,
+    pipeline: Any,
+    source_store: Any,
+    lease: Any,
+    *,
+    mode: str = "sync",
+) -> dict[str, Any] | None:
+    """Run (or continue) the legacy-id migration for a Source whose connector has one.
+
+    In a sync a failure is logged and recorded on the migration's persisted
+    state (it stays ``running``; the next sync retries) and the sync goes on;
+    the maintenance task raises it. A lost lock always propagates.
+    """
+    from app.ingestion.job_tracker import SyncLockLostError
+    from app.ingestion.mongodb_id_migration import (
+        MODE_SYNC,
+        MigrationStateStore,
+        migrate_legacy_mongodb_ids,
+        supports_legacy_id_migration,
+    )
+
+    if not supports_legacy_id_migration(connector):
+        return None
+    store = getattr(pipeline, "_kb", None)
+    if store is None or not config.collection_id:
+        return None
+    try:
+        return await migrate_legacy_mongodb_ids(
+            config=config,
+            connector=connector,
+            pipeline=pipeline,
+            knowledge_store=store,
+            state_store=MigrationStateStore(getattr(source_store, "_db", None)),
+            mode=mode,
+            check=lease.check,
+        )
+    except SyncLockLostError:
+        raise
+    except Exception as exc:
+        if mode != MODE_SYNC:
+            raise
+        _log.warning(
+            "mongodb_id_migration_failed source=%s tenant=%s (retried by the next sync): %s",
+            config.source_id,
+            config.tenant_id,
+            exc,
+        )
+        return {"status": "error", "error": str(exc)[:500]}
+
+
+_MIGRATION_DISPATCH_PAGE = 500
+_MIGRATION_DISPATCH_MAX = 10_000
+_MIGRATION_BUSY_RETRY_SECONDS = 300
+
+
+@shared_task(name="ingestion.migrate_mongodb_doc_ids", bind=True)
+def migrate_mongodb_doc_ids_task(self: Any) -> dict[str, Any]:
+    """Maintenance (idempotent): queue the legacy-id migration for every MongoDB
+    Source that has not completed it cleanly. Re-running it is always safe."""
+    return _run_task_loop(_dispatch_mongodb_doc_id_migrations_async())  # type: ignore[no-any-return]
+
+
+async def _dispatch_mongodb_doc_id_migrations_async(
+    *, max_sources: int = _MIGRATION_DISPATCH_MAX, system_db: Any = None
+) -> dict[str, Any]:
+    """Keyset scan of ``source_configs`` (maintenance role, cross-tenant); each
+    queued task then runs for its own tenant under RLS."""
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+    from app.ingestion.mongodb_id_migration import MIGRATION, STATUS_COMPLETED
+
+    if system_db is None:
+        from app.db.session import get_system_session_factory
+
+        system_db = get_system_session_factory()
+    after = ("", "")
+    queued = 0
+    more = False
+    while queued < max_sources:
+        async with system_db() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT s.tenant_id, s.id FROM source_configs s "
+                        "WHERE s.source_type = 'mongodb' AND (s.tenant_id, s.id) > (:t, :s) "
+                        "AND NOT EXISTS (SELECT 1 FROM ingestion_doc_id_migrations m "
+                        "  WHERE m.tenant_id = s.tenant_id AND m.source_id = s.id "
+                        "  AND m.migration = :m AND m.status = :done) "
+                        "ORDER BY s.tenant_id, s.id LIMIT :lim"
+                    ),
+                    {
+                        "t": after[0],
+                        "s": after[1],
+                        "m": MIGRATION,
+                        "done": STATUS_COMPLETED,
+                        "lim": min(_MIGRATION_DISPATCH_PAGE, max_sources - queued),
+                    },
+                )
+            ).fetchall()
+        for tenant_id, source_id in rows:
+            migrate_mongodb_doc_ids_source_task.apply_async(
+                kwargs={"source_id": str(source_id), "tenant_id": str(tenant_id)},
+                countdown=_jitter(str(source_id)),
+            )
+            queued += 1
+        if len(rows) < _MIGRATION_DISPATCH_PAGE:
+            break
+        after = (str(rows[-1][0]), str(rows[-1][1]))
+        more = queued >= max_sources
+    _log.info("mongodb_id_migration_dispatch queued=%d more=%s", queued, more)
+    return {"queued": queued, "more": more}
+
+
+@shared_task(
+    name="ingestion.migrate_mongodb_doc_ids_source",
+    bind=True,
+    max_retries=12,
+    default_retry_delay=_MIGRATION_BUSY_RETRY_SECONDS,
+)
+def migrate_mongodb_doc_ids_source_task(
+    self: Any, *, source_id: str, tenant_id: str
+) -> dict[str, Any]:
+    """Maintenance (idempotent): run the legacy-id migration for one Source."""
+    return _run_task_loop(  # type: ignore[no-any-return]
+        _migrate_mongodb_doc_ids_source_async(task=self, source_id=source_id, tenant_id=tenant_id)
+    )
+
+
+async def _migrate_mongodb_doc_ids_source_async(
+    *, task: Any, source_id: str, tenant_id: str
+) -> dict[str, Any]:
+    from app.ingestion.connector_registry import get_connector, load_all_connectors
+    from app.ingestion.mongodb_id_migration import MODE_MAINTENANCE
+
+    load_all_connectors()
+    tracker: Any
+    tracker, pipeline, source_store = _build_worker_ingestion()
+    # The Source's sync lock: never concurrently with its sync (or another run).
+    token = await tracker.acquire_lock(
+        source_id, tenant_id, ttl_seconds=_QUEUED_LOCK_TTL_SECONDS
+    )
+    lease = None
+    if token:
+        lease = await tracker.hold(source_id, tenant_id, token, ttl_seconds=_sync_lock_ttl())
+    if lease is None:
+        await _close(getattr(tracker, "_redis", None))
+        raise task.retry(countdown=_MIGRATION_BUSY_RETRY_SECONDS)
+    try:
+        config = await source_store.get(source_id, tenant_id)
+        if config is None:
+            return {"error": "source_not_found"}
+        if config.source_type != "mongodb":
+            return {"skipped": True, "reason": "not_mongodb"}
+        if not config.enabled:
+            return {"skipped": True, "reason": "source_disabled"}
+        try:
+            connector = get_connector(config.source_type)()
+        except (KeyError, RuntimeError) as exc:
+            from app.ingestion.connector_registry import connector_error_message
+
+            return {"skipped": True, "reason": connector_error_message(exc)}
+        result = await _migrate_legacy_ids(
+            connector, config, pipeline, source_store, lease, mode=MODE_MAINTENANCE
+        )
+        return result or {"skipped": True, "reason": "nothing_indexed"}
+    finally:
+        await lease.release()
+        await _close(getattr(tracker, "_redis", None))
 
 
 async def _delete_source_documents(pipeline, config) -> int:

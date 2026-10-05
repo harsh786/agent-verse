@@ -126,6 +126,9 @@ class _Harness:
                 "family": "nosql_database",
                 "source_type": "mongodb",
                 "connection_config": connection_config,
+                # A Source with no target knowledge collection is parked as
+                # "needs configuration" and refuses to sync (L-02).
+                "collection_id": "kb-orders",
                 **extra,
             },
         )
@@ -180,7 +183,16 @@ async def test_create_validate_sync_ingests_every_document(mongo: tuple[str, int
 
     health = h.health(source["source_id"])
     assert health["ok"] is True, health
-    assert set(health["metadata"]["collections"]) >= {"orders", "customers"}
+    # The polled health check is a ping (C8); the full check (Test connection)
+    # still lists the collections and verifies the configured ones exist.
+    assert "collections" not in health["metadata"]
+    from app.ingestion.connectors.mongodb_connector import MongoDBConnector
+
+    stored = await h.store.get(source["source_id"], source["tenant_id"])
+    assert stored is not None
+    full = await MongoDBConnector().validate_connection(stored)
+    assert full.ok is True, full.error
+    assert set(full.metadata["collections"]) >= {"orders", "customers"}
 
     result, pipeline = await h.sync(source["source_id"])
 
@@ -435,3 +447,216 @@ async def test_tls_with_custom_ca_and_client_certificate(
     health = h.health(trusted["source_id"])
     assert health["ok"] is True, health
     assert trusted["connection_config"]["tls_client_private_key"] == "********"
+
+
+async def test_a_uri_change_re_ids_nothing(mongo: tuple[str, int]) -> None:
+    """TG-13: ids came from the URI host, so pointing the Source at the same
+    server by another name re-ided (duplicated) every document."""
+    host, port = mongo
+    h = _Harness()
+    source = h.create(_ui_payload(host, port, collections_csv="customers"))
+    _first, pipeline1 = await h.sync(source["source_id"])
+    first = {d.doc_id for d in pipeline1.docs}
+    assert len(first) == 3
+
+    other_host = "127.0.0.1" if host != "127.0.0.1" else "localhost"
+    sid, tid = source["source_id"], source["tenant_id"]
+    stored = await h.store.get(sid, tid)
+    assert stored is not None
+    await h.store.update(
+        sid,
+        tid,
+        connection_config={**stored.connection_config, "uri": f"mongodb://{other_host}:{port}/shop"},
+        cursor_value="",  # a full re-read, as after a reindex
+    )
+    _second, pipeline2 = await h.sync(source["source_id"])
+
+    assert {d.doc_id for d in pipeline2.docs} == first  # 0 new documents
+    assert all(d.source_url.startswith(f"mongodb://{other_host}:{port}/") for d in pipeline2.docs)
+
+
+# ── TG-07: updated and deleted documents ─────────────────────────────────────
+
+
+async def test_updated_documents_are_re_read_from_the_change_stream(
+    mongo_replset: tuple[str, int],
+) -> None:
+    """With the default _id cursor an update was never re-read. On a replica set
+    the change stream (update / replace) brings it back under the same id."""
+    host, port = mongo_replset
+    client: MongoClient[dict[str, Any]] = MongoClient(host, port, directConnection=True)
+    try:
+        items = client["shop"]["items_tg07"]
+        ids = items.insert_many([{"sku": i, "price": 10 + i} for i in range(5)]).inserted_ids
+        h = _Harness()
+        source = h.create(
+            {
+                "uri": f"mongodb://{host}:{port}/?directConnection=true",
+                "database": "shop",
+                "collection": "items_tg07",
+            }
+        )
+        first, p1 = await h.sync(source["source_id"])
+        assert first["docs_indexed"] == 5, first
+        by_mongo_id = {d.metadata["_id"]: d.doc_id for d in p1.docs}
+
+        items.update_one({"_id": ids[1]}, {"$set": {"price": 999}})
+        items.replace_one({"_id": ids[3]}, {"sku": 3, "price": 333, "note": "replaced"})
+        second, p2 = await h.sync(source["source_id"])
+
+        assert second["docs_indexed"] == 2, second
+        assert {d.metadata["_id"]: d.doc_id for d in p2.docs} == {
+            str(ids[1]): by_mongo_id[str(ids[1])],
+            str(ids[3]): by_mongo_id[str(ids[3])],
+        }
+        texts = {d.metadata["_id"]: d.content for d in p2.docs}
+        assert b"price: 999" in texts[str(ids[1])]
+        assert b"note: replaced" in texts[str(ids[3])]
+
+        third, p3 = await h.sync(source["source_id"])
+        assert third["docs_indexed"] == 0 and p3.docs == [], third
+    finally:
+        client.close()
+
+
+async def test_updates_are_re_read_with_an_update_timestamp_cursor(
+    mongo: tuple[str, int],
+) -> None:
+    """A standalone server has no change stream: a cursor_field on an update
+    timestamp re-reads an edited document, under the same id."""
+    host, port = mongo
+    h = _Harness()
+    source = h.create(
+        _ui_payload(host, port, collections_csv="customers", cursor_field="updated_at")
+    )
+    _r1, p1 = await h.sync(source["source_id"])
+    ada = next(d for d in p1.docs if b"name: Ada" in d.content)
+    client: MongoClient[dict[str, Any]] = MongoClient(
+        host, port, username=_USER, password=_PASSWORD
+    )
+    try:
+        client["shop"]["customers"].update_one(
+            {"name": "Ada"},
+            {
+                "$set": {
+                    "address.city": "Cambridge",
+                    "updated_at": datetime.datetime(2026, 2, 1, tzinfo=datetime.UTC),
+                }
+            },
+        )
+    finally:
+        client.close()
+    r2, p2 = await h.sync(source["source_id"])
+    assert r2["docs_indexed"] == 1, r2
+    assert p2.docs[0].doc_id == ada.doc_id
+    assert b"address.city: Cambridge" in p2.docs[0].content
+
+
+class _IndexedStore:
+    """The knowledge-store surface upstream-deletion reconciliation uses."""
+
+    def __init__(self, doc_ids: set[str]) -> None:
+        self.docs = set(doc_ids)
+        self.staged: set[str] = set()
+        self.deleted: list[str] = []
+
+    async def begin_live_listing_async(self, run_id: str, *, tenant_ctx: Any) -> Any:
+        return datetime.datetime.now(datetime.UTC)
+
+    async def stage_live_doc_ids_async(self, run_id: str, ids: list[str], **_k: Any) -> None:
+        self.staged.update(ids)
+
+    async def list_unlisted_source_documents_async(
+        self, run_id: str, *, after: str | None, limit: int, **_k: Any
+    ) -> list[str]:
+        gone = sorted(d for d in self.docs if d not in self.staged and (after is None or d > after))
+        return gone[:limit]
+
+    async def held_document_ids_async(self, collection_id: str, ids: list[str], **_k: Any) -> set[str]:
+        return set()
+
+    async def delete_document_async(self, doc_id: str, **_k: Any) -> bool:
+        self.docs.discard(doc_id)
+        self.deleted.append(doc_id)
+        return True
+
+    async def clear_live_listing_async(self, run_id: str, **_k: Any) -> None:
+        self.staged.clear()
+
+
+async def test_deleted_documents_are_removed_by_reconciliation(mongo: tuple[str, int]) -> None:
+    from app.ingestion.base_connector import lists_upstream
+    from app.ingestion.connectors.mongodb_connector import MongoDBConnector
+    from app.ingestion.scheduler import _reconcile_upstream_deletions
+
+    host, port = mongo
+    client: MongoClient[dict[str, Any]] = MongoClient(
+        host, port, username=_USER, password=_PASSWORD
+    )
+    try:
+        gone = client["shop"]["gone_tg07"]
+        ids = gone.insert_many([{"n": i} for i in range(4)]).inserted_ids
+        h = _Harness()
+        source = h.create(_ui_payload(host, port, collections_csv="gone_tg07"))
+        _r1, p1 = await h.sync(source["source_id"])
+        by_mongo_id = {d.metadata["_id"]: d.doc_id for d in p1.docs}
+        legacy = "6b1c1c2e-0000-5000-8000-000000000001"  # an older (uuid5) id: never touched
+        kb = _IndexedStore(set(by_mongo_id.values()) | {legacy})
+        gone.delete_one({"_id": ids[2]})
+
+        config = await h.store.get(source["source_id"], source["tenant_id"])
+        assert config is not None
+        connector = MongoDBConnector()
+        assert lists_upstream(connector)
+        counts = await _reconcile_upstream_deletions(
+            connector, config, type("P", (), {"_kb": kb})()
+        )
+    finally:
+        client.close()
+
+    assert kb.deleted == [by_mongo_id[str(ids[2])]], counts
+    assert counts["deleted"] == 1 and counts["listing_failed"] == 0
+    assert legacy in kb.docs
+
+
+async def test_bson_types_round_trip_through_a_sync(mongo: tuple[str, int]) -> None:
+    """TG-09 on the ingestion path: real BSON from a real server."""
+    from bson import Binary, Decimal128, Int64, Regex
+
+    host, port = mongo
+    client: MongoClient[dict[str, Any]] = MongoClient(
+        host, port, username=_USER, password=_PASSWORD
+    )
+    try:
+        client["shop"]["bson_tg09"].insert_one(
+            {
+                "price": Decimal128("19.99"),
+                "blob": Binary(b"\x00\xffbinary-payload", 4),
+                "pattern": Regex("^sku-[0-9]+$", "i"),
+                "big": Int64(2**62),
+                "nothing": None,
+                "tags": [f"t{i}" for i in range(130)],
+                "deep": {"a": {"b": {"c": {"d": {"e": {"f": "kept"}}}}}},
+            }
+        )
+    finally:
+        client.close()
+    h = _Harness()
+    source = h.create(_ui_payload(host, port, collections_csv="bson_tg09"))
+    result, pipeline = await h.sync(source["source_id"])
+    assert result["docs_indexed"] == 1, result
+    (doc,) = pipeline.docs
+    text = doc.content.decode()
+    assert "price: 19.99" in text
+    assert "blob: <binary subtype 4, 16 bytes>" in text
+    assert "binary-payload" not in text
+    assert "pattern: /^sku-[0-9]+$/i" in text
+    assert f"big: {2**62}" in text
+    assert "nothing: null" in text
+    assert "tags[99]: t99" in text and "30 more item(s) of 130 not indexed" in text
+    assert "kept" in text
+    assert doc.metadata["truncated"] == {
+        "array_items_omitted": 30,
+        "arrays_truncated": 1,
+        "deep_fields": 1,
+    }

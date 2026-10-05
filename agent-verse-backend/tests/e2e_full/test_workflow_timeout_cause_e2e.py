@@ -44,6 +44,9 @@ def _inprocess_with_hanging_llm(app: Any, monkeypatch: pytest.MonkeyPatch) -> It
     compiler._cache.clear()
     compiler._services["llm_provider"] = _HangingProvider()
     compiler._services["provider"] = compiler._services["llm_provider"]
+    # BYOK-3: the per-run tenant resolver takes precedence over an injected
+    # process-wide provider; this test pins the provider, so drop the resolver.
+    compiler._services.pop("llm_provider_resolver", None)
     monkeypatch.setenv("AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS", "0.5")
     try:
         yield

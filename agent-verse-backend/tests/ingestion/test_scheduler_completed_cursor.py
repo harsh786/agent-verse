@@ -42,7 +42,6 @@ async def _sync(cancel_after: int | None) -> str:
     with (
         patch("app.ingestion.scheduler._build_worker_ingestion",
               return_value=(tracker, pipeline, store)),
-        patch("app.ingestion.scheduler._shared_redis", return_value=None),
         patch("app.ingestion.connector_registry.load_all_connectors"),
         patch("app.ingestion.connector_registry.get_connector", return_value=_Listing),
         patch("app.ingestion.scheduler._schedule_reconcile_if_due", AsyncMock()),
@@ -87,7 +86,6 @@ async def test_an_operator_sync_of_a_failing_source_is_not_backed_off() -> None:
         with (
             patch("app.ingestion.scheduler._build_worker_ingestion",
                   return_value=(tracker, pipeline, store)),
-            patch("app.ingestion.scheduler._shared_redis", return_value=None),
             patch("app.ingestion.connector_registry.load_all_connectors"),
             patch("app.ingestion.connector_registry.get_connector", return_value=_Listing),
             patch("app.ingestion.scheduler._schedule_reconcile_if_due", AsyncMock()),

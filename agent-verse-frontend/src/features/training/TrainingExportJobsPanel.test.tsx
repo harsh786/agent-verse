@@ -93,6 +93,16 @@ describe('TrainingExportJobsPanel', () => {
     expect(within(row).queryByRole('button', { name: /download/i })).toBeNull();
   });
 
+  test('an expired job says its file was deleted and offers no download (NF-17)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      json({ jobs: [job({ job_id: 'je', status: 'expired', example_count: 12 })] })
+    );
+    renderPanel();
+    const row = await screen.findByTestId('export-job-je');
+    expect(row).toHaveTextContent(/expired.*file deleted/i);
+    expect(within(row).queryByRole('button', { name: /download/i })).toBeNull();
+  });
+
   test('a failed job without a recorded reason says so instead of looking fine', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       json({ jobs: [job({ job_id: 'jf', status: 'failed', error: null })] })

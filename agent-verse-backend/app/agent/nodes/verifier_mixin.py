@@ -323,6 +323,10 @@ class VerifierMixin:
                 # gate still needs evidence to judge against, since without any
                 # it would flag every sentence of every text-only answer.
                 _had_evidence = bool(_evidence)
+                # Facts the user supplied in the goal are evidence too (P5-6): a
+                # high-risk answer repeating them was replanned as ungrounded.
+                if (agent_state.goal or "").strip():
+                    _evidence.append(agent_state.goal)
                 # Run the grounding check whenever there is a final answer — NOT only
                 # when tool evidence exists. check_grounding's own "concrete claims
                 # present + no supporting evidence → ungrounded" branch is exactly the

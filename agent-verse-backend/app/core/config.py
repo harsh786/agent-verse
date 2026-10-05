@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     # (600 s), so no caller can hang for ten minutes on a stuck endpoint.
     llm_client_timeout_seconds: float = 300.0
     llm_client_max_retries: int = 2
+    # Provider throttling (HTTP 429) on top of the SDK's own short retries (P5-1):
+    # exponential backoff with jitter, Retry-After honoured, the total wait capped
+    # here AND by the goal's remaining time budget. 429s never trip the breaker.
+    llm_rate_limit_max_retries: int = Field(default=4, ge=0, le=20)
+    llm_rate_limit_base_delay_seconds: float = Field(default=1.0, gt=0.0)
+    llm_rate_limit_max_delay_seconds: float = Field(default=30.0, gt=0.0)
+    llm_rate_limit_max_total_wait_seconds: float = Field(default=120.0, ge=0.0)
 
     # --- goal / step watchdog (GOAL-STALL) ---
     # A step that has not finished after this much ACTIVE time (time spent waiting
@@ -379,6 +386,28 @@ class Settings(BaseSettings):
     # DuckDB executes tenant SQL in-process on the API/worker host; even
     # confined, it is off unless an operator enables it explicitly.
     ingestion_connector_duckdb_enabled: bool = False
+    # Kill switch for the MongoDB ingestion connector (TG-15): false refuses new
+    # MongoDB Sources, syncs (failed job with the reason) and health checks.
+    ingestion_connector_mongodb_enabled: bool = True
+    # Kill switch for the MCP built-in MongoDB connector (NF-13): false refuses
+    # new/edited MongoDB connections (422), the connector test and every tool call.
+    mcp_connector_mongodb_enabled: bool = True
+    # MongoDB ingestion connector bounds (C1 / MDB-12). A server that accepts and
+    # then stalls used to block a sync (and the health check) forever. Every
+    # wait is bounded: TCP connect, server selection, each socket read, and the
+    # server-side time of each query (maxTimeMS, below the socket timeout so a
+    # slow query fails with an honest MaxTimeMSExpired). A tenant's ``timeout_ms``
+    # may only lower connect/selection; it can never raise or unbound them.
+    ingestion_mongodb_connect_timeout_ms: int = 10_000
+    ingestion_mongodb_server_selection_timeout_ms: int = 10_000
+    ingestion_mongodb_socket_timeout_ms: int = 60_000
+    ingestion_mongodb_max_time_ms: int = 30_000
+    # TTL of a running sync's per-Source lock (TG-12). The worker renews it every
+    # third of the TTL; a worker that dies frees its Source within one TTL.
+    ingestion_sync_lock_ttl_seconds: int = 300
+    # GET /sources/{id}/health results (failures too) are shared through Redis
+    # for this long per Source + connection config (C8); 0 disables the cache.
+    ingestion_health_cache_seconds: int = 60
     # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
     # /pdf, /docx). The body used to be read whole into memory with no limit.
     knowledge_max_upload_bytes: int = 50 * 1024 * 1024
@@ -523,6 +552,13 @@ class Settings(BaseSettings):
 
     # --- object storage (MinIO / S3) ---
     minio_endpoint: str = "http://minio:9000"
+    # NF-17: a finished training-export file is deleted from object storage this
+    # many hours after its job completed (the job becomes 'expired'); 0 keeps
+    # files forever. The hourly beat sweep handles at most
+    # batch_size * max_batches jobs per run.
+    training_export_retention_hours: int = Field(default=168, ge=0)
+    training_export_expiry_batch_size: int = Field(default=100, ge=1, le=1000)
+    training_export_expiry_max_batches: int = Field(default=10, ge=1)
     minio_access_key: str = "agentverse"
     minio_secret_key: str = "agentverse_minio"
 
@@ -666,6 +702,16 @@ class Settings(BaseSettings):
     stripe_price_enterprise: str = ""
     stripe_success_url: str = "https://app.agentverse.ai/settings/billing?success=1"
     stripe_cancel_url: str = "https://app.agentverse.ai/settings/billing?cancelled=1"
+
+    llm_require_platform_key: bool = Field(
+        default=True,
+        description=(
+            "Production refuses to start without a platform LLM key. Set "
+            "LLM_REQUIRE_PLATFORM_KEY=false for a BYOK-only deployment: tenants "
+            "with their own key run, tenants without one get 'no LLM provider "
+            "configured' (read via app.providers.llm_resolution.platform_key_required)."
+        ),
+    )
 
     # --- billing (Razorpay) ---
     razorpay_key_id: str = "rzp_test_placeholder"
