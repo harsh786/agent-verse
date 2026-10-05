@@ -9,7 +9,6 @@ attempt and carries its deterministic idempotency key, and the run completes.
 
 from __future__ import annotations
 
-import os
 import uuid
 from typing import Any
 
@@ -21,17 +20,17 @@ from tests.e2e_full.test_workflow_run_e2e import celery_worker  # noqa: F401
 pytestmark = [pytest.mark.e2e_full, pytest.mark.asyncio(loop_scope="session")]
 
 
-async def _db() -> Any:
+async def _db(dsn: str) -> Any:
+    """Seeds a crashed run's rows: fixture setup, so as the schema owner."""
     import asyncpg
 
-    return await asyncpg.connect(
-        os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
-    )
+    return await asyncpg.connect(dsn)
 
 
 async def test_stuck_run_redispatch_replays_only_the_inflight_step(
     tenant_client: Any,
     celery_worker: dict[str, Any],  # noqa: F811
+    owner_dsn: str,
 ) -> None:
     wid = await create_workflow(
         tenant_client,
@@ -45,7 +44,7 @@ async def test_stuck_run_redispatch_replays_only_the_inflight_step(
         },
     )
     run_id = str(uuid.uuid4())
-    conn = await _db()
+    conn = await _db(owner_dsn)
     try:
         tenant_id = await conn.fetchval(
             "SELECT tenant_id FROM workflow_definitions WHERE id = $1::uuid", wid

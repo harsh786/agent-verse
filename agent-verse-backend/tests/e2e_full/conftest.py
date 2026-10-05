@@ -119,6 +119,16 @@ def _migrated_backends(_backends: tuple[str, str]) -> tuple[str, str]:
     return database_url, redis_url
 
 
+@pytest.fixture(scope="session")
+def owner_dsn(_backends: tuple[str, str]) -> str:
+    """Plain (asyncpg) DSN of the schema OWNER, for fixture setup, fault
+    injection (DDL) and cross-tenant verification reads only. ``DATABASE_URL``
+    is the app's own role: with ``E2E_LEAST_PRIVILEGE=1`` that is the
+    NOBYPASSRLS application role, which (correctly) cannot run DDL, and sees
+    no tenant rows without ``app.tenant_id``."""
+    return _backends[0].replace("postgresql+asyncpg://", "postgresql://")
+
+
 _LP_ROLE = "agentverse_app_rls"
 _LP_PASSWORD = "agentverse-app-rls-e2e"
 _MAINT_ROLE = "agentverse_maint"

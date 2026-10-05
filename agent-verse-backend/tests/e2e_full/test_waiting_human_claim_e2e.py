@@ -12,7 +12,6 @@ and the booted app's GoalService; the task queue is a recorder (no worker).
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import pytest
@@ -20,12 +19,12 @@ import pytest
 pytestmark = [pytest.mark.e2e_full, pytest.mark.asyncio(loop_scope="session")]
 
 
-async def _db_status(goal_id: str) -> str:
+async def _db_status(dsn: str, goal_id: str) -> str:
+    """The row's durable status, read as the schema owner (a verification read;
+    the app role would need the tenant's RLS context)."""
     import asyncpg
 
-    conn = await asyncpg.connect(
-        os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
-    )
+    conn = await asyncpg.connect(dsn)
     try:
         return str(await conn.fetchval("SELECT status FROM goals WHERE id = $1", goal_id))
     finally:
@@ -42,7 +41,7 @@ class _RecordingQueue:
 
 
 async def test_waiting_goal_is_not_claimed_but_its_resume_relaunch_is(
-    app: Any, tenant_client: Any
+    app: Any, tenant_client: Any, owner_dsn: str
 ) -> None:
     from app.scaling.tasks import _claim_goal_for_execution
     from app.services.goal_service import _SUSPENDED_KEY, GoalStatus
@@ -70,14 +69,14 @@ async def test_waiting_goal_is_not_claimed_but_its_resume_relaunch_is(
 
         # Order 1: a message arrives while the goal still waits for a human.
         assert await _claim_goal_for_execution(goal_id, tenant_ctx.tenant_id) == "waiting_human"
-        assert await _db_status(goal_id) == "waiting_human"
+        assert await _db_status(owner_dsn, goal_id) == "waiting_human"
 
         # Order 2: the human approves; resume_goal relaunches it.
         queue.enqueued.clear()
         result = await gs.resume_goal(goal_id, tenant_ctx, approved=True)
         assert result["status"] == "resumed"
         assert [m["goal_id"] for m in queue.enqueued] == [goal_id]
-        assert await _db_status(goal_id) == "executing"
+        assert await _db_status(owner_dsn, goal_id) == "executing"
         # The relaunch message is claimable.
         assert await _claim_goal_for_execution(goal_id, tenant_ctx.tenant_id) == "claimed"
     finally:
