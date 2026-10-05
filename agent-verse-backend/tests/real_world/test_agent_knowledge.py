@@ -8,8 +8,9 @@ a real workflow gate, then assert what a client sees:
 
 * AGK-GOAL-OUTPUT     — two goals' answers become searchable within seconds of
   completing (event-triggered sync), cited ``agentverse://goals/<id>`` with the
-  goal id in the citation's origin; a generated e-mail / AWS key / password never
-  reaches the index; a re-sync indexes nothing again; a later goal is added
+  goal id in the citation's origin; a generated e-mail / mobile number never
+  reaches the index (secrets: AGK-WORKFLOW — a goal asked to repeat a key is
+  refused as high-risk in bounded-autonomous mode, by design); a re-sync indexes nothing again; a later goal is added
   incrementally; tenant B sees none of it.
 * AGK-APPROVAL        — an approved and a rejected gate of a supervised agent
   become decision documents (decision, reviewer, note, goal id); a pending
@@ -17,8 +18,8 @@ a real workflow gate, then assert what a client sees:
 * AGK-WORKFLOW        — a workflow gate's decision and the run's outputs become
   documents citing the approval / run id; secrets in the outputs are redacted;
   a disabled Source indexes nothing.
-* AGK-GOVERNANCE      — a collection under legal hold: a reindex keeps the held
-  documents (no loss, no duplicate); the subject's erasure deletes the goal but
+* AGK-GOVERNANCE      — a collection under legal hold: a reindex is refused (409)
+  and a re-sync replaces nothing; the subject's erasure deletes the goal but
   keeps the held knowledge (reported); after release, reconciliation removes it;
   without a hold the erasure removes the goal's knowledge at once.
 * AGK-FAILURES        — invalid configurations are refused on save (422) with the
@@ -204,7 +205,7 @@ def test_goal_outputs_become_cited_knowledge(
     soft: list[str] = []
     secret = _secrets()
     days, rate = random.randint(31, 59), random.randint(4100, 9800)
-    code = f"FS-{_rand(5)}"
+    code = f"DD-{_rand(5)}"
     agent = gx.create_agent(api, cleanup, "rw-agk-writer", system_prompt=(
         "You write short internal notes. Use only the facts in the request, verbatim; "
         "never call tools."))
@@ -220,14 +221,18 @@ def test_goal_outputs_become_cited_knowledge(
     assert str(first["status"]).lower() == "completed", f"empty first sync: {first}"
     assert first["docs_failed"] == 0 and first["docs_indexed"] == 0, first
 
+    mobile = "+91 9" + _rand(9, string.digits)
+    register_secret(mobile)
+    personal = {"email": secret["email"], "mobile": mobile}
     g1 = _submit(api, cleanup, (
         "Without using any tools, write a three-sentence internal note for the Pune "
         f"warehouse team stating exactly: the cold-room probe calibration interval is {days} "
-        f"days; escalations go to {secret['email']}; the monitoring service key is "
-        f"{secret['aws_key']} with password: {secret['password']}."), agent)
+        f"days; the duty supervisor is reachable at {secret['email']} or {mobile}; logs are "
+        "reviewed every Monday."), agent)
     g2 = _submit(api, cleanup, (
-        "Without using any tools, state in two sentences that freight surcharge code "
-        f"{code} costs {rate} INR per box and applies to Hosur shipments from 1 November."),
+        "Without using any tools, state in two sentences that dock door "
+        f"{code} at the Hosur yard handles reefer containers only and takes at most {rate} kg "
+        "per pallet from 1 November."),
         agent)
     evidence["goals"] = [g1, g2]
     done_at = {}
@@ -255,18 +260,18 @@ def test_goal_outputs_become_cited_knowledge(
     assert str(days) in str(hit.get("content")), mask(hit.get("content"))[:300]
     assert (hit.get("origin") or {}).get("goal_id") == g1, hit.get("origin")
     assert (hit.get("origin") or {}).get("kind") == "goal_output", hit.get("origin")
-    rank2, hit2 = _hit_for(_search(api, cid, f"freight surcharge {code} per box"),
+    rank2, hit2 = _hit_for(_search(api, cid, f"dock door {code} pallet weight limit"),
                            f"agentverse://goals/{g2}")
     evidence["surcharge_rank"] = rank2
     assert hit2 is not None and str(rate) in str(hit2.get("content")).replace(",", ""), hit2
 
-    text = _all_text(api, cid, ["escalation contact e-mail", "monitoring service key password",
+    text = _all_text(api, cid, ["duty supervisor contact e-mail mobile",
                                 f"calibration interval {days} days", secret["email"]])
-    leaked = [k for k, v in secret.items() if v in text]
+    leaked = [k for k, v in personal.items() if v in text or v.replace(" ", "") in text]
     evidence["leaked"] = leaked
     assert not leaked, f"generated {leaked} reached the index"
 
-    status, rbody, ms = kbx.rag_query(api, cid, f"What does freight surcharge {code} cost per box?")
+    status, rbody, ms = kbx.rag_query(api, cid, f"What is the pallet weight limit at dock door {code}?")
     cites = [_cite_url(c) for c in rbody.get("citations") or []]
     evidence["rag"] = {"http": status, "ms": round(ms), "citations": cites,
                        "answer": mask(rbody.get("answer"))[:300]}
@@ -276,7 +281,7 @@ def test_goal_outputs_become_cited_knowledge(
         if f"agentverse://goals/{g2}" not in cites:
             soft.append(f"RAG answer does not cite goal {g2}: {cites}")
         if str(rate) not in str(rbody.get("answer")).replace(",", ""):
-            soft.append(f"RAG answer misses {rate} INR: {mask(rbody.get('answer'))[:200]}")
+            soft.append(f"RAG answer misses {rate} kg: {mask(rbody.get('answer'))[:200]}")
 
     lessons = [_doc_url(d) for d in _docs(api, cid)
                if _doc_url(d).startswith("agentverse://memories/")]
@@ -417,7 +422,8 @@ def test_goal_approval_decisions_become_knowledge(
     assert origin.get("approval_id") == rid1 and origin.get("goal_id") == approved_goal, origin
     assert origin.get("decision") == "approved", origin
     whole = _all_text(api, cid, [ticket, "approved decided by", "questions to e-mail"])
-    if "APPROVED" not in whole or "rw-ops-lead" not in whole:
+    # The approver is the authenticated caller (the API ignores a claimed name).
+    if "APPROVED" not in whole or "Decided by: unknown" in whole:
         soft.append(f"decision / reviewer missing: {mask(content)[:300]}")
     assert reviewer_mail not in whole, "the reviewer's e-mail reached the index"
     rank2, hit2 = _hit_for(_search(api, cid, f"Why was the change rejected? {freeze}"),
@@ -588,14 +594,17 @@ def test_agent_knowledge_governance(
 
     hold_id = _hold(api, cid, "agk-gov")
     try:
-        # 1. Reindex under hold: held documents are kept, never duplicated.
+        # 1. Reindex (delete + re-sync) under hold is refused; nothing changes.
         resp = api.post(f"/sources/{sid}/reindex")
-        assert resp.status_code == 202, f"reindex -> {resp.status_code}: {mask(resp.text)}"
-        job = jobs.wait_job(api, sid, str(resp.json().get("job_id")), timeout=300)
-        evidence["reindex_under_hold"] = jobs.mask_job(job)
+        evidence["reindex_under_hold"] = {"http": resp.status_code,
+                                          "detail": mask(body_of(resp))[:200]}
+        assert resp.status_code == 409 and "legal hold" in resp.text.lower(), (
+            evidence["reindex_under_hold"])
+        again = jobs.sync(api, sid, timeout=300)  # a plain re-sync replaces nothing
+        evidence["resync_under_hold"] = again
+        assert again["docs_failed"] == 0 and again["docs_indexed"] == 0, again
         after = _docs(api, cid)
         assert sorted(str(d.get("document_id") or d.get("id")) for d in after) == ids_before
-        assert int(job.get("docs_failed") or 0) == 0, job
 
         # 2. Erasure of the claimant: the goal goes, its held knowledge stays (reported).
         principal = f"inspector-{_rand(8, string.ascii_lowercase)}"
