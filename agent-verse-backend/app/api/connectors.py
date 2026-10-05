@@ -636,6 +636,7 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
         _inferred = _infer_builtin_type(body.name, body.url)
         _builtin_cfg = _builtin_config_for_type(_inferred) if _inferred else None
     _canonical_id = str(_builtin_cfg.get("server_id")) if _builtin_cfg else ""
+    _assert_mongodb_policy(body.url, body.auth_config, _canonical_id)
     _builtin_tool_defs = list(_builtin_cfg.get("tool_definitions", [])) if _builtin_cfg else []
     _connection_id = (
         await _new_connection_id(reg, _canonical_id, body.name, tenant_ctx=tenant_ctx)
@@ -732,6 +733,9 @@ async def update_connector(
     shown = {existing.display_url, mask_dsn(existing.url) if is_dsn(existing.url) else ""}
     if url and url in shown - {""}:
         url = existing.url
+    _assert_mongodb_policy(
+        url, auth_config, existing.builtin_type or _declared_type_on_update(body)
+    )
     # Update had no SSRF guard at all (only registration did).
     await _assert_connector_urls_public(url, auth_config, context="connector update")
     secret_store = _connector_secret_store(
@@ -1698,6 +1702,35 @@ async def _purge_connector_rows(db: Any, tenant_id: str, server_id: str) -> None
             text("DELETE FROM tool_capabilities WHERE tenant_id = :t AND connector_id = :sid"),
             {"t": tenant_id, "sid": server_id},
         )
+
+
+_MONGODB_SCHEMES = ("mongodb://", "mongodb+srv://")
+
+
+def _assert_mongodb_policy(url: str, auth_config: dict[str, Any], builtin_type: str) -> None:
+    """422 at SAVE time for a MongoDB connection the call-time policy refuses (NF-2).
+
+    The same shared policy the MCP handler and the ingestion connector apply:
+    URI options read like the driver (no file paths / proxies / ambient-identity
+    mechanisms) and nothing that weakens TLS — on every connection string and on
+    the connector's own fields (also when the URI itself is kept sealed).
+    """
+    dsns = [
+        v.strip()
+        for v in (url, *auth_config.values())
+        if isinstance(v, str) and v.strip().lower().startswith(_MONGODB_SCHEMES)
+    ]
+    if not dsns and builtin_type != "builtin-mongodb":
+        return
+    from app.net.mongodb_policy import assert_mongo_connection_allowed
+
+    try:
+        for dsn in dsns or [""]:
+            assert_mongo_connection_allowed(dsn, auth_config)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
 
 
 def _close_pooled_clients(tenant_id: str, server_id: str) -> None:
