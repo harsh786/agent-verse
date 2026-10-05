@@ -314,4 +314,29 @@ describe('TrainingExportPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /clear/i }));
     expect(screen.queryByText(/^Export History$/)).not.toBeInTheDocument();
   });
+
+  test('shows the background export jobs section', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('preview')) return new Response(JSON.stringify(PREVIEW), { status: 200 });
+      if (url.includes('/export-training-data/jobs'))
+        return new Response(
+          JSON.stringify({
+            jobs: [
+              {
+                job_id: 'jf', status: 'failed', format: 'openai', min_score: 0.8, limit: 10,
+                example_count: null, has_file: false, error: 'OSError: bucket gone',
+                created_at: null, completed_at: null,
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    const panel = await screen.findByTestId('export-jobs');
+    expect(await within(panel).findByText(/OSError: bucket gone/)).toBeInTheDocument();
+    expect(within(panel).getByTestId('btn-start-export-job')).toBeEnabled();
+  });
 });

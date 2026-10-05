@@ -8,6 +8,7 @@
  *   - Date range filters
  *   - Export history (localStorage + best-effort backend sync)
  *   - One-click export to JSONL / JSON
+ *   - Background export jobs for large exports (start, status, download)
  */
 import { useState, useEffect } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -31,6 +32,7 @@ import { trainingApi, type TrainingPreview } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { TrainingExportJobsPanel } from './TrainingExportJobsPanel';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -669,6 +671,9 @@ export function TrainingExportPage() {
             )}
           </button>
           {showHistory && <ExportHistoryPanel refresh={historyRefresh} />}
+
+          {/* Durable background jobs for large exports (OPS-37) */}
+          <TrainingExportJobsPanel format={format} minScore={minScore} />
         </div>
       </div>
     </JARVISStagger>

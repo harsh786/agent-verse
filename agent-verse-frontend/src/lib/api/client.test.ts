@@ -202,6 +202,51 @@ test('trainingApi.listJobs reads the job list', async () => {
   expect(String(f.mock.calls[0][0])).toContain('/intelligence/export-training-data/jobs');
 });
 
+test('trainingApi.getJob reads one job by id', async () => {
+  const f = mockOk({ job_id: 'j/1', status: 'running' });
+  const job = await trainingApi.getJob('j/1');
+  expect(String(f.mock.calls[0][0])).toContain('/intelligence/export-training-data/jobs/j%2F1');
+  expect(job.status).toBe('running');
+});
+
+test('trainingApi.listJobs does not toast on a 5xx (the jobs panel shows it inline)', async () => {
+  const { useToastStore } = await import('@/stores/toast');
+  useToastStore.setState({ toasts: [] });
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ detail: 'Object storage is not configured for export jobs' }), {
+      status: 503,
+    })
+  );
+  await expect(trainingApi.listJobs()).rejects.toMatchObject({
+    status: 503,
+    message: 'Object storage is not configured for export jobs',
+  });
+  expect(useToastStore.getState().toasts).toHaveLength(0);
+});
+
+test('trainingApi.downloadJob surfaces the server reason when the job has no file', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response(JSON.stringify({ detail: 'Export job is failed', status: 'failed' }), {
+      status: 409,
+    })
+  );
+  const err = await trainingApi.downloadJob('j1').catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(ApiError);
+  expect(err).toMatchObject({ status: 409, message: 'Export job is failed' });
+});
+
+test('trainingApi.downloadJob returns the blob and the server filename', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response('{"a":1}\n', {
+      status: 200,
+      headers: { 'Content-Disposition': 'attachment; filename="agentverse_training_j1.jsonl"' },
+    })
+  );
+  const res = await trainingApi.downloadJob('j1');
+  expect(res.filename).toBe('agentverse_training_j1.jsonl');
+  expect(res.blob).toBeInstanceOf(Blob);
+});
+
 // ── adminApi (server-side tenant pagination) ────────────────────────────────────
 
 test('adminApi.listTenants sends limit + offset (server-side pagination)', async () => {

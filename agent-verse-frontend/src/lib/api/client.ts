@@ -1811,6 +1811,7 @@ export interface TrainingExportJob {
   has_file: boolean;
   error: string | null;
   created_at: string | null;
+  started_at?: string | null;
   completed_at: string | null;
   download_url?: string;
 }
@@ -1888,8 +1889,20 @@ export const trainingApi = {
     );
   },
 
+  // Polled by the jobs panel, which renders a 5xx inline (no toast per poll).
   listJobs: () =>
-    request<{ jobs: TrainingExportJob[] }>("/intelligence/export-training-data/jobs"),
+    request<{ jobs: TrainingExportJob[] }>(
+      "/intelligence/export-training-data/jobs",
+      {},
+      { silenceServerErrorToast: true }
+    ),
+
+  getJob: (jobId: string) =>
+    request<TrainingExportJob>(
+      `/intelligence/export-training-data/jobs/${encodeURIComponent(jobId)}`,
+      {},
+      { silenceServerErrorToast: true }
+    ),
 
   /** Download a finished job's JSONL through the API (owning tenant only). */
   downloadJob: async (jobId: string): Promise<{ blob: Blob; filename: string }> => {
@@ -1901,7 +1914,9 @@ export const trainingApi = {
       { headers }
     );
     if (!res.ok) {
-      throw new ApiError(res.status, res.statusText);
+      // 409 = the job has no file (queued / running / failed); say which.
+      const body: unknown = await res.json().catch(() => undefined);
+      throw new ApiError(res.status, errorMessageFromBody(body) ?? res.statusText, body);
     }
     return {
       blob: await res.blob(),
