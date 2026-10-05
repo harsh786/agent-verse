@@ -395,6 +395,47 @@ class PostgresChatRepository:
                 )
             return ids
 
+    async def search_messages(
+        self,
+        tenant_id: str,
+        query: str,
+        *,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Full-text search over the tenant's messages, newest first (ORG-32).
+
+        Uses the ``idx_chat_messages_fts`` GIN index (``to_tsvector('english',
+        content)``) with ``websearch_to_tsquery``, so it stays an index scan at
+        millions of rows; bounded by ``limit``."""
+        sql = (
+            "SELECT * FROM chat_messages WHERE tenant_id = :t "
+            "AND to_tsvector('english', content) @@ websearch_to_tsquery('english', :q)"
+        )
+        params: dict[str, Any] = {"t": tenant_id, "q": query, "lim": max(1, min(limit, 100))}
+        if session_id is not None:
+            sql += " AND session_id = :sid"
+            params["sid"] = session_id
+        sql += " ORDER BY created_at DESC, id DESC LIMIT :lim"
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            rows = (await s.execute(text(sql), params)).mappings().all()
+            return [dict(r) for r in rows]
+
+    async def count_messages(self, session_id: str, tenant_id: str) -> int:
+        """How many messages the session holds (index scan on
+        idx_chat_messages_session_created; one session's rows only)."""
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            value = (
+                await s.execute(
+                    text(
+                        "SELECT count(*) FROM chat_messages "
+                        "WHERE session_id = :sid AND tenant_id = :t"
+                    ),
+                    {"sid": session_id, "t": tenant_id},
+                )
+            ).scalar()
+            return int(value or 0)
+
     # ── Artifacts (chat_artifacts, ORG-42) ────────────────────────────────────
     # Generated documents (kind='document', retention via expires_at) and saved
     # session artifacts (kind='snippet', deleted with their session). Every read

@@ -198,3 +198,48 @@ async def test_update_message_content_returns_false_when_missing(
 async def test_get_message_returns_none_when_missing(repo: PostgresChatRepository) -> None:
     tenant = f"t-{uuid.uuid4().hex[:8]}"
     assert await repo.get_message(uuid.uuid4().hex, tenant) is None
+
+
+async def test_full_text_search_is_tenant_and_session_scoped(
+    repo: PostgresChatRepository,
+) -> None:
+    """ORG-32: search reads Postgres (GIN FTS), never the in-memory dict."""
+    t1, t2 = f"t-{uuid.uuid4().hex[:8]}", f"t-{uuid.uuid4().hex[:8]}"
+    s1, s2, s3 = uuid.uuid4().hex, uuid.uuid4().hex, uuid.uuid4().hex
+    await repo.create_session(session_id=s1, tenant_id=t1)
+    await repo.create_session(session_id=s2, tenant_id=t1)
+    await repo.create_session(session_id=s3, tenant_id=t2)
+    for sid, tenant, content in (
+        (s1, t1, "Please rotate the vault encryption keys tonight"),
+        (s2, t1, "Key rotation finished for the billing vault"),
+        (s1, t1, "Unrelated lunch plans"),
+        (s3, t2, "rotate the vault for the other tenant"),
+    ):
+        await repo.save_message(
+            message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user",
+            content=content,
+        )
+    hits = await repo.search_messages(t1, "vault")
+    assert {h["session_id"] for h in hits} == {s1, s2}
+    assert all(h["tenant_id"] == t1 for h in hits)
+    scoped = await repo.search_messages(t1, "vault", session_id=s1)
+    assert [h["session_id"] for h in scoped] == [s1]
+    assert await repo.search_messages(t1, "nonexistentword") == []
+    assert len(await repo.search_messages(t1, "vault", limit=1)) == 1
+
+
+async def test_count_messages_counts_one_tenants_session(repo: PostgresChatRepository) -> None:
+    """ORG-32: the durable summary's count is the whole session's."""
+    t1, t2 = f"t-{uuid.uuid4().hex[:8]}", f"t-{uuid.uuid4().hex[:8]}"
+    s1, s2 = uuid.uuid4().hex, uuid.uuid4().hex
+    await repo.create_session(session_id=s1, tenant_id=t1)
+    await repo.create_session(session_id=s2, tenant_id=t2)
+    for _ in range(3):
+        await repo.save_message(
+            message_id=uuid.uuid4().hex, session_id=s1, tenant_id=t1, role="user", content="x"
+        )
+    await repo.save_message(
+        message_id=uuid.uuid4().hex, session_id=s2, tenant_id=t2, role="user", content="y"
+    )
+    assert await repo.count_messages(s1, t1) == 3
+    assert await repo.count_messages(s1, t2) == 0

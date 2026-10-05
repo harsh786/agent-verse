@@ -2142,11 +2142,39 @@ class ChatService:
         ]
         return results[:limit]
 
+    async def asearch_messages(
+        self,
+        tenant_id: str,
+        query: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[_Message]:
+        """Durable search (ORG-32): Postgres full-text search when a repository is
+        attached -- the in-memory dict is empty in DB mode."""
+        if self._repository is None:
+            return self.search_messages(tenant_id, query, session_id=session_id, limit=limit)
+        rows = await self._repository.search_messages(
+            tenant_id, query, session_id=session_id, limit=limit
+        )
+        return [self._message_from_row(r) for r in rows]
+
     # ── Conversation summary ──────────────────────────────────────────────────
+
+    async def asummarize_session(self, session_id: str, tenant_id: str) -> str:
+        """Durable summary (ORG-32): topics from the persisted, bounded recent
+        history; the message count is the whole session's, not the window's."""
+        if self._repository is None:
+            return self.summarize_session(session_id, tenant_id)
+        msgs = await self.alist_messages(session_id, tenant_id, limit=500)
+        total = await self._repository.count_messages(session_id, tenant_id)
+        return self._summary_of(msgs, total=int(total))
 
     def summarize_session(self, session_id: str, tenant_id: str) -> str:
         """Return a brief summary of the session conversation."""
-        msgs = self.list_messages(session_id, tenant_id)
+        return self._summary_of(self.list_messages(session_id, tenant_id))
+
+    @staticmethod
+    def _summary_of(msgs: list[_Message], *, total: int | None = None) -> str:
         if not msgs:
             return "Empty session."
         topics: list[str] = []
@@ -2155,7 +2183,8 @@ class ChatService:
                 topics.append(m.content[:80])
         if not topics:
             return "No user messages yet."
-        summary = f"This session covered {len(msgs)} messages. Topics: " + "; ".join(topics[:3])
+        count = len(msgs) if total is None else max(total, len(msgs))
+        summary = f"This session covered {count} messages. Topics: " + "; ".join(topics[:3])
         if len(topics) > 3:
             summary += f" and {len(topics) - 3} more."
         return summary

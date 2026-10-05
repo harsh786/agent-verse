@@ -489,7 +489,7 @@ async def summarize_session(session_id: str, request: Request) -> dict[str, Any]
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    summary = svc.summarize_session(session_id, tenant.tenant_id)
+    summary = await svc.asummarize_session(session_id, tenant.tenant_id)
     return {"summary": summary}
 
 
@@ -500,7 +500,7 @@ async def summarize_session(session_id: str, request: Request) -> dict[str, Any]
 async def search_messages(body: SearchRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    results = svc.search_messages(
+    results = await svc.asearch_messages(
         tenant.tenant_id, body.query, session_id=body.session_id, limit=body.limit
     )
     return {"results": [_message_to_dict(m) for m in results], "total": len(results)}
@@ -678,33 +678,23 @@ async def within_session_search(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=500)
-    raw = [
-        {
-            "id": m.id,
-            "session_id": m.session_id,
-            "tenant_id": m.tenant_id,
-            "role": m.role,
-            "content": m.content,
-            "created_at": m.created_at.isoformat(),
-        }
-        for m in msgs
-    ]
-    results = _search_engine.within_session_search(
-        q, raw, tenant.tenant_id, session_id, limit=limit
-    )
+    if not await svc.aget_session(session_id, tenant.tenant_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    # a08-F186-01: the whole session's history through the Postgres full-text
+    # index (in DB mode), not a substring scan of the most recent 500 messages.
+    msgs = await svc.asearch_messages(tenant.tenant_id, q, session_id=session_id, limit=limit)
     return {
         "results": [
             {
-                "message_id": r.message_id,
-                "session_id": r.session_id,
-                "role": r.role,
-                "snippet": r.snippet,
-                "created_at": r.created_at,
+                "message_id": m.id,
+                "session_id": m.session_id,
+                "role": m.role,
+                "snippet": _search_engine.snippet(m.content, q),
+                "created_at": m.created_at.isoformat(),
             }
-            for r in results
+            for m in msgs
         ],
-        "total": len(results),
+        "total": len(msgs),
     }
 
 

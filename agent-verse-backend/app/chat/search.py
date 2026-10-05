@@ -53,6 +53,10 @@ class ChatSearchEngine:
         """Return messages matching *query* within *session_id*."""
         return self._search(query, messages, tenant_id, session_id=session_id, limit=limit)
 
+    def snippet(self, content: str, query: str) -> str:
+        """A short snippet of *content* around *query* (case-insensitive)."""
+        return self._make_snippet(content, query.lower().strip())
+
     # ── Private ────────────────────────────────────────────────────────────
 
     def _search(
