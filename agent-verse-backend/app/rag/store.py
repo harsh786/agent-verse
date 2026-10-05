@@ -184,6 +184,36 @@ def _document_row(document_id: str, chunks: list[Chunk], source_id: str) -> dict
     }
 
 
+# D1: the "source" of an uploaded file. A same-name re-upload replaces only a
+# document of the same source: uploads match uploads, a connector document matches
+# only documents of its own ``source_id``. Recorded on upload chunks as
+# ``metadata.ingest_source`` (never as ``source_id``, which names a real Source).
+UPLOAD_SOURCE = "upload"
+# Same-name matches considered per replace (a file name is one document per source;
+# more than this many copies only exist after the pre-P1a random-id bug).
+_SAME_NAME_MATCH_CAP = 1000
+
+
+def _is_upload_metadata(meta: dict[str, Any]) -> bool:
+    """True when a chunk was stored by the file-upload path.
+
+    New uploads say so (``ingest_source = "upload"``). Uploads stored before D1
+    carry no marker; they are the only chunks with an ``ext`` key and neither a
+    Source (``source_id``), a page (``source_url``) nor a repository (``repo_url``).
+    Kept in sync with the SQL in :meth:`KnowledgeStore.same_name_document_ids_async`.
+    """
+    if str(meta.get("source_id") or ""):
+        return False
+    marker = meta.get("ingest_source")
+    if marker is not None:
+        return str(marker) == UPLOAD_SOURCE
+    return (
+        "ext" in meta
+        and not str(meta.get("source_url") or "")
+        and not str(meta.get("repo_url") or "")
+    )
+
+
 # Chunk metadata keys a document listing's ``search`` matches (title / file / URL).
 _DOCUMENT_SEARCH_KEYS = ("doc_title", "title", "source_file", "filename", "source_url")
 # Documents counted exactly for a listing's ``total``; past it ``total_capped``.
@@ -668,6 +698,106 @@ class KnowledgeStore:
             ).fetchall()
         dist = {str(r[0]): int(r[1]) for r in rows}
         return dist, sum(dist.values())
+
+    async def same_name_document_ids_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        collection_id: str,
+        name: str,
+        source: str,
+    ) -> list[str]:
+        """Documents of ``source`` in one collection stored under file name ``name``.
+
+        D1: what a same-name re-upload may replace. ``source`` is
+        :data:`UPLOAD_SOURCE` for uploads, else a connector's ``source_id``; a
+        document of another source with the same name is never returned, and a
+        document any of whose chunks belongs to another source is not either
+        (fail closed). ``name`` matches ``source_file`` or ``doc_title`` exactly.
+        Bounded (``_SAME_NAME_MATCH_CAP``) and served by the
+        ``idx_knowledge_chunks_<dim>_source_file`` / ``_doc_title`` expression
+        indexes, so it never scans a large collection. Raises ``KeyError`` for an
+        unknown collection.
+        """
+        name = name.strip()
+        if not name or not source:
+            return []
+        if self._db is None:
+            cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
+            if cstore is None:
+                raise KeyError(f"Collection {collection_id} not found")
+            named: set[str] = set()
+            foreign: set[str] = set()
+            for c in cstore.chunks:
+                meta = c.metadata or {}
+                if name not in (str(meta.get("source_file") or ""),
+                                str(meta.get("doc_title") or "")):
+                    continue
+                named.add(c.document_id)
+                if source == UPLOAD_SOURCE:
+                    ours = _is_upload_metadata(meta)
+                else:
+                    ours = str(meta.get("source_id") or "") == source
+                if not ours:
+                    foreign.add(c.document_id)
+            return sorted(named - foreign)[:_SAME_NAME_MATCH_CAP]
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        params: dict[str, Any] = {
+            "tid": tenant_ctx.tenant_id,
+            "cid": collection_id,
+            "name": name,
+            "cap": _SAME_NAME_MATCH_CAP,
+        }
+        if source == UPLOAD_SOURCE:
+            # Mirrors _is_upload_metadata.
+            params["upload"] = UPLOAD_SOURCE
+            ours = (
+                "(COALESCE(metadata->>'source_id', '') = '' AND ("
+                "metadata->>'ingest_source' = :upload OR ("
+                "NOT (metadata ? 'ingest_source') AND metadata ? 'ext' "
+                "AND COALESCE(metadata->>'source_url', '') = '' "
+                "AND COALESCE(metadata->>'repo_url', '') = '')))"
+            )
+        else:
+            params["source"] = source
+            ours = "(metadata->>'source_id' = :source)"
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dim = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+            if dim is None:
+                raise KeyError(f"Collection {collection_id} not found")
+            table = _chunk_table(int(dim))
+            rows = (
+                await session.execute(
+                    text(f"""
+                        SELECT document_id FROM {table}
+                        WHERE tenant_id = :tid AND collection_id = :cid
+                          AND (metadata->>'source_file' = :name
+                               OR metadata->>'doc_title' = :name)
+                        GROUP BY document_id
+                        HAVING bool_and({ours})
+                        ORDER BY document_id
+                        LIMIT :cap
+                    """),
+                    params,
+                )
+            ).fetchall()
+        return [str(r[0]) for r in rows]
 
     async def list_source_documents_async(
         self,
