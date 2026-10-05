@@ -296,6 +296,18 @@ class BaseConnector(ABC):
         Must complete within 10 seconds or raise TimeoutError.
         """
 
+    @classmethod
+    def check_connection_policy(cls, connection_config: dict[str, Any]) -> None:
+        """Raise ``ValueError`` (with the reason) when ``connection_config`` breaks
+        this connector's connection policy — checked when a Source is saved.
+
+        Pure and offline (no DNS, no network): option / mechanism / TLS rules the
+        connector would refuse at sync time anyway, refused on save instead of a
+        201 followed by failed syncs (P1c-1). Destinations are checked separately
+        by the save-time egress policy. Default: nothing to check.
+        """
+        del connection_config
+
     async def health_check(self, config: SourceConfig) -> ConnectionHealth:
         """The periodic health probe (``GET /sources/{id}/health``, C8).
 

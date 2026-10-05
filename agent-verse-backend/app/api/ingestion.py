@@ -210,6 +210,32 @@ async def _refuse_internal_destinations(source_type: str, connection_config: Any
         ) from exc
 
 
+def _refuse_connection_policy(source_type: str, connection_config: Any) -> None:
+    """422 when the config breaks the connector's own connection policy (P1c-1).
+
+    E.g. a MongoDB URI that switches TLS verification off, reads a platform file
+    or uses the platform's ambient identity: refused on save, as the MCP
+    connector refuses it on register, instead of a Source whose syncs all fail.
+    """
+    from app.ingestion.connector_registry import get_connector, load_all_connectors
+
+    load_all_connectors()  # idempotent
+    try:
+        connector_cls = get_connector(source_type)
+    except (KeyError, RuntimeError):
+        return  # unknown / disabled / not installed: reported elsewhere
+    check = getattr(connector_cls, "check_connection_policy", None)
+    if check is None:
+        return
+    try:
+        check(dict(connection_config or {}))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{source_type} connection settings refused: {str(exc)[:300]}",
+        ) from exc
+
+
 def _refuse_unconfigured_source(source: SourceConfig) -> None:
     """422 with the reason when the Source cannot index anything as configured."""
     problem = configuration_problem(source)
@@ -267,6 +293,7 @@ async def validate_source(
         connector_cls = None
         errors.append(str(exc))
     try:
+        _refuse_connection_policy(body.source_type, body.connection_config)
         await _refuse_internal_destinations(body.source_type, body.connection_config)
     except HTTPException as exc:
         errors.append(str(exc.detail))
@@ -328,6 +355,7 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
     except (KeyError, RuntimeError):
         pass  # unknown / not installed here: reported at validate / sync time
 
+    _refuse_connection_policy(body.source_type, body.connection_config)
     await _refuse_internal_destinations(body.source_type, body.connection_config)
 
     # Source quota (plan limit) — counted in the DB; it was never enforced.
@@ -394,6 +422,7 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
         update_data["connection_config"] = merge_masked_update(
             source.connection_config, update_data["connection_config"]
         )
+        _refuse_connection_policy(source.source_type, update_data["connection_config"])
         await _refuse_internal_destinations(source.source_type, update_data["connection_config"])
     store = _get_source_store(request)
     if store is not None:

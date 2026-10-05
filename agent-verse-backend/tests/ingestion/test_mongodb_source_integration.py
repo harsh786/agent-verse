@@ -28,7 +28,7 @@ import app.api.ingestion as ingestion_mod
 from app.ingestion.job_tracker import IngestionJobTracker
 from app.ingestion.source_config import PipelineResult
 from app.ingestion.source_store import SourceConfigStore
-from tests.api.test_ingestion_api import _auth, _client
+from tests.api.test_ingestion_api import _CTX, _auth, _client
 from tests.ingestion.tls_certs import make_pki
 
 pytestmark = pytest.mark.integration
@@ -306,8 +306,21 @@ async def test_platform_credential_auth_mechanisms_are_refused(mongo: tuple[str,
         f"mongodb://{host}:{port}/?tlsCertificateKeyFile=/etc/ssl/private/platform.pem",
         f"mongodb://{host}:{port}/?proxyHost=10.0.0.5&proxyPort=1080",
     ):
-        source = h.create({"uri": uri, "database": "shop", "collection": "customers"})
-        health = h.health(source["source_id"])
+        cc = {"uri": uri, "database": "shop", "collection": "customers"}
+        # P1c-1: refused when the Source is saved ...
+        resp = h.client.post("/sources", headers=_auth(), json={
+            "name": "orders db", "family": "nosql_database", "source_type": "mongodb",
+            "connection_config": cc, "collection_id": "kb-orders"})
+        assert resp.status_code == 422, (uri, resp.text)
+        assert "not allowed" in resp.json()["detail"], (uri, resp.text)
+        # ... and still at connect time for a Source stored before that check.
+        from app.ingestion.source_config import SourceConfig, SourceFamily
+
+        stored = await h.store.create(SourceConfig(
+            source_id=f"legacy-{abs(hash(uri))}", tenant_id=_CTX.tenant_id, name="legacy",
+            family=SourceFamily.NOSQL_DATABASE, source_type="mongodb",
+            connection_config=cc, collection_id="kb-orders"))
+        health = h.health(stored.source_id)
         assert health["ok"] is False, uri
         assert "not allowed" in health["error"], (uri, health["error"])
 
@@ -660,3 +673,4 @@ async def test_bson_types_round_trip_through_a_sync(mongo: tuple[str, int]) -> N
         "arrays_truncated": 1,
         "deep_fields": 1,
     }
+

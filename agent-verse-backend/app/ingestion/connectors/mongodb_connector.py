@@ -896,6 +896,18 @@ class MongoDBConnector(BaseConnector):
 
     source_type = "mongodb"
 
+    @classmethod
+    def check_connection_policy(cls, connection_config: dict[str, Any]) -> None:
+        """P1c-1: the shared MongoDB policy (NF-1 / MDB-07) when a Source is saved —
+        URI options read the way the driver reads them ('&', ';', percent-encoded),
+        TLS weakening, platform files, proxies and ambient-identity mechanisms are
+        refused before the Source exists. A config without a URI / host yet is the
+        Source's configuration status, not a policy violation."""
+        cc = dict(connection_config or {})
+        if not (cc.get("uri") or cc.get("connection_string") or cc.get("host")):
+            return
+        _settings(cc, require_database=False)
+
     def manages_doc_id(self, doc_id: str) -> bool:
         """Only this connector's current (UUID v8) ids are deletion candidates."""
         try:
