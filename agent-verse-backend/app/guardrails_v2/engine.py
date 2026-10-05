@@ -586,8 +586,15 @@ class GuardrailsEngine:
         tenant_id: str,
         goal_id: str | None = None,
         step_description: str | None = None,
+        injection_content: str | None = None,
     ) -> dict[str, Any]:
-        """Evaluate content against all active rules for the given layer."""
+        """Evaluate content against all active rules for the given layer.
+
+        *injection_content*, when given, is the untrusted part of *content* (the
+        values interpolated into an author's template, retrieved context):
+        prompt-injection rules evaluate it instead of the whole text, so the
+        author's own instructions ("act as a reviewer") are not an injection.
+        """
         rules = await self.aget_rules(tenant_id, layer)
         violations = []
         redacted_content = content
@@ -595,7 +602,12 @@ class GuardrailsEngine:
         hitl_required = False
 
         for rule in rules:
-            result = await self._evaluate_rule(rule, content)
+            checked = (
+                injection_content
+                if injection_content is not None and rule.rule_type == "prompt_injection"
+                else content
+            )
+            result = await self._evaluate_rule(rule, checked)
             if result["triggered"]:
                 violation = GuardrailViolation(
                     violation_id=str(uuid.uuid4()),

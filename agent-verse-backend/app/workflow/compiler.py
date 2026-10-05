@@ -608,6 +608,10 @@ class WorkflowCompiler:
     @staticmethod
     def _should_retry(retry: Any, exc: BaseException) -> bool:
         """Honour RetryConfig.fail_on / retry_on exception-name filters."""
+        from app.workflow.guardrails import WorkflowGuardrailBlockedError
+
+        if isinstance(exc, WorkflowGuardrailBlockedError):
+            return False  # a policy verdict, not a transient failure (P8b-2)
         name = type(exc).__name__
         fail_on = getattr(retry, "fail_on", None) or []
         if name in fail_on:

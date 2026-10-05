@@ -52,7 +52,12 @@ def test_guard_delegates_to_central_guard(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def _state() -> dict[str, Any]:
-    return {"step_outputs": {}, "vars": {}, "inputs": {}, "is_test_run": False}
+    # A real run always carries its tenant (the HTTP step's guardrail check,
+    # P8b-2, fails closed without one).
+    return {
+        "step_outputs": {}, "vars": {}, "inputs": {}, "is_test_run": False,
+        "tenant_id": "t-egress",
+    }
 
 
 @pytest.mark.parametrize("url", _BYPASSES[:3])
