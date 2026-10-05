@@ -27,3 +27,17 @@ Mechanics per phase (one agent, in its own worktree off `main`):
 | P9 | Scalability: million-document ingestion/retrieval load, multi-worker |
 | P10 | Frontend e2e (Playwright against the live backend) |
 | P11 | Full real-world re-run of every scenario + final report |
+
+## Owner priority (2026-10-05)
+- **Ingestion (P1), do:** A1 file upload (PDF, DOCX, PPTX, XLSX, CSV, HTML, MD, scanned PDF/PNG OCR, ZIP) ·
+  A2 S3, MinIO · A3 PostgreSQL, MySQL · A5 MongoDB, Redis, Elasticsearch · A6 Kafka ·
+  A7 Google Drive, SharePoint, Confluence, Notion · A10 HTTP URL, web crawl · A12 agent-generated.
+  P1 runs in sub-phases: P1a A1 → P1b A2+A3 → P1c A5+A6 → P1d A7+A10 → P1e A12.
+- **Triggering (P3), do:** B1 time (cron, interval, once, relative_delay, deadline, business_calendar) ·
+  B2 webhook, rest, event · B3 github, stripe, jira, teams_webhook · B7 platform events
+  (goal_completed/goal_failed loop, goal_score_below, hitl_approved/rejected, memory_created) ·
+  B8 conversational (chat_command/keyword/mention, email_intent/arrival, sms_inbound, voice_transcript,
+  form_submission, meeting_ended, discord_event).
+- **Parked by owner:** B9 data/polling, B10 conditional/composite, B11 not-implemented (incl. kafka trigger,
+  s3_event, google_sheets, sharepoint, log_pattern, graphql_subscription, websocket_message, price_threshold);
+  sources A4, A8, A9, A11; B4–B6; channels C1–C5 unless the owner re-enables them.
