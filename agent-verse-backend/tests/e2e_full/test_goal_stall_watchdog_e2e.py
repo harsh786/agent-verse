@@ -19,10 +19,7 @@ call HANGS:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
-import signal
-import subprocess
 import sys
 import textwrap
 import time
@@ -105,7 +102,9 @@ _BOOT_MODULE = textwrap.dedent(
 
 
 def _start_worker(workdir: Path, name: str, extra_env: dict[str, str]) -> dict[str, Any]:
-    log_path = workdir / f"{name}.log"
+    """Start a real pool worker; a failed start stops its whole process group (USR-7)."""
+    from tests._worker_procs import node_name, start_worker_process
+
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(workdir), str(_BACKEND_ROOT), env.get("PYTHONPATH", "")]
@@ -113,44 +112,25 @@ def _start_worker(workdir: Path, name: str, extra_env: dict[str, str]) -> dict[s
     assert env.get("DATABASE_URL") and env.get("REDIS_URL"), "app fixture must export DSNs"
     env["ENVIRONMENT"] = "development"
     env.update(extra_env)
-    log_file = open(log_path, "w")
-    proc = subprocess.Popen(
+    handle = start_worker_process(
         [
             sys.executable, "-m", "celery", "-A", "e2e_stall_boot:celery_app", "worker",
-            "-Q", _QUEUES, "--loglevel=info", "--concurrency=1", "-n", f"{name}@%h",
+            "-Q", _QUEUES, "--loglevel=info", "--concurrency=1", "-n", node_name(name),
         ],
-        cwd=str(workdir),
+        cwd=workdir,
         env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
+        log_path=workdir / f"{name}.log",
+        ready_timeout=60.0,
+        name=name,
     )
-    worker = {"proc": proc, "log_path": log_path, "log_file": log_file}
-    deadline = time.monotonic() + 60.0
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"worker exited: {log_path.read_text()[-3000:]}")
-        with contextlib.suppress(OSError):
-            if "ready." in log_path.read_text():
-                return worker
-        time.sleep(0.5)
-    _stop_worker(worker, kill=True)
-    raise RuntimeError(f"worker did not become ready: {log_path.read_text()[-3000:]}")
+    return handle.as_dict()
 
 
 def _stop_worker(worker: dict[str, Any], *, kill: bool = False) -> None:
-    proc = worker["proc"]
-    if proc.poll() is None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL if kill else signal.SIGTERM)
-        try:
-            proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            proc.wait(timeout=10)
-    with contextlib.suppress(Exception):
-        worker["log_file"].close()
+    """Stop the worker's whole process group, even if its main process already died."""
+    from tests._worker_procs import stop_worker_process
+
+    stop_worker_process(worker["handle"], kill=kill)
 
 
 def _purge_goal_queues(redis_url: str) -> None:

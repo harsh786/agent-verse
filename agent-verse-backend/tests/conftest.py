@@ -132,6 +132,30 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_openai, append=False)
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """USR-7: no out-of-process Celery worker outlives the test session.
+
+    The e2e worker helpers (``tests/_worker_procs.py``) stop their workers on
+    every exit path; this is the backstop. Any worker group of this session that
+    is still running is killed here and fails the run, so a leak is reported
+    instead of holding Postgres, Redis and files open after pytest exits.
+    """
+    from tests import _worker_procs
+
+    try:
+        leaked = _worker_procs.reap_surviving_workers()
+    except Exception as exc:  # the check itself failing must not pass silently
+        leaked = [-1]
+        print(f"\n[USR-7] could not verify worker cleanup: {exc!r}")
+    if leaked:
+        print(
+            f"\n[USR-7] {len(leaked)} Celery worker process group(s) outlived the "
+            f"session and were killed: {leaked}"
+        )
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 @pytest.fixture(autouse=True)
 def _keep_scaling_tasks_bound():
     """Guard against full-suite module-state pollution.

@@ -27,15 +27,8 @@ This test proves the gap is closed. The run executes in a genuine, out-of-proces
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import os
-import signal
-import subprocess
-import sys
-import time
 import uuid
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -43,11 +36,6 @@ import pytest
 pytestmark = [pytest.mark.e2e_full, pytest.mark.asyncio(loop_scope="session")]
 
 _API = "/api/v1"
-_BACKEND_ROOT = Path(__file__).resolve().parents[2]
-_WORKER_QUEUES = (
-    "workflows.free,workflows.starter,workflows.professional,"
-    "workflows.enterprise,workflows.maintenance"
-)
 
 
 @pytest.fixture(scope="module")
@@ -58,70 +46,12 @@ def celery_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     session ``app`` fixture exported ``DATABASE_URL`` / ``REDIS_URL`` into
     ``os.environ``), and forwards that environment to the subprocess.
     """
-    log_path = tmp_path_factory.mktemp("xhitlworker") / "worker.log"
-    env = dict(os.environ)
-    # Run from the temp dir (no .env there): from the backend root the worker would
-    # load the developer's .env and call real LLM providers.
-    env["PYTHONPATH"] = str(_BACKEND_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-    assert env.get("DATABASE_URL"), "DATABASE_URL not set by the app fixture"
-    assert env.get("REDIS_URL"), "REDIS_URL not set by the app fixture"
+    # Shared helper (USR-7): the whole process group is stopped on any exit,
+    # even if the worker's main process already died.
+    from tests.e2e_full._wf_worker import workflow_worker
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "celery",
-        "-A",
-        "app.scaling.celery_app",
-        "worker",
-        "-Q",
-        _WORKER_QUEUES,
-        "--loglevel=info",
-        "--concurrency=1",
-        "-n",
-        "xhitle2e@%h",
-    ]
-    log_file = open(log_path, "w")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(log_path.parent),
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    try:
-        deadline = time.monotonic() + 60.0
-        ready = False
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                break
-            try:
-                text = log_path.read_text()
-            except OSError:
-                text = ""
-            if "ready." in text:
-                ready = True
-                break
-            time.sleep(0.5)
-        if not ready:
-            tail = ""
-            with contextlib.suppress(OSError):
-                tail = log_path.read_text()[-3000:]
-            raise RuntimeError(
-                f"celery worker did not become ready in time (rc={proc.poll()}).\n"
-                f"--- worker log tail ---\n{tail}"
-            )
-        yield {"proc": proc, "log_path": log_path}
-    finally:
-        if proc.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            try:
-                proc.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        log_file.close()
+    with workflow_worker(tmp_path_factory.mktemp("xhitlworker"), name="xhitle2e") as worker:
+        yield worker
 
 
 async def _create_hitl_workflow(tenant_client: Any) -> str:

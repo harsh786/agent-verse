@@ -12,12 +12,8 @@ end. The worker is bound to the same Postgres + Redis as the booted app.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
-import signal
-import subprocess
 import sys
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -33,49 +29,30 @@ _TERMINAL = {"complete", "failed", "cancelled"}
 
 @pytest.fixture(scope="module")
 def goal_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
-    log_path = tmp_path_factory.mktemp("goalworker") / "worker.log"
+    from tests._worker_procs import node_name, worker_process
+
+    workdir = tmp_path_factory.mktemp("goalworker")
     env = dict(os.environ)
     # Run from the temp dir (no .env there): from the backend root the worker would
     # load the developer's .env and call real LLM providers.
     env["PYTHONPATH"] = str(_BACKEND_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     assert env.get("DATABASE_URL") and env.get("REDIS_URL"), "app fixture must export DSNs"
     env["ENVIRONMENT"] = "development"  # FakeProvider is refused in production
-    log_file = open(log_path, "w")
-    proc = subprocess.Popen(
+    # USR-7: the whole process group is stopped on any exit (even after the
+    # worker's main process died), and a failed start stops what it started.
+    with worker_process(
         [
             sys.executable, "-m", "celery", "-A", "app.scaling.celery_app", "worker",
-            "-Q", _GOAL_QUEUES, "--loglevel=info", "--concurrency=1", "-n", "goale2e@%h",
+            "-Q", _GOAL_QUEUES, "--loglevel=info", "--concurrency=1",
+            "-n", node_name("goale2e"),
         ],
-        cwd=str(log_path.parent),
+        cwd=workdir,
         env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    try:
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                break
-            with contextlib.suppress(OSError):
-                if "ready." in log_path.read_text():
-                    break
-            time.sleep(0.5)
-        else:
-            raise RuntimeError("goal worker did not become ready")
-        if proc.poll() is not None:
-            raise RuntimeError(f"goal worker exited: {log_path.read_text()[-3000:]}")
-        yield {"proc": proc, "log_path": log_path}
-    finally:
-        if proc.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            try:
-                proc.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        log_file.close()
+        log_path=workdir / "worker.log",
+        ready_timeout=60.0,
+        name="goale2e",
+    ) as handle:
+        yield handle.as_dict()
 
 
 async def test_goal_runs_to_terminal_in_a_real_run_goal_worker(
