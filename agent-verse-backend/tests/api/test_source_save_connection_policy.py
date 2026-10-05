@@ -113,3 +113,26 @@ def test_config_without_uri_is_left_to_configuration_status() -> None:
     """No URI / host yet: not a policy violation (the Source needs configuration)."""
     resp = _client().post("/sources", json=_body({}), headers=_AUTH)
     assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.parametrize(("label", "cc"), [
+    ("URL query options", {"uri": "rediss://93.184.216.34:6379/0?ssl_cert_reqs=none"}),
+    ("unknown type", {"host": "93.184.216.34", "types": "string,bloom"}),
+    ("sentinel without master", {"mode": "sentinel", "sentinels": "93.184.216.34:26379"}),
+    ("cluster with a database", {"mode": "cluster", "host": "93.184.216.34", "db": 3}),
+    ("cert without key", {"host": "93.184.216.34", "tls_client_cert": "-----BEGIN"}),
+], ids=lambda v: v if isinstance(v, str) else "")
+def test_redis_config_errors_are_refused_on_save(label: str, cc: dict[str, Any]) -> None:
+    """P1c-10: a Redis config the sync would refuse is refused when saved (live:
+    a URL with ?ssl_cert_reqs=none was a 201 whose every sync failed)."""
+    body = {"name": "cache", "family": "nosql_database", "source_type": "redis",
+            "connection_config": cc, "collection_id": "col-1"}
+    resp = _client().post("/sources", json=body, headers=_AUTH)
+    assert resp.status_code == 422, (label, resp.text)
+    assert "redis" in resp.json()["detail"].lower()
+
+
+def test_redis_without_an_address_is_left_to_configuration_status() -> None:
+    body = {"name": "cache", "family": "nosql_database", "source_type": "redis",
+            "connection_config": {"key_patterns": "a:*"}, "collection_id": "col-1"}
+    assert _client().post("/sources", json=body, headers=_AUTH).status_code == 201

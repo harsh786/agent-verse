@@ -622,6 +622,17 @@ class RedisConnector(BaseConnector):
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc) or type(exc).__name__)
 
+    @classmethod
+    def check_connection_policy(cls, connection_config: dict[str, Any]) -> None:
+        """P1c-10: the settings a sync would refuse (URL query options, an unknown
+        type, Sentinel without a master, Cluster with a database ...) are refused
+        when the Source is saved. A config without any address yet is left to the
+        Source's configuration status."""
+        cc = dict(connection_config or {})
+        if not any(cc.get(k) for k in ("host", "uri", "sentinels", "cluster_nodes")):
+            return
+        _settings(cc)
+
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
