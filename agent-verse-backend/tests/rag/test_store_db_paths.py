@@ -176,14 +176,15 @@ class TestGetCollectionAsync:
         assert got is not None and got.name == "c"
 
     async def test_db_found(self):
-        row = ("cid1", "Name", "Desc", 3, "voyage")
+        row = ("cid1", "Name", "Desc", 3, "all-mpnet-base-v2", 768)
         db = _ScriptedDB(_Result(rows=[row]))
         store = KnowledgeStore(db_session_factory=db)
         got = await store.get_collection_async("cid1", tenant_ctx=_CTX)
         assert got is not None
         assert got.name == "Name"
         assert got.document_count == 3
-        assert got.embedder == "voyage"
+        assert got.embedder == "all-mpnet-base-v2"
+        assert got.embedding_dim == 768
 
     async def test_db_not_found_returns_none(self):
         db = _ScriptedDB(_Result(rows=[]))
@@ -192,12 +193,13 @@ class TestGetCollectionAsync:
         assert got is None
 
     async def test_db_default_embedder_when_missing(self):
-        row = ("cid1", "Name", None, 0, None)
+        row = ("cid1", "Name", None, 0, None, None)
         db = _ScriptedDB(_Result(rows=[row]))
         store = KnowledgeStore(db_session_factory=db)
         got = await store.get_collection_async("cid1", tenant_ctx=_CTX)
         assert got is not None
-        assert got.embedder == "voyage"
+        # USR-3: an unlabelled row is "unknown", never a guessed vendor.
+        assert got.embedder == "unknown"
         assert got.description == ""
 
 
@@ -272,14 +274,15 @@ class TestListCollectionsAsync:
 
     async def test_db_returns_rows(self):
         rows = [
-            ("cid1", "A", "d", 1, "voyage"),
-            ("cid2", "B", None, 0, None),
+            ("cid1", "A", "d", 1, "voyage-4-large", 1024),
+            ("cid2", "B", None, 0, None, 768),
         ]
         db = _ScriptedDB(_Result(rows=rows))
         store = KnowledgeStore(db_session_factory=db)
         cols = await store.list_collections_async(tenant_ctx=_CTX)
         assert [c.collection_id for c in cols] == ["cid1", "cid2"]
-        assert cols[1].embedder == "voyage"
+        assert (cols[0].embedder, cols[0].embedding_dim) == ("voyage-4-large", 1024)
+        assert cols[1].embedder == "unknown"
         assert cols[1].description == ""
 
 

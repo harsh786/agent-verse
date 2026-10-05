@@ -82,7 +82,7 @@ def test_create_collection_success() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/knowledge/collections",
-        json={"name": "codebase", "description": "Python codebase", "embedder_type": "voyage"},
+        json={"name": "codebase", "description": "Python codebase", "embedder_type": "default"},
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 201

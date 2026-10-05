@@ -14,7 +14,11 @@ class KnowledgeCollection:
     description: str = ""
     collection_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     document_count: int = 0
-    embedder: str = "voyage"
+    # The embedder (model) whose vectors the collection holds — "" until the
+    # store binds the active embedder's real name (never a hardcoded vendor).
+    embedder: str = ""
+    # Output width of that embedder; None while unknown.
+    embedding_dim: int | None = None
 
 
 @dataclass

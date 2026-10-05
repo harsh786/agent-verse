@@ -107,6 +107,7 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     fake_db_factory = MagicMock()
     fake_system_factory = MagicMock()
     fake_provider = MagicMock()
+    fake_provider._model_name = "all-mpnet-base-v2"
     fake_knowledge_store = MagicMock()
     fake_pipeline = MagicMock()
     fake_tracker = MagicMock()
@@ -138,8 +139,11 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     assert tracker is fake_tracker
     assert pipeline is fake_pipeline
     assert source_store is fake_source_store
-    # New collections are sized to the resolved embedder's real width.
-    ks_cls.assert_called_once_with(fake_db_factory, embedding_dim=768)
+    # New collections are sized to the resolved embedder's real width and
+    # labelled with its real model (USR-3).
+    ks_cls.assert_called_once_with(
+        fake_db_factory, embedding_dim=768, embedder_name="all-mpnet-base-v2"
+    )
     pipeline_cls.assert_called_once()
     kwargs = pipeline_cls.call_args.kwargs
     assert kwargs["knowledge_store"] is fake_knowledge_store

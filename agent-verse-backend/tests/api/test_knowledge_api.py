@@ -91,14 +91,17 @@ def test_create_collection() -> None:
         json={
             "name": "engineering-docs",
             "description": "Internal engineering documentation",
-            "embedder_type": "openai",
         },
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 201
     body = resp.json()
     assert body["name"] == "engineering-docs"
-    assert body["embedder"] == "openai"
+    # USR-3: the deployment's real embedder, not a client-chosen label.
+    from app.providers.embedder_factory import embedder_model_name
+
+    assert body["embedder"] == embedder_model_name(FakeProvider(embed_dim=768))
+    assert body["embedding_dim"] == 768
     assert "collection_id" in body
     assert body["document_count"] == 0
 

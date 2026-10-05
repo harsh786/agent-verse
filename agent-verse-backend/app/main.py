@@ -1737,14 +1737,17 @@ def create_app(
                 # (under the NOBYPASSRLS app role it used to load nothing).
                 system_db_session_factory=app.state.system_db_session_factory,
             )
-            from app.providers.embedder_factory import embedder_dimension
+            from app.providers.embedder_factory import embedder_dimension, embedder_model_name
 
             # New collections are sized to the embedder's REAL output width when
-            # it is known (else settings.embedding_dim), not a static setting.
+            # it is known (else settings.embedding_dim), not a static setting,
+            # and labelled with its real model name (USR-3), not "voyage".
+            _active_embedder = getattr(app.state, "embedder", None)
             _knowledge_store_db = KnowledgeStoreClass(
                 db_session_factory=db_factory,
-                embedding_dim=embedder_dimension(getattr(app.state, "embedder", None))
+                embedding_dim=embedder_dimension(_active_embedder)
                 or getattr(getattr(app.state, "embedder_resolution", None), "dimension", None),
+                embedder_name=embedder_model_name(_active_embedder) or None,
             )
             _collab_store_db = CollaborationStore(db_session_factory=db_factory)
 
