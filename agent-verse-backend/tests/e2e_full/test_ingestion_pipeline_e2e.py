@@ -114,14 +114,22 @@ async def test_document_ingests_and_is_retrievable(
     )
 
 
-async def test_search_isolated_by_collection(tenant_client: Any, _fake_embedder: Any) -> None:
+async def test_search_isolated_by_collection(
+    app: Any, tenant_client: Any, _fake_embedder: Any
+) -> None:
     """A query against an empty sibling collection must not return the document."""
+    # Two collections: above the FREE plan's knowledge-collection limit (1,
+    # enforced on create since RATE-01), so the tenant is on STARTER (10).
+    me = await tenant_client.get("/tenants/me")
+    assert me.status_code == 200, me.text
+    await app.state.tenant_service.update_plan(str(me.json()["tenant_id"]), "starter")
     a = await tenant_client.post(
         "/knowledge/collections", json={"name": f"e2e-a-{uuid.uuid4().hex[:8]}"}
     )
     b = await tenant_client.post(
         "/knowledge/collections", json={"name": f"e2e-b-{uuid.uuid4().hex[:8]}"}
     )
+    assert a.status_code == 201 and b.status_code == 201, (a.text, b.text)
     coll_a = a.json()["collection_id"]
     coll_b = b.json()["collection_id"]
 
