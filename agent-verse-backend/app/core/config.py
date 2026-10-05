@@ -395,6 +395,9 @@ class Settings(BaseSettings):
     # TTL of a running sync's per-Source lock (TG-12). The worker renews it every
     # third of the TTL; a worker that dies frees its Source within one TTL.
     ingestion_sync_lock_ttl_seconds: int = 300
+    # GET /sources/{id}/health results (failures too) are shared through Redis
+    # for this long per Source + connection config (C8); 0 disables the cache.
+    ingestion_health_cache_seconds: int = 60
     # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
     # /pdf, /docx). The body used to be read whole into memory with no limit.
     knowledge_max_upload_bytes: int = 50 * 1024 * 1024

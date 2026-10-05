@@ -183,7 +183,16 @@ async def test_create_validate_sync_ingests_every_document(mongo: tuple[str, int
 
     health = h.health(source["source_id"])
     assert health["ok"] is True, health
-    assert set(health["metadata"]["collections"]) >= {"orders", "customers"}
+    # The polled health check is a ping (C8); the full check (Test connection)
+    # still lists the collections and verifies the configured ones exist.
+    assert "collections" not in health["metadata"]
+    from app.ingestion.connectors.mongodb_connector import MongoDBConnector
+
+    stored = await h.store.get(source["source_id"], source["tenant_id"])
+    assert stored is not None
+    full = await MongoDBConnector().validate_connection(stored)
+    assert full.ok is True, full.error
+    assert set(full.metadata["collections"]) >= {"orders", "customers"}
 
     result, pipeline = await h.sync(source["source_id"])
 

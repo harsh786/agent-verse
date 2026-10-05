@@ -436,16 +436,70 @@ async def health_check(source_id: str, request: Request) -> dict:
 
     try:
         connector_cls = _available_connector(source.source_type)
+    except Exception as exc:
+        return {"ok": False, "error": connector_error_message(exc)}
+
+    # C8: one probe per Source + connection config per TTL, shared by every
+    # replica and every open UI; a failure is cached too, so a client's
+    # immediate retries do not each open a new connection.
+    redis = getattr(request.app.state, "_redis", None)
+    cache_key = _health_cache_key(source)
+    cached = await _health_cache_get(redis, cache_key)
+    if cached is not None:
+        return {**cached, "cached": True}
+    try:
         connector = connector_cls()
-        health = await connector.validate_connection(source)
-        return {
+        probe = getattr(connector, "health_check", None) or connector.validate_connection
+        health = await probe(source)
+        result = {
             "ok": health.ok,
             "latency_ms": health.latency_ms,
             "error": health.error or None,
             "metadata": health.metadata,
         }
     except Exception as exc:
-        return {"ok": False, "error": connector_error_message(exc)}
+        result = {"ok": False, "error": connector_error_message(exc)}
+    await _health_cache_put(redis, cache_key, result)
+    return {**result, "cached": False}
+
+
+def _health_cache_key(source: SourceConfig) -> str:
+    import hashlib
+    import json
+
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            [source.source_type, source.connection_config], sort_keys=True, default=str
+        ).encode()
+    ).hexdigest()[:24]
+    return f"ingestion_health:{source.tenant_id}:{source.source_id}:{fingerprint}"
+
+
+async def _health_cache_get(redis: Any, key: str) -> dict[str, Any] | None:
+    if redis is None:
+        return None
+    import json
+
+    try:
+        raw = await redis.get(key)
+        return dict(json.loads(raw)) if raw else None
+    except Exception as exc:
+        _log.warning("ingestion_health_cache_read_failed", error=str(exc)[:200])
+        return None
+
+
+async def _health_cache_put(redis: Any, key: str, result: dict[str, Any]) -> None:
+    from app.core.config import get_settings
+
+    ttl = int(get_settings().ingestion_health_cache_seconds)
+    if redis is None or ttl <= 0:
+        return
+    import json
+
+    try:
+        await redis.set(key, json.dumps(result, default=str), ex=ttl)
+    except Exception as exc:
+        _log.warning("ingestion_health_cache_write_failed", error=str(exc)[:200])
 
 
 def _available_connector(source_type: str) -> Any:

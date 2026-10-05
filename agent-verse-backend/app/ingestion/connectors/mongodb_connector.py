@@ -669,6 +669,31 @@ class MongoDBConnector(BaseConnector):
         except Exception as exc:
             return ConnectionHealth(ok=False, error=str(exc) or type(exc).__name__)
 
+    async def health_check(self, config: SourceConfig) -> ConnectionHealth:
+        """C8: a ping only (no collection listing) — polled by every open UI.
+
+        With credentials the driver authenticates while opening the connection,
+        so a wrong password still fails here; missing collections are reported by
+        :meth:`validate_connection` (Test connection) and by the sync.
+        """
+        import time
+
+        t0 = time.perf_counter()
+        try:
+            settings = _settings(config.connection_config)
+            async with _connected(settings) as (client, _s):
+                await asyncio.to_thread(
+                    client.admin.command, "ping", maxTimeMS=settings.max_time_ms
+                )
+            latency = (time.perf_counter() - t0) * 1000
+            return ConnectionHealth(
+                ok=True,
+                latency_ms=latency,
+                metadata={"host": settings.display_host, "database": settings.database},
+            )
+        except Exception as exc:
+            return ConnectionHealth(ok=False, error=str(exc) or type(exc).__name__)
+
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:

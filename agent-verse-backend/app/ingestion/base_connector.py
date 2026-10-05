@@ -296,6 +296,15 @@ class BaseConnector(ABC):
         Must complete within 10 seconds or raise TimeoutError.
         """
 
+    async def health_check(self, config: SourceConfig) -> ConnectionHealth:
+        """The periodic health probe (``GET /sources/{id}/health``, C8).
+
+        Polled by every open Sources UI, so a connector whose full
+        :meth:`validate_connection` is expensive overrides this with a cheaper
+        reachability + authentication check.
+        """
+        return await self.validate_connection(config)
+
     @abstractmethod
     async def get_delta(
         self,
