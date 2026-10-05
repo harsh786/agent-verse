@@ -233,13 +233,22 @@ async def test_supervisor_goal_completes_with_a_single_main_pool_slot(
     assert done[-1].get("success") is True and done[-1].get("completed_tasks") == 2, done
 
 
-async def _child_goal_ids(parent_id: str) -> list[str]:
+async def _child_goal_ids(parent_id: str, tenant_id: str) -> list[str]:
+    """Read as the app does: in the tenant's RLS context with an explicit tenant
+    predicate. Under E2E_LEAST_PRIVILEGE=1 DATABASE_URL is the NOBYPASSRLS app
+    role, for which a GUC-less read sees no rows."""
     import asyncpg
 
     dsn = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
     conn = await asyncpg.connect(dsn)
     try:
-        rows = await conn.fetch("SELECT id FROM goals WHERE parent_goal_id = $1", parent_id)
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            rows = await conn.fetch(
+                "SELECT id FROM goals WHERE parent_goal_id = $1 AND tenant_id = $2",
+                parent_id,
+                tenant_id,
+            )
     finally:
         await conn.close()
     return [str(r["id"]) for r in rows]
@@ -251,6 +260,9 @@ async def test_supervisor_mode_submission_enqueues_a_parent_goal(
     """CORE-07: POST /goals workflow_mode=supervisor returns a real parent goal id
     at once (no in-request fan-out); the parent runs on a worker and its sub-goals
     are linked to it (goals.parent_goal_id) and run on the sub-goal pool."""
+    me = await tenant_client.get("/tenants/me")
+    assert me.status_code == 200, me.text
+    tenant_id = str(me.json()["tenant_id"])
     started = time.monotonic()
     resp = await tenant_client.post(
         "/goals",
@@ -275,7 +287,7 @@ async def test_supervisor_mode_submission_enqueues_a_parent_goal(
     logs = f"--- main pool ---\n{main_log[-4000:]}\n--- sub-goal pool ---\n{sub_log[-4000:]}"
     assert goal.get("status") == "complete", f"{goal!r}\n{logs}"
 
-    children = await _child_goal_ids(parent_id)
+    children = await _child_goal_ids(parent_id, tenant_id)
     assert len(children) == 2, (children, logs)
     assert parent_id in _goal_ids_run(main_log)
     for child in children:
