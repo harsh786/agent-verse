@@ -109,9 +109,10 @@ STREAM_ALLOWED: dict[str, tuple[int, str]] = {
         1,
         "preflight_decision before the stream, charge_streamed after it (PROV-02)",
     ),
-    "agent/graph.py::AgentGraph._stream_with_failover": (
+    "agent/graph.py::AgentGraph._stream_with_failover._stream_once": (
         1,
-        "executor step: per-call timeout here, charged by the executor cost path "
+        "executor step (P5-1 moved the call into the 429-retry helper): per-call "
+        "timeout here, charged by the executor cost path "
         "(budget gate + ledger in executor_mixin)",
     ),
     "observability/traced_provider.py::TracedProvider.stream_tokens": (
