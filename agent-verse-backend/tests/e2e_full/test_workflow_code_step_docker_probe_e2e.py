@@ -104,6 +104,13 @@ async def test_code_step_recovers_once_docker_becomes_reachable(
 
     # 2. The daemon becomes reachable (VM resumed).
     os.symlink(_REAL_SOCKET, late_docker_socket)
+    # A failed probe is remembered for _DOCKER_RETRY_SECONDS (so a down daemon is
+    # not pinged on every call); runs landing inside that window still fail.
+    # The contract is "the sandbox is used once Docker is reachable and that
+    # window has passed" — never "pinned for the life of the process".
+    from app.tools.code_interpreter import _DOCKER_RETRY_SECONDS
+
+    await asyncio.sleep(_DOCKER_RETRY_SECONDS + 1.0)
 
     # 3. Repeated, concurrent runs on the same worker process all run in the
     #    sandbox — none is pinned to the disabled subprocess fallback.
