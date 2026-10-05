@@ -1305,6 +1305,11 @@ async def ingest_file(
         replace_document=replace_existing,
     )
     warnings = [w for u in units for w in u.warnings]
+    warnings += [
+        f"{u.source_file}: only the first {u.report.get('csv_max_rows')} rows were indexed"
+        for u in units
+        if u.report.get("csv_truncated")
+    ]
     legacy = [d for d in previous if d != document_id]
     if stored and legacy:
         # Copies of this file stored under random ids before uploads had stable ids.
@@ -1331,7 +1336,9 @@ async def ingest_file(
         "replaced_document_ids": legacy if stored else [],
         "warnings": warnings,
         # A workbook past the row / sheet caps was indexed only in part.
-        "truncated": any(u.report.get("excel_truncated") for u in units),
+        "truncated": any(
+            u.report.get("excel_truncated") or u.report.get("csv_truncated") for u in units
+        ),
         "truncated_sheets": [
             s for u in units for s in u.report.get("excel_row_truncated_sheets", [])
         ],

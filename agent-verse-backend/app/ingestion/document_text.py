@@ -484,13 +484,15 @@ def extract_upload_text(
             f"{filename}: unsupported binary file; upload PDF, DOCX, XLSX or text"
         )
     raw = decode_text(data)
-    text = _extract_structured_text(raw, ext=ext, filename=filename)
+    text = _extract_structured_text(raw, ext=ext, filename=filename, report=report)
     if not text.strip():
         raise DocumentParseError(f"{filename}: no extractable text")
     return text
 
 
-def _extract_structured_text(raw: str, *, ext: str, filename: str) -> str:
+def _extract_structured_text(
+    raw: str, *, ext: str, filename: str, report: dict[str, Any] | None = None
+) -> str:
     if ext in {"html", "htm", "xhtml"}:
         from app.ingestion.parsers.html_parser import HTMLParser
 
@@ -498,7 +500,9 @@ def _extract_structured_text(raw: str, *, ext: str, filename: str) -> str:
     if ext in {"csv", "tsv"}:
         from app.ingestion.parsers.csv_parser import CSVParser
 
-        return CSVParser().parse(raw, filename=filename, delimiter="\t" if ext == "tsv" else "")
+        return CSVParser().parse(
+            raw, filename=filename, delimiter="\t" if ext == "tsv" else "", report=report
+        )
     if ext in {"json", "jsonl", "ndjson"}:
         from app.ingestion.parsers.json_parser import JSONParser
 

@@ -15,9 +15,18 @@ class CSVParser:
     Header row defines field names.
     """
 
-    MAX_ROWS = 10_000
+    # Same cap as ExcelParser; it used to be 10,000 and a longer file was cut
+    # silently (P1a-11). A cut is now reported through ``report``.
+    MAX_ROWS = 100_000
 
-    def parse(self, content: str, *, filename: str = "", delimiter: str = "") -> str:
+    def parse(
+        self,
+        content: str,
+        *,
+        filename: str = "",
+        delimiter: str = "",
+        report: dict[str, object] | None = None,
+    ) -> str:
         try:
             import csv
 
@@ -37,6 +46,10 @@ class CSVParser:
             for i, row in enumerate(reader):
                 if i >= self.MAX_ROWS:
                     lines.append(f"[Truncated: showing first {self.MAX_ROWS} rows]")
+                    if report is not None:
+                        report["csv_truncated"] = True
+                        report["csv_max_rows"] = self.MAX_ROWS
+                    _log.warning("csv_truncated file=%s max_rows=%s", filename, self.MAX_ROWS)
                     break
                 if i == 0 and reader.fieldnames:
                     header_line = "Columns: " + ", ".join(str(f) for f in reader.fieldnames)
