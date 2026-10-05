@@ -639,6 +639,7 @@ class RedisConnector(BaseConnector):
     """Redis connector — standalone, Sentinel or Cluster; every common auth mode."""
 
     source_type = "redis"
+    supports_deletion_tracking = True  # iter_live_doc_ids -> reconcile (KB-44)
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         t0 = time.perf_counter()

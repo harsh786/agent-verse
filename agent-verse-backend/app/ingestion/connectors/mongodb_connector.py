@@ -910,6 +910,7 @@ class MongoDBConnector(BaseConnector):
     """MongoDB connector — collection-based incremental ingestion."""
 
     source_type = "mongodb"
+    supports_deletion_tracking = True  # iter_live_doc_ids -> reconcile (KB-44)
 
     @classmethod
     def check_connection_policy(cls, connection_config: dict[str, Any]) -> None:
