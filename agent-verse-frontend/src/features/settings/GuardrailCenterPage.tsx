@@ -231,8 +231,10 @@ function DashboardTab(): JSX.Element {
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: "Last 24h", value: stats.total_24h, color: "text-amber-600" },
-          { label: "All Time", value: stats.total_all, color: "text-foreground" },
-          { label: "Risk P95", value: `${Math.round(stats.risk_score_p95 * 100)}%`, color: stats.risk_score_p95 > 0.7 ? "text-red-600" : "text-green-600" },
+          { label: `Last ${stats.window_days ?? 30} days`, value: stats.total_window ?? stats.total_all, color: "text-foreground" },
+          stats.risk_score_p95 == null
+            ? { label: "Critical", value: stats.by_severity.critical ?? 0, color: (stats.by_severity.critical ?? 0) > 0 ? "text-red-600" : "text-green-600" }
+            : { label: "Risk P95", value: `${Math.round(stats.risk_score_p95 * 100)}%`, color: stats.risk_score_p95 > 0.7 ? "text-red-600" : "text-green-600" },
           { label: "Top Category", value: stats.top_categories[0]?.category ?? "—", color: "text-violet-600" },
         ].map((s) => (
           <div key={s.label} className="bg-card border border-border rounded-xl p-3">

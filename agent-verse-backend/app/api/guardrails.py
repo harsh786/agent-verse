@@ -1,13 +1,16 @@
-"""Guardrails API — CRUD for configs, violations query, stats, and live test endpoint."""
+"""Guardrails API — CRUD for configs, violations query, stats, and live test endpoint.
+
+Violations and stats read the durable guardrails-v2 store (P8b-3);
+``GET /guardrails/violations`` is a deprecated alias of ``GET /guardrails-v2/violations``.
+"""
 
 from __future__ import annotations
 
 import time
 import uuid
-from collections import defaultdict
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.intelligence.guardrail_engine import GuardrailEngine
@@ -78,7 +81,6 @@ class ViolationFilters(BaseModel):
 # Deprecated: configs are guardrails_v2 rules now (see "Configs are guardrails_v2
 # rules" below); kept only so old imports keep working.
 _configs_store: dict[str, dict] = {}
-_violations_store: dict[str, list] = defaultdict(list)  # tenant_id → [violation]
 
 # Per-tenant rate limiting for /test endpoint: {tenant_id → (count, window_start)}
 _test_rate: dict[str, tuple[int, float]] = {}
@@ -413,38 +415,84 @@ async def test_guardrail(
 
 
 # ---------------------------------------------------------------------------
-# GET /guardrails/violations  — query violations with filters
+# GET /guardrails/violations  — deprecated alias of GET /guardrails-v2/violations
 # ---------------------------------------------------------------------------
+
+_V2_VIOLATIONS = "/guardrails-v2/violations"
 
 
 @router.get("/violations")
 async def list_violations(
     request: Request,
+    response: Response,
     severity: str | None = None,
     layer: str | None = None,
     goal_id: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    cursor: str | None = None,
     ctx: Any = Depends(_require_tenant),
 ) -> dict[str, Any]:
-    tenant_id = ctx.tenant_id
-    violations = _violations_store.get(tenant_id, [])
+    """Deprecated: use ``GET /guardrails-v2/violations``.
 
-    if severity:
-        violations = [v for v in violations if v.get("severity") == severity]
-    if layer:
-        violations = [v for v in violations if v.get("layer") == layer]
-    if goal_id:
-        violations = [v for v in violations if v.get("goal_id") == goal_id]
+    P8b-3: this read a per-process ``_violations_store`` that nothing wrote to,
+    so it always answered "no violations". It now serves the same durable,
+    tenant-scoped, keyset-paginated rows as the v2 endpoint, in the legacy shape.
+    OFFSET paging is gone (``offset`` > 0 is refused): page with ``cursor``.
+    """
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.violation_pages import InvalidCursorError, violation_page
 
-    total = len(violations)
-    page = violations[offset : offset + limit]
-    return {"violations": page, "total": total, "offset": offset, "limit": limit}
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = f'<{_V2_VIOLATIONS}>; rel="successor-version"'
+    if offset:
+        raise HTTPException(
+            status_code=400,
+            detail=f"offset paging is not supported; use cursor (see {_V2_VIOLATIONS})",
+        )
+    try:
+        page = await violation_page(
+            guardrails_engine,
+            ctx.tenant_id,
+            limit=limit,
+            severity=severity,
+            layer=layer,
+            goal_id=goal_id,
+            cursor=cursor,
+        )
+    except InvalidCursorError as exc:
+        raise HTTPException(status_code=422, detail="Invalid cursor") from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Guardrail violations are temporarily unavailable"
+        ) from exc
+    return {
+        "violations": [
+            {
+                "id": v.violation_id,
+                "guardrail_id": v.rule_id,
+                "guardrail_name": v.rule_name,
+                "type": v.category,
+                "severity": v.severity,
+                "layer": v.layer,
+                "action_taken": v.action_taken,
+                "message": v.content_preview,
+                "goal_id": v.goal_id,
+                "created_at": v.created_at,
+            }
+            for v in page.violations
+        ],
+        "total": len(page.violations),
+        "limit": limit,
+        "next_cursor": page.next_cursor,
+    }
 
 
 # ---------------------------------------------------------------------------
-# GET /guardrails/stats  — aggregated violation statistics
+# GET /guardrails/stats  — aggregated violation statistics (durable store)
 # ---------------------------------------------------------------------------
+
+_STATS_WINDOW_DAYS = 30
 
 
 @router.get("/stats")
@@ -452,43 +500,21 @@ async def guardrail_stats(
     request: Request,
     ctx: Any = Depends(_require_tenant),
 ) -> dict[str, Any]:
-    tenant_id = ctx.tenant_id
-    violations = _violations_store.get(tenant_id, [])
+    """Counts of the tenant's durable violations over the last 30 days.
 
-    now = time.time()
-    day_ago = now - 86_400
-    recent = [v for v in violations if v.get("_ts", 0) >= day_ago]
+    P8b-3: these were computed from the same never-written per-process dict, so
+    the dashboard always showed zero. ``total_all`` is kept for older clients
+    and now means the window total; there is no risk score on durable
+    violations, so ``risk_score_p95`` is ``null`` rather than a made-up 0.
+    """
+    from app.guardrails_v2.engine import guardrails_engine
 
-    by_severity: dict[str, int] = defaultdict(int)
-    by_layer: dict[str, int] = defaultdict(int)
-    category_counts: dict[str, int] = defaultdict(int)
-
-    for v in violations:
-        by_severity[v.get("severity", "unknown")] += 1
-        by_layer[v.get("layer", "unknown")] += 1
-        category_counts[v.get("violation_type", "unknown")] += 1
-
-    categories: list[dict[str, Any]] = [
-        {"category": k, "count": c} for k, c in category_counts.items()
-    ]
-    top_categories = sorted(
-        categories,
-        key=lambda x: x["count"],
-        reverse=True,
-    )[:10]
-
-    all_scores = [v.get("risk_score", 0.0) for v in violations]
-    p95 = 0.0
-    if all_scores:
-        sorted_scores = sorted(all_scores)
-        p95_idx = int(len(sorted_scores) * 0.95)
-        p95 = sorted_scores[min(p95_idx, len(sorted_scores) - 1)]
-
-    return {
-        "total_24h": len(recent),
-        "total_all": len(violations),
-        "by_severity": dict(by_severity),
-        "by_layer": dict(by_layer),
-        "top_categories": top_categories,
-        "risk_score_p95": p95,
-    }
+    try:
+        stats = await guardrails_engine.aget_violation_stats(
+            ctx.tenant_id, window_days=_STATS_WINDOW_DAYS
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Guardrail statistics are temporarily unavailable"
+        ) from exc
+    return {**stats, "total_all": stats["total_window"], "risk_score_p95": None}

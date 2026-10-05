@@ -318,20 +318,29 @@ test('guardrailsApi.list() returns empty array when configs key is missing', asy
   expect(result).toHaveLength(0);
 });
 
-test('guardrailsApi.getViolations() unwraps {violations} envelope into a plain array', async () => {
-  const envelope = { violations: [{ id: 'v1', rule_id: 'g1', input: 'my ssn', severity: 'high' }], total: 1, offset: 0, limit: 50 };
-  mockOk(envelope);
+test('guardrailsApi.getViolations() reads the durable v2 store and maps rows', async () => {
+  const envelope = {
+    violations: [{ violation_id: 'v1', rule_id: 'g1', rule_name: 'Block PII', layer: 'final_output',
+      action_taken: 'block', category: 'pii', severity: 'high', goal_id: 'goal-1',
+      content_preview: 'email ***', created_at: '2026-10-05T10:00:00+00:00' }],
+    total: 1, next_cursor: null,
+  };
+  const spy = mockOk(envelope);
   useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
 
-  const result = await guardrailsApi.getViolations({ limit: 50 });
+  const result = await guardrailsApi.getViolations({ limit: 50, goal_id: 'goal-1' });
 
-  expect(Array.isArray(result)).toBe(true);
-  expect(result).toHaveLength(1);
-  expect(result[0].id).toBe('v1');
+  expect(String(spy.mock.calls[0][0])).toContain('/guardrails-v2/violations?limit=50&goal_id=goal-1');
+  expect(result).toEqual([{
+    id: 'v1', guardrail_id: 'g1', guardrail_name: 'Block PII', type: 'pii', severity: 'high',
+    message: 'block · final_output — email ***', layer: 'final_output', action_taken: 'block',
+    goal_id: 'goal-1', created_at: '2026-10-05T10:00:00+00:00',
+  }]);
 });
 
 test('guardrailsApi.getViolations() handles a plain array response (no envelope)', async () => {
-  const plain = [{ id: 'v2', rule_id: 'g1', input: 'test', severity: 'low' }];
+  const plain = [{ violation_id: 'v2', rule_name: 'r', layer: 'goal', action_taken: 'warn',
+    category: 'toxicity', severity: 'low', created_at: '' }];
   mockOk(plain);
   useAuthStore.setState({ apiKey: 'test-key', tenantId: 't1', plan: 'free', isAuthenticated: true });
 
@@ -339,4 +348,5 @@ test('guardrailsApi.getViolations() handles a plain array response (no envelope)
 
   expect(Array.isArray(result)).toBe(true);
   expect(result[0].id).toBe('v2');
+  expect(result[0].message).toBe('warn · goal');
 });

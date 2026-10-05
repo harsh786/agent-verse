@@ -3112,18 +3112,54 @@ export interface GuardrailViolation {
   type: string;
   severity: string;
   message: string;
+  layer?: string;
+  action_taken?: string;
   goal_id?: string;
   agent_id?: string;
   created_at: string;
 }
 
+/** A row of GET /guardrails-v2/violations (the durable, fleet-wide store). */
+export interface GuardrailV2Violation {
+  violation_id: string;
+  rule_id?: string;
+  rule_name: string;
+  layer: string;
+  action_taken: string;
+  category: string;
+  severity: string;
+  goal_id?: string | null;
+  content_preview?: string;
+  created_at: string;
+}
+
+export function toGuardrailViolation(v: GuardrailV2Violation): GuardrailViolation {
+  const where = `${v.action_taken} · ${v.layer}`;
+  return {
+    id: v.violation_id,
+    guardrail_id: v.rule_id ?? "",
+    guardrail_name: v.rule_name,
+    type: v.category,
+    severity: v.severity,
+    message: v.content_preview ? `${where} — ${v.content_preview}` : where,
+    layer: v.layer,
+    action_taken: v.action_taken,
+    goal_id: v.goal_id ?? undefined,
+    created_at: v.created_at,
+  };
+}
+
 export interface GuardrailStats {
   total_24h: number;
+  /** Kept for older servers; the window total on current ones. */
   total_all: number;
+  total_window?: number;
+  window_days?: number;
   by_severity: Record<string, number>;
   by_layer: Record<string, number>;
   top_categories: Array<{ category: string; count: number }>;
-  risk_score_p95: number;
+  /** null: durable violations carry no risk score. */
+  risk_score_p95: number | null;
 }
 
 export const guardrailsApi = {
@@ -3138,16 +3174,19 @@ export const guardrailsApi = {
   delete: (id: string) => request<void>(`/guardrails/${id}`, { method: "DELETE" }),
   test: (body: { text: string; rule_id?: string; layer?: string }) =>
     request<GuardrailTestResult>("/guardrails/test", { method: "POST", body: JSON.stringify(body) }),
-  getViolations: (params?: { limit?: number; severity?: string; goal_id?: string }) => {
+  // P8b-3: the durable v2 store. The legacy /guardrails/violations read a
+  // per-process dict nothing wrote to, so this tab always said "No violations".
+  getViolations: (params?: { limit?: number; severity?: string; goal_id?: string; cursor?: string }) => {
     const qs = new URLSearchParams();
     if (params?.limit) qs.set("limit", String(params.limit));
     if (params?.severity) qs.set("severity", params.severity);
     if (params?.goal_id) qs.set("goal_id", params.goal_id);
+    if (params?.cursor) qs.set("cursor", params.cursor);
     const q = qs.toString();
-    return request<{ violations: GuardrailViolation[]; total: number } | GuardrailViolation[]>(
-      `/guardrails/violations${q ? `?${q}` : ""}`
+    return request<{ violations: GuardrailV2Violation[]; next_cursor?: string | null } | GuardrailV2Violation[]>(
+      `/guardrails-v2/violations${q ? `?${q}` : ""}`
     ).then(
-      (res) => (Array.isArray(res) ? res : res.violations ?? [])
+      (res) => (Array.isArray(res) ? res : res.violations ?? []).map(toGuardrailViolation)
     );
   },
   getStats: () => request<GuardrailStats>("/guardrails/stats"),

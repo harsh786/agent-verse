@@ -69,7 +69,7 @@ def test_output_pii_guardrail(api: LiveAPI, cleanup: Any, evidence: dict[str, An
                     pii_events=[t for t in types if "pii" in t or "guardrail" in t])
     leaked = PII_EMAIL in answer or PII_PHONE_DIGITS in answer.replace(" ", "")
     assert not leaked, "the goal's answer returned the personal email/phone unredacted"
-    viol = api.get("/guardrails/violations", params={"goal_id": goal_id})
+    viol = api.get("/guardrails-v2/violations", params={"goal_id": goal_id})
     recorded = viol.status_code == 200 and bool(
         viol.json().get("violations") if isinstance(viol.json(), dict) else viol.json())
     evidence["violation_recorded"] = recorded

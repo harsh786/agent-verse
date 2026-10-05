@@ -26,7 +26,7 @@ const MOCK_GUARDRAILS = [
 function mockFetch(guardrails = MOCK_GUARDRAILS) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
-    if (url.includes('/guardrails/violations'))
+    if (url.includes('/guardrails-v2/violations'))
       return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/guardrails/stats'))
       return new Response(JSON.stringify({ total_24h: 0, total_all: 0, by_severity: {}, by_layer: {}, top_categories: [], risk_score_p95: 0 }),

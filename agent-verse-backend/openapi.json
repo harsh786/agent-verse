@@ -32186,7 +32186,7 @@
     },
     "/guardrails-v2/violations": {
       "get": {
-        "description": "List guardrail violations for the tenant.",
+        "description": "The tenant's guardrail violations, newest first, keyset-paginated.",
         "operationId": "list_violations_guardrails_v2_violations_get",
         "parameters": [
           {
@@ -32196,6 +32196,7 @@
             "schema": {
               "default": 50,
               "maximum": 500,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -32214,6 +32215,56 @@
                 }
               ],
               "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "layer",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Layer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "goal_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Goal Id"
+            }
+          },
+          {
+            "description": "next_cursor of the previous page",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor of the previous page",
+              "title": "Cursor"
             }
           }
         ],
@@ -32249,6 +32300,7 @@
     },
     "/guardrails/stats": {
       "get": {
+        "description": "Counts of the tenant's durable violations over the last 30 days.\n\nP8b-3: these were computed from the same never-written per-process dict, so\nthe dashboard always showed zero. ``total_all`` is kept for older clients\nand now means the window total; there is no risk score on durable\nviolations, so ``risk_score_p95`` is ``null`` rather than a made-up 0.",
         "operationId": "guardrail_stats_guardrails_stats_get",
         "responses": {
           "200": {
@@ -32315,6 +32367,7 @@
     },
     "/guardrails/violations": {
       "get": {
+        "description": "Deprecated: use ``GET /guardrails-v2/violations``.\n\nP8b-3: this read a per-process ``_violations_store`` that nothing wrote to,\nso it always answered \"no violations\". It now serves the same durable,\ntenant-scoped, keyset-paginated rows as the v2 endpoint, in the legacy shape.\nOFFSET paging is gone (``offset`` > 0 is refused): page with ``cursor``.",
         "operationId": "list_violations_guardrails_violations_get",
         "parameters": [
           {
@@ -32371,6 +32424,8 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 200,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -32381,8 +32436,25 @@
             "required": false,
             "schema": {
               "default": 0,
+              "minimum": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],

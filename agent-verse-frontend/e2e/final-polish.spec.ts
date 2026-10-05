@@ -179,17 +179,20 @@ test.describe('GuardrailCenter — Violation Timestamps', () => {
     await apiRoute(page, '**/guardrails**', route =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
-    await page.route('**/guardrails/violations**', route =>
+    // P8b-3: the page reads the durable v2 store.
+    await page.route('**/guardrails-v2/violations**', route =>
       route.fulfill({
         status: 200,
-        body: JSON.stringify([{
-          id: 'abc123deadbeef',
+        body: JSON.stringify({ violations: [{
+          violation_id: 'abc123deadbeef',
           rule_name: 'Block PII',
-          violation_type: 'pii_detection',
+          layer: 'final_output',
+          action_taken: 'block',
+          category: 'pii_detection',
           severity: 'high',
-          message: 'PII detected in output',
+          content_preview: 'PII detected in output',
           created_at: '2025-06-15T14:30:00Z',
-        }]),
+        }], next_cursor: null }),
       })
     );
     await page.route('**/guardrails/stats**', route =>

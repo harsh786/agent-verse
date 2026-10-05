@@ -541,20 +541,79 @@ class GuardrailsEngine:
         return violations[:limit]
 
     async def aget_violations(
-        self, tenant_id: str, limit: int = 100, severity: str | None = None
+        self,
+        tenant_id: str,
+        limit: int = 100,
+        severity: str | None = None,
+        *,
+        layer: str | None = None,
+        goal_id: str | None = None,
+        before: tuple[datetime.datetime, str] | None = None,
     ) -> list[GuardrailViolation]:
         """The tenant's violations from Postgres (every replica's) when a repository
-        is bound; raises if it cannot be read — never a one-replica partial view."""
+        is bound, newest first, keyset-paged by ``(created_at, id)`` (*before* =
+        the previous page's last row); raises if they cannot be read — never a
+        one-replica partial view. Without a repository: this process's cache."""
         lister = getattr(self._repo, "list_violations", None)
         if lister is None:
-            found = self.get_violations(tenant_id, limit if not severity else 10_000)
-            if severity:
-                found = [v for v in found if v.severity == severity][:limit]
-            return found
-        result: list[GuardrailViolation] = await lister(
-            tenant_id, limit=limit, severity=severity
-        )
+            found = [
+                v
+                for v in self.get_violations(tenant_id, _VIOLATION_CACHE_PER_TENANT)
+                if (not severity or v.severity == severity)
+                and (not layer or v.layer == layer)
+                and (not goal_id or v.goal_id == goal_id)
+            ]
+            found.sort(key=lambda v: (v.created_at or "", v.violation_id), reverse=True)
+            if before is not None:
+                cursor = (before[0].isoformat(), before[1])
+                found = [v for v in found if (v.created_at or "", v.violation_id) < cursor]
+            return found[:limit]
+        kwargs: dict[str, Any] = {"limit": limit, "severity": severity}
+        if layer or goal_id or before is not None:
+            kwargs.update(layer=layer, goal_id=goal_id, before=before)
+        result: list[GuardrailViolation] = await lister(tenant_id, **kwargs)
         return result
+
+    async def aget_violation_stats(
+        self, tenant_id: str, *, window_days: int = 30
+    ) -> dict[str, Any]:
+        """Counts of the tenant's violations over the last *window_days* (bounded)."""
+        now = datetime.datetime.now(datetime.UTC)
+        since = now - datetime.timedelta(days=window_days)
+        day_start = now - datetime.timedelta(days=1)
+        stats_fn = getattr(self._repo, "violation_stats", None)
+        groups: list[tuple[str, str, str, int, int]]
+        if stats_fn is None:
+            counted: dict[tuple[str, str, str], list[int]] = {}
+            for v in self._violations.get(tenant_id, []):
+                ts = datetime.datetime.fromisoformat(v.created_at) if v.created_at else now
+                if ts < since:
+                    continue
+                c = counted.setdefault((v.severity, v.layer, v.category or "unknown"), [0, 0])
+                c[0] += 1
+                c[1] += int(ts >= day_start)
+            groups = [(*k, c[0], c[1]) for k, c in counted.items()]
+        else:
+            groups = await stats_fn(tenant_id, since=since, day_start=day_start)
+        by_severity: dict[str, int] = {}
+        by_layer: dict[str, int] = {}
+        by_category: dict[str, int] = {}
+        total = recent = 0
+        for sev, lay, cat, count, count_24h in groups:
+            by_severity[sev] = by_severity.get(sev, 0) + count
+            by_layer[lay] = by_layer.get(lay, 0) + count
+            by_category[cat] = by_category.get(cat, 0) + count
+            total += count
+            recent += count_24h
+        top = sorted(by_category.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        return {
+            "total_24h": recent,
+            "total_window": total,
+            "window_days": window_days,
+            "by_severity": by_severity,
+            "by_layer": by_layer,
+            "top_categories": [{"category": k, "count": c} for k, c in top],
+        }
 
     def _remember_violation(self, tenant_id: str, violation: GuardrailViolation) -> None:
         cache = self._violations.setdefault(tenant_id, [])
