@@ -124,6 +124,39 @@ describe('useAuthStore actions', () => {
     expect(localStorage.getItem('av-auth')).toBeNull();
   });
 
+  it('logout revokes an SSO user session (avs_ token) on the backend', () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    useAuthStore.getState().setSSOCredentials('avs_session-token', '', 3600, 't1', 'starter');
+    useAuthStore.getState().setMfaToken('mfa-tok');
+
+    useAuthStore.getState().logout();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toMatch(/\/auth\/session\/logout$/);
+    expect(init?.method).toBe('POST');
+    expect(init?.keepalive).toBe(true);
+    expect(init?.headers).toMatchObject({
+      Authorization: 'Bearer avs_session-token',
+      'X-MFA-Token': 'mfa-tok',
+    });
+    expect(useAuthStore.getState().accessToken).toBe('');
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    fetchMock.mockRestore();
+  });
+
+  it('logout does not call the session endpoint for API keys or Keycloak JWTs', () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    useAuthStore.getState().setCredentials('key', 'tenant', 'pro');
+    useAuthStore.getState().logout();
+    useAuthStore.getState().setSSOCredentials('eyJ.a.b', 'refresh', 3600, 't1', 'pro');
+    useAuthStore.getState().logout();
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockRestore();
+  });
+
   it('setSessionValidated toggles the validated flag', () => {
     useAuthStore.getState().setSessionValidated(true);
     expect(useAuthStore.getState().sessionValidated).toBe(true);

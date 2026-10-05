@@ -65,6 +65,30 @@ interface AuthState {
   setMfaToken: (token: string | null) => void;
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+
+/** SSO user-session tokens (SAML login) — revocable on the backend. */
+const SESSION_TOKEN_PREFIX = "avs_";
+
+/**
+ * Revoke an SSO user session on the backend (POST /auth/session/logout) so the
+ * token stops working on every replica, not just in this tab. `keepalive` lets
+ * the request outlive a page navigation right after sign-out. API keys and
+ * Keycloak JWTs are not user sessions and are left alone.
+ */
+function revokeServerSession(accessToken: string, mfaToken: string | null): void {
+  if (!accessToken.startsWith(SESSION_TOKEN_PREFIX)) return;
+  const headers: Record<string, string> = { Authorization: `Bearer ${accessToken}` };
+  if (mfaToken) headers["X-MFA-Token"] = mfaToken;
+  void fetch(`${API_BASE}/auth/session/logout`, {
+    method: "POST",
+    headers,
+    keepalive: true,
+  }).catch(() => {
+    // Offline: the session still expires server-side; nothing is stored locally.
+  });
+}
+
 // Use sessionStorage (cleared on tab close) to reduce XSS exfiltration risk.
 // Falls back to localStorage for backward compat on reads only — never writes
 // API keys or JWTs back to localStorage.
@@ -84,7 +108,7 @@ const secureStorage = createJSONStorage(() => ({
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       // Default state
       apiKey: "",
       tenantId: "",
@@ -150,6 +174,8 @@ export const useAuthStore = create<AuthState>()(
       },
 
       logout: () => {
+        const { ssoMode, accessToken, mfaToken } = get();
+        if (ssoMode && accessToken) revokeServerSession(accessToken, mfaToken);
         sessionStorage.removeItem("av_api_key");
         localStorage.removeItem("av_api_key");
         sessionStorage.removeItem("av-auth");

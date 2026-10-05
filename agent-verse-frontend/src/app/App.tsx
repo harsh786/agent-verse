@@ -121,6 +121,7 @@ const CompliancePage = lazy(() => import('@/features/compliance/CompliancePage')
 import { LandingPage } from "@/features/landing/LandingPage";
 import { AuthPage } from "@/features/auth/AuthPage";
 import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
+import { SSOCompletePage } from "@/features/auth/SSOCompletePage";
 import MFAVerifyPage from "@/features/auth/MFAVerifyPage";
 import { StatusPage } from "@/features/status/StatusPage";
 
@@ -207,6 +208,7 @@ export default function App() {
       <Route path="/auth" element={<AuthPage />} />
       <Route path="/login" element={<AuthPage />} />
       <Route path="/auth/callback" element={<SSOCallbackPage />} />
+      <Route path="/auth/sso/complete" element={<SSOCompletePage />} />
       <Route path="/auth/mfa" element={<MFAVerifyPage />} />
       <Route path="/status" element={<StatusPage />} />
       {/* OAuth popup callback — must be public so the provider redirect works without auth */}

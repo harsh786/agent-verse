@@ -92,6 +92,17 @@ export function AuthPage() {
     }
   }
 
+  function handleSAMLLogin() {
+    // SP-initiated SAML: the backend redirects to the tenant's IdP; the ACS
+    // later sends the browser to /auth/sso/complete with a one-time code.
+    const trimmedTenantId = tenantId.trim();
+    if (!trimmedTenantId) {
+      setError("Enter your tenant ID to sign in with company SSO.");
+      return;
+    }
+    window.location.href = `${API_BASE}/enterprise/saml/login/${encodeURIComponent(trimmedTenantId)}`;
+  }
+
   function handleSSOLogin() {
     // Generate CSRF state token and persist so the callback page can validate it
     const state = crypto.randomUUID();
@@ -208,6 +219,13 @@ export function AuthPage() {
               className="w-full py-2 px-4 bg-[#00D4FF] text-primary-foreground text-sm font-medium rounded-md hover:opacity-90 transition-opacity"
             >
               {isSubmitting ? 'Signing in…' : 'Sign in'}
+            </button>
+            <button
+              type="button"
+              onClick={handleSAMLLogin}
+              className="w-full py-2 px-4 bg-card border border-input text-sm font-medium rounded-md hover:bg-muted/50 transition-colors"
+            >
+              Use company SSO (SAML)
             </button>
           </form>
 

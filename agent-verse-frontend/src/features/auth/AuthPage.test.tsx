@@ -251,6 +251,26 @@ describe('AuthPage', () => {
     expect(screen.getByLabelText(/^api key$/i)).toBeInTheDocument();
   });
 
+  test('company SSO (SAML) starts the SP-initiated login for the tenant', async () => {
+    mockFetchByUrl({});
+    const originalLocation = window.location;
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, href: originalLocation.href },
+    });
+    try {
+      renderAuthPage();
+      const samlButton = screen.getByRole('button', { name: /company sso \(saml\)/i });
+      await userEvent.click(samlButton);
+      expect(await screen.findByRole('alert')).toHaveTextContent(/tenant id/i);
+      await userEvent.type(screen.getByLabelText(/tenant id/i), 'acme');
+      await userEvent.click(samlButton);
+      expect(window.location.href).toMatch(/\/enterprise\/saml\/login\/acme$/);
+    } finally {
+      Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    }
+  });
+
   test('does not show the Keycloak SSO button when SSO is disabled', async () => {
     mockFetchByUrl({
       '/auth/config': () => jsonResponse({ sso_enabled: false, authorization_endpoint: null }),
