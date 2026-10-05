@@ -15,8 +15,9 @@ API shows instead.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, quote, urlsplit
+from urllib.parse import quote, unquote_plus, urlsplit
 
 if TYPE_CHECKING:
     from app.mcp.registry import MCPServerConfig
@@ -40,25 +41,45 @@ def is_dsn(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower().startswith(DSN_SCHEMES)
 
 
+_HOSTLIST = re.compile(r"^[A-Za-z0-9.\-_%\[\]:,]+$")
+
+
 def mask_dsn(dsn: str) -> str:
-    """The connection string without userinfo, secret-looking query values redacted."""
+    """The connection string without userinfo, secret-looking query values redacted.
+
+    The userinfo is dropped up to the LAST '@' that is followed by a well-formed
+    host list, so an unencoded ``# @ : / ? %`` inside a password can never leave
+    part of it in the "host", "path" or "query" (NF-4). When no such '@' exists
+    but one is present, nothing after the scheme is shown (fail closed).
+    """
     text = dsn.strip()
-    scheme, _, rest = text.partition("://")
+    scheme, sep, rest = text.partition("://")
+    if not sep:
+        return REDACTED
+    if "@" in rest:
+        cut = -1
+        for index in range(len(rest) - 1, -1, -1):
+            if rest[index] != "@":
+                continue
+            hosts = re.split(r"[/?#]", rest[index + 1 :], maxsplit=1)[0]
+            if hosts and _HOSTLIST.match(hosts):
+                cut = index
+                break
+        if cut < 0:
+            return f"{scheme.lower()}://{REDACTED}"
+        rest = rest[cut + 1 :]
     rest = rest.partition("#")[0]
-    # The userinfo ends at the LAST '@' before the query: an unencoded '@' or '/'
-    # inside a password must not leak part of it as "host" or "path".
-    before_query = rest.split("?", 1)[0]
-    if "@" in before_query:
-        rest = rest[before_query.rfind("@") + 1 :]
-    authority, slash, tail = rest.partition("/")
-    if "?" in authority:  # 'host?opts' with no path
-        authority, _, q = authority.partition("?")
-        tail = f"?{q}"
-    path, _, query = tail.partition("?")
+    match = re.match(r"^([^/?]*)(/?)([^?]*)\??(.*)$", rest, re.S)
+    authority, slash, path, query = match.groups() if match else (rest, "", "", "")
+    pairs = [p.partition("=") for p in re.split(r"[&;]", query) if p]
     masked_query = "&".join(
-        f"{quote(k, safe='')}="
-        + (REDACTED if any(p in k.lower() for p in _SECRET_QUERY_PARTS) else quote(v, safe=":,"))
-        for k, v in parse_qsl(query, keep_blank_values=True)
+        f"{quote(unquote_plus(k), safe='')}="
+        + (
+            REDACTED
+            if any(part in unquote_plus(k).lower() for part in _SECRET_QUERY_PARTS)
+            else quote(unquote_plus(v), safe=":,")
+        )
+        for k, _, v in pairs
     )
     out = f"{scheme.lower()}://{authority}{slash}{path}"
     return f"{out}?{masked_query}" if masked_query else out
