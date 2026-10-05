@@ -512,3 +512,32 @@ async def test_cluster_and_its_announced_nodes_are_egress_checked(cluster: int) 
     assert blocked["ok"] is False
     assert "10.0.0.9" in blocked["error"]
     assert "not allowed by the egress policy" in blocked["error"]
+
+
+# ── P1c: reconciliation, budget smaller than a SCAN batch, per-key failures ───
+
+
+async def test_deleted_keys_are_listed_away_for_reconciliation(plain: tuple[str, int]) -> None:
+    """P1c-8: Redis could not list what exists upstream, so reconcile answered 422
+    and a deleted key stayed indexed for ever. The live listing streams every key
+    of the configured patterns (SCAN), under the ids a sync gives them."""
+    from app.ingestion.connectors.redis_connector import RedisConnector
+
+    host, port = plain
+    admin = redis.Redis(host=host, port=port)
+    admin.mset({f"rec:{i}": f"record number {i} for reconciliation" for i in range(30)})
+    h = _harness()
+    source = h.create({"host": host, "port": port, "key_patterns": "rec:*, greeting"})
+    _, pipeline = await h.sync(source["source_id"])
+    ids = {d.doc_id for d in pipeline.docs}
+    assert len(ids) == 31
+    stored = await h.store.get(source["source_id"], source["tenant_id"])
+    assert stored is not None
+    live = [i async for i in RedisConnector().iter_live_doc_ids(stored)]
+    assert set(live) == ids
+    admin.delete("rec:3", "rec:4")
+    admin.close()
+    live2 = {i async for i in RedisConnector().iter_live_doc_ids(stored)}
+    gone = {d.doc_id for d in pipeline.docs if d.metadata["key"] in ("rec:3", "rec:4")}
+    assert len(gone) == 2 and not (gone & live2)
+    assert live2 == ids - gone

@@ -604,6 +604,14 @@ def _encode_cursor(state: dict[str, Any], patterns: list[str], *, done: bool = F
     )
 
 
+def _doc_id(config: SourceConfig, url: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{config.source_id}:{url}"))
+
+
+def _key_url(settings: _Settings, db: int, name: str) -> str:
+    return f"redis://{settings.display}/{db}/{quote(name, safe='')}"
+
+
 @register("redis")
 class RedisConnector(BaseConnector):
     """Redis connector — standalone, Sentinel or Cluster; every common auth mode."""
@@ -632,6 +640,23 @@ class RedisConnector(BaseConnector):
         if not any(cc.get(k) for k in ("host", "uri", "sentinels", "cluster_nodes")):
             return
         _settings(cc)
+
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Every key of the configured patterns, under its document id (P1c-8 /
+        KB-44 deletions). SCAN only (no value is read); any error propagates, so a
+        partial listing never looks complete."""
+        settings = _settings(config.connection_config)
+        db = 0 if settings.mode == "cluster" else settings.db
+        async with _connected(settings) as conn:
+            for pattern in settings.key_patterns:
+                for client in conn.nodes.values():
+                    at = 0
+                    while True:
+                        at, keys = await asyncio.to_thread(client.scan, at, pattern, _SCAN_COUNT)
+                        for key in keys:
+                            yield _doc_id(config, _key_url(settings, db, _text(key)))
+                        if not int(at):
+                            break
 
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
