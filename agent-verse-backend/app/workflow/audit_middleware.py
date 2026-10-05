@@ -205,7 +205,7 @@ class AutoAuditMiddleware:
                 tool_name=f"workflow.{event_type}",
                 action_level=ActionLevel.ALLOW_LOG,
                 outcome=event_type,
-                step_id=str(data.get("step_id", "") or "")[:64],
+                step_id=str(data.get("step_id", "") or ""),
                 note=_note(data),
             )
             # AuditLog.record(event, *, tenant_ctx=...). It used to be called as
@@ -260,13 +260,14 @@ def record_workflow_action(
         key_id = str(getattr(tenant, "api_key_id", "") or "") or None
         audit_log.record(
             AuditEvent(
-                goal_id=str(workflow_id)[:64],  # audit_log.goal_id is VARCHAR(64)
+                # Never truncated: an overflowing id is refused loudly by the writer.
+                goal_id=str(workflow_id),
                 tool_name=f"workflow.{action}",
                 action_level=(
                     ActionLevel.DENY if outcome == "denied" else ActionLevel.ALLOW_LOG
                 ),
                 outcome=outcome[:100],
-                step_id=step_id[:64],
+                step_id=step_id,
                 approver=approver,
                 note=note[:1000],
                 ip_address=getattr(client, "host", None),
@@ -278,3 +279,35 @@ def record_workflow_action(
         )
     except Exception as exc:  # auditing must never break the call path
         _log.warning("workflow_action_audit_failed", action=action, error=str(exc))
+
+
+def _created_id(result: Any) -> str:
+    """The new workflow id from a create result (dict or model)."""
+    if isinstance(result, dict):
+        return str(result.get("id") or "")
+    return str(getattr(result, "id", "") or "")
+
+
+def record_workflow_created(
+    request: Any,
+    result: Any,
+    *,
+    name: str,
+    source: str,
+    **detail: str,
+) -> None:
+    """P4-1: the ONE ``workflow.created`` audit row every create path writes.
+
+    Create-via-API, YAML import, clone, template instantiate/fork and the NL
+    builder's save must all leave the same row (``goal_id=<new workflow id>``,
+    caller's tenant and key) so the audit trail never depends on which door a
+    workflow came through. ``source`` names the door; ``detail`` adds origin ids
+    (``cloned_from``, ``template``).
+    """
+    workflow_id = _created_id(result)
+    if not workflow_id:
+        _log.warning("workflow_created_audit_missing_id", source=source)
+        return
+    parts = [f"name={name}", f"source={source}"]
+    parts += [f"{k}={v}" for k, v in detail.items() if v]
+    record_workflow_action(request, "created", workflow_id=workflow_id, note="; ".join(parts))

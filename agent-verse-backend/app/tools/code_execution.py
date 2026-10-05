@@ -192,8 +192,9 @@ async def _audit(
     raw = code.encode("utf-8", errors="replace")
     await audit_log.record_durable(
         AuditEvent(
-            goal_id=(ctx.ref_id or ctx.source)[:64],
-            step_id=ctx.step_id[:64],
+            # Ids are never truncated; AuditLog refuses an overflow loudly (P4-2).
+            goal_id=ctx.ref_id or ctx.source,
+            step_id=ctx.step_id,
             tool_name=f"code_interpreter.{language}"[:200],
             action_level=ActionLevel.ALLOW_LOG,
             outcome="success" if result.success else ("timeout" if result.timed_out else "failed"),

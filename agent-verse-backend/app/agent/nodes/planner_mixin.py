@@ -80,6 +80,20 @@ class PlannerMixin:
             if decision.allowed:
                 names.add(tool.name)
         agent_state.context[GRANTED_TOOLS_KEY] = sorted(names)
+        withheld = sorted({t.name for t in tools} - names)
+        if withheld:
+            # P8-2: hiding ungranted tools from the models left no trace at all;
+            # say once per goal which tools were withheld (a call to one is still
+            # refused — and audited — by the dispatch-time grant gate).
+            emit = getattr(self, "_emit", None)
+            if emit is not None:
+                await emit(
+                    {
+                        "type": "tools_withheld_by_grant",
+                        "tools": withheld[:50],
+                        "count": len(withheld),
+                    }
+                )
         return names
 
     def _pattern_result_parts(self, agent_state: AgentState) -> list[str]:

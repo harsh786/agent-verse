@@ -73,6 +73,17 @@ def _not_wired_probe() -> DependencyProbeResult:
     return DependencyProbeResult.not_ready("not_wired")
 
 
+def _per_collection_probe() -> DependencyProbeResult:
+    """``precomputed_index`` (RAPTOR / agentic chunking) exists per collection.
+
+    Platform-wide readiness cannot judge it without a collection; the RAG gateway
+    checks the collection's index on every request (P2-6) and refuses with
+    ``collection_index_required`` / ``precomputed_index_missing``. Report
+    degraded rather than claiming ready or not-wired.
+    """
+    return DependencyProbeResult.degraded("per_collection")
+
+
 def _provider_probe(state: Any) -> Probe:
     def probe() -> DependencyProbeResult:
         from app.providers.fake import FakeProvider
@@ -150,6 +161,7 @@ def build_strategy_probes(state: Any) -> dict[str, Probe]:
     }
     for dependency_id, attribute in _STATE_BACKED.items():
         probes[dependency_id] = _state_backed_probe(state, attribute)
+    probes["precomputed_index"] = _per_collection_probe
     not_wired: Callable[[], DependencyProbeResult] = _not_wired_probe
     for dependency_id in _NOT_WIRED:
         probes[dependency_id] = not_wired

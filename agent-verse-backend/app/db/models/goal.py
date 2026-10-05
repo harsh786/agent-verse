@@ -139,9 +139,10 @@ class GoalEvent(Base):
         {"postgresql_partition_by": "RANGE (created_at)"},
     )
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    # id / tenant_id widened to 64 (migration d4e7a2c9b1f3, P4-2).
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     tenant_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     goal_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("goals.id", ondelete="CASCADE"), nullable=False, index=True

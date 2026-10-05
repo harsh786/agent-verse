@@ -214,7 +214,7 @@ class _LexicalFakeSession:
             return _Result([(1536,)])  # the tenant's collection (ownership check)
         if "ts_rank_cd" in sql:
             return _Result(self.fts_rows)
-        if "similarity(content" in sql:
+        if "word_similarity(" in sql:
             return _Result(self.trgm_rows)
         return _Result([])
 
@@ -288,7 +288,7 @@ class TestTrigramLegErrorHandling:
 
         # e.g. pg_trgm extension not installed on this database.
         session = _LexicalFakeSession(
-            raise_on="similarity(content",
+            raise_on="word_similarity(",
             fts_rows=[("c1", "fts hit content", {}, 0.7)],
         )
         results = await hybrid_search(
@@ -307,7 +307,7 @@ class TestTrigramLegErrorHandling:
     async def test_trgm_leg_error_strict_raises_leg_error(self) -> None:
         from app.rag.engine import RetrievalLegExecutionError, hybrid_search
 
-        session = _LexicalFakeSession(raise_on="similarity(content")
+        session = _LexicalFakeSession(raise_on="word_similarity(")
         with pytest.raises(RetrievalLegExecutionError) as exc_info:
             await hybrid_search(
                 session,
@@ -380,8 +380,8 @@ class TestQueryShapingEdgeCases:
             top_k=5,
         )
         assert results == []
-        trgm_call = next(c for c in session.calls if "similarity(content" in c[0])
-        assert trgm_call[1]["q"] == "ab"
+        trgm_call = next(c for c in session.calls if "word_similarity(" in c[0])
+        assert trgm_call[1]["tq"] == "ab"
 
     @pytest.mark.asyncio
     async def test_non_ascii_query_characters_pass_through(self) -> None:

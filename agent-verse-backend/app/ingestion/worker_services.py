@@ -15,24 +15,21 @@ from typing import Any
 
 
 def bind_worker_guardrail_rules(db_factory: object) -> None:
-    """Bind the RAG_INGEST guardrail engine to the tenant's persisted rules.
+    """Bind the guardrail engine to the tenant's persisted rules (RV-06).
 
     ``app.main``'s lifespan does this for the API; it never runs in a worker, so
     ``ensure_tenant_loaded`` was a no-op here and worker-ingested documents were
     screened against the baseline defaults only — a tenant's own block rules
-    never applied. Each tenant's rules load under that tenant's RLS context on
-    its first evaluation. The worker writes no rules, so nothing is
-    auto-persisted. A failure here propagates: ingestion must not run unscreened
-    (and ``screen_text`` refuses to screen in production without a repository).
+    never applied. One implementation for every worker path (ingestion, goals,
+    workflows): :func:`app.guardrails_v2.worker_binding.bind_worker_guardrail_rules`.
+    A failure here propagates: ingestion must not run unscreened (and
+    ``screen_text`` refuses to screen in production without a repository).
     """
-    from app.guardrails_v2.engine import guardrails_engine
-    from app.guardrails_v2.repository import PostgresGuardrailRuleRepository
+    from app.guardrails_v2.worker_binding import (
+        bind_worker_guardrail_rules as _bind,
+    )
 
-    if not guardrails_engine.has_repository:
-        guardrails_engine.bind_repository(
-            PostgresGuardrailRuleRepository(db_factory),  # type: ignore[arg-type]
-            auto_persist=False,
-        )
+    _bind(db_factory)
 
 
 def build_worker_knowledge_services(db_factory: Any) -> tuple[Any, Any]:

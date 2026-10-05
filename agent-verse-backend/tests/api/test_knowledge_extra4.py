@@ -1065,8 +1065,9 @@ def test_federated_search_missing_collection_ids() -> None:
     assert resp.status_code in (422, 500)
 
 
-def test_federated_search_top_k_clamped() -> None:
-    """Line 1015: top_k clamped to 1-100."""
+def test_federated_search_top_k_above_the_contract_maximum_is_422() -> None:
+    """P2-4: top_k used to be clamped to 1-100, but the retrieval contract caps
+    it at 20, so 21-100 failed later as a 503. Out of range is now a 422."""
     embedder = _make_embedder()
     client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
 
@@ -1076,4 +1077,5 @@ def test_federated_search_top_k_clamped() -> None:
             json={"query": "test", "collection_ids": ["c1"], "top_k": 9999},
             headers=H,
         )
-    assert resp.status_code == 200
+    assert resp.status_code == 422
+    assert "between 1 and 20" in resp.text

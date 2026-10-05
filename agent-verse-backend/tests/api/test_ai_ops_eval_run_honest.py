@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-from collections.abc import AsyncGenerator
 from typing import Any
 
 import pytest
@@ -18,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api import ai_ops
 from app.api.ai_ops import router as ai_ops_router
+from app.evals.ai_ops_jobs import RunConfig
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
@@ -41,15 +41,20 @@ class _FakeGoalService:
         self._goals[gid] = kw["goal"]
         return {"goal_id": gid}
 
-    async def subscribe_events(
-        self, *, goal_id: str, tenant_ctx: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    async def get_goal(self, goal_id: str, tenant_ctx: Any) -> dict[str, Any]:
         goal = self._goals[goal_id]
         if goal in self.fail:
-            yield {"type": "goal_failed", "reason": "tool exploded"}
-            return
-        yield {"type": "step_complete", "output": self.answers.get(goal, "")}
-        yield {"type": "goal_complete"}
+            return {"goal_id": goal_id, "status": "failed", "failure_reason": "tool exploded"}
+        return {"goal_id": goal_id, "status": "complete"}
+
+    async def get_events(self, goal_id: str, tenant_ctx: Any) -> list[dict[str, Any]]:
+        goal = self._goals[goal_id]
+        if goal in self.fail:
+            return [{"type": "goal_failed", "reason": "tool exploded"}]
+        return [
+            {"type": "step_complete", "output": self.answers.get(goal, "")},
+            {"type": "goal_complete"},
+        ]
 
 
 class _Resp:
@@ -75,6 +80,10 @@ def _app(goal_service: Any = None, provider: Any = None) -> FastAPI:
 
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.include_router(ai_ops_router)
+    # In-process runs poll their goals; poll fast in tests.
+    app.state.ai_ops_run_config = RunConfig(
+        concurrency=4, poll_seconds=0.001, lease_seconds=30, case_timeout=30
+    )
     if goal_service is not None:
         app.state.goal_service = goal_service
     if provider is not None:

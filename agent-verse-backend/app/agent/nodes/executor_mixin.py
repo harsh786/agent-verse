@@ -1527,6 +1527,125 @@ class ExecutorMixin:
                 request_id, tenant_ctx=tenant_ctx, timeout=timeout
             )
 
+    async def _audit_grant_denial(
+        self, tool_name: str, reason: str, state: AgentState, tenant_ctx: TenantContext
+    ) -> None:
+        """P8-2: a durable audit row for every call the grant gate refused.
+
+        (tool, agent, tenant, reason): the tenant is the row's tenant, the agent
+        and the reason are in the note. A requested name too long for the
+        column is recorded as an explicit prefix + digest, with the whole name
+        in the note — never silently cut. A failed write is logged as an error;
+        the call stays refused either way.
+        """
+        import hashlib
+
+        if self._audit_log is None:
+            self._logger.warning("grant_denial_unaudited_no_audit_log", tool=tool_name[:120])
+            return
+        recorded_name = tool_name
+        if len(tool_name) > 200:
+            digest = hashlib.sha256(tool_name.encode()).hexdigest()[:16]
+            recorded_name = f"{tool_name[:150]}...sha256:{digest}"
+        try:
+            await self._audit_log.record_async(
+                AuditEvent(
+                    goal_id=str(state.goal_id or ""),
+                    tool_name=recorded_name,
+                    action_level=ActionLevel.DENY,
+                    outcome="denied",
+                    note=(
+                        f"grant_gate agent={self._agent_id or ''} reason={reason} "
+                        f"tool={tool_name}"
+                    )[:1000],
+                    api_key_id=getattr(tenant_ctx, "api_key_id", None) or None,
+                ),
+                tenant_ctx=tenant_ctx,
+            )
+        except Exception as exc:
+            self._logger.error(
+                "grant_denial_audit_failed", tool=tool_name[:120], error=str(exc)[:200]
+            )
+
+    async def _deny_ungranted_call(
+        self,
+        tool_name: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        *,
+        parallel: bool = False,
+    ) -> str | None:
+        """The grant gate for a call the model was never offered (P8-2).
+
+        Ungranted tools are hidden from the planner and executor prompts, so a
+        call to one can only be a hallucinated or injected name. It used to be
+        rejected as an "unknown tool" before the grant gate ran: no
+        ``tool_call_blocked_by_grant`` event and no audit row. With grants
+        enforced, it now goes through the gate: a refusal returns the refusal
+        reason (event + audit row written); ``None`` means the gate allows it.
+        """
+        if not getattr(self, "_enforce_grants", False):
+            return None
+        decision = await enforce_tool_call(
+            self._grant_store,
+            tenant_id=tenant_ctx.tenant_id,
+            agent_id=self._agent_id or "",
+            tool_name=tool_name,
+            enabled=True,
+        )
+        if decision.allowed:
+            return None
+        reason = str(decision.reason)
+        event: dict[str, Any] = {
+            "type": "tool_call_blocked_by_grant",
+            "tool": tool_name[:200],
+            "reason": reason,
+            "offered": False,
+        }
+        if parallel:
+            event["parallel"] = True
+        await self._emit(event)
+        record_tool_call(tool_name[:200], "grant", "denied", 0.0)
+        await self._audit_grant_denial(tool_name, reason, state, tenant_ctx)
+        return reason
+
+    async def _screen_step_output(
+        self, step: str, output: str, state: AgentState, tenant_ctx: TenantContext
+    ) -> str:
+        """Apply the tenant's ``tool_output`` guardrail rules to a step's output.
+
+        BLOCK withholds the output, REDACT replaces it with the redacted text;
+        both emit an event naming the rules. An errored check fails closed on
+        high-risk work (SAFE-4), else the output passes with a warning.
+        """
+        if guardrails_engine is None or GuardrailLayer is None:
+            return output
+        try:
+            verdict = await guardrails_engine.evaluate(
+                content=output,
+                layer=GuardrailLayer.TOOL_OUTPUT,
+                tenant_id=tenant_ctx.tenant_id,
+                goal_id=getattr(state, "goal_id", None),
+                step_description=step,
+            )
+        except Exception as exc:
+            if _guardrail_should_fail_closed(step, state.context.get("_risk_level")):
+                self._logger.warning("step_output_guardrail_failed_closed", error=str(exc)[:200])
+                return "[Output withheld: the guardrail check could not be completed]"
+            self._logger.warning("step_output_guardrail_failed", error=str(exc)[:200])
+            return output
+        rules = [str(v.get("rule_name") or "") for v in verdict.get("violations") or []]
+        if verdict.get("blocked"):
+            await self._emit(
+                {"type": "guardrail_blocked", "scope": "step_output", "rules": rules}
+            )
+            return "[Output blocked by guardrail policy]"
+        redacted = verdict.get("redacted_content")
+        if isinstance(redacted, str) and redacted != output:
+            await self._emit({"type": "pii_redacted", "issues": rules, "scope": "step_output"})
+            return redacted
+        return output
+
     async def _execute_step_pipeline(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
     ) -> str:
@@ -2444,7 +2563,23 @@ class ExecutorMixin:
             from app.agent.tool_calls import validate_tool_name as _validate_tn
 
             _tn_rejection = _validate_tn(tool_call.tool, _allowed_tools_set)
-            if _tn_rejection:
+            _offlist_grant_denial = (
+                await self._deny_ungranted_call(tool_call.tool, state, tenant_ctx)
+                if _tn_rejection
+                else None
+            )
+            if _offlist_grant_denial is not None:
+                # P8-2: an ungranted (never offered) tool — refused by the grant
+                # gate with an event and an audit row, not as an "unknown tool".
+                _taint_step_cache()
+                raw_output = self._sanitize_tool_raw_output(
+                    f"Tool call denied: '{tool_call.tool}' is not granted to this agent "
+                    f"({_offlist_grant_denial}). Do not call it again; complete the step "
+                    "with the information already available or other permitted tools."
+                )
+                raw_output_sanitized = True
+                tool_call = None  # never dispatched
+            elif _tn_rejection:
                 raw_output = _tn_rejection
                 _taint_step_cache()
                 raw_output_sanitized = True
@@ -2576,6 +2711,9 @@ class ExecutorMixin:
                         }
                     )
                     record_tool_call(tool_ref.name, "grant", "denied", 0.0)
+                    await self._audit_grant_denial(
+                        tool_ref.name, str(_grant_denial.reason), state, tenant_ctx
+                    )
                     raw_output = self._sanitize_tool_raw_output(
                         f"Tool call denied: '{tool_ref.name}' is not granted to this agent "
                         f"({_grant_denial.reason}). Do not call it again; complete the step "
@@ -3389,6 +3527,14 @@ class ExecutorMixin:
                     "guardrail_engine_v2_output_check_failed", error=str(_ge_out_exc)
                 )
 
+        # P8-1: the TENANT's own output rules (guardrails_v2, ``tool_output``
+        # layer) on this step's output — LLM-only steps included, not just tool
+        # results — before it is recorded, streamed and served as the answer. A
+        # tenant PII ``redact`` rule used to apply nowhere on this path (and on a
+        # worker its rules were never even loaded).
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx and raw_output:
+            raw_output = await self._screen_step_output(step, str(raw_output), state, tenant_ctx)
+
         # 10. Record rollback point — only for a tool call that actually ran and
         # succeeded (nothing external to undo otherwise). The undo record carries
         # the tool's OUTPUT, because inverses need the ids it returned (issue id,
@@ -3663,6 +3809,14 @@ class ExecutorMixin:
                 return None
             if _validate_tn(name, allowed_tools_set):
                 _taint_step_cache()
+                _ungranted = await self._deny_ungranted_call(
+                    name, state, tenant_ctx, parallel=True
+                )
+                if _ungranted is not None:
+                    return (name, self._sanitize_tool_raw_output(
+                        f"Tool call denied: '{name}' is not granted to this agent "
+                        f"({_ungranted}). Do not call it again."
+                    ))
                 return (name, f"[rejected: unknown tool '{name}']")
             if _remaining is not None and index >= _remaining:
                 return await _deny(
@@ -3706,6 +3860,7 @@ class ExecutorMixin:
                 enabled=self._enforce_grants,
             )
             if not grant.allowed:
+                await self._audit_grant_denial(tool_ref.name, str(grant.reason), state, tenant_ctx)
                 return await _deny(
                     tool_ref.name, "grant", str(grant.reason),
                     f"Tool call denied: '{tool_ref.name}' is not granted to this agent "

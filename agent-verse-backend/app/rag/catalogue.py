@@ -25,6 +25,10 @@ class RAGRuntimeDependency(StrEnum):
     RAFT_SERVICE = "raft_service"
     RAFT_MODEL = "raft_model"
     LONG_TERM_MEMORY = "long_term_memory"
+    #: The collection carries this strategy's precomputed index (RAPTOR summary
+    #: tree / agentic-chunking propositions). Per collection: without a
+    #: collection it is never "ready".
+    PRECOMPUTED_INDEX = "precomputed_index"
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,12 +249,14 @@ RAG_CAPABILITY_CATALOGUE: Mapping[RAGStrategy, RAGCapabilityCatalogueEntry] = Ma
             _DB_EMBED_PROVIDER,
         ),
         RAGStrategy.RAPTOR: RAGCapabilityCatalogueEntry(
-            RAGStrategy.RAPTOR, "app.rag.contracts:RAPTORRAGRuntimeAdapter", _DB_EMBED
+            RAGStrategy.RAPTOR,
+            "app.rag.contracts:RAPTORRAGRuntimeAdapter",
+            (*_DB_EMBED, RAGRuntimeDependency.PRECOMPUTED_INDEX),
         ),
         RAGStrategy.AGENTIC_CHUNKING: RAGCapabilityCatalogueEntry(
             RAGStrategy.AGENTIC_CHUNKING,
             "app.rag.contracts:AgenticChunkingRAGRuntimeAdapter",
-            _DB_EMBED,
+            (*_DB_EMBED, RAGRuntimeDependency.PRECOMPUTED_INDEX),
         ),
         RAGStrategy.COLBERT: RAGCapabilityCatalogueEntry(
             RAGStrategy.COLBERT,

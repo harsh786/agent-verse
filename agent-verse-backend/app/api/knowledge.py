@@ -65,11 +65,13 @@ from app.net.ssrf_guard import (
 )
 from app.providers.guarded_completion import DecisionBudgetExceededError
 from app.rag.contracts import (
+    MAX_RAG_TOP_K,
     RAGCitation,
     RAGExecutionResult,
     RAGStrategy,
     UnavailableRAGStrategyError,
     UnknownRAGStrategyError,
+    rag_request_contract_error,
     resolve_rag_strategy,
 )
 from app.rag.gateway import CollectionNotFoundError
@@ -398,9 +400,24 @@ def _parse_retrieval_filters(filters: str | None) -> dict[str, Any]:
     return parsed
 
 
+def _bounded_top_k(value: Any) -> int:
+    """``top_k`` from a JSON body: an integer in 1..MAX_RAG_TOP_K, else 422."""
+    if isinstance(value, bool) or not isinstance(value, int) or not (
+        1 <= value <= MAX_RAG_TOP_K
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"top_k must be an integer between 1 and {MAX_RAG_TOP_K}",
+        )
+    return value
+
+
 def _raise_retrieval_http_error(exc: Exception) -> None:
     if isinstance(exc, HTTPException):
         raise exc
+    contract_error = rag_request_contract_error(exc)
+    if contract_error is not None:
+        raise HTTPException(status_code=422, detail=contract_error) from exc
     if isinstance(exc, UnknownRAGStrategyError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if isinstance(exc, CollectionNotFoundError):
@@ -1027,11 +1044,16 @@ async def search_knowledge(
     request: Request,
     q: str,
     collection_id: str,
-    top_k: int | None = None,
+    top_k: int | None = Query(
+        default=None,
+        ge=1,
+        le=MAX_RAG_TOP_K,
+        description=f"Number of results, 1-{MAX_RAG_TOP_K} (default 10).",
+    ),
     limit: int | None = Query(
         default=None,
         ge=1,
-        le=100,
+        le=MAX_RAG_TOP_K,
         deprecated=True,
         description="Deprecated alias translated to the canonical top_k parameter.",
     ),
@@ -1049,10 +1071,7 @@ async def search_knowledge(
     boundary_filters = filters if isinstance(filters, str) else None
     if top_k is not None and boundary_limit is not None:
         raise HTTPException(status_code=422, detail="Use top_k or limit, not both")
-    effective_top_k = max(
-        1,
-        min(top_k if top_k is not None else boundary_limit or 10, 100),
-    )
+    effective_top_k = top_k if isinstance(top_k, int) else boundary_limit or 10
     q = q[:10000]
     try:
         resolve_rag_strategy(strategy)
@@ -2209,6 +2228,37 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
 # ---------------------------------------------------------------------------
 
 
+# Characters of extracted page text kept for one URL document.
+_MAX_URL_TEXT_CHARS = 50_000
+
+
+def _web_page_text(raw: str, content_type: str) -> tuple[str, str | None]:
+    """(article text, <title>) of a fetched web page.
+
+    HTML goes through the upload HTML extractor (P1a-12): script/style bodies,
+    navigation, header/footer and consent/sidebar chrome are dropped and
+    ``<main>``/``<article>`` is preferred. The old regex tag-strip kept inline
+    JavaScript and the whole nav, which diluted the document's embedding so
+    much that it fell out of the results after re-embedding (P0 KB-REEMBED).
+    A non-HTML response (plain text, markdown, JSON) is kept verbatim.
+    """
+    import html as _html
+    import re
+
+    # Servers mislabel HTML as text/plain: a body that opens with a tag is HTML.
+    looks_html = "html" in content_type.lower() or bool(
+        re.match(r"\s*<(?:!doctype|[a-z][a-z0-9]*)[\s/>]", raw, re.IGNORECASE)
+    )
+    if not looks_html:
+        return raw.strip()[:_MAX_URL_TEXT_CHARS], None
+    from app.ingestion.parsers.html_parser import HTMLParser
+
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+    title = " ".join(_html.unescape(title_match.group(1)).split()) if title_match else None
+    text = HTMLParser().parse(raw)
+    return text.strip()[:_MAX_URL_TEXT_CHARS], title or None
+
+
 async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str, Any]]:
     """SSRF-check and fetch a web/github URL; return (text content, metadata).
 
@@ -2241,13 +2291,8 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
                     headers={"User-Agent": "AgentVerse/1.0"},
                 )
                 resp.raise_for_status()
-                raw = resp.text
-                import re
-
-                content = re.sub(r"<[^>]+>", " ", raw)
-                content = re.sub(r"\s+", " ", content).strip()[:50000]
-                title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE)
-                metadata["title"] = title_match.group(1) if title_match else url
+                content, title = _web_page_text(resp.text, resp.headers.get("content-type", ""))
+                metadata["title"] = title or url
 
         elif source_type == "github":
             raw_url = url.replace("github.com", "raw.githubusercontent.com").replace(
@@ -2697,8 +2742,7 @@ async def federated_search_endpoint(
     tenant_ctx: TenantContext = _require_tenant(request)
     query: str = body.get("query", "")
     collection_ids: list[str] = body.get("collection_ids", [])
-    top_k: int = int(body.get("top_k", 10))
-    top_k = max(1, min(100, top_k))
+    top_k = _bounded_top_k(body.get("top_k", 10))
     strategy = str(body.get("strategy", RAGStrategy.HYBRID.value))
     filters = body.get("filters", {})
 
@@ -2756,7 +2800,7 @@ class RagChatRequest(BaseModel):
     question: str
     collection_ids: list[str] = Field(default_factory=list)  # empty = all tenant collections
     strategy: str = RAGStrategy.HYBRID.value
-    top_k: int = Field(default=5, ge=1, le=20)
+    top_k: int = Field(default=5, ge=1, le=MAX_RAG_TOP_K)
     filters: dict[str, Any] = Field(default_factory=dict)
     max_context_chars: int = Field(default=6000, ge=1, le=100_000)
     stream: bool = False

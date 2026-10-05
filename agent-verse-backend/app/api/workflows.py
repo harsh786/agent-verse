@@ -573,7 +573,9 @@ async def create_workflow(request: Request, body: WorkflowCreate) -> WorkflowOut
         description=body.description,
         definition=body.definition,
     )
-    _audit(request, "created", str(wf["id"]), f"name={body.name}")
+    from app.workflow.audit_middleware import record_workflow_created
+
+    record_workflow_created(request, wf, name=body.name, source="api")
     return _workflow_to_out(wf)
 
 

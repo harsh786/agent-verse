@@ -235,9 +235,9 @@ class OpenAICompatibleProvider:
         response = await self._complete_once(retry)
         if response.content.strip() or response.tool_calls:
             return response
-        from app.core.errors import ExternalServiceError
+        from app.core.errors import EmptyCompletionError
 
-        raise ExternalServiceError(
+        raise EmptyCompletionError(
             f"LLM returned an empty completion twice (model={response.model}, "
             f"stop_reason={response.stop_reason})"
         )

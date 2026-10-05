@@ -149,8 +149,10 @@ celery_app.conf.update(
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
         "app.scaling.tasks.expire_hitl_approvals": {"queue": "maintenance"},
         "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
-        # AI-Ops dataset runs (durable, resumable per case) — MEM-25.
+        # AI-Ops dataset runs (durable, resumable per case) — MEM-25. Short,
+        # non-blocking steps that poll their case goals (P7-1).
         "app.scaling.tasks.run_ai_ops_dataset": {"queue": "maintenance"},
+        "app.scaling.tasks.resume_stalled_ai_ops_runs": {"queue": "maintenance"},
         "app.scaling.tasks.run_eval_suite_worker": {"queue": "maintenance"},
         "app.scaling.tasks.resume_stalled_eval_suite_runs": {"queue": "maintenance"},
         "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
@@ -212,6 +214,12 @@ celery_app.conf.update(
         # MEM-53: re-dispatch eval-suite runs whose workers died.
         "resume-stalled-eval-suite-runs-every-60s": {
             "task": "app.scaling.tasks.resume_stalled_eval_suite_runs",
+            "schedule": 60.0,
+            "options": {"queue": "maintenance"},
+        },
+        # P7-1: re-dispatch AI-Ops dataset runs whose step chain died.
+        "resume-stalled-ai-ops-runs-every-60s": {
+            "task": "app.scaling.tasks.resume_stalled_ai_ops_runs",
             "schedule": 60.0,
             "options": {"queue": "maintenance"},
         },

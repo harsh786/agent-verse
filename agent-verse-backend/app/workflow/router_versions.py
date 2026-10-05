@@ -321,6 +321,9 @@ async def import_yaml(request: Request) -> dict[str, Any]:
         )
     except WorkflowValidationError as exc:  # e.g. below the plan's schedule floor
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from app.workflow.audit_middleware import record_workflow_created
+
+    record_workflow_created(request, result, name=wf.name, source="import")
     return result
 
 
@@ -350,4 +353,9 @@ async def clone_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
         )
     except WorkflowValidationError as exc:  # e.g. below the plan's schedule floor
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    from app.workflow.audit_middleware import record_workflow_created
+
+    record_workflow_created(
+        request, result, name=name, source="clone", cloned_from=workflow_id
+    )
     return result

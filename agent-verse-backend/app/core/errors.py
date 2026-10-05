@@ -119,6 +119,17 @@ class ExternalServiceError(PlatformError):
     default_severity = Severity.HIGH
 
 
+class EmptyCompletionError(ExternalServiceError):
+    """The model answered with no text and no tool call (even after a retry).
+
+    Distinct from an outage (429 / 5xx / circuit open): a caller with a sound
+    non-LLM fallback (query expansion falls back to the original query) may
+    use it, while a real outage still surfaces.
+    """
+
+    code = "EMPTY_COMPLETION"
+
+
 class TimeoutError(PlatformError):  # noqa: A001 — intentional domain-specific shadow
     code = "TIMEOUT"
     http_status = 504

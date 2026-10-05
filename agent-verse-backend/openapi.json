@@ -1,8 +1,33 @@
 {
   "components": {
     "schemas": {
+      "A2ADirectorySetting": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "A2ADirectorySetting",
+        "type": "object"
+      },
       "A2ATaskRequest": {
         "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
           "callback_url": {
             "anyOf": [
               {
@@ -739,6 +764,11 @@
             "contentMediaType": "application/octet-stream",
             "title": "File",
             "type": "string"
+          },
+          "replace_existing": {
+            "default": true,
+            "title": "Replace Existing",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1603,9 +1633,15 @@
             "type": "string"
           },
           "embedder_type": {
-            "default": "voyage",
-            "title": "Embedder Type",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embedder Type"
           },
           "name": {
             "title": "Name",
@@ -6929,6 +6965,18 @@
             "title": "Dataset Id",
             "type": "string"
           },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Version"
+          },
           "goal_id": {
             "anyOf": [
               {
@@ -7848,6 +7896,31 @@
         "title": "TakeoverRequest",
         "type": "object"
       },
+      "TaskEditRequest": {
+        "properties": {
+          "if_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Version"
+          },
+          "task": {
+            "additionalProperties": true,
+            "title": "Task",
+            "type": "object"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "TaskEditRequest",
+        "type": "object"
+      },
       "TaskResponse": {
         "properties": {
           "actual_cost_usd": {
@@ -8604,6 +8677,44 @@
       },
       "UpdateAgentRequest": {
         "properties": {
+          "a2a_description": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "A2A Description"
+          },
+          "a2a_public": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "A2A Public"
+          },
+          "a2a_skills": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "A2A Skills"
+          },
           "allowed_collection_ids": {
             "anyOf": [
               {
@@ -8901,6 +9012,61 @@
           }
         },
         "title": "UpdateBudgetRequest",
+        "type": "object"
+      },
+      "UpdateDatasetRequest": {
+        "description": "Edit a dataset. ``golden_tasks`` replaces the task list: a published head\ngets a new draft version; a draft head is edited in place (P7-3).",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "golden_tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Golden Tasks"
+          },
+          "if_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Version"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "UpdateDatasetRequest",
         "type": "object"
       },
       "UpdateDepartmentRequest": {
@@ -11845,7 +12011,7 @@
     },
     "/.well-known/agents": {
       "get": {
-        "description": "Public A2A agent directory \u2014 not implemented.",
+        "description": "Publicly listed agents, keyset-paginated by agent id (``next_cursor``).",
         "operationId": "list_public_agents__well_known_agents_get",
         "parameters": [
           {
@@ -11854,8 +12020,27 @@
             "required": false,
             "schema": {
               "default": 20,
+              "maximum": 100,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
             }
           }
         ],
@@ -11891,7 +12076,7 @@
     },
     "/.well-known/agents/{agent_id}.json": {
       "get": {
-        "description": "Per-agent AgentCard (A2A protocol) \u2014 not implemented.",
+        "description": "The public card of one publicly listed agent (404 for anything else).",
         "operationId": "get_agent_card__well_known_agents__agent_id__json_get",
         "parameters": [
           {
@@ -14340,7 +14525,7 @@
     },
     "/ai-ops/datasets": {
       "get": {
-        "description": "List evaluation datasets for the tenant.",
+        "description": "List evaluation datasets for the tenant (``version`` = the head version).",
         "operationId": "list_eval_datasets_ai_ops_datasets_get",
         "responses": {
           "200": {
@@ -14362,7 +14547,7 @@
         ]
       },
       "post": {
-        "description": "Create an evaluation dataset with golden tasks.",
+        "description": "Create an evaluation dataset; its golden tasks are published version 1.",
         "operationId": "create_eval_dataset_ai_ops_datasets_post",
         "requestBody": {
           "content": {
@@ -14399,6 +14584,202 @@
           }
         },
         "summary": "Create Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}": {
+      "get": {
+        "description": "A dataset's head version with its golden tasks, plus its version history.",
+        "operationId": "get_eval_dataset_ai_ops_datasets__dataset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Eval Dataset Ai Ops Datasets  Dataset Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      },
+      "patch": {
+        "description": "Edit a dataset. Published versions are immutable: changing the tasks of a\npublished head creates a new draft version; a draft head changes in place.",
+        "operationId": "update_eval_dataset_ai_ops_datasets__dataset_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Eval Dataset Ai Ops Datasets  Dataset Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      },
+      "put": {
+        "description": "Edit a dataset. Published versions are immutable: changing the tasks of a\npublished head creates a new draft version; a draft head changes in place.",
+        "operationId": "update_eval_dataset_ai_ops_datasets__dataset_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Eval Dataset Ai Ops Datasets  Dataset Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/publish": {
+      "post": {
+        "description": "Publish the draft head (409 when the head is already published).",
+        "operationId": "publish_eval_dataset_ai_ops_datasets__dataset_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Publish Eval Dataset Ai Ops Datasets  Dataset Id  Publish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Eval Dataset",
         "tags": [
           "ai-ops"
         ]
@@ -14454,6 +14835,288 @@
           }
         },
         "summary": "Run Eval",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/tasks": {
+      "post": {
+        "description": "Append a golden task (to the draft head; a published head gets a new draft).",
+        "operationId": "add_eval_dataset_task_ai_ops_datasets__dataset_id__tasks_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Eval Dataset Task Ai Ops Datasets  Dataset Id  Tasks Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Eval Dataset Task",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/tasks/{index}": {
+      "delete": {
+        "operationId": "delete_eval_dataset_task_ai_ops_datasets__dataset_id__tasks__index__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "if_version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Eval Dataset Task Ai Ops Datasets  Dataset Id  Tasks  Index  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Eval Dataset Task",
+        "tags": [
+          "ai-ops"
+        ]
+      },
+      "put": {
+        "operationId": "replace_eval_dataset_task_ai_ops_datasets__dataset_id__tasks__index__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Replace Eval Dataset Task Ai Ops Datasets  Dataset Id  Tasks  Index  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace Eval Dataset Task",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/versions": {
+      "get": {
+        "operationId": "list_eval_dataset_versions_ai_ops_datasets__dataset_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Eval Dataset Versions Ai Ops Datasets  Dataset Id  Versions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Eval Dataset Versions",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/versions/{version}": {
+      "get": {
+        "operationId": "get_eval_dataset_version_ai_ops_datasets__dataset_id__versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Eval Dataset Version Ai Ops Datasets  Dataset Id  Versions  Version  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Eval Dataset Version",
         "tags": [
           "ai-ops"
         ]
@@ -35805,7 +36468,7 @@
     },
     "/knowledge/ingest/file": {
       "post": {
-        "description": "Ingest a file into a knowledge collection.\n\nPDF (chunked per page, page citations), DOCX (paragraphs and tables), XLSX,\nPPTX (slide text, tables and speaker notes), images (PNG/JPEG/WebP, via OCR),\nCSV/TSV, HTML, JSON/JSONL, YAML, Jupyter notebooks, e-mail (.eml), Markdown,\nplain text and source code. The type comes from the filename extension, else\nthe part's MIME type. Unsupported or unreadable files are refused (415/422)\ninstead of being indexed as garbage; an image with no OCR engine or\nvision-capable provider configured is a 503 (never a placeholder text).",
+        "description": "Ingest a file into a knowledge collection.\n\nA file is one document per (collection, source, file name): uploading a\nnew version under the same name replaces the previous upload in the same\ntransaction (unchanged chunks keep their ids; a document under legal hold is\nrefused with 409). Only uploads are replaced (D1) \u2014 a connector's document\nwith the same name is another source and stays. ``replace_existing=false``\nstores it as another document.\n\nPDF (chunked per page, page citations), DOCX (paragraphs and tables), XLSX,\nPPTX (slide text, tables and speaker notes), images (PNG/JPEG/WebP, via OCR),\nCSV/TSV, HTML, JSON/JSONL, YAML, Jupyter notebooks, e-mail (.eml), Markdown,\nplain text and source code, and ZIP archives of these (nested archives\nexpanded, every chunk citing ``<archive>/<member>``; zip bombs refused 413 /\n422). PDF pages without a text layer are OCR'd. The type comes from the filename extension, else\nthe part's MIME type. Unsupported or unreadable files are refused (415/422)\ninstead of being indexed as garbage; an image with no OCR engine or\nvision-capable provider configured is a 503 (never a placeholder text).",
         "operationId": "ingest_file_knowledge_ingest_file_post",
         "requestBody": {
           "content": {
@@ -36360,18 +37023,22 @@
             }
           },
           {
+            "description": "Number of results, 1-20 (default 10).",
             "in": "query",
             "name": "top_k",
             "required": false,
             "schema": {
               "anyOf": [
                 {
+                  "maximum": 20,
+                  "minimum": 1,
                   "type": "integer"
                 },
                 {
                   "type": "null"
                 }
               ],
+              "description": "Number of results, 1-20 (default 10).",
               "title": "Top K"
             }
           },
@@ -36384,7 +37051,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "maximum": 100,
+                  "maximum": 20,
                   "minimum": 1,
                   "type": "integer"
                 },
@@ -40228,8 +40895,30 @@
     },
     "/rag/strategies": {
       "get": {
-        "description": "List available RAG strategies.",
+        "description": "List RAG strategies and whether each can really run now.\n\n``available`` reflects real capability: dependencies, the tenant's web\npolicy and the web search backend's health, and, per collection, a\nstrategy's precomputed index.",
         "operationId": "list_strategies_rag_strategies_get",
+        "parameters": [
+          {
+            "description": "Evaluate collection-specific readiness (RAPTOR / agentic-chunking need that collection's precomputed index). Without it those strategies report unavailable_reason=collection_index_required.",
+            "in": "query",
+            "name": "collection_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Evaluate collection-specific readiness (RAPTOR / agentic-chunking need that collection's precomputed index). Without it those strategies report unavailable_reason=collection_index_required.",
+              "title": "Collection Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -40242,6 +40931,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Strategies",
@@ -44172,6 +44871,76 @@
           }
         },
         "summary": "Get Me",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/me/a2a-directory": {
+      "get": {
+        "description": "Whether this tenant's opted-in agents are listed in the public A2A\ndirectory (``/.well-known/agents``). Off by default (D3).",
+        "operationId": "get_a2a_directory_tenants_me_a2a_directory_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Get A2A Directory Tenants Me A2A Directory Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get A2A Directory",
+        "tags": [
+          "tenants"
+        ]
+      },
+      "put": {
+        "description": "Turn the tenant's public A2A directory listing on or off (admin only).\n\nOnly agents that also opted in (``a2a_public``) and are active are listed;\nturning it off hides every card at once.",
+        "operationId": "set_a2a_directory_tenants_me_a2a_directory_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/A2ADirectorySetting"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Set A2A Directory Tenants Me A2A Directory Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set A2A Directory",
         "tags": [
           "tenants"
         ]

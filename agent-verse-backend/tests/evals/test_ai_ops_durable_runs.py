@@ -1,16 +1,17 @@
 """MEM-25: AI-Ops dataset runs are durable worker tasks that resume per case.
 
 A run was an asyncio task on the API replica that received the request; a
-deploy or crash lost it. It now runs as the Celery task ``run_ai_ops_dataset``
-(acks_late + reject_on_worker_lost); every finished case is persisted, and a
-redelivered run executes only the cases that are left.
+deploy or crash lost it. It now runs as non-blocking Celery steps
+(``run_ai_ops_dataset``, acks_late + reject_on_worker_lost, P7-1); every
+finished case and every submitted goal id is persisted, and a redelivered step
+executes only the cases that are left.
 """
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import datetime
-from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import patch
 
@@ -19,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import ai_ops as ai_ops_api
-from app.evals.ai_ops_jobs import execute_dataset_run
+from app.evals.ai_ops_jobs import MemoryRunLease, RunConfig, execute_dataset_run
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
@@ -53,8 +54,35 @@ class _Store:
     ) -> None:
         self.results[result_id] = copy.deepcopy(payload)
 
+    async def claim_run(
+        self, tenant_id: str, result_id: str, owner: str, lease_seconds: float
+    ) -> dict[str, Any] | None:
+        row = MemoryRunLease.claim(self.results.get(result_id), owner, lease_seconds)
+        return copy.deepcopy(row) if row is not None else None
+
+    async def save_run(
+        self, tenant_id: str, result_id: str, owner: str, payload: dict[str, Any],
+        lease_seconds: float, *, release: bool = False,
+    ) -> bool:
+        if not MemoryRunLease.fenced(self.results.get(result_id), owner):
+            return False
+        stored = copy.deepcopy(payload)
+        MemoryRunLease.stamp(stored, owner, lease_seconds, release)
+        self.results[result_id] = stored
+        return True
+
     async def get_dataset(self, tenant_id: str, dataset_id: str) -> dict[str, Any] | None:
-        return {"dataset_id": dataset_id, "golden_tasks": _TASKS}
+        return {"dataset_id": dataset_id, "version": 1, "golden_tasks": _TASKS}
+
+    async def get_dataset_version(
+        self, tenant_id: str, dataset_id: str, version: int
+    ) -> dict[str, Any] | None:
+        return {"dataset_id": dataset_id, "version": version, "golden_tasks": _TASKS}
+
+    async def pin_version_for_run(
+        self, tenant_id: str, dataset_id: str, version: int | None = None
+    ) -> dict[str, Any]:
+        return {"dataset_id": dataset_id, "version": version or 1, "golden_tasks": _TASKS}
 
     async def get_judge(self, tenant_id: str, judge_id: str) -> dict[str, Any] | None:
         return None
@@ -85,9 +113,16 @@ class _GoalService:
         self.submitted.append(goal)
         return {"goal_id": f"g-{goal}"}
 
-    async def subscribe_events(self, *, goal_id: str, tenant_ctx: Any) -> AsyncIterator[Any]:
+    async def get_goal(self, goal_id: str, tenant_ctx: Any) -> dict[str, Any]:
+        return {"goal_id": goal_id, "status": "complete"}
+
+    async def get_events(self, goal_id: str, tenant_ctx: Any) -> list[dict[str, Any]]:
         n = goal_id.rsplit(" ", 1)[-1]
-        yield {"type": "goal_complete", "answer": f"answer {n}"}
+        return [{"type": "goal_complete", "answer": f"answer {n}"}]
+
+
+# A lease that a dead step leaves behind expires almost at once here.
+_CFG = RunConfig(concurrency=1, poll_seconds=0, lease_seconds=0.01, case_timeout=60)
 
 
 def _queued(store: _Store, result_id: str = "r1") -> None:
@@ -106,24 +141,24 @@ async def test_a_run_interrupted_mid_way_resumes_only_the_remaining_cases() -> N
     with pytest.raises(WorkerLost):
         await execute_dataset_run(
             store=store, tenant_ctx=_CTX, result_id="r1", goal_service=first,
-            provider=None, concurrency=1,
+            provider=None, cfg=_CFG,
         )
     saved = store.results["r1"]
     assert saved["status"] == "running"
     done_before = {c["index"] for c in saved["cases"]}
-    assert {0, 1} <= done_before and 2 not in done_before
+    assert {0} <= done_before and 2 not in done_before
 
+    await asyncio.sleep(0.02)  # the dead step's lease expires
     second = _GoalService()
     final = await execute_dataset_run(
         store=store, tenant_ctx=_CTX, result_id="r1", goal_service=second,
-        provider=None, concurrency=1,
+        provider=None, cfg=_CFG,
     )
     assert final is not None and final["status"] == "completed"
-    # Only the cases the first attempt did not finish are executed again.
-    assert sorted(second.submitted) == [f"task {i}" for i in range(4) if i not in done_before]
+    # Only the cases the first attempt did not submit are executed again; the
+    # goals it had submitted are polled, never resubmitted.
     assert sorted(first.submitted + second.submitted) == [f"task {i}" for i in range(4)]
     assert final["total_cases"] == 4 and final["scored_cases"] == 4
-    assert final["resumed_cases"] == len(done_before)
     assert store.results["r1"]["passed"] is True
 
 
@@ -132,42 +167,53 @@ async def test_a_redelivered_finished_run_is_not_executed_again() -> None:
     _queued(store)
     await execute_dataset_run(
         store=store, tenant_ctx=_CTX, result_id="r1", goal_service=_GoalService(),
-        provider=None,
+        provider=None, cfg=_CFG,
     )
     again = _GoalService()
     out = await execute_dataset_run(
-        store=store, tenant_ctx=_CTX, result_id="r1", goal_service=again, provider=None
+        store=store, tenant_ctx=_CTX, result_id="r1", goal_service=again, provider=None,
+        cfg=_CFG,
     )
     assert out is not None and out["status"] == "completed"
     assert again.submitted == []
 
 
 def test_celery_task_survives_a_worker_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    import time
+
+    from app.core.config import get_settings
     from app.scaling import tasks
 
+    monkeypatch.setattr(get_settings(), "ai_ops_lease_seconds", 0.01)
     store = _Store()
     _queued(store, "r-celery")
-    workers = iter([_GoalService(die_on="task 1"), _GoalService()])
-    used: list[_GoalService] = []
+    first, second = _GoalService(die_on="task 1"), _GoalService()
+    workers = iter([first])
 
     def _deps() -> tuple[Any, Any, Any, str]:
-        gs = next(workers)
-        used.append(gs)
-        return store, gs, None, ""
+        return store, next(workers, second), None, ""
 
     monkeypatch.setattr(tasks, "_ai_ops_worker_deps", _deps)
+    chained: list[dict[str, Any]] = []
+    monkeypatch.setattr(tasks.run_ai_ops_dataset, "apply_async", lambda **kw: chained.append(kw))
     kwargs = {"tenant_id": _CTX.tenant_id, "plan": "professional", "result_id": "r-celery"}
     with pytest.raises(WorkerLost):
         tasks.run_ai_ops_dataset.apply(kwargs=kwargs)
-    assert store.results["r-celery"]["status"] == "running"
-    done_before = {c["index"] for c in store.results["r-celery"].get("cases", [])}
-    assert 1 not in done_before
+    saved = store.results["r-celery"]
+    assert saved["status"] == "running"
+    assert "0" in saved["inflight"]  # the goal submitted before the crash is recorded
 
-    out = tasks.run_ai_ops_dataset.apply(kwargs=kwargs).get()
+    time.sleep(0.02)  # the dead step's lease expires; the message is redelivered
+    out: dict[str, Any] = {}
+    for _ in range(10):
+        out = tasks.run_ai_ops_dataset.apply(kwargs=kwargs).get()
+        if out["status"] != "running":
+            break
     assert out == {"status": "completed", "result_id": "r-celery"}
-    assert "task 1" in used[1].submitted
-    assert sorted(used[0].submitted + used[1].submitted) == [f"task {i}" for i in range(4)]
+    assert "task 0" not in second.submitted  # polled, never resubmitted
+    assert sorted(first.submitted + second.submitted) == [f"task {i}" for i in range(4)]
     assert store.results["r-celery"]["scored_cases"] == 4
+    assert chained and all(c["countdown"] > 0 for c in chained)
 
 
 # ── API: queue to the worker when a durable store + Celery are wired ─────────

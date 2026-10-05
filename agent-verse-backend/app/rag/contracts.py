@@ -141,6 +141,12 @@ class RAGStrategyTrace(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+#: Largest ``top_k`` any retrieval path serves. Every API that takes a
+#: ``top_k`` validates against this (422 with the allowed range), so a bad value
+#: never reaches the gateway as a 503.
+MAX_RAG_TOP_K = 20
+
+
 class RAGExecutionRequest(BaseModel):
     """Tenant-scoped input accepted by every production RAG runtime adapter."""
 
@@ -149,7 +155,7 @@ class RAGExecutionRequest(BaseModel):
     requested_strategy_id: str = Field(min_length=1)
     collection_id: str | None = None
     execution_id: str = ""
-    top_k: int = Field(default=5, ge=1, le=20)
+    top_k: int = Field(default=5, ge=1, le=MAX_RAG_TOP_K)
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -448,3 +454,21 @@ def is_rag_runtime_adapter(
         and inspect.iscoroutinefunction(getattr(adapter, "execute", None))
         and callable(getattr(adapter, "probe_trace", None))
     )
+
+
+def rag_request_contract_error(exc: BaseException) -> str | None:
+    """A client-facing message when ``exc`` is a ``RAGExecutionRequest``
+    validation failure (bad caller input such as ``top_k=50``), else ``None``.
+
+    Only this model's errors qualify: a ValidationError from any other model is
+    an internal fault and must stay a 5xx.
+    """
+    from pydantic import ValidationError
+
+    if not isinstance(exc, ValidationError) or exc.title != RAGExecutionRequest.__name__:
+        return None
+    parts = []
+    for error in exc.errors(include_url=False, include_input=False):
+        field = ".".join(str(loc) for loc in error.get("loc", ())) or "request"
+        parts.append(f"{field}: {error.get('msg', 'invalid value')}")
+    return "; ".join(parts)

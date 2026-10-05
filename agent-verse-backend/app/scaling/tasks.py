@@ -2588,6 +2588,14 @@ def run_goal(
     except Exception as exc:
         logger.warning("Goal %s status bridge unavailable: %s", goal_id, exc)
 
+    # P8-1: screen this goal against the tenant's PERSISTED guardrail rules, as
+    # the API does. The lifespan that binds the rule repository never runs in a
+    # worker, so a tenant's own rules (e.g. a PII redact rule) never applied
+    # here — only the in-memory baseline did. Raises rather than run unscreened.
+    from app.guardrails_v2.worker_binding import bind_worker_guardrail_rules
+
+    bind_worker_guardrail_rules()
+
     async def update_submitted_goal_status(
         status: str,
         *,
@@ -9551,7 +9559,13 @@ def _ai_ops_worker_deps() -> tuple[Any, Any, Any, str]:
 
 
 async def _run_ai_ops_dataset_async(tenant_id: str, plan: str, result_id: str) -> dict[str, Any]:
-    from app.evals.ai_ops_jobs import execute_dataset_run
+    """One non-blocking step of an AI-Ops dataset run (P7-1).
+
+    Polls the run's case goals through the durable goal row / event store — it
+    never subscribes and waits on a goal, so it holds its worker slot only for
+    the few seconds a step takes.
+    """
+    from app.evals.ai_ops_jobs import run_step
     from app.tenancy.context import PlanTier, TenantContext
 
     store, goal_service, provider, redis_url = _ai_ops_worker_deps()
@@ -9562,20 +9576,18 @@ async def _run_ai_ops_dataset_async(tenant_id: str, plan: str, result_id: str) -
     tenant_ctx = TenantContext(tenant_id=tenant_id, plan=tier, api_key_id="ai-ops-run")
     redis = None
     if redis_url:
-        # Case goals run on goal workers: their events arrive over Redis
-        # pub/sub, and cancelling an unscored case reaches its runner through
-        # the Redis cancel flag.
-        goal_service._redis_url_for_pubsub = redis_url
-        goal_service.start_celery_event_bridge(redis_url)
+        # Cancelling a timed-out case goal reaches its runner (another worker)
+        # through the Redis cancel flag.
         redis = _worker_async_redis()
         goal_service._redis = redis
     try:
-        result = await execute_dataset_run(
+        return await run_step(
             store=store,
             tenant_ctx=tenant_ctx,
             result_id=result_id,
             goal_service=goal_service,
             provider=provider,
+            owner=f"celery-{uuid.uuid4().hex[:12]}",
         )
     finally:
         for task in list(getattr(goal_service, "_background_tasks", ())):
@@ -9583,23 +9595,92 @@ async def _run_ai_ops_dataset_async(tenant_id: str, plan: str, result_id: str) -
         if redis is not None:
             with contextlib.suppress(Exception):
                 await redis.aclose()
-    if result is None:
-        return {"status": "missing", "result_id": result_id}
-    return {"status": result.get("status"), "result_id": result_id}
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="app.scaling.tasks.run_ai_ops_dataset",
     bind=True,
     max_retries=0,
-    # At-least-once: a worker lost mid-run has the message redelivered, and the
-    # run resumes from the cases it already persisted (execute_dataset_run).
+    # At-least-once: a worker lost mid-step has the message redelivered; the run
+    # resumes from its persisted cases and in-flight goal ids (a recorded goal is
+    # polled, never resubmitted). The stalled-run sweeper re-dispatches a run
+    # whose step chain died.
     acks_late=True,
     reject_on_worker_lost=True,
 )
 def run_ai_ops_dataset(self: Any, tenant_id: str, plan: str, result_id: str) -> dict[str, Any]:
-    """Execute (or resume) one AI-Ops dataset run on a worker."""
+    """One non-blocking step of an AI-Ops dataset run; re-enqueues the next step.
+
+    A step never waits on a case goal (the goals need worker slots themselves —
+    on a two-slot worker an inline wait starved them, P7-1): it polls the
+    in-flight goals, submits up to the run's concurrency, and schedules the next
+    step after ``ai_ops_poll_seconds``.
+    """
+    from app.core.config import get_settings
+
     result: dict[str, Any] = _run_async(_run_ai_ops_dataset_async(tenant_id, plan, result_id))
+    if result.get("status") == "running":
+        run_ai_ops_dataset.apply_async(
+            kwargs={"tenant_id": tenant_id, "plan": plan, "result_id": result_id},
+            countdown=float(get_settings().ai_ops_poll_seconds),
+            queue="maintenance",
+        )
+    return result
+
+
+async def _resume_stalled_ai_ops_runs_async(
+    resume_after_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Re-dispatch AI-Ops runs whose step chain stopped (no heartbeat, lease free)."""
+    from sqlalchemy import text
+
+    from app.core.config import get_settings
+    from app.db.rls import system_session
+    from app.db.session import get_system_session_factory
+
+    after = float(
+        resume_after_seconds
+        if resume_after_seconds is not None
+        else get_settings().ai_ops_resume_after_seconds
+    )
+    # Cross-tenant scan → maintenance (BYPASSRLS) role, bounded by the partial
+    # index on active runs. Bumping heartbeat_at claims the row so two sweeps
+    # never dispatch it twice.
+    db = get_system_session_factory()
+    async with db() as session, session.begin(), system_session(session):
+        rows = (
+            await session.execute(
+                text(
+                    "WITH s AS MATERIALIZED (SELECT tenant_id, id FROM ai_ops_eval_results "
+                    "      WHERE payload->>'status' IN ('queued', 'running') "
+                    "        AND COALESCE(CAST(payload->>'lease_until' AS float8), 0) "
+                    "            < extract(epoch FROM clock_timestamp()) "
+                    "        AND COALESCE(CAST(payload->>'heartbeat_at' AS timestamptz), "
+                    "                     created_at) < now() - make_interval(secs => :after) "
+                    "      ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED) "
+                    "UPDATE ai_ops_eval_results r SET payload = r.payload || "
+                    "  jsonb_build_object('heartbeat_at', to_jsonb(now())) "
+                    "FROM s WHERE r.tenant_id = s.tenant_id AND r.id = s.id "
+                    "RETURNING r.tenant_id, r.id, COALESCE(r.payload->>'plan', 'free')"
+                ),
+                {"after": after},
+            )
+        ).all()
+    for tenant_id, result_id, plan in rows:
+        run_ai_ops_dataset.apply_async(
+            kwargs={"tenant_id": str(tenant_id), "plan": str(plan), "result_id": str(result_id)},
+            queue="maintenance",
+        )
+        logger.warning("ai_ops_run_resumed", tenant_id=tenant_id, result_id=result_id)
+    return {"resumed_runs": len(rows)}
+
+
+@celery_app.task(  # type: ignore[untyped-decorator]
+    name="app.scaling.tasks.resume_stalled_ai_ops_runs", bind=True, max_retries=0
+)
+def resume_stalled_ai_ops_runs(self: Any) -> dict[str, Any]:
+    """Beat: resume AI-Ops dataset runs whose step chain died."""
+    result: dict[str, Any] = _run_async(_resume_stalled_ai_ops_runs_async())
     return result
 
 

@@ -37,8 +37,11 @@ def _make_app(guardrail_engine: Any = None) -> FastAPI:
 
 
 def _clean_store(tenant_id: str = _CTX.tenant_id) -> None:
-    """Remove all in-memory configs/violations for the test tenant."""
+    """Remove the test tenant's configs (guardrails_v2 rules, P8-1) and violations."""
+    from app.guardrails_v2.engine import guardrails_engine
+
     _configs_store.pop(tenant_id, None)
+    guardrails_engine._rules.pop(tenant_id, None)
     _violations_store.pop(tenant_id, None)
 
 

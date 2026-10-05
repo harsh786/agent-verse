@@ -232,8 +232,8 @@ async def test_strict_hybrid_search_distinguishes_legitimate_zero_results() -> N
     )
 
     assert results == []
-    # Collection-ownership check + the FTS and trigram legs.
-    assert session.execute.await_count == 3
+    # Collection-ownership check + the FTS, trigram and exact-phrase legs.
+    assert session.execute.await_count == 4
 
 
 @pytest.mark.asyncio
@@ -574,8 +574,9 @@ async def test_metadata_filter_is_bound_in_sql_before_leg_limits() -> None:
         strict=True,
     )
 
-    # The first call is the collection-ownership check; then the two legs.
-    assert session.execute.await_count == 3
+    # The first call is the collection-ownership check; then the three
+    # lexical legs (FTS, trigram, exact phrase).
+    assert session.execute.await_count == 4
     for call in session.execute.await_args_list[1:]:
         statement = str(call.args[0])
         params = call.args[1]
@@ -791,6 +792,7 @@ class ScriptedSession:
         vector_rows=None,
         fts_rows=None,
         trgm_rows=None,
+        phrase_rows=None,
         bm25_corpus_count=0,
         bm25_pass1_page=None,
         bm25_pass2_page=None,
@@ -800,6 +802,7 @@ class ScriptedSession:
         self.vector_rows = vector_rows or []
         self.fts_rows = fts_rows or []
         self.trgm_rows = trgm_rows or []
+        self.phrase_rows = phrase_rows or []
         self.bm25_corpus_count = bm25_corpus_count
         self.bm25_pass1_page = bm25_pass1_page or []
         self.bm25_pass2_page = bm25_pass2_page or []
@@ -823,8 +826,11 @@ class ScriptedSession:
             return _FakeCursorResult(self.vector_rows)
         if "ts_rank_cd" in sql:
             return _FakeCursorResult(self.fts_rows)
-        if "similarity(content" in sql:
+        if "word_similarity(" in sql:
             return _FakeCursorResult(self.trgm_rows)
+        if "ILIKE" in sql:
+            # Exact phrase / identifier leg.
+            return _FakeCursorResult(self.phrase_rows)
         if "count(*) FROM (SELECT 1 FROM" in sql:
             return _FakeCursorResult([(self.bm25_corpus_count,)])
         # Remaining calls are BM25's paginated leg. The columns list distinguishes
@@ -1067,7 +1073,7 @@ class TestHybridSearchFullFusion:
         assert results[0].component_scores["vector"] == pytest.approx(0.95)
         # Recorded per-leg evidence for observability/debugging.
         components = {entry["component"] for entry in evidence}
-        assert components == {"vector", "fts", "trigram", "bm25"}
+        assert components == {"vector", "fts", "trigram", "phrase", "bm25"}
 
     @pytest.mark.asyncio
     async def test_bm25_leg_skipped_for_large_corpus_and_evidence_says_so(self) -> None:
@@ -2310,6 +2316,36 @@ class TestRetrieveFusionCoverage:
                 model="m",
                 strict=False,
             )
+
+    @pytest.mark.asyncio
+    async def test_empty_expansion_strict_falls_back_to_the_original_query(self) -> None:
+        """P2-2: an empty completion from the expander no longer fails the goal.
+
+        Fusion retrieves over the original query and the trace says so; it is
+        never a silent empty result.
+        """
+        from app.core.errors import EmptyCompletionError
+        from app.rag.engine import RetrievalResult, retrieve_fusion
+
+        provider = AsyncMock()
+        provider.complete.side_effect = EmptyCompletionError("empty completion twice")
+        hit = RetrievalResult(chunk_id="c1", content="diesel", score=1.0, source_metadata={})
+        search = AsyncMock(return_value=[hit])
+        trace: dict[str, object] = {}
+        with patch("app.rag.engine.hybrid_search", search):
+            out = await retrieve_fusion(
+                AsyncMock(),
+                query="diesel cost H1",
+                query_embedding=[0.1],
+                collection_id="col-1",
+                provider=provider,
+                model="m",
+                strict=True,
+                expansion_trace=trace,
+            )
+        assert [r.chunk_id for r in out] == ["c1"]
+        assert search.await_args.kwargs["query"] == "diesel cost H1"
+        assert trace == {"source": "rules", "fallback_reason": "empty_completion"}
 
     @pytest.mark.asyncio
     async def test_single_variant_expansion_strict_raises(self) -> None:

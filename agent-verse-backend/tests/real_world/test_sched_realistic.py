@@ -22,7 +22,7 @@ import pytest
 
 from tests.real_world import wf_complex as wfc
 from tests.real_world import workflows as wfx
-from tests.real_world.helpers import LiveAPI, mask, tag, wait_until
+from tests.real_world.helpers import LiveAPI, mask, schedule_history_runs, tag, wait_until
 
 MAX_WAIT = float(os.getenv("RW_SCHEDULE_MAX_WAIT", "960"))
 WEEKDAY_9AM = {"0 9 * * 1-5", "0 9 * * mon-fri", "00 09 * * 1-5", "0 9 * * 1,2,3,4,5"}
@@ -189,10 +189,8 @@ def test_schedule_fires_goal(api: LiveAPI, enterprise_api: LiveAPI | None,
         hist = wait_until(
             lambda: client.json_ok("GET", f"/schedules/{sid}/history"),
             timeout=interval + 180, interval=10, desc="the schedule to fire a goal",
-            done=lambda h: any((e or {}).get("goal_id") for e in (
-                h if isinstance(h, list) else h.get("events", h.get("items", [])))))
-        events = hist if isinstance(hist, list) else hist.get("events", hist.get("items", []))
-        goal_ids = [str(e["goal_id"]) for e in events if e.get("goal_id")]
+            done=lambda h: any(r.get("goal_id") for r in schedule_history_runs(h)))
+        goal_ids = [str(r["goal_id"]) for r in schedule_history_runs(hist) if r.get("goal_id")]
         evidence["fired_goal_ids"] = goal_ids
         goal = client.json_ok("GET", f"/goals/{goal_ids[0]}")
         evidence["goal_status"] = goal.get("status")

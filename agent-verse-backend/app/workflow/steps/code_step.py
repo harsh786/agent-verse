@@ -69,6 +69,7 @@ async def _run_in_code_sandbox(
 
     from app.tenancy.context import PlanTier, TenantContext
     from app.tools import code_execution
+    from app.workflow.engine_audit import audit_tenant_id
 
     if not tenant_id:
         # Every execution is audited against a tenant; never run unattributed code.
@@ -93,7 +94,12 @@ async def _run_in_code_sandbox(
         )
     ctx = code_execution.CodeExecutionContext(
         # Only the tenant id matters for the sandbox + audit row (no plan/roles used).
-        tenant_ctx=TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="workflow"),
+        # The run state carries the workflow tables' dashed UUID; the audit trail
+        # keys tenants by the hex form they are created with (as engine_audit
+        # does), so the row lands with the tenant's other audit rows (P4-2).
+        tenant_ctx=TenantContext(
+            tenant_id=audit_tenant_id(tenant_id), plan=PlanTier.FREE, api_key_id="workflow"
+        ),
         source="workflow.code_step",
         ref_id=run_id,
         step_id=step_id,

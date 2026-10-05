@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.observability.logging import get_logger
 from app.orchestration.strategy_registry import get_strategy_registry
 from app.rag.catalogue import RAG_CAPABILITY_CATALOGUE
 from app.rag.contracts import (
+    MAX_RAG_TOP_K,
     RAGStrategy,
     UnavailableRAGStrategyError,
     UnknownRAGStrategyError,
+    rag_request_contract_error,
     resolve_rag_strategy,
 )
 from app.rag.gateway import CollectionNotFoundError
@@ -35,6 +38,8 @@ from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
 
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/rag", tags=["rag-platform"])
 
 
@@ -49,7 +54,7 @@ class RAGQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10_000)
     collection_id: str | None = Field(default=None, min_length=1)
     strategy: str = RAGStrategy.HYBRID.value
-    top_k: int = Field(default=5, ge=1, le=20)
+    top_k: int = Field(default=5, ge=1, le=MAX_RAG_TOP_K)
     filters: dict[str, Any] = Field(default_factory=dict)
     execution_id: str = Field(default="", max_length=128)
 
@@ -119,6 +124,9 @@ def _raise_retrieval_http_error(exc: Exception) -> NoReturn:
 
     if isinstance(exc, HTTPException):
         raise exc
+    contract_error = rag_request_contract_error(exc)
+    if contract_error is not None:
+        raise HTTPException(status_code=422, detail=contract_error) from exc
     if isinstance(exc, UnknownRAGStrategyError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if isinstance(exc, CollectionNotFoundError):
@@ -155,6 +163,29 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
     except Exception as exc:
         _raise_retrieval_http_error(exc)
 
+    if result.answer and not result.grounded:
+        # Same contract as /knowledge/chat: an answer that fails citation
+        # verification is a 422, never a 200 the caller might take as fact.
+        last = result.strategy_trace[-1].detail if result.strategy_trace else {}
+        logger.warning(
+            "rag_query_answer_ungrounded",
+            strategy=result.resolved_strategy_id.value,
+            reason=last.get("reason"),
+            citations=len(result.citations),
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "answer_ungrounded",
+                "reason": last.get("reason", "unsupported"),
+                "requested_strategy_id": result.requested_strategy_id,
+                "resolved_strategy_id": result.resolved_strategy_id.value,
+                "strategy_trace": [
+                    trace.model_dump(mode="json") for trace in result.strategy_trace
+                ],
+            },
+        )
+
     # ``confidence`` used to be the single best citation score presented as an
     # answer confidence. Prefer the gateway's calibrated aggregate retrieval
     # confidence (WS-10); strategies that do not compute one fall back to the
@@ -183,13 +214,33 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
 
 
 @router.get("/strategies")
-async def list_strategies(request: Request) -> dict[str, Any]:
-    """List available RAG strategies."""
+async def list_strategies(
+    request: Request,
+    collection_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Evaluate collection-specific readiness (RAPTOR / agentic-chunking "
+            "need that collection's precomputed index). Without it those "
+            "strategies report unavailable_reason=collection_index_required."
+        ),
+    ),
+) -> dict[str, Any]:
+    """List RAG strategies and whether each can really run now.
+
+    ``available`` reflects real capability: dependencies, the tenant's web
+    policy and the web search backend's health, and, per collection, a
+    strategy's precomputed index.
+    """
     tenant = _require_tenant(request)
     registry = get_strategy_registry()
     gateway = getattr(request.app.state, "retrieval_gateway", None)
+    readiness_kwargs: dict[str, Any] = (
+        {"collection_id": collection_id} if isinstance(collection_id, str) else {}
+    )
     readiness_by_strategy = (
-        await gateway.readiness_all(tenant)
+        await gateway.readiness_all(tenant, **readiness_kwargs)
         if gateway is not None and hasattr(gateway, "readiness_all")
         else {}
     )
@@ -226,6 +277,7 @@ async def list_strategies(request: Request) -> dict[str, Any]:
             }
         )
     return {
+        "collection_id": collection_id if isinstance(collection_id, str) else None,
         "strategies": strategies,
     }
 

@@ -22,6 +22,8 @@ import { Pagination } from '@/components/ui/Pagination';
 import { ApiError, apiFetch, llmErrorMessage } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
+import { RagStrategySelect } from './RagStrategySelect';
+import { DEFAULT_RAG_STRATEGY } from './ragStrategies';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -409,7 +411,11 @@ function AskAITab() {
   const [question, setQuestion] = useState('');
   const [history, setHistory] = useState<Array<{ q: string; a: RagAnswer }>>([]);
   const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
+  const [strategy, setStrategy] = useState(DEFAULT_RAG_STRATEGY);
   const answerRef = useRef<HTMLDivElement>(null);
+  // Strategy readiness is per collection; with none or several selected the
+  // collection-bound strategies show as "needs a collection".
+  const strategyCollection = selectedCollections.length === 1 ? selectedCollections[0] : null;
 
   const { data: collections = [] } = useQuery<Collection[]>({
     queryKey: ['knowledge-collections'],
@@ -420,7 +426,7 @@ function AskAITab() {
     // 503/504 get a specific message below, not the generic "Server error" toast.
     mutationFn: (q: string) => apiFetch<RagAnswer>('/knowledge/chat', {
       method: 'POST',
-      body: JSON.stringify({ question: q, collection_ids: selectedCollections, top_k: 5 }),
+      body: JSON.stringify({ question: q, collection_ids: selectedCollections, top_k: 5, strategy }),
     }, { silenceServerErrorToast: true }),
     onSuccess: (r, q) => {
       setHistory((h) => [{ q, a: r }, ...h.slice(0, 4)]);
@@ -472,6 +478,10 @@ function AskAITab() {
             </div>
           </div>
         )}
+        <div className="max-w-xs">
+          <label htmlFor="ask-strategy" className="block text-xs text-muted-foreground mb-1">Retrieval strategy</label>
+          <RagStrategySelect id="ask-strategy" collectionId={strategyCollection} value={strategy} onChange={setStrategy} />
+        </div>
         <div className="flex flex-wrap gap-1.5">
           <span className="text-xs text-muted-foreground self-center">Try:</span>
           {exampleQuestions.map((q) => (
@@ -932,6 +942,7 @@ function SearchTab() {
   const [query, setQuery] = useState('');
   const [collectionId, setCollectionId] = useState('');
   const [topK, setTopK] = useState(10);
+  const [strategy, setStrategy] = useState(DEFAULT_RAG_STRATEGY);
   const [results, setResults] = useState<SearchResult[]>([]);
 
   const { data: collections = [] } = useQuery<Collection[]>({
@@ -941,7 +952,7 @@ function SearchTab() {
 
   const searchMutation = useMutation({
     mutationFn: () => {
-      const params = new URLSearchParams({ q: query, top_k: String(topK) });
+      const params = new URLSearchParams({ q: query, top_k: String(topK), strategy });
       if (collectionId) params.set('collection_id', collectionId);
       return apiFetch<SearchResult[]>(`/knowledge/search?${params.toString()}`);
     },
@@ -976,6 +987,9 @@ function SearchTab() {
         </div>
       </div>
       <div className="flex items-center gap-3">
+        <label htmlFor="search-strategy" className="text-xs text-muted-foreground">Strategy</label>
+        <RagStrategySelect id="search-strategy" collectionId={collectionId || null} value={strategy} onChange={setStrategy}
+          className="px-2 py-1 border border-border rounded-md text-sm bg-background" />
         <label className="text-xs text-muted-foreground">Results: {topK}</label>
         <input type="range" min="3" max="20" value={topK} onChange={(e) => setTopK(Number(e.target.value))} className="w-24" />
         <button onClick={() => searchMutation.mutate()} disabled={!query.trim() || searchMutation.isPending}

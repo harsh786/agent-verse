@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
+
+#: Output budget for the expansion call. 200 tokens let a reasoning model spend
+#: the whole budget thinking and return nothing (P0 GOAL-MULTISTEP-RAG); three
+#: one-line phrasings need ~60 visible tokens, the rest is reasoning headroom.
+EXPANSION_MAX_TOKENS = 1024
 
 
 class QueryExpander:
@@ -24,8 +34,6 @@ class QueryExpander:
 
     def expand_for_fusion(self, query: str, max_variants: int = 4) -> list[str]:
         """Generate multiple query phrasings for Fusion RAG (RRF across multiple queries)."""
-        import re
-
         variants = [query]
         syns = [
             ("authentication", "login auth"),
@@ -51,10 +59,24 @@ class QueryExpander:
         provider: Any = None,
         model: str = "",
         strict: bool = False,
+        trace: dict[str, Any] | None = None,
     ) -> list[str]:
-        """LLM-driven query expansion for Fusion RAG. Falls back to rule-based."""
+        """LLM-driven query expansion for Fusion RAG, with an honest fallback.
+
+        The original query is always ``variants[0]``. When the model returns no
+        usable phrasing — an empty completion (a reasoning model that spent its
+        budget thinking) or only a preamble — expansion falls back to the
+        rule-based variants of the original query, even when ``strict``: the
+        original query is a sound retrieval input, and the fallback is recorded
+        in ``trace`` (``source="rules"`` + ``fallback_reason``), never silent.
+        A provider outage (429, 5xx, circuit open) still raises when
+        ``strict``.
+        """
         if provider is None:
+            _record(trace, source="rules", fallback_reason=None)
             return self.expand_for_fusion(query, max_variants=max_variants)
+        from app.core.errors import EmptyCompletionError
+
         try:
             from app.providers.base import CompletionRequest, Message
             from app.providers.guarded_completion import complete_decision
@@ -74,17 +96,69 @@ class QueryExpander:
                         Message(role="user", content=f"Query: {query}"),
                     ],
                     model=model,
-                    max_tokens=200,
+                    max_tokens=EXPANSION_MAX_TOKENS,
                     temperature=0.7,
                 ),
                 role="rag_query_expand",
             )
-            raw = (resp.content or "").strip()
-            variants = [query] + [
-                line.strip() for line in raw.split("\n") if line.strip() and line.strip() != query
-            ]
-            return list(dict.fromkeys(variants))[:max_variants]
-        except Exception:
+        except EmptyCompletionError as exc:
+            return self._fallback(query, max_variants, trace, "empty_completion", exc)
+        except Exception as exc:
             if strict:
                 raise
-            return self.expand_for_fusion(query, max_variants=max_variants)
+            return self._fallback(query, max_variants, trace, "provider_error", exc)
+        raw = str(getattr(resp, "content", "") or "")
+        if not raw.strip():
+            return self._fallback(query, max_variants, trace, "empty_expansion", None)
+        phrasings = parse_phrasings(raw, query)
+        if not phrasings:
+            return self._fallback(query, max_variants, trace, "invalid_expansion", None)
+        _record(trace, source="llm", fallback_reason=None)
+        return list(dict.fromkeys([query, *phrasings]))[:max_variants]
+
+    def _fallback(
+        self,
+        query: str,
+        max_variants: int,
+        trace: dict[str, Any] | None,
+        reason: str,
+        exc: BaseException | None,
+    ) -> list[str]:
+        logger.warning(
+            "query_expansion_fallback",
+            reason=reason,
+            error=str(exc)[:160] if exc is not None else None,
+        )
+        _record(trace, source="rules", fallback_reason=reason)
+        return self.expand_for_fusion(query, max_variants=max_variants)
+
+
+def _record(trace: dict[str, Any] | None, *, source: str, fallback_reason: str | None) -> None:
+    if trace is not None:
+        trace["source"] = source
+        trace["fallback_reason"] = fallback_reason
+
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_LIST_MARKER_RE = re.compile(r"^\s*(?:\d+[.)]|[-*\u2022])\s*")
+
+
+def parse_phrasings(raw: str, query: str) -> list[str]:
+    """Usable phrasings from the model output, in order.
+
+    Drops ``<think>`` blocks, list markers and wrapping quotes; skips blank
+    lines, preambles ("Here are three phrasings:"), the query itself and
+    runaway lines far longer than any rephrasing of the query.
+    """
+    text = _THINK_RE.sub("", raw)
+    max_len = max(300, 4 * len(query))
+    original = query.strip().casefold()
+    out: list[str] = []
+    for line in text.splitlines():
+        candidate = _LIST_MARKER_RE.sub("", line).strip().strip("\"'`").strip()
+        if not candidate or candidate.endswith(":") or len(candidate) > max_len:
+            continue
+        if candidate.casefold() == original:
+            continue
+        out.append(candidate)
+    return out

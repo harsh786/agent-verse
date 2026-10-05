@@ -7,6 +7,7 @@ import hashlib
 import html
 import inspect
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -159,6 +160,11 @@ def _html_to_text(content: str) -> str:
     return " ".join(html.unescape(without_markup).split())
 
 
+# How long a last-known web backend health (from a search or a probe) is
+# trusted before readiness discovery probes again.
+_HEALTH_TTL_SECONDS = 30.0
+
+
 class GovernedWebSearchCapability:
     """Policy-gated SearXNG search with SSRF-safe result fetching."""
 
@@ -182,6 +188,36 @@ class GovernedWebSearchCapability:
             sorted({domain.lower().strip(".") for domain in default_allowed_domains if domain})
         )
         self._fetch_transport_factory = fetch_transport_factory or httpx.AsyncHTTPTransport
+        # Last-known backend health of THIS replica: (reason or None, monotonic
+        # time). Reachability is a per-replica observation (each replica has
+        # its own network path to SearXNG), so it is not shared state.
+        self._health: tuple[str | None, float] | None = None
+        self._health_lock = asyncio.Lock()
+
+    def _remember_health(self, reason: str | None) -> None:
+        self._health = (reason, time.monotonic())
+
+    async def health_reason(self, *, probe: bool = True) -> str | None:
+        """``None`` when the search backend is healthy, else why not.
+
+        The last-known health (from the last real search or probe) is used
+        while it is younger than ``_HEALTH_TTL_SECONDS``. When it is stale and
+        ``probe`` is true, SearXNG's ``/healthz`` is probed (one probe per
+        replica at a time); with ``probe`` false an unknown health counts as
+        healthy and the search call itself decides.
+        """
+        cached = self._health
+        if cached is not None and time.monotonic() - cached[1] < _HEALTH_TTL_SECONDS:
+            return cached[0]
+        if not probe:
+            return cached[0] if cached is not None else None
+        async with self._health_lock:
+            cached = self._health
+            if cached is not None and time.monotonic() - cached[1] < _HEALTH_TTL_SECONDS:
+                return cached[0]
+            reason = await self._backend.probe()
+            self._remember_health(reason)
+            return reason
 
     async def _validate_url(
         self,
@@ -306,9 +342,13 @@ class GovernedWebSearchCapability:
                     num_results=max_results,
                 )
         except TimeoutError as exc:
+            self._remember_health("backend_timeout")
             raise WebSearchCapabilityError("backend_timeout") from exc
         if search_result.error:
-            raise WebSearchCapabilityError(search_result.error_code or "backend_error")
+            reason = search_result.error_code or "backend_error"
+            self._remember_health(reason)
+            raise WebSearchCapabilityError(reason)
+        self._remember_health(None)
         request.report.candidate_count = len(search_result.results[:max_results])
 
         evidence: list[WebEvidence] = []

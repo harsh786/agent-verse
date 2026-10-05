@@ -488,6 +488,23 @@ def _has_async_method(dependency: object | None, method_name: str) -> bool:
     return callable(method) and inspect.iscoroutinefunction(method)
 
 
+async def _web_health_reason(capability: object, *, probe: bool) -> str | None:
+    """``None`` when the web search backend is (or was last seen) healthy.
+
+    Capabilities without a health hook are taken as healthy: only the search
+    call itself can tell then.
+    """
+    health = getattr(capability, "health_reason", None)
+    if not callable(health):
+        return None
+    try:
+        result = health(probe=probe)
+        reason = await result if inspect.isawaitable(result) else result
+    except Exception:
+        return "health_probe_failed"
+    return str(reason) if reason else None
+
+
 def _is_safe_web_capability(
     capability: SafeWebSearchCapability | None,
 ) -> TypeGuard[SafeWebSearchCapability]:
@@ -614,6 +631,90 @@ async def _probe_session_factory(factory: object | None, tenant_id: str) -> str 
                 return None if persisted_capabilities is True else "persistence_unavailable"
     except Exception:
         return "persistence_unavailable"
+
+
+# The metadata a strategy's precomputed chunks carry (what the engine's RAPTOR /
+# agentic-chunking retrieval filters on).
+_PRECOMPUTED_INDEX_MARKERS: Mapping[RAGStrategy, Mapping[str, object]] = MappingProxyType(
+    {
+        RAGStrategy.RAPTOR: MappingProxyType({"rag_strategy": "raptor"}),
+        RAGStrategy.AGENTIC_CHUNKING: MappingProxyType(
+            {"rag_strategy": "agentic_chunking", "is_proposition": True}
+        ),
+    }
+)
+
+
+async def _probe_precomputed_indexes(
+    factory: object | None,
+    tenant_id: str,
+    collection_id: str,
+    strategies: Sequence[RAGStrategy],
+) -> dict[RAGStrategy, ReadinessFact]:
+    """Whether ``collection_id`` carries each strategy's precomputed index.
+
+    One tenant-scoped session; per strategy one ``EXISTS`` probe answered by
+    the chunk table's ``metadata`` GIN index (bounded at any collection size).
+    """
+    import json
+
+    if not callable(factory):
+        return {
+            strategy: ReadinessFact(False, "session_factory_unavailable")
+            for strategy in strategies
+        }
+    facts: dict[RAGStrategy, ReadinessFact] = {}
+    try:
+        async with (
+            factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            try:
+                dim = await rag_engine._collection_metadata(
+                    session, collection_id, "embedding_dim"
+                )
+            except LookupError:
+                return {
+                    strategy: ReadinessFact(False, "collection_not_authorized")
+                    for strategy in strategies
+                }
+            if dim not in rag_engine._SUPPORTED_EMBEDDING_DIMENSIONS:
+                return {
+                    strategy: ReadinessFact(False, "collection_embedding_dim_unknown")
+                    for strategy in strategies
+                }
+            table = f"knowledge_chunks_{dim}"
+            for strategy in strategies:
+                indexed = await session.scalar(
+                    text(
+                        f"SELECT EXISTS (SELECT 1 FROM {table} "
+                        "WHERE collection_id = :cid "
+                        "AND tenant_id = current_setting('app.tenant_id', TRUE) "
+                        "AND (expires_at IS NULL OR expires_at > now()) "
+                        "AND metadata @> CAST(:marker AS jsonb))"
+                    ),
+                    {
+                        "cid": collection_id,
+                        "marker": json.dumps(dict(_PRECOMPUTED_INDEX_MARKERS[strategy])),
+                    },
+                )
+                facts[strategy] = (
+                    ReadinessFact(True, "ready")
+                    if indexed is True
+                    else ReadinessFact(False, _PRECOMPUTED_INDEX_UNAVAILABLE_REASON[strategy])
+                )
+    except Exception as exc:
+        logger.warning(
+            "precomputed_index_probe_failed",
+            failure_type=type(exc).__name__,
+            collection_id=collection_id,
+        )
+        return {
+            strategy: ReadinessFact(False, "precomputed_index_probe_failed")
+            for strategy in strategies
+        }
+    return facts
 
 
 @dataclass(frozen=True, slots=True)
@@ -1509,6 +1610,7 @@ async def execute_core_strategy(
         )
 
     if strategy is RAGStrategy.FUSION:
+        expansion_trace: dict[str, Any] = {}
         results = await rag_engine.retrieve_fusion(
             None,
             query=request.query,
@@ -1522,6 +1624,7 @@ async def execute_core_strategy(
             strict=True,
             search_operation=search_operation,
             strategy_evidence=strategy_evidence,
+            expansion_trace=expansion_trace,
         )
         for item in strategy_evidence:
             item["latency_ms"] = search_latencies.get(str(item.get("query")), 0.0)
@@ -1537,6 +1640,8 @@ async def execute_core_strategy(
                     "model": llm.model,
                     "provider_type": llm.provider_type,
                     "variant_count": len(strategy_evidence),
+                    "source": expansion_trace.get("source", "llm"),
+                    "fallback_reason": expansion_trace.get("fallback_reason"),
                 },
             ),
         )
@@ -2090,10 +2195,20 @@ class RetrievalGateway:
             web_fact = ReadinessFact(False, "search_capability_unavailable")
         else:
             web_reason = await self._web_policy_reason(tenant_context)
-            web_fact = ReadinessFact(
-                web_reason == "web_policy_allowed",
-                "ready" if web_reason == "web_policy_allowed" else web_reason,
-            )
+            if web_reason == "web_policy_allowed":
+                # Configured and permitted is not reachable: the search backend's
+                # health (probed when stale on discovery, last-known on the
+                # execution path) decides, so a down SearXNG is not "available".
+                health_reason = await _web_health_reason(
+                    self.dependencies.search_capability, probe=probe_database
+                )
+                web_fact = (
+                    ReadinessFact(True, "ready")
+                    if health_reason is None
+                    else ReadinessFact(False, f"web_search_{health_reason}")
+                )
+            else:
+                web_fact = ReadinessFact(False, web_reason)
         service = self.dependencies.raft_service
         raft_service_fact = ReadinessFact(
             isinstance(service, RAFTService),
@@ -2147,6 +2262,33 @@ class RetrievalGateway:
         strategy_facts: dict[RAGStrategy, Mapping[RAGRuntimeDependency, ReadinessFact]] = {}
         adapter_facts: dict[RAGStrategy, ReadinessFact] = {}
         target_strategies = tuple(strategies or RAG_CAPABILITY_CATALOGUE)
+        indexed_strategies = [
+            strategy
+            for strategy in target_strategies
+            if RAGRuntimeDependency.PRECOMPUTED_INDEX
+            in RAG_CAPABILITY_CATALOGUE[strategy].required_dependencies
+        ]
+        if not probe_database:
+            # Execution path: the strategy itself fails closed with
+            # "requires RAPTOR indexing" when the collection has no index.
+            index_facts = {
+                strategy: ReadinessFact(True, "checked_at_execution")
+                for strategy in indexed_strategies
+            }
+        elif collection_id is None:
+            index_facts = {
+                strategy: ReadinessFact(False, "collection_index_required")
+                for strategy in indexed_strategies
+            }
+        elif indexed_strategies:
+            index_facts = await _probe_precomputed_indexes(
+                self.dependencies.session_factory,
+                tenant_context.tenant_id,
+                collection_id,
+                indexed_strategies,
+            )
+        else:
+            index_facts = {}
         for strategy in target_strategies:
             entry = RAG_CAPABILITY_CATALOGUE[strategy]
             capability = self.dependencies.strategy_capabilities.get(strategy)
@@ -2160,6 +2302,10 @@ class RetrievalGateway:
                 adapter_facts[strategy] = ReadinessFact(
                     is_valid,
                     "ready" if is_valid else "invalid_adapter",
+                )
+            if strategy in index_facts:
+                strategy_facts[strategy] = MappingProxyType(
+                    {RAGRuntimeDependency.PRECOMPUTED_INDEX: index_facts[strategy]}
                 )
             if RAGRuntimeDependency.PROVIDER not in entry.required_dependencies:
                 continue

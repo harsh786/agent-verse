@@ -187,6 +187,11 @@ async def fork_template(slug: str, body: ForkRequest, request: Request) -> dict[
         except Exception as exc:  # surface a clear error instead of a dead id
             _log.warning("template_fork_persist_failed", slug=slug, error=str(exc)[:160])
             raise HTTPException(status_code=500, detail=f"Could not fork template: {exc}") from exc
+        from app.workflow.audit_middleware import record_workflow_created
+
+        record_workflow_created(
+            request, {"id": created_id}, name=definition.name, source="template", template=slug
+        )
 
     # Return both keys so the client can read `id` (and legacy `workflow_id`).
     return {

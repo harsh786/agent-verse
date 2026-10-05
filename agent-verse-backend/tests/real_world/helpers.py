@@ -69,6 +69,22 @@ def tag() -> str:
     return uuid.uuid4().hex[:8]
 
 
+def schedule_history_runs(body: Any) -> list[dict[str, Any]]:
+    """The runs of ``GET /schedules/{id}/history`` (``{"runs": [...]}``).
+
+    The SCHED-FIRES-GOAL wait looked for ``events``/``items`` keys the endpoint
+    never returns, so it timed out on a schedule that had fired correctly.
+    """
+    if isinstance(body, list):
+        return [r for r in body if isinstance(r, dict)]
+    if not isinstance(body, dict):
+        return []
+    runs = body.get("runs")
+    if runs is None:
+        runs = body.get("events", body.get("items", []))
+    return [r for r in runs or [] if isinstance(r, dict)]
+
+
 class LiveAPI:
     """httpx client bound to the test tenant; keeps a masked request trail."""
 
@@ -115,6 +131,9 @@ class LiveAPI:
 
     def post(self, path: str, **kw: Any) -> httpx.Response:
         return self.request("POST", path, **kw)
+
+    def put(self, path: str, **kw: Any) -> httpx.Response:
+        return self.request("PUT", path, **kw)
 
     def patch(self, path: str, **kw: Any) -> httpx.Response:
         return self.request("PATCH", path, **kw)

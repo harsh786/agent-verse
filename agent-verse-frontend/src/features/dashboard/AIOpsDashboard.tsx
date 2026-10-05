@@ -21,6 +21,9 @@ import { providerHealthState } from '@/features/models/providerHealth';
 interface EvalRun {
   result_id: string;
   dataset_id: string;
+  /** The immutable dataset version the run executed (P7-3). */
+  dataset_version?: number;
+  dataset?: { dataset_id?: string; version?: number; name?: string };
   status: 'queued' | 'running' | 'completed' | 'failed' | 'abandoned' | string;
   total_cases?: number;
   completed_cases?: number;
@@ -330,7 +333,17 @@ export function AIOpsDashboard() {
                 <div className="divide-y divide-border">
                   {evalRuns.map((run) => (
                     <div key={run.result_id} data-testid={`eval-run-${run.result_id}`} className="px-4 py-2.5">
-                      <p className="text-xs font-medium truncate">{run.dataset_id}</p>
+                      <p className="text-xs font-medium truncate">
+                        {run.dataset?.name || run.dataset_id}
+                        {run.dataset_version != null && (
+                          <span
+                            data-testid={`eval-run-version-${run.result_id}`}
+                            className="ml-1.5 text-[10px] font-normal text-muted-foreground"
+                          >
+                            v{run.dataset_version}
+                          </span>
+                        )}
+                      </p>
                       <p className={`text-[10px] mt-0.5 ${EVAL_RUN_COLORS[run.status] ?? 'text-muted-foreground'}`}>
                         {evalRunLabel(run)}
                       </p>
