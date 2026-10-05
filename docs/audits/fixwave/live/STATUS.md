@@ -9,7 +9,7 @@
 | 5 | A6 Kafka | PENDING | |
 | 6 | A7 Google Drive, SharePoint, Confluence, Notion | PENDING | |
 | 7 | A10 HTTP URL, web crawl | COMPLETE — HTTP URL ingest (fixed: P1d-1, -2, -3, -4, -5); web crawl (fixed: P1d-6, -7, -8, -9, -11); remaining regex HTML paths (fixed: P1d-10) | P1d branch `live/p1d-web-crawl`; report live/p1d-web-crawl.md; WEB-URL-* (7) and WEB-CRAWL-* (4) all pass on rebuilt images (baseline 0/11); P1b/P1c regression 28/28 on the P1d images (final 39/39), WEB-* 11/11 again after merging main 639d30ce7; open items → product (URL Source type), P2 (pipeline min length), P9 (crawl live set in the cursor, throughput) |
-| 8 | A12 Agent-generated | PENDING | |
+| 8 | A12 Agent-generated | COMPLETE — goal outputs (fixed: P1e-1, -3, -5); HITL decisions, goal + workflow gates (fixed: P1e-1, -3); workflow run results (fixed: P1e-1, -4); reflexion lessons (fixed: P1e-1); goal deletion / erasure propagation (fixed: P1e-2, -5); PII/secret screening, tenant isolation, dedup/incremental, legal hold (already / via P1e-1); OPEN: memory consolidations (no content, P6), chat transcripts (owner: privacy) | P1e branch `live/p1e-agent-generated`; report live/p1e-agent-generated.md; AGK-GOAL-OUTPUT / -APPROVAL / -WORKFLOW / -GOVERNANCE / -FAILURES all pass on rebuilt images (baseline 0/5); P1b/P1c/P1d regression 38/38 before the fixes, 39/39 on the final images |
 | 9 | B1 Time triggers | PENDING | |
 | 10 | B2 webhook, rest, event | PENDING | |
 | 11 | B3 github, stripe, jira, teams_webhook | PENDING | |

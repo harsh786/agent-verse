@@ -1,0 +1,4 @@
+failed test_goal_outputs_become_cited_knowledge 63.6
+     E       AssertionError: goal 670195c886144d06bc65487a175a3905 ended failed: PermissionError: Step 'Step 1: Write the first sentence: 'Freight surcharge code FS-X5Y2X costs 9083 INR per box.'' requires human approval (high-risk step: change to a sensitive target (money); step of a high-risk goal (change to a sensitive target (money)) that is not read-only), but the goal runs in 'bounded-autonomous' mode where no approval is awaited; the step was not executed. Run the goal in supervised mode to approve it.
+failed test_agent_knowledge_governance 52.3
+     E           AssertionError: assert 200 == 404

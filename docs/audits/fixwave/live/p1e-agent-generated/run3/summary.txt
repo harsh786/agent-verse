@@ -1,0 +1,6 @@
+failed test_goal_outputs_become_cited_knowledge 28.8
+     E       AssertionError: goal 5a9c771a9c7349339445032ac8447511 ended failed: PermissionError: Step 'Step 1: Compose a three-sentence internal note using the given facts: sentence 1 about calibration interval, sentence...' requires human approval (high-risk step: external communication involving secret), but the goal runs in 'bounded-autonomous' mode where no approval is awaited; the step was not executed. Run the goal in supervised mode to approve it.
+failed test_goal_approval_decisions_become_knowledge 462.5
+     E       AssertionError: decision / reviewer missing: ## Reviewer note
+failed test_agent_knowledge_governance 40.8
+     E           AssertionError: reindex -> 409: {"detail":"The source's collection is under legal hold; reindex would delete held data"}
