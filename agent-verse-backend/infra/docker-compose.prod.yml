@@ -37,8 +37,13 @@ x-common-env: &common-env
   SMTP_PASSWORD: ${SMTP_PASSWORD:-}
   SMTP_TLS: ${SMTP_TLS:-true}
 
-  # Vault encryption
-  AGENTVERSE_VAULT_KEY: ${AGENTVERSE_VAULT_KEY:-}
+  # Vault encryption (BYOK-1). Required: every service shares this anchor, so the
+  # API that encrypts tenant BYOK keys and the workers that decrypt them always
+  # get the same key. It used to be AGENTVERSE_VAULT_KEY with an empty default,
+  # which started production with an empty master key. If you set
+  # AGENTVERSE_VAULT_KEY before, put the SAME value in VAULT_MASTER_KEY.
+  VAULT_MASTER_KEY: ${VAULT_MASTER_KEY:?set VAULT_MASTER_KEY (the same value on every service)}
+  VAULT_PREVIOUS_MASTER_KEYS: ${VAULT_PREVIOUS_MASTER_KEYS:-}
 
   # Observability — export traces/metrics to the in-stack otel-collector.
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}

@@ -24,20 +24,15 @@ spec:
           image: ghcr.io/agentverse/backend:latest   # update image tag before switching
           ports:
             - containerPort: 8000
+          # DATABASE_URL, REDIS_URL and the vault master key come from the same
+          # Secret as every other app workload (BYOK-1). The explicit
+          # `database-url` / `redis-url` keys this used to reference do not exist
+          # in agentverse-secrets, so the pod could not start.
           envFrom:
             - configMapRef:
                 name: agentverse-config
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: database-url
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: redis-url
+            - secretRef:
+                name: agentverse-secrets
           resources:
             requests:
               cpu: 200m

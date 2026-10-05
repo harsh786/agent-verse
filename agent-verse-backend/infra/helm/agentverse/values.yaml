@@ -29,6 +29,8 @@ secrets:
   minioRootPassword: minioadmin
   jwtSecret: change-me-jwt
   vaultMasterKey: change-me-vault-master-key-min-32-chars
+  # Set (comma-separated) only while `agentverse vault-rotate` re-encrypts.
+  vaultPreviousMasterKeys: ""
   goalTokenSecret: change-me-goal-token
   manifestSigningSecret: change-me-manifest
   platformAdminKey: change-me-admin-key
