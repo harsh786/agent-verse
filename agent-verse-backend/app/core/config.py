@@ -379,6 +379,16 @@ class Settings(BaseSettings):
     # DuckDB executes tenant SQL in-process on the API/worker host; even
     # confined, it is off unless an operator enables it explicitly.
     ingestion_connector_duckdb_enabled: bool = False
+    # MongoDB ingestion connector bounds (C1 / MDB-12). A server that accepts and
+    # then stalls used to block a sync (and the health check) forever. Every
+    # wait is bounded: TCP connect, server selection, each socket read, and the
+    # server-side time of each query (maxTimeMS, below the socket timeout so a
+    # slow query fails with an honest MaxTimeMSExpired). A tenant's ``timeout_ms``
+    # may only lower connect/selection; it can never raise or unbound them.
+    ingestion_mongodb_connect_timeout_ms: int = 10_000
+    ingestion_mongodb_server_selection_timeout_ms: int = 10_000
+    ingestion_mongodb_socket_timeout_ms: int = 60_000
+    ingestion_mongodb_max_time_ms: int = 30_000
     # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
     # /pdf, /docx). The body used to be read whole into memory with no limit.
     knowledge_max_upload_bytes: int = 50 * 1024 * 1024

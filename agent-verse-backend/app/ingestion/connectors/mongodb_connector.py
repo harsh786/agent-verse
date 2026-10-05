@@ -28,6 +28,9 @@ Connection config (Sources UI: NoSQL / Relational -> mongodb):
     cursor_field         Field for incremental sync (default ``_id``); ties are broken
                          by ``_id`` so paging never skips documents.
     batch_size           Documents per page (default 500).
+    timeout_ms           Lowers the connect / server-selection timeouts (never raises
+                         them). Socket reads and each query's server time (maxTimeMS)
+                         are bounded by operator settings (INGESTION_MONGODB_*).
     max_documents_per_sync  Cap per sync run (default 10000); the next sync resumes
                          from the cursor.
 
@@ -78,7 +81,6 @@ _log = logging.getLogger(__name__)
 _CONTEXT = "mongodb"
 _DEFAULT_BATCH = 500
 _DEFAULT_MAX_DOCS = 10_000
-_DEFAULT_TIMEOUT_MS = 10_000
 _MAX_COLLECTIONS = 200
 
 # URI options a tenant may not set: they read files on the platform's disk, send
@@ -132,6 +134,22 @@ def _mongo_uri(cc: dict[str, Any]) -> str:
     return f"mongodb://{','.join(hosts)}/"
 
 
+def _driver_bounds() -> tuple[int, int, int, int]:
+    """(connect, server selection, socket, maxTimeMS) in ms, from operator settings.
+
+    Never 0: pymongo reads 0 as "no timeout".
+    """
+    from app.core.config import get_settings
+
+    cfg = get_settings()
+    return (
+        max(1, int(cfg.ingestion_mongodb_connect_timeout_ms)),
+        max(1, int(cfg.ingestion_mongodb_server_selection_timeout_ms)),
+        max(1, int(cfg.ingestion_mongodb_socket_timeout_ms)),
+        max(1, int(cfg.ingestion_mongodb_max_time_ms)),
+    )
+
+
 def _split_list(value: object) -> list[str]:
     if isinstance(value, list | tuple):
         items = [str(v) for v in value]
@@ -151,6 +169,7 @@ class _Settings:
     display_host: str
     discover_members: bool
     kwargs: dict[str, Any] = field(default_factory=dict)
+    max_time_ms: int = 30_000
     tls_ca_pem: str = ""
     tls_client_pem: str = ""
     tls_client_key_password: str = ""
@@ -170,9 +189,18 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
             "tls_ca_pem / tls_client_cert / tls_client_private_key fields for certificates"
         )
 
+    # C1 / MDB-12: every wait is bounded. Driver kwargs override the same URI
+    # options, so ``socketTimeoutMS=0`` in a tenant URI cannot unbound a read;
+    # the tenant's ``timeout_ms`` may only lower connect / server selection.
+    connect_ms, selection_ms, socket_ms, max_time_ms = _driver_bounds()
+    tenant_ms = int(cc.get("timeout_ms") or 0)
+    if tenant_ms > 0:
+        connect_ms = min(connect_ms, tenant_ms)
+        selection_ms = min(selection_ms, tenant_ms)
     kwargs: dict[str, Any] = {
-        "serverSelectionTimeoutMS": int(cc.get("timeout_ms") or _DEFAULT_TIMEOUT_MS),
-        "connectTimeoutMS": int(cc.get("timeout_ms") or _DEFAULT_TIMEOUT_MS),
+        "serverSelectionTimeoutMS": selection_ms,
+        "connectTimeoutMS": connect_ms,
+        "socketTimeoutMS": socket_ms,
         "appname": "agentverse-ingestion",
     }
     username = str(cc.get("username") or "")
@@ -234,6 +262,7 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
         display_host=display_host,
         discover_members=not direct and not load_balanced,
         kwargs=kwargs,
+        max_time_ms=max_time_ms,
         tls_ca_pem=tls_ca_pem,
         tls_client_pem=f"{client_cert}\n{client_key}\n" if client_cert else "",
         tls_client_key_password=str(cc.get("tls_client_key_password") or ""),
@@ -392,12 +421,12 @@ async def _connected(settings: _Settings) -> AsyncIterator[tuple[Any, _Settings]
 
 
 def _probe(client: Any, settings: _Settings) -> dict[str, Any]:
-    client.admin.command("ping")
+    client.admin.command("ping", maxTimeMS=settings.max_time_ms)
     meta: dict[str, Any] = {"host": settings.display_host, "database": settings.database}
     if settings.database:
         # Listing needs an authenticated, authorised user — ping does not, so a
         # wrong password used to "validate" fine and fail only on sync.
-        names = _list_collections(client, settings.database)
+        names = _list_collections(client, settings)
         missing = [c for c in settings.collections if c not in names]
         if missing:
             raise ValueError(
@@ -407,8 +436,10 @@ def _probe(client: Any, settings: _Settings) -> dict[str, Any]:
     return meta
 
 
-def _list_collections(client: Any, database: str) -> list[str]:
-    names = client[database].list_collection_names(filter={"type": "collection"})
+def _list_collections(client: Any, settings: _Settings) -> list[str]:
+    names = client[settings.database].list_collection_names(
+        filter={"type": "collection"}, maxTimeMS=settings.max_time_ms
+    )
     return sorted(str(n) for n in names if not str(n).startswith("system."))
 
 
@@ -508,7 +539,14 @@ def _fetch_page(
     field_name = settings.cursor_field
     sort = [("_id", 1)] if field_name == "_id" else [(field_name, 1), ("_id", 1)]
     col = client[settings.database][collection]
-    return list(col.find(_page_query(field_name, position), sort=sort, limit=limit))
+    return list(
+        col.find(
+            _page_query(field_name, position),
+            sort=sort,
+            limit=limit,
+            max_time_ms=settings.max_time_ms,
+        )
+    )
 
 
 def _dotted_get(doc: dict[str, Any], path: str) -> Any:
@@ -547,7 +585,7 @@ class MongoDBConnector(BaseConnector):
         settings = _settings(config.connection_config)
         async with _connected(settings) as (client, _s):
             collections = settings.collections or await asyncio.to_thread(
-                _list_collections, client, settings.database
+                _list_collections, client, settings
             )
             positions = _decode_cursor(cursor, settings, collections)
             remaining = settings.max_documents
