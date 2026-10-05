@@ -37,7 +37,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 from pydantic import BaseModel, Field, field_validator
 
 from app.observability.logging import get_logger
-from app.workflow.audit_middleware import record_workflow_action
+from app.workflow.audit_middleware import record_workflow_action, record_workflow_created
 from app.workflow.dsl import WorkflowDefinition
 from app.workflow.permissions import caller_access, require_workflow_access, workflow_access
 from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
@@ -221,9 +221,7 @@ async def create_workflow(
         )
     except WorkflowValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    record_workflow_action(
-        request, "created", workflow_id=str(result["id"]), note=f"name={body.name}"
-    )
+    record_workflow_created(request, result, name=body.name, source="api")
     return result
 
 
@@ -296,6 +294,15 @@ async def instantiate_template(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except WorkflowValidationError as exc:  # e.g. below the plan's schedule floor
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    record_workflow_created(
+        request,
+        result,
+        name=str(result.get("name", "") if isinstance(result, dict) else ""),
+        source="template",
+        template=slug,
+    )
     return result
 
 
