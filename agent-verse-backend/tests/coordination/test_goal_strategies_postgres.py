@@ -109,8 +109,8 @@ async def test_goal_runs_camel_on_a_goal_linked_postgres_session(factories: Any)
         tenant_ctx=TENANT,
         provider=provider,
     )
-    assert result["terminal_state"] == "succeeded", events[-1]
-    assert result["answer"] == "CAMEL SOLUTION"
+    assert result.terminal_state == "succeeded", events[-1]
+    assert result.answer == "CAMEL SOLUTION"
     session_id = next(e for e in events if e["type"] == "coordination_session")["session_id"]
     async with admin() as db:
         row = (
@@ -164,8 +164,8 @@ async def test_worker_builds_a_pattern_loop_against_postgres(factories: Any) -> 
         event_callback=callback,
         goal_id="goal-pg-worker",
     )
-    assert result["terminal_state"] == "succeeded", events[-1]
-    assert result["answer"] == "SWARM ANSWER"
+    assert result.terminal_state == "succeeded", events[-1]
+    assert result.answer == "SWARM ANSWER"
     # supervisor/goal_tree/debate/voyager now also run on the worker's StrategyRunner
     # (HITL-DISTRIBUTED-GATES); a strategy outside it (react) still gets no loop.
     assert (

@@ -52,8 +52,8 @@ async def test_goal_runs_pattern_on_a_goal_linked_session(strategy_id: str) -> N
         tenant_ctx=TENANT,
         provider=provider,
     )
-    assert result["terminal_state"] == "succeeded", events[-1]
-    assert result["answer"] == EXPECTED_ANSWER[strategy_id]
+    assert result.terminal_state == "succeeded", events[-1]
+    assert result.answer == EXPECTED_ANSWER[strategy_id]
     complete = events[-1]
     assert complete["type"] == "goal_complete" and complete["strategy_id"] == strategy_id
     session_event = next(e for e in events if e["type"] == "coordination_session")
@@ -88,8 +88,8 @@ async def test_goal_retry_reuses_the_goal_session_and_run() -> None:
         tenant_ctx=TENANT,
         provider=provider,
     )
-    assert first["terminal_state"] == "succeeded"
-    assert second["terminal_state"] == "failed"
+    assert first.terminal_state == "succeeded"
+    assert second.terminal_state == "failed"
     assert "coordination_session_closed" in events2[-1]["reason"]
     assert len(provider.prompts) == calls
     assert session_id
@@ -115,7 +115,7 @@ async def test_goal_budget_denial_fails_the_goal() -> None:
         )
     finally:
         set_platform_cost_services(None)
-    assert result["terminal_state"] == "failed"
+    assert result.terminal_state == "failed"
     assert "pattern_budget_exceeded" in events[-1]["reason"]
 
 
@@ -132,7 +132,7 @@ async def test_goal_limits_bound_the_pattern() -> None:
         provider=provider,
         calls=2,
     )
-    assert result["terminal_state"] == "failed"
+    assert result.terminal_state == "failed"
     assert "pattern_llm_call_limit" in events[-1]["reason"]
     assert len(provider.prompts) == 2
 
@@ -165,7 +165,7 @@ async def test_high_risk_goal_waits_for_approval() -> None:
     )
     types = [e["type"] for e in events]
     assert types.index("waiting_approval") < types.index("approval_granted")
-    assert result["terminal_state"] == "succeeded"
+    assert result.terminal_state == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -181,7 +181,7 @@ async def test_rejected_or_ungated_high_risk_goal_never_runs() -> None:
         tenant_ctx=TENANT,
         provider=provider,
     )
-    assert result["terminal_state"] == "failed"
+    assert result.terminal_state == "failed"
     assert "approval_rejected" in events[-1]["reason"]
     assert provider.prompts == []
     state.hitl_gateway = None
@@ -216,8 +216,8 @@ async def test_magentic_human_review_goes_through_the_goal_gate() -> None:
         tenant_ctx=TENANT,
         provider=provider,
     )
-    assert result["terminal_state"] == "succeeded", events[-1]
-    assert result["answer"] == "FINAL REPORT"
+    assert result.terminal_state == "succeeded", events[-1]
+    assert result.answer == "FINAL REPORT"
     assert any(e["type"] == "waiting_approval" for e in events)
 
 
@@ -232,5 +232,5 @@ async def test_fake_provider_goal_fails_closed() -> None:
         tenant_ctx=TENANT,
         provider=FakeProvider(responses=["canned"]),
     )
-    assert result["terminal_state"] == "failed"
+    assert result.terminal_state == "failed"
     assert "pattern_unavailable" in events[-1]["reason"]

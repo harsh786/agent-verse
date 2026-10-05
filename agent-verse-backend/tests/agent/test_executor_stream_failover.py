@@ -63,3 +63,53 @@ async def test_hung_model_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
         CompletionRequest(messages=[Message(role="user", content="x")], model="kimi"), on_token, buf
     )
     assert resp.content == "ok:qwen"
+
+
+async def test_throttled_stream_is_retried_and_does_not_trip_breaker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P5-1: a 429 on the executor stream retries the same model; no breaker hit."""
+    import httpx
+    import openai
+
+    from app.providers import circuit_breaker as cb
+    from app.providers import rate_limit as rl
+
+    monkeypatch.setattr(cb, "_provider_cb", cb.ProviderCircuitBreaker(failure_threshold=1))
+    slept: list[float] = []
+
+    async def _no_sleep(d: float) -> None:
+        slept.append(d)
+
+    monkeypatch.setattr(rl, "_sleep", _no_sleep)
+
+    class _Throttled:
+        _default_model = "kimi"
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def stream_tokens(self, request: CompletionRequest, on_token: Any) -> Any:
+            self.calls.append(request.model)
+            if len(self.calls) == 1:
+                resp = httpx.Response(
+                    429, headers={"retry-after": "3"}, request=httpx.Request("POST", "https://x.t")
+                )
+                raise openai.RateLimitError("429", response=resp, body=None)
+            await on_token("hi")
+            return CompletionResponse(
+                content=f"ok:{request.model}", model=request.model, input_tokens=1, output_tokens=1
+            )
+
+    ex = _Throttled()
+    buf: list[str] = []
+
+    async def on_token(t: str) -> None:
+        buf.append(t)
+
+    resp = await _graph(ex)._stream_with_failover(
+        CompletionRequest(messages=[Message(role="user", content="x")], model="kimi"), on_token, buf
+    )
+    assert resp.content == "ok:kimi" and ex.calls == ["kimi", "kimi"]
+    assert slept and slept[0] >= 3.0
+    assert not cb._provider_cb.is_open(cb.breaker_key(ex, CompletionRequest(messages=[], model="kimi")))

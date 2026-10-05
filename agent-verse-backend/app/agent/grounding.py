@@ -157,24 +157,29 @@ def claim_grounded_in(value: str, kind: str, evidence_lower: str) -> bool:
 
 
 def extract_claims(text: str) -> dict[str, list[str]]:
-    """Extract concrete claims from LLM output text."""
+    """Extract concrete claims from LLM output text.
+
+    A number inside another claim (the "2026" and "01" of "2026-01-01", the id of
+    a URL or a ticket) is part of that claim, not a claim of its own (P5-6): it
+    used to be checked — and annotated — separately, which split the date.
+    """
     claims: dict[str, list[str]] = {}
+    spans: list[tuple[int, int]] = []
     for claim_type, pattern in _PATTERNS.items():
-        raw_matches: list[Any] = pattern.findall(text)
-        if not raw_matches:
+        if claim_type == "number":
             continue
-        # findall returns strings or tuples depending on whether the pattern has groups
+        spans.extend(m.span() for m in pattern.finditer(text))
+    for claim_type, pattern in _PATTERNS.items():
         flat: list[str] = []
-        for m in raw_matches:
-            flat.append(m[0] if isinstance(m, tuple) else m)
-        # Deduplicate while preserving order
-        seen: set[str] = set()
-        unique: list[str] = []
-        for item in flat:
-            if item not in seen:
-                seen.add(item)
-                unique.append(item)
-        claims[claim_type] = unique
+        for m in pattern.finditer(text):
+            if claim_type == "number" and any(
+                start < m.end() and m.start() < end for start, end in spans
+            ):
+                continue
+            flat.append(m.group(1) if pattern.groups else m.group(0))
+        if not flat:
+            continue
+        claims[claim_type] = list(dict.fromkeys(flat))  # dedupe, keep order
     return claims
 
 
@@ -284,18 +289,51 @@ def check_grounding(
     )
 
 
+# A sentence ends at . ! ? followed by whitespace / end of text (so "3.5", "a.b"
+# and "1,024.50" do not end one), or at a line break.
+_SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
+_UNGROUNDED_MARKER = "[UNGROUNDED CLAIM — not found in the evidence: {claims}]"
+_MAX_ANNOTATED_CLAIMS = 5
+
+
+def _claim_end(text: str, claim: str) -> int | None:
+    """End offset of ``claim`` in ``text``, preferring a whole-token occurrence."""
+    m = re.search(rf"(?<!\w){re.escape(claim)}(?!\w)", text)
+    if m is not None:
+        return m.end()
+    idx = text.find(claim)
+    return idx + len(claim) if idx >= 0 else None
+
+
 def annotate_ungrounded(step_output: str, result: GroundingResult) -> str:
-    """Annotate step output with [UNGROUNDED CLAIM] markers for the verifier."""
+    """Annotate step output with ``[UNGROUNDED CLAIM …]`` markers for the verifier.
+
+    One marker per sentence, placed at the end of the sentence (before its
+    terminal punctuation) and naming the claims it holds (P5-6). The marker used
+    to be spliced right after the first occurrence of each claim string, so a
+    claim that was also a substring of a token ("01" in "2026-01-01") cut the
+    token apart: "2026 [UNGROUNDED CLAIM …]-01".
+    """
     if result.grounded or not result.ungrounded_claims:
         return step_output
 
+    inserts: dict[int, list[str]] = {}
+    for claim in result.ungrounded_claims[:_MAX_ANNOTATED_CLAIMS]:
+        end = _claim_end(step_output, claim)
+        if end is None:
+            continue
+        boundary = _SENTENCE_END.search(step_output, end)
+        pos = boundary.start() if boundary is not None else len(step_output)
+        while pos > end and step_output[pos - 1] in " \t":
+            pos -= 1
+        bucket = inserts.setdefault(pos, [])
+        if claim not in bucket:
+            bucket.append(claim)
+
     annotated = step_output
-    for claim in result.ungrounded_claims[:5]:  # cap at 5 annotations
-        annotated = annotated.replace(
-            claim,
-            f"{claim} [UNGROUNDED CLAIM — not found in tool outputs]",
-            1,
-        )
+    for pos in sorted(inserts, reverse=True):
+        marker = _UNGROUNDED_MARKER.format(claims=", ".join(inserts[pos]))
+        annotated = f"{annotated[:pos]} {marker}{annotated[pos:]}"
     return annotated
 
 
