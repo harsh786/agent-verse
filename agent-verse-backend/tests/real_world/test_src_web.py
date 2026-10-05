@@ -553,8 +553,12 @@ def _build_site(site: WebSite) -> None:
                  page(f"Calendar {month}", f"Vessel calls in month {month}.",
                       links=((p("calendar") + f"?month={month + 1}", "Next month"),)),
                  absolute=False)
-    site.put("deep/level-3", page("Archive", "Old notices.", links=((p("deep/level-4"), "4"),)))
-    site.put("deep/level-4", page("Archive 4", "Older notices: depth four."))
+    # (Pages shorter than the pipeline's minimum are skipped as empty: real text.)
+    site.put("deep/level-3", page("Notice archive",
+                                  "Archived notice: the old gate 2 entrance closed in March 2024.",
+                                  links=((p("deep/level-4"), "Older notices"),)))
+    site.put("deep/level-4", page("Notice archive 2",
+                                  "Archived notice: berth 1 was dredged to 14 m in 2022."))
     site.put("orphan", page("Monsoon advisory",
                             "During monsoon alerts the yard stops reefer stacking above "
                             "three tiers."))
@@ -617,6 +621,15 @@ def test_crawl_site(api: LiveAPI, cleanup: Any, evidence: dict[str, Any],
     rail = [s for s in sources if "articles/7" in s or "article.php" in s or "print/7" in s]
     if rail != [site.url("articles/7")]:
         soft.append(f"canonical / duplicate article indexed as {rail}")
+    # The same site with max_pages=5: exactly five pages read, and the crawl is
+    # recorded incomplete (a partial crawl must never drive deletions).
+    cid5 = srcs.create_collection(api, cleanup, "rw-web-crawl-cap")
+    sid5 = _crawl_source(api, cleanup, cid5, [site.url("")], max_depth=3, max_pages=5)
+    job5 = sj.sync(api, sid5, timeout=600)
+    evidence["max_pages_5"] = {"documents": _count(api, cid5),
+                               "complete": '"complete":true' in str(job5.get("cursor_after"))}
+    if _count(api, cid5) != 5 or '"complete":false' not in str(job5.get("cursor_after")):
+        soft.append(f"max_pages=5: {evidence['max_pages_5']}")
     rows: dict[str, Any] = {}
     soft += _ask(api, cid, "When does the rail siding load rakes?", ["22:00", "10 pm", "2200"],
                  site.url("articles/7"), rows.setdefault("rail", {}))
@@ -684,47 +697,64 @@ def test_crawl_incremental(api: LiveAPI, cleanup: Any, evidence: dict[str, Any],
 @pytest.mark.scenario("WEB-CRAWL-RETRY")
 def test_crawl_failed_pages_retried(api: LiveAPI, cleanup: Any, evidence: dict[str, Any],
                                     site: WebSite) -> None:
-    """A page that answers 503 and a dead seed: the sync is partial with both counted
-    and both in the retry queue, the 503 page retryable; once the page recovers the
-    operator retry indexes it and resolves the entry."""
+    """A page that answers 503, one that never answers (timeout), a 429 with
+    Retry-After and a dead seed: the throttled page is indexed in the same crawl
+    after waiting; the sync is partial with the other three counted and in the retry
+    queue; once the pages recover the operator retry indexes them and resolves them."""
     p = site.path
-    site.put("", page("Tariffs", "Tariff index.", links=((p("tariff/storage"), "Storage"),)))
-    site.put("tariff/storage", page("Storage tariff",
-                                    "Dry storage costs 640 INR per TEU per day."),
-             fail_first=1000, fail_status=503)
+    storage = ("Storage tariff", "Dry storage costs 640 INR per TEU per day after free time.")
+    slow = ("Demurrage tariff", "Demurrage for reefers is 3,200 INR per box per day.")
+    throttled = ("Detention tariff", "Detention after 14 days is 1,900 INR per box per day.")
+    site.put("", page("Tariffs", "Tariff index for the Hosur yard and the rail siding.", links=(
+        (p("tariff/storage"), "Storage"), (p("tariff/demurrage"), "Demurrage"),
+        (p("tariff/detention"), "Detention"))))
+    site.put("tariff/storage", page(*storage), fail_first=1000, fail_status=503)
+    site.put("tariff/demurrage", page(*slow), delay_s=40)
+    site.put("tariff/detention", page(*throttled), fail_first=1, fail_status=429,
+             fail_headers={"Retry-After": "3"})
     site.robots("User-agent: *\nDisallow:\n")
     cid = srcs.create_collection(api, cleanup, "rw-web-retry")
     sid = _crawl_source(api, cleanup, cid, [site.url(""), site.url("missing-seed")],
                         crawl_delay_seconds=0.2)
-    job = sj.sync(api, sid, timeout=600)
+    job = sj.sync(api, sid, timeout=900)
     entries = sj.dlq(api, sid)
+    hits = [h for h in site.hits() if h["path"] == p("tariff/detention")]
     evidence.update(collection_id=cid, source_id=sid, sync=job,
                     dlq=[{"doc": e.get("doc_id"), "error": mask(e.get("error_message"))[:160],
-                          "permanent": e.get("permanent_failure")} for e in entries])
+                          "permanent": e.get("permanent_failure")} for e in entries],
+                    throttled_requests=[round(h["t"], 2) for h in hits])
     soft: list[str] = []
-    if str(job.get("status")).lower() != "partial" or job.get("docs_failed") != 2:
-        soft.append(f"sync should be partial with 2 failures: {job}")
+    if str(job.get("status")).lower() != "partial" or job.get("docs_failed") != 3:
+        soft.append(f"sync should be partial with 3 failures: {job}")
+    if len(hits) != 2 or hits[1]["t"] - hits[0]["t"] < 2.9:
+        soft.append(f"429 Retry-After 3 s not waited out before the retry: {len(hits)} requests")
+    if _rank(api, cid, "detention charge after 14 days", "1,900 INR",
+             site.url("tariff/detention")) is None:
+        soft.append("the throttled page was not indexed after Retry-After")
     flaky = [e for e in entries if "503" in str(e.get("error_message"))]
+    timed_out = [e for e in entries if "timed out" in str(e.get("error_message")).lower()]
     dead = [e for e in entries if "404" in str(e.get("error_message"))]
-    if not flaky or flaky[0].get("permanent_failure"):
-        soft.append("the 503 page is not a retryable DLQ entry")
-    if not dead:
-        soft.append("the dead seed (404) is not in the DLQ")
-    site.put("tariff/storage", page("Storage tariff",
-                                    "Dry storage costs 640 INR per TEU per day."))
-    if flaky:
-        resp = api.post(f"/ingestion/dlq/{flaky[0]['id']}/retry")
-        evidence["retry_http"] = resp.status_code
+    for name, found in (("503", flaky), ("timeout", timed_out), ("404 seed", dead)):
+        if not found:
+            soft.append(f"the {name} page is not in the DLQ")
+    site.put("tariff/storage", page(*storage))
+    site.put("tariff/demurrage", page(*slow))
+    retried = [*flaky[:1], *timed_out[:1]]
+    evidence["retry_http"] = [api.post(f"/ingestion/dlq/{e['id']}/retry").status_code
+                              for e in retried]
+    for fact, rel in ((storage[1], "tariff/storage"), (slow[1], "tariff/demurrage")):
+        if not retried:
+            break
         try:
-            wait_until(lambda: _rank(api, cid, "dry storage cost per TEU", "640 INR",
-                                     site.url("tariff/storage")), timeout=240, interval=6,
-                       desc="the recovered page indexed by the operator retry")
+            wait_until(lambda f=fact, r=rel: _rank(api, cid, f, f[:30], site.url(r)),
+                       timeout=240, interval=6, desc=f"{rel} indexed by the operator retry")
         except AssertionError:
-            soft.append("the operator retry did not index the recovered page")
-        time.sleep(5)
-        still = [e for e in sj.dlq(api, sid) if e.get("id") == flaky[0]["id"]]
-        if still:
-            soft.append("the retried entry is still open")
+            soft.append(f"the operator retry did not index {rel}")
+    time.sleep(5)
+    still = [e.get("doc_id") for e in sj.dlq(api, sid) if e.get("id") in
+             {r.get("id") for r in retried}]
+    if still:
+        soft.append(f"retried entries still open: {still}")
     assert not soft, "; ".join(soft)
 
 
