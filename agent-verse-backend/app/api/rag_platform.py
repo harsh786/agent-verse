@@ -10,9 +10,11 @@ from pydantic import BaseModel, Field
 from app.orchestration.strategy_registry import get_strategy_registry
 from app.rag.catalogue import RAG_CAPABILITY_CATALOGUE
 from app.rag.contracts import (
+    MAX_RAG_TOP_K,
     RAGStrategy,
     UnavailableRAGStrategyError,
     UnknownRAGStrategyError,
+    rag_request_contract_error,
     resolve_rag_strategy,
 )
 from app.rag.gateway import CollectionNotFoundError
@@ -49,7 +51,7 @@ class RAGQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=10_000)
     collection_id: str | None = Field(default=None, min_length=1)
     strategy: str = RAGStrategy.HYBRID.value
-    top_k: int = Field(default=5, ge=1, le=20)
+    top_k: int = Field(default=5, ge=1, le=MAX_RAG_TOP_K)
     filters: dict[str, Any] = Field(default_factory=dict)
     execution_id: str = Field(default="", max_length=128)
 
@@ -119,6 +121,9 @@ def _raise_retrieval_http_error(exc: Exception) -> NoReturn:
 
     if isinstance(exc, HTTPException):
         raise exc
+    contract_error = rag_request_contract_error(exc)
+    if contract_error is not None:
+        raise HTTPException(status_code=422, detail=contract_error) from exc
     if isinstance(exc, UnknownRAGStrategyError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if isinstance(exc, CollectionNotFoundError):
