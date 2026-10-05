@@ -10,6 +10,7 @@ import math
 import os
 import uuid as _uuid
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from fastapi import (
@@ -1101,35 +1102,24 @@ async def ingest_file(
     PDF (chunked per page, page citations), DOCX (paragraphs and tables), XLSX,
     PPTX (slide text, tables and speaker notes), images (PNG/JPEG/WebP, via OCR),
     CSV/TSV, HTML, JSON/JSONL, YAML, Jupyter notebooks, e-mail (.eml), Markdown,
-    plain text and source code. The type comes from the filename extension, else
+    plain text and source code, and ZIP archives of these (nested archives
+    expanded, every chunk citing ``<archive>/<member>``; zip bombs refused 413 /
+    422). PDF pages without a text layer are OCR'd. The type comes from the filename extension, else
     the part's MIME type. Unsupported or unreadable files are refused (415/422)
     instead of being indexed as garbage; an image with no OCR engine or
     vision-capable provider configured is a 503 (never a placeholder text).
     """
-    from app.ingestion.document_text import IMAGE_UPLOAD_EXTS
+    from app.ingestion.archive import ARCHIVE_EXTS
 
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
-
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded_file"
     ext = _upload_ext(filename, file.content_type)
-    source_type = _upload_source_type(ext)
-    is_image = ext in IMAGE_UPLOAD_EXTS
 
-    # (label, page_number, text) segments: a PDF keeps its pages so results can
-    # cite them; everything else is one segment. Images are OCR'd after the
-    # dedup check below (OCR / vision calls are expensive).
-    segments: list[tuple[int | None, str]] = []
-    total_pages: int | None = None
-    parse_report: dict[str, Any] = {}
-    if not is_image:
-        segments, total_pages = await _extract_upload_segments_async(
-            content_bytes, ext=ext, filename=filename, report=parse_report
-        )
-
+    # Dedup first: identical bytes were parsed (and OCR'd) when first indexed.
     doc_hash = hashlib.sha256(content_bytes).hexdigest()
     if await _already_indexed_or_http(
         store, doc_hash, tenant_id=tenant.tenant_id, collection_id=collection_id
@@ -1143,64 +1133,67 @@ async def ingest_file(
             "document_id": None,
         }
 
-    ocr_engine_used = ""
-    if is_image:
-        image_text, ocr_engine_used = await _extract_image_text_or_http(
-            request, content_bytes, filename=filename
-        )
-        segments = [(None, image_text)]
-    # PDF pages without a text layer (a scan, or a scanned annex) are OCR'd.
-    page_ocr_engines: dict[int, str] = {}
-    pages_without_text: list[int] = []
-    warnings: list[str] = []
-    if ext == "pdf":
-        textless = [p for p, t in segments if p is not None and not t.strip()]
-        if textless:
-            segments, page_ocr_engines, pages_without_text, warnings = (
-                await _ocr_textless_pdf_pages_or_http(
-                    request, content_bytes, filename=filename, segments=segments,
-                    textless=textless,
-                )
+    archive_report: dict[str, Any] | None = None
+    if ext in ARCHIVE_EXTS:
+        units, skipped = await _extract_archive_units(request, content_bytes, filename=filename)
+        archive_report = {
+            "members_indexed": [u.archive_member for u in units],
+            "members_skipped": skipped,
+        }
+    else:
+        units = [
+            await _extract_upload_unit(
+                request, content_bytes, ext=ext, filename=filename, source_file=filename
             )
-        segments = [(p, t) for p, t in segments if t.strip()]
+        ]
 
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
 
-    pieces: list[tuple[str, int | None, int]] = []  # (content, page, char_offset)
-    for page, raw_text in segments:
-        text = await _screen_or_http(request, tenant.tenant_id, raw_text, doc_id=filename)
-        chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64) or [text]
-        cursor = 0
-        for chunk in chunks:
-            if not chunk.strip():
-                continue
-            found = text.find(chunk[:200], cursor)
-            offset = found if found >= 0 else cursor
-            cursor = max(cursor, offset)
-            pieces.append((chunk, page, offset))
+    # (unit, content, page, char_offset): a PDF keeps its pages so results can
+    # cite them; an archive member never shares a chunk with another member.
+    pieces: list[tuple[_UploadUnit, str, int | None, int]] = []
+    for unit in units:
+        for page, raw_text in unit.segments:
+            text = await _screen_or_http(
+                request, tenant.tenant_id, raw_text, doc_id=unit.source_file
+            )
+            chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64) or [text]
+            cursor = 0
+            for chunk in chunks:
+                if not chunk.strip():
+                    continue
+                found = text.find(chunk[:200], cursor)
+                offset = found if found >= 0 else cursor
+                cursor = max(cursor, offset)
+                pieces.append((unit, chunk, page, offset))
     if not pieces:
         raise HTTPException(422, "File is empty or could not be parsed")
 
     document_id = _uuid.uuid4().hex
-    embeddings = await _embed_texts_or_http([c for c, _, _ in pieces], embedder, request=request)
+    embeddings = await _embed_texts_or_http(
+        [c for _, c, _, _ in pieces], embedder, request=request
+    )
     rag_chunks: list[Chunk] = []
-    for idx, ((content, page, offset), embedding) in enumerate(
+    for idx, ((unit, content, page, offset), embedding) in enumerate(
         zip(pieces, embeddings, strict=True)
     ):
         metadata = {
-            "source_file": filename,
-            "ext": ext,
+            "source_file": unit.source_file,
+            "ext": unit.ext,
             "char_offset": str(offset),
-            "source_type": source_type,
+            "source_type": _upload_source_type(unit.ext),
             "doc_content_hash": doc_hash,
         }
+        if unit.archive_member is not None:
+            metadata["archive"] = filename
+            metadata["archive_member"] = unit.archive_member
         if page is not None:
             metadata["page"] = str(page)
-            metadata["total_pages"] = str(total_pages)
-        page_engine = page_ocr_engines.get(page) if page is not None else None
-        if ocr_engine_used or page_engine is not None:
+            metadata["total_pages"] = str(unit.total_pages)
+        page_engine = unit.page_ocr_engines.get(page) if page is not None else None
+        if unit.ocr_engine or page_engine is not None:
             metadata["ocr_used"] = "true"
-            metadata["ocr_engine"] = ocr_engine_used or page_engine or ""
+            metadata["ocr_engine"] = unit.ocr_engine or page_engine or ""
         rag_chunks.append(
             Chunk(
                 document_id=document_id,
@@ -1217,21 +1210,148 @@ async def ingest_file(
         tenant_ctx=tenant,
     )
 
-    return {
+    single = units[0] if archive_report is None else None
+    response: dict[str, Any] = {
         "filename": filename,
         "chunks_created": len(stored),
         "collection_id": collection_id,
         "file_size_bytes": len(content_bytes),
         "deduplicated": bool(rag_chunks) and not stored,
         "document_id": document_id if stored else None,
-        "pages": total_pages,
-        "ocr_pages": sorted(page_ocr_engines),
-        "pages_without_text": pages_without_text,
-        "warnings": warnings,
+        "pages": single.total_pages if single else None,
+        "ocr_pages": sorted(single.page_ocr_engines) if single else [],
+        "pages_without_text": single.pages_without_text if single else [],
+        "warnings": [w for u in units for w in u.warnings],
         # A workbook past the row / sheet caps was indexed only in part.
-        "truncated": bool(parse_report.get("excel_truncated")),
-        "truncated_sheets": list(parse_report.get("excel_row_truncated_sheets", [])),
+        "truncated": any(u.report.get("excel_truncated") for u in units),
+        "truncated_sheets": [
+            s for u in units for s in u.report.get("excel_row_truncated_sheets", [])
+        ],
     }
+    if archive_report is not None:
+        response["archive"] = archive_report
+    return response
+
+
+@dataclass
+class _UploadUnit:
+    """One extracted file of an upload: the file itself, or one archive member."""
+
+    source_file: str
+    ext: str
+    segments: list[tuple[int | None, str]] = field(default_factory=list)
+    total_pages: int | None = None
+    page_ocr_engines: dict[int, str] = field(default_factory=dict)
+    pages_without_text: list[int] = field(default_factory=list)
+    ocr_engine: str = ""
+    warnings: list[str] = field(default_factory=list)
+    report: dict[str, Any] = field(default_factory=dict)
+    archive_member: str | None = None
+
+
+async def _extract_upload_unit(
+    request: Request,
+    data: bytes,
+    *,
+    ext: str,
+    filename: str,
+    source_file: str,
+    archive_member: str | None = None,
+) -> _UploadUnit:
+    """Text segments of one file (OCR for images and textless PDF pages); raises
+    the upload's HTTP errors (415 unsupported, 422 unreadable, 503 no parser/OCR)."""
+    from app.ingestion.document_text import IMAGE_UPLOAD_EXTS
+
+    unit = _UploadUnit(source_file=source_file, ext=ext, archive_member=archive_member)
+    if ext in IMAGE_UPLOAD_EXTS:
+        text, unit.ocr_engine = await _extract_image_text_or_http(
+            request, data, filename=filename
+        )
+        unit.segments = [(None, text)]
+        return unit
+    segments, unit.total_pages = await _extract_upload_segments_async(
+        data, ext=ext, filename=filename, report=unit.report
+    )
+    if ext == "pdf":
+        # PDF pages without a text layer (a scan, or a scanned annex) are OCR'd.
+        textless = [p for p, t in segments if p is not None and not t.strip()]
+        if textless:
+            (
+                segments,
+                unit.page_ocr_engines,
+                unit.pages_without_text,
+                unit.warnings,
+            ) = await _ocr_textless_pdf_pages_or_http(
+                request, data, filename=filename, segments=segments, textless=textless
+            )
+        segments = [(p, t) for p, t in segments if t.strip()]
+    unit.segments = segments
+    return unit
+
+
+async def _extract_archive_units(
+    request: Request, data: bytes, *, filename: str
+) -> tuple[list[_UploadUnit], list[dict[str, str]]]:
+    """Every indexable member of a ZIP upload (nested archives expanded), plus the
+    skipped members with the reason. 413 / 422 for a refused archive (zip bomb,
+    limits, unreadable) and 422 when no member could be indexed."""
+    from app.ingestion.archive import (
+        ArchiveLimits,
+        ArchiveRejectedError,
+        ArchiveSkip,
+        iter_archive,
+    )
+    from app.ingestion.document_text import IMAGE_UPLOAD_EXTS, OCR_MAX_PDF_PAGES
+
+    limits = ArchiveLimits.for_upload_limit(int(get_settings().knowledge_max_upload_bytes))
+    members = iter_archive(data, filename=filename, limits=limits)
+    units: list[_UploadUnit] = []
+    skipped: list[dict[str, str]] = []
+    images_ocrd = 0
+    while True:
+        try:
+            # Inflating runs in a worker thread, one member at a time.
+            item = await asyncio.to_thread(next, members, None)
+        except ArchiveRejectedError as exc:
+            raise HTTPException(status_code=413 if exc.too_large else 422, detail=str(exc)) from exc
+        except ValueError as exc:  # DocumentParseError: unreadable archive / member
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if item is None:
+            break
+        if isinstance(item, ArchiveSkip):
+            skipped.append({"name": item.name, "reason": item.reason})
+            continue
+        ext = item.ext or "txt"
+        if ext in IMAGE_UPLOAD_EXTS:
+            if images_ocrd >= OCR_MAX_PDF_PAGES:
+                skipped.append({"name": item.path, "reason": "OCR limit for one upload reached"})
+                continue
+            images_ocrd += 1
+        try:
+            unit = await _extract_upload_unit(
+                request,
+                item.data,
+                ext=ext,
+                filename=item.path,
+                source_file=f"{filename}/{item.path}",
+                archive_member=item.path,
+            )
+        except HTTPException as exc:  # this member only: unsupported / unreadable / no OCR
+            skipped.append({"name": item.path, "reason": str(exc.detail)})
+            continue
+        unit.warnings = [f"{item.path}: {w}" for w in unit.warnings]
+        if unit.segments:
+            units.append(unit)
+        else:
+            skipped.append({"name": item.path, "reason": "no extractable text"})
+    if not units:
+        reasons = "; ".join(f"{s['name']}: {s['reason']}" for s in skipped[:5])
+        raise HTTPException(
+            status_code=422,
+            detail=f"{filename}: the archive has no indexable files"
+            + (f" ({reasons})" if reasons else ""),
+        )
+    return units, skipped
 
 
 def _upload_ext(filename: str, content_type: str | None) -> str:
