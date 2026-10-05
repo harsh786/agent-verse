@@ -5,7 +5,8 @@ World-Class RAG Retrieval Engine
 Four retrieval legs fused with Reciprocal Rank Fusion (RRF):
   1. pgvector ANN — cosine similarity with HNSW index
   2. PostgreSQL FTS — OR of the significant terms, ts_rank_cd + all-terms bonus
-  3. pg_trgm fuzzy — trigram similarity for typo tolerance
+  3. pg_trgm fuzzy — word similarity of identifiers / short queries (typo tolerance)
+  3b. exact phrase / identifier on word boundaries (double RRF weight)
   4. Application Okapi BM25 over a bounded persisted corpus
 
 After fusion: optional cross-encoder reranking of top-50 candidates.
@@ -271,6 +272,22 @@ def _rrf_score(ranks: list[int]) -> float:
     return sum(1.0 / (_RRF_K + r) for r in ranks)
 
 
+# Per-leg RRF weights. An exact phrase / identifier hit is the strongest
+# lexical evidence, so it counts double (P2-3); every other leg counts once.
+_LEG_WEIGHTS: dict[str, float] = {
+    "vector": 1.0,
+    "fts": 1.0,
+    "trigram": 1.0,
+    "bm25": 1.0,
+    "phrase": 2.0,
+}
+
+
+def _weighted_rrf_score(ranks: list[tuple[int, float]]) -> float:
+    """Weighted Reciprocal Rank Fusion: ``sum(weight / (k + rank))``."""
+    return sum(weight / (_RRF_K + rank) for rank, weight in ranks)
+
+
 _COLLECTION_METADATA_COLUMNS = frozenset({"embedding_dim", "chunk_count"})
 
 
@@ -481,6 +498,7 @@ async def hybrid_search(
     fts_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
     trgm_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
     bm25_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
+    phrase_ranks: dict[str, tuple[str, dict[str, Any], int, float]] = {}
 
     # Leg 1: pgvector ANN
     vector_started = time.perf_counter()
@@ -567,25 +585,30 @@ async def hybrid_search(
             logger.debug("fts_leg_failed", error=str(e)[:80])
     fts_latency_ms = (time.perf_counter() - fts_started) * 1000
 
-    # Leg 3: pg_trgm fuzzy
+    # Leg 3: pg_trgm fuzzy. word_similarity compares the query with the
+    # best-matching EXTENT of the chunk; similarity() compared it with the whole
+    # chunk, which is < 0.3 for any long chunk, so the leg never fired on a
+    # table page (P2-3). Indexed by the gin_trgm_ops index via ``<%``.
+    analysed = analyze_query(query)
     trgm_started = time.perf_counter()
-    if retrieval_mode in ("hybrid", "lexical"):
+    trigram_text = analysed.trigram_text()
+    if retrieval_mode in ("hybrid", "lexical") and trigram_text:
         try:
             trgm_sql = text(f"""
                 SELECT id, content, metadata,
-                       similarity(content, :q) AS score
+                       word_similarity(:tq, content) AS score
                 FROM {table}
                 WHERE collection_id = :cid
                   {metadata_clause}
                   {live_chunk_clause}
-                  AND content % :q
+                  AND :tq <% content
                  ORDER BY score DESC, id ASC
                 LIMIT :limit
             """)
             rows = await session.execute(
                 trgm_sql,
                 {
-                    "q": query[:500],
+                    "tq": trigram_text,
                     "cid": collection_id,
                     "limit": top_k * 2,
                     **metadata_params,
@@ -599,6 +622,37 @@ async def hybrid_search(
             logger.debug("trgm_leg_failed", error=str(e)[:80])
     trgm_latency_ms = (time.perf_counter() - trgm_started) * 1000
 
+    # Leg 3b: exact phrase / identifier. A chunk that contains the query's
+    # identifier ("TJ-5531") or the whole short query verbatim, on word
+    # boundaries, is the strongest lexical evidence there is; this leg carries
+    # double weight in the fusion (``_LEG_WEIGHTS``).
+    phrase_started = time.perf_counter()
+    phrases = analysed.phrases()
+    if retrieval_mode in ("hybrid", "lexical") and phrases:
+        try:
+            phrase_sql, phrase_params = _phrase_statement(
+                table=table,
+                phrases=phrases,
+                metadata_clause=metadata_clause,
+                live_chunk_clause=live_chunk_clause,
+            )
+            rows = await session.execute(
+                phrase_sql,
+                {
+                    **phrase_params,
+                    "cid": collection_id,
+                    "limit": top_k * 2,
+                    **metadata_params,
+                },
+            )
+            for i, row in enumerate(rows.fetchall()):
+                phrase_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
+        except Exception as e:
+            if strict:
+                raise RetrievalLegExecutionError("phrase") from e
+            logger.debug("phrase_leg_failed", error=str(e)[:80])
+    phrase_latency_ms = (time.perf_counter() - phrase_started) * 1000
+
     if retrieval_mode in ("hybrid", "lexical"):
         _record_leg_evidence(
             evidence,
@@ -611,6 +665,12 @@ async def hybrid_search(
             "trigram",
             trgm_ranks,
             detail={"latency_ms": trgm_latency_ms},
+        )
+        _record_leg_evidence(
+            evidence,
+            "phrase",
+            phrase_ranks,
+            detail={"latency_ms": phrase_latency_ms, "phrase_count": len(phrases)},
         )
 
     # Leg 4: application-side Okapi BM25 over the persisted corpus.
@@ -686,14 +746,16 @@ async def hybrid_search(
         )
 
     # Collect all unique chunk IDs
-    all_ids = set(vector_ranks) | set(fts_ranks) | set(trgm_ranks) | set(bm25_ranks)
+    all_ids = (
+        set(vector_ranks) | set(fts_ranks) | set(trgm_ranks) | set(bm25_ranks) | set(phrase_ranks)
+    )
     if not all_ids:
         return []
 
     # Compute RRF scores
     fused: list[tuple[str, float, str, dict[str, Any], list[str], dict[str, float]]] = []
     for chunk_id in all_ids:
-        ranks: list[int] = []
+        ranks: list[tuple[int, float]] = []
         legs: list[str] = []
         content: str = ""
         metadata: dict[str, Any] = {}
@@ -701,32 +763,39 @@ async def hybrid_search(
 
         if chunk_id in vector_ranks:
             content, metadata, r, component_score = vector_ranks[chunk_id]
-            ranks.append(r)
+            ranks.append((r, _LEG_WEIGHTS["vector"]))
             legs.append("vector")
             component_scores["vector"] = component_score
         if chunk_id in fts_ranks:
             c, m, r, component_score = fts_ranks[chunk_id]
             if not content:
                 content, metadata = c, m
-            ranks.append(r)
+            ranks.append((r, _LEG_WEIGHTS["fts"]))
             legs.append("fts")
             component_scores["fts"] = component_score
         if chunk_id in trgm_ranks:
             c, m, r, component_score = trgm_ranks[chunk_id]
             if not content:
                 content, metadata = c, m
-            ranks.append(r)
+            ranks.append((r, _LEG_WEIGHTS["trigram"]))
             legs.append("trigram")
             component_scores["trigram"] = component_score
         if chunk_id in bm25_ranks:
             c, m, r, component_score = bm25_ranks[chunk_id]
             if not content:
                 content, metadata = c, m
-            ranks.append(r)
+            ranks.append((r, _LEG_WEIGHTS["bm25"]))
             legs.append("bm25")
             component_scores["bm25"] = component_score
+        if chunk_id in phrase_ranks:
+            c, m, r, component_score = phrase_ranks[chunk_id]
+            if not content:
+                content, metadata = c, m
+            ranks.append((r, _LEG_WEIGHTS["phrase"]))
+            legs.append("phrase")
+            component_scores["phrase"] = component_score
 
-        score = _rrf_score(ranks)
+        score = _weighted_rrf_score(ranks)
         fused.append((chunk_id, score, content, metadata, legs, component_scores))
 
     # Sort by RRF score descending
@@ -787,9 +856,10 @@ def _fts_statement(
     analysed = analyze_query(query)
     params: dict[str, Any] = {"q": query[:500], "cap": _FTS_CANDIDATE_CAP}
     and_query = "plainto_tsquery('english', :q)"
-    if analysed.terms:
+    terms = analysed.fts_terms()
+    if terms:
         or_parts = []
-        for i, term in enumerate(analysed.terms):
+        for i, term in enumerate(terms):
             params[f"fts_t{i}"] = term
             or_parts.append(f"plainto_tsquery('english', :fts_t{i})")
         or_query = "(" + " || ".join(or_parts) + ")"
@@ -810,6 +880,64 @@ def _fts_statement(
           FROM {table} c
           JOIN candidates USING (id)
          ORDER BY score DESC, c.id ASC
+         LIMIT :limit
+    """)
+    return sql, params
+
+
+# The exact-phrase leg reads at most this many trigram-index candidates
+# before ranking them.
+_PHRASE_CANDIDATE_CAP = 1000
+
+
+def _like_pattern(phrase: str) -> str:
+    escaped = phrase.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _word_bounded_regex(phrase: str) -> str:
+    # POSIX ARE: a backslash before a non-alphanumeric character quotes it.
+    quoted = "".join(ch if ch.isalnum() or ch == " " else "\\" + ch for ch in phrase)
+    return f"(^|[^[:alnum:]]){quoted}([^[:alnum:]]|$)"
+
+
+def _phrase_statement(
+    *,
+    table: str,
+    phrases: tuple[tuple[str, float], ...],
+    metadata_clause: str,
+    live_chunk_clause: str,
+) -> tuple[Any, dict[str, Any]]:
+    """Exact-match leg: chunks containing a phrase/identifier on word boundaries.
+
+    ``ILIKE '%phrase%'`` is answered by the ``gin_trgm_ops`` index; the
+    case-insensitive regex then keeps only whole-word matches ("TJ-5531" does
+    not match "TJ-55310"). Score = sum of the matched phrases' weights; ties go
+    to the shorter chunk (the phrase is a larger share of it). Phrases are bound
+    parameters, escaped for LIKE and regex syntax.
+    """
+    params: dict[str, Any] = {"cap": _PHRASE_CANDIDATE_CAP}
+    matches: list[str] = []
+    scores: list[str] = []
+    for i, (phrase, weight) in enumerate(phrases):
+        params[f"ph_like{i}"] = _like_pattern(phrase)
+        params[f"ph_re{i}"] = _word_bounded_regex(phrase)
+        params[f"ph_w{i}"] = weight
+        matched = f"(content ILIKE :ph_like{i} AND content ~* :ph_re{i})"
+        matches.append(matched)
+        scores.append(f"CASE WHEN {matched} THEN CAST(:ph_w{i} AS float8) ELSE 0 END")
+    sql = text(f"""
+        SELECT id, content, metadata, score
+          FROM (
+            SELECT id, content, metadata, ({" + ".join(scores)}) AS score
+              FROM {table}
+             WHERE collection_id = :cid
+               {metadata_clause}
+               {live_chunk_clause}
+               AND ({" OR ".join(matches)})
+             LIMIT :cap
+          ) matched
+         ORDER BY score DESC, length(content) ASC, id ASC
          LIMIT :limit
     """)
     return sql, params

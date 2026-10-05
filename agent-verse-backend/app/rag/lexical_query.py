@@ -15,6 +15,7 @@ same way, or only mentions a part of it, can still be found.
 
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass
 
@@ -78,10 +79,69 @@ class LexicalQuery:
     identifiers: tuple[str, ...]
     #: Number of significant (non-stop-word) words in the query.
     significant_word_count: int
+    #: Significant tokens (identifiers included) in query order.
+    ordered_tokens: tuple[str, ...] = ()
+    #: The query with hyphens folded and surrounding punctuation stripped.
+    normalized: str = ""
+    #: Codes the user typed with a space ("TJ 5531"): their hyphenated and
+    #: joined spellings ("TJ-5531", "TJ5531"), searched as exact phrases and
+    #: full-text terms. Postgres' parser reads "TJ-5531" as 'tj' + '-5531', so
+    #: the bare "5531" of the spaced form never matches it in full text.
+    derived_identifiers: tuple[str, ...] = ()
 
     @property
     def is_long(self) -> bool:
         return self.significant_word_count > MAX_PHRASE_WORDS
+
+    def fts_terms(self) -> tuple[str, ...]:
+        """Terms for the full-text OR: :attr:`terms` plus the separator-free
+        spelling of each compound identifier ("TJ-5531" → "TJ5531"), so a chunk
+        that writes the code without its hyphen still matches. Bounded by
+        ``2 * MAX_LEXICAL_TERMS``."""
+        out = list(self.terms)
+        for derived in self.derived_identifiers:
+            if derived.casefold() not in {t.casefold() for t in out}:
+                out.append(derived)
+        for ident in self.identifiers:
+            joined = _SEPARATORS_RE.sub("", ident)
+            if joined != ident and joined.casefold() not in {t.casefold() for t in out}:
+                out.append(joined)
+        return tuple(out[: 2 * MAX_LEXICAL_TERMS])
+
+    def trigram_text(self) -> str:
+        """What the fuzzy (pg_trgm word-similarity) leg looks for.
+
+        Identifiers when the query has any (a code is what a typo-tolerant
+        match helps most), else the significant words of a short query in
+        their original order. Empty for a long query without identifiers: no
+        chunk contains a long question's words contiguously, so the leg would
+        only add noise.
+        """
+        if self.identifiers:
+            return " ".join(self.identifiers)[:200]
+        if self.is_long:
+            return ""
+        return " ".join(self.ordered_tokens)[:200]
+
+    def phrases(self) -> tuple[tuple[str, float], ...]:
+        """Exact phrases and their weights for the exact-match leg.
+
+        The whole (short) query counts double; every identifier of 3+
+        characters counts once. Phrases shorter than 3 characters are dropped
+        (no trigram index support, and no signal).
+        """
+        out: dict[str, float] = {}
+        whole = self.normalized
+        if not self.is_long and len(whole) >= 3 and self.significant_word_count >= 1:
+            out[whole.casefold()] = 2.0
+        for ident in (*self.identifiers, *self.derived_identifiers):
+            if len(ident) >= 3:
+                out.setdefault(ident.casefold(), 1.0)
+        return tuple(out.items())[:MAX_LEXICAL_TERMS]
+
+
+_SEPARATORS_RE = re.compile(r"[-_./]")
+_EDGE_PUNCT = " \t\r\n?!.,;:\"'`()[]{}"
 
 
 def analyze_query(query: str) -> LexicalQuery:
@@ -95,6 +155,7 @@ def analyze_query(query: str) -> LexicalQuery:
     normalized = normalize_hyphens(query)
     identifiers: list[str] = []
     words: list[str] = []
+    ordered: list[str] = []
     seen: set[str] = set()
     significant = 0
     for match in _COMPOUND_RE.finditer(normalized):
@@ -104,6 +165,7 @@ def analyze_query(query: str) -> LexicalQuery:
         lowered = token.casefold()
         if is_identifier(token):
             significant += 1
+            ordered.append(token)
             if lowered not in seen:
                 seen.add(lowered)
                 identifiers.append(token)
@@ -111,18 +173,50 @@ def analyze_query(query: str) -> LexicalQuery:
         if lowered in STOPWORDS or len(lowered) < 2:
             continue
         significant += 1
+        ordered.append(lowered)
         if lowered not in seen:
             seen.add(lowered)
             words.append(lowered)
+    derived = _spaced_codes(ordered)
     ranked_words = sorted(words, key=lambda w: -len(w))  # stable: ties keep position
     terms = (*identifiers, *ranked_words)[:MAX_LEXICAL_TERMS]
     return LexicalQuery(
         terms=tuple(terms),
         identifiers=tuple(identifiers),
         significant_word_count=significant,
+        ordered_tokens=tuple(ordered[: 2 * MAX_LEXICAL_TERMS]),
+        normalized=" ".join(normalized.split()).strip(_EDGE_PUNCT)[:200],
+        derived_identifiers=derived,
     )
+
+
+def _spaced_codes(tokens: list[str]) -> tuple[str, ...]:
+    """Hyphenated + joined spellings of "<letters> <digits>" pairs ("TJ 5531").
+
+    Only a short alphabetic prefix (1-4 letters) followed by a number of 2+
+    digits counts, which is the shape of job / invoice / ticket codes. At most
+    ``MAX_LEXICAL_TERMS // 2`` pairs are kept.
+    """
+    out: list[str] = []
+    for prefix, number in itertools.pairwise(tokens):
+        if prefix.isalpha() and 1 <= len(prefix) <= 4 and number.isdigit() and len(number) >= 2:
+            out.extend((f"{prefix}-{number}", f"{prefix}{number}"))
+        if len(out) >= MAX_LEXICAL_TERMS:
+            break
+    return tuple(out)
 
 
 def identifier_parts(token: str) -> list[str]:
     """The word parts of a compound identifier ("TJ-5531" → ["tj", "5531"])."""
     return [p.casefold() for p in _PART_RE.findall(normalize_hyphens(token))]
+
+
+def compound_tokens(text: str) -> list[str]:
+    """Lower-cased compound tokens of ``text`` that contain a separator
+    ("TJ-5531" → "tj-5531", "out-of-gauge"), hyphens folded. Used by BM25 to
+    index a code whole next to its parts."""
+    return [
+        m.group(0).casefold()
+        for m in _COMPOUND_RE.finditer(normalize_hyphens(text))
+        if _SEPARATORS_RE.search(m.group(0))
+    ]

@@ -5,6 +5,12 @@ query. A long natural-language step ("calculate the total H1 diesel cost in
 INR ...") never has every term in one chunk, so the leg returned 0 hits on
 every retrieval of GOAL-MULTISTEP-RAG and the fact was never retrieved.
 
+P2-3: a PDF tariff table chunk holding "Out-of-gauge lift per lift 18,600"
+ranked 4th of 6 even for the exact phrase, and an exact job code "TJ-5531"
+lost to a near-identical code: the trigram leg compared the query with the
+WHOLE chunk (``similarity`` < 0.3 for any long chunk), the BM25 tokenizer split
+codes into parts only, and nothing rewarded an exact phrase / identifier match.
+
 Runs on the migrated testcontainer (real ``to_tsvector`` / GIN / pg_trgm).
 """
 
@@ -61,6 +67,41 @@ _LONG_STEP = (
 )
 
 
+# pdf-tables (P1a open item): one page mixing prose with an 11-row table.
+_TARIFF_PAGE = (
+    "Saltmarsh Terminal - Schedule of Tariffs 2027. The terminal operator publishes these "
+    "rates for the calendar year; they apply to every vessel call and every consignee and "
+    "supersede earlier circulars. Rates exclude taxes. Charges accrue from gate-in until "
+    "gate-out and are billed per call. Disputes go to the terminal commercial desk within "
+    "seven days of the invoice. Service | Unit | Rate (INR) | Free period | Notes\n"
+    "Container handling 20ft | per box | 6,450 | - | laden\n"
+    "Container handling 40ft | per box | 9,800 | - | laden\n"
+    "Reefer plug-in | per day | 2,150 | 1 day | includes monitoring\n"
+    "Storage 20ft | per day | 310 | 5 days | after free period\n"
+    "Storage 40ft | per day | 540 | 5 days | after free period\n"
+    "Hazardous surcharge | per box | 3,900 | - | IMDG class 1-9\n"
+    "Weighment (VGM) | per box | 720 | - | SOLAS\n"
+    "Customs examination | per box | 1,850 | - | on request\n"
+    "Out-of-gauge lift | per lift | 18,600 | - | pre-booked\n"
+    "Shut-out cancellation | per box | 4,200 | - | within 24 hours"
+)
+# Shorter chunks that sit closer to the query vector than the table page.
+_TARIFF_DISTRACTORS = [
+    "Heavy lift operations need a crane plan; the lift supervisor signs off every lift.",
+    "Gauge readings on the quay crane are checked daily; how much load a crane takes "
+    "depends on the outreach.",
+    "The cost of berth delays is set out in Table 2 of the tariff.",
+    "Out of hours gate service costs extra and must be booked in advance.",
+    "Rail gauge at the inland depot is standard; wagons are loaded out of the yard.",
+]
+# Low-quality receipt (P1a): the right job code and a near-identical one.
+_RECEIPTS = {
+    "TJ-5531": "RECEIPT - HERON TUGS. Towage job: TJ-5531. Amount: INR 1,86,000. Paid.",
+    "TJ-5534": "RECEIPT - HERON TUGS. Towage job: TJ-5534. Amount: INR 7,86,000. Paid.",
+    "TJ-5513": "Heron Tugs towage job TJ-5513 was cancelled; no receipt was issued.",
+}
+
+
 async def _tenant(s: Any) -> str:
     tid = uuid.uuid4().hex
     await s.execute(
@@ -75,7 +116,7 @@ async def _collection(s: Any, tenant: str) -> str:
     await s.execute(
         text(
             "INSERT INTO knowledge_collections (id, tenant_id, name, embedding_dim) "
-            "VALUES (:id, :tid, 'c', :dim)"
+            "VALUES (:id, :tid, :id, :dim)"
         ),
         {"id": cid, "tid": tenant, "dim": _DIM},
     )
@@ -128,7 +169,44 @@ async def world(pg_url: str) -> AsyncIterator[dict[str, Any]]:
             content=_FUEL_TOTAL,
             embedding=_towards(_QUERY_AXIS, 30, 0.5),
         )
-    yield {"factory": factory, "tenant": tenant, "fuel": fuel, "fuel_total": fuel_total}
+        tariff = await _collection(s, tenant)
+        for i, content in enumerate(_TARIFF_DISTRACTORS):
+            await _chunk(
+                s,
+                tenant=tenant,
+                collection=tariff,
+                content=content,
+                embedding=_towards(_QUERY_AXIS, 40 + i, 0.8 - 0.05 * i),
+            )
+        # Ranked 4th of 6 by the vector leg, as in the live probe.
+        tariff_page = await _chunk(
+            s,
+            tenant=tenant,
+            collection=tariff,
+            content=_TARIFF_PAGE,
+            embedding=_towards(_QUERY_AXIS, 50, 0.68),
+        )
+        receipts = await _collection(s, tenant)
+        receipt_ids: dict[str, str] = {}
+        # The wrong codes sit closer to the query vector than the right one.
+        for i, (code, content) in enumerate(sorted(_RECEIPTS.items(), reverse=True)):
+            receipt_ids[code] = await _chunk(
+                s,
+                tenant=tenant,
+                collection=receipts,
+                content=content,
+                embedding=_towards(_QUERY_AXIS, 60 + i, 0.9 - 0.1 * i),
+            )
+    yield {
+        "factory": factory,
+        "tenant": tenant,
+        "fuel": fuel,
+        "fuel_total": fuel_total,
+        "tariff": tariff,
+        "tariff_page": tariff_page,
+        "receipts": receipts,
+        "receipt_ids": receipt_ids,
+    }
     await engine.dispose()
 
 
@@ -192,3 +270,55 @@ async def test_short_query_still_prefers_chunks_matching_every_term(
     assert len(scores) == 2, "OR semantics: the cost-only chunk is a candidate too"
     best = max(scores.items(), key=lambda item: item[1])[0]
     assert best == world["fuel_total"], "a chunk with every term outranks a partial match"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "out-of-gauge lift",
+        "Out-of-gauge lift per lift",
+        "How much does an out-of-gauge lift cost?",
+    ],
+)
+async def test_table_row_query_ranks_the_table_chunk_first(
+    world: dict[str, Any], query: str
+) -> None:
+    results = await _search(world, world["tariff"], query, top_k=5)
+    assert results[0].chunk_id == world["tariff_page"], [
+        (r.content[:30], r.retrieval_legs) for r in results
+    ]
+
+
+async def test_trigram_leg_scores_a_phrase_inside_a_long_chunk(world: dict[str, Any]) -> None:
+    evidence: list[dict[str, Any]] = []
+    await _search(world, world["tariff"], "out-of-gauge lift", mode="lexical", evidence=evidence)
+    trigram = _leg(evidence, "trigram")["component_scores"]
+    assert trigram.get(world["tariff_page"], 0.0) > 0.5, trigram
+
+
+@pytest.mark.parametrize("query", ["TJ-5531", "receipt for towage job TJ-5531", "tj-5531"])
+async def test_exact_identifier_ranks_its_chunk_first(world: dict[str, Any], query: str) -> None:
+    results = await _search(world, world["receipts"], query, top_k=3)
+    assert results[0].chunk_id == world["receipt_ids"]["TJ-5531"], [
+        (r.content[:50], r.retrieval_legs, r.component_scores) for r in results
+    ]
+    assert "phrase" in results[0].retrieval_legs
+
+
+async def test_identifier_spelled_without_the_hyphen_still_matches(
+    world: dict[str, Any],
+) -> None:
+    results = await _search(world, world["receipts"], "TJ 5531", mode="lexical", top_k=3)
+    assert results[0].chunk_id == world["receipt_ids"]["TJ-5531"]
+
+
+async def test_like_and_regex_metacharacters_in_a_query_are_inert(world: dict[str, Any]) -> None:
+    # Strict mode: a leg error would raise. Metacharacters are matched literally.
+    for query in ("100%_sure", "a.b*c (x) [y] \\ TJ-55.31", "%%", "_"):
+        await _search(world, world["receipts"], query, mode="lexical")
+
+
+async def test_identifier_match_is_word_bounded(world: dict[str, Any]) -> None:
+    evidence: list[dict[str, Any]] = []
+    await _search(world, world["receipts"], "TJ-553", mode="lexical", evidence=evidence)
+    assert _leg(evidence, "phrase")["result_count"] == 0, "TJ-553 must not match TJ-5531"

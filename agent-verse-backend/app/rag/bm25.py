@@ -8,11 +8,20 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from app.rag.lexical_query import compound_tokens, normalize_hyphens
+
 
 def _tokenize(text: str) -> list[str]:
-    """Tokenize complete text into lowercase Unicode-safe words."""
+    """Tokenize text into lowercase Unicode-safe words, plus compound codes whole.
 
-    return re.findall(r"[^\W_]+", text.casefold())
+    "Towage job TJ-5531" → ["towage", "job", "tj", "5531", "tj-5531"]: the parts
+    keep partial matches working, and the whole code is a rare term with a high
+    IDF, so a chunk holding the exact identifier outranks one holding only its
+    parts ("TJ-5534" shares "tj").
+    """
+
+    folded = normalize_hyphens(text).casefold()
+    return [*re.findall(r"[^\W_]+", folded), *compound_tokens(folded)]
 
 
 @dataclass

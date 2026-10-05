@@ -198,10 +198,13 @@ class _HybridSession:
             return _Rows(
                 [("shared", "shared evidence", {"source": "f", "department": "legal"}, 0.8)]
             )
-        if "similarity(content" in sql:
+        if "word_similarity(" in sql:
             return _Rows(
                 [("shared", "shared evidence", {"source": "f", "department": "legal"}, 0.7)]
             )
+        if "ILIKE" in sql:
+            # Exact-phrase leg: the fake corpus holds no verbatim phrase match.
+            return _Rows([])
         if "ORDER BY id" in sql:
             if self.fail_bm25:
                 raise RuntimeError("corpus unavailable")
@@ -242,7 +245,7 @@ class _PaginatedCorpusSession(_HybridSession):
 
     async def execute(self, statement: Any, params: dict[str, Any] | None = None) -> _Rows:
         sql = str(statement)
-        if any(component in sql for component in ("<=>", "ts_rank_cd", "similarity(content")):
+        if any(component in sql for component in ("<=>", "ts_rank_cd", "word_similarity(", "ILIKE")):
             self.sql.append(sql)
             return _Rows([])
         if "ORDER BY id ASC" not in sql or "SELECT id, content" not in sql:
@@ -270,7 +273,13 @@ async def test_hybrid_executes_four_real_legs_and_records_scores() -> None:
         evidence=evidence,
     )
 
-    assert [item["component"] for item in evidence] == ["vector", "fts", "trigram", "bm25"]
+    assert [item["component"] for item in evidence] == [
+        "vector",
+        "fts",
+        "trigram",
+        "phrase",
+        "bm25",
+    ]
     assert all("result_count" in item for item in evidence)
     assert all(item["latency_ms"] > 0 for item in evidence)
     assert {leg for result in results for leg in result.retrieval_legs} == {
@@ -299,8 +308,9 @@ async def test_every_persisted_leg_filters_expired_chunks_in_sql() -> None:
     )
 
     retrieval_sql = [sql for sql in session.sql if "FROM knowledge_chunks_" in sql]
-    # 5 retrieval legs + the BM25 corpus-size gate probe (also expired-chunk filtered).
-    assert len(retrieval_sql) == 6
+    # vector, FTS, trigram, exact phrase, BM25 corpus (2 passes) + the BM25
+    # corpus-size gate probe (also expired-chunk filtered).
+    assert len(retrieval_sql) == 7
     assert all(
         "expires_at IS NULL OR expires_at > now()" in sql for sql in retrieval_sql
     )
