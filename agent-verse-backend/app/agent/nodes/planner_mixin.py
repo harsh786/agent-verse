@@ -115,6 +115,13 @@ class PlannerMixin:
                 "sub-goals. Build the plan on these results; do not repeat the "
                 "sub-tasks.]\n" + supervisor[:4000]
             )
+        # OI-1: side-effecting calls this goal already ran (approved where needed)
+        # are done — a replan must build on them, not plan them again.
+        from app.agent.goal_action_ledger import executed_calls_planner_block
+
+        executed = executed_calls_planner_block(ctx)
+        if executed:
+            parts.append(executed)
         debate = str(ctx.get("debate_result") or ctx.get("debate_consensus") or "").strip()
         if debate:
             parts.append("[Multi-agent debate consensus]\n" + debate[:3000])

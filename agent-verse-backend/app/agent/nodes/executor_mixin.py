@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from app.agent.checkpoint_resume import COMPLETED_STEPS_KEY, RESUME_COMPLETED_KEY
+from app.agent.goal_action_ledger import action_approval_key
 from app.agent.nodes.planner_mixin import GRANTED_TOOLS_KEY
 from app.agent.prompts import (
     EXECUTOR_SYSTEM,
@@ -596,28 +597,39 @@ class ExecutorMixin:
         # APPROVAL: a persisted per-agent approval rule must actually block.
         if self._hitl_gateway is None:
             return "agent permission requires approval but no approval gateway is configured"
-        try:
-            req_id = await self._file_approval_request(
-                goal_id=state.goal_id,
-                action=f"{tool_name}: {step}"[:500],
-                risk_level="high",
-                tenant_ctx=tenant_ctx,
-            )
-        except PermissionError as exc:
-            return str(exc)  # not durable, so nobody could approve it: deny
-        await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
-        final_status = await self._await_approval_decision(
-            req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+        _perm_action = f"{tool_name}: {step}"[:500]
+        _perm_key = action_approval_key(_perm_action, tool_name)
+        req_id = ""
+        _reused = await self._reuse_approval(
+            state, tenant_ctx, _perm_key, action=_perm_action, scope="agent_permission"
         )
-        if final_status != ApprovalStatus.APPROVED:
-            return f"agent permission approval {str(final_status).lower()}"
+        if not _reused:
+            try:
+                req_id = await self._file_approval_request(
+                    goal_id=state.goal_id,
+                    action=_perm_action,
+                    risk_level="high",
+                    tenant_ctx=tenant_ctx,
+                )
+            except PermissionError as exc:
+                return str(exc)  # not durable, so nobody could approve it: deny
+            await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
+            final_status = await self._await_approval_decision(
+                req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+            )
+            if final_status != ApprovalStatus.APPROVED:
+                return f"agent permission approval {str(final_status).lower()}"
+            await self._remember_approval(
+                state, tenant_ctx, _perm_key, request_id=req_id, action=_perm_action
+            )
         daily_denial = await self._reserve_daily_permission_call(
             tenant_ctx, agent_id, tool_name, rule
         )
         if daily_denial is not None:
             return daily_denial
         counts[tool_name] = int(counts.get(tool_name, 0)) + 1
-        await self._emit({"type": "approval_granted", "request_id": req_id})
+        if not _reused:
+            await self._emit({"type": "approval_granted", "request_id": req_id})
         return None
 
     async def _guard_tool_args(
@@ -767,12 +779,14 @@ class ExecutorMixin:
                 if _b_denial is not None or self._hitl_gateway is None:
                     record_tool_call(tool_name, "compliance_bundle", "approval_required", 0.0)
                     return str(_b_denial or f"{_what} requires a human approval")
+                _b_action = f"{tool_name}: {step}"[:500]
                 await self._await_tool_approval(
                     tool_name=tool_name,
-                    action=f"{tool_name}: {step}"[:500],
+                    action=_b_action,
                     risk_level="high",
                     state=state,
                     tenant_ctx=tenant_ctx,
+                    approval_key=action_approval_key(_b_action, tool_name, arguments),
                 )
         if self._policy_engine is None or not tool_name or tool_name == already_checked:
             return None
@@ -790,12 +804,14 @@ class ExecutorMixin:
             if denial is not None or self._hitl_gateway is None:
                 record_tool_call(tool_name, "policy", "approval_required", 0.0)
                 return str(denial or f"tool '{tool_name}' requires approval by policy")
+            _p_action = f"{tool_name}: {step}"[:500]
             await self._await_tool_approval(
                 tool_name=tool_name,
-                action=f"{tool_name}: {step}"[:500],
+                action=_p_action,
                 risk_level="high",
                 state=state,
                 tenant_ctx=tenant_ctx,
+                approval_key=action_approval_key(_p_action, tool_name, arguments),
             )
         return None
 
@@ -807,13 +823,20 @@ class ExecutorMixin:
         risk_level: str,
         state: AgentState,
         tenant_ctx: TenantContext,
+        approval_key: str | None = None,
     ) -> None:
         """File a durable approval for one tool call and block on the decision.
 
-        Raises PermissionError unless a human explicitly APPROVED it.
+        Raises PermissionError unless a human explicitly APPROVED it. With an
+        ``approval_key`` (the exact action / call), an approval of the identical
+        request earlier in this goal is reused instead of asking again (OI-1).
         """
         if self._hitl_gateway is None:
             raise PermissionError(f"Tool '{tool_name}' requires approval; no gateway.")
+        if approval_key is not None and await self._reuse_approval(
+            state, tenant_ctx, approval_key, action=action, scope="tool_call"
+        ):
+            return
         req_id = await self._file_approval_request(
             goal_id=state.goal_id, action=action, risk_level=risk_level, tenant_ctx=tenant_ctx
         )
@@ -832,6 +855,10 @@ class ExecutorMixin:
             raise PermissionError(f"Tool '{tool_name}' approval timed out.")
         if final_status != ApprovalStatus.APPROVED:
             raise PermissionError(f"Tool '{tool_name}' was not approved ({final_status}).")
+        if approval_key is not None:
+            await self._remember_approval(
+                state, tenant_ctx, approval_key, request_id=req_id, action=action
+            )
         await self._emit({"type": "approval_granted", "request_id": req_id})
 
     async def _reserve_daily_permission_call(
@@ -1495,6 +1522,93 @@ class ExecutorMixin:
                 f"approver can see it; the step was not executed ({exc})."
             ) from exc
 
+    # ── OI-1: goal-scoped ledger of executed calls and approval decisions ──────
+
+    def _goal_action_ledger(self, state: AgentState, tenant_ctx: TenantContext) -> Any:
+        """The goal's action ledger: state context mirror + the shared Redis hash."""
+        from app.agent.goal_action_ledger import GoalActionLedger
+
+        app_state = getattr(self._app_state, "state", self._app_state)
+        redis = getattr(app_state, "_redis", None) if app_state is not None else None
+        if redis is None:
+            redis = getattr(self._hitl_gateway, "_redis", None)
+        return GoalActionLedger(
+            state.context,
+            tenant_id=getattr(tenant_ctx, "tenant_id", "") or "",
+            goal_id=state.goal_id or "",
+            redis=redis,
+        )
+
+    async def _reuse_approval(
+        self,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        key: str,
+        *,
+        action: str,
+        scope: str,
+    ) -> bool:
+        """True when this exact action was already APPROVED earlier in this goal.
+
+        Only explicit approvals are recorded (never a rejection or a timeout), and
+        only in supervised mode, where approvals are awaited at all.
+        """
+        if self._autonomy_mode != "supervised" or self._hitl_gateway is None:
+            return False
+        entry = await self._goal_action_ledger(state, tenant_ctx).approval(key)
+        if entry is None:
+            return False
+        await self._emit(
+            {
+                "type": "approval_reused",
+                "request_id": str(entry.get("request_id") or ""),
+                "action": action[:300],
+                "scope": scope,
+            }
+        )
+        return True
+
+    async def _remember_approval(
+        self,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        key: str,
+        *,
+        request_id: str,
+        action: str,
+    ) -> None:
+        await self._goal_action_ledger(state, tenant_ctx).record_approval(
+            key, request_id=request_id, action=action
+        )
+
+    async def _record_executed_call(
+        self,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        fingerprint: str,
+        *,
+        tool_ref: Any,
+        arguments: dict[str, Any] | None,
+        output: Any,
+    ) -> None:
+        """Record a succeeded side-effecting call so it is never dispatched again."""
+        ok = await self._goal_action_ledger(state, tenant_ctx).record_executed(
+            fingerprint,
+            step_id=state.steps[-1].step_id if state.steps else "",
+            tool=str(getattr(tool_ref, "name", "") or ""),
+            server_id=str(getattr(tool_ref, "server_id", "") or ""),
+            arguments=arguments,
+            output=self._sanitize_tool_raw_output(output),
+        )
+        if not ok:
+            await self._emit(
+                {
+                    "type": "action_ledger_degraded",
+                    "tool": str(getattr(tool_ref, "name", "") or ""),
+                    "reason": "the executed call could not be shared with other replicas",
+                }
+            )
+
     async def _execute_step(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str:
         """Run the governed per-step pipeline and record its real output for dedup.
 
@@ -1720,11 +1834,21 @@ class ExecutorMixin:
         # approval rejection/timeout can never be swallowed and silently allowed.
         # True only once a human explicitly APPROVED this step (supervised wait).
         _step_approved = False
+        # OI-1: an approval of this exact step text earlier in the goal is reused
+        # (a replan / retry of the same step must not ask a human again).
+        from app.agent.goal_action_ledger import step_approval_key
+
+        _step_key = step_approval_key(step)
         if _asp_hitl_required:
             _asp_denial = self._approval_unawaitable_error(step, f"action-safety: {_asp_reason}")
             if _asp_denial is not None or self._hitl_gateway is None:
                 record_tool_call(tool_name, "policy", "approval_required", 0.0)
                 raise _asp_denial or PermissionError(f"Step '{step}' requires approval.")
+            # OI-1: this exact step was already approved in this goal.
+            _step_approved = await self._reuse_approval(
+                state, tenant_ctx, _step_key, action=step, scope="step"
+            )
+        if _asp_hitl_required and not _step_approved:
             # Supervised with a gateway: block until a human decides.
             req_id = await self._file_approval_request(
                 goal_id=state.goal_id,
@@ -1754,6 +1878,9 @@ class ExecutorMixin:
                     f"(action-safety: {_asp_reason})."
                 )
             _step_approved = True
+            await self._remember_approval(
+                state, tenant_ctx, _step_key, request_id=req_id, action=step
+            )
             await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 1. Cost check deferred — actual cost calculated after LLM call below.
@@ -1902,6 +2029,10 @@ class ExecutorMixin:
                     raise _policy_denial or PermissionError(
                         f"Tool '{tool_name}' requires approval by policy."
                     )
+                _step_approved = await self._reuse_approval(
+                    state, tenant_ctx, _step_key, action=step, scope="step"
+                )
+            if policy_result == PolicyResult.REQUIRE_APPROVAL and not _step_approved:
                 req_id = await self._file_approval_request(
                     goal_id=state.goal_id,
                     action=step,
@@ -1925,6 +2056,9 @@ class ExecutorMixin:
                         f"Step '{step}' policy approval not granted ({final_status})."
                     )
                 _step_approved = True
+                await self._remember_approval(
+                    state, tenant_ctx, _step_key, request_id=req_id, action=step
+                )
                 await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 7. HITL gate — a high-risk step needs an explicit approval unless one was
@@ -1944,6 +2078,10 @@ class ExecutorMixin:
             if _gate7_denial is not None or self._hitl_gateway is None:
                 record_tool_call(tool_name, "policy", "approval_required", 0.0)
                 raise _gate7_denial or PermissionError(f"Step '{step}' requires approval.")
+            _step_approved = await self._reuse_approval(
+                state, tenant_ctx, _step_key, action=step, scope="step"
+            )
+        if _gate7_risk is not None and _gate7_risk.high_risk and not _step_approved:
             req_id = await self._file_approval_request(
                 goal_id=state.goal_id,
                 action=step,
@@ -1969,6 +2107,9 @@ class ExecutorMixin:
             elif final_status != ApprovalStatus.APPROVED:
                 raise PermissionError(f"Step '{step}' approval timed out.")
             _step_approved = True
+            await self._remember_approval(
+                state, tenant_ctx, _step_key, request_id=req_id, action=step
+            )
             await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 8-pre. Dedup — AFTER every governance gate above, so a duplicate is never
@@ -2558,6 +2699,10 @@ class ExecutorMixin:
         # Set once an MCP tool call actually SUCCEEDED; carries the tool's output
         # (ids of created objects) for the rollback registration in step 10.
         _rb_executed: dict[str, Any] | None = None
+        # OI-1: fingerprint of a side-effecting (non-read) MCP call, recorded in the
+        # goal's action ledger once it succeeded so no replan re-issues it.
+        _sfx_fp: str | None = None
+        _sfx_tool_ref: Any = None
         # Validate tool name before dispatching
         if tool_call is not None and tool_call.tool:
             from app.agent.tool_calls import validate_tool_name as _validate_tn
@@ -3003,7 +3148,58 @@ class ExecutorMixin:
                     tool_risk = _effective_risk
                     # else: falls through to write_high HITL gate below (default-secure)
                     _ckpt_blocked = tool_risk != "read" and _checkpoint_degraded(state)
-                    if tool_risk == "destructive" or _ckpt_blocked:
+                    # OI-1: a side-effecting call this goal already ran (identical
+                    # server, tool and arguments) is never dispatched again — a
+                    # replanned or retried step gets the recorded result instead
+                    # of a second side effect and a second approval request.
+                    _sfx_prior: dict[str, Any] | None = None
+                    if (
+                        classify_tool_risk(tool_ref.name, tool_ref.server_name, tool_call.arguments)
+                        != "read"
+                    ):
+                        from app.agent.goal_action_ledger import call_fingerprint
+
+                        _sfx_fp = call_fingerprint(
+                            tool_ref.server_id, tool_ref.name, tool_call.arguments
+                        )
+                        _sfx_tool_ref = tool_ref
+                        _sfx_prior = await self._goal_action_ledger(state, tenant_ctx).executed(
+                            _sfx_fp
+                        )
+                    if _sfx_prior is not None:
+                        from app.agent.goal_action_ledger import replay_output
+
+                        _sfx_fp = None  # already recorded; nothing new ran
+                        raw_output = self._sanitize_tool_raw_output(replay_output(_sfx_prior))
+                        raw_output_sanitized = True
+                        await self._emit(
+                            {
+                                "type": "tool_call_already_executed",
+                                "tool": tool_ref.name,
+                                "server_id": tool_ref.server_id,
+                                "first_step_id": str(_sfx_prior.get("step_id") or ""),
+                            }
+                        )
+                        if state.steps:
+                            # The replayed record is this step's evidence (the
+                            # verifier / grounding gates check outputs against it).
+                            state.steps[-1].tool_calls.append(
+                                {
+                                    "tool_name": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "success": True,
+                                    "error": "",
+                                    "output": raw_output[:1000],
+                                    "replayed": True,
+                                }
+                            )
+                        record_tool_call(
+                            tool_ref.name,
+                            tool_ref.server_id,
+                            "deduplicated",
+                            time.monotonic() - tool_call_started,
+                        )
+                    elif tool_risk == "destructive" or _ckpt_blocked:
                         _taint_step_cache()
                         error = self._sanitize_tool_raw_output(
                             f"Tool '{tool_ref.name}' was not run: this goal's checkpoints "
@@ -3059,52 +3255,84 @@ class ExecutorMixin:
                             raw_output = error
                             raw_output_sanitized = True
                         else:
-                            req_id = await self._file_approval_request(
-                                goal_id=state.goal_id,
+                            from app.agent.goal_action_ledger import (
+                                call_approval_key,
+                                call_fingerprint,
+                            )
+
+                            _call_key = call_approval_key(
+                                _sfx_fp
+                                or call_fingerprint(
+                                    tool_ref.server_id, tool_ref.name, tool_call.arguments
+                                )
+                            )
+                            # OI-1: the identical call (same server, tool and
+                            # arguments) was already APPROVED in this goal — e.g. it
+                            # failed after approval and is retried — reuse that
+                            # decision instead of asking again.
+                            if not await self._reuse_approval(
+                                state,
+                                tenant_ctx,
+                                _call_key,
                                 action=tool_ref.name,
-                                risk_level=tool_risk,
-                                tenant_ctx=tenant_ctx,
-                            )
-                            await self._emit(
-                                {
-                                    "type": "waiting_approval",
-                                    "request_id": req_id,
-                                    "action": tool_ref.name,
-                                    "tool": tool_ref.name,
-                                }
-                            )
-                            await self._emit(
-                                {
-                                    "type": "tool_call_pending_approval",
-                                    "tool": tool_ref.name,
-                                    "server_id": tool_ref.server_id,
-                                    "request_id": req_id,
-                                    "risk": tool_risk,
-                                }
-                            )
-                            _hitl_start = time.monotonic()
-                            final_status = await self._await_approval_decision(
-                                req_id, tenant_ctx=tenant_ctx
-                            )
-                            record_approval_wait(time.monotonic() - _hitl_start)
-                            if final_status == ApprovalStatus.REJECTED:
-                                raise PermissionError(
-                                    f"Tool '{tool_ref.name}' was rejected by human approver."
+                                scope="tool_call",
+                            ):
+                                req_id = await self._file_approval_request(
+                                    goal_id=state.goal_id,
+                                    action=tool_ref.name,
+                                    risk_level=tool_risk,
+                                    tenant_ctx=tenant_ctx,
                                 )
-                            elif final_status == ApprovalStatus.TIMED_OUT:
-                                raise PermissionError(
-                                    f"Tool '{tool_ref.name}' approval timed out."
+                                await self._emit(
+                                    {
+                                        "type": "waiting_approval",
+                                        "request_id": req_id,
+                                        "action": tool_ref.name,
+                                        "tool": tool_ref.name,
+                                    }
                                 )
-                            elif final_status != ApprovalStatus.APPROVED:
-                                # Fail closed: only an explicit APPROVED runs the
-                                # tool. A still-PENDING result (e.g. the wait was
-                                # cut short by a Redis error) used to fall through.
-                                raise PermissionError(
-                                    f"Tool '{tool_ref.name}' was not approved "
-                                    f"({final_status})."
+                                await self._emit(
+                                    {
+                                        "type": "tool_call_pending_approval",
+                                        "tool": tool_ref.name,
+                                        "server_id": tool_ref.server_id,
+                                        "request_id": req_id,
+                                        "risk": tool_risk,
+                                    }
                                 )
-                            # APPROVED: now actually dispatch the tool call
-                            await self._emit({"type": "approval_granted", "request_id": req_id})
+                                _hitl_start = time.monotonic()
+                                final_status = await self._await_approval_decision(
+                                    req_id, tenant_ctx=tenant_ctx
+                                )
+                                record_approval_wait(time.monotonic() - _hitl_start)
+                                if final_status == ApprovalStatus.REJECTED:
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' was rejected by human "
+                                        "approver."
+                                    )
+                                elif final_status == ApprovalStatus.TIMED_OUT:
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' approval timed out."
+                                    )
+                                elif final_status != ApprovalStatus.APPROVED:
+                                    # Fail closed: only an explicit APPROVED runs the
+                                    # tool. A still-PENDING result (e.g. the wait was
+                                    # cut short by a Redis error) used to fall through.
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' was not approved "
+                                        f"({final_status})."
+                                    )
+                                await self._remember_approval(
+                                    state,
+                                    tenant_ctx,
+                                    _call_key,
+                                    request_id=req_id,
+                                    action=tool_ref.name,
+                                )
+                                # APPROVED: now actually dispatch the tool call
+                                await self._emit(
+                                    {"type": "approval_granted", "request_id": req_id}
+                                )
                             _note_step_tool(tool_ref.name, tool_ref.server_name)
                             _approved_result = await self._mcp_client.call_tool(
                                 server_id=tool_ref.server_id,
@@ -3426,6 +3654,17 @@ class ExecutorMixin:
                                         result.success,
                                     )
                                 raw_output_sanitized = True
+
+        # OI-1: a side-effecting call that succeeded is now done for this goal.
+        if _sfx_fp is not None and _rb_executed is not None:
+            await self._record_executed_call(
+                state,
+                tenant_ctx,
+                _sfx_fp,
+                tool_ref=_sfx_tool_ref,
+                arguments=tool_call.arguments if tool_call is not None else None,
+                output=_rb_executed.get("output"),
+            )
 
         # ── Strategy B: parallel tool calls ─────────────────────────────────────
         # When the resolved strategy is PARALLEL and this turn produced more than
@@ -3764,6 +4003,11 @@ class ExecutorMixin:
         import asyncio as _asyncio
         import os as _os
 
+        from app.agent.goal_action_ledger import (
+            call_approval_key,
+            call_fingerprint,
+            replay_output,
+        )
         from app.agent.tool_calls import (
             validate_tool_arguments as _validate_args,
         )
@@ -3887,6 +4131,23 @@ class ExecutorMixin:
                     tool_ref.name, "checkpoint", "checkpoint_degraded",
                     f"[denied: '{tool_ref.name}' not run; checkpoints could not be saved]",
                 )
+            # OI-1: an identical side-effecting call this goal already ran is not
+            # dispatched again; its recorded result is returned.
+            _fp: str | None = None
+            if risk != "read":
+                _fp = call_fingerprint(tool_ref.server_id, tool_ref.name, args)
+                _prior = await self._goal_action_ledger(state, tenant_ctx).executed(_fp)
+                if _prior is not None:
+                    await self._emit(
+                        {
+                            "type": "tool_call_already_executed",
+                            "tool": tool_ref.name,
+                            "server_id": tool_ref.server_id,
+                            "first_step_id": str(_prior.get("step_id") or ""),
+                            "parallel": True,
+                        }
+                    )
+                    return (tool_ref.name, self._sanitize_tool_raw_output(replay_output(_prior)))
             if eff == "write_high":
                 if self._hitl_gateway is None or self._autonomy_mode != "supervised":
                     # Nobody will decide an approval here: not run, none filed.
@@ -3899,6 +4160,9 @@ class ExecutorMixin:
                 await self._await_tool_approval(
                     tool_name=tool_ref.name, action=tool_ref.name, risk_level=eff,
                     state=state, tenant_ctx=tenant_ctx,
+                    approval_key=call_approval_key(
+                        _fp or call_fingerprint(tool_ref.server_id, tool_ref.name, args)
+                    ),
                 )
             _arg_errors = _validate_args(args, getattr(tool_ref, "input_schema", None) or {})
             if _arg_errors:
@@ -3946,6 +4210,11 @@ class ExecutorMixin:
                 started=_t0,
                 error=result.error,
             )
+            if result.success and _fp is not None:
+                await self._record_executed_call(
+                    state, tenant_ctx, _fp, tool_ref=tool_ref, arguments=args,
+                    output=result.output,
+                )
             if result.success and self._rollback_engine is not None:
                 self._rollback_engine.register_tool_call(
                     action=f"{step} [{tool_ref.name}]",
