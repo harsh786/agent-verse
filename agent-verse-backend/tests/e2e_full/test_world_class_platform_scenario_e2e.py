@@ -108,8 +108,12 @@ class _IncidentProvider(FakeProvider):
             str(getattr(m, "content", "") or "") for m in getattr(request, "messages", [])
         )
         if "steps" in props:
+            # Read/report-only wording: the goal names a leaked secret, so it is
+            # high risk, and since HIGH-RISK-GATE-WORDING every step of it that
+            # is not read-only ("issue a credential ...") needs an approval that
+            # this bounded-autonomous mission never awaits.
             content = (
-                '{"steps": ["Consult the incident runbooks and issue a '
+                '{"steps": ["Review the incident runbooks and summarize a '
                 'credential containment recommendation"]}'
             )
         elif "success" in props:
@@ -139,12 +143,24 @@ class _IncidentProvider(FakeProvider):
             attempt_label = attempt_match.group(1) if attempt_match else "1"
             content = f"{_MARKER_CRED} runbook audit (reformulated, attempt {attempt_label})"
         else:
+            # Every claim restates the retrieved runbook: the goal names a leaked
+            # secret, so it is high risk and its final answer must pass the
+            # fail-closed claim-grounding gate (an unsupported "24 hours" for the
+            # runbook's "twenty-four hours" fails it).
             content = (
-                f"Per the {_MARKER_CRED} runbook, immediately revoke the exposed "
-                f"AWS access key {_LEAKED_KEY}, rotate the paired secret, and audit "
-                "CloudTrail for the preceding 24 hours."
+                f"Per the {_MARKER_CRED} runbook, the exposed AWS access key "
+                f"{_LEAKED_KEY} must be revoked within fifteen minutes, its paired "
+                "secret rotated, and CloudTrail audited for the twenty-four hours "
+                "preceding exposure."
             )
         return CompletionResponse(content=content, model="fake", input_tokens=8, output_tokens=8)
+
+    async def stream_tokens(self, request: Any, on_token: Any) -> Any:  # type: ignore[override]
+        # The executor streams: without this it got FakeProvider's canned reply
+        # ("I am a fake LLM response."), which no evidence supports.
+        resp = await self.complete(request)
+        await on_token(resp.content)
+        return resp
 
 
 def _two_agent_plan_factory() -> Any:
