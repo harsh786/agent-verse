@@ -60,6 +60,11 @@ _PUBLIC_PREFIXES = (
     "/auth/refresh",
     "/auth/userinfo",
     "/enterprise/saml/acs/",
+    # SAML-01: SP-initiated login for a tenant (a person has no key yet; it only
+    # redirects to the tenant's IdP) and the one-time login code exchange (the
+    # 60-second single-use code is the credential; unknown codes are a 401).
+    "/enterprise/saml/login/",
+    "/auth/session/exchange",
     "/channels/slack/",
     "/channels/teams/",
     "/channels/discord/",

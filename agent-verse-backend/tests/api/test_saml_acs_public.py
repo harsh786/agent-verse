@@ -5,7 +5,8 @@
 2. The advertised ACS URL was ``{base}/api/enterprise/saml/acs`` while the
    route is ``/enterprise/saml/acs``.
 3. A verified assertion answered 200 ``{"authenticated": true}`` although no
-   session was issued.
+   session was issued (then an honest 501). It now JIT-provisions the person and
+   redirects (303) with a one-time login code (SAML-01).
 4. Replay protection read ``app.state.redis`` (never set), so it never ran.
 """
 
@@ -22,7 +23,7 @@ from app.auth.saml_provider import SAMLIdentity, SAMLProvider
 from app.services.tenant_service import TenantService
 from app.tenancy.middleware import TenantMiddleware
 
-_ROW = ("idp-entity", "https://idp.example/sso", "CERT", "sp-entity", {})
+_ROW = ("idp-entity", "https://idp.example/sso", "CERT", "sp-entity", {}, "operator", True)
 
 
 class _Session:
@@ -49,17 +50,31 @@ class _Session:
         return result
 
 
+class _Store:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, Any]] = []
+
+    async def provision_member(self, **kw: Any) -> str:
+        self.calls.append(("provision", kw))
+        return "user-1"
+
+    async def issue_login_code(self, **kw: Any) -> str:
+        self.calls.append(("code", kw))
+        return "one-time-code-123456"
+
+
 def _app() -> FastAPI:
     svc = TenantService()
     app = FastAPI()
     app.state.tenant_service = svc
     app.state._redis = MagicMock()
+    app.state.user_session_store = _Store()
     app.add_middleware(TenantMiddleware, key_resolver=svc.resolve_api_key)
     app.include_router(ent.router)
     return app
 
 
-def test_acs_needs_no_api_key_and_answers_501_for_a_valid_assertion() -> None:
+def test_acs_needs_no_api_key_and_starts_a_session_for_a_valid_assertion() -> None:
     session = _Session()
     identity = SAMLIdentity(email="u@corp.test", name_id="u@corp.test")
     seen: dict[str, Any] = {}
@@ -75,13 +90,28 @@ def test_acs_needs_no_api_key_and_answers_501_for_a_valid_assertion() -> None:
         patch.object(SAMLProvider, "process_acs", _process),
     ):
         resp = TestClient(app, raise_server_exceptions=False).post(
-            "/enterprise/saml/acs/tenant-a", data={"SAMLResponse": "PHNhbWw+"}
+            "/enterprise/saml/acs/tenant-a",
+            data={"SAMLResponse": "PHNhbWw+"},
+            follow_redirects=False,
         )
-    assert resp.status_code == 501, resp.text
-    body = resp.json()
-    assert body["error"] == "NOT_IMPLEMENTED"
-    assert body["authenticated"] is False
-    assert body["email"] == "u@corp.test"
+    assert resp.status_code == 303, resp.text
+    location = resp.headers["location"]
+    assert location.endswith("/auth/sso/complete?code=one-time-code-123456")
+    assert "avs_" not in location  # the bearer token never travels in a URL
+    store = app.state.user_session_store
+    assert store.calls == [
+        (
+            "provision",
+            {
+                "tenant_id": "tenant-a",
+                "email": "u@corp.test",
+                "name": None,
+                "default_role": "operator",
+                "jit": True,
+            },
+        ),
+        ("code", {"tenant_id": "tenant-a", "user_id": "user-1", "auth_method": "saml"}),
+    ]
     assert "tenant-a" in session.tids  # config read under the path tenant's RLS
     assert seen["acs_url"].endswith("/enterprise/saml/acs/tenant-a")
     assert "/api/" not in seen["acs_url"]

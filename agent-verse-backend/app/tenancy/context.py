@@ -77,6 +77,9 @@ class TenantContext:
     # It travels with the goal (goals.execution_context) so the worker's tool
     # gate enforces the same restrictions.
     agent_key: AgentKeyRestriction | None = None
+    # Set when the request authenticated as a PERSON (an SSO user session):
+    # the global ``users.id``. ``None`` for API keys / agent credentials.
+    user_id: str | None = None
 
 
 def _matches(names: tuple[str, ...], patterns: tuple[str, ...]) -> bool:

@@ -15,6 +15,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -210,3 +211,26 @@ async def get_userinfo(request: Request) -> dict[str, Any]:
         "roles": roles,
         "email_verified": payload.get("email_verified", False),
     }
+
+
+class SessionExchangeRequest(BaseModel):
+    code: str = Field(..., min_length=16, max_length=256)
+
+
+@router.post("/session/exchange")
+async def exchange_session_code(request: Request, body: SessionExchangeRequest) -> dict[str, Any]:
+    """Exchange a one-time SSO login code (SAML / Google) for a session token.
+
+    The SSO callback redirects the browser to the frontend with ``?code=``; the
+    token itself never travels in a URL. A code works once, for 60 seconds.
+    """
+    await _check_auth_rate_limit(request)
+    from app.auth.user_sessions import SessionStoreUnavailableError, get_user_session_store
+
+    try:
+        result = await get_user_session_store(request.app).exchange_code(body.code)
+    except SessionStoreUnavailableError as exc:
+        raise HTTPException(503, exc.message, headers={"Retry-After": "5"}) from exc
+    if result is None:
+        raise HTTPException(401, "Login code is invalid, expired or already used")
+    return result

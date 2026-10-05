@@ -127,6 +127,8 @@ _BYPASS_PREFIXES = (
     "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
     "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
     "/wf-hooks/",  # workflow webhook triggers — authenticated by the signed token in the path
+    "/auth/session/exchange",  # one-time SSO login code → session token (the code is the auth)
+    "/enterprise/saml/login/",  # SP-initiated SAML login for /{tenant_id}: a person has no key yet
     "/enterprise/saml/acs/",  # SAML ACS: the IdP's signed assertion is the auth
     # (validated per tenant in app.api.enterprise.saml_acs); an IdP POST never
     # carries a tenant API key, so this was unreachable.
@@ -368,6 +370,27 @@ async def _try_resolve_agent_jwt(request: Request, token: str) -> TenantContext 
     )
 
 
+async def _resolve_user_session(request: Request, raw_key: str) -> TenantContext | None:
+    """Resolve an ``avs_*`` user-session token; raises SessionStoreUnavailableError."""
+    from app.auth.user_sessions import get_user_session_store
+
+    return await get_user_session_store(request.app).resolve(raw_key)
+
+
+def _session_unavailable_response() -> JSONResponse:
+    return JSONResponse(
+        content={
+            "error": {
+                "code": "SESSION_STORE_UNAVAILABLE",
+                "message": "Could not verify the session; retry shortly.",
+                "retryable": True,
+            }
+        },
+        status_code=503,
+        headers={"Retry-After": "5"},
+    )
+
+
 async def _resolve_agent_key(request: Request, raw_key: str) -> TenantContext | None:
     """Resolve an ``av_agent_*`` key; None (→ 401) when unknown or unverifiable."""
     from app.auth import agent_credentials
@@ -513,8 +536,18 @@ class TenantMiddleware(BaseHTTPMiddleware):
         # Try agent JWTs, then SSO JWTs, when the token looks like a JWT (2+ dots)
         tenant_ctx: TenantContext | None = None
         from app.auth.agent_credentials import is_agent_key
+        from app.auth.user_sessions import SessionStoreUnavailableError, is_session_token
 
-        if is_agent_key(raw_key):
+        if is_session_token(raw_key):
+            # SSO user session (SAML / Google login): resolved ONLY by the
+            # Postgres-authoritative session store; an unreadable store is a 503.
+            try:
+                tenant_ctx = await _resolve_user_session(request, raw_key)
+            except SessionStoreUnavailableError:
+                return _session_unavailable_response()
+            if tenant_ctx is None:
+                return _auth_error_response()
+        elif is_agent_key(raw_key):
             # Agent-scoped key: resolved ONLY by the agent-key store (never the
             # tenant-key resolver) into an agent-bound, tool-restricted context.
             tenant_ctx = await _resolve_agent_key(request, raw_key)

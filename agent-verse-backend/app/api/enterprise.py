@@ -10,7 +10,6 @@ import uuid
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
 
@@ -2459,87 +2458,153 @@ async def saml_login(request: Request) -> Response:
         raise HTTPException(500, f"SAML login error: {exc}") from exc
 
 
-@router.post("/saml/acs/{tenant_id}")
-async def saml_acs(request: Request, tenant_id: str) -> JSONResponse:
-    """SAML Assertion Consumer Service for *tenant_id* (the IdP's HTTP-POST target).
+async def _load_saml_config(db: Any, tenant_id: str) -> dict[str, Any] | None:
+    """The tenant's active SAML IdP configuration, or None when it has none."""
+    from sqlalchemy import text
 
-    Public by design (TenantMiddleware bypass ``/enterprise/saml/acs/``): the
-    signed assertion, validated against the tenant's configured IdP
-    certificate in python3-saml strict mode, is the authentication. Replay
-    protection (Redis) fails closed (503).
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
+        row = (
+            await session.execute(
+                text("""
+            SELECT idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
+                   attribute_mapping, default_role, jit_provisioning
+            FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
+        """),
+                {"tid": tenant_id},
+            )
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "idp_entity_id": row[0],
+        "idp_sso_url": row[1],
+        "idp_cert": row[2],
+        "sp_entity_id": row[3],
+        "attribute_mapping": row[4] or {},
+        "default_role": row[5] or "viewer",
+        "jit_provisioning": bool(row[6]) if row[6] is not None else True,
+    }
 
-    NOT IMPLEMENTED: turning a verified identity into an AgentVerse session (JIT
-    user provisioning + a credential TenantMiddleware accepts). The endpoint
-    used to answer 200 ``{"authenticated": true}`` with no session at all; it
-    now answers 501 after verifying the assertion.
+
+def _saml_provider_for(request: Request, tenant_id: str, cfg: dict[str, Any]) -> Any:
+    from app.auth.saml_provider import SAMLProvider
+
+    return SAMLProvider(
+        tenant_id=tenant_id,
+        idp_entity_id=cfg["idp_entity_id"],
+        idp_sso_url=cfg["idp_sso_url"],
+        idp_cert=cfg["idp_cert"],
+        sp_entity_id=cfg["sp_entity_id"],
+        acs_url=_saml_acs_url(request, tenant_id),
+        attribute_mapping=cfg["attribute_mapping"],
+        # app.state.redis is never set (the runtime client is app.state._redis):
+        # reading it silently disabled replay protection.
+        redis=getattr(request.app.state, "_redis", None),
+    )
+
+
+@router.get("/saml/login/{tenant_id}")
+async def saml_login_public(request: Request, tenant_id: str) -> Response:
+    """SP-initiated SAML login for *tenant_id* — public: a person has no key yet.
+
+    (``GET /enterprise/saml/login`` needs a tenant API key, which someone who is
+    trying to log in does not hold.)
     """
+    from fastapi.responses import RedirectResponse
+
     db = _get_db(request)
     if db is None:
         raise HTTPException(503, "Database not configured")
     try:
-        form = await request.form()
-        saml_response = form.get("SAMLResponse", "")
-        if not saml_response:
-            raise HTTPException(400, "Missing SAMLResponse in form data")
-        from sqlalchemy import text
-
-        from app.auth.saml_provider import SAMLProvider
-
-        async with (
-            db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
-            row = (
-                await session.execute(
-                    text("""
-                SELECT idp_entity_id, idp_sso_url, idp_cert, sp_entity_id,
-                       attribute_mapping
-                FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
-            """),
-                    {"tid": tenant_id},
-                )
-            ).fetchone()
-        if row is None:
-            raise HTTPException(404, "SAML not configured")
-        # app.state.redis is never set (the runtime client is app.state._redis):
-        # reading it silently disabled replay protection.
-        redis = getattr(request.app.state, "_redis", None)
-        provider = SAMLProvider(
-            tenant_id=tenant_id,
-            idp_entity_id=row[0],
-            idp_sso_url=row[1],
-            idp_cert=row[2],
-            sp_entity_id=row[3],
-            acs_url=_saml_acs_url(request, tenant_id),
-            attribute_mapping=row[4] or {},
-            redis=redis,
-        )
-        identity = await provider.process_acs(str(saml_response))
-    except HTTPException:
-        raise
+        cfg = await _load_saml_config(db, tenant_id)
+    except Exception as exc:
+        raise HTTPException(503, "SAML configuration unavailable; retry") from exc
+    if cfg is None:
+        raise HTTPException(404, "SAML not configured")
+    try:
+        return RedirectResponse(url=_saml_provider_for(request, tenant_id, cfg).initiate_login())
     except SAMLNotInstalledError as exc:
-        # Was a 500 ("SAML ACS error: python3-saml is not installed").
+        raise HTTPException(501, str(exc)) from exc
+
+
+@router.post("/saml/acs/{tenant_id}")
+async def saml_acs(request: Request, tenant_id: str) -> Response:
+    """SAML Assertion Consumer Service for *tenant_id* (the IdP's HTTP-POST target).
+
+    Public by design (TenantMiddleware bypass ``/enterprise/saml/acs/``): the
+    signed assertion, validated against the tenant's configured IdP certificate
+    in python3-saml strict mode (signature, Destination, Audience, Recipient,
+    validity window), is the authentication. Replay protection (Redis) fails
+    closed (503).
+
+    On success the person is JIT-provisioned into the tenant (``users`` +
+    ``tenant_memberships`` with the config's ``default_role``; refused when JIT
+    is off and they were never provisioned, or when SCIM deactivated them), a
+    user session is recorded, and the browser is redirected (303) to the
+    frontend with a one-time login code it exchanges at
+    ``POST /auth/session/exchange`` for the session token.
+    """
+    from fastapi.responses import RedirectResponse
+
+    from app.auth.user_sessions import (
+        LoginRefusedError,
+        SessionStoreUnavailableError,
+        get_user_session_store,
+    )
+    from app.core.config import get_settings
+
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(503, "Database not configured")
+    form = await request.form()
+    saml_response = form.get("SAMLResponse", "")
+    if not saml_response:
+        raise HTTPException(400, "Missing SAMLResponse in form data")
+    try:
+        cfg = await _load_saml_config(db, tenant_id)
+    except Exception as exc:
+        raise HTTPException(503, "SAML configuration unavailable; retry") from exc
+    if cfg is None:
+        raise HTTPException(404, "SAML not configured")
+    try:
+        identity = await _saml_provider_for(request, tenant_id, cfg).process_acs(
+            str(saml_response)
+        )
+    except SAMLNotInstalledError as exc:
         raise HTTPException(501, str(exc)) from exc
     except SAMLReplayCheckUnavailableError as exc:
         raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(401, str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(500, f"SAML ACS error: {exc}") from exc
-    return JSONResponse(
-        status_code=501,
-        content={
-            "error": "NOT_IMPLEMENTED",
-            "detail": (
-                "The SAML assertion is valid, but issuing an AgentVerse session "
-                "for SAML users is not implemented."
-            ),
-            "email": identity.email,
-            "name_id": identity.name_id,
-            "authenticated": False,
-        },
-    )
+        # An assertion python3-saml cannot even parse is a bad credential.
+        get_logger(__name__).warning("saml_acs_invalid_response", error=str(exc)[:200])
+        raise HTTPException(401, "Invalid SAML response") from exc
+
+    display = " ".join(p for p in (identity.first_name, identity.last_name) if p) or None
+    try:
+        store = get_user_session_store(request.app)
+        user_id = await store.provision_member(
+            tenant_id=tenant_id,
+            email=identity.email,
+            name=display,
+            default_role=str(cfg["default_role"]),
+            jit=bool(cfg["jit_provisioning"]),
+        )
+        code = await store.issue_login_code(
+            tenant_id=tenant_id, user_id=user_id, auth_method="saml"
+        )
+    except LoginRefusedError as exc:
+        raise HTTPException(403, exc.message) from exc
+    except SessionStoreUnavailableError as exc:
+        raise HTTPException(503, exc.message, headers={"Retry-After": "5"}) from exc
+    get_logger(__name__).info("saml_login_succeeded", tenant_id=tenant_id, user_id=user_id)
+    frontend = get_settings().frontend_url.rstrip("/")
+    return RedirectResponse(url=f"{frontend}/auth/sso/complete?code={code}", status_code=303)
 
 
 @router.post("/saml/test")

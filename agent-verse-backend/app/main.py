@@ -1923,6 +1923,9 @@ def create_app(
             except Exception as _acs_db_exc:
                 logger.warning("agent_credentials_db_wire_failed", error=str(_acs_db_exc))
 
+            # SSO user sessions (SAML / Google): Postgres-authoritative.
+            app.state.user_session_store.set_db(db_factory)
+
             # Wire DB into department memory (durable + cross-pod).
             try:
                 from app.memory.dept_memory import get_dept_memory
@@ -2243,6 +2246,8 @@ def create_app(
                     _acs.set_redis(redis_for_runtime)
                 except Exception as _acs_exc:
                     logger.warning("agent_credentials_redis_wire_failed", error=str(_acs_exc))
+                # User sessions: short shared cache, purged on every revocation.
+                app.state.user_session_store.set_redis(redis_for_runtime)
 
                 # ── PromptOptimizer: wire Redis for cross-replica cache invalidation ──
                 try:
@@ -2809,6 +2814,11 @@ def create_app(
     app.state.model_router = _model_router
     # Core services
     app.state.tenant_service = _tenant_svc
+    # SSO user sessions — no DB yet (every operation is a 503); the lifespan
+    # wires Postgres + Redis.
+    from app.auth.user_sessions import UserSessionStore
+
+    app.state.user_session_store = UserSessionStore()
     app.state.goal_service = _goal_svc
     # Wire chat GOAL turns to the real engine + QA to the real provider.
     if getattr(app.state, "chat_service", None) is not None:

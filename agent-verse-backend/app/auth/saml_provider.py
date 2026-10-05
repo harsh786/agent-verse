@@ -11,8 +11,9 @@ Amendment 8.4: SAML replay protection via Redis assertion-ID cache.
 Flow:
   1. GET /enterprise/saml/login → redirect to IdP SSO URL
   2. IdP authenticates → POST to /enterprise/saml/acs/{tenant_id}
-  3. ACS validates assertion, checks replay, extracts attributes,
-     (session issuance: NOT IMPLEMENTED — the ACS answers 501)
+  3. ACS validates assertion, checks replay, extracts attributes; the API then
+     JIT-provisions the person and issues a user session
+     (app.auth.user_sessions) via a one-time login code.
 """
 
 from __future__ import annotations
@@ -126,10 +127,15 @@ class SAMLProvider:
             raise SAMLNotInstalledError()
 
         settings = self._build_saml_settings()
-        # python3-saml version-compatible https flag
-        https_val: Any = True if sys.version_info >= (3, 11) else "on"
+        # python3-saml rebuilds the URL the response was POSTed to from this
+        # request data and checks Destination / Recipient against it, so it must
+        # be the advertised ACS URL exactly — including its scheme (an http ACS
+        # used to be rebuilt as https and every assertion failed Destination).
+        acs = urlparse(self._acs_url)
+        # python3-saml treats any value other than "off" as https.
+        https_val = "on" if acs.scheme == "https" else "off"
         request_data = {
-            "http_host": self._acs_url.split("/")[2] if "/" in self._acs_url else "localhost",
+            "http_host": acs.netloc or "localhost",
             # Must be the ACS path python3-saml checks Destination against.
             "script_name": urlparse(self._acs_url).path or "/",
             "post_data": {"SAMLResponse": saml_response},
@@ -235,6 +241,9 @@ class SAMLProvider:
             "security": {
                 "wantAssertionsSigned": True,
                 "requestedAuthnContext": False,
+                # The (signed) NameID identifies the person; IdPs that send no
+                # AttributeStatement are valid SAML and must not be rejected.
+                "wantAttributeStatement": False,
             },
             # MUST be strict. With strict=False python3-saml skips the
             # "assertion must be signed" (wantAssertionsSigned), Destination,

@@ -25,7 +25,9 @@ from app.api import enterprise as ent
 from app.auth.saml_provider import SAMLNotInstalledError, SAMLProvider
 from app.tenancy.context import PlanTier, TenantContext
 
-_ROW = ("idp-entity", "https://idp.example/sso", "CERT", "sp-entity", {}, "email")
+# saml_configs: idp_entity_id, idp_sso_url, idp_cert, sp_entity_id, attribute_mapping,
+# default_role, jit_provisioning
+_ROW = ("idp-entity", "https://idp.example/sso", "CERT", "sp-entity", {}, "viewer", True)
 
 
 def _provider() -> SAMLProvider:
