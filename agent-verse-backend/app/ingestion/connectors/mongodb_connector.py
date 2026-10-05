@@ -162,7 +162,13 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
     parts = urlsplit(uri)
     if parts.scheme.lower() not in ("mongodb", "mongodb+srv"):
         raise ValueError("MongoDB URI must start with mongodb:// or mongodb+srv://")
-    options = {k.lower(): v for k, v in parse_qsl(parts.query, keep_blank_values=True)}
+    # NF-1 / MDB-07: the shared policy reads the options the way the driver does
+    # ('&' or ';'), refuses file-path / proxy / provider-property options,
+    # ambient-identity mechanisms and anything that weakens TLS.
+    from app.net.mongodb_policy import assert_mongo_connection_allowed, uri_options
+
+    assert_mongo_connection_allowed(uri, cc)
+    options = {k.lower(): v for k, v in uri_options(uri)}
     forbidden = sorted(set(options) & _FORBIDDEN_URI_OPTIONS)
     if forbidden:
         raise ValueError(
@@ -210,10 +216,8 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
         raise ValueError("tls_client_cert and tls_client_private_key must be given together")
     if _truthy(cc.get("tls")) or tls_ca_pem or client_cert:
         kwargs["tls"] = True
-    # MDB-07 / C6: TLS verification can never be weakened (shared policy).
-    from app.net.mongodb_policy import assert_tls_not_weakened
-
-    assert_tls_not_weakened(uri, cc)
+    # MDB-07 / C6: TLS verification can never be weakened (checked above with
+    # the rest of the shared connection policy).
     if kwargs.get("authMechanism") == "MONGODB-X509" and not client_cert:
         raise ValueError("MONGODB-X509 authentication needs tls_client_cert and its private key")
 

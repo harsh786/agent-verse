@@ -32,7 +32,7 @@ import shutil
 import tempfile
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
 from app.observability.logging import get_logger
 
@@ -158,28 +158,10 @@ TOOL_DEFINITIONS = [
 _URI_KEYS = ("uri", "connection_string", "url", "base_url", "mongodb_uri")
 _URI_SCHEMES = ("mongodb://", "mongodb+srv://")
 
-# URI options a tenant may not set (lower-cased): platform file reads, proxy
-# routing around the egress pinning, and ambient-identity auth settings.
-_BLOCKED_URI_OPTIONS = frozenset(
-    {
-        "tlscafile",
-        "tlscertificatekeyfile",
-        "tlscertificatekeyfilepassword",
-        "tlscrlfile",
-        "proxyhost",
-        "proxyport",
-        "proxyusername",
-        "proxypassword",
-        "authmechanismproperties",
-        "srvservicename",
-    }
-)
-# SCRAM / PLAIN (LDAP) authenticate with the credentials the tenant supplies.
-# MONGODB-AWS / GSSAPI / MONGODB-OIDC fall back to the platform's ambient
-# identity (env keys, instance metadata, keytab). MONGODB-X509 is allowed only
-# with the tenant's OWN client certificate (tls_client_cert, MDB-05) — never a
-# certificate file on the platform's disk (tlsCertificateKeyFile is refused).
-_ALLOWED_AUTH_MECHANISMS = frozenset({"DEFAULT", "SCRAM-SHA-1", "SCRAM-SHA-256", "PLAIN"})
+# URI options and auth mechanisms: the shared policy (app/net/mongodb_policy,
+# NF-1): options read the way the driver reads them ('&' or ';'), no file-path /
+# proxy / provider-property options, no ambient-identity mechanisms;
+# MONGODB-X509 only with the tenant's OWN client certificate (MDB-05).
 _X509 = "MONGODB-X509"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
@@ -251,29 +233,22 @@ def _has_client_cert(credentials: dict[str, Any] | None) -> bool:
 
 
 def _check_auth_mechanism(value: str, credentials: dict[str, Any] | None = None) -> None:
-    mechanism = value.strip().upper()
-    if mechanism == _X509:
-        if not _has_client_cert(credentials):
-            raise MongoCredentialError(
-                "MONGODB-X509 authentication needs the connector's tls_client_cert and "
-                "tls_client_private_key"
-            )
-        return
-    if mechanism not in _ALLOWED_AUTH_MECHANISMS:
-        raise MongoCredentialError(
-            f"MongoDB auth mechanism '{value}' is not allowed; use SCRAM, PLAIN or "
-            "MONGODB-X509 with credentials supplied on the connector"
-        )
+    from app.net.mongodb_policy import MongoUriPolicyError, assert_auth_mechanism_allowed
+
+    try:
+        assert_auth_mechanism_allowed(value, client_cert=_has_client_cert(credentials))
+    except MongoUriPolicyError as exc:
+        raise MongoCredentialError(str(exc)) from exc
 
 
 def _check_uri_options(uri: str, credentials: dict[str, Any] | None = None) -> None:
     """Refuse URI options that reach outside the tenant's own database."""
-    for key, value in parse_qsl(urlsplit(uri).query, keep_blank_values=True):
-        lowered = key.strip().lower()
-        if lowered in _BLOCKED_URI_OPTIONS:
-            raise MongoCredentialError(f"MongoDB URI option '{key}' is not allowed")
-        if lowered == "authmechanism":
-            _check_auth_mechanism(value, credentials)
+    from app.net.mongodb_policy import MongoUriPolicyError, assert_uri_options_allowed
+
+    try:
+        assert_uri_options_allowed(uri, client_cert=_has_client_cert(credentials))
+    except MongoUriPolicyError as exc:
+        raise MongoCredentialError(str(exc)) from exc
 
 
 def _client_kwargs(credentials: dict[str, Any] | None) -> dict[str, Any]:

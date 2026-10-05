@@ -8,6 +8,13 @@
   stages that write (``$out``, ``$merge``), the operators that run server-side
   JavaScript (``$where``, ``$function``, ``$accumulator``, BSON ``Code`` values)
   and the stages that expose other sessions' operations on a shared cluster.
+* :func:`uri_options` (NF-1) — the options of a MongoDB URI as the DRIVER reads
+  them: separated by ``&`` OR ``;`` (``?appName=a;tlsInsecure=true`` used to slip
+  past a ``parse_qsl`` check), percent-decoded, plus pymongo's own normalised
+  form (``split_options``: ``ssl`` -> ``tls``, ``tlsInsecure`` expanded).
+* :func:`assert_uri_options_allowed` — refuses file-path options (certificates
+  come only from vault-stored PEM fields), proxy routing, provider properties,
+  and auth mechanisms that use the platform's ambient identity.
 * :func:`assert_tls_not_weakened` (MDB-07 / C6) — the URI options and connector
   fields that switch TLS verification off, used by the MCP builtin AND the
   ingestion connector. Plain-text transport (``tls=false``) only with the
@@ -154,9 +161,7 @@ def non_tls_allowed() -> bool:
 
 def assert_tls_not_weakened(uri: str, config: Mapping[str, Any] | None = None) -> None:
     """Raise :class:`MongoTlsPolicyError` when ``uri`` / ``config`` weaken TLS."""
-    from urllib.parse import parse_qsl, urlsplit
-
-    for key, value in parse_qsl(urlsplit(uri.strip()).query, keep_blank_values=True):
+    for key, value in uri_options(uri):
         lowered = key.strip().lower()
         if lowered in _REFUSED_URI_OPTIONS or (
             lowered in TLS_WEAKENING_URI_OPTIONS and not _is_false(value)
@@ -182,3 +187,120 @@ def assert_tls_not_weakened(uri: str, config: Mapping[str, Any] | None = None) -
             raise MongoTlsPolicyError(
                 f"MongoDB setting '{field}: false' is not allowed: connections must use TLS"
             )
+
+
+# ── URI option policy (NF-1) ─────────────────────────────────────────────────
+
+
+class MongoUriPolicyError(ValueError):
+    """A MongoDB URI option the platform refuses (file paths, proxies, ambient auth)."""
+
+
+def _query_of(uri: str) -> str:
+    """The option string exactly where pymongo's ``parse_uri`` looks for it."""
+    text = uri.strip()
+    scheme_free = text.split("://", 1)[1] if "://" in text else text
+    host_part, slash, path_part = scheme_free.partition("/")
+    if not slash:
+        # pymongo refuses 'host?opts' (no '/'); check them anyway.
+        return host_part.partition("?")[2].partition("#")[0]
+    return path_part.partition("?")[2].partition("#")[0]
+
+
+def uri_options(uri: str) -> list[tuple[str, str]]:
+    """Every (option, value) of ``uri``, however the driver could read it.
+
+    Raises :class:`MongoUriPolicyError` for an option string pymongo itself
+    cannot parse (e.g. mixed ``&`` / ``;`` separators).
+    """
+    import re
+    from urllib.parse import unquote_plus
+
+    query = _query_of(uri)
+    if not query:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for part in re.split(r"[&;]", query):
+        if not part.strip():
+            continue
+        key, _, value = part.partition("=")
+        pairs.append((unquote_plus(key).strip(), unquote_plus(value).strip()))
+    try:
+        from pymongo.uri_parser import split_options
+    except ImportError:  # pragma: no cover - pymongo is a dependency
+        return pairs
+    try:
+        normalized = split_options(query, validate=False, warn=False, normalize=True)
+    except Exception as exc:
+        raise MongoUriPolicyError(
+            f"MongoDB URI options could not be parsed ({type(exc).__name__}); use '&' "
+            "between options"
+        ) from exc
+    pairs.extend((str(k), str(v)) for k, v in normalized.items())
+    return pairs
+
+
+# Options naming a file on the PLATFORM's disk, routing through a proxy (around
+# the egress pinning), or passing provider properties to ambient-credential auth.
+_REFUSED_OPTIONS = frozenset(
+    {
+        "proxyhost",
+        "proxyport",
+        "proxyusername",
+        "proxypassword",
+        "authmechanismproperties",
+        "srvservicename",
+    }
+)
+_ALLOWED_MECHANISMS = frozenset({"DEFAULT", "SCRAM-SHA-1", "SCRAM-SHA-256", "PLAIN"})
+X509 = "MONGODB-X509"
+
+
+def assert_auth_mechanism_allowed(mechanism: str, *, client_cert: bool) -> None:
+    """SCRAM / PLAIN, or MONGODB-X509 with the tenant's OWN client certificate.
+
+    MONGODB-AWS / GSSAPI / MONGODB-OIDC authenticate with the platform's ambient
+    identity (env keys, instance metadata, Kerberos tickets): never allowed.
+    """
+    value = mechanism.strip().upper()
+    if value == X509:
+        if not client_cert:
+            raise MongoUriPolicyError(
+                "MONGODB-X509 authentication needs the connector's tls_client_cert and "
+                "tls_client_private_key"
+            )
+        return
+    if value not in _ALLOWED_MECHANISMS:
+        raise MongoUriPolicyError(
+            f"MongoDB auth mechanism '{mechanism}' is not allowed (it would use the "
+            "platform's own identity); use SCRAM, PLAIN or MONGODB-X509 with credentials "
+            "supplied on the connector"
+        )
+
+
+def assert_uri_options_allowed(uri: str, *, client_cert: bool = False) -> None:
+    """Raise :class:`MongoUriPolicyError` for a refused option in ``uri``."""
+    for key, value in uri_options(uri):
+        lowered = key.lower()
+        if lowered in _REFUSED_URI_OPTIONS:
+            continue  # ssl_cert_reqs: refused by the TLS policy, with its message
+        if "file" in lowered or lowered.startswith("ssl_") or lowered in _REFUSED_OPTIONS:
+            raise MongoUriPolicyError(
+                f"MongoDB URI option '{key}' is not allowed; certificates come only from "
+                "the connector's tls_ca_pem / tls_client_cert / tls_client_private_key fields"
+                if "file" in lowered or lowered.startswith("ssl_")
+                else f"MongoDB URI option '{key}' is not allowed"
+            )
+        if lowered == "authmechanism":
+            assert_auth_mechanism_allowed(value, client_cert=client_cert)
+
+
+def assert_mongo_connection_allowed(uri: str, config: Mapping[str, Any] | None = None) -> None:
+    """The whole shared connection policy: URI options, auth mechanism, TLS."""
+    cfg = config or {}
+    client_cert = bool(str(cfg.get("tls_client_cert") or "").strip())
+    assert_uri_options_allowed(uri, client_cert=client_cert)
+    mechanism = str(cfg.get("auth_mechanism") or cfg.get("authMechanism") or "").strip()
+    if mechanism:
+        assert_auth_mechanism_allowed(mechanism, client_cert=client_cert)
+    assert_tls_not_weakened(uri, cfg)
