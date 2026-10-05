@@ -476,10 +476,25 @@ async def _open_client(
 
 
 def _serialize(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for d in docs:
-        if "_id" in d:
-            d["_id"] = str(d["_id"])
-    return docs
+    """Documents as JSON-safe relaxed Extended JSON (TG-09), ``_id`` as a string.
+
+    Decimal128, Binary, Regex, datetimes, nested ObjectIds ... used to reach the
+    tool result as driver objects; relaxed Extended JSON keeps their type
+    (``{"$numberDecimal": "1.10"}``) while plain numbers stay numbers.
+    """
+    import json
+
+    from bson import json_util
+
+    out: list[dict[str, Any]] = []
+    for doc in docs:
+        rendered: dict[str, Any] = json.loads(
+            json_util.dumps(doc, json_options=json_util.RELAXED_JSON_OPTIONS)
+        )
+        if "_id" in doc:
+            rendered["_id"] = str(doc["_id"])
+        out.append(rendered)
+    return out
 
 
 def _run_tool(
@@ -517,9 +532,7 @@ def _run_tool_bounded(
         return {"documents": _serialize(docs), "count": len(docs), "limit": limit}
     if tool_name == "mongodb_find_one":
         doc = coll.find_one(arguments.get("query") or {}, arguments.get("projection"))
-        if doc:
-            doc["_id"] = str(doc["_id"])
-        return {"document": doc}
+        return {"document": _serialize([doc])[0] if doc else None}
     if tool_name == "mongodb_insert_one":
         inserted = coll.insert_one(arguments["document"])
         return {"inserted_id": str(inserted.inserted_id), "success": True}
