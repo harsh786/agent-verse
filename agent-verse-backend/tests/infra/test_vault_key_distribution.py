@@ -472,6 +472,54 @@ def test_k8s_dev_secret_app_dsn_matches_the_app_role() -> None:
     assert set(migration) == {"MIGRATION_DATABASE_URL"}
 
 
+_WAIT_CMD = '["python", "-m", "app.db.wait_for_schema"]'
+
+
+def test_helm_app_pods_wait_for_the_migrated_schema_instead_of_crash_looping() -> None:
+    """NF-16 follow-up: the migrate Job is not a hook, so on a first install the
+    app pods start with it; they wait in Init until the schema (read as the app
+    role) is at this image's alembic head."""
+    blocks = {c: _expand(b) for c, b in _helm_blocks().items() if c != "frontend"}
+    for comp, block in blocks.items():
+        assert "initContainers:" in block, comp
+        init, main = block.split("\n      containers:\n", 1)
+        init = init.split("initContainers:", 1)[1]
+        assert "- name: wait-for-schema" in init, comp
+        assert f"command: {_WAIT_CMD}" in init, comp
+        image = re.compile(r"image: (.+)")
+        assert image.findall(init) == image.findall(main)[:1], comp  # same code + migrations
+        db = {n: v for n, v in _PLAIN_ENV.findall(init) if n == "DATABASE_URL"}
+        assert db and db == {n: v for n, v in _PLAIN_ENV.findall(main) if n == "DATABASE_URL"}
+    assert "initContainers" not in _helm_template("migrate-job.yaml")  # it must not wait on itself
+
+
+def test_k8s_app_pods_wait_for_the_migrated_schema() -> None:
+    for fname, doc in _k8s_docs():
+        pod = _pod_spec(doc)
+        if not pod or doc.get("kind") != "Deployment":
+            continue
+        main = (pod.get("containers") or [{}])[0]
+        if not _BACKEND_IMAGE.search(str(main.get("image", ""))):
+            continue
+        name = doc["metadata"]["name"]
+        inits = {c["name"]: c for c in pod.get("initContainers") or []}
+        assert "wait-for-schema" in inits, f"{fname}:{name}"
+        wait = inits["wait-for-schema"]
+        assert wait["command"] == ["python", "-m", "app.db.wait_for_schema"], name
+        assert wait["image"] == main["image"], name
+
+        def refs(c: dict[str, Any]) -> set[str]:
+            return {
+                (r.get("secretRef") or {}).get("name", "")
+                for r in c.get("envFrom") or []
+                if r.get("secretRef")
+            }
+
+        assert refs(main) and refs(wait) >= refs(main), name  # same DATABASE_URL
+    job = next(d for f, d in _k8s_docs() if f == "migration-job.yaml")
+    assert not (_pod_spec(job) or {}).get("initContainers")
+
+
 def test_legacy_helm_roles() -> None:
     api = _legacy_env("deployment.yaml")
     assert api["MAINTENANCE_DATABASE_URL"] == ("agentverse-secrets", "maintenance-database-url")

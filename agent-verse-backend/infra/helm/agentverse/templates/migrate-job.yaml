@@ -2,8 +2,8 @@
   NF-16: migrations run as the schema OWNER here — never in an app workload —
   and alembic's env.py then creates/repairs the least-privilege application role
   (APP_DB_USER) with grants on every table (app/db/app_role.py). A new Job per
-  release revision (Jobs are immutable); app pods connecting as the app role
-  retry until it exists. Not a helm hook: a pre-install hook would run before
+  release revision (Jobs are immutable); app pods wait for it in an
+  initContainer (app/db/wait_for_schema.py) instead of crash-looping. Not a helm hook: a pre-install hook would run before
   the bundled Postgres exists, and a post-install one deadlocks `helm --wait`.
 */}}
 {{- if .Values.migrations.enabled }}

@@ -296,7 +296,7 @@ backup:
 
 # NF-16: one-shot Job per install/upgrade (named by release revision): migrates
 # as the schema owner, then creates/repairs postgresql.appUsername with grants.
-# App pods connect as that role, so they retry until the Job has provisioned it.
+# App pods wait in an initContainer until the schema is at this image's head.
 migrations:
   enabled: true
   backoffLimit: 20

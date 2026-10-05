@@ -20,6 +20,16 @@ spec:
     spec:
       imagePullSecrets:
         {{- toYaml .Values.global.imagePullSecrets | nindent 8 }}
+      # NF-16: the migrate Job (not a hook) runs alongside a first install;
+      # this pod waits in Init — not CrashLoopBackOff — until the schema, read
+      # as the app role, is at this image's alembic head (app/db/wait_for_schema.py).
+      initContainers:
+      - name: wait-for-schema
+        image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["python", "-m", "app.db.wait_for_schema"]
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
       containers:
       - name: backend
         image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
@@ -144,6 +154,16 @@ spec:
         {{- include "agentverse.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
+      # NF-16: the migrate Job (not a hook) runs alongside a first install;
+      # this pod waits in Init — not CrashLoopBackOff — until the schema, read
+      # as the app role, is at this image's alembic head (app/db/wait_for_schema.py).
+      initContainers:
+      - name: wait-for-schema
+        image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["python", "-m", "app.db.wait_for_schema"]
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
       containers:
       - name: worker
         image: "{{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}"
@@ -186,6 +206,16 @@ spec:
         {{- include "agentverse.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: subgoal-worker
     spec:
+      # NF-16: the migrate Job (not a hook) runs alongside a first install;
+      # this pod waits in Init — not CrashLoopBackOff — until the schema, read
+      # as the app role, is at this image's alembic head (app/db/wait_for_schema.py).
+      initContainers:
+      - name: wait-for-schema
+        image: "{{ .Values.subgoalWorker.image.repository }}:{{ .Values.subgoalWorker.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["python", "-m", "app.db.wait_for_schema"]
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
       containers:
       - name: subgoal-worker
         image: "{{ .Values.subgoalWorker.image.repository }}:{{ .Values.subgoalWorker.image.tag }}"
@@ -223,6 +253,16 @@ spec:
         {{- include "agentverse.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: beat
     spec:
+      # NF-16: the migrate Job (not a hook) runs alongside a first install;
+      # this pod waits in Init — not CrashLoopBackOff — until the schema, read
+      # as the app role, is at this image's alembic head (app/db/wait_for_schema.py).
+      initContainers:
+      - name: wait-for-schema
+        image: "{{ .Values.beat.image.repository }}:{{ .Values.beat.image.tag }}"
+        imagePullPolicy: {{ .Values.imagePullPolicy }}
+        command: ["python", "-m", "app.db.wait_for_schema"]
+        env:
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
       containers:
       - name: beat
         image: "{{ .Values.beat.image.repository }}:{{ .Values.beat.image.tag }}"
