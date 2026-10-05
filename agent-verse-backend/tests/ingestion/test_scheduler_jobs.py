@@ -343,7 +343,7 @@ async def test_sync_commits_cursor_every_100_docs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_sync_per_doc_exception_is_swallowed_and_counted_as_failed() -> None:
+async def test_sync_per_doc_exception_is_counted_and_queued_for_retry() -> None:
     tracker = AsyncMock()
     tracker.acquire_lock = AsyncMock(return_value=True)
     tracker.create_job = AsyncMock(return_value=_job())
@@ -367,7 +367,9 @@ async def test_sync_per_doc_exception_is_swallowed_and_counted_as_failed() -> No
 
     assert result["docs_failed"] == 1
     assert result["docs_indexed"] == 0
-    tracker.add_to_dlq.assert_not_called()  # doc-level exceptions bypass the DLQ path
+    # USR-4: an unexpected per-document error goes to the DLQ (it used to be lost).
+    tracker.add_to_dlq.assert_awaited_once()
+    assert tracker.add_to_dlq.await_args.kwargs["doc_id"] == "d1"
     tracker.complete_job.assert_called_once()
 
 

@@ -673,6 +673,16 @@ async def _sync_source_async(
                 _log.exception(
                     "unhandled error processing doc in source=%s: %s", source_id, doc_exc
                 )
+                # USR-4: the document goes to the durable retry queue like any
+                # other failure — it used to be counted and then lost.
+                await tracker.add_to_dlq(
+                    source_id=source_id,
+                    tenant_id=tenant_id,
+                    doc_id=raw_doc.doc_id,
+                    error=f"{type(doc_exc).__name__}: {doc_exc}"[:2000],
+                    raw_doc=raw_doc,
+                    job_id=job.job_id,
+                )
 
         # ── Final cursor commit ───────────────────────────────────────────────
         await tracker.update_cursor(job, new_cursor or "", config)

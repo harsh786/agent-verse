@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import (
     BaseConnector,
@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+# CONNECTOR_REPLAY_KEY "kind" of a URL the sync could not fetch (see replay_event).
+URL_REPLAY_KIND = "url"
 
 
 def _doc_id(url: str) -> str:
@@ -69,6 +71,22 @@ class _UrlFileConnector(BaseConnector):
         for url in urls:
             yield await self._fetch_one(config, str(url)), str(url)
 
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Fetch again a URL a sync could not read (DLQ retry, USR-4).
+
+        Only a URL still listed in the Source is fetched: a reference can never
+        make the connector fetch something the tenant no longer configures.
+        """
+        url = str(reference.get("url") or "")
+        if reference.get("kind") != URL_REPLAY_KIND or not url:
+            raise ValueError(f"not a URL replay reference: {reference!r}")
+        configured = {str(u) for u in config.connection_config.get("urls", []) or []}
+        if url not in configured:
+            raise ConnectorFetchError(f"{self.source_type}: {url} is no longer configured")
+        yield await self._fetch_one(config, url)
+
     async def _fetch_one(self, config: SourceConfig, url: str) -> RawDocument:
         """The file at ``url``, or a failure document saying why it could not be read."""
         from app.ingestion.source_config import RawDocument
@@ -91,6 +109,8 @@ class _UrlFileConnector(BaseConnector):
                 and is_retryable_fetch_error(exc),
                 source_url=url,
                 title=url.split("/")[-1],
+                # USR-4: the DLQ retry fetches the URL again (replay_event).
+                replay={"kind": URL_REPLAY_KIND, "url": url},
             )
         return RawDocument(
             doc_id=_doc_id(url),

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
     describe_fetch_error,
     fetch_failure_document,
@@ -164,3 +165,32 @@ class GCSConnector(BaseConnector):
             )
             new_cursor = blob_ts or blob.name
             yield doc, new_cursor
+
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Download again a blob a sync could not read (DLQ retry, USR-4)."""
+        from app.ingestion.source_config import RawDocument
+
+        bucket_name = str(reference.get("bucket") or "")
+        name = str(reference.get("name") or "")
+        if reference.get("kind") != _REPLAY_KIND or not bucket_name or not name:
+            raise ValueError(f"not a GCS blob replay reference: {reference!r}")
+        if bucket_name != config.connection_config.get("bucket", ""):
+            raise ConnectorFetchError(f"gcs: bucket {bucket_name!r} is not this Source's")
+        from google.cloud import storage  # type: ignore[import-not-found]
+
+        client = await run_blocking(
+            _make_client, storage, config.connection_config.get("service_account_json")
+        )
+        blob = client.bucket(bucket_name).blob(name)
+        content = await run_blocking(blob.download_as_bytes)
+        yield RawDocument(
+            doc_id=stable_doc_id(config, f"gs://{bucket_name}/{name}"),
+            source_id=config.source_id,
+            tenant_id=config.tenant_id,
+            source_url=f"gs://{bucket_name}/{name}",
+            content=content,
+            content_type=getattr(blob, "content_type", None) or "application/octet-stream",
+            metadata={"bucket": bucket_name, "name": name},
+        )

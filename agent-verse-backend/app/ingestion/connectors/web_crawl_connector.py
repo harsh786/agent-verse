@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import (
     BaseConnector,
@@ -64,6 +64,26 @@ async def _sitemap_urls(client: object, sitemap_url: str, limit: int) -> list[st
     # A regex, not an XML parser: no entity expansion on tenant-supplied XML.
     locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text, flags=re.I)
     return [u for u in dict.fromkeys(locs) if not u.lower().endswith(".xml")][:limit]
+
+
+# CONNECTOR_REPLAY_KEY "kind" of a page the crawl could not fetch (see replay_event).
+_REPLAY_KIND = "web_page"
+
+
+def _page_failure(
+    config: SourceConfig, url: str, error: object, *, retryable: bool
+) -> RawDocument:
+    """A counted failure for a page that could not be fetched (USR-1); a retryable
+    one carries a replay reference so the DLQ retry fetches it again (USR-4)."""
+    return fetch_failure_document(
+        config,
+        doc_id=f"web://{hashlib.md5(url.encode()).hexdigest()}",
+        reason=describe_fetch_error(error),
+        retryable=retryable,
+        source_url=url,
+        replay={"kind": _REPLAY_KIND, "url": url} if retryable else None,
+        metadata={"original_url": url},
+    )
 
 
 @register("web_crawl")
@@ -137,14 +157,7 @@ class WebCrawlConnector(BaseConnector):
         visited = 0
 
         def _failure(url: str, error: object, *, retryable: bool) -> RawDocument:
-            return fetch_failure_document(
-                config,
-                doc_id=f"web://{hashlib.md5(url.encode()).hexdigest()}",
-                reason=describe_fetch_error(error),
-                retryable=retryable,
-                source_url=url,
-                metadata={"original_url": url},
-            )
+            return _page_failure(config, url, error, retryable=retryable)
 
         import asyncio
 
@@ -264,6 +277,53 @@ class WebCrawlConnector(BaseConnector):
                         h = hashlib.md5(new_url.encode()).hexdigest()
                         if h not in new_seen and new_url not in urls_to_visit:
                             urls_to_visit.append(new_url)
+
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Fetch again one page the crawl could not read (DLQ retry, USR-4).
+
+        The page is re-checked by the egress guard; its links are not followed
+        (the next crawl discovers them). Yields the page, or a fresh failure
+        document when it still cannot be read.
+        """
+        from app.ingestion.source_config import RawDocument
+
+        url = str(reference.get("url") or "")
+        if reference.get("kind") != _REPLAY_KIND or not url:
+            raise ValueError(f"not a web page replay reference: {reference!r}")
+        if not source_url_is_allowed(url, context="web_crawl.replay"):
+            yield _page_failure(config, url, "blocked by the egress policy", retryable=False)
+            return
+        async with source_client(
+            timeout=30, headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"}
+        ) as client:
+            try:
+                response = await client.get(url)
+            except Exception as exc:
+                yield _page_failure(config, url, exc, retryable=True)
+                return
+        if response.status_code >= 400 or response.is_redirect:
+            yield _page_failure(
+                config, url, response, retryable=is_retryable_fetch_error(response)
+            )
+            return
+        html = response.content.decode("utf-8", errors="replace")
+        text = self._extract_text(html, url)
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        yield RawDocument(
+            doc_id=f"web://{url_hash}",
+            source_id=config.source_id,
+            tenant_id=config.tenant_id,
+            content=text.encode("utf-8"),
+            content_type="text/plain",
+            source_url=url,
+            title=self._extract_title(html),
+            metadata={
+                "original_url": url,
+                "content_hash": hashlib.sha256(text.encode()).hexdigest(),
+            },
+        )
 
     @staticmethod
     def _extract_text(html: str, url: str = "") -> str:

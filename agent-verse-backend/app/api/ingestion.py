@@ -1000,6 +1000,16 @@ async def _run_sync(
                 skipped += 1 if result.status == "skipped" else 0
                 failed += 1 if result.status == "failed" else 0
                 chunks += result.chunks_created
+                if result.status == "failed":
+                    # USR-4: the durable retry queue, as on the worker path.
+                    await tracker.add_to_dlq(
+                        source_id=source.source_id,
+                        tenant_id=source.tenant_id,
+                        doc_id=str(getattr(raw_doc, "doc_id", raw_doc)),
+                        error=getattr(result, "error", None) or "pipeline_failure",
+                        raw_doc=raw_doc,
+                        job_id=job.job_id,
+                    )
                 await tracker.increment_counters(
                     job,
                     indexed=1 if result.status == "indexed" else 0,

@@ -27,6 +27,9 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+# CONNECTOR_REPLAY_KEY "kind" of a video whose transcript a sync could not read.
+_REPLAY_KIND = "youtube_video"
 _YT_API = "https://www.googleapis.com/youtube/v3"
 # Per-request timeout for transcript fetches: they run on a worker thread that
 # cannot be interrupted, and requests has no default timeout.
@@ -184,5 +187,32 @@ class YouTubeConnector(BaseConnector):
                     ),
                     retryable=not disabled,
                     source_url=f"https://www.youtube.com/watch?v={video_id}",
+                    replay=None if disabled else {"kind": _REPLAY_KIND, "video_id": video_id},
                     metadata={"video_id": video_id},
                 ), new_cursor
+
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Fetch again the transcript of a video a sync could not read (DLQ retry)."""
+        from app.ingestion.source_config import RawDocument
+
+        video_id = str(reference.get("video_id") or "")
+        if reference.get("kind") != _REPLAY_KIND or not video_id:
+            raise ValueError(f"not a YouTube video replay reference: {reference!r}")
+        from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import-not-found]
+
+        languages = config.connection_config.get("languages") or ["en"]
+        transcript_list = await run_blocking(
+            _fetch_transcript, YouTubeTranscriptApi, video_id, list(languages)
+        )
+        text = " ".join(seg["text"] for seg in transcript_list)
+        yield RawDocument(
+            doc_id=stable_doc_id(config, video_id),
+            source_id=config.source_id,
+            tenant_id=config.tenant_id,
+            source_url=f"https://www.youtube.com/watch?v={video_id}",
+            content=f"# {video_id}\n\n{text}".encode(),
+            content_type="text/plain",
+            metadata={"video_id": video_id, "title": video_id},
+        )
