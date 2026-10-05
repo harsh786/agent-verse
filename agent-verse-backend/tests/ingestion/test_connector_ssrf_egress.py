@@ -29,6 +29,7 @@ from app.ingestion.connector_egress import (
     source_url_is_allowed,
 )
 from app.ingestion.source_config import SourceConfig, SourceFamily
+from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
 
 # Targets a tenant would reach for. Literal IPs so no DNS is needed and the test
 # can never accidentally touch a real host.
@@ -209,6 +210,11 @@ async def test_get_delta_yields_nothing_for_internal_hosts(
     produced = []
     try:
         async for doc, _cursor in connector.get_delta(config, None):
+            # A failure document (USR-1: the blocked URL reported as a counted
+            # failure, with no content) is the honest outcome, not a leak.
+            if CONNECTOR_FAILURE_KEY in (doc.metadata or {}):
+                assert doc.content == b"", doc
+                continue
             produced.append(doc)
     except Exception as exc:
         # Raising (the guard, or a connection failure) is an acceptable

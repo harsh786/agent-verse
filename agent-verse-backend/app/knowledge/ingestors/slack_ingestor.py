@@ -20,8 +20,16 @@ class SlackIngestor:
         return {"Authorization": f"Bearer {self._token}"}
 
     async def ingest_channel(
-        self, channel_id: str, *, channel_name: str = "", max_messages: int = 500
+        self,
+        channel_id: str,
+        *,
+        channel_name: str = "",
+        max_messages: int = 500,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
+        """Chunks of a channel's history. ``raise_on_error``: a Slack API error
+        (``ok: false`` — invalid auth, unknown channel, rate limit) raises
+        ``RuntimeError`` instead of ending the history early as if it were empty."""
         from app.knowledge.ingestors.limits import MAX_SLACK_MESSAGES, clamp_limit
 
         max_messages = clamp_limit(max_messages, MAX_SLACK_MESSAGES)
@@ -41,6 +49,11 @@ class SlackIngestor:
                 data = r.json()
                 if not data.get("ok"):
                     logger.warning("slack_api_error", error=data.get("error"))
+                    if raise_on_error:
+                        raise RuntimeError(
+                            f"Slack conversations.history failed for {channel_id}: "
+                            f"{data.get('error') or f'HTTP {r.status_code}'}"
+                        )
                     break
 
                 messages = data.get("messages", [])

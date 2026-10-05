@@ -10,7 +10,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -65,53 +71,61 @@ class DiscordConnector(BaseConnector):
         headers = {"Authorization": f"Bot {token}"}
         new_cursor = cursor or ""
 
+        failures = UnitFailures("discord")
         async with httpx.AsyncClient(timeout=30) as client:
             for channel_id in channel_ids:
-                params: dict = {"limit": batch_size}
-                if cursor:
-                    params["after"] = cursor  # snowflake ID — after this ID
+                try:
+                    params: dict = {"limit": batch_size}
+                    if cursor:
+                        params["after"] = cursor  # snowflake ID — after this ID
 
-                while True:
-                    r = await client.get(
-                        f"{_DISCORD_BASE}/channels/{channel_id}/messages",
-                        params=params,
-                        headers=headers,
-                    )
-                    if not r.is_success:
-                        _log.warning("discord: channel %s → %d", channel_id, r.status_code)
-                        break
-                    messages = r.json()
-                    if not messages:
-                        break
-
-                    for msg in reversed(messages):  # oldest first
-                        msg_id = msg.get("id", "")
-                        if not msg_id:
-                            continue
-                        new_cursor = max(new_cursor, msg_id)
-                        author = msg.get("author", {}).get("username", "Unknown")
-                        content = msg.get("content", "")
-                        ts = msg.get("timestamp", "")
-                        if not content.strip():
-                            continue
-                        text = f"[Discord] {author}: {content}"
-                        doc = RawDocument(
-                            doc_id=stable_doc_id(config, channel_id, msg_id),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=f"https://discord.com/channels/{cc.get('guild_id', '_')}/{channel_id}/{msg_id}",  # noqa: E501
-                            content=text.encode(),
-                            content_type="text/plain",
-                            metadata={
-                                "author": author,
-                                "channel": channel_id,
-                                "ts": ts,
-                                "msg_id": msg_id,
-                            },
+                    while True:
+                        r = await client.get(
+                            f"{_DISCORD_BASE}/channels/{channel_id}/messages",
+                            params=params,
+                            headers=headers,
                         )
-                        yield doc, new_cursor
+                        if not r.is_success:
+                            failures.add(f"channel {channel_id}", r)
+                            break
+                        messages = r.json()
+                        if not messages:
+                            break
 
-                    # Use last message ID for pagination
-                    if len(messages) < batch_size:
-                        break
-                    params = {"limit": batch_size, "after": messages[0].get("id", "")}
+                        for msg in reversed(messages):  # oldest first
+                            msg_id = msg.get("id", "")
+                            if not msg_id:
+                                continue
+                            new_cursor = max(new_cursor, msg_id)
+                            author = msg.get("author", {}).get("username", "Unknown")
+                            content = msg.get("content", "")
+                            ts = msg.get("timestamp", "")
+                            if not content.strip():
+                                continue
+                            text = f"[Discord] {author}: {content}"
+                            doc = RawDocument(
+                                doc_id=stable_doc_id(config, channel_id, msg_id),
+                                source_id=config.source_id,
+                                tenant_id=config.tenant_id,
+                                source_url=f"https://discord.com/channels/{cc.get('guild_id', '_')}/{channel_id}/{msg_id}",  # noqa: E501
+                                content=text.encode(),
+                                content_type="text/plain",
+                                metadata={
+                                    "author": author,
+                                    "channel": channel_id,
+                                    "ts": ts,
+                                    "msg_id": msg_id,
+                                },
+                            )
+                            yield doc, new_cursor
+
+                        # Use last message ID for pagination
+                        if len(messages) < batch_size:
+                            break
+                        params = {"limit": batch_size, "after": messages[0].get("id", "")}
+                except ConnectorUnavailableError:
+                    raise
+                except Exception as exc:  # transport / response errors: this channel only
+                    failures.add(f"channel {channel_id}", exc)
+        # USR-1: an unreadable channel fails the sync (partial), never 0 failures.
+        failures.raise_if_any()

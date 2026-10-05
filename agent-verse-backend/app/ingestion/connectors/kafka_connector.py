@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
     stable_doc_id,
 )
@@ -160,7 +161,11 @@ class KafkaConnector(BaseConnector):
                         break
                     if msg.error():
                         if msg.error().code() != KafkaError._PARTITION_EOF:
+                            # USR-1: a broker / auth / topic error fails the sync
+                            # (nothing is committed) — it used to end the batch
+                            # as an empty success.
                             _log.warning("kafka error: %s", msg.error())
+                            raise ConnectorFetchError(f"kafka: consume failed: {msg.error()}")
                         break
                     msgs.append(
                         {

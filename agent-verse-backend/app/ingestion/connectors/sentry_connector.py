@@ -10,7 +10,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -67,59 +73,75 @@ class SentryConnector(BaseConnector):
         headers = {"Authorization": f"Bearer {token}"}
         new_cursor = cursor or ""
 
+        failures = UnitFailures("sentry")
         async with source_client(timeout=30) as client:
             for project_slug in project_slugs or [""]:
-                url_path = (
-                    f"{base_url}/projects/{org_slug}/{project_slug}/issues/"
-                    if project_slug
-                    else f"{base_url}/organizations/{org_slug}/issues/"
-                )
-                params: dict = {"limit": batch_size, "sort": "date", "query": "is:unresolved"}
-                if cursor:
-                    params["query"] += f" lastSeen:>{cursor}"
+                try:
+                    url_path = (
+                        f"{base_url}/projects/{org_slug}/{project_slug}/issues/"
+                        if project_slug
+                        else f"{base_url}/organizations/{org_slug}/issues/"
+                    )
+                    params: dict = {"limit": batch_size, "sort": "date", "query": "is:unresolved"}
+                    if cursor:
+                        params["query"] += f" lastSeen:>{cursor}"
 
-                url: str | None = url_path
-                while url:
-                    r = await client.get(url, params=params, headers=headers)
-                    if not r.is_success:
-                        break
-                    issues = r.json()
-                    if not isinstance(issues, list) or not issues:
-                        break
+                    url: str | None = url_path
+                    while url:
+                        r = await client.get(url, params=params, headers=headers)
+                        if not r.is_success:
+                            failures.add(f"project {project_slug or org_slug}", r)
+                            break
+                        issues = r.json()
+                        if not isinstance(issues, list):
+                            failures.add(
+                                f"project {project_slug or org_slug}",
+                                f"unexpected issue listing: {str(issues)[:200]}",
+                            )
+                            break
+                        if not issues:
+                            break
 
-                    for issue in issues:
-                        last_seen = issue.get("lastSeen", "")
-                        new_cursor = max(new_cursor, last_seen)
-                        culprit = issue.get("culprit", "")
-                        level = issue.get("level", "")
-                        count = issue.get("count", 0)
-                        text = (
-                            f"Sentry Issue: {issue.get('title', '')}\n"
-                            f"ID: {issue.get('id')}  Level: {level}  Events: {count}\n"
-                            f"Culprit: {culprit}  Last seen: {last_seen}\n\n"
-                            f"Permalink: {issue.get('permalink', '')}"
-                        )
-                        doc = RawDocument(
-                            doc_id=stable_doc_id(config, issue.get("id")),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=issue.get("permalink", ""),
-                            content=text.encode(),
-                            content_type="text/plain",
-                            metadata={
-                                "id": issue.get("id"),
-                                "level": level,
-                                "last_seen": last_seen,
-                                "project": project_slug,
-                            },
-                        )
-                        yield doc, new_cursor
+                        for issue in issues:
+                            last_seen = issue.get("lastSeen", "")
+                            new_cursor = max(new_cursor, last_seen)
+                            culprit = issue.get("culprit", "")
+                            level = issue.get("level", "")
+                            count = issue.get("count", 0)
+                            text = (
+                                f"Sentry Issue: {issue.get('title', '')}\n"
+                                f"ID: {issue.get('id')}  Level: {level}  Events: {count}\n"
+                                f"Culprit: {culprit}  Last seen: {last_seen}\n\n"
+                                f"Permalink: {issue.get('permalink', '')}"
+                            )
+                            doc = RawDocument(
+                                doc_id=stable_doc_id(config, issue.get("id")),
+                                source_id=config.source_id,
+                                tenant_id=config.tenant_id,
+                                source_url=issue.get("permalink", ""),
+                                content=text.encode(),
+                                content_type="text/plain",
+                                metadata={
+                                    "id": issue.get("id"),
+                                    "level": level,
+                                    "last_seen": last_seen,
+                                    "project": project_slug,
+                                },
+                            )
+                            yield doc, new_cursor
 
-                    # Next page from Link header
-                    link_header = r.headers.get("Link", "")
-                    next_url = None
-                    for part in link_header.split(","):
-                        if 'rel="next"' in part and 'results="true"' in part:
-                            next_url = part.strip().split(";")[0].strip().strip("<>")
-                    url = next_url
-                    params = {}
+                        # Next page from Link header
+                        link_header = r.headers.get("Link", "")
+                        next_url = None
+                        for part in link_header.split(","):
+                            if 'rel="next"' in part and 'results="true"' in part:
+                                next_url = part.strip().split(";")[0].strip().strip("<>")
+                        url = next_url
+                        params = {}
+                except ConnectorUnavailableError:
+                    raise
+                except Exception as exc:  # transport / response errors: this unit only
+                    failures.add(f"project {project_slug or org_slug}", exc)
+        # USR-1: an unreadable unit fails the sync (partial) instead of being
+        # logged and skipped with 0 failures reported.
+        failures.raise_if_any()

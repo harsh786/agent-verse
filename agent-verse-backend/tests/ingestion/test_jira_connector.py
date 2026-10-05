@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ingestion.connectors.jira_connector import JiraConnector, _extract_adf_text
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorFetchError
 
 
 _DEFAULT_BASE_URL = "https://acme.atlassian.net"
@@ -196,7 +198,7 @@ class TestGetDeltaEmptyAndErrors:
             results = [d async for d in JiraConnector().get_delta(_make_config(), None)]
         assert results == []
 
-    async def test_malformed_jql_400_response_breaks_loop_gracefully(self):
+    async def test_malformed_jql_400_response_fails_the_sync(self):
         async def get(url, params=None, auth=None):
             resp = MagicMock()
             resp.is_success = False
@@ -209,10 +211,13 @@ class TestGetDeltaEmptyAndErrors:
             # An invalid project key still flows into a JQL string; the
             # connector must not crash on a 400 — it should stop cleanly.
             config = _make_config({"project_keys": ["!!!not-a-real-project!!!"]})
-            results = [d async for d in JiraConnector().get_delta(config, None)]
+            results, exc = await drain(JiraConnector().get_delta(config, None))
         assert results == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorFetchError), exc
+        assert "HTTP 400" in str(exc)
 
-    async def test_auth_failure_401_during_search_breaks_loop_gracefully(self):
+    async def test_auth_failure_401_during_search_fails_the_sync(self):
         async def get(url, params=None, auth=None):
             resp = MagicMock()
             resp.is_success = False
@@ -222,8 +227,11 @@ class TestGetDeltaEmptyAndErrors:
 
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_async_client(get)
-            results = [d async for d in JiraConnector().get_delta(_make_config(), None)]
+            results, exc = await drain(JiraConnector().get_delta(_make_config(), None))
         assert results == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorFetchError), exc
+        assert "HTTP 401" in str(exc)
 
 
 class TestGetDeltaContentAndCursor:

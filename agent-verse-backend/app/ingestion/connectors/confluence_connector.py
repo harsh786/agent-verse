@@ -10,7 +10,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -70,6 +76,7 @@ class ConfluenceConnector(BaseConnector):
 
         new_cursor = cursor or ""
 
+        failures = UnitFailures("confluence")
         async with source_client(timeout=30) as client:
             for ctype in content_types:
                 for space_key in space_keys or [""]:
@@ -83,41 +90,50 @@ class ConfluenceConnector(BaseConnector):
                     if cursor:
                         params["postingDay"] = cursor[:10]  # best effort date filter
 
-                    url = f"{base_url}/rest/api/content"
-                    while url:
-                        r = await client.get(url, params=params, auth=auth)
-                        if not r.is_success:
-                            _log.warning("confluence: %s → %d", url, r.status_code)
-                            break
-                        data = r.json()
-                        for page in data.get("results", []):
-                            modified = page.get("version", {}).get("when", "")
-                            if cursor and modified and modified <= cursor:
-                                continue
-                            new_cursor = max(new_cursor, modified)
-                            body_html = page.get("body", {}).get("view", {}).get("value", "")
-                            # Strip HTML tags
-                            import re
+                    unit = f"{ctype} in space {space_key or '(all)'}"
+                    try:
+                        url = f"{base_url}/rest/api/content"
+                        while url:
+                            r = await client.get(url, params=params, auth=auth)
+                            if not r.is_success:
+                                failures.add(unit, r)
+                                break
+                            data = r.json()
+                            for page in data.get("results", []):
+                                modified = page.get("version", {}).get("when", "")
+                                if cursor and modified and modified <= cursor:
+                                    continue
+                                new_cursor = max(new_cursor, modified)
+                                body_html = page.get("body", {}).get("view", {}).get("value", "")
+                                # Strip HTML tags
+                                import re
 
-                            text = re.sub(r"<[^>]+>", " ", body_html)
-                            text = re.sub(r"\s+", " ", text).strip()
-                            title = page.get("title", "")
-                            full_text = f"# {title}\n\n{text}"
-                            doc = RawDocument(
-                                doc_id=stable_doc_id(config, page.get("id")),
-                                source_id=config.source_id,
-                                tenant_id=config.tenant_id,
-                                source_url=f"{base_url}/wiki/spaces/{space_key}/pages/{page.get('id')}",
-                                content=full_text.encode(),
-                                content_type="text/plain",
-                                metadata={
-                                    "title": title,
-                                    "space": space_key,
-                                    "type": ctype,
-                                    "modified": modified,
-                                },
-                            )
-                            yield doc, new_cursor
-                        next_link = data.get("_links", {}).get("next")
-                        url = f"{base_url}{next_link}" if next_link else None
-                        params = {}  # next_link has all params embedded
+                                text = re.sub(r"<[^>]+>", " ", body_html)
+                                text = re.sub(r"\s+", " ", text).strip()
+                                title = page.get("title", "")
+                                full_text = f"# {title}\n\n{text}"
+                                doc = RawDocument(
+                                    doc_id=stable_doc_id(config, page.get("id")),
+                                    source_id=config.source_id,
+                                    tenant_id=config.tenant_id,
+                                    source_url=f"{base_url}/wiki/spaces/{space_key}/pages/{page.get('id')}",
+                                    content=full_text.encode(),
+                                    content_type="text/plain",
+                                    metadata={
+                                        "title": title,
+                                        "space": space_key,
+                                        "type": ctype,
+                                        "modified": modified,
+                                    },
+                                )
+                                yield doc, new_cursor
+                            next_link = data.get("_links", {}).get("next")
+                            url = f"{base_url}{next_link}" if next_link else None
+                            params = {}  # next_link has all params embedded
+                    except ConnectorUnavailableError:
+                        raise
+                    except Exception as exc:  # transport / response errors: this unit only
+                        failures.add(unit, exc)
+        # USR-1: an unreadable space / content type fails the sync (partial) —
+        # it used to be logged and skipped, reporting 0 failures.
+        failures.raise_if_any()

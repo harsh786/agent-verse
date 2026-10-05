@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ingestion.connectors.servicenow_connector import ServiceNowConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorPartialFailureError
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -145,7 +147,7 @@ class TestGetDelta:
         tables_seen = {doc.metadata["table"] for doc, _ in results}
         assert tables_seen == {"incident", "problem"}
 
-    async def test_failed_response_breaks_loop(self):
+    async def test_failed_response_is_a_counted_failure(self):
         async def get(*a, **kw):
             resp = MagicMock()
             resp.is_success = False
@@ -156,8 +158,9 @@ class TestGetDelta:
             mock_cls.return_value = _mock_async_client(get)
             connector = ServiceNowConnector()
             config = _make_config({"instance": "acme", "tables": ["incident"]})
-            results = [d async for d in connector.get_delta(config, None)]
+            results, exc = await drain(connector.get_delta(config, None))
         assert results == []
+        assert isinstance(exc, ConnectorPartialFailureError) and "table incident" in str(exc)
 
     async def test_empty_records_breaks_loop(self):
         async def get(*a, **kw):

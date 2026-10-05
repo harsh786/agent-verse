@@ -15,6 +15,7 @@ from app.ingestion.base_connector import ConnectorUnavailableError
 
 from app.ingestion.connectors.s3_connector import S3Connector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import failure_docs
 
 
 def _make_config(conn_config: dict | None = None, **overrides) -> SourceConfig:
@@ -148,7 +149,7 @@ class TestGetDelta:
         assert len(results) == 1
         assert results[0][0].title == "keep.txt"
 
-    async def test_skips_oversized_objects(self):
+    async def test_oversized_object_is_reported_not_dropped(self):
         t1 = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
         page = {"Contents": [_obj("huge.bin", t1, size=999_999_999)]}
         mock_paginator = MagicMock()
@@ -163,9 +164,13 @@ class TestGetDelta:
             config = _make_config()
             config.max_doc_size_bytes = 10
             results = [d async for d in connector.get_delta(config, None)]
-        assert results == []
+        # USR-1: a counted, permanent failure — never downloaded.
+        (failed,) = failure_docs(results)
+        assert "size cap" in failed.metadata["connector_failure"]
+        assert failed.metadata["connector_failure_retryable"] is False
+        mock_s3.get_object.assert_not_called()
 
-    async def test_download_error_is_skipped_not_raised(self):
+    async def test_download_error_is_a_counted_retryable_failure(self):
         t1 = datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
         page = {"Contents": [_obj("broken.txt", t1)]}
         mock_paginator = MagicMock()
@@ -179,7 +184,11 @@ class TestGetDelta:
         with patch("boto3.Session", return_value=mock_session):
             connector = S3Connector()
             results = [d async for d in connector.get_delta(_make_config(), None)]
-        assert results == []
+        # USR-1/USR-4: reported (→ DLQ) with a replay reference, not skipped.
+        (failed,) = failure_docs(results)
+        assert "network blip" in failed.metadata["connector_failure"]
+        assert failed.metadata["connector_failure_retryable"] is True
+        assert failed.metadata["connector_replay"]["key"] == "broken.txt"
 
     async def test_unexpected_error_reraises(self):
         """The error must surface while iterating pages (inside the try block),

@@ -15,6 +15,9 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
+    describe_fetch_error,
+    ensure_success,
+    fetch_failure_document,
     stable_doc_id,
 )
 from app.ingestion.connector_registry import register
@@ -122,9 +125,11 @@ class YouTubeConnector(BaseConnector):
                         **({"publishedAfter": cursor} if cursor else {}),
                     },
                 )
-                if r.is_success:
-                    for item in r.json().get("items", []):
-                        video_ids.append(item["id"]["videoId"])
+                # USR-1: a failed channel listing fails the sync (it used to sync
+                # nothing and report success).
+                ensure_success(r, source_type="youtube", what=f"video search of {channel_id}")
+                for item in r.json().get("items", []):
+                    video_ids.append(item["id"]["videoId"])
 
         for video_id in video_ids[:max_videos]:
             try:
@@ -162,7 +167,22 @@ class YouTubeConnector(BaseConnector):
                 new_cursor = max(new_cursor, video_id)
                 yield doc, new_cursor
 
-            except TranscriptsDisabled:
-                _log.info("youtube: transcripts disabled for %s", video_id)
+            except ConnectorUnavailableError:
+                raise
             except Exception as exc:
-                _log.warning("youtube: skip %s: %s", video_id, exc)
+                # USR-1: a video whose transcript cannot be read is a counted
+                # failure (→ DLQ) — it used to be logged and skipped.
+                disabled = isinstance(exc, TranscriptsDisabled)
+                _log.warning("youtube: cannot read %s: %s", video_id, exc)
+                yield fetch_failure_document(
+                    config,
+                    doc_id=stable_doc_id(config, video_id),
+                    reason=(
+                        "transcripts are disabled for this video"
+                        if disabled
+                        else describe_fetch_error(exc)
+                    ),
+                    retryable=not disabled,
+                    source_url=f"https://www.youtube.com/watch?v={video_id}",
+                    metadata={"video_id": video_id},
+                ), new_cursor

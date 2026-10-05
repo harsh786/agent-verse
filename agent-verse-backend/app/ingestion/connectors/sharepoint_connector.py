@@ -12,7 +12,16 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorFetchError,
+    ConnectorUnavailableError,
+    describe_fetch_error,
+    fetch_failure_document,
+    is_retryable_fetch_error,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
     assert_source_url,
@@ -173,7 +182,9 @@ class SharePointConnector:
         files.extend(root_files)
         return files
 
-    async def download_file(self, site_id: str, item_id: str) -> str:
+    async def download_file(
+        self, site_id: str, item_id: str, *, require_url: bool = False
+    ) -> str:
         """Download file content as a UTF-8 string.
 
         Parameters
@@ -182,6 +193,9 @@ class SharePointConnector:
             SharePoint site ID.
         item_id : str
             DriveItem ID of the file.
+        require_url : bool
+            Raise :class:`ConnectorFetchError` when Graph gives no download URL
+            (the sync must not mistake an unreadable file for an empty one).
         """
         # Get download URL first
         meta = await self._get(f"sites/{site_id}/drive/items/{item_id}")
@@ -189,6 +203,8 @@ class SharePointConnector:
         if download_url:
             content_bytes = await self._download(download_url)
             return content_bytes.decode("utf-8", errors="replace")
+        if require_url:
+            raise ConnectorFetchError(f"sharepoint: item {item_id} has no download URL")
         return ""
 
     async def list_drives(self, site_id: str) -> list[dict[str, Any]]:
@@ -199,6 +215,10 @@ class SharePointConnector:
     async def get_file_metadata(self, site_id: str, item_id: str) -> dict[str, Any]:
         """Return metadata for a single file."""
         return await self._get(f"sites/{site_id}/drive/items/{item_id}")
+
+
+# CONNECTOR_REPLAY_KEY "kind" of a failed SharePoint file download.
+_REPLAY_KIND = "sharepoint_file"
 
 
 @register("sharepoint", feature_flag="ingestion_connector_sharepoint_enabled")
@@ -250,7 +270,25 @@ class SharePointSourceConnector(BaseConnector):
                 continue
             if modified:
                 new_cursor = max(new_cursor, modified)
-            content = await client.download_file(site_id, item_id)
+            try:
+                content = await client.download_file(site_id, item_id, require_url=True)
+            except ConnectorUnavailableError:
+                raise
+            except Exception as exc:
+                # USR-1/USR-4: an unreadable file is a counted failure (→ DLQ,
+                # retried by re-fetching it), not silently skipped.
+                yield fetch_failure_document(
+                    config,
+                    doc_id=stable_doc_id(config, item_id),
+                    reason=describe_fetch_error(exc),
+                    retryable=is_retryable_fetch_error(exc)
+                    and not isinstance(exc, ConnectorFetchError),
+                    source_url=meta.get("webUrl", ""),
+                    title=meta.get("name", ""),
+                    replay={"kind": _REPLAY_KIND, "site_id": site_id, "item_id": item_id},
+                    metadata={"sharepoint_item_id": item_id},
+                ), new_cursor  # the DLQ replay re-fetches it: the cursor may pass it
+                continue
             if not content.strip():
                 continue
             doc = RawDocument(
@@ -265,3 +303,28 @@ class SharePointSourceConnector(BaseConnector):
                 metadata={"sharepoint_item_id": item_id, "source_type": "sharepoint"},
             )
             yield doc, new_cursor
+
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Download again a file a sync could not read (DLQ retry)."""
+        from app.ingestion.source_config import RawDocument
+
+        site_id = str(reference.get("site_id") or "")
+        item_id = str(reference.get("item_id") or "")
+        if reference.get("kind") != _REPLAY_KIND or not site_id or not item_id:
+            raise ValueError(f"not a SharePoint file replay reference: {reference!r}")
+        client = self._client(config)
+        meta = await client.get_file_metadata(site_id, item_id)
+        content = await client.download_file(site_id, item_id, require_url=True)
+        yield RawDocument(
+            doc_id=stable_doc_id(config, item_id),
+            source_id=config.source_id,
+            tenant_id=config.tenant_id,
+            source_url=meta.get("webUrl", ""),
+            title=meta.get("name", ""),
+            content=content.encode(),
+            content_type="text/plain",
+            modified_at=meta.get("lastModifiedDateTime", ""),
+            metadata={"sharepoint_item_id": item_id, "source_type": "sharepoint"},
+        )

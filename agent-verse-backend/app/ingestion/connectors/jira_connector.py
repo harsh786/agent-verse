@@ -10,7 +10,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ensure_success,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -90,9 +95,9 @@ class JiraConnector(BaseConnector):
                     },
                     auth=auth,
                 )
-                if not r.is_success:
-                    _log.warning("jira: search failed %d: %s", r.status_code, r.text[:200])
-                    break
+                # USR-1: a failed search (auth, bad JQL, outage) fails the sync —
+                # it used to end it as an empty success.
+                ensure_success(r, source_type="jira", what="issue search")
 
                 data = r.json()
                 issues = data.get("issues", [])

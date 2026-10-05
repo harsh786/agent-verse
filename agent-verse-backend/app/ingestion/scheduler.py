@@ -718,13 +718,25 @@ async def _sync_source_async(
         }
 
     except Exception as exc:
+        from app.ingestion.base_connector import ConnectorPartialFailureError
+
         _log.exception("sync failed for source=%s: %s", source_id, exc)
+        # USR-1: the source-level failure is itself counted (a connection or
+        # auth failure used to leave the job at 0 failures); units a connector
+        # could not read count one each.
+        partial = isinstance(exc, ConnectorPartialFailureError)
         job.docs_indexed = docs_indexed
         job.docs_skipped = docs_skipped
-        job.docs_failed = docs_failed
-        await tracker.complete_job(job, error=str(exc))
+        job.docs_failed = docs_failed + (exc.failed_units if partial else 1)
+        await tracker.complete_job(
+            job, error=str(exc) or type(exc).__name__, partial=partial
+        )
         await source_store.mark_synced(
-            source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=1
+            source_id,
+            tenant_id,
+            docs_indexed=docs_indexed,
+            chunks=job.chunks_created,
+            failed=job.docs_failed,
         )
         # Celery retry
         # The retry acquires the lock itself (this run releases it below).

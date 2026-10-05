@@ -1014,9 +1014,14 @@ async def _run_sync(
         await tracker.complete_job(job, cancelled=cancelled)
 
     except Exception as exc:
+        from app.ingestion.base_connector import ConnectorPartialFailureError
+
         _log.error("sync_error source=%s: %s", source.source_id, exc)
-        failed += 1
-        await tracker.complete_job(job, error=str(exc))
+        partial = isinstance(exc, ConnectorPartialFailureError)
+        units = exc.failed_units if partial else 1
+        failed += units
+        job.docs_failed += units
+        await tracker.complete_job(job, error=str(exc) or type(exc).__name__, partial=partial)
     finally:
         # Persist stats + advance last_synced_at/cursor so the beat due-scan
         # reschedules the next sync one interval out (item 6 durability).

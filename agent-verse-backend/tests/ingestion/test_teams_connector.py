@@ -8,6 +8,8 @@ import pytest
 
 from app.ingestion.connectors.teams_connector import TeamsConnector
 from app.ingestion.source_config import SourceConfig, SourceFamily
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorPartialFailureError
 
 
 def _config(**cc: Any) -> SourceConfig:
@@ -170,7 +172,7 @@ async def test_get_delta_uses_explicit_channel_ids_and_cursor_filter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_delta_breaks_on_failed_response() -> None:
+async def test_get_delta_counts_a_failed_response() -> None:
     channels_resp = MagicMock()
     channels_resp.is_success = True
     channels_resp.json = MagicMock(return_value={"value": [{"id": "chan-1"}]})
@@ -187,6 +189,8 @@ async def test_get_delta_breaks_on_failed_response() -> None:
         patch.object(connector, "_get_token", AsyncMock(return_value="tok")),
         patch("httpx.AsyncClient", return_value=client),
     ):
-        docs = [d async for d in connector.get_delta(cfg, None)]
+        docs, exc = await drain(connector.get_delta(cfg, None))
 
     assert docs == []
+    # USR-1: the failure is counted, never an empty success.
+    assert isinstance(exc, ConnectorPartialFailureError), exc

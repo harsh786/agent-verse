@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     row_identity,
     stable_doc_id,
 )
@@ -59,10 +60,22 @@ def _dig(obj: Any, path: str) -> Any:
     return cur
 
 
-def _extract_records(payload: Any, records_path: str) -> list[Any]:
+def _extract_records(payload: Any, records_path: str, *, strict: bool = False) -> list[Any]:
+    """The record list of ``payload``.
+
+    ``strict`` (a sync): a response with no record list where one was expected
+    raises :class:`ConnectorFetchError` — an error body or a wrong
+    ``records_path`` used to read as "0 records", a successful empty sync.
+    """
     if records_path:
         found = _dig(payload, records_path)
-        return list(found) if isinstance(found, list) else []
+        if isinstance(found, list):
+            return list(found)
+        if strict:
+            raise ConnectorFetchError(
+                f"http: the response has no record list at records_path {records_path!r}"
+            )
+        return []
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
@@ -70,6 +83,11 @@ def _extract_records(payload: Any, records_path: str) -> list[Any]:
             value = payload.get(key)
             if isinstance(value, list):
                 return value
+    if strict:
+        raise ConnectorFetchError(
+            "http: the response holds no record list (a top-level list, or "
+            "results / data / items / records); set records_path"
+        )
     return []
 
 
@@ -108,8 +126,8 @@ class HttpApiConnector(BaseConnector):
         cc = config.connection_config
         url = str(cc.get("url", "") or "")
         if not url:
-            _log.error("http_connector: no url in connection_config")
-            return
+            # USR-1: nothing can be fetched — fail, never an empty success.
+            raise ConnectorFetchError("http: connection_config.url is required")
         # SSRF egress guard — fail closed before any request.
         assert_public_url(url, context="http_connector.get_delta")
 
@@ -121,7 +139,7 @@ class HttpApiConnector(BaseConnector):
         records_path = str(cc.get("records_path", ""))
 
         payload = await self._fetch(config, cursor=cursor)
-        records = _extract_records(payload, records_path)
+        records = _extract_records(payload, records_path, strict=True)
 
         new_cursor = cursor or ""
         emitted = 0

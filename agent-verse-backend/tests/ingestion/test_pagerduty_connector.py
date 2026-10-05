@@ -8,6 +8,8 @@ import pytest
 
 from app.ingestion.connectors.pagerduty_connector import PagerDutyConnector
 from app.ingestion.source_config import SourceConfig, SourceFamily
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorFetchError
 
 
 def _config(**cc: Any) -> SourceConfig:
@@ -137,16 +139,18 @@ async def test_get_delta_stops_on_empty_page() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_delta_breaks_on_failed_response() -> None:
+async def test_get_delta_fails_on_failed_response() -> None:
     fail_resp = MagicMock()
     fail_resp.is_success = False
     client = _mock_async_client(get_side_effect=[fail_resp])
 
     cfg = _config(api_token="tok")
     with patch("httpx.AsyncClient", return_value=client):
-        docs = [d async for d in PagerDutyConnector().get_delta(cfg, None)]
+        docs, exc = await drain(PagerDutyConnector().get_delta(cfg, None))
 
     assert docs == []
+    # USR-1: the failure is counted, never an empty success.
+    assert isinstance(exc, ConnectorFetchError), exc
 
 
 @pytest.mark.asyncio

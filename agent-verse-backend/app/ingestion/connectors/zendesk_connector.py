@@ -12,7 +12,12 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import ConnectorEgressBlockedError
 from app.ingestion.connector_registry import register
 
@@ -99,6 +104,7 @@ class ZendeskConnector(BaseConnector):
         ingest_types = cc.get("ingest_types") or ["tickets"]
         new_cursor = cursor or ""
 
+        failures = UnitFailures("zendesk")
         async with httpx.AsyncClient(timeout=30) as client:
             if "tickets" in ingest_types:
                 # Zendesk Incremental Ticket Export
@@ -112,6 +118,7 @@ class ZendeskConnector(BaseConnector):
                 while url:
                     r = await client.get(url, params=params, auth=auth)
                     if not r.is_success:
+                        failures.add("tickets", r)
                         break
                     data = r.json()
                     for ticket in data.get("tickets", []):
@@ -151,6 +158,7 @@ class ZendeskConnector(BaseConnector):
                 while url:
                     r = await client.get(url, params=params, auth=auth)
                     if not r.is_success:
+                        failures.add("help center articles", r)
                         break
                     data = r.json()
                     for article in data.get("articles", []):
@@ -179,3 +187,6 @@ class ZendeskConnector(BaseConnector):
                     next_page = data.get("next_page")
                     url = _check_next_page(next_page, base) if next_page else None
                     params = {}
+        # USR-1: an unreadable ticket export / article listing fails the sync
+        # (partial) — it used to end it as an empty success.
+        failures.raise_if_any()

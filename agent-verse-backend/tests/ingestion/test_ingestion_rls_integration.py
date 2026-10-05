@@ -211,7 +211,7 @@ async def test_manual_sync_persists_job_cursor_and_stats_under_the_app_role(
     job = await _row(dbs.admin, "SELECT * FROM ingestion_jobs WHERE id = :id", id=job_id)
     assert job is not None, "job row never persisted (INSERT rejected by RLS)"
     assert job["tenant_id"] == TENANT_A
-    assert job["status"] == "completed"
+    assert job["status"] == "partial"  # USR-1: one document failed
     assert job["triggered_by"] == "manual"
     assert (job["docs_indexed"], job["docs_failed"], job["chunks_created"]) == (1, 1, 4)
     assert job["cursor_after"] == "c2"
@@ -368,7 +368,8 @@ async def test_scheduled_sync_runs_under_tenant_rls(dbs: SimpleNamespace) -> Non
 
     assert result["docs_indexed"] == 1 and result["docs_failed"] == 1, result
     job = await _row(dbs.admin, "SELECT * FROM ingestion_jobs WHERE id = :id", id=result["job_id"])
-    assert job is not None and job["status"] == "completed" and job["cursor_after"] == "k2"
+    # USR-1: one document failed → partial, never "completed".
+    assert job is not None and job["status"] == "partial" and job["cursor_after"] == "k2"
     dlq = await _row(dbs.admin, "SELECT * FROM ingestion_dlq WHERE source_id = 'src-worker'")
     assert dlq is not None, "DLQ INSERT never landed"
     assert (dlq["tenant_id"], dlq["doc_id"], dlq["job_id"]) == (TENANT_A, "w2", result["job_id"])

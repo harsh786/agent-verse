@@ -11,7 +11,14 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    ensure_success,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -67,45 +74,57 @@ class TeamsConnector(BaseConnector):
         headers = {"Authorization": f"Bearer {token}"}
         new_cursor = cursor or ""
 
+        failures = UnitFailures("teams")
         async with httpx.AsyncClient(timeout=30) as client:
             # If no specific channels, fetch all channels in the team
             if not channel_ids and team_id:
                 r = await client.get(f"{_GRAPH_BASE}/teams/{team_id}/channels", headers=headers)
-                if r.is_success:
-                    channel_ids = [ch["id"] for ch in r.json().get("value", [])]
+                # USR-1: no channel listing means nothing can be read — fail.
+                ensure_success(r, source_type="teams", what=f"channel listing of team {team_id}")
+                channel_ids = [ch["id"] for ch in r.json().get("value", [])]
 
             for channel_id in channel_ids:
-                url = f"{_GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages"
-                if cursor:
-                    url += f"?$filter=lastModifiedDateTime gt {cursor}"
+                try:
+                    url = f"{_GRAPH_BASE}/teams/{team_id}/channels/{channel_id}/messages"
+                    if cursor:
+                        url += f"?$filter=lastModifiedDateTime gt {cursor}"
 
-                while url:
-                    r = await client.get(url, headers=headers)
-                    if not r.is_success:
-                        _log.warning("teams: %s → %d", url, r.status_code)
-                        break
-                    data = r.json()
-                    for msg in data.get("value", []):
-                        body_content = msg.get("body", {}).get("content", "")
-                        if not body_content or body_content == "<systemEventMessage/>":
-                            continue
-                        ts = msg.get("lastModifiedDateTime", "")
-                        new_cursor = max(new_cursor, ts)
-                        author = msg.get("from", {}).get("user", {}).get("displayName", "Unknown")
-                        text = f"[Teams] {author}: {body_content}"
-                        doc = RawDocument(
-                            doc_id=stable_doc_id(config, team_id, channel_id, msg.get("id")),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=msg.get(
-                                "webUrl", f"teams://{team_id}/{channel_id}/{msg.get('id')}"
-                            ),
-                            content=text.encode(),
-                            content_type="text/plain",
-                            metadata={"author": author, "channel": channel_id, "ts": ts},
-                        )
-                        yield doc, new_cursor
-                    url = data.get("@odata.nextLink")
+                    while url:
+                        r = await client.get(url, headers=headers)
+                        if not r.is_success:
+                            failures.add(f"channel {channel_id}", r)
+                            break
+                        data = r.json()
+                        for msg in data.get("value", []):
+                            body_content = msg.get("body", {}).get("content", "")
+                            if not body_content or body_content == "<systemEventMessage/>":
+                                continue
+                            ts = msg.get("lastModifiedDateTime", "")
+                            new_cursor = max(new_cursor, ts)
+                            author = (
+                                msg.get("from", {}).get("user", {}).get("displayName", "Unknown")
+                            )
+                            text = f"[Teams] {author}: {body_content}"
+                            doc = RawDocument(
+                                doc_id=stable_doc_id(config, team_id, channel_id, msg.get("id")),
+                                source_id=config.source_id,
+                                tenant_id=config.tenant_id,
+                                source_url=msg.get(
+                                    "webUrl", f"teams://{team_id}/{channel_id}/{msg.get('id')}"
+                                ),
+                                content=text.encode(),
+                                content_type="text/plain",
+                                metadata={"author": author, "channel": channel_id, "ts": ts},
+                            )
+                            yield doc, new_cursor
+                        url = data.get("@odata.nextLink")
+                except ConnectorUnavailableError:
+                    raise
+                except Exception as exc:  # transport / response errors: this unit only
+                    failures.add(f"channel {channel_id}", exc)
+        # USR-1: an unreadable unit fails the sync (partial) instead of being
+        # logged and skipped with 0 failures reported.
+        failures.raise_if_any()
 
     async def _get_token(self, config: SourceConfig) -> str:
         """Acquire OAuth2 token via client credentials flow."""

@@ -182,8 +182,10 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
             job.status === 'completed' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' :
             job.status === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' :
+            // USR-1: some documents / parts of the source could not be read.
+            job.status === 'partial' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300' :
             'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-          }`}>{String(job.status)}</span>
+          }`} data-testid="sync-job-status">{job.status === 'partial' ? 'partially failed' : String(job.status)}</span>
           <span className="text-muted-foreground text-xs">{String(job.sync_mode)} sync</span>
         </div>
         <dl className="grid grid-cols-2 gap-1 text-xs">

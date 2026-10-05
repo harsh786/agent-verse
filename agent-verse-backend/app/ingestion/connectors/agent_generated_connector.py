@@ -11,7 +11,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -59,9 +64,13 @@ class AgentGeneratedConnector(BaseConnector):
             source_types,
         )
 
-        # Yield nothing in pull mode — streaming mode via on_webhook is primary
-        # Implement DB query when DB integration is available
-        return
+        # Pull mode has no data source: outputs arrive as goal.completed events
+        # (on_webhook). Yielding nothing here reported every scheduled / manual
+        # sync as "completed" with 0 failures (USR-1) — refuse it honestly.
+        raise ConnectorUnavailableError(
+            "agent_generated sources are push-only: goal outputs are indexed as they "
+            "complete (goal.completed events); a pull sync has nothing to fetch"
+        )
         yield  # makes this an async generator (unreachable, intentional)
 
     async def on_webhook(

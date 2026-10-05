@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
     stable_doc_id,
 )
@@ -164,11 +165,22 @@ class MQTTConnector(BaseConnector):
                 }
             )
 
+        # The broker answers the CONNECT asynchronously: a refused login (bad
+        # credentials, not authorised) arrives as a failing CONNACK on paho's
+        # network thread, after which no message ever comes. It used to read as
+        # a quiet topic — a successful, empty sync (USR-1).
+        connack: dict[str, Any] = {}
+
+        def on_connect(client, userdata, flags, reason_code, properties=None):
+            connack["failure"] = bool(getattr(reason_code, "is_failure", False))
+            connack["reason"] = str(reason_code)
+
         async with pin_source_hosts([(host, port)], context="mqtt_connector"):
             client = _new_client(mqtt)
             if cc.get("username"):
                 client.username_pw_set(cc["username"], cc.get("password", ""))
             client.on_message = on_message
+            client.on_connect = on_connect
             await run_blocking(client.connect, host, port, 60)
             try:
                 for topic in topics:
@@ -177,6 +189,15 @@ class MQTTConnector(BaseConnector):
                 await asyncio.sleep(timeout_seconds)
             finally:
                 await run_blocking(_shutdown, client)
+
+        if not connack:
+            raise ConnectorFetchError(
+                f"mqtt: no CONNACK from broker {host}:{port} within {timeout_seconds:.0f}s"
+            )
+        if connack.get("failure"):
+            raise ConnectorFetchError(
+                f"mqtt: broker {host}:{port} refused the connection: {connack.get('reason')}"
+            )
 
         import time as _time
 

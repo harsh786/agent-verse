@@ -769,7 +769,9 @@ async def test_run_sync_happy_path_updates_job_and_source_store() -> None:
         await _run_sync(source, pipeline, tracker, job_id, source_store)
 
     job = tracker.get_job(job_id)
-    assert job.status == "completed"
+    # USR-1: a failed document makes the job partial, never "completed".
+    assert job.status == "partial"
+    assert "1 document(s) failed" in job.error_message
     assert job.docs_indexed == 1
     assert job.docs_skipped == 1
     assert job.docs_failed == 1

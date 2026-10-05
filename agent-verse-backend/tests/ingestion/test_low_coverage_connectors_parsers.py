@@ -26,6 +26,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.ingestion.source_config import SourceConfig, SourceFamily
+from tests.ingestion._drain import content_docs, drain, failure_docs
+from app.ingestion.base_connector import ConnectorFetchError, ConnectorPartialFailureError
 
 
 def _config(source_type: str, conn_config: dict | None = None) -> SourceConfig:
@@ -208,7 +210,7 @@ class TestGCSConnectorGetDelta:
             docs = _run(_collect(GCSConnector().get_delta(config, None)))
         assert docs == []
 
-    def test_download_exception_is_skipped_not_raised(self):
+    def test_download_exception_is_a_counted_failure(self):
         from app.ingestion.connectors.gcs_connector import GCSConnector
 
         storage_mock = MagicMock()
@@ -222,8 +224,12 @@ class TestGCSConnectorGetDelta:
         config = _config("gcs", {"bucket": "b1"})
         with patch.dict("sys.modules", _fake_module_tree("google.cloud.storage", storage_mock)):
             docs = _run(_collect(GCSConnector().get_delta(config, None)))
-        assert len(docs) == 1
-        assert docs[0][0].source_url == "gs://b1/good.txt"
+        # USR-1/USR-4: the unreadable blob is reported (→ DLQ), the other synced.
+        (good,) = content_docs(docs)
+        assert good.source_url == "gs://b1/good.txt"
+        (bad,) = failure_docs(docs)
+        assert "network error" in bad.metadata["connector_failure"]
+        assert bad.metadata["connector_replay"]["name"] == "bad.txt"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -436,7 +442,7 @@ class TestGitHubConnectorGetDelta:
         assert docs == []
         MockIngestor.return_value.ingest_repo.assert_not_called()
 
-    def test_repo_error_is_caught_and_continues(self):
+    def test_repo_error_is_counted_and_others_continue(self):
         from app.ingestion.connectors.github_connector import GitHubConnector
 
         config = _config(
@@ -449,9 +455,12 @@ class TestGitHubConnectorGetDelta:
             MockIngestor.return_value.ingest_repo = AsyncMock(
                 side_effect=[RuntimeError("404"), good_chunk]
             )
-            docs = _run(_collect(GitHubConnector().get_delta(config, None)))
+            docs, exc = _run(drain(GitHubConnector().get_delta(config, None)))
         assert len(docs) == 1
         assert docs[0][0].content == b"ok"
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "acme/broken" in str(exc)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -766,7 +775,7 @@ class TestSlackConnectorGetDelta:
         assert len(docs) == 1
         assert docs[0][0].content == b"new"
 
-    def test_channel_error_is_caught_and_continues(self):
+    def test_channel_error_is_counted_and_others_continue(self):
         from app.ingestion.connectors.slack_connector import SlackConnector
 
         config = _config("slack", {"bot_token": "t", "channels": ["bad", "ok"]})
@@ -775,9 +784,12 @@ class TestSlackConnectorGetDelta:
             MockIngestor.return_value.ingest_channel = AsyncMock(
                 side_effect=[RuntimeError("rate_limited"), good_chunks]
             )
-            docs = _run(_collect(SlackConnector().get_delta(config, None)))
+            docs, exc = _run(drain(SlackConnector().get_delta(config, None)))
         assert len(docs) == 1
         assert docs[0][0].content == b"fine"
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "bad" in str(exc)
 
     def test_supports_streaming_true(self):
         from app.ingestion.connectors.slack_connector import SlackConnector
@@ -810,12 +822,15 @@ class TestPDFFileConnector:
         result = _run(PDFFileConnector().validate_connection(_config("pdf_file")))
         assert result.ok is True
 
-    def test_no_urls_yields_nothing(self):
+    def test_no_urls_fails_the_sync(self):
         from app.ingestion.connectors.pdf_file_connector import PDFFileConnector
 
         config = _config("pdf_file", {})
-        docs = _run(_collect(PDFFileConnector().get_delta(config, None)))
+        docs, exc = _run(drain(PDFFileConnector().get_delta(config, None)))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorFetchError), exc
+        assert "no urls" in str(exc)
 
     def test_fetches_and_yields_document(self):
         from app.ingestion.connectors.pdf_file_connector import PDFFileConnector
@@ -831,7 +846,7 @@ class TestPDFFileConnector:
         assert doc.title == "report.pdf"
         assert cursor == "http://example.com/report.pdf"
 
-    def test_fetch_error_is_skipped(self):
+    def test_fetch_error_is_a_counted_failure(self):
         from app.ingestion.connectors.pdf_file_connector import PDFFileConnector
 
         config = _config(
@@ -841,8 +856,10 @@ class TestPDFFileConnector:
         bad_client = _mock_httpx_get(status_ok=False)
         with patch("httpx.AsyncClient", side_effect=[bad_client, good_client]):
             docs = _run(_collect(PDFFileConnector().get_delta(config, None)))
-        assert len(docs) == 1
-        assert docs[0][0].content == b"good content"
+        (good,) = content_docs(docs)
+        assert good.content == b"good content"
+        (bad,) = failure_docs(docs)  # USR-1: counted, not skipped
+        assert bad.source_url == "http://example.com/bad.pdf"
 
 
 class TestDOCXFileConnector:
@@ -865,14 +882,15 @@ class TestDOCXFileConnector:
         assert "wordprocessingml" in doc.content_type
         assert doc.title == "doc.docx"
 
-    def test_fetch_error_is_skipped(self):
+    def test_fetch_error_is_a_counted_failure(self):
         from app.ingestion.connectors.pdf_file_connector import DOCXFileConnector
 
         config = _config("docx_file", {"urls": ["http://example.com/bad.docx"]})
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_httpx_get(status_ok=False)
             docs = _run(_collect(DOCXFileConnector().get_delta(config, None)))
-        assert docs == []
+        (bad,) = failure_docs(docs)  # USR-1: counted, not skipped
+        assert bad.source_url == "http://example.com/bad.docx" and bad.content == b""
 
 
 # ═══════════════════════════════════════════════════════════════════════════

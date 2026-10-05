@@ -11,7 +11,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -62,49 +68,58 @@ class SalesforceConnector(BaseConnector):
         headers = {"Authorization": f"Bearer {token}"}
         new_cursor = cursor or ""
 
+        failures = UnitFailures("salesforce")
         async with source_client(timeout=30) as client:
             for sobject in sobjects:
-                # Discover fields if not specified
-                fields = fields_map.get(sobject) or await self._get_fields(
-                    client, instance_url, token, sobject
-                )
-                soql_fields = ", ".join(fields[:50])  # SOQL field limit
-                soql = f"SELECT {soql_fields} FROM {sobject}"
-                if cursor:
-                    soql += f" WHERE SystemModstamp > {cursor}"
-                soql += f" ORDER BY SystemModstamp ASC LIMIT {batch_size}"
+                try:
+                    # Discover fields if not specified
+                    fields = fields_map.get(sobject) or await self._get_fields(
+                        client, instance_url, token, sobject
+                    )
+                    soql_fields = ", ".join(fields[:50])  # SOQL field limit
+                    soql = f"SELECT {soql_fields} FROM {sobject}"
+                    if cursor:
+                        soql += f" WHERE SystemModstamp > {cursor}"
+                    soql += f" ORDER BY SystemModstamp ASC LIMIT {batch_size}"
 
-                url: str | None = f"{instance_url}/services/data/v58.0/query"
-                params: dict = {"q": soql}
-                while url:
-                    r = await client.get(url, params=params, headers=headers)
-                    if not r.is_success:
-                        _log.warning("salesforce: %s %d", sobject, r.status_code)
-                        break
-                    data = r.json()
-                    for record in data.get("records", []):
-                        modified = record.get("SystemModstamp", "")
-                        new_cursor = max(new_cursor, modified)
-                        record.pop("attributes", None)
-                        text_parts = [f"{k}: {v}" for k, v in record.items() if v is not None]
-                        text = f"SObject: {sobject}\n" + "\n".join(text_parts)
-                        doc = RawDocument(
-                            doc_id=stable_doc_id(config, sobject, record.get("Id")),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=f"{instance_url}/lightning/r/{sobject}/{record.get('Id')}/view",
-                            content=text.encode(),
-                            content_type="text/plain",
-                            metadata={
-                                "sobject": sobject,
-                                "id": record.get("Id"),
-                                "modified": modified,
-                            },
-                        )
-                        yield doc, new_cursor
-                    next_url = data.get("nextRecordsUrl")
-                    url = f"{instance_url}{next_url}" if next_url else None
-                    params = {}
+                    url: str | None = f"{instance_url}/services/data/v58.0/query"
+                    params: dict = {"q": soql}
+                    while url:
+                        r = await client.get(url, params=params, headers=headers)
+                        if not r.is_success:
+                            failures.add(f"SObject {sobject}", r)
+                            break
+                        data = r.json()
+                        for record in data.get("records", []):
+                            modified = record.get("SystemModstamp", "")
+                            new_cursor = max(new_cursor, modified)
+                            record.pop("attributes", None)
+                            text_parts = [f"{k}: {v}" for k, v in record.items() if v is not None]
+                            text = f"SObject: {sobject}\n" + "\n".join(text_parts)
+                            doc = RawDocument(
+                                doc_id=stable_doc_id(config, sobject, record.get("Id")),
+                                source_id=config.source_id,
+                                tenant_id=config.tenant_id,
+                                source_url=f"{instance_url}/lightning/r/{sobject}/{record.get('Id')}/view",
+                                content=text.encode(),
+                                content_type="text/plain",
+                                metadata={
+                                    "sobject": sobject,
+                                    "id": record.get("Id"),
+                                    "modified": modified,
+                                },
+                            )
+                            yield doc, new_cursor
+                        next_url = data.get("nextRecordsUrl")
+                        url = f"{instance_url}{next_url}" if next_url else None
+                        params = {}
+                except ConnectorUnavailableError:
+                    raise
+                except Exception as exc:  # transport / response errors: this unit only
+                    failures.add(f"SObject {sobject}", exc)
+        # USR-1: an unreadable unit fails the sync (partial) instead of being
+        # logged and skipped with 0 failures reported.
+        failures.raise_if_any()
 
     async def _authenticate(self, config: SourceConfig) -> tuple[str, str]:
 

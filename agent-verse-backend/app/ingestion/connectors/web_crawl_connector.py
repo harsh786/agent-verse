@@ -20,7 +20,15 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorFetchError,
+    ConnectorUnavailableError,
+    describe_fetch_error,
+    fetch_failure_document,
+    is_retryable_fetch_error,
+)
 from app.ingestion.connector_egress import (
     assert_source_url,
     source_client,
@@ -116,8 +124,27 @@ class WebCrawlConnector(BaseConnector):
         include_re = re.compile(include_pat) if include_pat else None
         exclude_re = re.compile(exclude_pat) if exclude_pat else None
 
+        if not seed_urls and not sitemap_url:
+            # USR-1: nothing to fetch is a misconfiguration, not an empty success.
+            raise ConnectorFetchError("web_crawl: no seed_urls (or sitemap_url) configured")
+
         urls_to_visit = list(seed_urls[:max_pages])
+        # URLs the tenant configured (the seeds; the sitemap itself below): any
+        # failure to fetch one is a counted failure. A URL the site supplied (a
+        # sitemap entry, a link on a page) counts only when retrying can help —
+        # a dead or blocked link is the site's, not the sync's.
+        requested: set[str] = set(urls_to_visit)
         visited = 0
+
+        def _failure(url: str, error: object, *, retryable: bool) -> RawDocument:
+            return fetch_failure_document(
+                config,
+                doc_id=f"web://{hashlib.md5(url.encode()).hexdigest()}",
+                reason=describe_fetch_error(error),
+                retryable=retryable,
+                source_url=url,
+                metadata={"original_url": url},
+            )
 
         import asyncio
 
@@ -138,10 +165,15 @@ class WebCrawlConnector(BaseConnector):
                         if loc not in urls_to_visit:
                             urls_to_visit.append(loc)
                 except Exception as exc:
-                    # The sitemap is optional discovery; seeds still crawl.
                     _log.warning("webcrawl_sitemap_failed url=%s: %s", sitemap_url[:200], exc)
                     if not urls_to_visit:
                         raise
+                    # Seeds still crawl, but the configured sitemap is a counted
+                    # failure (USR-1) — it used to be logged only.
+                    yield (
+                        _failure(sitemap_url, exc, retryable=is_retryable_fetch_error(exc)),
+                        json.dumps(sorted(new_seen)),
+                    )
             while urls_to_visit and visited < max_pages:
                 url = urls_to_visit.pop(0)
                 url_hash = hashlib.md5(url.encode()).hexdigest()
@@ -159,6 +191,11 @@ class WebCrawlConnector(BaseConnector):
                 if not source_url_is_allowed(url, context="web_crawl.fetch"):
                     _log.warning("webcrawl_url_blocked url=%s", url[:200])
                     new_seen.add(url_hash)
+                    if url in requested:
+                        yield (
+                            _failure(url, "blocked by the egress policy", retryable=False),
+                            json.dumps(sorted(new_seen)),
+                        )
                     continue
 
                 try:
@@ -175,11 +212,25 @@ class WebCrawlConnector(BaseConnector):
                         new_seen.add(url_hash)
                         continue
                     if response.status_code >= 400:
+                        retryable = is_retryable_fetch_error(response)
+                        if url in requested or retryable:
+                            # USR-1: a page that could not be fetched is a counted
+                            # failure (→ DLQ); it used to be skipped silently.
+                            yield (
+                                _failure(url, response, retryable=retryable),
+                                json.dumps(sorted(new_seen)),
+                            )
+                        else:
+                            _log.info("webcrawl_dead_link url=%s status=%d", url[:200],
+                                      response.status_code)
                         continue
                     response.headers.get("content-type", "text/html")
                     html_bytes = response.content
+                except ConnectorUnavailableError:
+                    raise
                 except Exception as exc:
-                    _log.debug("webcrawl_fetch_error url=%s: %s", url, exc)
+                    _log.warning("webcrawl_fetch_error url=%s: %s", url[:200], exc)
+                    yield _failure(url, exc, retryable=True), json.dumps(sorted(new_seen))
                     continue
 
                 visited += 1

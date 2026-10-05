@@ -137,6 +137,17 @@ describe('SourceDetailDrawer', () => {
     expect(screen.getByText('10')).toBeInTheDocument(); // docs_indexed
   });
 
+  test('USR-1: a partially failed sync is shown as such, with its failures and reason', async () => {
+    mockFetch({ syncStatus: { status: 'partial', sync_mode: 'incremental', docs_indexed: 4, docs_skipped: 0, docs_failed: 2, chunks_created: 9, error_message: '2 document(s) failed to sync; the failures are in the ingestion DLQ and are retried automatically' } });
+    renderDrawer();
+    await userEvent.click(screen.getByRole('button', { name: 'History' }));
+    const badge = await screen.findByTestId('sync-job-status');
+    expect(badge).toHaveTextContent('partially failed');
+    expect(badge.className).toContain('amber');
+    expect(screen.getByText('2')).toBeInTheDocument(); // docs_failed
+    expect(screen.getByText(/2 document\(s\) failed to sync/)).toBeInTheDocument();
+  });
+
   test('the Settings tab renders the source configuration', async () => {
     mockFetch();
     renderDrawer();

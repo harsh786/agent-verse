@@ -10,7 +10,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
@@ -66,70 +72,83 @@ class GitLabConnector(BaseConnector):
         headers = {"PRIVATE-TOKEN": token}
         new_cursor = cursor or ""
 
+        failures = UnitFailures("gitlab")
         async with source_client(timeout=30) as client:
             for project_id in project_ids:
-                # Issues
-                if "issues" in ingest_types:
-                    params: dict = {"per_page": 50, "order_by": "updated_at", "sort": "asc"}
-                    if cursor:
-                        params["updated_after"] = cursor
-                    url: str | None = f"{base}/api/v4/projects/{project_id}/issues"
-                    while url:
-                        r = await client.get(url, params=params, headers=headers)
-                        if not r.is_success:
-                            break
-                        for issue in r.json():
-                            updated = issue.get("updated_at", "")
-                            new_cursor = max(new_cursor, updated)
-                            text = f"# [{issue.get('iid')}] {issue.get('title')}\n\nStatus: {issue.get('state')}\nUpdated: {updated}\n\n{issue.get('description') or ''}"  # noqa: E501
-                            doc = RawDocument(
-                                doc_id=stable_doc_id(config, project_id, "issue", issue.get("iid")),
-                                source_id=config.source_id,
-                                tenant_id=config.tenant_id,
-                                source_url=issue.get("web_url", ""),
-                                content=text.encode(),
-                                content_type="text/plain",
-                                metadata={
-                                    "source_type": "gitlab",
-                                    "iid": issue.get("iid"),
-                                    "state": issue.get("state"),
-                                    "type": "issue",
-                                },
-                            )
-                            yield doc, new_cursor
-                        next_link = r.links.get("next", {}).get("url")
-                        url = next_link
-                        params = {}
+                try:
+                    # Issues
+                    if "issues" in ingest_types:
+                        params: dict = {"per_page": 50, "order_by": "updated_at", "sort": "asc"}
+                        if cursor:
+                            params["updated_after"] = cursor
+                        url: str | None = f"{base}/api/v4/projects/{project_id}/issues"
+                        while url:
+                            r = await client.get(url, params=params, headers=headers)
+                            if not r.is_success:
+                                failures.add(f"project {project_id} issues", r)
+                                break
+                            for issue in r.json():
+                                updated = issue.get("updated_at", "")
+                                new_cursor = max(new_cursor, updated)
+                                text = f"# [{issue.get('iid')}] {issue.get('title')}\n\nStatus: {issue.get('state')}\nUpdated: {updated}\n\n{issue.get('description') or ''}"  # noqa: E501
+                                doc = RawDocument(
+                                    doc_id=stable_doc_id(
+                                        config, project_id, "issue", issue.get("iid")
+                                    ),
+                                    source_id=config.source_id,
+                                    tenant_id=config.tenant_id,
+                                    source_url=issue.get("web_url", ""),
+                                    content=text.encode(),
+                                    content_type="text/plain",
+                                    metadata={
+                                        "source_type": "gitlab",
+                                        "iid": issue.get("iid"),
+                                        "state": issue.get("state"),
+                                        "type": "issue",
+                                    },
+                                )
+                                yield doc, new_cursor
+                            next_link = r.links.get("next", {}).get("url")
+                            url = next_link
+                            params = {}
 
-                # Merge Requests
-                if "merge_requests" in ingest_types:
-                    params = {"per_page": 50, "order_by": "updated_at", "sort": "asc"}
-                    if cursor:
-                        params["updated_after"] = cursor
-                    url = f"{base}/api/v4/projects/{project_id}/merge_requests"
-                    while url:
-                        r = await client.get(url, params=params, headers=headers)
-                        if not r.is_success:
-                            break
-                        for mr in r.json():
-                            updated = mr.get("updated_at", "")
-                            new_cursor = max(new_cursor, updated)
-                            text = f"# MR !{mr.get('iid')}: {mr.get('title')}\n\nStatus: {mr.get('state')}\nBranch: {mr.get('source_branch')} → {mr.get('target_branch')}\n\n{mr.get('description') or ''}"  # noqa: E501
-                            doc = RawDocument(
-                                doc_id=stable_doc_id(config, project_id, "mr", mr.get("iid")),
-                                source_id=config.source_id,
-                                tenant_id=config.tenant_id,
-                                source_url=mr.get("web_url", ""),
-                                content=text.encode(),
-                                content_type="text/plain",
-                                metadata={
-                                    "source_type": "gitlab",
-                                    "iid": mr.get("iid"),
-                                    "state": mr.get("state"),
-                                    "type": "merge_request",
-                                },
-                            )
-                            yield doc, new_cursor
-                        next_link = r.links.get("next", {}).get("url")
-                        url = next_link
-                        params = {}
+                    # Merge Requests
+                    if "merge_requests" in ingest_types:
+                        params = {"per_page": 50, "order_by": "updated_at", "sort": "asc"}
+                        if cursor:
+                            params["updated_after"] = cursor
+                        url = f"{base}/api/v4/projects/{project_id}/merge_requests"
+                        while url:
+                            r = await client.get(url, params=params, headers=headers)
+                            if not r.is_success:
+                                failures.add(f"project {project_id} merge requests", r)
+                                break
+                            for mr in r.json():
+                                updated = mr.get("updated_at", "")
+                                new_cursor = max(new_cursor, updated)
+                                text = f"# MR !{mr.get('iid')}: {mr.get('title')}\n\nStatus: {mr.get('state')}\nBranch: {mr.get('source_branch')} → {mr.get('target_branch')}\n\n{mr.get('description') or ''}"  # noqa: E501
+                                doc = RawDocument(
+                                    doc_id=stable_doc_id(config, project_id, "mr", mr.get("iid")),
+                                    source_id=config.source_id,
+                                    tenant_id=config.tenant_id,
+                                    source_url=mr.get("web_url", ""),
+                                    content=text.encode(),
+                                    content_type="text/plain",
+                                    metadata={
+                                        "source_type": "gitlab",
+                                        "iid": mr.get("iid"),
+                                        "state": mr.get("state"),
+                                        "type": "merge_request",
+                                    },
+                                )
+                                yield doc, new_cursor
+                            next_link = r.links.get("next", {}).get("url")
+                            url = next_link
+                            params = {}
+                except ConnectorUnavailableError:
+                    raise
+                except Exception as exc:  # transport / response errors: this unit only
+                    failures.add(f"project {project_id}", exc)
+        # USR-1: an unreadable unit fails the sync (partial) instead of being
+        # logged and skipped with 0 failures reported.
+        failures.raise_if_any()
