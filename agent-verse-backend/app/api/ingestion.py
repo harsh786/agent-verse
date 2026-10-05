@@ -262,8 +262,10 @@ async def validate_source(
         connector_cls = get_connector(body.source_type)
     except KeyError:
         connector_cls = None
-    if connector_cls is None:
         errors.append(f"No connector for source_type={body.source_type!r}")
+    except RuntimeError as exc:  # disabled by its feature flag / SDK missing
+        connector_cls = None
+        errors.append(str(exc))
     try:
         await _refuse_internal_destinations(body.source_type, body.connection_config)
     except HTTPException as exc:
@@ -315,6 +317,16 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
         family = SourceFamily(body.family)
     except ValueError as _b904_exc:
         raise HTTPException(status_code=422, detail=f"Unknown family: {body.family!r}") from _b904_exc  # noqa: E501
+
+    # TG-15: a connector the operator switched off cannot get new Sources.
+    from app.ingestion.connector_registry import ConnectorDisabledError, get_connector
+
+    try:
+        get_connector(body.source_type)
+    except ConnectorDisabledError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, RuntimeError):
+        pass  # unknown / not installed here: reported at validate / sync time
 
     await _refuse_internal_destinations(body.source_type, body.connection_config)
 

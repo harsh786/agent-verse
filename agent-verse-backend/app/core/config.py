@@ -379,6 +379,9 @@ class Settings(BaseSettings):
     # DuckDB executes tenant SQL in-process on the API/worker host; even
     # confined, it is off unless an operator enables it explicitly.
     ingestion_connector_duckdb_enabled: bool = False
+    # Kill switch for the MongoDB ingestion connector (TG-15): false refuses new
+    # MongoDB Sources, syncs (failed job with the reason) and health checks.
+    ingestion_connector_mongodb_enabled: bool = True
     # MongoDB ingestion connector bounds (C1 / MDB-12). A server that accepts and
     # then stalls used to block a sync (and the health check) forever. Every
     # wait is bounded: TCP connect, server selection, each socket read, and the
