@@ -7,6 +7,7 @@ import { ApiError, connectorsApi, type ConnectorResponse, type CatalogAuthField,
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
 import { friendlyConnectionError } from '@/lib/friendlyError';
+import { parseApiFieldErrors } from '@/lib/apiFieldErrors';
 import { connectorDisplayUrl, connectorLabel, connectorTypeLabel, isDsn, isHttpUrl, isMaskedSecret } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -459,12 +460,14 @@ function PasswordInput({
   placeholder,
   id,
   'aria-describedby': describedBy,
+  'aria-invalid': invalid,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
   id: string;
   'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
 }) {
   const [visible, setVisible] = useState(false);
   return (
@@ -476,6 +479,7 @@ function PasswordInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
         autoComplete="new-password"
         className="w-full border border-input rounded-lg px-3 py-2 pr-9 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
       />
@@ -508,6 +512,7 @@ function SmartAuthFields({
   authValues,
   connectorName,
   onChange,
+  errors = {},
 }: {
   authType: string;
   /** Resolved fields for this auth type (see resolveAuthFields). */
@@ -515,6 +520,8 @@ function SmartAuthFields({
   authValues: Record<string, string>;
   connectorName: string;
   onChange: (values: Record<string, string>) => void;
+  /** Save refusals (422) keyed by auth_config key. */
+  errors?: Record<string, string>;
 }) {
   const setField = (key: string, value: string) => {
     const next = { ...authValues, [key]: value };
@@ -615,6 +622,7 @@ function SmartAuthFields({
             field={field}
             value={authValues[field.key] ?? ''}
             hint={getFieldHint(connectorName, field.key, field.hint)}
+            error={errors[field.key]}
             onChange={(v) => setField(field.key, v)}
           />
         ))}
@@ -642,13 +650,20 @@ function AuthFieldInput({
   field,
   value,
   hint,
+  error,
   onChange,
 }: {
   field: AuthField;
   value: string;
   hint: string;
+  /** The backend's refusal for this field (422 on save). */
+  error?: string;
   onChange: (v: string) => void;
 }) {
+  const invalid = error ? true : undefined;
+  const errorText = error ? (
+    <p data-testid={`field-error-${field.key}`} className="mt-1 text-xs text-destructive">{error}</p>
+  ) : null;
   const hintId = `hint-${field.key}`;
   const inputId = `auth-${field.key}`;
   const describedBy = hint ? hintId : undefined;
@@ -670,11 +685,13 @@ function AuthFieldInput({
             checked={checked}
             onChange={(e) => onChange(e.target.checked ? 'true' : '')}
             aria-describedby={describedBy}
+            aria-invalid={invalid}
             className="h-4 w-4 rounded border-input accent-primary"
           />
           {field.label}
         </label>
         {hint && <HintText id={hintId} text={hint} />}
+        {errorText}
         {checked && field.warning && (
           <p className="mt-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
             {field.warning}
@@ -697,6 +714,7 @@ function AuthFieldInput({
           onChange={onChange}
           placeholder={shownPlaceholder}
           aria-describedby={describedBy}
+          aria-invalid={invalid}
         />
       ) : field.type === 'textarea' || field.type === 'file' ? (
         <>
@@ -709,6 +727,7 @@ function AuthFieldInput({
             spellCheck={false}
             autoComplete="off"
             aria-describedby={describedBy}
+            aria-invalid={invalid}
             style={field.secret ? ({ WebkitTextSecurity: 'disc' } as CSSProperties) : undefined}
             className={`${INPUT_CLS} font-mono resize-y`}
           />
@@ -733,6 +752,7 @@ function AuthFieldInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           aria-describedby={describedBy}
+          aria-invalid={invalid}
           className={INPUT_CLS}
         >
           {(field.options ?? []).map((o) => (
@@ -751,12 +771,43 @@ function AuthFieldInput({
           onChange={(e) => onChange(e.target.value)}
           placeholder={field.placeholder}
           aria-describedby={describedBy}
+          aria-invalid={invalid}
           className={INPUT_CLS}
         />
       )}
       {hint && <HintText id={hintId} text={hint} />}
+      {errorText}
     </div>
   );
+}
+
+/**
+ * A 422 save refusal as per-field messages (keys: auth_config keys, or "name").
+ * FastAPI 'loc' paths map directly; the MongoDB save policy answers a string
+ * naming the setting ("MongoDB setting 'tls: false' …"), the URI option, the
+ * auth mechanism, or X.509's missing client certificate.
+ */
+function connectorSaveFieldErrors(e: unknown, fields: AuthField[]): Record<string, string> {
+  if (!(e instanceof ApiError) || e.status !== 422) return {};
+  const out: Record<string, string> = {};
+  const parsed = parseApiFieldErrors(e);
+  for (const [path, msg] of Object.entries(parsed.fields)) {
+    if (path === 'name') out.name = msg;
+    else if (path.startsWith('auth_config.')) out[path.slice('auth_config.'.length)] = msg;
+  }
+  const text = parsed.general ?? '';
+  if (!text) return out;
+  const keys = new Set(fields.map((f) => f.key));
+  const uriKey = fields.find((f) => URI_KEYS.includes(f.key))?.key;
+  const setting = text.match(/MongoDB setting '([a-z_]+)/i)?.[1];
+  const target =
+    setting && keys.has(setting) ? setting
+      : /X509|X\.509/i.test(text) && keys.has('tls_client_cert') ? 'tls_client_cert'
+        : /auth(entication)? mechanism/i.test(text) && keys.has('auth_mechanism') ? 'auth_mechanism'
+          : /\bURI\b|connection string|must start with mongodb/i.test(text) ? uriKey
+            : undefined;
+  if (target && !out[target]) out[target] = text;
+  return out;
 }
 
 function unknownAuthTypeConfig(authType: string, authValues: Record<string, string>): AuthTypeConfig {
@@ -1053,6 +1104,8 @@ export function ConnectorsRegisteredPage() {
     return EMPTY_FORM;
   });
   const [formError, setFormError] = useState('');
+  /** 422 save refusals placed on their fields. */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [authFieldOverrides] = useState<CatalogAuthField[]>(() =>
     Array.isArray(prefill?.auth_fields) ? (prefill.auth_fields as CatalogAuthField[]) : []
   );
@@ -1093,8 +1146,13 @@ export function ConnectorsRegisteredPage() {
       setForm(EMPTY_FORM);
       setFormError('');
     },
-    // Backend refusals may quote the URI/host they rejected — show the reason only.
-    onError: (e: Error) => setFormError(friendlyConnectionError(e, 'Registration failed').message),
+    onMutate: () => setFieldErrors({}),
+    // Backend refusals may quote the URI/host they rejected — show the reason only;
+    // a 422 also goes under the field it names.
+    onError: (e: Error) => {
+      setFormError(friendlyConnectionError(e, 'Registration failed').message);
+      setFieldErrors(connectorSaveFieldErrors(e, authFields));
+    },
   });
 
   const unregisterMutation = useMutation({
@@ -1415,8 +1473,12 @@ export function ConnectorsRegisteredPage() {
                   value={form.name}
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                   placeholder="my-jira, github-org, slack-engineering…"
+                  aria-invalid={fieldErrors.name ? true : undefined}
                   className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                 />
+                {fieldErrors.name && (
+                  <p data-testid="field-error-name" className="text-xs text-destructive mt-1">{fieldErrors.name}</p>
+                )}
                 {nameTaken ? (
                   <p role="alert" className="text-xs text-destructive mt-1">
                     A connector named “{form.name.trim()}” already exists — give this connection its own name.
@@ -1495,6 +1557,7 @@ export function ConnectorsRegisteredPage() {
                     authValues={form.auth_values}
                     connectorName={connectorNameForHints}
                     onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
+                    errors={fieldErrors}
                   />
                   {authBlocker && (
                     <p data-testid="auth-blocker" className="pt-2 text-xs text-amber-700 dark:text-amber-300">{authBlocker}</p>

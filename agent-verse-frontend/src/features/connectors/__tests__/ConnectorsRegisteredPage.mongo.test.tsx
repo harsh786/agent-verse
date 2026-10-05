@@ -474,3 +474,50 @@ describe('A8 the table shows display_url', () => {
     expect(table.querySelector('a[href^="mongodb"]')).toBeNull();
   });
 });
+
+// ── 422 save refusals inline ─────────────────────────────────────────────────
+
+describe('422 save errors are shown on the field they name', () => {
+  const refuse = (detail: unknown): Handler => ({
+    match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { detail }, status: 422,
+  });
+  async function submitMongo(extra?: () => Promise<void>) {
+    renderPage(mongoPrefill);
+    await screen.findByTestId('register-modal');
+    await userEvent.type(screen.getByLabelText(/connection uri/i), 'mongodb://8.8.8.8:27017/shop?tlsInsecure=true');
+    if (extra) await extra();
+    await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
+  }
+
+  it('a refused URI option is shown under the Connection URI', async () => {
+    mockFetch([listOf([]), refuse("MongoDB URI option 'tlsInsecure' is not allowed: TLS certificate verification cannot be turned off; supply the server's CA as tls_ca_pem instead")]);
+    await submitMongo();
+    const uri = screen.getByLabelText(/connection uri/i);
+    await waitFor(() => expect(uri).toHaveAttribute('aria-invalid', 'true'));
+    expect(screen.getByTestId('field-error-url')).toHaveTextContent(/'tlsInsecure' is not allowed/);
+    expect(screen.getByRole('alert')).toBeInTheDocument(); // the modal still says it was refused
+  });
+
+  it('a refused setting is shown under that setting', async () => {
+    mockFetch([listOf([]), refuse("MongoDB setting 'tls: false' is not allowed: connections must use TLS")]);
+    await submitMongo();
+    expect(await screen.findByTestId('field-error-tls')).toHaveTextContent(/connections must use TLS/);
+  });
+
+  it('X.509 without a certificate points at the client certificate; a pydantic loc is mapped too', async () => {
+    mockFetch([listOf([]), refuse('MONGODB-X509 authentication needs the connector’s tls_client_cert and tls_client_private_key')]);
+    await submitMongo();
+    await userEvent.click(screen.getByRole('checkbox', { name: /use tls/i }));
+    expect(await screen.findByTestId('field-error-tls_client_cert')).toHaveTextContent(/X509/);
+  });
+
+  it('FastAPI loc-based 422s map to their auth_config key or the name', async () => {
+    mockFetch([listOf([]), refuse([
+      { loc: ['body', 'name'], msg: 'String should have at most 64 characters' },
+      { loc: ['body', 'auth_config', 'auth_source'], msg: 'Value error, bad auth source' },
+    ])]);
+    await submitMongo();
+    expect(await screen.findByTestId('field-error-name')).toHaveTextContent('at most 64 characters');
+    expect(screen.getByTestId('field-error-auth_source')).toHaveTextContent('bad auth source');
+  });
+});
