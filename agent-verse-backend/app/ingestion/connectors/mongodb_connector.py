@@ -151,6 +151,55 @@ def _driver_bounds() -> tuple[int, int, int, int]:
     )
 
 
+# URI options that set (or unset: 0 = "no timeout") a wait. They are removed
+# from the tenant's URI; a positive value may only LOWER the matching bound.
+_URI_TIMEOUT_OPTIONS = frozenset(
+    {
+        "timeoutms",
+        "sockettimeoutms",
+        "connecttimeoutms",
+        "serverselectiontimeoutms",
+        "maxtimems",
+        "waitqueuetimeoutms",
+        "wtimeoutms",
+    }
+)
+
+
+def _strip_uri_timeouts(uri: str) -> tuple[str, dict[str, int]]:
+    """``uri`` without its timeout options, and the tenant's positive values.
+
+    C1 follow-up: ``?timeoutMS=0`` (client-side operation timeout off) or a
+    huge ``socketTimeoutMS`` let a stalled server hang the worker again. The
+    options are read the way the driver reads them (``&`` or ``;`` separators,
+    percent-encoded names) and dropped; the caller applies a value only when it
+    is lower than the operator's bound.
+    """
+    import re
+    from urllib.parse import unquote_plus
+
+    parts = urlsplit(uri)
+    if not parts.query:
+        return uri, {}
+    kept: list[str] = []
+    found: dict[str, int] = {}
+    for item in re.split(r"[&;]", parts.query):
+        if not item:
+            continue
+        key, _, value = item.partition("=")
+        name = unquote_plus(key).strip().lower()
+        if name not in _URI_TIMEOUT_OPTIONS:
+            kept.append(item)
+            continue
+        try:
+            number = int(float(unquote_plus(value).strip()))
+        except ValueError:
+            continue
+        if number > 0:
+            found[name] = min(number, found.get(name, number))
+    return urlunsplit(parts._replace(query="&".join(kept))), found
+
+
 def _split_list(value: object) -> list[str]:
     if isinstance(value, list | tuple):
         items = [str(v) for v in value]
@@ -178,7 +227,7 @@ class _Settings:
 
 def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings:
     """Parse and vet ``connection_config``; raises ValueError with an honest message."""
-    uri = _mongo_uri(cc)
+    uri, uri_timeouts = _strip_uri_timeouts(_mongo_uri(cc))
     parts = urlsplit(uri)
     if parts.scheme.lower() not in ("mongodb", "mongodb+srv"):
         raise ValueError("MongoDB URI must start with mongodb:// or mongodb+srv://")
@@ -198,6 +247,17 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
     if tenant_ms > 0:
         connect_ms = min(connect_ms, tenant_ms)
         selection_ms = min(selection_ms, tenant_ms)
+    # URI timeout options were removed from the URI; a positive one may lower
+    # its bound (timeoutMS lowers every bound), never raise or unbound it.
+    overall = uri_timeouts.get("timeoutms", 0)
+
+    def _lower(bound: int, option: str) -> int:
+        return min(v for v in (bound, uri_timeouts.get(option, 0), overall) if v > 0)
+
+    connect_ms = _lower(connect_ms, "connecttimeoutms")
+    selection_ms = _lower(selection_ms, "serverselectiontimeoutms")
+    socket_ms = _lower(socket_ms, "sockettimeoutms")
+    max_time_ms = _lower(max_time_ms, "maxtimems")
     kwargs: dict[str, Any] = {
         "serverSelectionTimeoutMS": selection_ms,
         "connectTimeoutMS": connect_ms,

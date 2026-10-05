@@ -229,3 +229,65 @@ async def test_member_advertised_after_discovery_is_never_dialled_by_a_sync() ->
     finally:
         srv.close()
         victim.close()
+
+
+# ── C1 follow-up: tenant URI timeout options can only lower the bounds ────────
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "timeoutMS=0",
+        "socketTimeoutMS=0",
+        "socketTimeoutMS=999999999",
+        "connectTimeoutMS=0&serverSelectionTimeoutMS=0",
+        "appName=a;timeoutMS=0",
+        "appName=a;socketTimeoutMS=0",
+        "time%6FutMS=0",
+        "maxTimeMS=0&waitQueueTimeoutMS=0&wTimeoutMS=0",
+    ],
+)
+def test_tenant_uri_timeouts_never_unbound_or_raise(query: str) -> None:
+    s = mc._settings({"uri": f"mongodb://h/?{query}", "database": "d"})
+    lowered = s.uri.lower()
+    for name in ("timeoutms", "sockettimeoutms", "connecttimeoutms",
+                 "serverselectiontimeoutms", "maxtimems", "waitqueuetimeoutms", "wtimeoutms"):
+        assert f"{name}=" not in lowered.replace("%6f", "o"), (name, s.uri)
+    assert s.kwargs["socketTimeoutMS"] == 1000
+    assert s.kwargs["connectTimeoutMS"] == 2000
+    assert s.kwargs["serverSelectionTimeoutMS"] == 2000
+    assert s.max_time_ms == 700
+    assert "timeoutMS" not in s.kwargs
+
+
+def test_tenant_uri_timeouts_may_lower_the_bounds() -> None:
+    s = mc._settings(
+        {
+            "uri": "mongodb://h/?appName=x&socketTimeoutMS=300&connectTimeoutMS=200"
+            "&serverSelectionTimeoutMS=250&maxTimeMS=100",
+            "database": "d",
+        }
+    )
+    assert s.kwargs["socketTimeoutMS"] == 300
+    assert s.kwargs["connectTimeoutMS"] == 200
+    assert s.kwargs["serverSelectionTimeoutMS"] == 250
+    assert s.max_time_ms == 100
+    assert "appName=x" in s.uri  # other options are kept
+    every = mc._settings({"uri": "mongodb://h/?timeoutMS=150", "database": "d"})
+    assert every.kwargs["socketTimeoutMS"] == 150
+    assert every.max_time_ms == 150
+
+
+async def test_timeoutms_zero_in_the_uri_does_not_hang_on_a_stalled_server(
+    stalled: FakeMongod,
+) -> None:
+    t0 = time.monotonic()
+    health = await asyncio.wait_for(
+        mc.MongoDBConnector().validate_connection(
+            _config(f"mongodb://{stalled.me}/?timeoutMS=0&socketTimeoutMS=0")
+        ),
+        timeout=30,
+    )
+    assert health.ok is False
+    assert "timed out" in (health.error or "").lower()
+    assert time.monotonic() - t0 < 15
