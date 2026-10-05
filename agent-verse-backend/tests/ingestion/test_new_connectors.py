@@ -229,6 +229,19 @@ class TestElasticsearchConnector:
         assert get_connector("elasticsearch") is not None
         assert get_connector("opensearch") is not None
 
+    def test_auth_mode_picks_one_credential(self):
+        from app.ingestion.connectors.elasticsearch_connector import _settings
+
+        both = {"url": "http://es:9200", "username": "u", "password": "p", "api_key": "id:key"}
+        assert _settings(both).headers["Authorization"].startswith("ApiKey ")
+        assert _settings(both).auth is None
+        basic = _settings({**both, "auth_mode": "basic"})
+        assert basic.auth == ("u", "p") and not basic.headers
+        none = _settings({**both, "auth_mode": "none"})
+        assert none.auth is None and not none.headers
+        with pytest.raises(ValueError, match="api_key"):
+            _settings({"url": "http://es:9200", "auth_mode": "api_key"})
+
     def test_get_delta_pagination(self):
         """search_after pages through a point in time until a short page."""
         from app.ingestion.connectors import elasticsearch_connector as esc

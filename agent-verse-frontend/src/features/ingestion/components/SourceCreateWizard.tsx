@@ -19,7 +19,7 @@ const SOURCE_TYPES_BY_FAMILY: Record<SourceFamily, string[]> = {
   object_storage:  ['s3', 'gcs', 'azure_blob', 'minio', 'r2', 'delta_lake', 'iceberg'],
   olap_database:   ['snowflake', 'bigquery', 'clickhouse', 'databricks', 'redshift', 'duckdb', 'trino'],
   oltp_database:   ['postgresql', 'mysql', 'mssql', 'oracle', 'mongodb', 'cockroachdb'],
-  nosql_database:  ['mongodb', 'redis', 'dynamodb', 'firestore', 'cosmos_db', 'cassandra'],
+  nosql_database:  ['mongodb', 'redis', 'elasticsearch', 'opensearch', 'dynamodb', 'firestore', 'cosmos_db', 'cassandra'],
   streaming:       ['kafka', 'kinesis', 'pubsub', 'pulsar', 'rabbitmq', 'nats'],
   file_system:     ['local_fs', 'sftp', 'nfs'],
   document_store:  ['gdrive', 'notion', 'confluence', 'sharepoint', 'dropbox', 'box'],

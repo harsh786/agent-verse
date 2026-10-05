@@ -2,6 +2,7 @@ import type { SourceFamily } from '../../types';
 import { ObjectStorageForm } from './ObjectStorageForm';
 import { DatabaseForm } from './DatabaseForm';
 import { RedisForm } from './RedisForm';
+import { ElasticsearchForm } from './ElasticsearchForm';
 import { StreamingForm } from './StreamingForm';
 import { CommunicationForm } from './CommunicationForm';
 import { CodeRepoForm } from './CodeRepoForm';
@@ -19,6 +20,7 @@ export function FamilyFormRouter({ family, sourceType, value, onChange, errors }
     case 'object_storage': return <ObjectStorageForm sourceType={sourceType} value={value} onChange={onChange} />;
     case 'nosql_database':
       if (sourceType === 'redis') return <RedisForm sourceType={sourceType} value={value} onChange={onChange} />;
+      if (sourceType === 'elasticsearch' || sourceType === 'opensearch') return <ElasticsearchForm sourceType={sourceType} value={value} onChange={onChange} />;
       return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} errors={errors} />;
     case 'olap_database':
     case 'oltp_database': return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} errors={errors} />;

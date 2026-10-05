@@ -9,6 +9,8 @@ Connection config (Sources -> NoSQL Database -> elasticsearch / opensearch):
     username, password   Basic authentication, or
     api_key              an API key: the ``encoded`` value Elasticsearch returns
                          (base64 of ``id:key``) or ``id:key`` itself.
+    auth_mode            ``basic`` / ``api_key`` / ``none`` (the Sources form sets it);
+                         without it an ``api_key`` wins over a username.
     sort_field           Field ordering the incremental sync (default
                          ``@timestamp``): a date (or numeric) field the index maps,
                          typically an update timestamp. ``_doc`` reads everything
@@ -95,12 +97,18 @@ def _settings(cc: dict[str, Any]) -> _Settings:
     index = str(cc.get("index") or "").strip() or "_all"
     headers: dict[str, str] = {}
     auth: tuple[str, str] | None = None
-    api_key = str(cc.get("api_key") or "").strip()
+    # The Sources form sends auth_mode; without it, an API key wins over basic.
+    mode = str(cc.get("auth_mode") or "").strip().lower()
+    api_key = str(cc.get("api_key") or "").strip() if mode in ("", "api_key") else ""
+    if mode == "api_key" and not api_key:
+        raise ValueError("Elasticsearch auth_mode 'api_key' needs an api_key")
+    if mode == "basic" and not cc.get("username"):
+        raise ValueError("Elasticsearch auth_mode 'basic' needs a username")
     if api_key:
         if ":" in api_key:  # "id:key" -> the encoded form
             api_key = base64.b64encode(api_key.encode()).decode()
         headers["Authorization"] = f"ApiKey {api_key}"
-    elif cc.get("username"):
+    elif cc.get("username") and mode in ("", "basic"):
         auth = (str(cc.get("username")), str(cc.get("password") or ""))
     batch = int(cc.get("batch_size") or _DEFAULT_BATCH)
     raw_lookback = cc.get("cursor_lookback_seconds")
