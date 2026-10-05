@@ -105,12 +105,18 @@ class _FakeSession:
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
         sql = str(stmt)
-        if "legal_holds" in sql:
+        if "to_regclass" in sql:  # which per-dimension chunk tables exist
+            return _Result(rows=[(t,) for t in self.tables if t.startswith("knowledge_chunks_")])
+        if sql.lstrip().startswith("SELECT name FROM legal_holds"):
             return _Result(rows=[(self.hold_name,)] if self.hold_name else [])
 
         m = re.search(r"FROM (\w+)", sql)
         table = m.group(1) if m else ""
 
+        if "count(*)" in sql and "AND EXISTS (SELECT 1 FROM legal_holds" in sql:
+            return _Result(scalar=0)  # no chunk is under a collection/document hold
+        if "metadata->'origin'" in sql:
+            return _Result(rows=[])  # no goal-derived knowledge in these fakes
         if "count(*)" in sql:
             if table in self.count_raises_for:
                 raise RuntimeError(f"count-failed-{table}")

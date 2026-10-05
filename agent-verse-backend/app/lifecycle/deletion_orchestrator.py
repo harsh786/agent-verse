@@ -55,12 +55,29 @@ class DeletionSchedule:
 _DIRECT_STORES: tuple[tuple[str, str, str], ...] = (
     ("goals", "goals", "tenant_id = :tid AND execution_context::text ILIKE :pat"),
     ("documents", "documents", "tenant_id = :tid AND metadata::text ILIKE :pat"),
-    (
-        "knowledge_chunks",
-        "knowledge_chunks_768",
-        "tenant_id = :tid AND metadata::text ILIKE :pat",
-    ),
     ("dpdp_consents", "dpdp_consents", "tenant_id = :tid AND data_principal_id = :subj"),
+)
+
+# Knowledge chunks live in one table per embedding dimension. Only the 768 table
+# used to be erased: a tenant on any other embedder (the live stack is 2048) kept
+# every tagged chunk. A chunk whose collection or document is under an in-force
+# legal hold is never erased (held data is never destroyed); it is reported.
+_CHUNK_TABLES: tuple[str, ...] = tuple(
+    f"knowledge_chunks_{dim}" for dim in (768, 1024, 1536, 2048, 3072)
+)
+_CHUNK_HELD = (
+    "EXISTS (SELECT 1 FROM legal_holds lh WHERE lh.tenant_id = :tid "
+    "AND lh.status = 'active' AND (lh.expires_at IS NULL OR lh.expires_at > now()) "
+    "AND (lh.resource_type = 'tenant' "
+    "OR lh.resource_ids @> jsonb_build_array({table}.collection_id) "
+    "OR lh.resource_ids @> jsonb_build_array({table}.document_id)))"
+)
+# Subject-tagged chunks, and the chunks of knowledge the subject's goals produced
+# (agent_generated Sources stamp ``metadata.origin.goal_id``: the goal's answer,
+# its approval decisions, the lessons learned from it).
+_TAGGED_CHUNKS = "tenant_id = :tid AND metadata::text ILIKE :pat"
+_GOAL_DERIVED_CHUNKS = (
+    "tenant_id = :tid AND metadata->'origin'->>'goal_id' = ANY(CAST(:gids AS text[]))"
 )
 
 _GOAL_LINKED_STORES: tuple[tuple[str, str, str], ...] = (
@@ -182,6 +199,30 @@ class DeletionOrchestrator:
                 # In dry-run goals are not deleted; use the counted ids as the
                 # cascade anchor so goal-linked would-be counts are accurate.
                 goal_ids = ids or goal_ids
+        chunk_tables = await self._chunk_tables(tenant_id)
+        held = 0
+        receipt.per_store["knowledge_chunks"], n_held = await self._apply_chunks(
+            chunk_tables, _TAGGED_CHUNKS, {"tid": tenant_id, "pat": pat}, dry_run=dry_run
+        )
+        held += n_held
+        if goal_ids:
+            (
+                receipt.per_store["knowledge_chunks_goal_derived"],
+                n_held,
+            ) = await self._apply_chunks(
+                chunk_tables,
+                _GOAL_DERIVED_CHUNKS,
+                {"tid": tenant_id, "gids": list(goal_ids)},
+                dry_run=dry_run,
+            )
+            held += n_held
+        else:
+            receipt.per_store["knowledge_chunks_goal_derived"] = 0
+        if held:
+            receipt.notes["knowledge_chunks_held"] = (
+                f"{held} knowledge chunk(s) kept: their collection or document is under "
+                "an active legal hold"
+            )
 
         # 4. Goal-linked stores.
         node_ids: list[str] = []
@@ -253,6 +294,16 @@ class DeletionOrchestrator:
             n = await self._count(table, where, params)
             if n:
                 residue[key] = n
+        chunks = 0
+        for table in await self._chunk_tables(tenant_id):
+            n = await self._count(
+                table,
+                f"{_TAGGED_CHUNKS} AND NOT {_CHUNK_HELD.format(table=table)}",
+                {"tid": tenant_id, "pat": pat},
+            )
+            chunks = -1 if n < 0 or chunks < 0 else chunks + n
+        if chunks:
+            residue["knowledge_chunks"] = chunks
 
         for key, table, column in _GOAL_LINKED_STORES:
             if not goal_ids:
@@ -320,6 +371,47 @@ class DeletionOrchestrator:
                 )
             ).fetchall()
         return [r[0] for r in rows]
+
+    async def _chunk_tables(self, tenant_id: str) -> list[str]:
+        """The per-dimension chunk tables that exist in this database."""
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT t FROM unnest(CAST(:tables AS text[])) AS t "
+                        "WHERE to_regclass(t) IS NOT NULL"
+                    ),
+                    {"tables": list(_CHUNK_TABLES)},
+                )
+            ).fetchall()
+        return [str(r[0]) for r in rows]
+
+    async def _apply_chunks(
+        self,
+        tables: list[str],
+        where: str,
+        params: dict[str, Any],
+        *,
+        dry_run: bool,
+    ) -> tuple[int, int]:
+        """Erase (or count) matching chunks that no hold covers: (erased, held)."""
+        erased = held = 0
+        for table in tables:
+            hold = _CHUNK_HELD.format(table=table)
+            count, _ = await self._apply(
+                table, f"{where} AND NOT {hold}", params, dry_run=dry_run
+            )
+            erased += count
+            held += max(0, await self._count(table, f"{where} AND {hold}", params))
+        return erased, held
 
     async def _apply(
         self,
