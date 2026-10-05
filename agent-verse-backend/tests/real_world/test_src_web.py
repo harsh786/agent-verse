@@ -311,7 +311,7 @@ def test_url_honest_failures(api: LiveAPI, cleanup: Any, evidence: dict[str, Any
 def test_url_large_pages_are_bounded(api: LiveAPI, cleanup: Any, evidence: dict[str, Any],
                                      site: WebSite) -> None:
     """A 12 MiB HTML page and a 60 MB download are refused (413) quickly, without the
-    stack reading them whole; a 1.5 MB page that is mostly markup is indexed."""
+    stack reading them whole; a 0.8 MB page that is mostly markup is indexed."""
     chunk = "<div class='row'><span>filler cell</span></div>\n"
     site.put("huge.html", chunk.encode() * (12 * 1024 * 1024 // len(chunk) + 1))
     site.put("dump.bin", b"\x00" * (1024 * 1024), content_type="application/octet-stream",

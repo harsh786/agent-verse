@@ -1,0 +1,11 @@
+passed test_url_html_boilerplate 20.6
+passed test_url_non_html_documents 10.1
+passed test_url_redirects 0.7
+passed test_url_honest_failures 30.3
+passed test_url_large_pages_are_bounded 1.6
+passed test_url_reingest_replaces_and_honours_legal_hold 2.8
+passed test_url_charsets_and_languages 9.4
+passed test_crawl_site 35.8
+passed test_crawl_incremental 38.6
+passed test_crawl_failed_pages_retried 49.1
+passed test_crawl_ssrf_on_every_hop 3.2

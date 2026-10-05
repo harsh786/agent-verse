@@ -1,0 +1,12 @@
+passed test_url_html_boilerplate 33.7
+passed test_url_non_html_documents 12.8
+passed test_url_redirects 0.8
+passed test_url_honest_failures 30.3
+passed test_url_large_pages_are_bounded 1.5
+passed test_url_reingest_replaces_and_honours_legal_hold 3.9
+passed test_url_charsets_and_languages 14.0
+failed test_crawl_site 40.8
+     E       AssertionError: not indexed: deep/level-3; 13 documents, expected 14
+passed test_crawl_incremental 41.5
+passed test_crawl_failed_pages_retried 14.7
+passed test_crawl_ssrf_on_every_hop 3.2

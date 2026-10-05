@@ -8,7 +8,7 @@
 | 4 | A5 MongoDB, Redis, Elasticsearch | COMPLETE — MongoDB ingestion (fixed: P1c-1, -2, -3, -4, -13); MongoDB MCP (fixed: P1c-5); Redis (fixed: P1c-7..-10, -13); Elasticsearch (fixed: P1c-6, -11, -12, -13) | P1c branch `live/p1c-nosql`; report live/p1c-nosql.md; SRC-MONGO-*, MCP-MONGO-* (incl. HITL, kill switches), SRC-REDIS-*, SRC-ES-* all pass on rebuilt images; P1b regression 12/12; open items → P2 (rerank calibration), P4/P5 (repeated approved delete), owner (Redis host-based ids) |
 | 5 | A6 Kafka | PENDING | |
 | 6 | A7 Google Drive, SharePoint, Confluence, Notion | PENDING | |
-| 7 | A10 HTTP URL, web crawl | PENDING | |
+| 7 | A10 HTTP URL, web crawl | COMPLETE — HTTP URL ingest (fixed: P1d-1, -2, -3, -4, -5); web crawl (fixed: P1d-6, -7, -8, -9, -11); remaining regex HTML paths (fixed: P1d-10) | P1d branch `live/p1d-web-crawl`; report live/p1d-web-crawl.md; WEB-URL-* (7) and WEB-CRAWL-* (4) all pass on rebuilt images (baseline 0/11); P1b/P1c regression 28/28 on the P1d images (final 39/39), WEB-* 11/11 again after merging main 639d30ce7; open items → product (URL Source type), P2 (pipeline min length), P9 (crawl live set in the cursor, throughput) |
 | 8 | A12 Agent-generated | PENDING | |
 | 9 | B1 Time triggers | PENDING | |
 | 10 | B2 webhook, rest, event | PENDING | |
