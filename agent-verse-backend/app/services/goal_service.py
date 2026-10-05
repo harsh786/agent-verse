@@ -3176,6 +3176,16 @@ class GoalService:
         if record is None:
             return
         sanitized_event = sanitize_event(event)
+        # P8b-1: every user-facing output in the event (step outputs, answers,
+        # errors, the live token stream) is screened for PII / secrets and the
+        # tenant's output rules BEFORE it is stored, published or kept — the
+        # result artifact, /events, SSE and replay all derive from these events.
+        from app.guardrails_v2.output_screening import screen_goal_event
+
+        _screened = await screen_goal_event(sanitized_event, record.tenant_id)
+        if _screened is None:
+            return  # a live token chunk this tenant's output rules do not allow
+        sanitized_event = _screened
         _ephemeral_event_types = {"token_chunk", "heartbeat"}
         _is_ephemeral = sanitized_event.get("type") in _ephemeral_event_types
         if not _is_ephemeral:

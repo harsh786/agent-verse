@@ -2630,8 +2630,15 @@ def run_goal(
         # CORE-34: sanitized (credential redaction, size caps) before it reaches
         # Redis (SSE) or the event store, like every AgentGraph event.
         from app.agent.sanitization import sanitize_event
+        from app.guardrails_v2.output_screening import screen_goal_event
 
         event = sanitize_event(event)
+        # P8b-1: the same output screening as the API (PII / secrets + the
+        # tenant's output rules) before the event is stored or published.
+        _screened = await screen_goal_event(event, tenant_id)
+        if _screened is None:
+            return  # a live token chunk this tenant's output rules do not allow
+        event = _screened
         # ── Persist first, so the live event carries its durable sequence ─────
         # SVC-05: that sequence is the SSE id / Last-Event-ID resume cursor; an
         # event published before it was stored had none, so the id fell back to

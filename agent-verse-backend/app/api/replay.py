@@ -107,6 +107,26 @@ async def replay_goal(
                 )
             ).fetchall()
 
+        # P8b-1: stored events were screened when written; history from before
+        # that, the step rows and the decision traces get the baseline PII /
+        # secret redaction here (honouring a tenant that disabled the PII rule).
+        from app.guardrails_v2.output_screening import (
+            load_output_policy,
+            redact_baseline,
+            redact_legacy_event,
+        )
+
+        _policy = await load_output_policy(tenant_ctx.tenant_id)
+
+        def _safe(value: Any) -> Any:
+            if not isinstance(value, str) or not value:
+                return value
+            if _policy.unavailable:
+                from app.guardrails_v2.output_screening import WITHHELD_OUTPUT
+
+                return WITHHELD_OUTPUT
+            return redact_baseline(value, pii=_policy.pii_baseline)
+
         # Build timeline
         timeline = []
 
@@ -124,6 +144,7 @@ async def replay_goal(
 
         for seq, etype, payload, created_at in events:
             event_data = payload if isinstance(payload, dict) else _json.loads(payload or "{}")
+            event_data = redact_legacy_event(dict(event_data))
 
             # Filter sensitive data based on request params
             if not include_raw_output:
@@ -148,23 +169,23 @@ async def replay_goal(
             tc_list = tool_calls if isinstance(tool_calls, list) else []
             step_summary = {
                 "step_index": step_idx,
-                "description": desc,
+                "description": _safe(desc),
                 "status": status,
                 "created_at": created_at.isoformat() if created_at else "",
             }
             if include_raw_output:
-                step_summary["output"] = output or ""
+                step_summary["output"] = _safe(output or "")
             if include_tool_calls:
                 step_summary["tool_calls"] = tc_list
             if error:
-                step_summary["error"] = error
+                step_summary["error"] = _safe(error)
             step_summaries.append(step_summary)
 
         # Add decision traces
         trace_summaries = [
             {
                 "action": t[0],
-                "reasoning": t[1],
+                "reasoning": _safe(t[1]),
                 "confidence": t[2],
                 "ts": t[4].isoformat() if t[4] else "",
             }

@@ -61,6 +61,8 @@ _PII_PATTERNS = [
     (r"\b\d{3}-\d{2}-\d{4}\b", "SSN"),
     (r"\b4[0-9]{12}(?:[0-9]{3})?\b", "Visa card"),
     (r"\b5[1-5][0-9]{14}\b", "Mastercard"),
+    # Card numbers written in groups ("4111 1111 1111 1111", "5500-0000-0000-0004").
+    (r"\b(?:4\d{3}|5[1-5]\d{2})(?:[ -]\d{4}){3}\b", "Card number"),
     (r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", "Email"),
     (r"\b(?:\+1)?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b", "Phone"),
     # International numbers with a country code (e.g. "+91 98450 12345", "+44 20 7946
@@ -665,6 +667,18 @@ class GuardrailsEngine:
             "would_require_hitl": any(w["action"] == "require_hitl" for w in would_trigger),
             "triggered_rules": would_trigger,
         }
+
+    async def match_rule(
+        self, rule: GuardrailRule, content: str, *, use_llm: bool = True
+    ) -> dict[str, Any]:
+        """Evaluate one rule against *content* without recording a violation.
+
+        With ``use_llm=False`` a toxicity rule uses the deterministic pattern
+        classifier (hot paths that screen every goal event, P8b-1).
+        """
+        if rule.rule_type == "toxicity" and not use_llm:
+            return self._check_toxicity_patterns(content)
+        return await self._evaluate_rule(rule, content)
 
     async def _evaluate_rule(self, rule: GuardrailRule, content: str) -> dict[str, Any]:
         """Evaluate a single rule against content."""

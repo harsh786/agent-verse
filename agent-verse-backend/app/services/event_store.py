@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.core.errors import PlatformError, ServiceUnavailableError
 from app.db.models.goal import GoalEvent
 from app.db.rls import sqlalchemy_rls_context
+from app.guardrails_v2.output_screening import redact_legacy_event
 from app.observability.logging import get_logger
 from app.tenancy.context import PlanTier, TenantContext
 
@@ -252,7 +253,10 @@ class EventStore:
                     .order_by(GoalEvent.sequence)
                     .limit(limit)
                 )
-                return [dict(event.payload) for event in result.scalars().all()]
+                # P8b-1 backstop: history stored before write-time screening.
+                return [
+                    redact_legacy_event(dict(event.payload)) for event in result.scalars().all()
+                ]
         except Exception as exc:
             _log.warning("list_events_failed", goal_id=goal_id, error=str(exc))
             raise ServiceUnavailableError(
@@ -297,7 +301,10 @@ class EventStore:
                     .limit(limit)
                 )
                 rows = result.scalars().all()
-                return [{**dict(row.payload), "_seq": row.sequence} for row in rows]
+                return [
+                    {**redact_legacy_event(dict(row.payload)), "_seq": row.sequence}
+                    for row in rows
+                ]
         except Exception as exc:
             _log.warning("list_events_since_failed", goal_id=goal_id, error=str(exc))
             raise ServiceUnavailableError(
