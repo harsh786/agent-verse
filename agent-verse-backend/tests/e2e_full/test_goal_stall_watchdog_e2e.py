@@ -181,32 +181,48 @@ async def _agent(tenant_client: Any) -> str:
     return str(body.get("agent_id") or body.get("id"))
 
 
-async def _goal_row(goal_id: str) -> dict[str, Any]:
+async def _goal_row(goal_id: str, tenant_id: str) -> dict[str, Any]:
+    """Read the goal as the app does: in the tenant's RLS context with an explicit
+    tenant predicate. Under E2E_LEAST_PRIVILEGE=1 DATABASE_URL is the NOBYPASSRLS
+    app role, for which a GUC-less read sees no rows."""
     import asyncpg
 
     dsn = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
     conn = await asyncpg.connect(dsn)
     try:
-        row = await conn.fetchrow(
-            "SELECT status, heartbeat_at, runner_token, error_message, "
-            "now() - heartbeat_at AS age FROM goals WHERE id = $1",
-            goal_id,
-        )
-        events = await conn.fetch(
-            "SELECT event_type, payload::text AS payload FROM goal_events "
-            "WHERE goal_id = $1 ORDER BY sequence",
-            goal_id,
-        )
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            row = await conn.fetchrow(
+                "SELECT status, heartbeat_at, runner_token, error_message, "
+                "now() - heartbeat_at AS age FROM goals WHERE id = $1 AND tenant_id = $2",
+                goal_id,
+                tenant_id,
+            )
+            events = await conn.fetch(
+                "SELECT event_type, payload::text AS payload FROM goal_events "
+                "WHERE goal_id = $1 AND tenant_id = $2 ORDER BY sequence",
+                goal_id,
+                tenant_id,
+            )
     finally:
         await conn.close()
+    assert row is not None, f"goal {goal_id} not visible to tenant {tenant_id}"
     return {**dict(row), "events": [(e["event_type"], e["payload"]) for e in events]}
 
 
-async def _wait(goal_id: str, predicate: Any, timeout: float, logs: Any) -> dict[str, Any]:
+async def _tenant_id(tenant_client: Any) -> str:
+    resp = await tenant_client.get("/tenants/me")
+    assert resp.status_code == 200, resp.text
+    return str(resp.json()["tenant_id"])
+
+
+async def _wait(
+    goal_id: str, tenant_id: str, predicate: Any, timeout: float, logs: Any
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     row: dict[str, Any] = {}
     while time.monotonic() < deadline:
-        row = await _goal_row(goal_id)
+        row = await _goal_row(goal_id, tenant_id)
         if predicate(row):
             return row
         await asyncio.sleep(0.5)
@@ -237,6 +253,7 @@ async def test_hung_provider_step_hits_its_deadline_and_the_goal_ends(
         )
         assert resp.status_code == 202, resp.text
         goal_id = resp.json()["goal_id"]
+        tenant_id = await _tenant_id(tenant_client)
 
         def logs() -> str:
             return worker["log_path"].read_text()[-4000:]
@@ -244,6 +261,7 @@ async def test_hung_provider_step_hits_its_deadline_and_the_goal_ends(
         # While the step hangs the run beats and the step heartbeats.
         live = await _wait(
             goal_id,
+            tenant_id,
             lambda r: r["heartbeat_at"] is not None
             and any(e == "step_heartbeat" for e, _ in r["events"]),
             60,
@@ -253,7 +271,7 @@ async def test_hung_provider_step_hits_its_deadline_and_the_goal_ends(
         assert live["age"].total_seconds() < 10
 
         started = time.monotonic()
-        final = await _wait(goal_id, lambda r: r["status"] in _TERMINAL, 90, logs)
+        final = await _wait(goal_id, tenant_id, lambda r: r["status"] in _TERMINAL, 90, logs)
         assert final["status"] == "failed", final
         types = [e for e, _ in final["events"]]
         assert "step_timeout" in types, types
@@ -285,6 +303,7 @@ async def test_killed_worker_goal_is_reaped_and_completed_by_a_healthy_worker(
         )
         assert resp.status_code == 202, resp.text
         goal_id = resp.json()["goal_id"]
+        tenant_id = await _tenant_id(tenant_client)
 
         def logs() -> str:
             text = hung["log_path"].read_text()[-3000:]
@@ -294,6 +313,7 @@ async def test_killed_worker_goal_is_reaped_and_completed_by_a_healthy_worker(
 
         running = await _wait(
             goal_id,
+            tenant_id,
             lambda r: r["status"] == "executing"
             and r["heartbeat_at"] is not None
             and any(e == "step_started" for e, _ in r["events"]),
@@ -309,7 +329,7 @@ async def test_killed_worker_goal_is_reaped_and_completed_by_a_healthy_worker(
         # The worker dies mid-step (as the SIGABRT'd prefork child did).
         _stop_worker(hung, kill=True)
         await asyncio.sleep(3.0)
-        stale = await _goal_row(goal_id)
+        stale = await _goal_row(goal_id, tenant_id)
         assert stale["status"] == "executing" and stale["age"].total_seconds() >= 2.5
 
         healthy = _start_worker(workdir, "healthypool", {"E2E_PROVIDER_MODE": "ok"})
@@ -331,7 +351,7 @@ async def test_killed_worker_goal_is_reaped_and_completed_by_a_healthy_worker(
         assert goal_id in result["requeued"], result
         assert r.get(f"goal_lock:{goal_id}") is None  # the dead run's lock is released
 
-        final = await _wait(goal_id, lambda row: row["status"] in _TERMINAL, 120, logs)
+        final = await _wait(goal_id, tenant_id, lambda row: row["status"] in _TERMINAL, 120, logs)
         assert final["status"] == "complete", final
         types = [e for e, _ in final["events"]]
         assert "goal_runner_lost" in types, types
