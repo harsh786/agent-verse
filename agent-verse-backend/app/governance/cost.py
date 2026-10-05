@@ -101,6 +101,100 @@ class BudgetUnavailableError(RuntimeError):
     """The tenant's configured budget could not be loaded (and none is cached)."""
 
 
+# ── Budget threshold alerts (COST-03) ─────────────────────────────────────────
+# Each configured ``alert_pct_thresholds`` value fires once per UTC day per scope
+# when a charge crosses it. They used to be persisted and never evaluated (only a
+# hard-coded 79-81% log line, and none at all on the production Lua path).
+
+_ALERT_DELIVERY_TIMEOUT_S = 5.0
+
+
+def crossed_thresholds(
+    before: float, after: float, limit: float, thresholds: tuple[int, ...] | list[int]
+) -> list[int]:
+    """The thresholds (percent of *limit*) that a charge from *before* to *after* crossed."""
+    if limit <= 0 or after <= before:
+        return []
+    out: list[int] = []
+    for pct in sorted({int(t) for t in thresholds if 0 < int(t) <= 100}):
+        mark = limit * pct / 100.0
+        if before < mark <= after:
+            out.append(pct)
+    return out
+
+
+async def _deliver_budget_alert(db_factory: Any, alert: dict[str, Any]) -> None:
+    """Send *alert* to the tenant's notification channels (Slack/Teams/webhook)."""
+    if db_factory is None:
+        return
+    from app.services.notification_service import NotificationService
+
+    svc = NotificationService()
+    svc.set_db(db_factory)
+    await svc.notify_budget_alert(alert)
+
+
+async def emit_budget_alerts(
+    *,
+    tenant_id: str,
+    scope: str,
+    before: float,
+    after: float,
+    limit: float,
+    thresholds: tuple[int, ...] | list[int],
+    agent_id: str = "",
+    redis: Any = None,
+    db_factory: Any = None,
+    seen: set[str] | None = None,
+) -> list[int]:
+    """Fire every threshold the charge crossed, once per day (fleet-wide with Redis).
+
+    Dedupe: ``SET NX`` on a per-(tenant, scope, agent, day, pct) key in the shared
+    Redis, else the caller's process-local *seen* set. Delivery is bounded and
+    never raises — an alert must not block or fail the charge it reports.
+    """
+    crossed = crossed_thresholds(before, after, limit, thresholds)
+    fired: list[int] = []
+    day = datetime.now(UTC).strftime("%Y-%m-%d")
+    for pct in crossed:
+        key = f"cost_alert:{tenant_id}:{scope}:{agent_id}:{day}:{pct}"
+        try:
+            if redis is not None:
+                won = bool(await redis.set(key, "1", nx=True, ex=2 * 86400))
+            elif seen is not None:
+                if len(seen) > 10_000:  # bounded: old days' keys are dropped
+                    seen.clear()
+                won = key not in seen
+                seen.add(key)
+            else:
+                won = True
+        except Exception as exc:
+            get_logger(__name__).warning("budget_alert_dedupe_failed", error=str(exc)[:100])
+            won = True  # better a duplicate alert than a missed one
+        if not won:
+            continue
+        fired.append(pct)
+        alert = {
+            "type": "budget_threshold_alert",
+            "tenant_id": tenant_id,
+            "scope": scope,
+            "agent_id": agent_id,
+            "threshold_pct": pct,
+            "spent_usd": round(after, 6),
+            "limit_usd": limit,
+        }
+        get_logger(__name__).warning("budget_threshold_alert", **alert)
+        try:
+            await asyncio.wait_for(
+                _deliver_budget_alert(db_factory, alert), _ALERT_DELIVERY_TIMEOUT_S
+            )
+        except Exception as exc:
+            get_logger(__name__).warning(
+                "budget_alert_delivery_failed", tenant_id=tenant_id, error=str(exc)[:100]
+            )
+    return fired
+
+
 # Budgets live in ``budget_configs`` (DB-authoritative, shared by every replica
 # and Celery worker). Each process caches a tenant's row briefly so the per-LLM-
 # call check is not a DB round-trip; a PUT invalidates this process's cache and
@@ -246,9 +340,7 @@ async def persist_tenant_budget(
         f"ON CONFLICT (tenant_id) DO UPDATE SET {', '.join(sets)}"
     )
     # budget_configs is FORCE ROW LEVEL SECURITY: the write must carry the GUC.
-    async with db_factory() as session, session.begin(), sqlalchemy_rls_context(
-        session, tenant_id
-    ):
+    async with db_factory() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
         await session.execute(text(sql), params)
 
 
@@ -294,6 +386,8 @@ class CostController:
         # Per-tenant overrides (no-DB mode) and the DB-authoritative source.
         self._tenant_configs: dict[str, BudgetConfig] = {}
         self._budget_source = TenantBudgetSource()
+        # Threshold alerts already fired by this process (no-Redis dedupe).
+        self._alerts_seen: set[str] = set()
 
     def set_budget_db(self, db_factory: Any) -> None:
         """Enforce each tenant's budget_configs row (wired in lifespan / worker)."""
@@ -381,19 +475,54 @@ class CostController:
             self._daily_totals[tenant_ctx.tenant_id] = new_daily_total
             if agent:
                 self._agent_daily_totals[agent_key] = new_agent_total
-            # 2.4: 80% budget alert
-            if cfg.per_tenant_daily_usd > 0:
-                _pct = new_daily_total / cfg.per_tenant_daily_usd
-                if 0.79 < _pct <= 0.81:
-                    get_logger(__name__).warning(
-                        "budget_80pct_alert",
-                        tenant_id=tenant_ctx.tenant_id,
-                        daily_used=new_daily_total,
-                        daily_limit=cfg.per_tenant_daily_usd,
-                        pct=round(_pct * 100, 1),
-                    )
             record_cost_usd(scope=_COST_SCOPE.get(), amount=cost_usd)
-            return True
+        # Configured threshold alerts (COST-03), outside the tenant lock.
+        await self._alert(
+            tenant_ctx.tenant_id,
+            cfg,
+            cost_usd,
+            new_daily_total,
+            agent,
+            agent_limit,
+            new_agent_total,
+        )
+        return True
+
+    async def _alert(
+        self,
+        tenant_id: str,
+        cfg: BudgetConfig,
+        cost_usd: float,
+        new_daily: float,
+        agent: str,
+        agent_limit: float,
+        new_agent: float,
+    ) -> None:
+        db = self._budget_source._db
+        await emit_budget_alerts(
+            tenant_id=tenant_id,
+            scope="tenant_daily",
+            before=new_daily - cost_usd,
+            after=new_daily,
+            limit=cfg.per_tenant_daily_usd,
+            thresholds=cfg.alert_pct_thresholds,
+            redis=self._redis,
+            db_factory=db,
+            seen=self._alerts_seen,
+        )
+        if agent and agent_limit > 0:
+            await emit_budget_alerts(
+                tenant_id=tenant_id,
+                scope="agent_daily",
+                before=new_agent - cost_usd,
+                after=new_agent,
+                limit=agent_limit,
+                thresholds=cfg.alert_pct_thresholds,
+                agent_id=agent,
+                redis=self._redis,
+                db_factory=db,
+                seen=self._alerts_seen,
+            )
 
     def goal_total(self, goal_id: str, *, tenant_ctx: TenantContext) -> float:
         return self._goal_totals.get((tenant_ctx.tenant_id, goal_id), 0.0)
@@ -588,7 +717,7 @@ class RedisCostController:
             if getattr(self._redis, "register_script", None) is not None:
                 # Atomic Lua path — check THEN increment (all counters in one script)
                 script = self._redis.register_script(_LUA_CHECK_AND_INCREMENT)
-                await script(
+                _totals = await script(
                     keys=[goal_key, daily_key, agent_key],
                     args=[
                         str(cost_usd),
@@ -600,6 +729,11 @@ class RedisCostController:
                         "1" if agent else "0",
                     ],
                 )
+                _parts = (
+                    _totals.decode() if isinstance(_totals, bytes) else str(_totals or "")
+                ).split(":")
+                _new_daily = _parse_float(_parts[1]) if len(_parts) > 1 else 0.0
+                _new_agent = _parse_float(_parts[2]) if len(_parts) > 2 else 0.0
             else:
                 # Fallback for test doubles without Lua support.
                 # Non-atomic GET-check-INCRBYFLOAT — safe for single-replica tests.
@@ -617,20 +751,10 @@ class RedisCostController:
                 await self._redis.expire(goal_key, 86400)
                 _new_daily = _parse_float(await self._redis.incrbyfloat(daily_key, cost_usd))
                 await self._redis.expireat(daily_key, daily_expiry)
+                _new_agent = 0.0
                 if agent:
-                    await self._redis.incrbyfloat(agent_key, cost_usd)
+                    _new_agent = _parse_float(await self._redis.incrbyfloat(agent_key, cost_usd))
                     await self._redis.expireat(agent_key, daily_expiry)
-                # 2.4: 80% budget alert
-                if cfg.per_tenant_daily_usd > 0:
-                    _pct = _new_daily / cfg.per_tenant_daily_usd
-                    if 0.79 < _pct <= 0.81:
-                        get_logger(__name__).warning(
-                            "budget_80pct_alert",
-                            tenant_id=tenant_ctx.tenant_id,
-                            daily_used=_new_daily,
-                            daily_limit=cfg.per_tenant_daily_usd,
-                            pct=round(_pct * 100, 1),
-                        )
 
             # Stamp idempotency key so retries are skipped
             if idem_key:
@@ -638,6 +762,29 @@ class RedisCostController:
                     await self._redis.set(idem_key, "1", ex=86400)
 
             record_cost_usd(scope=_COST_SCOPE.get(), amount=cost_usd)
+            # Configured threshold alerts (COST-03): fleet-wide once per day.
+            await emit_budget_alerts(
+                tenant_id=tenant_ctx.tenant_id,
+                scope="tenant_daily",
+                before=_new_daily - cost_usd,
+                after=_new_daily,
+                limit=daily_limit,
+                thresholds=cfg.alert_pct_thresholds,
+                redis=self._redis,
+                db_factory=self._budget_source._db,
+            )
+            if agent and agent_limit > 0:
+                await emit_budget_alerts(
+                    tenant_id=tenant_ctx.tenant_id,
+                    scope="agent_daily",
+                    before=_new_agent - cost_usd,
+                    after=_new_agent,
+                    limit=agent_limit,
+                    thresholds=cfg.alert_pct_thresholds,
+                    agent_id=agent,
+                    redis=self._redis,
+                    db_factory=self._budget_source._db,
+                )
             return True
 
         except Exception as exc:

@@ -344,6 +344,24 @@ class NotificationService:
             except Exception as exc:
                 logger.warning("goal_notification_failed", error=str(exc))
 
+    async def notify_budget_alert(self, alert: dict[str, Any]) -> None:
+        """Send a budget threshold alert to every channel of the tenant (COST-03)."""
+        tenant_id = str(alert.get("tenant_id", ""))
+        await self.ensure_tenant_loaded(tenant_id)
+        who = f"agent `{alert['agent_id']}`" if alert.get("agent_id") else "tenant"
+        message = {
+            **alert,
+            "text": (
+                f"Budget alert: {who} has used {alert.get('threshold_pct')}% of its daily "
+                f"budget (${alert.get('spent_usd')} of ${alert.get('limit_usd')})"
+            ),
+        }
+        for channel in self.get_channels(tenant_id):
+            try:
+                await self._send(channel, message)
+            except Exception as exc:
+                logger.warning("budget_alert_notification_failed", error=str(exc))
+
     async def _send(self, channel: NotificationChannel, message: dict[str, Any]) -> None:
         """Deliver *message* to *channel*; raises when it was not delivered.
 
