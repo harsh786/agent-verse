@@ -449,6 +449,7 @@
           "custom_header",
           "mtls",
           "hmac",
+          "connection_string",
           "none"
         ],
         "title": "AuthType",

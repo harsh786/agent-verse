@@ -247,18 +247,29 @@ def with_tenant_credentials(handler: Handler) -> Handler:
     if getattr(handler, "_tenant_scoped", False):
         return handler
     pass_through = accepts_credentials(handler)
+    try:
+        inner = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        inner = {}  # type: ignore[assignment]
+    # The calling connection's identity, for handlers that pool per-connection
+    # resources (the MongoDB client cache, C2) — forwarded only when declared.
+    forwards = tuple(name for name in ("tenant_ctx", "server_id") if name in inner)
 
     async def _call(
         tool_name: str,
         arguments: dict[str, Any],
         credentials: dict[str, Any] | None = None,
+        tenant_ctx: Any = None,
+        server_id: str = "",
     ) -> dict[str, Any]:
         creds = dict(credentials or {})
+        context = {"tenant_ctx": tenant_ctx, "server_id": server_id}
+        extra = {name: context[name] for name in forwards}
         try:
             with tenant_scope(creds):
                 if pass_through:
-                    return await handler(tool_name, arguments, credentials=creds)
-                return await handler(tool_name, arguments)
+                    return await handler(tool_name, arguments, credentials=creds, **extra)
+                return await handler(tool_name, arguments, **extra)
         except TenantCredentialError as exc:
             return {"error": str(exc), "status": "credentials_rejected"}
 

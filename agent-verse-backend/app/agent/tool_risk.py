@@ -12,7 +12,7 @@ tool names encountered in production.
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
 ToolRisk = Literal["read", "write_low", "write_high", "destructive", "unknown"]
 
@@ -173,7 +173,18 @@ def _name_tokens(name: str) -> frozenset[str]:
     return frozenset(part.lower() for part in separated.split() if part)
 
 
-def classify_tool_risk(tool_name: str, server_name: str = "") -> str:
+_RISK_RANK = {"read": 0, "write_low": 1, "write_high": 2, "destructive": 3}
+
+
+def _max_risk(*risks: str) -> str:
+    return max(risks, key=lambda r: _RISK_RANK.get(r, _RISK_RANK["write_high"]))
+
+
+def classify_tool_risk(
+    tool_name: str,
+    server_name: str = "",
+    arguments: dict[str, Any] | None = None,
+) -> str:
     """Classify a tool into a risk tier.
 
     Parameters
@@ -181,7 +192,14 @@ def classify_tool_risk(tool_name: str, server_name: str = "") -> str:
     tool_name:
         The name of the tool (e.g. ``"delete_issue"``).
     server_name:
-        The MCP server / connector name (e.g. ``"jira"``).
+        The MCP server / connector name (e.g. ``"jira"``). It is a tenant-chosen
+        display string, so it may only ever RAISE the tier the tool name alone
+        gets (MDB-02: ``budget-db`` turned ``mongodb_insert_one`` into ``read``
+        through the substring ``get``; ``prod-db`` downgraded a destructive delete).
+    arguments:
+        The call's arguments, when known. Only consulted where the operation's
+        risk depends on them (``mongodb_aggregate``: read only for a pipeline
+        verified to have no write stage); unknown arguments fail closed.
 
     Returns
     -------
@@ -199,6 +217,27 @@ def classify_tool_risk(tool_name: str, server_name: str = "") -> str:
     if builtin is not None:
         return builtin
 
+    # 0b. MongoDB operations: declared by the OPERATION. A connector name can
+    # only raise them (high-risk connector override), never lower them.
+    mongo = _mongodb_risk(tool_name, arguments)
+    if mongo is not None:
+        if _is_high_risk_connector(server_name):
+            return _max_risk(mongo, "write_high")
+        return mongo
+
+    alone = _classify_by_name(tool_name, "")
+    if not server_name.strip():
+        return alone
+    return _max_risk(alone, _classify_by_name(tool_name, server_name))
+
+
+def _is_high_risk_connector(server_name: str) -> bool:
+    lowered = server_name.lower()
+    return any(c in lowered for c in _HIGH_RISK_CONNECTORS)
+
+
+def _classify_by_name(tool_name: str, server_name: str) -> str:
+    """Name heuristics (the tool name, optionally combined with the connector name)."""
     combined = f"{server_name} {tool_name}".lower()
 
     # 1. High-risk connector override — Stripe, billing, etc. → always write_high
@@ -266,6 +305,43 @@ _RPA_RISK_MAP = {"read": "read", "low": "write_low", "high": "write_low"}
 # Pure interaction (click / type / select_option) stays write_low so browser
 # navigation is not blocked on an approval per keystroke.
 _RPA_WRITE_HIGH_TOOLS = frozenset({"rpa_submit_form", "rpa_upload_file", "rpa_download_file"})
+
+
+# The builtin MongoDB connector's operations (app/mcp/servers/mongodb_server.py)
+# plus the bulk / drop forms, declared by what they do to the tenant's data.
+_MONGODB_TOOL_RISK: dict[str, str] = {
+    "mongodb_find": "read",
+    "mongodb_find_one": "read",
+    "mongodb_count": "read",
+    "mongodb_list_collections": "read",
+    "mongodb_insert_one": "write_high",
+    "mongodb_insert_many": "write_high",
+    "mongodb_update_one": "write_high",
+    "mongodb_update_many": "write_high",
+    "mongodb_replace_one": "write_high",
+    "mongodb_delete_one": "destructive",
+    "mongodb_delete_many": "destructive",
+    "mongodb_drop_collection": "destructive",
+    "mongodb_drop_database": "destructive",
+}
+
+
+def _mongodb_base_name(tool_name: str) -> str:
+    """``budget_db__mongodb_find`` / ``builtin-mongodb:x/mongodb_find`` -> ``mongodb_find``."""
+    return tool_name.rsplit("/", 1)[-1].rsplit("__", 1)[-1].strip()
+
+
+def _mongodb_risk(tool_name: str, arguments: dict[str, Any] | None) -> str | None:
+    name = _mongodb_base_name(tool_name)
+    if not name.startswith("mongodb_"):
+        return None
+    if name == "mongodb_aggregate":
+        from app.net.mongodb_policy import pipeline_is_read_only
+
+        pipeline = arguments.get("pipeline") if isinstance(arguments, dict) else None
+        return "read" if pipeline_is_read_only(pipeline) else "write_high"
+    # An unlisted mongodb_* operation: the approval-requiring tier.
+    return _MONGODB_TOOL_RISK.get(name, "write_high")
 
 
 def _builtin_risk(tool_name: str) -> str | None:

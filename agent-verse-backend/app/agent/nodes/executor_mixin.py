@@ -2834,7 +2834,9 @@ class ExecutorMixin:
                             time.monotonic() - tool_call_started,
                         )
                 else:
-                    tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
+                    tool_risk = classify_tool_risk(
+                        tool_ref.name, tool_ref.server_name, tool_call.arguments
+                    )
                     # Gate write_high bypass behind an explicit env flag (default-secure).
                     import os as _os
 
@@ -3709,7 +3711,7 @@ class ExecutorMixin:
             if grant.grant_id:
                 await self._set_authorizing_grant(state, tenant_ctx, grant.grant_id)
             # Risk gate — same rules as the primary path (per-connector opt-in).
-            risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
+            risk = classify_tool_risk(tool_ref.name, tool_ref.server_name, args)
             eff = resolve_effective_tool_risk(
                 risk,
                 autonomy_mode=self._autonomy_mode,
