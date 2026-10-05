@@ -133,8 +133,14 @@ class A2ADirectory:
             return bool(self._settings.get(tenant_id, False))
         from sqlalchemy import text
 
+        from app.db.rls import sqlalchemy_rls_context
+
         try:
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 value = (
                     await session.execute(
                         text("SELECT a2a_directory_enabled FROM tenants WHERE id = :tid"),
@@ -151,8 +157,14 @@ class A2ADirectory:
             return
         from sqlalchemy import text
 
+        from app.db.rls import sqlalchemy_rls_context
+
         try:
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     text(
                         "UPDATE tenants SET a2a_directory_enabled = :v, updated_at = now() "
@@ -207,6 +219,9 @@ class A2ADirectory:
         ]
 
     async def _query(self, tail: str, params: dict[str, Any]) -> list[PublicAgent]:
+        # Deliberately cross-tenant and without a tenant RLS scope: it reads only the
+        # card projection through its permissive public-read policy (see the module
+        # docstring), never ``agents``. The tenant switch methods above are scoped.
         from sqlalchemy import text
 
         sql = (
