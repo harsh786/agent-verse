@@ -130,10 +130,16 @@ def enqueue_notify(
     attempt: int = 0,
     countdown: float = NOTIFY_DELAY_SECONDS,
 ) -> None:
-    """Queue ``ingestion.agent_generated_notify`` (raises when the broker refuses)."""
-    from app.ingestion.scheduler import agent_generated_notify_task
+    """Queue ``ingestion.agent_generated_notify`` (raises when the broker refuses).
 
-    agent_generated_notify_task.apply_async(
+    Sent through the configured Celery app by name: the task proxy resolves the
+    *current* app, which in a thread (``asyncio.to_thread``) of the API process is
+    an unconfigured default app (broker on localhost: "connection refused").
+    """
+    from app.scaling.celery_app import celery_app
+
+    celery_app.send_task(
+        NOTIFY_TASK,
         kwargs={
             "tenant_id": tenant_id,
             "kind": kind,

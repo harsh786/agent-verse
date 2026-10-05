@@ -179,3 +179,22 @@ async def test_goal_completion_notifies(monkeypatch: pytest.MonkeyPatch) -> None
         )
         await svc._dispatch_event(gid, {"type": "goal_complete"}, tenant_ctx=ctx)
     assert calls == [(TENANT, "goal_output", "g1", db)]  # a dry run produces nothing
+
+
+async def test_enqueue_uses_the_configured_celery_app_from_any_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The API enqueues from a worker thread, where the task proxy resolves an
+    unconfigured default Celery app (broker on localhost: connection refused)."""
+    import asyncio
+
+    from app.scaling.celery_app import celery_app
+
+    sent: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(celery_app, "send_task",
+                        lambda name, **kw: sent.append((name, kw)))
+    await asyncio.to_thread(events.enqueue_notify, TENANT, "goal_output", "g1")
+    assert sent == [("ingestion.agent_generated_notify", {
+        "kwargs": {"tenant_id": TENANT, "kind": "goal_output", "ref_id": "g1",
+                   "source_id": "", "attempt": 0},
+        "queue": "ingestion", "countdown": events.NOTIFY_DELAY_SECONDS})]
