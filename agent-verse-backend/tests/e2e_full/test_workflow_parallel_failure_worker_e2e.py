@@ -36,7 +36,8 @@ async def test_parallel_branch_failure_pauses_on_failing_step(
              "var_value": "Tesla"},
             {"id": "ok_branch", "type": "transform", "input": {"v": "{{vars.company}}"},
              "depends_on": ["set_company"]},
-            {"id": "bad_branch", "type": "tool", "tool": "tool_that_no_connector_has",
+            # A read-only name: a write_high tool step would wait for approval (OI-2).
+            {"id": "bad_branch", "type": "tool", "tool": "search_tool_that_no_connector_has",
              "input": {"q": "x"}, "depends_on": ["set_company"]},
             {"id": "join", "type": "transform", "input": {"v": 1},
              "depends_on": ["ok_branch", "bad_branch"]},
@@ -68,4 +69,4 @@ async def test_parallel_branch_failure_pauses_on_failing_step(
     assert run.get("status") == "paused", f"expected paused, got {run!r}"
     err = str(run.get("error") or "")
     assert "InvalidUpdateError" not in err and "Can receive only one value" not in err, err
-    assert "tool_that_no_connector_has" in err, err
+    assert "search_tool_that_no_connector_has" in err, err

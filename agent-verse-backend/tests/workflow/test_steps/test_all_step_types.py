@@ -36,7 +36,8 @@ async def test_tool_step_success() -> None:
     from types import SimpleNamespace
 
     from app.workflow.steps.tool_step import ToolStepNode
-    step = StepDefinition(id="s1", type="tool", tool="test.tool")
+    # A read-only tool: no approval gate (OI-2 gates write_high / destructive).
+    step = StepDefinition(id="s1", type="tool", tool="test.list_items")
     mcp_client = AsyncMock()
     # Real dispatch goes through call_tool_by_name (resolves tool -> connector).
     mcp_client.call_tool_by_name.return_value = SimpleNamespace(
@@ -68,7 +69,7 @@ async def test_tool_step_mcp_error() -> None:
     from app.workflow.steps.tool_step import ToolStepNode
     from types import SimpleNamespace
 
-    step = StepDefinition(id="s1", type="tool", tool="fail.tool")
+    step = StepDefinition(id="s1", type="tool", tool="fail.list_items")
     mcp_client = AsyncMock()
     # A failed tool result must propagate so the runner's on_failure handling runs.
     mcp_client.call_tool_by_name.return_value = SimpleNamespace(

@@ -38,6 +38,7 @@ from app.workflow.state import (
     WorkflowState,
 )
 from app.workflow.steps.hitl_step import classify_hitl_decision
+from app.workflow.steps.tool_step import is_gated_tool_step
 
 _log = get_logger(__name__)
 
@@ -259,6 +260,26 @@ class WorkflowCompiler:
                     make_hitl_router(),
                     [*targets, END],
                 )
+            elif is_gated_tool_step(step):
+                # OI-2: a write_high / destructive tool step is an approval gate
+                # too. While it waits for its approval (or after a denial /
+                # rejection stopped the run) nothing downstream is released.
+                downstream = self._find_downstream(step.id, definition)
+
+                def make_tool_gate_router(s: Any = step, ds: list[str] = downstream) -> Any:
+                    async def router(state: WorkflowState) -> Any:
+                        if state.get("status") in _HALTED_STATUSES or state.get("paused_by"):
+                            return END
+                        out = (state.get("step_outputs") or {}).get(s.id)
+                        if out is None or (isinstance(out, dict) and out.get("_denied")):
+                            return END
+                        return list(ds) if ds else END
+
+                    return router
+
+                graph.add_conditional_edges(
+                    step.id, make_tool_gate_router(), [*sorted(set(downstream)), END]
+                )
             else:
                 # Standard edges: step → all steps that depend on it
                 downstream = self._find_downstream(step.id, definition)
@@ -266,8 +287,9 @@ class WorkflowCompiler:
                     graph.add_edge(step.id, ds)
 
         hitl_ids = {s.id for s in definition.steps if s.type == "hitl"}
+        routed_ids = hitl_ids | {s.id for s in definition.steps if is_gated_tool_step(s)}
         for terminal_id in terminal_steps:
-            if terminal_id in hitl_ids:
+            if terminal_id in routed_ids:
                 continue  # the approval router already routes to END
             graph.add_edge(terminal_id, END)
 
@@ -288,7 +310,11 @@ class WorkflowCompiler:
         ``depends_on_any`` step is released by the approval router's routing.
         """
         by_id = {s.id: s for s in definition.steps}
-        hitl_ids = {s.id for s in definition.steps if s.type == "hitl"}
+        # Approval gates: approval steps and gated (write_high / destructive)
+        # tool steps (OI-2).
+        hitl_ids = {
+            s.id for s in definition.steps if s.type == "hitl" or is_gated_tool_step(s)
+        }
         memo: dict[str, frozenset[str]] = {}
 
         def ancestors(step_id: str, seen: frozenset[str]) -> frozenset[str]:
@@ -328,6 +354,14 @@ class WorkflowCompiler:
         direct, indirect = barrier
         outputs = state.get("step_outputs") or {}
         for hitl_id in direct | indirect:
+            gate = by_id[hitl_id]
+            if getattr(gate, "type", "") == "tool":
+                # A gated tool step releases once it ran (approved, or below
+                # the approval tier); pending or denied, it holds.
+                tool_out = outputs.get(hitl_id)
+                if tool_out is None or (isinstance(tool_out, dict) and tool_out.get("_denied")):
+                    return True
+                continue
             out = outputs.get(hitl_id) or {}
             if "action" not in out:
                 return True  # still pending
