@@ -566,6 +566,11 @@ class Settings(BaseSettings):
     # alone punches no hole, and nothing a tenant can put in connection_config
     # reaches either setting.
     ingestion_allow_internal_sources: bool = False
+    # MongoDB (MCP builtin + ingestion): a tenant can never weaken TLS
+    # verification (tlsInsecure / tlsAllowInvalid* / ...; MDB-07). This dev-only
+    # switch additionally lets a connection run WITHOUT TLS (tls=false /
+    # ssl=false). Production ignores it.
+    mongodb_allow_non_tls: bool = False
     ingestion_internal_source_allowlist: str = ""  # comma-separated hostnames
     # Connector drivers are pinned to the addresses the egress check validated
     # (no DNS-rebinding window). A driver that resolves hosts outside Python and

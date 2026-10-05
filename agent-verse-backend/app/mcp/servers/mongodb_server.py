@@ -3,7 +3,7 @@
 Credentials come ONLY from the calling connector (``credentials``): the
 connection URI (``uri`` / ``connection_string`` / ``url``), optional
 ``username`` / ``password`` / ``auth_source`` / ``auth_mechanism`` overrides,
-TLS options (``tls``, ``tls_allow_invalid_certificates``, ``tls_ca_pem``) and a
+TLS options (``tls``, ``tls_ca_pem``; nothing that weakens verification — MDB-07) and a
 default ``database``. There is deliberately no platform-env fallback: the old
 ``MONGODB_MCP_URL`` lookup ran every tenant's calls against the PLATFORM's
 database (confused deputy).
@@ -247,8 +247,7 @@ def _client_kwargs(credentials: dict[str, Any] | None) -> dict[str, Any]:
         kwargs["authMechanism"] = str(mechanism).strip().upper()
     if str(creds.get("tls", "")).strip() != "":
         kwargs["tls"] = _truthy(creds["tls"])
-    if _truthy(creds.get("tls_allow_invalid_certificates")):
-        kwargs["tlsAllowInvalidCertificates"] = True
+    # MDB-07: no certificate-verification opt-out exists (assert_tls_not_weakened).
     return kwargs
 
 
@@ -299,7 +298,12 @@ async def call_tool(
     arguments: dict[str, Any],
     credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    from app.net.mongodb_policy import MongoOperatorError, assert_safe_mongo_arguments
+    from app.net.mongodb_policy import (
+        MongoOperatorError,
+        MongoTlsPolicyError,
+        assert_safe_mongo_arguments,
+        assert_tls_not_weakened,
+    )
 
     try:
         # MDB-03: write stages / server-side JavaScript anywhere in the call are
@@ -310,7 +314,10 @@ async def call_tool(
     try:
         uri = _connection_uri(credentials)
         _check_uri_options(uri)
+        assert_tls_not_weakened(uri, credentials)
         kwargs = _client_kwargs(credentials)
+    except MongoTlsPolicyError as exc:
+        return {"error": str(exc), "status": "tls_refused"}
     except MongoCredentialError as exc:
         return {"error": str(exc), "status": "credentials_required"}
     try:
@@ -332,9 +339,12 @@ async def call_tool(
             # Every URI host (SRV targets expanded) is checked and pinned for the call.
             async with pin_source_dsn(uri, context="mcp builtin mongodb") as pins:
                 _check_uri_options(pins.dsn)  # includes SRV TXT-record options
+                assert_tls_not_weakened(pins.dsn, credentials)
                 return await asyncio.to_thread(
                     _call_sync, pins.dsn, kwargs, tool_name, arguments, credentials
                 )
+    except MongoTlsPolicyError as exc:
+        return {"error": str(exc), "status": "tls_refused"}
     except MongoCredentialError as exc:
         return {"error": str(exc), "status": "credentials_required"}
     except Exception as exc:

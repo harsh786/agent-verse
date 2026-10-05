@@ -21,7 +21,7 @@ Connection config (Sources UI: NoSQL / Relational -> mongodb):
     tls_client_cert      PEM client certificate (mutual TLS / MONGODB-X509) ...
     tls_client_private_key  ... and its private key (secret);
     tls_client_key_password optional key passphrase (secret).
-    tls_allow_invalid_certificates  Explicit opt-out of server certificate checks.
+    tls_allow_invalid_certificates  Refused (MDB-07): verification cannot be turned off.
     database             Database to ingest (required).
     collections          List of collections (or ``collections_csv`` / ``collection``);
                          empty -> every non-system collection in the database.
@@ -210,8 +210,10 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
         raise ValueError("tls_client_cert and tls_client_private_key must be given together")
     if _truthy(cc.get("tls")) or tls_ca_pem or client_cert:
         kwargs["tls"] = True
-    if _truthy(cc.get("tls_allow_invalid_certificates")):
-        kwargs["tlsAllowInvalidCertificates"] = True
+    # MDB-07 / C6: TLS verification can never be weakened (shared policy).
+    from app.net.mongodb_policy import assert_tls_not_weakened
+
+    assert_tls_not_weakened(uri, cc)
     if kwargs.get("authMechanism") == "MONGODB-X509" and not client_cert:
         raise ValueError("MONGODB-X509 authentication needs tls_client_cert and its private key")
 

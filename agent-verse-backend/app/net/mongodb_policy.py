@@ -8,10 +8,15 @@
   stages that write (``$out``, ``$merge``), the operators that run server-side
   JavaScript (``$where``, ``$function``, ``$accumulator``, BSON ``Code`` values)
   and the stages that expose other sessions' operations on a shared cluster.
+* :func:`assert_tls_not_weakened` (MDB-07 / C6) — the URI options and connector
+  fields that switch TLS verification off, used by the MCP builtin AND the
+  ingestion connector. Plain-text transport (``tls=false``) only with the
+  dev-only ``MONGODB_ALLOW_NON_TLS`` setting, which production ignores.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 try:
@@ -95,3 +100,85 @@ def pipeline_is_read_only(pipeline: object) -> bool:
     if not all(isinstance(stage, dict) for stage in pipeline):
         return False
     return not _contains_key(pipeline, WRITE_STAGES)
+
+
+# ── TLS policy (MDB-07 / C6) ─────────────────────────────────────────────────
+
+# URI options (lower-cased) that switch certificate / hostname / revocation
+# checks off. Refused unless their value is explicitly false.
+TLS_WEAKENING_URI_OPTIONS = frozenset(
+    {
+        "tlsinsecure",
+        "tlsallowinvalidcertificates",
+        "tlsallowinvalidhostnames",
+        "tlsdisableocspendpointcheck",
+        "tlsdisablecertificaterevocationcheck",
+        "sslallowinvalidcertificates",
+        "sslallowinvalidhostnames",
+    }
+)
+# Legacy option whose only purpose is CERT_NONE / CERT_OPTIONAL: refused outright.
+_REFUSED_URI_OPTIONS = frozenset({"ssl_cert_reqs"})
+# Connector config fields with the same effect.
+TLS_WEAKENING_FIELDS = (
+    "tls_allow_invalid_certificates",
+    "tls_allow_invalid_hostnames",
+    "tls_insecure",
+)
+_FALSE = frozenset({"false", "0", "no", "off"})
+_TRUE = frozenset({"true", "1", "yes", "on"})
+
+
+class MongoTlsPolicyError(ValueError):
+    """The connection would run with weakened (or no) TLS."""
+
+
+def _is_false(value: object) -> bool:
+    return value is False or str(value).strip().lower() in _FALSE
+
+
+def _is_true(value: object) -> bool:
+    return value is True or str(value).strip().lower() in _TRUE
+
+
+def non_tls_allowed() -> bool:
+    """The dev-only MONGODB_ALLOW_NON_TLS switch (never in production)."""
+    try:
+        from app.core.config import get_settings
+
+        settings = get_settings()
+    except Exception:
+        return False  # unreadable settings: the strict policy
+    return bool(settings.mongodb_allow_non_tls) and not settings.is_production
+
+
+def assert_tls_not_weakened(uri: str, config: Mapping[str, Any] | None = None) -> None:
+    """Raise :class:`MongoTlsPolicyError` when ``uri`` / ``config`` weaken TLS."""
+    from urllib.parse import parse_qsl, urlsplit
+
+    for key, value in parse_qsl(urlsplit(uri.strip()).query, keep_blank_values=True):
+        lowered = key.strip().lower()
+        if lowered in _REFUSED_URI_OPTIONS or (
+            lowered in TLS_WEAKENING_URI_OPTIONS and not _is_false(value)
+        ):
+            raise MongoTlsPolicyError(
+                f"MongoDB URI option '{key}' is not allowed: TLS certificate verification "
+                "cannot be turned off; supply the server's CA as tls_ca_pem instead"
+            )
+        if lowered in ("tls", "ssl") and _is_false(value) and not non_tls_allowed():
+            raise MongoTlsPolicyError(
+                f"MongoDB URI option '{key}={value}' is not allowed: connections must use TLS"
+            )
+    for field in TLS_WEAKENING_FIELDS:
+        if config and _is_true(config.get(field)):
+            raise MongoTlsPolicyError(
+                f"MongoDB setting '{field}' is not allowed: TLS certificate verification "
+                "cannot be turned off; supply the server's CA as tls_ca_pem instead"
+            )
+    for field in ("tls", "ssl"):
+        value = (config or {}).get(field)
+        explicit_off = value is not None and str(value).strip() != "" and _is_false(value)
+        if explicit_off and not non_tls_allowed():
+            raise MongoTlsPolicyError(
+                f"MongoDB setting '{field}: false' is not allowed: connections must use TLS"
+            )
