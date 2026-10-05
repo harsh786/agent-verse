@@ -421,14 +421,15 @@ describe('Auth type selector', () => {
     expect(hints.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('clears auth_values when auth type changes', async () => {
+  it('clears auth_values when auth type changes (after confirming)', async () => {
     mockFetch([EMPTY_LIST]);
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: /register connector/i }));
     // Type token for bearer
     await userEvent.type(screen.getByLabelText(/access token/i), 'old-token');
-    // Switch to basic — token field should disappear
+    // Switch to basic — the entered token would be dropped, so it asks first (A2)
     await userEvent.selectOptions(screen.getByRole('combobox', { name: /auth type/i }), 'basic');
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /switch/i }));
     expect(screen.queryByLabelText(/access token/i)).not.toBeInTheDocument();
     expect((screen.getByLabelText(/username/i) as HTMLInputElement).value).toBe('');
   });

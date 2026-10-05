@@ -89,6 +89,43 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
       },
     ],
   },
+  connection_string: {
+    label: 'Connection String',
+    description: 'Database connection URI (MongoDB, PostgreSQL, …) — stored as a secret and never shown in plain text',
+    color: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400',
+    fields: [
+      {
+        key: 'uri',
+        label: 'Connection URI',
+        placeholder: 'mongodb+srv://cluster0.example.mongodb.net/',
+        type: 'password',
+        required: true,
+        hint: 'mongodb:// or mongodb+srv://. Put the credentials in the fields below instead (no URL-escaping needed).',
+      },
+      {
+        key: 'username',
+        label: 'Username',
+        placeholder: 'app-user',
+        type: 'text',
+        required: false,
+      },
+      {
+        key: 'password',
+        label: 'Password',
+        placeholder: '••••••••',
+        type: 'password',
+        required: false,
+      },
+      {
+        key: 'database',
+        label: 'Database',
+        placeholder: 'orders',
+        type: 'text',
+        required: false,
+        hint: 'Used when a tool call names no database (falls back to the URI path).',
+      },
+    ],
+  },
   oauth_ac: {
     label: 'OAuth 2.0 (Authorization Code)',
     description: 'Redirects user to authorize — click "Start OAuth Flow" after registering',
@@ -386,8 +423,9 @@ function SmartAuthFields({
   connectorName: string;
   onChange: (values: Record<string, string>) => void;
 }) {
-  const config = AUTH_TYPE_CONFIGS[authType];
-  if (!config) return null;
+  // An auth type this UI doesn't know (a newer backend, a legacy row): still show
+  // the stored credential keys — masked — so editing never silently drops them.
+  const config: AuthTypeConfig = AUTH_TYPE_CONFIGS[authType] ?? unknownAuthTypeConfig(authType, authValues);
 
   const setField = (key: string, value: string) =>
     onChange({ ...authValues, [key]: value });
@@ -520,6 +558,22 @@ function SmartAuthFields({
   );
 }
 
+function unknownAuthTypeConfig(authType: string, authValues: Record<string, string>): AuthTypeConfig {
+  return {
+    label: authType,
+    description: 'Auth type not known to this UI — stored values are shown masked',
+    color: 'bg-muted text-muted-foreground',
+    fields: Object.keys(authValues)
+      .filter((key) => key.trim())
+      .map((key) => ({ key, label: key, placeholder: '', type: 'password' as const, required: false })),
+  };
+}
+
+/** Field keys an auth type collects (catalog-provided fields included). */
+function authFieldKeys(authType: string, extra: { key: string }[] = []): Set<string> {
+  return new Set([...(AUTH_TYPE_CONFIGS[authType]?.fields ?? []), ...extra].map((f) => f.key));
+}
+
 // ── Auth type selector with colored badge ────────────────────────────────────
 
 function AuthTypeSelector({
@@ -547,6 +601,9 @@ function AuthTypeSelector({
               {cfg.label}
             </option>
           ))}
+          {/* A stored type this UI doesn't list must still be the selected one —
+              a controlled <select> with an unknown value shows the first option. */}
+          {value && !config && <option value={value}>{value}</option>}
         </select>
         {config && (
           <span className={`text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap ${config.color}`}>
@@ -640,6 +697,8 @@ export function ConnectorsRegisteredPage() {
   );
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  /** An auth-type switch waiting for confirmation because it would drop entered values. */
+  const [pendingAuthType, setPendingAuthType] = useState<{ type: string; dropped: string[] } | null>(null);
   const editHandled = useRef(false);
 
   const { data: connectors = [], isLoading, error } = useQuery({
@@ -734,6 +793,33 @@ export function ConnectorsRegisteredPage() {
   }, []);
 
   const urlConfig = getUrlConfig(form.connector_type || form.name);
+
+  // Fields the CURRENT auth type collects, including catalog-provided ones.
+  const prefillAuthType: string | undefined = prefill?.auth_type;
+  const currentFieldKeys = (authType: string) =>
+    authFieldKeys(authType, authType === prefillAuthType ? authFieldOverrides : []);
+
+  const applyAuthType = useCallback((type: string, keep: Set<string>) => {
+    setForm((f) => ({
+      ...f,
+      auth_type: type,
+      auth_values: Object.fromEntries(Object.entries(f.auth_values).filter(([k]) => keep.has(k))),
+    }));
+  }, []);
+
+  /** Switch auth type keeping the values both types share; confirm before dropping any. */
+  const requestAuthTypeChange = (type: string) => {
+    if (type === form.auth_type) return;
+    const keep = currentFieldKeys(type);
+    const dropped = Object.entries(form.auth_values)
+      .filter(([k, v]) => k.trim() && v.trim() !== '' && !keep.has(k))
+      .map(([k]) => k);
+    if (dropped.length) {
+      setPendingAuthType({ type, dropped });
+      return;
+    }
+    applyAuthType(type, keep);
+  };
 
   // Each connection needs its own name — several of one type are allowed, but
   // two with the same name can't be told apart in pickers.
@@ -1020,9 +1106,7 @@ export function ConnectorsRegisteredPage() {
               {/* Auth Type */}
               <AuthTypeSelector
                 value={form.auth_type}
-                onChange={(v) =>
-                  setForm((f) => ({ ...f, auth_type: v, auth_values: {} }))
-                }
+                onChange={requestAuthTypeChange}
               />
 
               {/* Auth Fields — type-aware (from catalog) or generic */}
@@ -1129,6 +1213,24 @@ export function ConnectorsRegisteredPage() {
            </div>
          </div>
        )}
+
+      {/* ── Confirm auth-type switch that would drop entered values ── */}
+      <ConfirmModal
+        open={!!pendingAuthType}
+        title="Switch auth type?"
+        description={
+          pendingAuthType
+            ? `${AUTH_TYPE_CONFIGS[pendingAuthType.type]?.label ?? pendingAuthType.type} does not use: ${pendingAuthType.dropped.join(', ')}. Those values will be cleared.`
+            : undefined
+        }
+        confirmLabel="Switch and clear"
+        variant="warning"
+        onConfirm={() => {
+          if (pendingAuthType) applyAuthType(pendingAuthType.type, currentFieldKeys(pendingAuthType.type));
+          setPendingAuthType(null);
+        }}
+        onCancel={() => setPendingAuthType(null)}
+      />
 
       {/* ── Confirm Delete Modal ── */}
       <ConfirmModal
