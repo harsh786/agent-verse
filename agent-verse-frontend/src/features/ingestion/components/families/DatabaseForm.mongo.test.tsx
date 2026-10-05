@@ -77,3 +77,11 @@ describe('B5 X.509 reveals the certificate fields', () => {
     expect(screen.getByLabelText(/client certificate/i)).toBeInTheDocument();
   });
 });
+
+describe('MongoDB TLS: no verification opt-out (backend refuses it, MDB-07)', () => {
+  test('the MongoDB form never offers "skip certificate verification"', async () => {
+    render(<Harness initial={{ tls: true }} spy={vi.fn()} />);
+    expect(screen.getByLabelText(/client certificate/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/skip server certificate verification/i)).not.toBeInTheDocument();
+  });
+});

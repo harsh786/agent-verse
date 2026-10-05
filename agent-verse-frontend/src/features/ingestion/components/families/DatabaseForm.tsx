@@ -57,7 +57,8 @@ export function DatabaseForm({ sourceType, value, onChange, errors = {} }: FormP
         </select></F>
         <F label="Incremental cursor field" error={errors.cursor_field}><input type="text" value={String(value.cursor_field ?? '')} aria-invalid={errors.cursor_field ? true : undefined} onChange={e => set('cursor_field', e.target.value)} placeholder="_id" className={inputCls} /></F>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={Boolean(value.direct_connection)} onChange={e => set('direct_connection', e.target.checked)} />Direct connection (no replica-set discovery)</label>
-        <TlsFields prefix="mongo" value={value} set={set}
+        {/* MongoDB refuses every TLS-weakening option (MDB-07): no verification opt-out. */}
+        <TlsFields prefix="mongo" value={value} set={set} allowInsecure={false}
           requiredReason={isX509 ? 'X.509 needs the client certificate and its private key below (TLS is required).' : undefined} />
         <MongoAdvanced value={value} onChange={onChange} errors={errors} />
       </>}

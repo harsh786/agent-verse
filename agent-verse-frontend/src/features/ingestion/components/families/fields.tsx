@@ -118,10 +118,12 @@ export function Checkbox({ id, label, checked, onChange, hint, disabled }: {
  * custom CA, and a client certificate + key for mutual TLS. Field names match
  * the backend connectors (tls, tls_ca_pem, tls_client_cert, tls_client_private_key).
  */
-export function TlsFields({ prefix, value, set, requiredReason }: {
+export function TlsFields({ prefix, value, set, requiredReason, allowInsecure = true }: {
   prefix: string; value: Record<string, unknown>; set: (k: string, v: unknown) => void;
   /** TLS is mandatory (e.g. X.509 auth): the switch is locked on and this explains why. */
   requiredReason?: string;
+  /** Offer "skip certificate verification" (false where the backend refuses it, e.g. MongoDB). */
+  allowInsecure?: boolean;
 }) {
   const enabled = Boolean(value.tls) || !!requiredReason;
   return (
@@ -135,8 +137,10 @@ export function TlsFields({ prefix, value, set, requiredReason }: {
         <SecretTextarea id={`${prefix}-tls-key`} label="Client private key (PEM, mutual TLS)" placeholder="-----BEGIN PRIVATE KEY-----"
           value={value.tls_client_private_key} onChange={v => set('tls_client_private_key', v)} />
         <SecretInput id={`${prefix}-tls-key-pass`} label="Client key passphrase (optional)" value={value.tls_client_key_password} onChange={v => set('tls_client_key_password', v)} />
-        <Checkbox id={`${prefix}-tls-insecure`} label="Skip server certificate verification (not recommended)"
-          checked={Boolean(value.tls_allow_invalid_certificates)} onChange={v => set('tls_allow_invalid_certificates', v)} />
+        {allowInsecure && (
+          <Checkbox id={`${prefix}-tls-insecure`} label="Skip server certificate verification (not recommended)"
+            checked={Boolean(value.tls_allow_invalid_certificates)} onChange={v => set('tls_allow_invalid_certificates', v)} />
+        )}
       </>}
     </div>
   );
