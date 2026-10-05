@@ -68,7 +68,11 @@ class ExcelParser:
                     continue  # skip blank rows
                 if not headers:
                     distinct = {str(c).strip() for c in row if c is not None and str(c).strip()}
-                    if len(distinct) == 1 and _wide(ws, merged, r) and len(pending_titles) < 5:
+                    if (
+                        len(distinct) == 1
+                        and _title_like(row, ws, merged, r)
+                        and len(pending_titles) < 5
+                    ):
                         # A title / caption row (one label, often merged across the
                         # sheet) above the real header row.
                         pending_titles.append(next(iter(distinct)))
@@ -175,10 +179,16 @@ class _Merges:
         return row
 
 
-def _wide(ws: Any, merged: list[tuple[int, int, int, int]], r: int) -> bool:
-    """A one-label row is a title when the sheet has more than one column."""
+def _title_like(
+    row: list[Any], ws: Any, merged: list[tuple[int, int, int, int]], r: int
+) -> bool:
+    """A one-label row is a title / caption when it is merged across columns, or
+    its label sits in column A of a sheet with more than one column. A header
+    with a blank first cell (``[None, "B"]``) stays a header."""
     if any(r1 == r and c2 > c1 for r1, c1, _r2, c2 in merged):
         return True
+    if not row or row[0] is None or not str(row[0]).strip():
+        return False
     try:
         return int(ws.max_column or 1) > 1
     except Exception:
