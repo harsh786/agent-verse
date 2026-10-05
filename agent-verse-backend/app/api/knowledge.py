@@ -664,6 +664,28 @@ async def _already_indexed_or_http(
         ) from exc
 
 
+async def _indexed_document_id_or_http(
+    store: KnowledgeStore, doc_hash: str, *, tenant_id: str, collection_id: str
+) -> str | None:
+    """:func:`_already_indexed_or_http` that also names the document holding the
+    content: its id, ``""`` when indexed but the store cannot say where, else None."""
+    lookup = getattr(store, "document_id_by_hash", None)
+    if not callable(lookup):
+        indexed = await _already_indexed_or_http(
+            store, doc_hash, tenant_id=tenant_id, collection_id=collection_id
+        )
+        return "" if indexed else None
+    try:
+        found = await lookup(
+            content_hash=doc_hash, tenant_id=tenant_id, collection_id=collection_id
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Knowledge persistence is unavailable"
+        ) from exc
+    return None if found is None else str(found)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — collections
 # ---------------------------------------------------------------------------
@@ -1177,16 +1199,18 @@ async def ingest_file(
 
     # Dedup first: identical bytes were parsed (and OCR'd) when first indexed.
     doc_hash = hashlib.sha256(content_bytes).hexdigest()
-    if await _already_indexed_or_http(
+    existing_id = await _indexed_document_id_or_http(
         store, doc_hash, tenant_id=tenant.tenant_id, collection_id=collection_id
-    ):
+    )
+    if existing_id is not None:
         return {
             "filename": filename,
             "chunks_created": 0,
             "collection_id": collection_id,
             "file_size_bytes": len(content_bytes),
             "deduplicated": True,
-            "document_id": None,
+            # The document that already holds these bytes (P1a-5).
+            "document_id": existing_id or None,
         }
 
     # Re-uploading a file replaces it: a stable document id per file name.
