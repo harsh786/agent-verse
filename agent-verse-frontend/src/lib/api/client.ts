@@ -1801,6 +1801,34 @@ export interface TrainingPreview {
   samples: Array<{ goal: string; eval_score: number; steps: number; tools: string[] }>;
 }
 
+export interface TrainingExportJob {
+  job_id: string;
+  status: "queued" | "running" | "complete" | "failed";
+  format: "openai" | "anthropic";
+  min_score: number | null;
+  limit: number;
+  example_count: number | null;
+  has_file: boolean;
+  error: string | null;
+  created_at: string | null;
+  completed_at: string | null;
+  download_url?: string;
+}
+
+/** Non-blank lines of a JSONL body, without splitting it into an array. */
+function countJsonlLines(text: string): number {
+  let count = 0;
+  let start = 0;
+  while (start <= text.length) {
+    const end = text.indexOf("\n", start);
+    const stop = end === -1 ? text.length : end;
+    if (text.slice(start, stop).trim() !== "") count += 1;
+    if (end === -1) break;
+    start = end + 1;
+  }
+  return count;
+}
+
 export const trainingApi = {
   export: async (opts: {
     format: "openai" | "anthropic";
@@ -1825,14 +1853,62 @@ export const trainingApi = {
     if (!res.ok) {
       throw new ApiError(res.status, res.statusText);
     }
-    const blob = await res.blob();
+    // The DB-backed export is streamed, so the server cannot send a count
+    // header up front; count the JSONL lines instead.
+    const header = res.headers.get("X-Training-Examples");
+    let blob: Blob;
+    let count: number;
+    if (header !== null) {
+      blob = await res.blob();
+      count = Number(header);
+    } else {
+      const text = await res.text();
+      blob = new Blob([text], { type: "application/x-ndjson" });
+      count = countJsonlLines(text);
+    }
     return {
       blob,
       filename: parseFilename(
         res.headers.get("Content-Disposition"),
         `training_${opts.format}.jsonl`
       ),
-      count: Number(res.headers.get("X-Training-Examples") ?? 0),
+      count,
+    };
+  },
+
+  /** Queue a durable background export (large exports; written to object storage). */
+  createJob: (opts: { format: "openai" | "anthropic"; minScore?: number; limit?: number }) => {
+    const params = new URLSearchParams();
+    params.set("format", opts.format);
+    params.set("min_score", String(opts.minScore ?? 0.8));
+    params.set("limit", String(opts.limit ?? 10000));
+    return request<TrainingExportJob>(
+      `/intelligence/export-training-data/jobs?${params.toString()}`,
+      { method: "POST" }
+    );
+  },
+
+  listJobs: () =>
+    request<{ jobs: TrainingExportJob[] }>("/intelligence/export-training-data/jobs"),
+
+  /** Download a finished job's JSONL through the API (owning tenant only). */
+  downloadJob: async (jobId: string): Promise<{ blob: Blob; filename: string }> => {
+    const apiKey = getApiKey();
+    const headers: Record<string, string> = { ...getMfaHeader() };
+    if (apiKey) headers["X-API-Key"] = apiKey;
+    const res = await fetch(
+      `${API_BASE_URL}/intelligence/export-training-data/jobs/${encodeURIComponent(jobId)}/download`,
+      { headers }
+    );
+    if (!res.ok) {
+      throw new ApiError(res.status, res.statusText);
+    }
+    return {
+      blob: await res.blob(),
+      filename: parseFilename(
+        res.headers.get("Content-Disposition"),
+        `agentverse_training_${jobId}.jsonl`
+      ),
     };
   },
 

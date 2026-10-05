@@ -99,6 +99,8 @@ celery_app = Celery(
         "app.coordination.outbox_tasks",
         # Coordination pattern runs admitted by the REST route (ORG-39).
         "app.coordination.pattern_runs.tasks",
+        # Durable training-data export jobs (POST /intelligence/export-training-data/jobs).
+        "app.training_export.tasks",
     ],
 )
 
@@ -151,6 +153,8 @@ celery_app.conf.update(
         "app.scaling.event_outbox_tasks.drain_goal_event_outbox": {"queue": "maintenance"},
         # GDPR export — runs in background, long-running
         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
+        # Training-data export jobs (OPS-37) — long-running, streamed to object storage.
+        "agentverse.training_export.run": {"queue": "maintenance"},
         # Per-plan routing aliases (workers can subscribe to these specific queues)
         "agentverse.goals.run_goal_free": {"queue": "goals.free"},
         "agentverse.goals.run_goal_starter": {"queue": "goals.starter"},

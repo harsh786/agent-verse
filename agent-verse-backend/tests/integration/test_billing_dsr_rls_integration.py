@@ -302,7 +302,12 @@ async def test_memory_v2_roundtrip_under_rls(dbs: tuple) -> None:
 
 @pytest.mark.asyncio
 async def test_training_export_db_query(dbs: tuple) -> None:
-    from app.api.training_export import _collect_training_examples_db
+    from app.training_export.stream import iter_training_examples
+
+    async def _collect_training_examples_db(
+        db: Any, min_score: float, limit: int, tenant_id: str
+    ) -> list[dict[str, Any]]:
+        return [e async for e in iter_training_examples(db, tenant_id, min_score, limit)]
 
     admin, app, _ = dbs
     tid = _tid()

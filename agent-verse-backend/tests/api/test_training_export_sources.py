@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 from types import SimpleNamespace
 from typing import Any
 
@@ -42,8 +43,11 @@ def _client(goal_service: Any, *, db_state: Any = None) -> TestClient:
 
 
 def _rows(sql: str, _p: dict[str, Any]) -> list[Any]:
+    if sql.startswith("SELECT COUNT(*)"):
+        # count, avg, min, max, then the four histogram buckets
+        return [(1, 0.93, 0.93, 0.93, 0, 0, 1, 0)]
     if "FROM goals g" in sql:
-        return [("g1", "Summarise the Q3 report", 0.93)]
+        return [("g1", "Summarise the Q3 report", _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC), 0.93)]
     if "FROM goal_steps" in sql:
         return [("g1", "report summary", [{"tool_name": "docs.read"}])]
     return []
@@ -56,9 +60,12 @@ def test_db_path_used_via_goal_service_db_attribute() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["count"] == 1 and body["max_score_found"] == 0.93
-    (q,) = db.touching("FROM goals g")
-    assert q.tenant_guc == TENANT  # under tenant RLS
-    assert "evaluations" in q.sql and "eval_scorecards" in q.sql
+    assert body["samples"][0]["goal"] == "Summarise the Q3 report"
+    queries = db.touching("FROM goals g")
+    assert queries and all(q.tenant_guc == TENANT for q in queries)  # under tenant RLS
+    assert all("evaluations" in q.sql and "eval_scorecards" in q.sql for q in queries)
+    # OPS-37: per-goal latest-score lookups, never DISTINCT ON over the ledger.
+    assert all("DISTINCT ON" not in q.sql for q in queries)
 
 
 def test_db_failure_is_503_not_an_empty_export() -> None:

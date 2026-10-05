@@ -169,6 +169,39 @@ test('trainingApi.export downloads a blob + parses headers', async () => {
   expect(res.blob).toBeInstanceOf(Blob);
 });
 
+test('trainingApi.export counts JSONL lines when the streamed response has no count header', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+    new Response('{"a":1}\n{"b":2}\n{"c":3}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/x-ndjson' },
+    })
+  );
+  const res = await trainingApi.export({ format: 'openai' });
+  expect(res.count).toBe(3);
+});
+
+test('trainingApi.export counts zero lines for an empty stream', async () => {
+  vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 200 }));
+  expect((await trainingApi.export({ format: 'openai' })).count).toBe(0);
+});
+
+test('trainingApi.createJob posts to the durable job endpoint', async () => {
+  const f = mockOk({ job_id: 'j1', status: 'queued' });
+  const job = await trainingApi.createJob({ format: 'anthropic', minScore: 0.9, limit: 50000 });
+  const url = String(f.mock.calls[0][0]);
+  expect(url).toContain('/intelligence/export-training-data/jobs?');
+  expect(url).toContain('format=anthropic');
+  expect(url).toContain('limit=50000');
+  expect((f.mock.calls[0][1] as RequestInit).method).toBe('POST');
+  expect(job.job_id).toBe('j1');
+});
+
+test('trainingApi.listJobs reads the job list', async () => {
+  const f = mockOk({ jobs: [] });
+  await trainingApi.listJobs();
+  expect(String(f.mock.calls[0][0])).toContain('/intelligence/export-training-data/jobs');
+});
+
 // ── adminApi (server-side tenant pagination) ────────────────────────────────────
 
 test('adminApi.listTenants sends limit + offset (server-side pagination)', async () => {
