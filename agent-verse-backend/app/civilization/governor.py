@@ -28,6 +28,14 @@ logger = get_logger(__name__)
 _tracer = get_tracer(__name__)
 
 
+class CivilizationControlError(RuntimeError):
+    """A pause/resume/kill could not be carried out (no DB/Redis, or a write failed).
+
+    Raised instead of reporting success for a control that did not happen
+    (a08-F182-02/03). An unknown civilization or member raises ``LookupError``.
+    """
+
+
 class Governor:
     """Governs the civilization: enforces the Constitution, creates/retires members.
 
@@ -265,28 +273,98 @@ class Governor:
             logger.warning("governor_auto_retire_failed", error=str(exc))
         return retired
 
-    async def kill_agent(self, agent_id: str, tenant_ctx: Any) -> None:
-        """Kill a specific civilization member."""
-        await self._retire_member_by_agent_id(agent_id)
-        # Signal running task to halt (Redis flag)
-        if self._redis is not None:
-            try:
-                await self._redis.set(
-                    f"civ_kill_agent:{self._civilization_id}:{agent_id}", "1", ex=3600
-                )
-            except Exception as exc:
-                logger.warning("governor_kill_signal_failed", error=str(exc))
+    async def kill_agent(self, agent_id: str, tenant_ctx: Any) -> dict[str, int]:
+        """Kill a civilization member: retire it durably, then cancel its running goals.
+
+        Retiring removes it from routing and A2A dispatch (both require an active
+        member). Its in-flight goals are cancelled through the shared goal
+        lifecycle (Redis cancel signal + conditional status write), which every
+        runner honours at its next step. The ``civ_kill_agent`` flag this used
+        to set was read by nothing (a08-F182-01). Unknown member → LookupError;
+        any failure raises (a08-F182-03).
+        """
+        if not await self._retire_member_by_agent_id(agent_id):
+            raise LookupError(f"agent {agent_id!r} is not a member of this civilization")
+        return await self._cancel_member_goals(agent_id)
+
+    async def _cancel_member_goals(self, agent_id: str, *, batch_size: int = 200) -> dict[str, int]:
+        """Cancel the member's non-terminal goals in this civilization, in keyset batches."""
+        from sqlalchemy import text
+
+        from app.reliability.goal_lifecycle import signal_cancel
+
+        if self._db is None:
+            raise CivilizationControlError("no database configured")
+        select_sql = text(
+            "SELECT id FROM goals WHERE tenant_id = :tid AND agent_id = :aid "
+            "AND execution_context->>'civilization_id' = :cid "
+            "AND status NOT IN ('complete', 'failed', 'cancelled') AND id > :after "
+            "ORDER BY id LIMIT :lim"
+        )
+        update_sql = text(
+            "UPDATE goals SET status = 'cancelled', "
+            "error_message = 'Cancelled: civilization member was killed' "
+            "WHERE tenant_id = :tid AND id = ANY(:ids) "
+            "AND status NOT IN ('complete', 'failed', 'cancelled')"
+        )
+        after = ""
+        cancelled = signal_failures = 0
+        try:
+            while True:
+                params = {
+                    "tid": self._tenant_id,
+                    "aid": agent_id,
+                    "cid": self._civilization_id,
+                    "after": after,
+                    "lim": batch_size,
+                }
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
+                    ids = [str(r[0]) for r in await session.execute(select_sql, params)]
+                if not ids:
+                    break
+                for gid in ids:
+                    try:
+                        await signal_cancel(gid, self._redis, strict=True)
+                    except Exception:
+                        signal_failures += 1
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
+                    res = await session.execute(update_sql, {"tid": self._tenant_id, "ids": ids})
+                    cancelled += int(getattr(res, "rowcount", 0) or 0)
+                after = ids[-1]
+                if len(ids) < batch_size:
+                    break
+        except Exception as exc:
+            raise CivilizationControlError(f"could not cancel the member's goals: {exc}") from exc
+        logger.info(
+            "governor_member_killed",
+            civilization_id=self._civilization_id,
+            agent_id=agent_id,
+            goals_cancelled=cancelled,
+            signal_failures=signal_failures,
+        )
+        return {"goals_cancelled": cancelled, "signal_failures": signal_failures}
 
     async def pause(self) -> None:
-        """Pause the civilization — stops new spawns, signals agents to halt at next checkpoint."""
-        await self._set_civilization_status("paused")
+        """Pause the civilization — stops new spawns, signals agents to halt at next checkpoint.
+
+        The shared flag is written first (with no TTL: a pause never lapses on its
+        own) so a failure part-way leaves the civilization more stopped, never
+        less; any failure raises (a08-F182-02).
+        """
         if self._redis is not None:
             try:
-                await self._redis.set(
-                    f"civ_paused:{self._tenant_id}:{self._civilization_id}", "1", ex=86400
-                )
+                await self._redis.set(f"civ_paused:{self._tenant_id}:{self._civilization_id}", "1")
             except Exception as exc:
-                logger.warning("governor_pause_redis_failed", error=str(exc))
+                raise CivilizationControlError(f"pause flag could not be set: {exc}") from exc
+        await self._set_civilization_status("paused")
         # GAP 2: Emit CIVILIZATION_PAUSED event
         try:
             from app.civilization.events import CivEventType, emit_event
@@ -303,13 +381,13 @@ class Governor:
             pass
 
     async def resume(self) -> None:
-        """Resume a paused civilization."""
+        """Resume a paused civilization. Any failure raises (it stays paused)."""
         await self._set_civilization_status("active")
         if self._redis is not None:
             try:
                 await self._redis.delete(f"civ_paused:{self._tenant_id}:{self._civilization_id}")
             except Exception as exc:
-                logger.warning("governor_resume_redis_failed", error=str(exc))
+                raise CivilizationControlError(f"pause flag could not be cleared: {exc}") from exc
         # GAP 2: Emit CIVILIZATION_RESUMED event
         try:
             from app.civilization.events import CivEventType, emit_event
@@ -543,9 +621,10 @@ class Governor:
         except Exception as exc:
             logger.warning("governor_retire_failed", member_id=member_id, error=str(exc))
 
-    async def _retire_member_by_agent_id(self, agent_id: str) -> None:
+    async def _retire_member_by_agent_id(self, agent_id: str) -> int:
+        """Retire the member; returns the rows matched (0 = not a member). Raises on error."""
         if self._db is None:
-            return
+            raise CivilizationControlError("no database configured")
         try:
             from sqlalchemy import text
 
@@ -554,16 +633,17 @@ class Governor:
                 session.begin(),
                 sqlalchemy_rls_context(session, self._tenant_id),
             ):
-                await session.execute(
+                result = await session.execute(
                     text("""
                     UPDATE civilization_agents
-                    SET status = 'retired', retired_at = NOW()
+                    SET status = 'retired', retired_at = COALESCE(retired_at, NOW())
                     WHERE agent_id = :aid AND civilization_id = :cid AND tenant_id = :tid
                 """),
                     {"aid": agent_id, "cid": self._civilization_id, "tid": self._tenant_id},
                 )
+                return int(getattr(result, "rowcount", 0) or 0)
         except Exception as exc:
-            logger.warning("governor_retire_by_agent_failed", error=str(exc))
+            raise CivilizationControlError(f"member could not be retired: {exc}") from exc
 
     async def _auto_pause(self, reasons: list[str]) -> None:
         await self.pause()
@@ -617,8 +697,9 @@ class Governor:
             logger.error("governor_hitl_breach_failed", error=str(exc))
 
     async def _set_civilization_status(self, status: str) -> None:
+        """Persist the status; raises when it cannot (a08-F182-02), LookupError if unknown."""
         if self._db is None:
-            return
+            raise CivilizationControlError("no database configured")
         try:
             from sqlalchemy import text
 
@@ -627,15 +708,18 @@ class Governor:
                 session.begin(),
                 sqlalchemy_rls_context(session, self._tenant_id),
             ):
-                await session.execute(
+                result = await session.execute(
                     text(
                         "UPDATE civilizations SET status=:status, updated_at=NOW() "
                         "WHERE id=:id AND tenant_id=:tid"
                     ),
                     {"status": status, "id": self._civilization_id, "tid": self._tenant_id},
                 )
+                updated = int(getattr(result, "rowcount", 0) or 0)
         except Exception as exc:
-            logger.warning("governor_set_status_failed", error=str(exc))
+            raise CivilizationControlError(f"status could not be saved: {exc}") from exc
+        if not updated:
+            raise LookupError(f"civilization {self._civilization_id!r} not found")
 
     async def _audit_spawn(
         self,

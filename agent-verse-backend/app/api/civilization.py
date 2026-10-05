@@ -915,12 +915,20 @@ async def control_civilization(
         redis=redis,
     )
 
-    if action == "pause":
-        await governor.pause()
-        return {"status": "paused", "civilization_id": civ_id}
-    if action == "resume":
-        await governor.resume()
-        return {"status": "active", "civilization_id": civ_id}
+    if action in ("pause", "resume"):
+        from app.civilization.governor import CivilizationControlError
+
+        try:
+            await (governor.pause() if action == "pause" else governor.resume())
+        except LookupError as exc:
+            raise HTTPException(404, "Civilization not found") from exc
+        except CivilizationControlError as exc:
+            # Never answer paused/active for a control that did not happen.
+            raise HTTPException(503, f"{action} could not be applied; retry") from exc
+        return {
+            "status": "paused" if action == "pause" else "active",
+            "civilization_id": civ_id,
+        }
 
     # throttle / adjust_budget: persist the change, or say it did not happen
     # (both used to `except: pass` and still answer status "ok").
@@ -977,7 +985,7 @@ async def kill_agent(request: Request, civ_id: str, agent_id: str) -> dict:
         request.app.state, "_rate_limiter_redis", None
     )
 
-    from app.civilization.governor import Governor
+    from app.civilization.governor import CivilizationControlError, Governor
     from app.civilization.models import Constitution
 
     governor = Governor(
@@ -987,8 +995,13 @@ async def kill_agent(request: Request, civ_id: str, agent_id: str) -> dict:
         db_session_factory=db,
         redis=redis,
     )
-    await governor.kill_agent(agent_id, tenant_ctx)
-    return {"killed": agent_id, "civilization_id": civ_id}
+    try:
+        outcome = await governor.kill_agent(agent_id, tenant_ctx)
+    except LookupError as exc:
+        raise HTTPException(404, "Agent is not a member of this civilization") from exc
+    except CivilizationControlError as exc:
+        raise HTTPException(503, "Agent could not be killed; retry") from exc
+    return {"killed": agent_id, "civilization_id": civ_id, **outcome}
 
 
 # ── SSE streaming ────────────────────────────────────────────────────────────

@@ -659,88 +659,99 @@ async def test_governor_retire_member_by_agent_id_with_db():
     assert len(session.executions) >= 1
 
 
+# a08-F182-01/02/03: these controls used to swallow every failure and report
+# success; they now raise (CivilizationControlError / LookupError). The full
+# behaviour is covered in tests/civilization/test_governor_fail_closed.py.
+
+
 @pytest.mark.asyncio
-async def test_governor_retire_member_by_agent_id_no_db():
+async def test_governor_retire_member_by_agent_id_no_db_raises():
+    from app.civilization.governor import CivilizationControlError
+
     g = _make_governor(db_session_factory=None)
-    await g._retire_member_by_agent_id("agent-1")  # no-op
+    with pytest.raises(CivilizationControlError):
+        await g._retire_member_by_agent_id("agent-1")
 
 
 @pytest.mark.asyncio
-async def test_governor_retire_member_by_agent_id_exception_swallowed():
+async def test_governor_retire_member_by_agent_id_exception_raises():
+    from app.civilization.governor import CivilizationControlError
+
     session = _FakeSession(raise_on="DB error")
     g = _make_governor(db_session_factory=lambda: session)
-    await g._retire_member_by_agent_id("agent-1")  # should not raise
+    with pytest.raises(CivilizationControlError):
+        await g._retire_member_by_agent_id("agent-1")
 
 
 @pytest.mark.asyncio
-async def test_governor_set_civilization_status_with_db():
-    session = _FakeSession()
+async def test_governor_set_civilization_status_unknown_civ_is_lookup_error():
+    session = _FakeSession()  # UPDATE matches no row
     g = _make_governor(db_session_factory=lambda: session)
-    await g._set_civilization_status("paused")
+    with pytest.raises(LookupError):
+        await g._set_civilization_status("paused")
     assert len(session.executions) >= 1
 
 
 @pytest.mark.asyncio
-async def test_governor_set_civilization_status_no_db():
+async def test_governor_set_civilization_status_no_db_raises():
+    from app.civilization.governor import CivilizationControlError
+
     g = _make_governor(db_session_factory=None)
-    await g._set_civilization_status("active")  # no-op
+    with pytest.raises(CivilizationControlError):
+        await g._set_civilization_status("active")
 
 
 @pytest.mark.asyncio
-async def test_governor_set_civilization_status_exception_swallowed():
+async def test_governor_set_civilization_status_exception_raises():
+    from app.civilization.governor import CivilizationControlError
+
     session = _FakeSession(raise_on="DB error")
     g = _make_governor(db_session_factory=lambda: session)
-    await g._set_civilization_status("paused")  # should not raise
+    with pytest.raises(CivilizationControlError):
+        await g._set_civilization_status("paused")
 
 
 @pytest.mark.asyncio
-async def test_governor_kill_agent_sets_redis_key():
-    mock_redis = AsyncMock()
-    mock_redis.set = AsyncMock()
-    g = _make_governor(redis=mock_redis)
-    g._retire_member_by_agent_id = AsyncMock()
-
-    await g.kill_agent("agent-1", _make_tenant_ctx())
-
-    mock_redis.set.assert_called_once()
-    call_args = str(mock_redis.set.call_args)
-    assert "civ_kill_agent" in call_args
-    assert "agent-1" in call_args
-
-
-@pytest.mark.asyncio
-async def test_governor_kill_agent_no_redis():
-    g = _make_governor(redis=None)
-    g._retire_member_by_agent_id = AsyncMock()
-    await g.kill_agent("agent-1", _make_tenant_ctx())
+async def test_governor_kill_agent_cancels_goals_after_retiring():
+    g = _make_governor(redis=AsyncMock())
+    g._retire_member_by_agent_id = AsyncMock(return_value=1)
+    g._cancel_member_goals = AsyncMock(return_value={"goals_cancelled": 0, "signal_failures": 0})
+    out = await g.kill_agent("agent-1", _make_tenant_ctx())
     g._retire_member_by_agent_id.assert_called_once_with("agent-1")
+    g._cancel_member_goals.assert_awaited_once_with("agent-1")
+    assert out["goals_cancelled"] == 0
 
 
 @pytest.mark.asyncio
-async def test_governor_kill_agent_redis_exception_swallowed():
-    mock_redis = AsyncMock()
-    mock_redis.set = AsyncMock(side_effect=RuntimeError("Redis error"))
-    g = _make_governor(redis=mock_redis)
-    g._retire_member_by_agent_id = AsyncMock()
-    await g.kill_agent("agent-1", _make_tenant_ctx())  # should not raise
+async def test_governor_kill_unknown_agent_is_lookup_error():
+    g = _make_governor(redis=None)
+    g._retire_member_by_agent_id = AsyncMock(return_value=0)
+    with pytest.raises(LookupError):
+        await g.kill_agent("agent-1", _make_tenant_ctx())
 
 
 @pytest.mark.asyncio
-async def test_governor_pause_redis_exception_swallowed():
+async def test_governor_pause_redis_exception_raises():
+    from app.civilization.governor import CivilizationControlError
+
     mock_redis = AsyncMock()
     mock_redis.set = AsyncMock(side_effect=RuntimeError("Redis down"))
     g = _make_governor(redis=mock_redis)
     g._set_civilization_status = AsyncMock()
-    await g.pause()  # should not raise
+    with pytest.raises(CivilizationControlError):
+        await g.pause()
 
 
 @pytest.mark.asyncio
-async def test_governor_resume_redis_exception_swallowed():
+async def test_governor_resume_redis_exception_raises():
+    from app.civilization.governor import CivilizationControlError
+
     mock_redis = AsyncMock()
     mock_redis.delete = AsyncMock(side_effect=RuntimeError("Redis down"))
     g = _make_governor(redis=mock_redis)
     g._set_civilization_status = AsyncMock()
-    await g.resume()  # should not raise
+    with pytest.raises(CivilizationControlError):
+        await g.resume()
 
 
 @pytest.mark.asyncio

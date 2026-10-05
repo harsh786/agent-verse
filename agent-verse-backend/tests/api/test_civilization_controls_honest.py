@@ -126,3 +126,58 @@ def test_unknown_civilization_is_404() -> None:
 def test_missing_or_bad_param_is_422() -> None:
     assert _post(_DB(), "throttle").status_code == 422
     assert _post(_DB(), "adjust_budget", {"total_budget_usd": "lots"}).status_code == 422
+
+
+# ── a08-F182-02/03: pause/resume/kill never answer success for a no-op ──────
+
+
+def _post_with_governor(path: str, **governor_patches: Any) -> Any:
+    db = _DB()
+    patches = [
+        patch(f"app.civilization.governor.Governor.{name}", mock)
+        for name, mock in governor_patches.items()
+    ]
+    with (
+        patch("app.api.civilization._require_feature_enabled", lambda r: None),
+        patch("app.api.civilization._get_db", lambda r: db),
+        patch("app.api.civilization._rls_ctx", _no_rls),
+    ):
+        for p in patches:
+            p.start()
+        try:
+            return _client(db).post(f"/civilizations/civ-1/{path}", json={"params": {}})
+        finally:
+            for p in patches:
+                p.stop()
+
+
+def test_pause_that_could_not_be_applied_is_503() -> None:
+    from app.civilization.governor import CivilizationControlError
+
+    failing = AsyncMock(side_effect=CivilizationControlError("db down"))
+    assert _post_with_governor("controls/pause", pause=failing).status_code == 503
+    assert _post_with_governor("controls/resume", resume=failing).status_code == 503
+
+
+def test_kill_unknown_member_is_404() -> None:
+    missing = AsyncMock(side_effect=LookupError("not a member"))
+    assert _post_with_governor("agents/ghost/kill", kill_agent=missing).status_code == 404
+
+
+def test_kill_that_could_not_be_applied_is_503() -> None:
+    from app.civilization.governor import CivilizationControlError
+
+    failing = AsyncMock(side_effect=CivilizationControlError("db down"))
+    assert _post_with_governor("agents/a1/kill", kill_agent=failing).status_code == 503
+
+
+def test_kill_reports_the_goals_it_cancelled() -> None:
+    ok = AsyncMock(return_value={"goals_cancelled": 2, "signal_failures": 0})
+    r = _post_with_governor("agents/a1/kill", kill_agent=ok)
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "killed": "a1",
+        "civilization_id": "civ-1",
+        "goals_cancelled": 2,
+        "signal_failures": 0,
+    }
