@@ -818,6 +818,11 @@ def create_app(
         _tool_cache_inmem = None
     _fake_redis = _FakeRedis()
     _mcp_registry = mcp_registry or MCPRegistry(redis=_fake_redis)
+    # BYOK-2: refuse to build the API without a usable vault key outside
+    # development/test (same check the Celery worker / beat run at startup).
+    from app.providers.vault import assert_vault_key_configured
+
+    assert_vault_key_configured("api")
     # With no vault the manager stored/persisted OAuth access + refresh tokens
     # in plaintext; always give it the credential vault.
     _oauth_manager = OAuthFlowManager(vault=get_vault())
@@ -1356,6 +1361,16 @@ def create_app(
             from app.db.session import get_system_session_factory
 
             app.state.system_db_session_factory = get_system_session_factory()
+            # BYOK-2: establish / verify the vault key canary the workers check
+            # at startup; /health/ready is down while this API's key cannot open it.
+            from app.providers.vault_canary import publish_vault_canary, vault_key_health_check
+
+            _canary = await publish_vault_canary(db_factory, role="api")
+            if _canary.status == "mismatch":
+                logger.error("vault_canary_mismatch", message=_canary.message)
+            elif not _canary.ok:
+                logger.warning("vault_canary_unverified", message=_canary.message)
+            registry.register(vault_key_health_check(db_factory))
             event_store = EventStore(db_factory)
 
             # MCPREG-01: Postgres is the connector registry's source of truth;

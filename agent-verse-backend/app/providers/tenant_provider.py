@@ -202,9 +202,13 @@ def build_tenant_provider(
 
         api_key = str(cfg.get("decrypted_key") or "") or get_vault().decrypt(encrypted_key)
     except Exception as exc:
-        raise TenantProviderError(
-            "Tenant LLM API key could not be decrypted; re-save it with PUT /tenants/me/llm"
-        ) from exc
+        # BYOK-2: say WHICH side holds the wrong key (by fingerprint, stored with
+        # the ciphertext) instead of an opaque "re-save it" — re-saving from the
+        # API never helped a worker that runs with another VAULT_MASTER_KEY.
+        from app.providers.vault import explain_decrypt_failure
+
+        reason = explain_decrypt_failure(str(cfg.get("vault_key_fingerprint") or "") or None)
+        raise TenantProviderError(f"Tenant LLM API key could not be decrypted: {reason}") from exc
     if not api_key:
         raise TenantProviderError("Tenant LLM API key is empty")
 

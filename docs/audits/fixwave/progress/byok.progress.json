@@ -1,0 +1,4 @@
+{
+  "BYOK-1": {"status": "done", "commit": "e538d01a8", "note": "helm worker/subgoal-worker/beat lacked VAULT_MASTER_KEY; k8s beat+blue/green had no secretRef (and nonexistent database-url/redis-url keys), others got it only as AGENTVERSE_VAULT_KEY; prod compose defaulted the key to ''; dev beat had no env_file. Fixed + manifest/helm/compose parsing test"},
+  "BYOK-2": {"status": "done", "commit": null, "note": "empty/conflicting key names refused; worker+beat refuse to start without a key (worker_init/beat_init SystemExit); fingerprint stored with tenant LLM ciphertext (kept current by rotation); decrypt errors name both fingerprints + the misconfigured side; vault_key_canary written by API, checked by workers at startup, API /health/ready vault_key check"}
+}

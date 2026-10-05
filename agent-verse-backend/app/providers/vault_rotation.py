@@ -76,11 +76,20 @@ class PgStore:
     columns: tuple[str, ...]
     prefix: str = ""
     source_json: bool = False
+    # Column recording which platform key sealed the row (BYOK-2): set to the new
+    # key's fingerprint on every row that opens with it after this run.
+    fingerprint_column: str = ""
 
 
 PG_STORES: tuple[PgStore, ...] = (
     PgStore("tenant_vault_keys", "tenant_vault_keys", "tenant_id", ("wrapped_key",)),
-    PgStore("tenant_llm_configs", "tenant_llm_configs", "tenant_id", ("encrypted_key",)),
+    PgStore(
+        "tenant_llm_configs",
+        "tenant_llm_configs",
+        "tenant_id",
+        ("encrypted_key",),
+        fingerprint_column="vault_key_fingerprint",
+    ),
     PgStore("oauth_tokens", "oauth_tokens", "id", ("access_token", "refresh_token")),
     PgStore(
         "trigger_secrets",
@@ -194,7 +203,8 @@ async def _rotate_pg_batch(
     from app.db.rls import sqlalchemy_rls_context
 
     report = StoreReport()
-    cols = ", ".join(store.columns)
+    fp_col = store.fingerprint_column
+    cols = ", ".join((*store.columns, fp_col) if fp_col else store.columns)
     async with (
         tenant_db() as session,
         session.begin(),
@@ -213,7 +223,9 @@ async def _rotate_pg_batch(
         for row in rows:
             report.rows_scanned += 1
             updates: dict[str, Any] = {}
-            for col, value in zip(store.columns, row[1:], strict=True):
+            values = row[1 : 1 + len(store.columns)]
+            opened = True
+            for col, value in zip(store.columns, values, strict=True):
                 if store.source_json:
                     data = json.loads(value) if isinstance(value, str) else value
                     rotated = _rotate_source_config(data, old, new, report)
@@ -223,9 +235,14 @@ async def _rotate_pg_batch(
                 try:
                     rotated = _rotate_prefixed(value, store.prefix, old, new, report)
                 except _OpenFailedError:
+                    opened = False
                     continue
                 if rotated is not None:
                     updates[col] = rotated
+            if fp_col and opened and row[-1] != new.fingerprint():
+                # tv1 rows count too: their tenant key's wrapper (tenant_vault_keys,
+                # rotated first) is under the new platform key after this run.
+                updates[fp_col] = new.fingerprint()
             if updates and not dry_run:
                 assignments = ", ".join(
                     f"{c} = CAST(:{c} AS jsonb)" if store.source_json else f"{c} = :{c}"
@@ -265,7 +282,9 @@ async def _rotate_redis(redis: Any, old: Any, new: Any, dry_run: bool) -> dict[s
                 writes.append((key, rotated))
                 rep.rows_written += 1
 
-    async def _json(match: str, fields: tuple[str, ...], nested: str, rep: StoreReport) -> None:
+    async def _json(
+        match: str, fields: tuple[str, ...], nested: str, rep: StoreReport, fp_field: str = ""
+    ) -> None:
         async for key in redis.scan_iter(match=match, count=200):
             raw = await redis.get(key)
             if not raw:
@@ -279,14 +298,19 @@ async def _rotate_redis(redis: Any, old: Any, new: Any, dry_run: bool) -> dict[s
                 continue
             rep.rows_scanned += 1
             changed = False
+            opened = True
             for fld in fields:
                 try:
                     rotated = _rotate_prefixed(target.get(fld), "", old, new, rep)
                 except _OpenFailedError:
+                    opened = False
                     continue
                 if rotated is not None:
                     target[fld] = rotated
                     changed = True
+            if fp_field and opened and target.get(fp_field) != new.fingerprint():
+                target[fp_field] = new.fingerprint()
+                changed = True
             if changed:
                 writes.append((key, json.dumps(doc)))
                 rep.rows_written += 1
@@ -298,7 +322,13 @@ async def _rotate_redis(redis: Any, old: Any, new: Any, dry_run: bool) -> dict[s
         "auth_config",
         reports["connector_oauth_copies"],
     )
-    await _json("llm_config:*", ("encrypted_key",), "", reports["llm_config_cache"])
+    await _json(
+        "llm_config:*",
+        ("encrypted_key",),
+        "",
+        reports["llm_config_cache"],
+        fp_field="vault_key_fingerprint",
+    )
     if writes and not dry_run:
         for i in range(0, len(writes), 200):
             pipe = redis.pipeline()
