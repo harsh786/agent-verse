@@ -53,3 +53,11 @@ Complete ALL line items (13-item live sequence + the three MongoDB tracks + ever
 fix and verify each e2e, merge every branch/worktree/feature into `main`, run the full suite (unit, frontend,
 integration, e2e_full both modes, live real-world), and **then push `main` to origin** (authorized by the owner
 for that final push once everything is green).
+
+## Owner decisions (2026-10-05, evening)
+1. Same-name re-upload: keep "replace" default, scoped to same collection AND same source; `replace_existing=false` keeps both; legal hold blocks.
+2. MongoDB id change: automatic one-time, resumable, bounded reindex that removes stale host-based-id copies.
+3. A2A public directory: off by default; per-tenant switch + per-agent opt-in; only active/published agents; minimal card (name, description, skills, endpoint); rate-limited; inbound tasks routed to the specific agent with signed/authenticated requests.
+4. Helm workers: 4 processes per pod, 3.5Gi limit, explicit per-child memory cap (matches prod compose/k8s); scale with pods.
+5. RPA: no plan limit; remove the unused `rpa` plan-feature flag.
+6. Channels C1–C5: stay parked.
