@@ -219,13 +219,20 @@ async def test_mission_handoff_links_two_different_agents_in_order(
 
 
 async def test_mission_finalize_marks_failed_when_underlying_goal_is_cancelled(
-    tenant_client: Any, _in_process_goals: Any
+    tenant_client: Any, _in_process_goals: Any, monkeypatch: Any
 ) -> None:
     """When the mission's dispatched goal ends up in a terminal-FAIL state
     (cancelled counts, per OrgService.finalize_mission's terminal_fail set),
     finalize must mark every open task + the mission itself "failed" and
     persist a failure report — proven end-to-end via the real cancel endpoint,
     not by poking internal state."""
+    from app.org.meta_orchestrator import MetaOrchestrator
+
+    # Pin the sequential plan (-> a single_agent goal on the real AgentGraph),
+    # like the other tests here. Unpinned, the FakeProvider's unparseable plan
+    # could yield a multi_agent goal, whose static plan is empty and now fails
+    # at once (fc2edb156) — before the cancel this test sends ever lands.
+    monkeypatch.setattr(MetaOrchestrator, "plan_mission", _fake_two_agent_plan_factory())
     dispatch = await _dispatch_mission(
         tenant_client,
         title="Doomed mission",
