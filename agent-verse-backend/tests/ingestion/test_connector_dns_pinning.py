@@ -131,7 +131,7 @@ async def test_mysql_driver_dials_the_checked_address(rebinding: _RebindingResol
         return conn
 
     fake.connect = _connect  # type: ignore[attr-defined]
-    cfg = _config("mysql", host=HOST, port=3306, table="t")
+    cfg = _config("mysql", host=HOST, port=3306, table="t", primary_keys={"t": ["id"]})
     with patch.dict(sys.modules, {"pymysql": fake, "pymysql.cursors": cursors}):
         _ = [d async for d in MySQLConnector().get_delta(cfg, None)]
     assert dialed == [PUBLIC]

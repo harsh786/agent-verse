@@ -10,6 +10,7 @@ import pytest
 
 from app.ingestion.base_connector import ConnectorUnavailableError
 
+import json
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -137,7 +138,10 @@ class TestGetDelta:
         assert doc0.tenant_id == "t1"
         assert "Alice" in doc0.content.decode()
         _doc1, cursor1 = docs[1]
-        assert cursor1 == "2026-01-03T00:00:00"
+        # P1b-7: a per-table position (cursor value + primary key), typed.
+        pos = json.loads(cursor1)["tables"]["public.customers"]
+        assert pos["c"] == {"t": "str", "v": "2026-01-03T00:00:00"}
+        assert pos["k"] == [{"t": "int", "v": "2"}]
         fake_conn.close.assert_awaited_once()
 
     async def test_table_without_schema_defaults_to_public(self):
@@ -145,7 +149,7 @@ class TestGetDelta:
         fake_conn = AsyncMock()
         fake_conn.fetch = AsyncMock(return_value=rows)
         fake_conn.close = AsyncMock()
-        config = _make_config({"tables": ["widgets"]})
+        config = _make_config({"tables": ["widgets"], "primary_keys": {"widgets": ["id"]}})
 
         with patch("asyncpg.connect", AsyncMock(return_value=fake_conn)):
             docs = await _collect(PostgreSQLConnector().get_delta(config, None))
@@ -159,7 +163,8 @@ class TestGetDelta:
             side_effect=[Exception("bad table"), [{"id": 9, "updated_at": "2026-01-01"}]]
         )
         fake_conn.close = AsyncMock()
-        config = _make_config({"tables": ["broken", "public.good"]})
+        config = _make_config({"tables": ["broken", "public.good"],
+                               "primary_keys": {"broken": ["id"], "good": ["id"]}})
 
         with patch("asyncpg.connect", AsyncMock(return_value=fake_conn)):
             docs, exc = await drain(PostgreSQLConnector().get_delta(config, None))
@@ -185,7 +190,8 @@ class TestGetDelta:
         fake_conn = AsyncMock()
         fake_conn.fetch = AsyncMock(return_value=[{"id": 1, "updated_at": "2026-01-01"}])
         fake_conn.close = AsyncMock()
-        config = _make_config({"tables": ["t"], "cdc_mode": "logical_replication"})
+        config = _make_config({"tables": ["t"], "cdc_mode": "logical_replication",
+                               "primary_keys": {"t": ["id"]}})
 
         with patch("asyncpg.connect", AsyncMock(return_value=fake_conn)):
             docs = await _collect(PostgreSQLConnector().get_delta(config, None))
