@@ -163,6 +163,9 @@ def test_tenant_b_cannot_reach_tenant_a_connection(
     assert client.post(f"/connectors/{sid}/test", headers=HB).status_code == 404
     assert client.get(f"/connectors/{sid}/tools", headers=HB).status_code == 404
     assert client.get(f"/connectors/{sid}", headers=HB).status_code == 404
+    # P1c-5: the health history answered 200 [] for another tenant's connector
+    # (live: MCP-MONGO-ISOLATION) — now the same 404 as every other route.
+    assert client.get(f"/connectors/{sid}/health", headers=HB).status_code == 404
     assert (
         client.put(
             f"/connectors/{sid}",

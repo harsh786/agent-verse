@@ -113,9 +113,12 @@ def test_health_history_for_other_tenants_connector_is_empty() -> None:
     server_id = created["server_id"]
 
     resp = client.get(f"/connectors/{server_id}/health", headers={"X-API-Key": _KEY_B})
-    # No DB here: an honest 503 (MCPREG-02) — and never tenant A's snapshots.
-    assert resp.status_code == 503
+    # P1c-5: not the caller's connector -> 404 (as GET / test / tools / PUT /
+    # DELETE answer), checked before the database — never tenant A's snapshots.
+    assert resp.status_code == 404
     assert "checked_at" not in resp.text
+    own = client.get(f"/connectors/{server_id}/health", headers={"X-API-Key": _KEY_A})
+    assert own.status_code == 503  # the owner: no DB here, an honest 503 (MCPREG-02)
 
 
 def test_usage_for_other_tenants_connector_never_returns_other_tenants_goals() -> None:

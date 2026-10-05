@@ -1371,9 +1371,12 @@ async def get_connector_health_history(
     """Return health check history for a connector.
 
     No database or a failed read is a 503 — never ``[]``, which the UI shows as
-    "never checked" (MCPREG-02).
+    "never checked" (MCPREG-02). Another tenant's (or an unknown) connector is a
+    404, as on every other connector route (P1c-5).
     """
     tenant = _require_tenant(request)
+    if await _registry(request).get(server_id, tenant_ctx=tenant) is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         raise HTTPException(

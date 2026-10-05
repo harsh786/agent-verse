@@ -807,7 +807,9 @@ class TestConnectorsExtra:
         def _db():
             return mock_session
 
-        app = _make_connectors_app()
+        registry = MagicMock()
+        registry.get = AsyncMock(return_value=object())  # the caller's connector (P1c-5)
+        app = _make_connectors_app(registry=registry)
         app.state.db_session_factory = _db
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/connectors/srv-999/health", headers=_H)
