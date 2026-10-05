@@ -74,8 +74,9 @@ class _TeamProvider(FakeProvider):
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def team_client(app: Any, client: Any) -> AsyncIterator[Any]:
-    """Fresh tenant per test so cumulative plan/concurrency caps don't leak."""
+async def team_tenant(app: Any, client: Any) -> AsyncIterator[tuple[Any, str]]:
+    """Fresh tenant per test so cumulative plan/concurrency caps don't leak.
+    Yields ``(client, tenant_id)``."""
     from httpx import ASGITransport, AsyncClient
 
     email = f"team-{uuid.uuid4().hex[:12]}@example.com"
@@ -86,7 +87,7 @@ async def team_client(app: Any, client: Any) -> AsyncIterator[Any]:
     async with AsyncClient(
         transport=transport, base_url="http://e2e-full", headers={"X-API-Key": api_key}
     ) as c:
-        yield c
+        yield c, str(resp.json()["tenant_id"])
 
 
 @pytest.fixture
@@ -108,11 +109,12 @@ def _team_provider(app: Any) -> Any:
 
 
 async def test_supervisor_forms_team_and_persists_subagent_results(
-    app: Any, client: Any, team_client: Any, _team_provider: Any
+    app: Any, client: Any, team_tenant: tuple[Any, str], _team_provider: Any
 ) -> None:
     """A supervisor-mode goal decomposes into a real 2-agent team; each sub-goal runs
     the full agent loop to completion and both are durably persisted + retrievable via
     GET /goals for this tenant only -- proving the team path is real, not a mock."""
+    team_client, tenant_id = team_tenant
     submit = await team_client.post(
         "/goals",
         json={
@@ -152,11 +154,20 @@ async def test_supervisor_forms_team_and_persists_subagent_results(
 
     import asyncpg
 
+    # Read as the app would: in this tenant's RLS context plus an explicit
+    # tenant predicate. With E2E_LEAST_PRIVILEGE=1 DATABASE_URL is the NOBYPASSRLS
+    # app role, for which a GUC-less read sees no rows at all.
     conn = await asyncpg.connect(
         os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
     )
     try:
-        rows = await conn.fetch("SELECT goal_text FROM goals WHERE parent_goal_id = $1", parent_id)
+        async with conn.transaction():
+            await conn.execute("SELECT set_config('app.tenant_id', $1, true)", tenant_id)
+            rows = await conn.fetch(
+                "SELECT goal_text FROM goals WHERE parent_goal_id = $1 AND tenant_id = $2",
+                parent_id,
+                tenant_id,
+            )
     finally:
         await conn.close()
     assert {r["goal_text"] for r in rows} == {SUBTASK_A, SUBTASK_B}
