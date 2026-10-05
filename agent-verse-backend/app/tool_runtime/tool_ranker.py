@@ -7,10 +7,12 @@ class ToolRanker:
     def __init__(self, scorer: ToolScorer) -> None:
         self._scorer = scorer
 
-    def rank(self, tool_names: list[str], goal_context: str = "") -> list[str]:
+    def rank(
+        self, tool_names: list[str], goal_context: str = "", *, tenant_id: str = ""
+    ) -> list[str]:
         scored = []
         for name in tool_names:
-            profile = self._scorer.score(name)
+            profile = self._scorer.score(name, tenant_id=tenant_id)
             relevance = self._semantic_relevance(name, goal_context)
             combined = 0.6 * profile.trust_score + 0.4 * relevance
             scored.append((name, combined))

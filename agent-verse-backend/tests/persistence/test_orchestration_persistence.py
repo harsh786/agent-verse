@@ -98,7 +98,7 @@ async def test_persist_tool_trust_no_db() -> None:
         tenant_id="t1",
         db=None,
     )
-    history = store.get_history("jira.search_issues")
+    history = store.get_history("jira.search_issues", tenant_id="t1")
     assert len(history) >= 1
     assert history[0]["success"] is True
 

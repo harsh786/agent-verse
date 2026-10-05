@@ -239,7 +239,9 @@ class OrchestrationPersistence:
         db: Any = None,
     ) -> None:
         """Persist tool trust outcome to in-memory store + Postgres."""
-        self._tool_trust_store.record_outcome(tool_name, success=success, latency_ms=latency_ms)
+        self._tool_trust_store.record_outcome(
+            tool_name, success=success, latency_ms=latency_ms, tenant_id=tenant_id
+        )
         effective_db = db or self._db
         if effective_db is None:
             return
@@ -326,8 +328,12 @@ class OrchestrationPersistence:
                         {"tenant_id": tenant_id},
                     )
                 ).fetchall()
-            for row in rows:
-                self._tool_trust_store.record_outcome(row[0], success=row[1], latency_ms=row[2])
+            # Newest-first from the query; replay oldest-first so the history
+            # (and its trailing consecutive-failure count) is chronological.
+            for row in reversed(rows):
+                self._tool_trust_store.record_outcome(
+                    row[0], success=row[1], latency_ms=row[2], tenant_id=tenant_id
+                )
             return len(rows)
         except Exception as exc:
             from app.observability.logging import get_logger

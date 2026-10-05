@@ -22,8 +22,8 @@ class ToolScorer:
     def __init__(self, trust_store: ToolTrustStore) -> None:
         self._store = trust_store
 
-    def score(self, tool_name: str) -> ToolTrustProfile:
-        history = self._store.get_history(tool_name)
+    def score(self, tool_name: str, *, tenant_id: str = "") -> ToolTrustProfile:
+        history = self._store.get_history(tool_name, tenant_id=tenant_id)
         if not history:
             return ToolTrustProfile(
                 tool_name=tool_name,

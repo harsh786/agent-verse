@@ -61,7 +61,8 @@ async def test_load_tool_trust_is_tenant_scoped() -> None:
     (select,) = assert_tenant_scoped(db, "tool_trust_records", TENANT)
     assert "WHERE tenant_id = :tenant_id" in select.sql
     assert loaded == 2
-    assert store.has_tool("jira.search") and store.has_tool("github.list")
+    assert store.has_tool("jira.search", tenant_id=TENANT)
+    assert store.has_tool("github.list", tenant_id=TENANT)
 
 
 async def test_load_tool_trust_refuses_cross_tenant_wildcard() -> None:
