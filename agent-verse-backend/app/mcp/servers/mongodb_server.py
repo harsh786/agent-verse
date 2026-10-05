@@ -19,7 +19,9 @@ pool) to a member the server advertises but the tenant did not list
 
 URI options that would read platform files (``tlsCAFile`` ...), route through a
 proxy (``proxyHost`` ...) or authenticate as the PLATFORM's ambient identity
-(``MONGODB-AWS``, ``GSSAPI``, ``MONGODB-OIDC``, ``MONGODB-X509``) are refused.
+(``MONGODB-AWS``, ``GSSAPI``, ``MONGODB-OIDC``) are refused. TLS material comes
+from the connector as PEM text: ``tls_ca_pem`` and, for mutual TLS or
+``MONGODB-X509``, ``tls_client_cert`` + ``tls_client_private_key`` (MDB-05).
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shutil
 import tempfile
 from collections.abc import Iterator
 from typing import Any
@@ -173,9 +176,12 @@ _BLOCKED_URI_OPTIONS = frozenset(
     }
 )
 # SCRAM / PLAIN (LDAP) authenticate with the credentials the tenant supplies.
-# MONGODB-AWS / GSSAPI / MONGODB-OIDC / MONGODB-X509 fall back to the platform's
-# ambient identity (env keys, instance metadata, keytab, local files).
+# MONGODB-AWS / GSSAPI / MONGODB-OIDC fall back to the platform's ambient
+# identity (env keys, instance metadata, keytab). MONGODB-X509 is allowed only
+# with the tenant's OWN client certificate (tls_client_cert, MDB-05) — never a
+# certificate file on the platform's disk (tlsCertificateKeyFile is refused).
 _ALLOWED_AUTH_MECHANISMS = frozenset({"DEFAULT", "SCRAM-SHA-1", "SCRAM-SHA-256", "PLAIN"})
+_X509 = "MONGODB-X509"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
@@ -208,22 +214,34 @@ def _connection_uri(credentials: dict[str, Any] | None) -> str:
     raise MongoCredentialError(CONFIGURE_CREDENTIALS_ERROR)
 
 
-def _check_auth_mechanism(value: str) -> None:
-    if value.strip().upper() not in _ALLOWED_AUTH_MECHANISMS:
+def _has_client_cert(credentials: dict[str, Any] | None) -> bool:
+    return bool(str((credentials or {}).get("tls_client_cert") or "").strip())
+
+
+def _check_auth_mechanism(value: str, credentials: dict[str, Any] | None = None) -> None:
+    mechanism = value.strip().upper()
+    if mechanism == _X509:
+        if not _has_client_cert(credentials):
+            raise MongoCredentialError(
+                "MONGODB-X509 authentication needs the connector's tls_client_cert and "
+                "tls_client_private_key"
+            )
+        return
+    if mechanism not in _ALLOWED_AUTH_MECHANISMS:
         raise MongoCredentialError(
-            f"MongoDB auth mechanism '{value}' is not allowed; use SCRAM or PLAIN with "
-            "credentials supplied on the connector"
+            f"MongoDB auth mechanism '{value}' is not allowed; use SCRAM, PLAIN or "
+            "MONGODB-X509 with credentials supplied on the connector"
         )
 
 
-def _check_uri_options(uri: str) -> None:
+def _check_uri_options(uri: str, credentials: dict[str, Any] | None = None) -> None:
     """Refuse URI options that reach outside the tenant's own database."""
     for key, value in parse_qsl(urlsplit(uri).query, keep_blank_values=True):
         lowered = key.strip().lower()
         if lowered in _BLOCKED_URI_OPTIONS:
             raise MongoCredentialError(f"MongoDB URI option '{key}' is not allowed")
         if lowered == "authmechanism":
-            _check_auth_mechanism(value)
+            _check_auth_mechanism(value, credentials)
 
 
 def _client_kwargs(credentials: dict[str, Any] | None) -> dict[str, Any]:
@@ -243,31 +261,65 @@ def _client_kwargs(credentials: dict[str, Any] | None) -> dict[str, Any]:
         kwargs["authSource"] = str(auth_source)
     mechanism = creds.get("auth_mechanism") or creds.get("authMechanism")
     if mechanism:
-        _check_auth_mechanism(str(mechanism))
+        _check_auth_mechanism(str(mechanism), creds)
         kwargs["authMechanism"] = str(mechanism).strip().upper()
+        if kwargs["authMechanism"] == _X509:
+            # The identity is the certificate subject; a password makes no sense.
+            kwargs.pop("password", None)
+            kwargs.setdefault("authSource", "$external")
     if str(creds.get("tls", "")).strip() != "":
         kwargs["tls"] = _truthy(creds["tls"])
     # MDB-07: no certificate-verification opt-out exists (assert_tls_not_weakened).
     return kwargs
 
 
+def _pem(credentials: dict[str, Any] | None, key: str) -> str:
+    return str((credentials or {}).get(key) or "").strip()
+
+
 @contextlib.contextmanager
-def _ca_file(credentials: dict[str, Any] | None) -> Iterator[str | None]:
-    """Materialise a tenant-supplied CA bundle (PEM text) for the driver."""
-    pem = str((credentials or {}).get("tls_ca_pem") or "").strip()
-    if not pem:
-        yield None
-        return
-    if "-----BEGIN CERTIFICATE-----" not in pem:
+def _tls_files(credentials: dict[str, Any] | None) -> Iterator[dict[str, Any]]:
+    """Driver TLS kwargs with tenant-supplied PEM material in private temp files.
+
+    pymongo only takes certificate PATHS; the connector holds PEM text: the CA
+    bundle (``tls_ca_pem``) and, for mutual TLS / MONGODB-X509, the client
+    certificate + private key (``tls_client_cert`` / ``tls_client_private_key``,
+    optional ``tls_client_key_password``). They are written to a 0700 directory
+    for the client's lifetime and removed after.
+    """
+    ca = _pem(credentials, "tls_ca_pem")
+    cert = _pem(credentials, "tls_client_cert")
+    key = _pem(credentials, "tls_client_private_key")
+    if ca and "-----BEGIN CERTIFICATE-----" not in ca:
         raise MongoCredentialError("tls_ca_pem must be a PEM-encoded certificate bundle")
-    fd, path = tempfile.mkstemp(prefix="mongo-ca-", suffix=".pem")
+    if bool(cert) != bool(key):
+        raise MongoCredentialError("tls_client_cert and tls_client_private_key go together")
+    if cert and "-----BEGIN CERTIFICATE-----" not in cert:
+        raise MongoCredentialError("tls_client_cert must be a PEM-encoded certificate")
+    if key and "PRIVATE KEY-----" not in key:
+        raise MongoCredentialError("tls_client_private_key must be a PEM-encoded private key")
+    if not ca and not cert:
+        yield {}
+        return
+    tmpdir = tempfile.mkdtemp(prefix="av-mcp-mongo-tls-")
     try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(pem)
-        yield path
+        kwargs: dict[str, Any] = {"tls": True}
+        if ca:
+            path = os.path.join(tmpdir, "ca.pem")
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600), "w") as handle:
+                handle.write(ca + "\n")
+            kwargs["tlsCAFile"] = path
+        if cert:
+            path = os.path.join(tmpdir, "client.pem")
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600), "w") as handle:
+                handle.write(f"{cert}\n{key}\n")
+            kwargs["tlsCertificateKeyFile"] = path
+            password = _pem(credentials, "tls_client_key_password")
+            if password:
+                kwargs["tlsCertificateKeyFilePassword"] = password
+        yield kwargs
     finally:
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def _db_name(uri: str, arguments: dict[str, Any], credentials: dict[str, Any] | None) -> str:
@@ -313,7 +365,7 @@ async def call_tool(
         return {"error": str(exc), "tool": tool_name, "status": "operator_refused"}
     try:
         uri = _connection_uri(credentials)
-        _check_uri_options(uri)
+        _check_uri_options(uri, credentials)
         assert_tls_not_weakened(uri, credentials)
         kwargs = _client_kwargs(credentials)
     except MongoTlsPolicyError as exc:
@@ -332,13 +384,11 @@ async def call_tool(
     from app.ingestion.connector_egress import pin_source_dsn
 
     try:
-        with _ca_file(credentials) as ca_path:
-            if ca_path:
-                kwargs["tlsCAFile"] = ca_path
-                kwargs.setdefault("tls", True)
+        with _tls_files(credentials) as tls_kwargs:
+            kwargs.update(tls_kwargs)
             # Every URI host (SRV targets expanded) is checked and pinned for the call.
             async with pin_source_dsn(uri, context="mcp builtin mongodb") as pins:
-                _check_uri_options(pins.dsn)  # includes SRV TXT-record options
+                _check_uri_options(pins.dsn, credentials)  # incl. SRV TXT-record options
                 assert_tls_not_weakened(pins.dsn, credentials)
                 return await asyncio.to_thread(
                     _call_sync, pins.dsn, kwargs, tool_name, arguments, credentials
