@@ -1,0 +1,3 @@
+passed test_es_index_pattern_pagination_and_incremental 212.8
+passed test_es_mapped_kb_index 14.1
+passed test_es_auth_and_honest_failures 23.1

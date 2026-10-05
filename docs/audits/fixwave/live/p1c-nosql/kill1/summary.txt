@@ -1,0 +1,2 @@
+passed test_mongo_kill_switch 0.1
+passed test_mcp_mongo_kill_switch 3.4

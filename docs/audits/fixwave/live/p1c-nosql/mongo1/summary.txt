@@ -1,0 +1,8 @@
+passed test_mongo_host_change_keeps_ids 16.6
+failed test_mongo_tls_required_server 64.6
+     E       AssertionError: not refused with 422: ['?tlsInsecure=true', '?tlsAllowInvalidCertificates=true', ';tlsAllowInvalidHostnames=true', '%3B-encoded tlsInsecure', 'tls_allow_invalid_certificates field', 'tls=false']
+passed test_mongo_stalled_server_times_out 23.4
+failed test_mongo_refusals 0.3
+     E       AssertionError: unexpected answers: {'tlsCAFile platform file': 201, "';' tlsCertificateKeyFile": 201, "';' proxyHost": 201, '%3B proxyHost': 201, 'MONGODB-AWS ambient creds': 201, 'MONGODB-OIDC': 201, 'GSSAPI': 201}
+failed test_mongo_honest_failures 26.3
+     E       AssertionError: missing collection: sync completed (0 indexed) instead of failing

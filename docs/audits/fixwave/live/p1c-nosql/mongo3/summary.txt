@@ -1,0 +1,14 @@
+passed test_mongo_first_and_incremental_sync 113.8
+passed test_mongo_host_change_keeps_ids 15.9
+passed test_mongo_legacy_id_reindex 20.7
+passed test_mongo_tls_required_server 44.9
+passed test_mongo_stalled_server_times_out 22.2
+passed test_mongo_refusals 0.2
+passed test_mongo_honest_failures 26.1
+passed test_mcp_mongo_register_test_list 0.8
+passed test_mcp_mongo_tool_calls 3.3
+passed test_mcp_mongo_errors 7.0
+failed test_mcp_mongo_cross_tenant 1.4
+     E       AssertionError: {'GET': 404, 'test': 404, 'tools': 404, 'health': 200, ...}
+failed test_mcp_mongo_delete_one_needs_approval 317.8
+     E       AssertionError: approve -> 404 {"detail":"Approval request None not found"}; the approved delete did not remove the document; -1 other documents were deleted

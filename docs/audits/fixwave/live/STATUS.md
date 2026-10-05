@@ -5,7 +5,7 @@
 | 1 | A1 File upload (PDF, DOCX, PPTX, XLSX, CSV, HTML, MD, OCR, ZIP) | COMPLETE (9/10); PDF table-row ranking → P2 | P1a merged 4e38f7fa8; report live/p1a-file-upload.md; KB-COMPLEX-CORPUS 10/10, KB-UPLOAD-HARD 18/19 |
 | 2 | A2 S3, MinIO | COMPLETE (fixed: P1b-1..6, -8, -9, -10) | P1b branch `live/p1b-storage-oltp`; report live/p1b-storage-oltp.md; SRC-OBJ-* all pass (both flavors), UI wizard verified |
 | 3 | A3 PostgreSQL, MySQL | COMPLETE (fixed: P1b-7, + P1b-1/-5) | report live/p1b-storage-oltp.md; SRC-DB-SYNC / TABLE-RETRY / FAILURES pass on both engines |
-| 4 | A5 MongoDB, Redis, Elasticsearch | IN PROGRESS (P1c) | |
+| 4 | A5 MongoDB, Redis, Elasticsearch | COMPLETE — MongoDB ingestion (fixed: P1c-1, -2, -3, -4, -13); MongoDB MCP (fixed: P1c-5); Redis (fixed: P1c-7..-10, -13); Elasticsearch (fixed: P1c-6, -11, -12, -13) | P1c branch `live/p1c-nosql`; report live/p1c-nosql.md; SRC-MONGO-*, MCP-MONGO-* (incl. HITL, kill switches), SRC-REDIS-*, SRC-ES-* all pass on rebuilt images; P1b regression 12/12; open items → P2 (rerank calibration), P4/P5 (repeated approved delete), owner (Redis host-based ids) |
 | 5 | A6 Kafka | PENDING | |
 | 6 | A7 Google Drive, SharePoint, Confluence, Notion | PENDING | |
 | 7 | A10 HTTP URL, web crawl | PENDING | |

@@ -1,0 +1,7 @@
+passed test_redis_every_type_and_patterns 27.3
+passed test_redis_keyspace_over_several_runs_and_changes 402.9
+passed test_redis_tls_and_auth 28.9
+failed test_redis_source_incremental 0.0
+     E       AssertionError: POST /sources (redis) -> 422: {"detail":"Unknown family: ''"}
+failed test_mongo_source_incremental 0.1
+     E       AssertionError: POST /sources (mongodb) -> 422: {"detail":"Unknown family: ''"}

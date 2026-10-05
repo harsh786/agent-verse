@@ -1,0 +1,5 @@
+failed test_redis_every_type_and_patterns 23.8
+     E       AssertionError: sync failed: User rwreader has no permissions to run the 'json.get' command; 4 documents, expected 9 (one per key); not searchable: list; not searchable: zset; not searchable: stream; not searchable: json; types=hash,json indexed 1 documents, expected 3 (2 hashes + 1 JSON)
+failed test_redis_keyspace_over_several_runs_and_changes 89.3
+     E       AssertionError: 250 of 600 keys indexed after 6 runs; 6 runs (expected 3, each at most 250 keys); 1 keys indexed after the changes, expected 4 (2 edited + 2 new; unchanged ones skipped); edited hash not searchable; new key not searchable; deleted keys cannot be reconciled: 422 {"detail":"The redis connector cannot list what exists upstream, so it never removes documents deleted there"}
+passed test_redis_tls_and_auth 28.8
