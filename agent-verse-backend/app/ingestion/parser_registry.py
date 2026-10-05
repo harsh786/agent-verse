@@ -18,6 +18,39 @@ class DocumentParseError(ValueError):
     """
 
 
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_ZIP_MIMES = frozenset({"application/zip", "application/x-zip-compressed", "multipart/x-zip"})
+
+
+def _ext_of(name: str) -> str:
+    leaf = name.rsplit("/", 1)[-1]
+    return leaf.rsplit(".", 1)[-1].lower() if "." in leaf else ""
+
+
+def _a1_kind(ct: ContentType, name: str, mime_type: str) -> str | None:
+    """Which upload-path (A1) extractor reads this document, if any."""
+    ext = _ext_of(name)
+    mime = (mime_type or "").split(";", 1)[0].strip().lower()
+    if ext == "pptx" or mime == _PPTX_MIME:
+        return "pptx"
+    if ext == "zip" or mime in _ZIP_MIMES:
+        return "zip"
+    if ct == ContentType.DOCX and (ext == "docx" or mime == _DOCX_MIME or not ext):
+        return "docx"
+    if ct in (ContentType.HTML, ContentType.WEB_PAGE):
+        return "html"
+    if ct == ContentType.PDF:
+        return "pdf"
+    return None
+
+
+def _looks_binary(content: bytes) -> bool:
+    """NUL bytes in the first 8 KiB (and no UTF-16 BOM): not a text document."""
+    head = content[:8192]
+    return b"\x00" in head and not head.startswith((b"\xff\xfe", b"\xfe\xff"))
+
+
 class TextParser:
     def parse(self, content: str, **kwargs: object) -> list[str]:
         """Split into paragraphs for semantic chunking."""
@@ -228,6 +261,13 @@ class ParserRegistry:
         name = filename or "document"
 
         try:
+            # P1b-2: the formats file upload extracts with the A1 extractors are
+            # read the same way here (connectors: S3/MinIO objects, Drive files…).
+            a1 = await self._parse_a1(
+                content, ct, name, mime_type, meta, ocr_engine, vision_provider
+            )
+            if a1 is not None:
+                return a1, meta
             if ct in (ContentType.PARQUET, ContentType.AVRO):
                 return self._parse_columnar(content, ct, name), meta
             if ct == ContentType.NOTEBOOK:
@@ -280,8 +320,147 @@ class ParserRegistry:
             meta["parse_error"] = str(exc)[:200]
             return "", meta
 
-        # Generic str-based parsers (TEXT, MARKDOWN, CODE, HTML, JSON, EXCEL, …)
+        if _looks_binary(content):
+            # Decoding it would index binary garbage (and Postgres refuses NUL
+            # bytes): fail with the reason instead.
+            raise DocumentParseError(
+                f"{name}: unsupported binary content (no extractor for this file type)"
+            )
+        # Generic str-based parsers (TEXT, MARKDOWN, CODE, JSON, …)
         return self.parse(content, ct), meta
+
+    async def _parse_a1(
+        self,
+        content: bytes,
+        ct: ContentType,
+        name: str,
+        mime_type: str,
+        meta: dict[str, object],
+        ocr_engine: object | None,
+        vision_provider: object | None,
+    ) -> str | None:
+        """Text via the upload path's extractors, or None for other formats.
+
+        Raises :class:`DocumentParseError` with the extractor's reason for an
+        unreadable document (corrupt, password-protected, zip bomb, no text).
+        """
+        from app.ingestion import document_text as dt
+
+        kind = _a1_kind(ct, name, mime_type)
+        if kind is None:
+            return None
+        try:
+            if kind == "pptx":
+                return dt.extract_pptx_text(content, filename=name)
+            if kind == "zip":
+                return await self._parse_archive(content, name, meta, ocr_engine, vision_provider)
+            if kind == "docx":
+                return dt.extract_docx_text(content, filename=name)
+            if kind == "html":
+                from app.ingestion.parsers.html_parser import HTMLParser as A1HTMLParser
+
+                return A1HTMLParser().parse(dt.decode_text(content))
+            # pdf
+            return await self._parse_pdf_a1(content, name, meta, ocr_engine, vision_provider)
+        except dt.ParserUnavailableError as exc:
+            if isinstance(exc, dt.OcrUnavailableError):
+                raise DocumentParseError(str(exc)[:300]) from exc
+            return None  # optional library missing: the older parser path below
+        except (dt.DocumentParseError, dt.UnsupportedDocumentError) as exc:
+            raise DocumentParseError(str(exc)[:300]) from exc
+
+    async def _parse_pdf_a1(
+        self,
+        content: bytes,
+        name: str,
+        meta: dict[str, object],
+        ocr_engine: object | None,
+        vision_provider: object | None,
+    ) -> str:
+        """Per-page text (pypdf, owner-password PDFs opened); pages without a text
+        layer OCR'd one by one, as for uploads."""
+        from app.ingestion import document_text as dt
+
+        pages = dt.extract_pdf_pages(content, filename=name, allow_textless=True)
+        textless = [i for i, page in enumerate(pages, start=1) if not page.strip()]
+        if textless:
+            ocrd = await dt.ocr_pdf_pages(
+                content,
+                filename=name,
+                page_numbers=textless,
+                vision_provider=vision_provider,
+                ocr_engine=ocr_engine,
+            )
+            for number, (text, engine) in ocrd.items():
+                pages[number - 1] = text
+                if engine:
+                    meta["ocr_engine"] = engine
+            meta["ocr_used"] = True
+            meta["ocr_pages"] = len(textless)
+        text = "\n\n".join(p for p in pages if p.strip())
+        if not text.strip():
+            raise dt.DocumentParseError(f"{name}: the PDF has no extractable text")
+        return text
+
+    async def _parse_archive(
+        self,
+        content: bytes,
+        name: str,
+        meta: dict[str, object],
+        ocr_engine: object | None,
+        vision_provider: object | None,
+    ) -> str:
+        """Every member of a ZIP (nested archives expanded) under the upload limits,
+        each as a section headed by its path; skipped members are reported."""
+        import asyncio
+
+        from app.core.config import get_settings
+        from app.ingestion.archive import ArchiveLimits, ArchiveSkip, iter_archive
+        from app.ingestion.document_text import IMAGE_UPLOAD_EXTS, extract_upload_text
+
+        limits = ArchiveLimits.for_upload_limit(int(get_settings().knowledge_max_upload_bytes))
+        members = iter_archive(content, filename=name, limits=limits)
+        sections: list[str] = []
+        skipped: list[str] = []
+        while True:
+            item = await asyncio.to_thread(next, members, None)  # inflate off the loop
+            if item is None:
+                break
+            if isinstance(item, ArchiveSkip):
+                skipped.append(f"{item.name}: {item.reason}")
+                continue
+            ext = item.ext or "txt"
+            try:
+                if ext in IMAGE_UPLOAD_EXTS:
+                    text, _ = await self.parse_bytes_async(
+                        item.data, ContentType.IMAGE, filename=item.path,
+                        ocr_engine=ocr_engine, vision_provider=vision_provider,
+                    )
+                elif ext in {"pdf", "pptx"}:
+                    text, _ = await self.parse_bytes_async(
+                        item.data, ContentType.TEXT, filename=item.path,
+                        ocr_engine=ocr_engine, vision_provider=vision_provider,
+                    )
+                else:
+                    text = extract_upload_text(item.data, ext=ext, filename=item.path)
+            except Exception as exc:  # this member only
+                skipped.append(f"{item.path}: {str(exc)[:160]}")
+                continue
+            if text.strip():
+                sections.append(f"{name}/{item.path}\n{text.strip()}")
+            else:
+                skipped.append(f"{item.path}: no extractable text")
+        if skipped:
+            meta["archive_members_skipped"] = skipped[:50]
+        meta["archive_members_indexed"] = len(sections)
+        if not sections:
+            from app.ingestion.document_text import DocumentParseError as A1ParseError
+
+            raise A1ParseError(
+                f"{name}: the archive has no indexable files"
+                + (f" ({'; '.join(skipped[:5])})" if skipped else "")
+            )
+        return "\n\n".join(sections)
 
     @staticmethod
     def _parse_columnar(content: bytes, ct: ContentType, name: str) -> str:

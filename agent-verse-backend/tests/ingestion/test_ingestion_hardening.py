@@ -96,11 +96,11 @@ def test_pipeline_unsupported_binary_mime_falls_back_to_text_without_crashing():
         )
         config = _config()
         result = await pipeline.ingest(raw, config)
-        # Must reach past classify+parse without raising -- whatever the
-        # final status, it must not be a hard "failed" from an unhandled
-        # exception in the classify stage.
-        assert result.status in ("skipped", "success", "completed")
-        assert pipeline.last_strategy == str(ContentType.TEXT)
+        # Must not raise. Binary bytes are never decoded and indexed as text
+        # (P1b-2: Postgres refused the NUL bytes of a connector's .pptx/.zip);
+        # the document fails with the reason instead.
+        assert result.status == "failed"
+        assert "binary" in (result.error or "")
 
     asyncio.run(_run())
 
