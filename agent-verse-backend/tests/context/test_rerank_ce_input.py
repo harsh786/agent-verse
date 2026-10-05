@@ -58,3 +58,35 @@ def test_cross_encoder_input_stays_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     )
     assert 2000 <= len(seen[0][0]) <= 8192
 
+
+def test_blend_uses_the_retrieval_rank_on_the_same_scale(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1c-4: ``0.6 * ce + 0.4 * retrieval`` mixed a 0..1 cross-encoder score with a raw
+    RRF score (~0.016 .. 0.05), so the retrieval evidence never mattered: live, the one
+    chunk matching "Hosur" in the vector, full-text AND BM25 legs (RRF 0.049, every
+    other chunk ~0.015) ranked 9th of 10. Both scores are now normalised over the
+    candidate set before blending."""
+
+    # The live numbers (top 10 of the widened pool + its lowest member): normalised
+    # cross-encoder score and RRF score per chunk.
+    live = [(1.0, 0.0156), (0.995, 0.0159), (0.927, 0.0143), (0.747, 0.0135),
+            (0.519, 0.0149), (0.475, 0.0133), (0.429, 0.0139), (0.421, 0.0137),
+            (0.316, 0.0147), (0.0, 0.0130)]
+    chunks = [{"chunk_id": f"c{i}", "content": f"order {i} standard shipping", "score": rrf}
+              for i, (_ce, rrf) in enumerate(live)]
+    chunks.insert(8, {"chunk_id": "target", "content": "order reroute to Hosur",
+                      "score": 0.0489})
+    ce = {f"order {i} standard shipping": ce for i, (ce, _rrf) in enumerate(live)}
+    ce["order reroute to Hosur"] = 0.317
+
+    def _fake_cross_encode(query: str, documents: list[str], batch_size: int = 32) -> list[float]:
+        return [ce[d] for d in documents]
+
+    monkeypatch.setattr("app.rag.cross_encoder.cross_encode", _fake_cross_encode)
+    out = RerankPolicy(strategy=RerankStrategy.CROSS_ENCODER)._cross_encoder_rerank(
+        chunks, "Hosur"
+    )
+
+    rank = [c["chunk_id"] for c in out].index("target") + 1
+    assert rank <= 3, [c["chunk_id"] for c in out]
+    # Still mostly a cross-encoder ranking: the CE's top choices stay on top.
+    assert {c["chunk_id"] for c in out[:2]} == {"c0", "c1"} or rank == 1

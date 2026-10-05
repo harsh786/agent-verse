@@ -404,13 +404,17 @@ class RerankPolicy:
                 norm_scores = [(s - min_s) / span for s in scores]
             else:
                 norm_scores = [0.5] * len(chunks)
-            # Blend cross-encoder score with original retrieval score
+            # Blend cross-encoder score with original retrieval score. P1c-4: on
+            # the SAME 0..1 scale — the retrieval score is an RRF value (~0.016 ..
+            # 0.05), so the raw 0.4 weight never moved anything and a chunk every
+            # retrieval leg agreed on lost to the cross-encoder's guess alone.
+            raw = [float(c.get("score", 0.5)) for c in chunks]
+            low, high = min(raw), max(raw)
+            orig_norm = (
+                [(r - low) / (high - low) for r in raw] if high > low else [0.5] * len(raw)
+            )
             scored = []
-            for chunk, ce_score, orig_score in zip(
-                chunks,
-                norm_scores,
-                [float(c.get("score", 0.5)) for c in chunks], strict=False,
-            ):
+            for chunk, ce_score, orig_score in zip(chunks, norm_scores, orig_norm, strict=False):
                 blended = 0.6 * ce_score + 0.4 * orig_score
                 scored.append({**chunk, "score": blended, "ce_score": ce_score})
             scored.sort(key=lambda c: c["score"], reverse=True)
