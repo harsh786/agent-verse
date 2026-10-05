@@ -1,5 +1,9 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { isMaskedSecret } from '@/lib/connectors';
+
+/** Placeholder for a stored secret the API returned masked ("********"). */
+export const SAVED_SECRET_PLACEHOLDER = '•••••••• saved — type to replace';
 
 /** Shared building blocks for Source connection forms. */
 
@@ -35,15 +39,18 @@ export function SecretInput({ id, label, value, onChange, placeholder, hint, err
   id: string; label: string; value: unknown; onChange: (v: string) => void; placeholder?: string; hint?: string; error?: string;
 }) {
   const [shown, setShown] = useState(false);
+  // A stored secret comes back as a mask: show it as "saved", never as text to
+  // edit around. Left empty, the caller sends the mask back (= unchanged).
+  const saved = isMaskedSecret(String(value ?? ''));
   return (
     <Field label={label} hint={hint} htmlFor={id} error={error}>
       <div className="flex gap-2">
         <input
           id={id}
           type={shown ? 'text' : 'password'}
-          value={String(value ?? '')}
+          value={saved ? '' : String(value ?? '')}
           onChange={e => onChange(e.target.value)}
-          placeholder={placeholder}
+          placeholder={saved ? SAVED_SECRET_PLACEHOLDER : placeholder}
           autoComplete="new-password"
           spellCheck={false}
           aria-invalid={error ? true : undefined}
@@ -67,9 +74,9 @@ export function SecretTextarea({ id, label, value, onChange, placeholder, hint }
       <textarea
         id={id}
         rows={4}
-        value={String(value ?? '')}
+        value={isMaskedSecret(String(value ?? '')) ? '' : String(value ?? '')}
         onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
+        placeholder={isMaskedSecret(String(value ?? '')) ? SAVED_SECRET_PLACEHOLDER : placeholder}
         autoComplete="off"
         spellCheck={false}
         data-secret="true"

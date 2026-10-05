@@ -5,15 +5,9 @@ import { SPRING_PAGE } from '@/components/ui/JARVISPageShell';
 import type { SourceConfig, SourceFamily, SourceValidation } from '../types';
 import { FAMILY_CONFIG, ALL_FAMILIES } from '../types';
 import { useCreateSource, useSourcePreview, useValidateSource } from '../hooks';
-import { ObjectStorageForm } from './families/ObjectStorageForm';
-import { DatabaseForm } from './families/DatabaseForm';
-import { RedisForm } from './families/RedisForm';
-import { StreamingForm } from './families/StreamingForm';
-import { CommunicationForm } from './families/CommunicationForm';
-import { CodeRepoForm } from './families/CodeRepoForm';
-import { WebForm } from './families/WebForm';
-import { GenericSourceForm } from './families/GenericSourceForm';
 import { FieldError } from './families/fields';
+import { FamilyFormRouter } from './families/FamilyFormRouter';
+import { formShowsFieldErrors } from './families/formSupport';
 import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
 import { connectionConfigErrors, parseApiFieldErrors, type ApiFieldErrors } from '@/lib/apiFieldErrors';
 
@@ -41,32 +35,6 @@ const SOURCE_TYPES_BY_FAMILY: Record<SourceFamily, string[]> = {
   vector_database: ['pinecone', 'weaviate', 'qdrant', 'chroma', 'milvus'],
   agent_generated: ['agent_generated', 'pdf_file', 'docx_file'],
 };
-
-/** Families whose form renders server field errors next to each field. */
-function formShowsFieldErrors(family: SourceFamily, sourceType: string): boolean {
-  return (family === 'nosql_database' && sourceType !== 'redis') || family === 'olap_database' || family === 'oltp_database';
-}
-
-function FamilyFormRouter({ family, sourceType, value, onChange, errors }: {
-  family: SourceFamily; sourceType: string;
-  value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void;
-  /** connection_config field errors from the server, keyed by config key. */
-  errors?: Record<string, string>;
-}) {
-  switch (family) {
-    case 'object_storage': return <ObjectStorageForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'nosql_database':
-      if (sourceType === 'redis') return <RedisForm sourceType={sourceType} value={value} onChange={onChange} />;
-      return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} errors={errors} />;
-    case 'olap_database':
-    case 'oltp_database': return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} errors={errors} />;
-    case 'streaming':      return <StreamingForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'communication':  return <CommunicationForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'code_repository': return <CodeRepoForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'web':            return <WebForm sourceType={sourceType} value={value} onChange={onChange} />;
-    default:               return <GenericSourceForm sourceType={sourceType} value={value} onChange={onChange} />;
-  }
-}
 
 export function SourceCreateWizard({ onClose, onCreated }: Props) {
   const [step, setStep] = useState<Step>('family');

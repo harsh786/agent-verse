@@ -3,7 +3,12 @@ import { useState } from 'react';
 import { ApiError } from '@/lib/api/client';
 import type { SourceConfig } from '../types';
 import { FAMILY_CONFIG } from '../types';
-import { useSourceHealth, useSyncStatus, useDocuments, useTriggerSync, useCancelSync, useReindexSource } from '../hooks';
+import { useSourceHealth, useSyncStatus, useDocuments, useTriggerSync, useCancelSync, useReindexSource, useUpdateSource } from '../hooks';
+import { FamilyFormRouter } from './families/FamilyFormRouter';
+import { formShowsFieldErrors } from './families/formSupport';
+import { restoreMaskedSecrets } from '../sourceSecrets';
+import { connectionConfigErrors, parseApiFieldErrors, type ApiFieldErrors } from '@/lib/apiFieldErrors';
+import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
 
 interface Props { source: SourceConfig; onClose: () => void; }
 type Tab = 'overview' | 'documents' | 'history' | 'settings';
@@ -202,7 +207,8 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
 
 function SettingsTab({ source }: { source: SourceConfig }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-5">
+      <ConnectionEditor source={source} />
       <Section title="Configuration">
         <dl className="grid grid-cols-2 gap-2 text-xs">
           <dt className="text-muted-foreground">Chunking</dt><dd>{source.chunking_strategy}</dd>
@@ -213,6 +219,67 @@ function SettingsTab({ source }: { source: SourceConfig }) {
         </dl>
       </Section>
     </div>
+  );
+}
+
+/**
+ * Edit connection_config in place (credential rotation). Secrets arrive masked
+ * ("********"), are shown as "saved", and are PATCHed back as the mask unless
+ * the user typed a replacement — the backend keeps the stored value for a mask.
+ */
+function ConnectionEditor({ source }: { source: SourceConfig }) {
+  const update = useUpdateSource();
+  const original = source.connection_config ?? {};
+  const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
+  const [errors, setErrors] = useState<ApiFieldErrors | null>(null);
+  const [saved, setSaved] = useState(false);
+  const connErrors = errors ? connectionConfigErrors(errors) : {};
+  const placed = formShowsFieldErrors(source.family, source.source_type);
+  const listed = Object.entries(errors?.fields ?? {}).filter(([k]) => !placed || !k.startsWith('connection_config.'));
+
+  function save() {
+    if (!draft) return;
+    setErrors(null);
+    update.mutate(
+      { id: source.source_id, data: { connection_config: restoreMaskedSecrets(draft, original) } },
+      {
+        onSuccess: () => { setDraft(null); setSaved(true); },
+        onError: (e: unknown) => setErrors(parseApiFieldErrors(e)),
+      },
+    );
+  }
+
+  return (
+    <Section title="Connection">
+      {!draft ? (
+        <div className="space-y-2">
+          {saved && <p className="text-xs text-emerald-600">Connection saved.</p>}
+          <button
+            onClick={() => { setDraft({ ...original }); setSaved(false); setErrors(null); }}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+          >
+            Edit connection
+          </button>
+          <p className="text-xs text-muted-foreground">Change hosts or options, or rotate credentials. Saved secrets stay hidden.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <FamilyFormRouter family={source.family} sourceType={source.source_type} value={draft} onChange={setDraft} errors={connErrors} />
+          {errors && (errors.general || listed.length > 0) && (
+            <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-300">
+              {errors.general && <FriendlyErrorMessage className="text-xs" prefix="Could not save: " error={errors.general} />}
+              {listed.map(([k, msg]) => <p key={k}><code className="font-mono">{k.replace(/^connection_config\./, '')}</code>: {msg}</p>)}
+            </div>
+          )}
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => { setDraft(null); setErrors(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted">Cancel</button>
+            <button onClick={save} disabled={update.isPending} className="rounded-lg bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium hover:bg-primary/90 disabled:opacity-50">
+              {update.isPending ? 'Saving…' : 'Save connection'}
+            </button>
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }
 
