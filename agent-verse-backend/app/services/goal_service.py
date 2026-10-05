@@ -125,6 +125,7 @@ from app.reliability.goal_lifecycle import GoalCancelledError
 
 # Sub-module imports — part of ongoing decomposition to reduce God-class size
 # See: app/services/goal_events.py, goal_metrics.py, goal_lifecycle.py
+from app.services.failure_reason import public_failure_reason, terminal_reason_code
 from app.services.goal_queue import GoalTaskQueue
 from app.services.result_artifacts import build_result_artifact
 from app.tenancy.context import PlanTier, TenantContext
@@ -4960,6 +4961,14 @@ class GoalService:
             "event_count": event_count,
             "provider_warning": record.execution_context.get("provider_warning"),
             "result_artifact": result_artifact,
+            # NF-14: why a failed / cancelled goal ended — sanitized (no
+            # credentials, URLs, hosts or addresses); None for any other status.
+            "failure_reason": (
+                public_failure_reason(record.error_message)
+                if record.status.value in {"failed", "cancelled"}
+                else None
+            ),
+            "terminal_reason": terminal_reason_code(record.status.value, record.error_message),
             **_downgrade_fields(record.execution_context),
         }
 
@@ -6490,6 +6499,8 @@ class GoalService:
             workflow_mode=row.workflow_mode,
             execution_context=row.execution_context or {},
             completed_at=_row_completed_at(row, status),
+            # NF-14: the durable failure reason (it was dropped on every DB load).
+            error_message=str(getattr(row, "error_message", "") or ""),
         )
         # A refresh must not orphan live SSE subscribers: subscribe_events
         # registers its queue on the cached record, and the Celery bridge /
