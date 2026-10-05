@@ -62,8 +62,8 @@
   },
   "TG-07": {
     "status": "done",
-    "commit": "a58e5f4d9",
-    "note": "change stream (update/replace, resume token in cursor, history-lost -> re-read) + cursor_field timestamps; deletes via iter_live_doc_ids + KB-44 reconcile; ids -> UUIDv8 so legacy v5 ids are never reconciled away"
+    "commit": "a58e5f4d9+419a43da1",
+    "note": "change stream (update/replace, token in cursor, history-lost -> re-read, reads bounded) + cursor_field timestamps; deletes via iter_live_doc_ids + KB-44 reconcile; UUIDv8 ids"
   },
   "TG-09": {
     "status": "done",
@@ -77,8 +77,8 @@
   },
   "MDB-20": {
     "status": "done",
-    "commit": "3de5784a1",
-    "note": "ingestion half: get_delta -> ConnectorFetchError(public_mongo_error) + health_check sanitised; detail logged by error id"
+    "commit": "3de5784a1+419a43da1",
+    "note": "ingestion half: driver errors -> ConnectorFetchError(public_mongo_error) w/ error id, own policy/egress errors keep their type; health_check sanitised"
   },
   "NF-1": {
     "status": "done",
