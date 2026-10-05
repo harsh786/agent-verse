@@ -717,6 +717,67 @@ def _doc_id(config: SourceConfig, collection: str, oid: Any) -> str:
     return str(uuid.UUID(int=value))
 
 
+def _raw_document(
+    config: SourceConfig, settings: _Settings, collection: str, doc: dict[str, Any]
+) -> RawDocument:
+    """The RawDocument a sync indexes for one MongoDB document (current v8 id)."""
+    from app.ingestion.source_config import RawDocument
+
+    oid = doc.get("_id")
+    doc_key = str(oid)
+    text, truncation = _flatten({**doc, "_id": doc_key})
+    url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
+    metadata: dict[str, Any] = {
+        "database": settings.database,
+        "collection": collection,
+        "_id": doc_key,
+    }
+    if truncation:
+        metadata["truncated"] = truncation  # TG-09: never silent
+    return RawDocument(
+        doc_id=_doc_id(config, collection, oid),
+        source_id=config.source_id,
+        tenant_id=config.tenant_id,
+        source_url=f"{url}/{quote(doc_key, safe='')}",
+        content=text.encode(),
+        content_type="text/plain",
+        metadata=metadata,
+    )
+
+
+def _legacy_key_candidates(key: str) -> list[Any]:
+    """The ``_id`` values whose ``str()`` is ``key`` (pre-v8 ids keyed ``str(_id)``).
+
+    Pre-v8 releases keyed a document by the string of its ``_id``, which drops
+    the type: ``"64f0..."`` may have been an ObjectId or that string, ``"42"``
+    an int or that string. Every candidate is looked up; a match is accepted
+    only if ``str(_id)`` equals ``key`` again.
+    """
+    from bson import ObjectId
+
+    out: list[Any] = [key]
+    if ObjectId.is_valid(key) and len(key) == 24:
+        out.append(ObjectId(key))
+    if key.lstrip("-").isdigit() and len(key) <= 19:
+        out.append(int(key))
+    return out
+
+
+def _read_by_legacy_keys(
+    client: Any, settings: _Settings, collection: str, keys: list[str]
+) -> list[dict[str, Any]]:
+    col = client[settings.database][collection]
+    values: list[Any] = [v for key in keys for v in _legacy_key_candidates(key)]
+    wanted = set(keys)
+    return [
+        doc
+        for doc in col.find(
+            {"_id": {"$in": values}}, max_time_ms=settings.max_time_ms, limit=len(values)
+        )
+        if str(doc.get("_id")) in wanted
+    ]
+
+
 # Change streams (TG-07): server error codes meaning "not available here".
 _NO_CHANGE_STREAM_CODES = frozenset({40573, 40324, 13, 115})
 # ... and "the resume token fell off the oplog: re-read the collection".
@@ -865,6 +926,46 @@ class MongoDBConnector(BaseConnector):
                         break
                     after = page[-1]
 
+    def legacy_scope(self, config: SourceConfig) -> tuple[str, list[str]]:
+        """(database, configured collections — empty = all) a legacy id may come from."""
+        settings = _settings(config.connection_config)
+        return settings.database, list(settings.collections)
+
+    async def read_legacy_documents(
+        self, config: SourceConfig, refs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], list[RawDocument]]:
+        """D2: re-read documents indexed under pre-v8 ids, as the sync would index them now.
+
+        ``refs`` are ``(collection, str(_id))`` pairs parsed from the legacy
+        documents; the result maps each to the upstream documents it names
+        (normally one; none when it was deleted upstream), each under its
+        current v8 id. One bounded ``$in`` query per collection. Any error is
+        raised (sanitised, MDB-20) so the caller never deletes on a failed read.
+        """
+        if not refs:
+            return {}
+        by_collection: dict[str, list[str]] = {}
+        for collection, key in refs:
+            by_collection.setdefault(collection, []).append(key)
+        out: dict[tuple[str, str], list[RawDocument]] = {ref: [] for ref in refs}
+        try:
+            settings = _settings(config.connection_config)
+            async with _connected(settings) as (client, _s):
+                for collection, keys in by_collection.items():
+                    docs = await asyncio.to_thread(
+                        _read_by_legacy_keys, client, settings, collection, keys
+                    )
+                    for doc in docs:
+                        key = str(doc.get("_id"))
+                        out[(collection, key)].append(
+                            _raw_document(config, settings, collection, doc)
+                        )
+        except Exception as exc:
+            if _is_own_error(exc):
+                raise
+            raise ConnectorFetchError(f"mongodb: {_public_error(exc)}") from exc
+        return out
+
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
@@ -920,8 +1021,6 @@ class MongoDBConnector(BaseConnector):
     async def _delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        from app.ingestion.source_config import RawDocument
-
         settings = _settings(config.connection_config)
         async with _connected(settings) as (client, _s):
             collections = settings.collections or await asyncio.to_thread(
@@ -935,26 +1034,7 @@ class MongoDBConnector(BaseConnector):
             track_changes = settings.cursor_field == "_id"
 
             def _raw(collection: str, doc: dict[str, Any]) -> RawDocument:
-                oid = doc.get("_id")
-                doc_key = str(oid)
-                text, truncation = _flatten({**doc, "_id": doc_key})
-                url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
-                metadata: dict[str, Any] = {
-                    "database": settings.database,
-                    "collection": collection,
-                    "_id": doc_key,
-                }
-                if truncation:
-                    metadata["truncated"] = truncation  # TG-09: never silent
-                return RawDocument(
-                    doc_id=_doc_id(config, collection, oid),
-                    source_id=config.source_id,
-                    tenant_id=config.tenant_id,
-                    source_url=f"{url}/{quote(doc_key, safe='')}",
-                    content=text.encode(),
-                    content_type="text/plain",
-                    metadata=metadata,
-                )
+                return _raw_document(config, settings, collection, doc)
 
             for collection in collections:
                 # A second pass only when the change stream's history was lost.

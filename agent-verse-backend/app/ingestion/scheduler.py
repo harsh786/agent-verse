@@ -662,6 +662,10 @@ async def _sync_locked(
             config.cursor_value = ""
             await source_store.update(source_id, tenant_id, cursor_value="")
 
+        # D2: the first sync after the upgrade (and each later one, until it is
+        # done) moves documents still under pre-v8 MongoDB ids — bounded per run.
+        await _migrate_legacy_ids(connector, config, pipeline, source_store, lease)
+
         # ── Delta loop ───────────────────────────────────────────────────────
         cursor = config.cursor_value or None
         new_cursor = cursor
@@ -1150,6 +1154,182 @@ async def _retry_dlq_entry_async(*, dlq_id: str, tenant_id: str) -> dict:
 
 
 _REINDEX_PAGE = 200
+
+
+# ── D2: one-time reindex of MongoDB documents under pre-v8 ids ───────────────
+
+
+async def _migrate_legacy_ids(
+    connector: Any,
+    config: Any,
+    pipeline: Any,
+    source_store: Any,
+    lease: Any,
+    *,
+    mode: str = "sync",
+) -> dict[str, Any] | None:
+    """Run (or continue) the legacy-id migration for a Source whose connector has one.
+
+    In a sync a failure is logged and recorded on the migration's persisted
+    state (it stays ``running``; the next sync retries) and the sync goes on;
+    the maintenance task raises it. A lost lock always propagates.
+    """
+    from app.ingestion.job_tracker import SyncLockLostError
+    from app.ingestion.mongodb_id_migration import (
+        MODE_SYNC,
+        MigrationStateStore,
+        migrate_legacy_mongodb_ids,
+        supports_legacy_id_migration,
+    )
+
+    if not supports_legacy_id_migration(connector):
+        return None
+    store = getattr(pipeline, "_kb", None)
+    if store is None or not config.collection_id:
+        return None
+    try:
+        return await migrate_legacy_mongodb_ids(
+            config=config,
+            connector=connector,
+            pipeline=pipeline,
+            knowledge_store=store,
+            state_store=MigrationStateStore(getattr(source_store, "_db", None)),
+            mode=mode,
+            check=lease.check,
+        )
+    except SyncLockLostError:
+        raise
+    except Exception as exc:
+        if mode != MODE_SYNC:
+            raise
+        _log.warning(
+            "mongodb_id_migration_failed source=%s tenant=%s (retried by the next sync): %s",
+            config.source_id,
+            config.tenant_id,
+            exc,
+        )
+        return {"status": "error", "error": str(exc)[:500]}
+
+
+_MIGRATION_DISPATCH_PAGE = 500
+_MIGRATION_DISPATCH_MAX = 10_000
+_MIGRATION_BUSY_RETRY_SECONDS = 300
+
+
+@shared_task(name="ingestion.migrate_mongodb_doc_ids", bind=True)
+def migrate_mongodb_doc_ids_task(self: Any) -> dict[str, Any]:
+    """Maintenance (idempotent): queue the legacy-id migration for every MongoDB
+    Source that has not completed it cleanly. Re-running it is always safe."""
+    return _run_task_loop(_dispatch_mongodb_doc_id_migrations_async())  # type: ignore[no-any-return]
+
+
+async def _dispatch_mongodb_doc_id_migrations_async(
+    *, max_sources: int = _MIGRATION_DISPATCH_MAX, system_db: Any = None
+) -> dict[str, Any]:
+    """Keyset scan of ``source_configs`` (maintenance role, cross-tenant); each
+    queued task then runs for its own tenant under RLS."""
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+    from app.ingestion.mongodb_id_migration import MIGRATION, STATUS_COMPLETED
+
+    if system_db is None:
+        from app.db.session import get_system_session_factory
+
+        system_db = get_system_session_factory()
+    after = ("", "")
+    queued = 0
+    more = False
+    while queued < max_sources:
+        async with system_db() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT s.tenant_id, s.id FROM source_configs s "
+                        "WHERE s.source_type = 'mongodb' AND (s.tenant_id, s.id) > (:t, :s) "
+                        "AND NOT EXISTS (SELECT 1 FROM ingestion_doc_id_migrations m "
+                        "  WHERE m.tenant_id = s.tenant_id AND m.source_id = s.id "
+                        "  AND m.migration = :m AND m.status = :done) "
+                        "ORDER BY s.tenant_id, s.id LIMIT :lim"
+                    ),
+                    {
+                        "t": after[0],
+                        "s": after[1],
+                        "m": MIGRATION,
+                        "done": STATUS_COMPLETED,
+                        "lim": min(_MIGRATION_DISPATCH_PAGE, max_sources - queued),
+                    },
+                )
+            ).fetchall()
+        for tenant_id, source_id in rows:
+            migrate_mongodb_doc_ids_source_task.apply_async(
+                kwargs={"source_id": str(source_id), "tenant_id": str(tenant_id)},
+                countdown=_jitter(str(source_id)),
+            )
+            queued += 1
+        if len(rows) < _MIGRATION_DISPATCH_PAGE:
+            break
+        after = (str(rows[-1][0]), str(rows[-1][1]))
+        more = queued >= max_sources
+    _log.info("mongodb_id_migration_dispatch queued=%d more=%s", queued, more)
+    return {"queued": queued, "more": more}
+
+
+@shared_task(
+    name="ingestion.migrate_mongodb_doc_ids_source",
+    bind=True,
+    max_retries=12,
+    default_retry_delay=_MIGRATION_BUSY_RETRY_SECONDS,
+)
+def migrate_mongodb_doc_ids_source_task(
+    self: Any, *, source_id: str, tenant_id: str
+) -> dict[str, Any]:
+    """Maintenance (idempotent): run the legacy-id migration for one Source."""
+    return _run_task_loop(  # type: ignore[no-any-return]
+        _migrate_mongodb_doc_ids_source_async(task=self, source_id=source_id, tenant_id=tenant_id)
+    )
+
+
+async def _migrate_mongodb_doc_ids_source_async(
+    *, task: Any, source_id: str, tenant_id: str
+) -> dict[str, Any]:
+    from app.ingestion.connector_registry import get_connector, load_all_connectors
+    from app.ingestion.mongodb_id_migration import MODE_MAINTENANCE
+
+    load_all_connectors()
+    tracker: Any
+    tracker, pipeline, source_store = _build_worker_ingestion()
+    # The Source's sync lock: never concurrently with its sync (or another run).
+    token = await tracker.acquire_lock(
+        source_id, tenant_id, ttl_seconds=_QUEUED_LOCK_TTL_SECONDS
+    )
+    lease = None
+    if token:
+        lease = await tracker.hold(source_id, tenant_id, token, ttl_seconds=_sync_lock_ttl())
+    if lease is None:
+        await _close(getattr(tracker, "_redis", None))
+        raise task.retry(countdown=_MIGRATION_BUSY_RETRY_SECONDS)
+    try:
+        config = await source_store.get(source_id, tenant_id)
+        if config is None:
+            return {"error": "source_not_found"}
+        if config.source_type != "mongodb":
+            return {"skipped": True, "reason": "not_mongodb"}
+        if not config.enabled:
+            return {"skipped": True, "reason": "source_disabled"}
+        try:
+            connector = get_connector(config.source_type)()
+        except (KeyError, RuntimeError) as exc:
+            from app.ingestion.connector_registry import connector_error_message
+
+            return {"skipped": True, "reason": connector_error_message(exc)}
+        result = await _migrate_legacy_ids(
+            connector, config, pipeline, source_store, lease, mode=MODE_MAINTENANCE
+        )
+        return result or {"skipped": True, "reason": "nothing_indexed"}
+    finally:
+        await lease.release()
+        await _close(getattr(tracker, "_redis", None))
 
 
 async def _delete_source_documents(pipeline, config) -> int:
