@@ -60,4 +60,4 @@ for that final push once everything is green).
 3. A2A public directory: off by default; per-tenant switch + per-agent opt-in; only active/published agents; minimal card (name, description, skills, endpoint); rate-limited; inbound tasks routed to the specific agent with signed/authenticated requests.
 4. Helm workers: 4 processes per pod, 3.5Gi limit, explicit per-child memory cap (matches prod compose/k8s); scale with pods.
 5. RPA: no plan limit; remove the unused `rpa` plan-feature flag.
-6. Channels C1–C5: stay parked.
+6. Channels C1–C5: **un-parked by the owner** — Telegram, WhatsApp, Slack, Teams, generic webhook are in scope (live item 14).
