@@ -214,3 +214,13 @@ async def test_minio_defaults_to_path_style() -> None:
 def test_an_unknown_addressing_style_is_refused() -> None:
     with pytest.raises(ValueError, match="addressing_style"):
         S3Connector._client_kwargs(None, _config(addressing_style="dns"))
+
+
+@pytest.mark.asyncio
+async def test_flat_ui_credentials_are_used() -> None:
+    """P1b-8: the UI form sent access_key_id / secret_access_key at the top level."""
+    fake = FakeS3()
+    fake.put("a", b"1")
+    await _run(fake, None, access_key_id="AK", secret_access_key="SK")
+    assert fake.session_kwargs[0]["aws_access_key_id"] == "AK"
+    assert fake.session_kwargs[0]["aws_secret_access_key"] == "SK"

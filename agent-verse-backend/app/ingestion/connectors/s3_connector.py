@@ -287,6 +287,15 @@ class S3Connector(BaseConnector):
         """The source's credentials (incl. an STS session token) and region."""
         cc = config.connection_config
         credentials = cc.get("credentials", {}) or {}
+        if not isinstance(credentials, dict):
+            credentials = {}
+        if not credentials.get("access_key_id") and cc.get("access_key_id"):
+            # The UI's object-storage form sent the keys at the top level, where
+            # nothing read them: every UI-created S3/MinIO source ran anonymous.
+            credentials = {
+                k: cc[k] for k in ("access_key_id", "secret_access_key", "session_token")
+                if cc.get(k)
+            }
         kwargs: dict[str, Any] = {
             "aws_access_key_id": credentials.get("access_key_id"),
             "aws_secret_access_key": credentials.get("secret_access_key"),

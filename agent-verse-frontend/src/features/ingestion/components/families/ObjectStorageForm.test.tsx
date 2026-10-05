@@ -24,11 +24,31 @@ describe('ObjectStorageForm', () => {
     expect(screen.queryByText('Bucket')).not.toBeInTheDocument();
   });
 
-  test('renders endpoint URL field only for minio', () => {
+  test('endpoint URL is required-looking for minio and optional for s3', () => {
     const { rerender } = render(<ObjectStorageForm sourceType="minio" value={{}} onChange={vi.fn()} />);
     expect(screen.getByText('Endpoint URL')).toBeInTheDocument();
     rerender(<ObjectStorageForm sourceType="s3" value={{}} onChange={vi.fn()} />);
-    expect(screen.queryByText('Endpoint URL')).not.toBeInTheDocument();
+    expect(screen.getByText('Endpoint URL (optional, S3-compatible stores)')).toBeInTheDocument();
+    rerender(<ObjectStorageForm sourceType="gcs" value={{}} onChange={vi.fn()} />);
+    expect(screen.queryByText(/Endpoint URL/)).not.toBeInTheDocument();
+  });
+
+  test('s3 keys are sent nested under credentials (what the connector reads), with a session token', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<ObjectStorageForm sourceType="minio" value={{ bucket: 'b' }} onChange={onChange} />);
+    const input = (label: string) => screen.getByText(label).parentElement!.querySelector('input') as HTMLInputElement;
+    fireEvent.change(input('Access Key ID'), { target: { value: 'AK' } });
+    expect(lastArg(onChange)).toEqual({ bucket: 'b', credentials: { access_key_id: 'AK' } });
+    rerender(<ObjectStorageForm sourceType="minio" value={lastArg(onChange)} onChange={onChange} />);
+    fireEvent.change(input('Session Token (optional, temporary credentials)'), { target: { value: 'TOK' } });
+    expect(lastArg(onChange)).toEqual({ bucket: 'b', credentials: { access_key_id: 'AK', session_token: 'TOK' } });
+  });
+
+  test('addressing style can be chosen', () => {
+    const onChange = vi.fn();
+    render(<ObjectStorageForm sourceType="s3" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByText('Addressing style').parentElement!.querySelector('select')!, { target: { value: 'virtual' } });
+    expect(lastArg(onChange)).toEqual({ addressing_style: 'virtual' });
   });
 
   test('renders bucket fields for r2 too', () => {
@@ -49,7 +69,7 @@ describe('ObjectStorageForm', () => {
     render(<ObjectStorageForm sourceType="s3" value={{}} onChange={onChange} />);
     const secretInput = screen.getByText('Secret Access Key').parentElement?.querySelector('input');
     fireEvent.change(secretInput as HTMLInputElement, { target: { value: 'shh' } });
-    expect(lastArg(onChange)).toEqual({ secret_access_key: 'shh' });
+    expect(lastArg(onChange)).toEqual({ credentials: { secret_access_key: 'shh' } });
   });
 
   test('renders existing values', () => {
