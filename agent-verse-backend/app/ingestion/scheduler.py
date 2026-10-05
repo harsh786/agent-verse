@@ -604,7 +604,12 @@ async def _sync_with(
         return {"skipped": True, "reason": "needs_configuration", "detail": reason}
 
     # ── Backoff check (LAW-09) ───────────────────────────────────────────────
-    if config.consecutive_failures and config.consecutive_failures > 0:
+    # Backoff spaces out AUTOMATIC retries of a failing Source. An operator's
+    # sync / reindex (the API already answered "queued" with this job id) runs
+    # now: it used to be skipped without a job record, so the UI waited on a job
+    # that never existed (P1b-5).
+    operator_run = triggered_by in _OPERATOR_TRIGGERS and job_id is not None
+    if not operator_run and config.consecutive_failures and config.consecutive_failures > 0:
         backoff = _backoff_seconds(config.consecutive_failures)
         import time
 
@@ -852,6 +857,9 @@ async def _sync_with(
     finally:
         await tracker.release_lock(source_id, tenant_id)
 
+
+# Syncs an operator asked for (POST /sources/{id}/sync or /reindex): never backed off.
+_OPERATOR_TRIGGERS = frozenset({"manual", "reindex"})
 
 # Indexed document ids are matched against open DLQ entries in batches this big.
 _RESOLVE_BATCH = 200

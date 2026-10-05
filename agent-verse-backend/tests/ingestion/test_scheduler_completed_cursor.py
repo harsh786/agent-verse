@@ -62,3 +62,38 @@ async def test_a_finished_run_commits_the_watermark() -> None:
 @pytest.mark.asyncio
 async def test_a_cancelled_run_keeps_its_resume_position() -> None:
     assert await _sync(2) == "after:d1"
+
+
+@pytest.mark.asyncio
+async def test_an_operator_sync_of_a_failing_source_is_not_backed_off() -> None:
+    """P1b-5: the API answered "queued" with a job id; the worker skipped it for
+    backoff without any job record, so the caller waited on a job that never was."""
+    import datetime
+
+    tracker = IngestionJobTracker()
+    store = AsyncMock()
+    failing = SourceConfig(source_id="src-1", tenant_id="t1", name="s",
+                           family=SourceFamily.OBJECT_STORAGE, source_type="s3",
+                           collection_id="c", consecutive_failures=2,
+                           last_synced_at=datetime.datetime.now(datetime.UTC).isoformat())
+    store.get.return_value = failing
+    pipeline = AsyncMock()
+    pipeline.ingest.return_value = PipelineResult(doc_id="d", source_id="src-1", tenant_id="t1",
+                                                  status="indexed")
+    _Listing.cancel_after = None
+    results = {}
+    for trigger in ("manual", "scheduler"):
+        job_id = await tracker.acquire_lock("src-1", "t1") if trigger == "manual" else None
+        with (
+            patch("app.ingestion.scheduler._build_worker_ingestion",
+                  return_value=(tracker, pipeline, store)),
+            patch("app.ingestion.scheduler._shared_redis", return_value=None),
+            patch("app.ingestion.connector_registry.load_all_connectors"),
+            patch("app.ingestion.connector_registry.get_connector", return_value=_Listing),
+            patch("app.ingestion.scheduler._schedule_reconcile_if_due", AsyncMock()),
+        ):
+            results[trigger] = await _sync_source_async(
+                task=MagicMock(), source_id="src-1", tenant_id="t1", triggered_by=trigger,
+                job_id=job_id)
+    assert results["manual"].get("docs_indexed") == 3
+    assert results["scheduler"].get("reason") == "backoff"
