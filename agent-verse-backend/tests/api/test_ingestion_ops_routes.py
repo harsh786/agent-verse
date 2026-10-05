@@ -358,3 +358,71 @@ def test_dlq_retry_without_a_database_is_503() -> None:
         "/ingestion/dlq/d1/retry", headers=_AUTH
     )
     assert resp.status_code == 503
+
+
+# ── Reconcile (KB-44) ────────────────────────────────────────────────────────
+
+
+def _s3_source() -> SourceConfig:
+    return _source(
+        family=SourceFamily.OBJECT_STORAGE,
+        source_type="s3",
+        connection_config={"bucket": "b"},
+    )
+
+
+def test_reconcile_queues_the_upstream_deletion_run() -> None:
+    source = _s3_source()
+    with patch(
+        "app.ingestion.scheduler.request_reconcile", AsyncMock(return_value=True)
+    ) as request:
+        resp = _client(ingestion_job_tracker=IngestionJobTracker()).post(
+            f"/sources/{source.source_id}/reconcile", headers=_AUTH
+        )
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "queued"
+    request.assert_awaited_once_with(source.source_id, _CTX.tenant_id)
+
+
+def test_reconcile_already_queued_queues_nothing_more() -> None:
+    source = _s3_source()
+    with patch("app.ingestion.scheduler.request_reconcile", AsyncMock(return_value=False)):
+        resp = _client(ingestion_job_tracker=IngestionJobTracker()).post(
+            f"/sources/{source.source_id}/reconcile", headers=_AUTH
+        )
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "already_queued"
+
+
+def test_reconcile_that_cannot_be_queued_is_503_never_accepted() -> None:
+    from app.ingestion.scheduler import ReconcileUnavailableError
+
+    source = _s3_source()
+    with patch(
+        "app.ingestion.scheduler.request_reconcile",
+        AsyncMock(side_effect=ReconcileUnavailableError("no shared Redis")),
+    ):
+        resp = _client(ingestion_job_tracker=IngestionJobTracker()).post(
+            f"/sources/{source.source_id}/reconcile", headers=_AUTH
+        )
+    assert resp.status_code == 503
+
+
+def test_reconcile_of_a_connector_without_an_upstream_listing_is_422() -> None:
+    source = _source()  # http: cannot list what exists upstream
+    with patch("app.ingestion.scheduler.request_reconcile", AsyncMock()) as request:
+        resp = _client(ingestion_job_tracker=IngestionJobTracker()).post(
+            f"/sources/{source.source_id}/reconcile", headers=_AUTH
+        )
+    assert resp.status_code == 422
+    assert "cannot list" in resp.json()["detail"]
+    request.assert_not_awaited()
+
+
+def test_reconcile_of_an_unknown_source_is_404() -> None:
+    with patch("app.ingestion.scheduler.request_reconcile", AsyncMock()) as request:
+        resp = _client(ingestion_job_tracker=IngestionJobTracker()).post(
+            "/sources/nope/reconcile", headers=_AUTH
+        )
+    assert resp.status_code == 404
+    request.assert_not_awaited()

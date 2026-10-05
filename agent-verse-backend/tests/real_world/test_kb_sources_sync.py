@@ -14,6 +14,9 @@ documents — the unchanged one under the SAME document id, the edited one repla
   cursor on ``updated_at``.
 * S3 / MinIO (SRC-S3-INCREMENTAL): RW_S3_ENDPOINT, RW_S3_BUCKET, RW_S3_ACCESS_KEY,
   RW_S3_SECRET_KEY (+ RW_S3_SEED_ENDPOINT, RW_S3_SOURCE_TYPE=minio|s3, RW_S3_REGION).
+  Objects deleted upstream are removed by reconciliation, which syncs schedule at most
+  once per INGESTION_RECONCILE_INTERVAL_SECONDS (KB-44, default a day) — so the test
+  triggers it explicitly (POST /sources/{id}/reconcile) after sync 2 and waits for it.
 
 Without its env a source scenario is SKIPPED with the exact variables it needs.
 """
@@ -30,7 +33,14 @@ import pytest
 from tests.real_world import kb
 from tests.real_world import sources as srcs
 from tests.real_world.fixture_server import FixtureServer, rss_feed
-from tests.real_world.helpers import LiveAPI, mask, register_secret, require_env, tag
+from tests.real_world.helpers import (
+    LiveAPI,
+    mask,
+    register_secret,
+    require_env,
+    tag,
+    wait_until,
+)
 from tests.real_world.metrics import norm
 
 COMPLETED = {"completed", "complete", "succeeded", "success"}
@@ -77,6 +87,25 @@ def _sync(api: LiveAPI, sid: str, evidence: dict[str, Any], label: str) -> dict[
         f"{label} did not complete: {evidence[label]}"
     )
     return dict(status)
+
+
+def _reconcile(api: LiveAPI, sid: str, cid: str, gone_ids: set[str],
+               evidence: dict[str, Any]) -> None:
+    """Run upstream-deletion reconciliation now and wait until ``gone_ids`` are removed.
+
+    Syncs only schedule it once per INGESTION_RECONCILE_INTERVAL_SECONDS (KB-44).
+    """
+    resp = api.post(f"/sources/{sid}/reconcile")
+    assert resp.status_code == 202, (
+        f"POST /sources/{sid}/reconcile -> {resp.status_code}: {mask(resp.text[:300])}"
+    )
+    evidence["reconcile"] = resp.json().get("status")
+    assert evidence["reconcile"] in ("queued", "already_queued"), evidence["reconcile"]
+    wait_until(
+        lambda: {str(d.get("id")) for d in kb.all_documents(api, cid)[0]},
+        timeout=180, interval=4, desc=f"reconciliation of source {sid}",
+        done=lambda ids: not (ids & gone_ids),
+    )
 
 
 def _docs_by_marker(api: LiveAPI, cid: str, markers: dict[str, str]
@@ -272,6 +301,7 @@ def test_s3_source_incremental(api: LiveAPI, cleanup: Any, evidence: dict[str, A
         s3.delete_object(Bucket=bucket, Key=f"{prefix}charlie.txt")
         s3.put_object(Bucket=bucket, Key=f"{prefix}delta.txt", Body=NEW_DELTA.encode())
         _sync(api, sid, evidence, "sync2")
+        _reconcile(api, sid, cid, {str(d.get("id")) for d in before["charlie"]}, evidence)
         _assert_second_sync(api, cid, before, evidence, _key)
     finally:
         for k2 in [*ITEMS_V1, "delta"]:

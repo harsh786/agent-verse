@@ -11,6 +11,7 @@ Endpoints (this list is checked against the registered routes by a test):
   GET           /sources/{source_id}/sync/status      Latest sync job
   GET           /sources/{source_id}/sync/history     Recent sync jobs
   POST          /sources/{source_id}/reindex          Delete the Source's documents + full re-sync
+  POST          /sources/{source_id}/reconcile        Remove documents deleted upstream (now)
   POST          /sources/{source_id}/preview          Sample 5 docs (dry-run)
   GET           /sources/{source_id}/stats            Totals
   GET           /ingestion/documents                  Indexed documents of a Source
@@ -597,6 +598,49 @@ async def reindex_source(source_id: str, request: Request) -> dict:
             status_code=503, detail="Reindex could not be queued; try again shortly"
         ) from exc
     return {"status": "queued", "job_id": job_id}
+
+
+@router.post("/{source_id}/reconcile", response_model=dict, status_code=202)
+async def reconcile_source(source_id: str, request: Request) -> dict:
+    """Queue upstream-deletion reconciliation for the Source now (KB-44).
+
+    Syncs schedule it on their own at most once per
+    ``INGESTION_RECONCILE_INTERVAL_SECONDS`` (default a day); this runs it on
+    demand. Only connectors that can list what exists upstream (object
+    stores) reconcile — anything else is 422. Documents under legal hold are
+    never removed. At most one run is queued per Source (``already_queued``);
+    503 when it cannot be queued.
+    """
+    tenant = _require_tenant(request)
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    _refuse_unconfigured_source(source)
+    if not source.enabled:
+        raise HTTPException(status_code=409, detail="Source is disabled")
+    from app.ingestion.base_connector import lists_upstream
+    from app.ingestion.connector_registry import connector_error_message
+
+    try:
+        connector_cls = _available_connector(source.source_type)
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=connector_error_message(exc)) from exc
+    if not lists_upstream(connector_cls):
+        raise HTTPException(
+            status_code=422,
+            detail=f"The {source.source_type} connector cannot list what exists upstream, "
+            "so it never removes documents deleted there",
+        )
+    from app.ingestion import scheduler
+
+    try:
+        queued = await scheduler.request_reconcile(source_id, tenant.tenant_id)
+    except scheduler.ReconcileUnavailableError as exc:
+        _log.warning("ingestion_reconcile_enqueue_failed", source_id=source_id, error=str(exc))
+        raise HTTPException(
+            status_code=503, detail="Reconciliation could not be queued; try again shortly"
+        ) from exc
+    return {"status": "queued" if queued else "already_queued", "source_id": source_id}
 
 
 # ── Preview (dry-run) ─────────────────────────────────────────────────────────
