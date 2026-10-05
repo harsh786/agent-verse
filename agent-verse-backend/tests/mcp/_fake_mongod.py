@@ -26,11 +26,20 @@ _HANDSHAKE = {"hello", "ismaster", "ping", "buildinfo", "endsessions", "saslstar
 
 class FakeMongod:
     def __init__(
-        self, *, stall: bool = False, set_name: str = "", advertise: tuple[str, ...] = ()
+        self,
+        *,
+        stall: bool = False,
+        set_name: str = "",
+        advertise: tuple[str, ...] = (),
+        advertise_late: bool = False,
     ) -> None:
         self.stall = stall
         self.set_name = set_name
         self.advertise = advertise
+        # True: the first hello lists only this server (discovery looks clean);
+        # every later hello also lists the advertised members.
+        self.advertise_late = advertise_late
+        self.hellos = 0
         self.commands: list[str] = []
         self._release = threading.Event()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -43,6 +52,12 @@ class FakeMongod:
     @property
     def me(self) -> str:
         return f"127.0.0.1:{self.port}"
+
+    def _advertised(self) -> tuple[str, ...]:
+        self.hellos += 1
+        if self.advertise_late and self.hellos == 1:
+            return ()
+        return self.advertise
 
     def _hello(self) -> dict[str, Any]:
         doc: dict[str, Any] = {
@@ -63,7 +78,7 @@ class FakeMongod:
             doc.update(
                 {
                     "setName": self.set_name,
-                    "hosts": [self.me, *self.advertise],
+                    "hosts": [self.me, *self._advertised()],
                     "primary": self.me,
                     "me": self.me,
                     "setVersion": 1,

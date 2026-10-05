@@ -115,3 +115,33 @@ def test_control_an_unguarded_client_does_dial_it(hostile: tuple[FakeMongod, Vic
     finally:
         client.close()
     assert victim.hits > 0
+
+
+async def test_member_advertised_after_discovery_is_never_dialled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TG-08: the server answers discovery clean, THEN advertises an internal member.
+
+    The guard sits in the socket factory, so it also covers members a monitor
+    learns about later (and the pooled client keeps living across calls, C2).
+    """
+    import app.ingestion.connector_egress as egress
+
+    victim = Victim()
+    server = FakeMongod(
+        set_name="rs0", advertise=(f"localhost:{victim.port}",), advertise_late=True
+    )
+    monkeypatch.setattr(egress, "_effective_allowlist", lambda: ["127.0.0.1"])
+    try:
+        uri = f"mongodb://127.0.0.1:{server.port}/db?replicaSet=rs0&heartbeatFrequencyMS=500"
+        for _ in range(3):  # the pooled client keeps monitoring between calls
+            result = await mongodb_server.call_tool(
+                "mongodb_find", {"collection": "c", "limit": 1}, credentials={"url": uri}
+            )
+            assert result.get("count") == 0, result
+            time.sleep(1.0)
+        assert server.hellos > 1  # the late advertisement was served
+        assert victim.hits == 0
+    finally:
+        server.close()
+        victim.close()
