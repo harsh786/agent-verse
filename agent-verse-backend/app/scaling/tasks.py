@@ -6904,10 +6904,18 @@ def expire_hitl_approvals(self: Any) -> dict[str, Any]:
 
     expired_count = 0
     released = 0
+    parked_failed: list[dict[str, Any]] = []
     notified: list[str] = []
     try:
-        expired_ids = _run_async(_expire_db_approvals())
+        expired_ids, parked_failed = _run_async(_expire_db_approvals_and_fail_parked())
         expired_count = len(expired_ids)
+        if parked_failed:
+            # NF-11: parked supervised goals were failed with the approvals; tell
+            # every replica (SSE / in-memory record) and close owning missions.
+            try:
+                _run_async(_announce_parked_goal_failures(parked_failed))
+            except Exception as _a_exc:
+                logger.warning("expire_hitl_approvals_announce_failed: %s", _a_exc)
         if expired_ids:
             # P5-4: wake the goals blocked on these approvals (on any replica) so
             # they fail or replan with the "expired" outcome instead of hanging.
@@ -6926,6 +6934,7 @@ def expire_hitl_approvals(self: Any) -> dict[str, Any]:
     return {
         "expired": expired_count,
         "waiters_released": released,
+        "parked_goals_failed": len(parked_failed),
         "notified": len(notified),
         "checked_at": datetime.now(UTC).isoformat(),
     }
@@ -7002,11 +7011,23 @@ async def _notify_expired_approvals(expired_ids: list[str]) -> list[str]:
 
 
 async def _expire_db_approvals() -> list[str]:
+    ids, _parked = await _expire_db_approvals_and_fail_parked()
+    return ids
+
+
+async def _expire_db_approvals_and_fail_parked() -> tuple[list[str], list[dict[str, Any]]]:
+    """Expire overdue approvals and fail the goals parked on them, atomically.
+
+    NF-11: a supervised goal parked in ``waiting_human`` (no live waiter) whose
+    approval expires is failed with "approval expired" in the SAME transaction,
+    so an expired approval never leaves its goal parked forever.
+    """
     try:
         from sqlalchemy import text
 
         from app.db.rls import system_session
         from app.db.session import get_system_session_factory
+        from app.governance.hitl_expiry import fail_goals_parked_on_expired
 
         # Cross-tenant beat scan → maintenance (BYPASSRLS) role.
         db = get_system_session_factory()
@@ -7021,10 +7042,39 @@ async def _expire_db_approvals() -> list[str]:
                             RETURNING id"""
                 )
             )
-            return [row[0] for row in result.fetchall()]
+            ids = [row[0] for row in result.fetchall()]
+            parked = await fail_goals_parked_on_expired(session, [str(i) for i in ids])
+            return ids, parked
     except Exception as exc:
         logger.warning("expire_db_approvals failed: %s", exc)
-        return []
+        return [], []
+
+
+async def _announce_parked_goal_failures(parked: list[dict[str, Any]]) -> int:
+    """goal_failed events + SSE publish + mission finalize for NF-11 failures."""
+    import json as _json
+
+    from app.db.session import get_session_factory
+    from app.governance.hitl_expiry import announce_parked_goal_failures
+
+    redis_client = _get_sync_redis()
+
+    def _publish(tenant_id: str, goal_id: str, event: dict[str, Any]) -> None:
+        if redis_client is None:
+            return
+        envelope: dict[str, Any] = {
+            "goal_id": goal_id,
+            "tenant_id": tenant_id,
+            "type": event.get("type", ""),
+            "payload": event,
+        }
+        if "_seq" in event:
+            envelope["_seq"] = event["_seq"]
+        redis_client.publish(f"goal_events:{tenant_id}:{goal_id}", _json.dumps(envelope))
+
+    return await announce_parked_goal_failures(
+        get_session_factory(), parked, publish=_publish, finalize=_finalize_owning_mission
+    )
 
 
 # G-16: Register the HITL expiry task in Celery's beat schedule so approvals

@@ -1309,10 +1309,14 @@ async def test_delete_expired_records_handles_db_error() -> None:
 async def test_expire_hitl_approvals_task_returns_expired_count() -> None:
     from app.scaling.tasks import expire_hitl_approvals
 
-    with patch("app.scaling.tasks._run_async", return_value=["req-1", "req-2"]):
+    # expiry (ids, parked goals failed — NF-11), waiter release, notifications
+    with patch(
+        "app.scaling.tasks._run_async", side_effect=[(["req-1", "req-2"], []), 2, []]
+    ):
         result = expire_hitl_approvals.run()
 
     assert result["expired"] == 2
+    assert result["parked_goals_failed"] == 0
     assert "checked_at" in result
 
 
@@ -1487,9 +1491,15 @@ async def test_expire_db_approvals_with_mocked_db() -> None:
 
     mock_result = MagicMock()
     mock_result.fetchall.return_value = [("req-1",), ("req-2",)]
+    no_parked = MagicMock()
+    no_parked.fetchall.return_value = []  # NF-11: no goal parked on these requests
 
     mock_session = AsyncMock()
-    mock_session.execute = AsyncMock(return_value=mock_result)
+    mock_session.execute = AsyncMock(
+        side_effect=lambda stmt, *a, **k: (
+            no_parked if "UPDATE goals" in str(stmt) else mock_result
+        )
+    )
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
     mock_begin = AsyncMock()

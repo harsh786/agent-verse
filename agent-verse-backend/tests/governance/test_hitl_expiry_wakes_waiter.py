@@ -98,13 +98,13 @@ def test_beat_expiry_task_releases_waiters(monkeypatch: pytest.MonkeyPatch) -> N
 
     server = fakeredis.FakeServer()
 
-    async def _expired() -> list[str]:
-        return ["req-1", "req-2"]
+    async def _expired() -> tuple[list[str], list[dict[str, Any]]]:
+        return ["req-1", "req-2"], []
 
     async def _notified(ids: list[str]) -> list[str]:
         return []
 
-    monkeypatch.setattr(tasks, "_expire_db_approvals", _expired)
+    monkeypatch.setattr(tasks, "_expire_db_approvals_and_fail_parked", _expired)
     monkeypatch.setattr(tasks, "_notify_expired_approvals", _notified)
     monkeypatch.setattr(
         tasks, "_hitl_release_redis", lambda: fakeredis.aioredis.FakeRedis(server=server)
