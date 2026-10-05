@@ -125,14 +125,23 @@ def collect_grounding_sources(
     Return every tool output across ALL steps plus the retrieved KB/RAG context,
     and the goal text itself when given: facts the user supplied in the goal
     ("rec-101 last_used=2025-01-03") are evidence, not hallucinations (P5-6).
+    Structured tool results are added as normalised facts too (GRD-1).
     A true hallucination — absent from all of this evidence — is still caught.
     """
+    from app.agent.structured_evidence import facts_from_tool_calls
+
     sources: list[str] = []
+    tool_calls: list[Any] = []
     for s in steps or []:
         for tc in getattr(s, "tool_calls", None) or []:
+            tool_calls.append(tc)
             out = tc.get("output") if isinstance(tc, dict) else None
             if out:
                 sources.append(str(out))
+    # Structured results as plain facts ("1 deleted", "status 204 succeeded") (GRD-1).
+    facts = facts_from_tool_calls(tool_calls)
+    if not facts.empty:
+        sources.append(facts.render())
     if step_context:
         sources.append(str(step_context))
     if goal and goal.strip():

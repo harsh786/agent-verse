@@ -1,5 +1,10 @@
 """D2 — one-time reindex of MongoDB documents still under pre-v8 (host-based) ids.
 
+OI-4: the same migration moves Redis documents off their host-based ids. A
+connector opts in with ``legacy_scope`` + ``read_legacy_documents`` and may
+supply its own ``legacy_id_migration`` name, ``legacy_ref`` parser and
+``legacy_ref_in_scope`` check (MongoDB uses the module defaults below).
+
 MongoDB document ids were ``uuid5("mongodb://{host}/{db}/{collection}/{str(_id)}")``
 until TG-13 / TG-07 made them UUID v8 keyed by Source + collection + canonical
 ``_id``. Documents indexed before keep their v5 id: an updated one is indexed again
@@ -128,8 +133,9 @@ class MigrationStateStore:
     Without a database (dev/tests) the state lives in this object only.
     """
 
-    def __init__(self, db: Any = None) -> None:
+    def __init__(self, db: Any = None, *, migration: str = MIGRATION) -> None:
         self._db = db
+        self._migration = migration
         self._mem: dict[tuple[str, str], MigrationState] = {}
 
     async def get(self, tenant_id: str, source_id: str) -> MigrationState | None:
@@ -153,7 +159,7 @@ class MigrationStateStore:
                         "FROM ingestion_doc_id_migrations "
                         "WHERE tenant_id = :tid AND source_id = :sid AND migration = :m"
                     ),
-                    {"tid": tenant_id, "sid": source_id, "m": MIGRATION},
+                    {"tid": tenant_id, "sid": source_id, "m": self._migration},
                 )
             ).fetchone()
         if row is None:
@@ -208,7 +214,7 @@ class MigrationStateStore:
                 {
                     "tid": state.tenant_id,
                     "sid": state.source_id,
-                    "m": MIGRATION,
+                    "m": self._migration,
                     "status": state.status,
                     "cursor": state.cursor,
                     "scanned": state.scanned,
@@ -229,13 +235,28 @@ class _LegacyConnector(Protocol):
 
     async def read_legacy_documents(
         self, config: Any, refs: list[tuple[str, str]]
-    ) -> dict[tuple[str, str], list[Any]]: ...
+    ) -> dict[tuple[str, str], list[Any] | None]: ...
 
 
 def supports_legacy_id_migration(connector: Any) -> bool:
     return callable(getattr(connector, "read_legacy_documents", None)) and callable(
         getattr(connector, "legacy_scope", None)
     )
+
+
+def migration_name(connector: Any) -> str:
+    """The persisted migration name of ``connector``'s legacy-id migration."""
+    return str(getattr(connector, "legacy_id_migration", "") or MIGRATION)
+
+
+def _parse_ref(connector: Any, doc: dict[str, Any], config: Any) -> LegacyRef | None:
+    doc_id = str(doc.get("id") or "")
+    url = str(doc.get("source_url") or "")
+    parse = getattr(connector, "legacy_ref", None)
+    if callable(parse):
+        ref = parse(doc_id, url, config)
+        return ref if isinstance(ref, LegacyRef) else None
+    return legacy_ref(doc_id, url)
 
 
 def should_run(state: MigrationState | None, mode: str) -> bool:
@@ -282,6 +303,7 @@ async def migrate_legacy_mongodb_ids(
         tenant_id=config.tenant_id, api_key_id="mongodb-id-migration", plan=PlanTier.FREE
     )
     database, collections = connector.legacy_scope(config)
+    in_scope = getattr(connector, "legacy_ref_in_scope", None)
     scanned_this_run = 0
     try:
         exhausted = False
@@ -308,6 +330,7 @@ async def migrate_legacy_mongodb_ids(
                 tenant_ctx=tenant_ctx,
                 database=database,
                 collections=collections,
+                in_scope=in_scope if callable(in_scope) else None,
             )
             state.scanned += len(docs)
             scanned_this_run += len(docs)
@@ -325,8 +348,9 @@ async def migrate_legacy_mongodb_ids(
         await state_store.save(state)
         raise
     _log.info(
-        "mongodb_id_migration source=%s tenant=%s status=%s scanned=%d migrated=%d "
-        "deleted=%d held=%d skipped=%d failed=%d",
+        "doc_id_migration migration=%s source=%s tenant=%s status=%s scanned=%d "
+        "migrated=%d deleted=%d held=%d skipped=%d failed=%d",
+        migration_name(connector),
         config.source_id,
         config.tenant_id,
         state.status,
@@ -357,12 +381,9 @@ async def _migrate_page(
     tenant_ctx: Any,
     database: str,
     collections: list[str],
+    in_scope: Any = None,
 ) -> None:
-    refs = [
-        ref
-        for doc in docs
-        if (ref := legacy_ref(str(doc.get("id") or ""), str(doc.get("source_url") or "")))
-    ]
+    refs = [ref for doc in docs if (ref := _parse_ref(connector, doc, config))]
     if not refs:
         return
     held = await knowledge_store.held_document_ids_async(
@@ -372,7 +393,7 @@ async def _migrate_page(
     for ref in refs:
         if ref.document_id in held:
             state.held += 1
-        elif ref.database != database or (collections and ref.collection not in collections):
+        elif not _ref_in_scope(ref, config, in_scope, database, collections):
             state.skipped += 1
         else:
             todo.append(ref)
@@ -382,7 +403,13 @@ async def _migrate_page(
         config, [(r.collection, r.key) for r in todo]
     )
     for ref in todo:
-        raws = list(upstream.get((ref.collection, ref.key)) or [])
+        found = upstream.get((ref.collection, ref.key), [])
+        if found is None:
+            # Exists upstream but is not indexed any more (e.g. a filtered type):
+            # kept, never deleted on a guess.
+            state.skipped += 1
+            continue
+        raws = list(found)
         try:
             done = await _migrate_one(
                 ref, raws, config=config, pipeline=pipeline,
@@ -401,6 +428,15 @@ async def _migrate_page(
             state.migrated += 1
         else:
             state.failed += 1
+
+
+def _ref_in_scope(
+    ref: LegacyRef, config: Any, in_scope: Any, database: str, collections: list[str]
+) -> bool:
+    """Whether a legacy document is one this Source still reads (else it is kept)."""
+    if in_scope is not None:
+        return bool(in_scope(config, ref))
+    return ref.database == database and (not collections or ref.collection in collections)
 
 
 async def _migrate_one(

@@ -116,7 +116,8 @@ async def test_tool_step_exposes_the_key_to_the_mcp_call() -> None:
         StepDefinition(id="t1", type="tool", tool="crm_create"), ContextResolver(),
         mcp_client=_Client(),
     )
-    await node.execute(_state())  # type: ignore[arg-type]
+    # crm_create is write_high (OI-2): it runs once a reviewer approved it.
+    await node.execute(_state(hitl_request_id="t1", hitl_action="approve"))  # type: ignore[arg-type]
     assert seen == ["wf:run-1:t1"]
     assert current_idempotency_key() is None  # not leaked past the call
 

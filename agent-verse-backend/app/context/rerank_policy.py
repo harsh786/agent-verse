@@ -79,6 +79,59 @@ _RECENCY_HALFLIFE_DAYS = 30.0
 # Characters of a chunk handed to the cross-encoder. Its tokenizer truncates at
 # 512 tokens (~2,000+ characters of English); this only bounds pathological input.
 _CE_MAX_INPUT_CHARS = 4096
+# Weight of the cross-encoder probability against the retrieval score (OI-5:
+# equal trust; the cross-encoder's say now scales with its own confidence).
+_CE_WEIGHT = 0.5
+
+
+def _ce_probabilities(scores: list[float], count: int) -> list[float]:
+    """Cross-encoder scores as relevance probabilities in 0..1.
+
+    The ms-marco cross-encoder returns raw logits (about -11 .. +11): they go
+    through a sigmoid. Scores already on a 0..1 scale (the TF-IDF fallback) are
+    used as they are.
+    """
+    if not scores:
+        return [0.5] * count
+    values = [float(s) for s in scores]
+    if all(0.0 <= v <= 1.0 for v in values):
+        return values
+    out: list[float] = []
+    for v in values:
+        if v >= 0:
+            out.append(1.0 / (1.0 + math.exp(-v)))
+        else:
+            e = math.exp(v)
+            out.append(e / (1.0 + e))
+    return out
+
+
+def _query_identifier_patterns(query: str) -> list[re.Pattern[str]]:
+    """Word-bounded, separator-tolerant patterns of the query's identifiers.
+
+    "TJ-5531" matches "TJ-5531", "tj 5531" and "TJ5531" but not "TJ-55310".
+    Only code-like tokens count (letters mixed with digits, or joined parts).
+    """
+    try:
+        from app.rag.lexical_query import analyze_query, identifier_parts
+    except ImportError:  # pragma: no cover - rag package always present
+        return []
+    analysed = analyze_query(query or "")
+    patterns: list[re.Pattern[str]] = []
+    seen: set[str] = set()
+    for ident in (*analysed.identifiers, *analysed.derived_identifiers):
+        parts = identifier_parts(ident)
+        if not parts or sum(len(p) for p in parts) < 3:
+            continue
+        key = "-".join(parts)
+        if key in seen:
+            continue
+        seen.add(key)
+        body = r"[-_./\s]?".join(re.escape(p) for p in parts)
+        patterns.append(re.compile(rf"(?<![^\W_]){body}(?![^\W_])", re.IGNORECASE))
+        if len(patterns) >= 8:
+            break
+    return patterns
 
 def source_trust(chunk: dict[str, Any]) -> float:
     """Trust multiplier in (0, 1] for a chunk's source.
@@ -397,27 +450,33 @@ class RerankPolicy:
             # field often comes last). Capped only against pathological input.
             documents = [str(c.get("content", ""))[:_CE_MAX_INPUT_CHARS] for c in chunks]
             scores = cross_encode(query, documents)
-            # Normalize scores to 0-1 range
-            if scores:
-                min_s, max_s = min(scores), max(scores)
-                span = max_s - min_s or 1.0
-                norm_scores = [(s - min_s) / span for s in scores]
-            else:
-                norm_scores = [0.5] * len(chunks)
-            # Blend cross-encoder score with original retrieval score. P1c-4: on
-            # the SAME 0..1 scale — the retrieval score is an RRF value (~0.016 ..
-            # 0.05), so the raw 0.4 weight never moved anything and a chunk every
-            # retrieval leg agreed on lost to the cross-encoder's guess alone.
-            raw = [float(c.get("score", 0.5)) for c in chunks]
-            low, high = min(raw), max(raw)
-            orig_norm = (
-                [(r - low) / (high - low) for r in raw] if high > low else [0.5] * len(raw)
-            )
+            # OI-5: the cross-encoder's relevance as a PROBABILITY, not min-max
+            # normalised over the candidates. Min-max stretched an indiscriminate
+            # cross-encoder's noise (every logit ~ -10 for a one-word proper noun,
+            # every structured record ~ +6) to a full 0..1 span that outvoted the
+            # retrieval evidence; a probability adds the same to every chunk it
+            # cannot tell apart, and still separates the ones it is sure about.
+            ce_probs = _ce_probabilities(scores, len(chunks))
+            # The retrieval (weighted RRF) score on a 0..1 scale (P1c-4), relative
+            # to the best candidate: a chunk every lexical leg and the exact-match
+            # leg (P2-3) agreed on keeps its lead; near-equal RRF scores stay
+            # near-equal (min-max stretched a 0.015 vs 0.017 tie to 0 vs 1).
+            raw = [max(float(c.get("score", 0.5)), 0.0) for c in chunks]
+            top = max(raw) if raw else 0.0
+            orig_rel = [r / top for r in raw] if top > 0 else [0.5] * len(raw)
+            # An exact identifier of the query ("RTO-5531", "TJ-5531") in a chunk
+            # is decisive: such chunks rank ahead of chunks without it.
+            ident_patterns = _query_identifier_patterns(query)
             scored = []
-            for chunk, ce_score, orig_score in zip(chunks, norm_scores, orig_norm, strict=False):
-                blended = 0.6 * ce_score + 0.4 * orig_score
-                scored.append({**chunk, "score": blended, "ce_score": ce_score})
-            scored.sort(key=lambda c: c["score"], reverse=True)
+            for chunk, ce_score, orig_score in zip(chunks, ce_probs, orig_rel, strict=False):
+                blended = _CE_WEIGHT * ce_score + (1.0 - _CE_WEIGHT) * orig_score
+                exact = bool(ident_patterns) and any(
+                    p.search(str(chunk.get("content", ""))) for p in ident_patterns
+                )
+                scored.append(
+                    {**chunk, "score": blended, "ce_score": ce_score, "exact_identifier": exact}
+                )
+            scored.sort(key=lambda c: (c["exact_identifier"], c["score"]), reverse=True)
             return scored
         except Exception:
             # Cross-encoder inference failed (missing lib, load error, backend

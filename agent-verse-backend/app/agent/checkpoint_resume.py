@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agent.goal_action_ledger import LEDGER_CONTEXT_KEY
 from app.agent.state import AgentState, StepResult, StepStatus
 from app.tenancy.context import TenantContext
 
@@ -58,6 +59,9 @@ def checkpoint_payload(state: Any, step_index: int) -> dict[str, Any]:
         "executable_plan": [str(p) for p in context.get(EXECUTABLE_PLAN_KEY) or []],
         "completed": completed,
         "steps": steps,
+        # OI-1: executed side-effecting calls + approval decisions of this goal,
+        # so a resumed run neither repeats a call nor re-asks an approval.
+        "action_ledger": _json_safe(context.get(LEDGER_CONTEXT_KEY) or {}),
     }
 
 
@@ -111,4 +115,7 @@ def restore_from_checkpoint(
     state.context[RESUME_COMPLETED_KEY] = dict(completed)
     state.context[COMPLETED_STEPS_KEY] = dict(completed)
     state.context[EXECUTABLE_PLAN_KEY] = executable_plan
+    ledger = payload.get("action_ledger")
+    if isinstance(ledger, dict) and ledger:
+        state.context[LEDGER_CONTEXT_KEY] = ledger
     return state

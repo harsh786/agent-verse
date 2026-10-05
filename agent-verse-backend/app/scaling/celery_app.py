@@ -12,6 +12,12 @@ from celery.signals import (  # type: ignore[import-untyped]
     worker_process_init,
 )
 
+from app.observability.log_redaction import install_log_redaction
+
+# OI-3: workers and beat never call configure_logging(); mask credentials in
+# every stdlib and structlog line (messages, exception text, tracebacks).
+install_log_redaction()
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 _SENTINEL_URLS = os.getenv("REDIS_SENTINEL_URLS", "")
 _SENTINEL_MASTER = os.getenv("REDIS_SENTINEL_MASTER", "mymaster")

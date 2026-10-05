@@ -312,6 +312,19 @@ class VerifierMixin:
                 _rag_knowledge = agent_state.context.get("rag_knowledge")
                 if isinstance(_rag_knowledge, str) and _rag_knowledge.strip():
                     _evidence.append(_rag_knowledge)
+                # GRD-1: structured tool results (counts, flags, status codes, ids,
+                # a failed call's error) normalised into checkable facts: "1 deleted"
+                # grounds "The order was deleted."; "0 deleted" or an error refutes it.
+                from app.agent.structured_evidence import (
+                    StructuredFactNLI,
+                    facts_from_tool_calls,
+                )
+
+                _facts = facts_from_tool_calls(
+                    tc for step in agent_state.steps for tc in getattr(step, "tool_calls", [])
+                )
+                if not _facts.empty:
+                    _evidence.append(_facts.render())
                 _high_risk = _is_high_risk_step(agent_state.goal)
                 # Whether there was any real evidence (tool outputs or retrieved
                 # knowledge) to check the answer against. The keyword gate below
@@ -384,7 +397,11 @@ class VerifierMixin:
                     # fail-CLOSED (replan) on high-risk goals.
                     from app.intelligence.grounding_verification import verify_grounding
 
-                    _verdict = await verify_grounding(_final_answer, _evidence)
+                    _verdict = await verify_grounding(
+                        _final_answer,
+                        _evidence,
+                        nli=StructuredFactNLI(_facts, " ".join(_evidence)),
+                    )
                     agent_state.context["claim_grounding_safe"] = _verdict.safe_to_emit
                     agent_state.context["claim_grounding_score"] = _verdict.claim_score
                     if not _verdict.safe_to_emit:

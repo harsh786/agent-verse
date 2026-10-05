@@ -85,7 +85,9 @@ def test_collect_grounding_sources_spans_all_steps_and_kb() -> None:
     joined = "\n".join(sources)
     assert "active-active" in joined  # earlier step's tool output
     assert "AES-256" in joined  # retrieved KB context
-    assert len(sources) == 3
+    # Two tool outputs, their normalised structured facts (GRD-1), the KB context.
+    assert len(sources) == 4
+    assert "the operation succeeded" in joined
 
 
 def test_collect_grounding_sources_empty() -> None:

@@ -1217,6 +1217,7 @@ async def _migrate_legacy_ids(
         MODE_SYNC,
         MigrationStateStore,
         migrate_legacy_mongodb_ids,
+        migration_name,
         supports_legacy_id_migration,
     )
 
@@ -1231,7 +1232,9 @@ async def _migrate_legacy_ids(
             connector=connector,
             pipeline=pipeline,
             knowledge_store=store,
-            state_store=MigrationStateStore(getattr(source_store, "_db", None)),
+            state_store=MigrationStateStore(
+                getattr(source_store, "_db", None), migration=migration_name(connector)
+            ),
             mode=mode,
             check=lease.check,
         )
@@ -1241,7 +1244,7 @@ async def _migrate_legacy_ids(
         if mode != MODE_SYNC:
             raise
         _log.warning(
-            "mongodb_id_migration_failed source=%s tenant=%s (retried by the next sync): %s",
+            "doc_id_migration_failed source=%s tenant=%s (retried by the next sync): %s",
             config.source_id,
             config.tenant_id,
             exc,
@@ -1249,6 +1252,12 @@ async def _migrate_legacy_ids(
         return {"status": "error", "error": str(exc)[:500]}
 
 
+# Source types with a one-time legacy-id migration, and its persisted name
+# (MongoDB D2, Redis OI-4).
+_LEGACY_ID_MIGRATIONS: dict[str, str] = {
+    "mongodb": "mongodb_v8_doc_ids",
+    "redis": "redis_v8_doc_ids",
+}
 _MIGRATION_DISPATCH_PAGE = 500
 _MIGRATION_DISPATCH_MAX = 10_000
 _MIGRATION_BUSY_RETRY_SECONDS = 300
@@ -1257,7 +1266,8 @@ _MIGRATION_BUSY_RETRY_SECONDS = 300
 @shared_task(name="ingestion.migrate_mongodb_doc_ids", bind=True)
 def migrate_mongodb_doc_ids_task(self: Any) -> dict[str, Any]:
     """Maintenance (idempotent): queue the legacy-id migration for every MongoDB
-    Source that has not completed it cleanly. Re-running it is always safe."""
+    and Redis Source that has not completed it cleanly. Re-running it is always
+    safe."""
     return _run_task_loop(_dispatch_mongodb_doc_id_migrations_async())  # type: ignore[no-any-return]
 
 
@@ -1269,46 +1279,48 @@ async def _dispatch_mongodb_doc_id_migrations_async(
     from sqlalchemy import text
 
     from app.db.rls import system_session
-    from app.ingestion.mongodb_id_migration import MIGRATION, STATUS_COMPLETED
+    from app.ingestion.mongodb_id_migration import STATUS_COMPLETED
 
     if system_db is None:
         from app.db.session import get_system_session_factory
 
         system_db = get_system_session_factory()
-    after = ("", "")
     queued = 0
     more = False
-    while queued < max_sources:
-        async with system_db() as session, session.begin(), system_session(session):
-            rows = (
-                await session.execute(
-                    text(
-                        "SELECT s.tenant_id, s.id FROM source_configs s "
-                        "WHERE s.source_type = 'mongodb' AND (s.tenant_id, s.id) > (:t, :s) "
-                        "AND NOT EXISTS (SELECT 1 FROM ingestion_doc_id_migrations m "
-                        "  WHERE m.tenant_id = s.tenant_id AND m.source_id = s.id "
-                        "  AND m.migration = :m AND m.status = :done) "
-                        "ORDER BY s.tenant_id, s.id LIMIT :lim"
-                    ),
-                    {
-                        "t": after[0],
-                        "s": after[1],
-                        "m": MIGRATION,
-                        "done": STATUS_COMPLETED,
-                        "lim": min(_MIGRATION_DISPATCH_PAGE, max_sources - queued),
-                    },
+    for source_type, migration in _LEGACY_ID_MIGRATIONS.items():
+        after = ("", "")
+        while queued < max_sources:
+            async with system_db() as session, session.begin(), system_session(session):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT s.tenant_id, s.id FROM source_configs s "
+                            "WHERE s.source_type = :st AND (s.tenant_id, s.id) > (:t, :s) "
+                            "AND NOT EXISTS (SELECT 1 FROM ingestion_doc_id_migrations m "
+                            "  WHERE m.tenant_id = s.tenant_id AND m.source_id = s.id "
+                            "  AND m.migration = :m AND m.status = :done) "
+                            "ORDER BY s.tenant_id, s.id LIMIT :lim"
+                        ),
+                        {
+                            "st": source_type,
+                            "t": after[0],
+                            "s": after[1],
+                            "m": migration,
+                            "done": STATUS_COMPLETED,
+                            "lim": min(_MIGRATION_DISPATCH_PAGE, max_sources - queued),
+                        },
+                    )
+                ).fetchall()
+            for tenant_id, source_id in rows:
+                migrate_mongodb_doc_ids_source_task.apply_async(
+                    kwargs={"source_id": str(source_id), "tenant_id": str(tenant_id)},
+                    countdown=_jitter(str(source_id)),
                 )
-            ).fetchall()
-        for tenant_id, source_id in rows:
-            migrate_mongodb_doc_ids_source_task.apply_async(
-                kwargs={"source_id": str(source_id), "tenant_id": str(tenant_id)},
-                countdown=_jitter(str(source_id)),
-            )
-            queued += 1
-        if len(rows) < _MIGRATION_DISPATCH_PAGE:
-            break
-        after = (str(rows[-1][0]), str(rows[-1][1]))
-        more = queued >= max_sources
+                queued += 1
+            if len(rows) < _MIGRATION_DISPATCH_PAGE:
+                break
+            after = (str(rows[-1][0]), str(rows[-1][1]))
+            more = queued >= max_sources
     _log.info("mongodb_id_migration_dispatch queued=%d more=%s", queued, more)
     return {"queued": queued, "more": more}
 
@@ -1351,8 +1363,8 @@ async def _migrate_mongodb_doc_ids_source_async(
         config = await source_store.get(source_id, tenant_id)
         if config is None:
             return {"error": "source_not_found"}
-        if config.source_type != "mongodb":
-            return {"skipped": True, "reason": "not_mongodb"}
+        if config.source_type not in _LEGACY_ID_MIGRATIONS:
+            return {"skipped": True, "reason": "no_legacy_id_migration"}
         if not config.enabled:
             return {"skipped": True, "reason": "source_disabled"}
         try:
