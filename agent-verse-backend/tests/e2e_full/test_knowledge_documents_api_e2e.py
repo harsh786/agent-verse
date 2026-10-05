@@ -137,10 +137,13 @@ async def test_url_document_has_a_stable_reachable_id(
     marker = f"Quokkaberry{uuid.uuid4().hex[:6]}"
     body = {"text": f"{marker} version one. " * 30}
 
-    async def _fake_fetch(url: str, source_type: str) -> tuple[str, dict[str, Any]]:
-        return body["text"], {"source_url": url, "title": "Zen page"}
+    from app.ingestion.web_fetch import WebResource
 
-    monkeypatch.setattr(knowledge_api, "_fetch_url_content", _fake_fetch)
+    async def _fake_fetch(url: str, source_type: str) -> WebResource:
+        return WebResource(url=url, final_url=url, status=200, content_type="text/plain",
+                           data=body["text"].encode())
+
+    monkeypatch.setattr(knowledge_api, "_fetch_url_resource", _fake_fetch)
     col = await _collection(kb_client)
     url = "https://peps.example.test/pep-0020/"
 

@@ -81,3 +81,35 @@ def test_title_is_used_when_the_page_has_no_h1() -> None:
     text = _text("<html><head><title>Gate hours</title></head><body><p>Gate 4 opens at 05:00."
                  "</p></body></html>")
     assert text.splitlines()[0] == "# Gate hours"
+
+
+def test_xhtml_with_an_xml_declaration_is_read_by_lxml() -> None:
+    """P1d: lxml refuses a str carrying an encoding declaration, so an XHTML page
+    fell through to the regex fallback and its navigation was indexed."""
+    from app.ingestion.parsers.html_parser import extract_html_text
+
+    page = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Depot</title>'
+        "</head><body><nav>Home | Careers | Investors</nav><main><h1>Depot hours</h1>"
+        "<p>The Hosur depot opens at 06:30 on weekdays.</p></main>"
+        "<script>track('pageview');</script></body></html>"
+    )
+    text = extract_html_text(page)
+    assert text is not None
+    assert "The Hosur depot opens at 06:30 on weekdays." in text
+    assert "Careers" not in text
+    assert "track(" not in text
+
+
+def test_an_html_upload_honours_its_meta_charset() -> None:
+    """P1d-4: an uploaded page in Shift_JIS / KOI8-R was decoded as cp1252."""
+    from app.ingestion.document_text import extract_upload_text
+
+    for enc, label, sentence in (
+        ("shift_jis", "Shift_JIS", "東京都江東区の倉庫は午前九時に開きます"),
+        ("koi8_r", "KOI8-R", "Склад в Новосибирске открыт с девяти утра"),
+    ):
+        page = (f'<html><head><meta charset="{label}"><title>t</title></head>'
+                f"<body><main><p>{sentence}</p></main></body></html>").encode(enc)
+        assert sentence in extract_upload_text(page, ext="html", filename="p.html")

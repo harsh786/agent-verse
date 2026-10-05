@@ -54,10 +54,13 @@ def _store() -> tuple[KnowledgeStore, str]:
 
 
 def _fetch(text: str) -> Any:
-    async def _fake(url: str, source_type: str) -> tuple[str, dict[str, Any]]:
-        return text, {"source_url": url, "title": "Docs page"}
+    from app.ingestion.web_fetch import WebResource
 
-    return patch("app.api.knowledge._fetch_url_content", new=_fake)
+    async def _fake(url: str, source_type: str) -> WebResource:
+        return WebResource(url=url, final_url=url, status=200,
+                           content_type="text/plain; charset=utf-8", data=text.encode())
+
+    return patch("app.api.knowledge._fetch_url_resource", new=_fake)
 
 
 def _auth() -> dict[str, str]:

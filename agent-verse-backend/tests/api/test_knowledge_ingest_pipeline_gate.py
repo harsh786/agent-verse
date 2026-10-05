@@ -212,10 +212,11 @@ def test_ingest_openapi_redacts_pii_in_endpoint_text() -> None:
 
 def test_ingest_url_redacts_pii() -> None:
     client, store, embedder, cid = _app()
-    with patch(
-        "app.api.knowledge._fetch_url_content",
-        new=AsyncMock(return_value=(_BODY, {"source_url": "https://example.com/x"})),
-    ):
+    from app.ingestion.web_fetch import WebResource
+
+    page = WebResource(url="https://example.com/x", final_url="https://example.com/x",
+                       status=200, content_type="text/plain", data=_BODY.encode())
+    with patch("app.api.knowledge._fetch_url_resource", new=AsyncMock(return_value=page)):
         resp = client.post(
             "/knowledge/ingest/url",
             json={"collection_id": cid, "url": "https://example.com/x"},

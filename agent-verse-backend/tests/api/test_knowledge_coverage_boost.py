@@ -627,8 +627,12 @@ def test_reingest_url_document_replaces_it() -> None:
     coll_id, doc_id = _collection_with_doc(
         client, "old page text", source_url="https://example.com/page", source_type="web"
     )
-    fetched = ("fresh page text with new facts", {"source_url": "https://example.com/page"})
-    with patch("app.api.knowledge._fetch_url_content", new=AsyncMock(return_value=fetched)):
+    from app.ingestion.web_fetch import WebResource
+
+    fetched = WebResource(url="https://example.com/page", final_url="https://example.com/page",
+                          status=200, content_type="text/plain",
+                          data=b"fresh page text with new facts")
+    with patch("app.api.knowledge._fetch_url_resource", new=AsyncMock(return_value=fetched)):
         resp = client.post(
             f"/knowledge/collections/{coll_id}/documents/{doc_id}/reingest", headers=_auth()
         )
@@ -648,12 +652,12 @@ def test_reingest_fetch_failure_keeps_the_old_document() -> None:
     coll_id, doc_id = _collection_with_doc(
         client, "old page text", source_url="https://example.com/p", source_type="web"
     )
-    boom = AsyncMock(side_effect=_HTTPException(500, "Failed to fetch"))
-    with patch("app.api.knowledge._fetch_url_content", new=boom):
+    boom = AsyncMock(side_effect=_HTTPException(502, "https://example.com/p: HTTP 503"))
+    with patch("app.api.knowledge._fetch_url_resource", new=boom):
         resp = client.post(
             f"/knowledge/collections/{coll_id}/documents/{doc_id}/reingest", headers=_auth()
         )
-    assert resp.status_code == 500
+    assert resp.status_code == 502
     store: KnowledgeStore = client.app.state.knowledge_store  # type: ignore[attr-defined]
     assert {c.document_id for c in store._data[(_CTX.tenant_id, coll_id)].chunks} == {doc_id}
 

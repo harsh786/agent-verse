@@ -601,64 +601,54 @@ def test_ingest_openapi_embedder_exception_is_fail_closed() -> None:
 # ingest/url — web and github (lines 710-779)
 # ---------------------------------------------------------------------------
 
+def _page(url: str, data: bytes, ctype: str = "text/plain") -> Any:
+    from app.ingestion.web_fetch import WebResource
+
+    res = WebResource(url=url, final_url=url, status=200, content_type=ctype, data=data)
+    return patch("app.api.knowledge._fetch_url_resource", new=AsyncMock(return_value=res))
+
+
 def test_ingest_url_web_success() -> None:
-    """Lines 705-716: URL ingest for web fetches and chunks content."""
-    embedder = _make_embedder()
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
+    """A web page is fetched, its article text chunked and embedded."""
+    from app.providers.fake import FakeProvider
+
+    client = TestClient(_make_app(embedder=FakeProvider(embed_dim=8)),
+                        raise_server_exceptions=False)
     coll_id = _create_collection(client)
-
-    mock_response = MagicMock()
-    mock_response.text = "<html><title>Test Page</title><body><p>Great content here.</p></body></html>"
-    mock_response.raise_for_status = MagicMock()
-    mock_response.is_redirect = False  # request_public follows redirects per hop
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.request = AsyncMock(return_value=mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
-            resp = client.post(
-                "/knowledge/ingest/url",
-                json={"collection_id": coll_id, "url": "https://example.com", "source_type": "web"},
-                headers=H,
-            )
-    assert resp.status_code in (200, 201, 500)
+    html = b"<html><title>Test Page</title><body><p>Great content here.</p></body></html>"
+    with _page("https://example.com", html, "text/html"):
+        resp = client.post(
+            "/knowledge/ingest/url",
+            json={"collection_id": coll_id, "url": "https://example.com", "source_type": "web"},
+            headers=H,
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["title"] == "Test Page"
 
 
 def test_ingest_url_github_success() -> None:
-    """Lines 717-728: GitHub URL ingest fetches raw content."""
-    embedder = _make_embedder()
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
+    """A GitHub blob URL is fetched as its raw file."""
+    from app.api.knowledge import _url_fetch_target
+    from app.providers.fake import FakeProvider
+
+    assert _url_fetch_target("https://github.com/org/repo/blob/main/file.py", "github") == (
+        "https://raw.githubusercontent.com/org/repo/main/file.py"
+    )
+    client = TestClient(_make_app(embedder=FakeProvider(embed_dim=8)),
+                        raise_server_exceptions=False)
     coll_id = _create_collection(client)
-
-    mock_response = MagicMock()
-    mock_response.text = "def main():\n    print('hello')\n"
-    mock_response.raise_for_status = MagicMock()
-    mock_response.is_redirect = False  # request_public follows redirects per hop
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.request = AsyncMock(return_value=mock_response)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
-            resp = client.post(
-                "/knowledge/ingest/url",
-                json={
-                    "collection_id": coll_id,
-                    "url": "https://github.com/org/repo/blob/main/file.py",
-                    "source_type": "github",
-                },
-                headers=H,
-            )
-    assert resp.status_code in (200, 201, 500)
+    url = "https://github.com/org/repo/blob/main/file.py"
+    with _page(url, b"def main():\n    print('hello')\n"):
+        resp = client.post(
+            "/knowledge/ingest/url",
+            json={"collection_id": coll_id, "url": url, "source_type": "github"},
+            headers=H,
+        )
+    assert resp.status_code == 201, resp.text
 
 
 def test_ingest_url_unsupported_source_type() -> None:
-    """Line 731: Unsupported source_type raises 400."""
+    """Unsupported source_type raises 400."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     coll_id = _create_collection(client)
 
@@ -671,43 +661,32 @@ def test_ingest_url_unsupported_source_type() -> None:
 
 
 def test_ingest_url_fetch_failure() -> None:
-    """Line 735-736: HTTP failure raises 500."""
+    """A network failure is an honest 502 (it used to be a bare 500)."""
+    import httpx
+
     client = TestClient(_make_app(), raise_server_exceptions=False)
     coll_id = _create_collection(client)
 
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.request = AsyncMock(side_effect=Exception("Network error"))
+    async def _down(self: Any, request: Any, **_: Any) -> Any:
+        raise httpx.ConnectError("connection refused", request=request)
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
+    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]), \
+         patch.object(httpx.AsyncClient, "send", _down):
         resp = client.post(
             "/knowledge/ingest/url",
-            # Use a publicly resolvable host so this reaches the mocked fetch
-            # instead of being rejected by the SSRF guard during DNS validation.
-            json={"collection_id": coll_id, "url": "https://docs.python.org/failure", "source_type": "web"},
+            json={"collection_id": coll_id, "url": "https://docs.example.com/failure",
+                  "source_type": "web"},
             headers=H,
         )
-    assert resp.status_code == 500
+    assert resp.status_code == 502
+    assert "could not connect" in resp.json()["detail"]
 
 
 def test_ingest_url_empty_content_raises_422() -> None:
-    """Line 739: No content extracted → 422."""
+    """No content extracted → 422."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     coll_id = _create_collection(client)
-
-    mock_response = MagicMock()
-    mock_response.text = "   "  # whitespace only
-    mock_response.raise_for_status = MagicMock()
-    mock_response.is_redirect = False  # request_public follows redirects per hop
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.request = AsyncMock(return_value=mock_response)
-
-    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]), \
-         patch("httpx.AsyncClient", return_value=mock_client):
+    with _page("https://empty.example.com", b"   "):
         resp = client.post(
             "/knowledge/ingest/url",
             json={"collection_id": coll_id, "url": "https://empty.example.com", "source_type": "web"},
@@ -717,57 +696,37 @@ def test_ingest_url_empty_content_raises_422() -> None:
 
 
 def test_ingest_url_with_embedder_chunks_content() -> None:
-    """Lines 742-784: URL content is chunked and embedded."""
-    embedder = _make_embedder()
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
+    """Long URL content is chunked and embedded."""
+    from app.providers.fake import FakeProvider
+
+    client = TestClient(_make_app(embedder=FakeProvider(embed_dim=8)),
+                        raise_server_exceptions=False)
     coll_id = _create_collection(client)
-
-    mock_response = MagicMock()
-    mock_response.text = "Word " * 200  # enough to create chunks
-    mock_response.raise_for_status = MagicMock()
-    mock_response.is_redirect = False  # request_public follows redirects per hop
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.request = AsyncMock(return_value=mock_response)
-
-    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]), \
-         patch("httpx.AsyncClient", return_value=mock_client), \
-         patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
+    with _page("https://long.example.com", ("Word " * 2000).encode()):
         resp = client.post(
             "/knowledge/ingest/url",
             json={"collection_id": coll_id, "url": "https://long.example.com", "source_type": "web"},
             headers=H,
         )
-    assert resp.status_code in (200, 201, 500)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["chunks_ingested"] >= 2
 
 
-def test_ingest_url_short_content_fallback_chunk() -> None:
-    """Lines 745-746: Very short content falls back to single chunk."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+def test_ingest_url_short_content_single_chunk() -> None:
+    """Very short content is one chunk."""
+    from app.providers.fake import FakeProvider
+
+    client = TestClient(_make_app(embedder=FakeProvider(embed_dim=8)),
+                        raise_server_exceptions=False)
     coll_id = _create_collection(client)
-
-    mock_response = MagicMock()
-    mock_response.text = "Short content."
-    mock_response.raise_for_status = MagicMock()
-    mock_response.is_redirect = False  # request_public follows redirects per hop
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.request = AsyncMock(return_value=mock_response)
-
-    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]), \
-         patch("httpx.AsyncClient", return_value=mock_client), \
-         patch("app.knowledge.chunker_v2.chunk_by_tokens", return_value=[]), \
-         patch("app.api.knowledge._embed_texts_or_http", new=_make_embed_texts_mock()):
+    with _page("https://short.example.com", b"Short content."):
         resp = client.post(
             "/knowledge/ingest/url",
             json={"collection_id": coll_id, "url": "https://short.example.com", "source_type": "web"},
             headers=H,
         )
-    assert resp.status_code in (200, 201, 422, 500)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["chunks_ingested"] == 1
 
 
 # ---------------------------------------------------------------------------

@@ -313,6 +313,7 @@ async def guarded_fetch(
     *,
     context: str,
     max_redirects: int = _MAX_REDIRECTS,
+    stream: bool = False,
     **kwargs: Any,
 ) -> GuardedFetch:
     """Send ``method url`` following redirects safely; return the response and its path.
@@ -324,6 +325,10 @@ async def guarded_fetch(
     ``max_redirects`` hops raise ``httpx.TooManyRedirects``. Credentials
     (``auth``, ``Authorization`` / ``Cookie`` headers) are dropped once a redirect
     leaves the original host, so a redirect cannot harvest them either.
+
+    ``stream=True`` returns the final response unread (``client.send(...,
+    stream=True)``): the caller reads it within its own size cap and must
+    ``aclose()`` it. Redirect responses are closed before the next hop.
     """
     import asyncio
 
@@ -339,13 +344,26 @@ async def guarded_fetch(
     from urllib.parse import urljoin
 
     for _hop in range(max_redirects + 1):
-        response = await client.request(method, current, follow_redirects=False, **kwargs)
+        if stream:
+            send_kwargs: dict[str, Any] = {}
+            if kwargs.get("auth") is not None:
+                send_kwargs["auth"] = kwargs["auth"]
+            request = client.build_request(
+                method, current, **{k: v for k, v in kwargs.items() if k != "auth"}
+            )
+            response = await client.send(
+                request, stream=True, follow_redirects=False, **send_kwargs
+            )
+        else:
+            response = await client.request(method, current, follow_redirects=False, **kwargs)
         status = getattr(response, "status_code", None)
         location = ""
         if isinstance(status, int) and status in _REDIRECT_STATUSES:
             location = str((getattr(response, "headers", None) or {}).get("location", "") or "")
         if not location:
             return GuardedFetch(response=response, requested_url=url, final_url=current, hops=hops)
+        if stream:
+            await response.aclose()
         nxt = urljoin(current, location)
         try:
             await asyncio.to_thread(assert_source_url, nxt, context=context)

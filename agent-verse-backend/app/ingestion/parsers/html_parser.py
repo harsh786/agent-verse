@@ -73,6 +73,59 @@ class HTMLParser:
         return text
 
 
+def html_to_text(content: str) -> str:
+    """Readable text of an HTML page or fragment, the way uploads read it (P1a-12).
+
+    Every ingestion path that receives HTML (connector bodies, e-mail parts,
+    fetched pages) uses this instead of a regex tag-strip, which kept
+    ``<script>`` / ``<style>`` bodies and page chrome and flattened headings,
+    lists and table rows into one line (P1d-10).
+    """
+    return HTMLParser().parse(content).strip()
+
+
+def html_page_links(html: str, base_url: str) -> tuple[list[str], str | None, set[str], str]:
+    """``(hrefs, canonical href, meta-robots directives, title)`` of a page (lxml).
+
+    ``hrefs`` are absolute (against ``<base href>`` / ``base_url``), in page
+    order, not yet filtered or normalised; directives come from
+    ``<meta name="robots">`` and ``<meta name="agentverse-knowledgecrawler">``.
+    """
+    from urllib.parse import urljoin
+
+    import lxml.html
+
+    doc = lxml.html.document_fromstring(_XML_DECLARATION.sub("", html, count=1))
+    base = base_url
+    for href in doc.xpath("//base/@href")[:1]:
+        base = urljoin(base_url, str(href).strip())
+    canonical = None
+    for href in doc.xpath(
+        "//link[contains(concat(' ', normalize-space(@rel), ' '), ' canonical ')]/@href"
+    )[:1]:
+        canonical = urljoin(base, str(href).strip())
+    directives: set[str] = set()
+    for content in doc.xpath(
+        "//meta[translate(@name,'ROBTS','robts')='robots' or translate(@name,"
+        "'AGENTVRSKWLC','agentvrskwlc')='agentverse-knowledgecrawler']/@content"
+    ):
+        directives.update(v.strip().lower() for v in str(content).split(",") if v.strip())
+    title = _norm(str(doc.findtext(".//title") or ""))
+    hrefs: list[str] = []
+    for href in doc.xpath("//a/@href | //area/@href"):
+        value = str(href).strip()
+        if not value:
+            continue
+        if value.lower().startswith(("mailto:", "javascript:", "tel:", "data:")):
+            hrefs.append(value)
+            continue
+        try:
+            hrefs.append(urljoin(base, value))
+        except ValueError:
+            continue
+    return hrefs, canonical, directives, title
+
+
 # ── lxml extraction ────────────────────────────────────────────────────────────
 
 # Elements that are never content.
@@ -100,6 +153,9 @@ _BLOCK_TAGS = frozenset(
 )
 
 
+_XML_DECLARATION = re.compile(r"^\ufeff?\s*<\?xml[^>]*\?>", re.IGNORECASE)
+
+
 def _norm(text: str) -> str:
     return " ".join(text.split())
 
@@ -118,6 +174,9 @@ def extract_html_text(content: str) -> str | None:
 
     if not content.strip():
         return None
+    # lxml refuses a str that still carries an encoding declaration (XHTML
+    # pages): the text is already decoded, so the declaration is dropped.
+    content = _XML_DECLARATION.sub("", content, count=1)
     doc = lxml.html.document_fromstring(content)
     title = _norm(doc.findtext(".//title") or "")
     for el in doc.xpath("|".join(f"//{t}" for t in _DROP_TAGS)):

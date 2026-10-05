@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -182,17 +182,26 @@ def test_ingest_with_embedder() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _fake_page(text: str = "A page about container yards. " * 10) -> Any:
+    from app.ingestion.web_fetch import WebResource
+
+    page = WebResource(url="https://example.com/doc", final_url="https://example.com/doc",
+                       status=200, content_type="text/plain", data=text.encode())
+    return patch("app.api.knowledge._fetch_url_resource", new=AsyncMock(return_value=page))
+
+
 def test_ingest_url_collection_not_found() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
+    with _fake_page():
+        resp = client.post(
         "/knowledge/ingest/url",
         json={
             "collection_id": "nonexistent",
             "url": "https://example.com/doc",
         },
         headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code in (201, 202, 404, 500, 503)
+        )
+    assert resp.status_code in (404, 503)
 
 
 def test_ingest_url_queued() -> None:
@@ -205,16 +214,17 @@ def test_ingest_url_queued() -> None:
     ).json()
     coll_id = created["collection_id"]
 
-    resp = client.post(
-        "/knowledge/ingest/url",
-        json={
-            "collection_id": coll_id,
-            "url": "https://example.com/docs",
-            "source_type": "web",
-        },
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code in (200, 202, 500)
+    with _fake_page():
+        resp = client.post(
+            "/knowledge/ingest/url",
+            json={
+                "collection_id": coll_id,
+                "url": "https://example.com/docs",
+                "source_type": "web",
+            },
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert resp.status_code in (201, 503)
 
 
 # ---------------------------------------------------------------------------

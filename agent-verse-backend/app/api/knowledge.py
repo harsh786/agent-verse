@@ -60,8 +60,6 @@ from app.knowledge.ingestors.limits import (
 from app.net.ssrf_guard import (
     SSRFError,
     assert_public_url_async,
-    public_async_client,
-    request_public,
 )
 from app.providers.guarded_completion import DecisionBudgetExceededError
 from app.rag.contracts import (
@@ -497,6 +495,13 @@ async def _persist_chunks_or_http(
         # no-op, matching the explicit exists_by_hash dedup skip used elsewhere,
         # rather than surfacing a misleading persistence failure.
         return []
+    except KnowledgeLegalHoldError as exc:
+        # P1d-5: the previous version of this document is held; it is kept.
+        raise HTTPException(
+            status_code=409,
+            detail="The document is under legal hold and cannot be replaced; "
+            "the held version is kept.",
+        ) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
     except EmbeddingDimensionError as exc:
@@ -2228,129 +2233,296 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
 # ---------------------------------------------------------------------------
 
 
-# Characters of extracted page text kept for one URL document.
-_MAX_URL_TEXT_CHARS = 50_000
+# Kinds a fetched URL is read as text (decoded by its charset); everything else
+# goes through the upload extractors (PDF, DOCX, PPTX, XLSX, images via OCR, ZIP).
+_URL_TEXT_EXTS = frozenset(
+    {"html", "txt", "md", "csv", "tsv", "json", "jsonl", "yaml", "log", "rst"}
+)
 
 
-def _web_page_text(raw: str, content_type: str) -> tuple[str, str | None]:
-    """(article text, <title>) of a fetched web page.
+@dataclass
+class _UrlDocument:
+    """One fetched URL, extracted like an upload of the same file."""
 
-    HTML goes through the upload HTML extractor (P1a-12): script/style bodies,
-    navigation, header/footer and consent/sidebar chrome are dropped and
-    ``<main>``/``<article>`` is preferred. The old regex tag-strip kept inline
-    JavaScript and the whole nav, which diluted the document's embedding so
-    much that it fell out of the results after re-embedding (P0 KB-REEMBED).
-    A non-HTML response (plain text, markdown, JSON) is kept verbatim.
+    url: str
+    final_url: str
+    ext: str
+    content_type: str
+    size_bytes: int
+    units: list[_UploadUnit]
+    title: str = ""
+    moved: dict[str, Any] | None = None
+    archive_skipped: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(t for u in self.units for _, t in u.segments)
+
+
+def _url_fetch_target(url: str, source_type: str) -> str:
+    """The URL actually fetched for ``source_type`` (400 for an unsupported type)."""
+    if source_type == "web":
+        return url
+    if source_type == "github":
+        # Anonymous fetch of the raw file only. It used to attach the PLATFORM's
+        # GITHUB_TOKEN to a tenant-chosen URL, letting any tenant read every
+        # private repo that token can see (confused deputy). Private repos go
+        # through a tenant-configured GitHub source instead.
+        return url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
+    raise HTTPException(
+        400,
+        f"Source type '{source_type}' not yet supported for URL ingestion. "
+        "Supported: web, github",
+    )
+
+
+async def _fetch_url_resource(url: str, source_type: str) -> Any:
+    """Fetch ``url`` for URL ingestion; a :class:`~app.ingestion.web_fetch.WebResource`.
+
+    The ingestion egress policy applies (P1d-1), exactly as for connector
+    Sources: a public address or an operator-allowlisted ingestion host; every
+    redirect hop re-checked (a redirect to an internal address is refused and
+    never requested), at most 5 hops, a permanent move recorded; the body
+    streamed under the upload size limit; connections pinned to the checked
+    address (DNS rebinding). Failures are honest HTTP errors (P1d-3): 400
+    blocked, 422 redirect loop, 502 upstream error status / unreachable, 504
+    timeout, 413 too large — it used to be a 500 for every one of them.
     """
+    from app.ingestion.connector_egress import source_client
+    from app.ingestion.web_fetch import WebFetchError, fetch_web_resource
+
+    target = _url_fetch_target(url, source_type)
+    limit = int(get_settings().knowledge_max_upload_bytes)
+    try:
+        async with source_client(
+            timeout=30.0, headers={"User-Agent": "AgentVerse-Knowledge/1.0"}
+        ) as client:
+            return await fetch_web_resource(
+                client, target, context="/ingest/url", max_bytes=limit
+            )
+    except WebFetchError as exc:
+        detail = str(exc)
+        if exc.kind == "blocked":
+            detail = f"URL blocked for security reasons: {exc}"
+        raise HTTPException(status_code=exc.http_status, detail=detail[:500]) from exc
+
+
+def _html_title(html: str) -> str:
     import html as _html
     import re
 
-    # Servers mislabel HTML as text/plain: a body that opens with a tag is HTML.
-    looks_html = "html" in content_type.lower() or bool(
-        re.match(r"\s*<(?:!doctype|[a-z][a-z0-9]*)[\s/>]", raw, re.IGNORECASE)
-    )
-    if not looks_html:
-        return raw.strip()[:_MAX_URL_TEXT_CHARS], None
-    from app.ingestion.parsers.html_parser import HTMLParser
-
-    title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
-    title = " ".join(_html.unescape(title_match.group(1)).split()) if title_match else None
-    text = HTMLParser().parse(raw)
-    return text.strip()[:_MAX_URL_TEXT_CHARS], title or None
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    return " ".join(_html.unescape(match.group(1)).split()) if match else ""
 
 
-async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str, Any]]:
-    """SSRF-check and fetch a web/github URL; return (text content, metadata).
+async def _fetch_url_document(
+    request: Request, url: str, source_type: str
+) -> _UrlDocument:
+    """Fetch ``url`` and extract it with the upload extractors (P1d-2).
 
-    Shared by ``/ingest/url`` and document re-ingestion, which re-validates the
-    stored URL at fetch time (DNS may have changed since the first ingest).
+    A PDF / DOCX / PPTX / XLSX / image / ZIP served by URL is read like an
+    upload of that file (pages cited, OCR, archive members); it used to be
+    decoded as text and indexed as binary garbage. HTML and text are decoded
+    by their charset (P1d-4: header, BOM, ``<meta charset>``) and HTML goes
+    through the lxml extractor (page chrome dropped). The kind comes from the
+    bytes first (servers mislabel files), then Content-Type, then the URL.
     """
-    content = ""
-    metadata: dict[str, Any] = {"source_url": url, "source_type": source_type}
+    import codecs
 
-    # SSRF guard — reject internal/metadata URLs before fetching
-    try:
-        await assert_public_url_async(url, context="/ingest/url")
-    except SSRFError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=f"URL blocked for security reasons: {exc}",
-        ) from exc
+    from app.ingestion.archive import ARCHIVE_EXTS
+    from app.ingestion.web_fetch import HTML_MAX_BYTES, decode_web_text, web_resource_ext
 
-    # Fetches go through the pinned client (connect-time IP check — a plain
-    # client re-resolved the name: DNS rebinding) and request_public, which
-    # follows redirects re-validating every hop.
-    try:
-        if source_type == "web":
-            async with public_async_client(timeout=30.0) as client:
-                resp = await request_public(
-                    client,
-                    "GET",
-                    url,
-                    context="/ingest/url",
-                    headers={"User-Agent": "AgentVerse/1.0"},
-                )
-                resp.raise_for_status()
-                content, title = _web_page_text(resp.text, resp.headers.get("content-type", ""))
-                metadata["title"] = title or url
-
-        elif source_type == "github":
-            raw_url = url.replace("github.com", "raw.githubusercontent.com").replace(
-                "/blob/", "/"
-            )
-            # Anonymous fetch only. It used to attach the PLATFORM's GITHUB_TOKEN to
-            # a tenant-chosen URL, letting any tenant read every private repo that
-            # token can see (confused deputy). Private repos go through a
-            # tenant-configured GitHub source instead.
-            headers: dict[str, str] = {}
-            async with public_async_client(timeout=15.0) as client:
-                resp = await request_public(
-                    client, "GET", raw_url, context="/ingest/url", headers=headers
-                )
-                resp.raise_for_status()
-                content = resp.text[:100000]
-            metadata["filename"] = url.split("/")[-1]
-
-        else:
+    res = await _fetch_url_resource(url, source_type)
+    ext = web_resource_ext(res.final_url, res.content_type, res.data)
+    if source_type == "github" and ext == "html" and not res.data.lstrip().startswith(b"<"):
+        ext = "txt"
+    data = res.data
+    title = ""
+    if ext in _URL_TEXT_EXTS:
+        if ext == "html" and len(data) > HTML_MAX_BYTES:
             raise HTTPException(
-                400,
-                f"Source type '{source_type}' not yet supported for URL ingestion. "
-                "Supported: web, github",
+                413, f"{url}: the HTML page is larger than the "
+                f"{HTML_MAX_BYTES // (1024 * 1024)} MiB HTML limit; not indexed",
             )
+        decoded = decode_web_text(data, res.content_type)
+        if ext == "html":
+            title = _html_title(decoded)
+        # Re-encoded as UTF-8 with a BOM: the extractor then never re-reads it
+        # through a stale <meta charset> declaration.
+        data = codecs.BOM_UTF8 + decoded.encode("utf-8")
+    leaf = res.final_url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1] or "document"
+    filename = leaf if leaf.lower().endswith(f".{ext}") else f"{leaf}.{ext}"
+    archive_skipped: list[dict[str, str]] = []
+    if not data.strip(b"\xef\xbb\xbf \t\r\n"):
+        raise HTTPException(422, "No content extracted from URL")
+    if ext in ARCHIVE_EXTS:
+        units, archive_skipped = await _extract_archive_units(request, data, filename=filename)
+    else:
+        units = [
+            await _extract_upload_unit(
+                request, data, ext=ext, filename=filename, source_file=url
+            )
+        ]
+    return _UrlDocument(
+        url=url,
+        final_url=res.final_url,
+        ext=ext,
+        content_type=res.content_type,
+        size_bytes=len(res.data),
+        units=units,
+        title=title or leaf,
+        moved=res.moved,
+        archive_skipped=archive_skipped,
+    )
 
-    except HTTPException:
-        raise
-    except SSRFError as exc:
-        # A redirect hop (or the connect-time re-check) hit a blocked address:
-        # same 400 as the up-front check.
+
+async def _refuse_replacing_held_url_document(
+    request: Request, store: KnowledgeStore, tenant: TenantContext, *,
+    collection_id: str, document_id: str, url: str,
+) -> bool:
+    """True when ``document_id`` is already indexed; 409 when it is under legal hold.
+
+    Re-ingesting a URL replaces its document (stable id): the previous version
+    is deleted in the same transaction. A held document must never be
+    replaced (P1d-5) — it used to be, without any hold check.
+    """
+    existing = await _existing_document_id(
+        store, document_id, collection_id=collection_id, tenant_ctx=tenant
+    )
+    if existing is None:
+        return False
+    try:
+        await _refuse_if_under_legal_hold(request, tenant, collection_id, document_id)
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_409_CONFLICT:
+            raise
         raise HTTPException(
-            status_code=400,
-            detail=f"URL blocked for security reasons: {exc}",
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"The document of {url} is under legal hold and cannot be replaced; "
+            "the held version is kept.",
         ) from exc
-    except Exception as exc:
-        import logging as _logging
+    return True
 
-        _logging.getLogger(__name__).warning("ingest_url_fetch_failed: %s", exc)
-        raise HTTPException(500, "Failed to fetch content from the requested URL") from exc
 
-    return content, metadata
+async def _index_url_document(
+    request: Request,
+    store: KnowledgeStore,
+    tenant: TenantContext,
+    doc: _UrlDocument,
+    *,
+    collection_id: str,
+    document_id: str,
+    source_type: str,
+    extra_metadata: dict[str, str] | None = None,
+) -> list[str]:
+    """Screen, chunk (structure-aware), embed and persist a fetched URL document,
+    replacing the previous version of ``document_id`` in one transaction."""
+    from app.knowledge.chunker_v2 import chunk_structured
+
+    doc_hash = hashlib.sha256(doc.text.encode()).hexdigest()
+    pieces: list[tuple[_UploadUnit, str, int | None, int]] = []
+    for unit in doc.units:
+        for page, raw_text in unit.segments:
+            text = await _screen_or_http(request, tenant.tenant_id, raw_text, doc_id=doc.url)
+            for chunk, offset in chunk_structured(text, max_tokens=512, overlap_tokens=64):
+                if chunk.strip():
+                    pieces.append((unit, chunk, page, offset))
+    if not pieces:
+        raise HTTPException(422, "No content extracted from URL")
+    embeddings = await _embed_texts_or_http(
+        [c for _, c, _, _ in pieces], getattr(request.app.state, "embedder", None),
+        request=request,
+    )
+    chunk_ids = _stable_chunk_ids(document_id, [c for _, c, _, _ in pieces])
+    chunks: list[Chunk] = []
+    for idx, ((unit, content, page, offset), embedding) in enumerate(
+        zip(pieces, embeddings, strict=True)
+    ):
+        metadata = {
+            "source_url": doc.url,
+            "final_url": doc.final_url,
+            "title": doc.title,
+            "doc_title": doc.title,
+            "source_type": source_type,
+            "content_kind": doc.ext,
+            "char_offset": str(offset),
+            "doc_content_hash": doc_hash,
+            **(extra_metadata or {}),
+        }
+        if doc.moved:
+            metadata["moved_to"] = str(doc.moved.get("to") or "")
+            metadata["moved_status"] = str(doc.moved.get("status") or "")
+        if unit.archive_member is not None:
+            metadata["archive_member"] = unit.archive_member
+        if page is not None:
+            metadata["page"] = str(page)
+            metadata["total_pages"] = str(unit.total_pages)
+        if unit.ocr_engine or (page is not None and page in unit.page_ocr_engines):
+            metadata["ocr_used"] = "true"
+        chunks.append(
+            Chunk(
+                document_id=document_id,
+                content=content,
+                embedding=embedding,
+                chunk_index=idx,
+                chunk_id=chunk_ids[idx],
+                metadata=metadata,
+            )
+        )
+    return await _persist_chunks_or_http(
+        store, chunks, collection_id=collection_id, tenant_ctx=tenant, replace_document=True
+    )
+
+
+def _url_document_report(doc: _UrlDocument) -> dict[str, Any]:
+    single = doc.units[0] if len(doc.units) == 1 else None
+    report: dict[str, Any] = {
+        "final_url": doc.final_url,
+        "moved_permanently": doc.moved,
+        "content_type": doc.content_type,
+        "content_kind": doc.ext,
+        "size_bytes": doc.size_bytes,
+        "title": doc.title,
+        "pages": single.total_pages if single else None,
+        "ocr_pages": sorted(single.page_ocr_engines) if single else [],
+        "warnings": [w for u in doc.units for w in u.warnings],
+        "truncated": any(
+            u.report.get("excel_truncated") or u.report.get("csv_truncated") for u in doc.units
+        ),
+    }
+    if doc.archive_skipped or len(doc.units) > 1:
+        report["archive"] = {
+            "members_indexed": [u.archive_member for u in doc.units],
+            "members_skipped": doc.archive_skipped,
+        }
+    return report
 
 
 @router.post("/ingest/url", status_code=201, dependencies=_DOC_QUOTA)
 async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str, Any]:
-    """Ingest content from a URL (web page, GitHub file, Confluence page, etc.)."""
+    """Ingest the web page or file at a URL (HTML, text, PDF, DOCX, PPTX, XLSX, images, ZIP).
+
+    One document per (collection, URL): ingesting the URL again replaces its
+    previous version (unchanged chunks keep their ids), unless that document
+    is under legal hold (409, the held version is kept). An unchanged page is
+    reported ``deduplicated``. Redirects are followed safely; a permanent move
+    is reported in ``moved_permanently``.
+    """
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
 
-    content, metadata = await _fetch_url_content(body.url, body.source_type)
+    doc = await _fetch_url_document(request, body.url, body.source_type)
+    content = doc.text
     if not content.strip():
         raise HTTPException(422, "No content extracted from URL")
 
     doc_hash = hashlib.sha256(content.encode()).hexdigest()
     doc_id = stable_url_document_id(tenant_ctx.tenant_id, body.collection_id, body.url)
-    if await _already_indexed_or_http(
+    report = _url_document_report(doc)
+    holder = await _indexed_document_id_or_http(
         store, doc_hash, tenant_id=tenant_ctx.tenant_id, collection_id=body.collection_id
-    ):
+    )
+    if holder is not None:
         return {
             "collection_id": body.collection_id,
             "source_url": body.url,
@@ -2358,71 +2530,30 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
             "chunks_ingested": 0,
             "total_chars": len(content),
             "deduplicated": True,
-            "document_id": await _existing_document_id(
+            "replaced": False,
+            # The document that already holds this content.
+            "document_id": holder
+            or await _existing_document_id(
                 store, doc_id, collection_id=body.collection_id, tenant_ctx=tenant_ctx
             ),
+            **report,
         }
-    content = await _screen_or_http(request, tenant_ctx.tenant_id, content, doc_id=body.url)
-
-    # Chunk and ingest
-    from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_url
-
-    _raw_url_chunks = _chunk_by_tokens_url(content, max_tokens=512, overlap_tokens=64)
-    chunks = [
-        type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
-        for chunk in _raw_url_chunks
-    ]
-    if not chunks and content.strip():
-        chunks = [
-            type(
-                "_C",
-                (),
-                {"content": content.strip(), "start_char": 0, "end_char": len(content)},
-            )()
-        ]
-
-    embedder = getattr(request.app.state, "embedder", None)
-    from app.rag.models import Chunk as RagChunk
-
-    kept = [(idx, chunk) for idx, chunk in enumerate(chunks) if chunk.content.strip()]
-    # One batched embed call instead of one provider round trip per chunk.
-    embeddings = (
-        await _embed_texts_or_http(
-            [chunk.content for _, chunk in kept], embedder, request=request
-        )
-        if kept
-        else []
+    existed = await _refuse_replacing_held_url_document(
+        request, store, tenant_ctx, collection_id=body.collection_id, document_id=doc_id,
+        url=body.url,
     )
-    rag_chunks: list[Chunk] = [
-        RagChunk(
-            document_id=doc_id,
-            content=chunk.content,
-            embedding=embedding,
-            chunk_index=idx,
-            metadata={
-                **{k: str(v) for k, v in metadata.items()},
-                "source_type": body.source_type,
-                "doc_content_hash": doc_hash,
-            },
-        )
-        for (idx, chunk), embedding in zip(kept, embeddings, strict=True)
-    ]
-    # The stable id replaces this URL's previous version (same transaction).
-    stored = await _persist_chunks_or_http(
-        store,
-        rag_chunks,
-        collection_id=body.collection_id,
-        tenant_ctx=tenant_ctx,
-        replace_document=True,
+    stored = await _index_url_document(
+        request, store, tenant_ctx, doc, collection_id=body.collection_id,
+        document_id=doc_id, source_type=body.source_type,
     )
-
     return {
         "collection_id": body.collection_id,
         "source_url": body.url,
         "source_type": body.source_type,
         "chunks_ingested": len(stored),
         "total_chars": len(content),
-        "deduplicated": bool(rag_chunks) and not stored,
+        "deduplicated": not stored,
+        "replaced": bool(stored) and existed,
         "document_id": (
             doc_id
             if stored
@@ -2430,6 +2561,7 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
                 store, doc_id, collection_id=body.collection_id, tenant_ctx=tenant_ctx
             )
         ),
+        **report,
     }
 
 
@@ -3541,41 +3673,26 @@ async def reingest_document(
             "upload it again to replace it.",
         )
 
-    content, metadata = await _fetch_url_content(url, source_type)
-    if not content.strip():
+    # A held document is never replaced (P1d-5): checked before anything is
+    # fetched or embedded, and again by the store inside the replacing write.
+    await _refuse_replacing_held_url_document(
+        request, store, tenant, collection_id=collection_id, document_id=document_id, url=url
+    )
+    doc = await _fetch_url_document(request, url, source_type)
+    if not doc.text.strip():
         raise HTTPException(422, "No content extracted from URL")
-
-    from app.knowledge.chunker_v2 import chunk_by_tokens
-    from app.rag.models import Chunk as RagChunk
-
-    pieces = [p for p in chunk_by_tokens(content, max_tokens=512, overlap_tokens=64) if p.strip()]
-    pieces = pieces or [content.strip()]
-    embedder = getattr(request.app.state, "embedder", None)
-    embeddings = await _embed_texts_or_http(pieces, embedder, request=request)
-    chunks = [
-        RagChunk(
-            document_id=document_id,
-            content=piece,
-            embedding=embedding,
-            chunk_index=i,
-            metadata={
-                **{k: str(v) for k, v in metadata.items()},
-                "source_type": source_type,
-                "reingested_from": document_id,
-            },
-        )
-        for i, (piece, embedding) in enumerate(zip(pieces, embeddings, strict=True))
-    ]
     # The document keeps its id: the new version replaces the old chunks in one
     # transaction, so a failed fetch / embed / write leaves the old one intact.
-    stored = await _persist_chunks_or_http(
-        store, chunks, collection_id=collection_id, tenant_ctx=tenant, replace_document=True
+    stored = await _index_url_document(
+        request, store, tenant, doc, collection_id=collection_id, document_id=document_id,
+        source_type=source_type, extra_metadata={"reingested_from": document_id},
     )
     return {
         "status": "reingested" if stored else "unchanged",
         "document_id": document_id,
         "previous_document_id": document_id,
         "chunks_ingested": len(stored),
+        **_url_document_report(doc),
     }
 
 

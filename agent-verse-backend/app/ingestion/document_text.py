@@ -486,7 +486,14 @@ def extract_upload_text(
         raise UnsupportedDocumentError(
             f"{filename}: unsupported binary file; upload PDF, DOCX, XLSX or text"
         )
-    raw = decode_text(data)
+    if ext in {"html", "htm", "xhtml"}:
+        # A page declares its charset (<meta charset>, XML declaration): honoured
+        # like a browser (P1d-4) instead of UTF-8-else-cp1252.
+        from app.ingestion.web_fetch import decode_web_text
+
+        raw = decode_web_text(data, "text/html")
+    else:
+        raw = decode_text(data)
     text = _extract_structured_text(raw, ext=ext, filename=filename, report=report)
     if not text.strip():
         raise DocumentParseError(f"{filename}: no extractable text")

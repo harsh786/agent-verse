@@ -52,11 +52,11 @@ def test_connector_test_probe_connects_via_pinned_client(
 async def test_knowledge_url_ingest_connects_via_pinned_client(
     monkeypatch: pytest.MonkeyPatch, source_type: str
 ) -> None:
-    from app.api.knowledge import _fetch_url_content
+    from app.api.knowledge import _fetch_url_resource
 
     spy = install_connect_spy(monkeypatch)
     with pytest.raises(HTTPException):
-        await _fetch_url_content("https://rebind.example/page", source_type)
+        await _fetch_url_resource("https://rebind.example/page", source_type)
     assert spy.dialed == ["rebind.example"]
 
 
@@ -64,7 +64,7 @@ async def test_knowledge_url_ingest_connects_via_pinned_client(
 async def test_knowledge_url_ingest_revalidates_redirects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.knowledge import _fetch_url_content
+    from app.api.knowledge import _fetch_url_resource
 
     monkeypatch.setattr(g, "_resolve_host", lambda host: ["93.184.216.34"])
     with respx.mock(assert_all_called=False) as mock:
@@ -75,7 +75,7 @@ async def test_knowledge_url_ingest_revalidates_redirects(
             return_value=httpx.Response(200, text="<title>secret</title>")
         )
         with pytest.raises(HTTPException) as exc_info:
-            await _fetch_url_content("https://site.example/page", "web")
+            await _fetch_url_resource("https://site.example/page", "web")
     assert not internal.called
     assert exc_info.value.status_code == 400
 
@@ -84,7 +84,7 @@ async def test_knowledge_url_ingest_revalidates_redirects(
 async def test_knowledge_url_ingest_follows_public_redirects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.knowledge import _fetch_url_content
+    from app.api.knowledge import _fetch_url_resource
 
     monkeypatch.setattr(g, "_resolve_host", lambda host: ["93.184.216.34"])
     with respx.mock:
@@ -94,6 +94,8 @@ async def test_knowledge_url_ingest_follows_public_redirects(
         respx.get("https://site.example/page").mock(
             return_value=httpx.Response(200, text="<title>Hi</title><p>body</p>")
         )
-        content, metadata = await _fetch_url_content("http://site.example/page", "web")
-    assert "body" in content
-    assert metadata["title"] == "Hi"
+        res = await _fetch_url_resource("http://site.example/page", "web")
+    assert b"body" in res.data
+    assert res.final_url == "https://site.example/page"
+    assert res.moved == {"from": "http://site.example/page", "to": "https://site.example/page",
+                         "status": 301}

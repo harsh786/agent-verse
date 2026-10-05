@@ -11,11 +11,19 @@ Re-ingestion of a URL document goes through the same fetch.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import httpx
 import pytest
 import respx
 
 import app.net.ssrf_guard as g
+
+
+def _request() -> Any:
+    """URL extraction needs the app state only for OCR (images / scanned PDFs)."""
+    return SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
 
 _ZEN = (
     "Beautiful is better than ugly. Explicit is better than implicit. "
@@ -40,7 +48,7 @@ document.addEventListener('DOMContentLoaded', function () {{ initThemeToggle(); 
 async def test_web_url_content_drops_scripts_styles_and_navigation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.api.knowledge import _fetch_url_content
+    from app.api.knowledge import _fetch_url_document
 
     monkeypatch.setattr(g, "_resolve_host", lambda host: ["93.184.216.34"])
     with respx.mock:
@@ -49,7 +57,8 @@ async def test_web_url_content_drops_scripts_styles_and_navigation(
                 200, text=_PAGE, headers={"content-type": "text/html; charset=utf-8"}
             )
         )
-        content, metadata = await _fetch_url_content("https://peps.example/pep-0020/", "web")
+        doc = await _fetch_url_document(_request(), "https://peps.example/pep-0020/", "web")
+    content = doc.text
 
     assert _ZEN in content
     for boilerplate in (
@@ -66,12 +75,12 @@ async def test_web_url_content_drops_scripts_styles_and_navigation(
         assert boilerplate not in content, boilerplate
     # The article is (nearly) all that is left, so its embedding is not diluted.
     assert len(content) < len(_ZEN) + 200
-    assert metadata["title"] == "PEP 20 - The Zen of Python"
+    assert doc.title == "PEP 20 - The Zen of Python"
 
 
 @pytest.mark.asyncio
 async def test_plain_text_urls_are_kept_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.api.knowledge import _fetch_url_content
+    from app.api.knowledge import _fetch_url_document
 
     monkeypatch.setattr(g, "_resolve_host", lambda host: ["93.184.216.34"])
     body = "line one: a < b and c > d\nline two"
@@ -79,6 +88,6 @@ async def test_plain_text_urls_are_kept_verbatim(monkeypatch: pytest.MonkeyPatch
         respx.get("https://site.example/notes.txt").mock(
             return_value=httpx.Response(200, text=body, headers={"content-type": "text/plain"})
         )
-        content, metadata = await _fetch_url_content("https://site.example/notes.txt", "web")
-    assert content == body
-    assert metadata["title"] == "https://site.example/notes.txt"
+        doc = await _fetch_url_document(_request(), "https://site.example/notes.txt", "web")
+    assert doc.text == body
+    assert doc.title == "notes.txt"
