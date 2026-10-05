@@ -3473,8 +3473,11 @@ class ExecutorMixin:
             # failed correct answers until max_iterations.
             from app.agent.nodes._helpers import collect_grounding_sources
 
+            # Gathered evidence decides whether the check runs; the goal text is
+            # added as a source so user-supplied facts count as grounded (P5-6).
+            _gathered_evidence = collect_grounding_sources(state.steps, step_context or "")
             _tool_outputs_for_grounding = collect_grounding_sources(
-                state.steps, step_context or ""
+                state.steps, step_context or "", goal=state.goal or ""
             )
             # P0-4: high/critical-risk goals get zero ungrounded tolerance.
             _rp_ground = state.context.get("_runtime_profile")
@@ -3494,7 +3497,7 @@ class ExecutorMixin:
             )
             if (
                 raw_output
-                and (_tool_outputs_for_grounding or _goal_high_risk)
+                and (_gathered_evidence or _goal_high_risk)
                 and not _is_structured_tool_output
             ):
                 _ground_ratio = 0.0 if _risk_ground in ("high", "critical") else None

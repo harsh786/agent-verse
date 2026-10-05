@@ -111,7 +111,9 @@ def surface_delivered_content(
     return f"Delivered via {tool}:\n{sent}\n\n[delivery receipt] {raw_output or ''}".strip()
 
 
-def collect_grounding_sources(steps: list[Any], step_context: str = "") -> list[str]:
+def collect_grounding_sources(
+    steps: list[Any], step_context: str = "", *, goal: str = ""
+) -> list[str]:
     """Assemble the evidence a step's claims may be grounded in.
 
     A synthesis/delivery step legitimately draws on facts gathered EARLIER — the
@@ -120,7 +122,9 @@ def collect_grounding_sources(steps: list[Any], step_context: str = "") -> list[
     KB-sourced facts (and facts from earlier searches) were wrongly flagged
     "ungrounded", failing correct answers until the goal hit max_iterations.
 
-    Return every tool output across ALL steps plus the retrieved KB/RAG context.
+    Return every tool output across ALL steps plus the retrieved KB/RAG context,
+    and the goal text itself when given: facts the user supplied in the goal
+    ("rec-101 last_used=2025-01-03") are evidence, not hallucinations (P5-6).
     A true hallucination — absent from all of this evidence — is still caught.
     """
     sources: list[str] = []
@@ -131,6 +135,8 @@ def collect_grounding_sources(steps: list[Any], step_context: str = "") -> list[
                 sources.append(str(out))
     if step_context:
         sources.append(str(step_context))
+    if goal and goal.strip():
+        sources.append(goal)
     return sources
 
 
