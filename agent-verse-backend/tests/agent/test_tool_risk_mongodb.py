@@ -45,7 +45,7 @@ EXPECTED = {
     "mongodb_update_one": "write_high",
     "mongodb_update_many": "write_high",
     "mongodb_replace_one": "write_high",
-    "mongodb_delete_one": "destructive",
+    "mongodb_delete_one": "write_high",
     "mongodb_delete_many": "destructive",
     "mongodb_drop_collection": "destructive",
     "mongodb_drop_database": "destructive",
@@ -113,7 +113,7 @@ def test_aggregate_with_unverifiable_pipeline_is_gated(pipeline: object) -> None
 
 @pytest.mark.parametrize("server_name", ["prod-db", "production", "billing", "deploy-db"])
 @pytest.mark.parametrize(
-    "tool", ["delete_issue", "drop_table", "purge_cache", "mongodb_delete_one", "remove_user"]
+    "tool", ["delete_issue", "drop_table", "purge_cache", "mongodb_delete_many", "remove_user"]
 )
 def test_high_risk_connector_name_never_lowers_destructive(tool: str, server_name: str) -> None:
     assert classify_tool_risk(tool, server_name) == "destructive"
@@ -131,7 +131,8 @@ def test_generic_connector_name_never_lowers_a_write(tool: str, server_name: str
     [
         ("budget_db__mongodb_insert_one", "write_high"),
         ("target_db__mongodb_aggregate", "write_high"),
-        ("prod_db__mongodb_delete_one", "destructive"),
+        ("prod_db__mongodb_delete_one", "write_high"),
+        ("prod_db__mongodb_delete_many", "destructive"),
         ("analytics__mongodb_find", "read"),
         ("builtin-mongodb:budget-db/mongodb_update_one", "write_high"),
     ],
@@ -176,3 +177,11 @@ async def test_governed_gate_never_runs_a_mongodb_write_unapproved(
     )
     assert asked == [tool]
     assert decision.allowed is False
+
+
+@pytest.mark.parametrize("server_name", ["prod-db", "readonly", "analytics", "budget-db", ""])
+def test_mongodb_delete_one_is_approvable_never_read_or_auto(server_name: str) -> None:
+    """Owner decision: a single delete pauses for HITL approval (write_high) under any
+    connector name; it is never lowered to read/write_low and never raised to an
+    unapprovable destructive deny."""
+    assert classify_tool_risk("mongodb_delete_one", server_name) == "write_high"

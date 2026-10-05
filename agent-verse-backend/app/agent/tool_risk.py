@@ -319,7 +319,9 @@ _MONGODB_TOOL_RISK: dict[str, str] = {
     "mongodb_update_one": "write_high",
     "mongodb_update_many": "write_high",
     "mongodb_replace_one": "write_high",
-    "mongodb_delete_one": "destructive",
+    # Owner decision (2026-10-05): a single-document delete is approvable via HITL
+    # (write_high pauses for a human); bulk deletes and drops stay destructive.
+    "mongodb_delete_one": "write_high",
     "mongodb_delete_many": "destructive",
     "mongodb_drop_collection": "destructive",
     "mongodb_drop_database": "destructive",
