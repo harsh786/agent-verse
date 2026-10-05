@@ -162,14 +162,52 @@ def extract_docx_text(data: bytes, *, filename: str = "document.docx") -> str:
         document = docx.Document(io.BytesIO(data))
     except Exception as exc:  # python-docx raises several unrelated types
         raise DocumentParseError(f"{filename}: not a readable .docx ({exc})") from exc
-    text = "\n".join(_docx_blocks(document))
+    headers, footers = _docx_header_footer_lines(document)
+    lines = (
+        [f"Header: {h}" for h in headers]
+        + _docx_blocks(document, document.element.body)
+        + [f"Footer: {f}" for f in footers]
+    )
+    text = "\n".join(lines)
     if not text.strip():
         raise DocumentParseError(f"{filename}: the document has no text")
     return text
 
 
-def _docx_blocks(document: object) -> list[str]:
-    """Paragraphs AND tables in document order.
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_DOCX_REMOVED = frozenset({f"{_W}del", f"{_W}moveFrom"})
+
+
+def _docx_paragraph_text(p_element: Any) -> str:
+    """A paragraph's text as Word shows it with tracked changes accepted.
+
+    python-docx's ``Paragraph.text`` reads only runs that are direct children of
+    the paragraph, so text inserted with Track Changes (runs inside ``w:ins`` /
+    ``w:moveTo``) and hyperlink / text-box runs were lost. Deleted text
+    (``w:delText``, runs inside ``w:del`` / ``w:moveFrom``) stays out.
+    """
+    parts: list[str] = []
+    for el in p_element.iter(f"{_W}t", f"{_W}tab", f"{_W}br", f"{_W}cr"):
+        if any(a.tag in _DOCX_REMOVED for a in el.iterancestors()):
+            continue
+        if el.tag == f"{_W}t":
+            parts.append(el.text or "")
+        elif el.tag == f"{_W}tab":
+            if el.getparent() is not None and el.getparent().tag != f"{_W}tabs":
+                parts.append("\t")  # a tab character, not a tab-stop definition
+        else:
+            parts.append("\n")
+    return "".join(parts)
+
+
+def _docx_cell_text(tc: Any) -> str:
+    return "\n".join(
+        t for t in (_docx_paragraph_text(p) for p in tc.iterchildren(f"{_W}p")) if t.strip()
+    ).strip()
+
+
+def _docx_blocks(document: object, container: Any) -> list[str]:
+    """Paragraphs AND tables of a body / header / footer, in document order.
 
     ``document.paragraphs`` skips tables entirely, so the figures a policy or a
     price list keeps in a table never reached the index. Each table row is
@@ -178,19 +216,17 @@ def _docx_blocks(document: object) -> list[str]:
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
-    body = document.element.body  # type: ignore[attr-defined]
     out: list[str] = []
-    for child in body.iterchildren():
+    for child in container.iterchildren():
         tag = child.tag.rsplit("}", 1)[-1]
         if tag == "p":
-            paragraph = Paragraph(child, document)  # type: ignore[arg-type]
-            text = paragraph.text
+            text = _docx_paragraph_text(child)
             if text.strip():
-                level = _docx_heading_level(paragraph)
+                level = _docx_heading_level(Paragraph(child, document))  # type: ignore[arg-type]
                 out.append(f"{'#' * level} {text.strip()}" if level else text)
         elif tag == "tbl":
             table = Table(child, document)  # type: ignore[arg-type]
-            rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+            rows = [[_docx_cell_text(cell._tc) for cell in row.cells] for row in table.rows]
             if not rows:
                 continue
             header, *data_rows = rows
@@ -206,6 +242,25 @@ def _docx_blocks(document: object) -> list[str]:
                 if pairs:
                     out.append("; ".join(pairs))
     return out
+
+
+def _docx_header_footer_lines(document: Any) -> tuple[list[str], list[str]]:
+    """Distinct header and footer lines of every section (default, first-page and
+    even-page variants); a header linked to the previous section is not re-read."""
+    headers: list[str] = []
+    footers: list[str] = []
+    for section in document.sections:
+        for kind, out in (("header", headers), ("footer", footers)):
+            for variant in (kind, f"first_page_{kind}", f"even_page_{kind}"):
+                part = getattr(section, variant, None)
+                try:
+                    if part is None or part.is_linked_to_previous:
+                        continue
+                    lines = _docx_blocks(document, part._element)
+                except Exception:  # a broken header part must not lose the body
+                    continue
+                out.extend(line for line in lines if line.strip() and line not in out)
+    return headers, footers
 
 
 def _docx_heading_level(paragraph: Any) -> int:
