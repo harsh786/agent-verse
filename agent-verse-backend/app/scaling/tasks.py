@@ -6830,10 +6830,18 @@ def expire_hitl_approvals(self: Any) -> dict[str, Any]:
     from datetime import UTC, datetime
 
     expired_count = 0
+    released = 0
     notified: list[str] = []
     try:
         expired_ids = _run_async(_expire_db_approvals())
         expired_count = len(expired_ids)
+        if expired_ids:
+            # P5-4: wake the goals blocked on these approvals (on any replica) so
+            # they fail or replan with the "expired" outcome instead of hanging.
+            try:
+                released = _run_async(_release_expired_approval_waiters(expired_ids))
+            except Exception as _r_exc:
+                logger.warning("expire_hitl_approvals_release_failed: %s", _r_exc)
         # G-12: notify on each expired request
         if expired_ids:
             try:
@@ -6844,9 +6852,28 @@ def expire_hitl_approvals(self: Any) -> dict[str, Any]:
         logger.warning("expire_hitl_approvals failed: %s", exc)
     return {
         "expired": expired_count,
+        "waiters_released": released,
         "notified": len(notified),
         "checked_at": datetime.now(UTC).isoformat(),
     }
+
+
+def _hitl_release_redis() -> Any:
+    """Async Redis client for releasing approval waiters (closed by the caller)."""
+    import redis.asyncio as _aioredis
+
+    return _aioredis.from_url(REDIS_URL)
+
+
+async def _release_expired_approval_waiters(expired_ids: list[str]) -> int:
+    from app.governance.hitl import release_expired_waiters
+
+    client = _hitl_release_redis()
+    try:
+        return await release_expired_waiters(client, [str(i) for i in expired_ids])
+    finally:
+        with contextlib.suppress(Exception):
+            await client.aclose()
 
 
 async def _notify_expired_approvals(expired_ids: list[str]) -> list[str]:

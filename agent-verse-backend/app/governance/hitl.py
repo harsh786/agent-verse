@@ -18,7 +18,7 @@ import json
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -164,6 +164,52 @@ _STATUS_BY_DB_VALUE = {
     "timed_out": ApprovalStatus.TIMED_OUT,
     "expired": ApprovalStatus.TIMED_OUT,
 }
+
+
+# Redis list a waiter BLPOPs for a decision taken on any replica.
+HITL_RESULT_TTL_S = 86400
+
+
+def hitl_result_key(request_id: str) -> str:
+    return f"hitl_result:{request_id}"
+
+
+_EXPIRED_RESOLUTION = json.dumps(
+    {
+        "action": "expired",
+        "approver": "system:expiry",
+        "note": "Approval expired before a decision was made",
+    }
+)
+
+
+async def release_expired_waiters(redis: Any, request_ids: Iterable[str]) -> int:
+    """Wake every goal blocked on these (already expired) approvals — any replica.
+
+    The expiry beat only UPDATEd ``approval_requests`` to ``timed_out``; nothing
+    pushed ``hitl_result:{id}``, so a goal waiting in the cross-replica BLPOP sat
+    ``executing`` until its own (hour-long) HITL timeout (P5-4). The waiter maps
+    ``expired`` to TIMED_OUT and the goal fails or replans honestly. Returns the
+    number of waiters released; a failed push is logged (the DB row is already
+    terminal, so a waiter that misses it still re-reads a terminal state when it
+    times out).
+    """
+    if redis is None:
+        return 0
+    released = 0
+    for request_id in request_ids:
+        key = hitl_result_key(str(request_id))
+        try:
+            await redis.rpush(key, _EXPIRED_RESOLUTION)
+            await redis.expire(key, HITL_RESULT_TTL_S)
+            released += 1
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning(
+                "hitl_expiry_release_failed", request_id=str(request_id), error=str(exc)[:200]
+            )
+    return released
 
 
 class HITLResolutionUnavailableError(Exception):
@@ -696,6 +742,13 @@ class HITLGateway:
                         req._event.set()
                     elif action == "rejected" and req.status == ApprovalStatus.PENDING:
                         req.status = ApprovalStatus.REJECTED
+                        req._event.set()
+                    elif (
+                        action in ("expired", "timed_out")
+                        and req.status == ApprovalStatus.PENDING
+                    ):
+                        # Expired by the beat on any replica (P5-4).
+                        req.status = ApprovalStatus.TIMED_OUT
                         req._event.set()
                 elif redis_failed and req.status == ApprovalStatus.PENDING:
                     # Redis is down: keep waiting for a local decision and poll the
