@@ -4,7 +4,8 @@ Provides:
 - GET /auth/login     — Redirect to Keycloak login page
 - GET /auth/callback  — Handle OAuth2 authorization code callback
 - GET /auth/userinfo  — Return current user info from JWT
-- POST /auth/logout   — Invalidate Keycloak session
+- POST /auth/session/exchange — One-time SSO login code → user session token
+- POST /auth/session/logout   — Revoke the caller's user session token
 - GET /auth/config    — Return SSO configuration for frontend
 """
 
@@ -13,7 +14,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -234,3 +235,33 @@ async def exchange_session_code(request: Request, body: SessionExchangeRequest) 
     if result is None:
         raise HTTPException(401, "Login code is invalid, expired or already used")
     return result
+
+
+@router.post("/session/logout", status_code=204)
+async def logout_session(request: Request) -> Response:
+    """End the caller's SSO user session (the ``avs_`` bearer token).
+
+    Authenticated by TenantMiddleware with that very token (a revoked or
+    unknown one is already a 401 there). The session is revoked in Postgres and
+    its cached context purged from the shared Redis, so every replica refuses
+    the token at once. Anything but a session token is a 400 — an API key is
+    revoked through key management, not logged out. A store outage is a 503,
+    never a silent "logged out".
+    """
+    from app.auth.user_sessions import (
+        SessionStoreUnavailableError,
+        get_user_session_store,
+        is_session_token,
+    )
+    from app.tenancy.middleware import _extract_key
+
+    # Exactly the credential TenantMiddleware authenticated this request with.
+    token = _extract_key(request) or ""
+    ctx = getattr(request.state, "tenant", None)
+    if not is_session_token(token) or getattr(ctx, "user_id", None) is None:
+        raise HTTPException(400, "Only an SSO session token can be logged out")
+    try:
+        await get_user_session_store(request.app).revoke_token(token)
+    except SessionStoreUnavailableError as exc:
+        raise HTTPException(503, exc.message, headers={"Retry-After": "5"}) from exc
+    return Response(status_code=204)

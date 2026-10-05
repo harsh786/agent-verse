@@ -51,6 +51,8 @@ _TABLES = (
     "api_key_scopes",
     "custom_roles",
     "role_assignments",
+    # SCIM deactivation revokes the member's SSO sessions in the same transaction.
+    "user_sessions",
 )
 
 

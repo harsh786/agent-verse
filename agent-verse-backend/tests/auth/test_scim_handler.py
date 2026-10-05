@@ -345,3 +345,32 @@ async def test_handler_db_error_rolls_back_transaction_then_maps_to_500():
     assert "set_config('app.tenant_id'" in _sql(session_mock)[0]
     exit_args = session_mock.begin.return_value.__aexit__.await_args.args
     assert exit_args[0] is not None
+
+
+async def test_deprovision_whose_session_cache_purge_fails_is_503_not_success():
+    """SAML-01: SCIM DELETE revokes the user's sessions in the same transaction
+    and then purges their cached contexts; when that purge fails the IdP gets a
+    503 (it retries) — never a 204 while a cached session still authenticates."""
+    from types import SimpleNamespace
+
+    from app.auth.user_sessions import SessionStoreUnavailableError
+
+    store = MagicMock()
+    store.purge_cache = AsyncMock(side_effect=SessionStoreUnavailableError("redis down"))
+    session_mock = _new_session()
+    handler = SCIMHandler(
+        tenant_id="tenant-1",
+        config={"allow_user_delete": True},
+        db_factory=MagicMock(return_value=session_mock),
+        session_store=store,
+    )
+    member = (SimpleNamespace(id="u1"), SimpleNamespace(status="active"))
+    handler._find_member = AsyncMock(return_value=member)  # type: ignore[method-assign]
+    handler._revoke_sessions = AsyncMock(return_value=["digest-1"])  # type: ignore[method-assign]
+
+    with pytest.raises(HTTPException) as exc_info:
+        await handler.delete_user("u1")
+    assert exc_info.value.status_code == 503
+    assert member[1].status == "deactivated"
+    handler._revoke_sessions.assert_awaited_once_with(session_mock, "u1")
+    store.purge_cache.assert_awaited_once_with(["digest-1"])

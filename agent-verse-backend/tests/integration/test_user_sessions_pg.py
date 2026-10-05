@@ -185,6 +185,20 @@ async def test_saml_login_end_to_end(pg_url: str, redis_url: str) -> None:
             # The code is single use.
             r = await client.post("/auth/session/exchange", json={"code": code})
             assert r.status_code == 401
+            # Logout revokes the token in Postgres: it stops authenticating.
+            auth = {"Authorization": f"Bearer {token}"}
+            r = await client.post("/auth/session/logout", headers=auth)
+            assert r.status_code == 204, r.text
+            r = await client.get("/auth/mfa/status", headers=auth)
+            assert r.status_code == 401, r.text
+        async with owner() as s, s.begin():
+            revoked_at = (
+                await s.execute(
+                    text("SELECT revoked_at FROM user_sessions WHERE tenant_id = :t"),
+                    {"t": tenant_id},
+                )
+            ).scalar_one()
+        assert revoked_at is not None
         async with owner() as s, s.begin():
             role = (
                 await s.execute(
@@ -195,6 +209,84 @@ async def test_saml_login_end_to_end(pg_url: str, redis_url: str) -> None:
         assert role == "approver"
     finally:
         await _cleanup(owner, tenant_id, [email])
+        await redis.aclose()
+        await app_engine.dispose()
+        await owner_engine.dispose()
+
+
+async def _live_session(store: UserSessionStore, tenant_id: str, user_id: str) -> str:
+    result = await store.exchange_code(
+        await store.issue_login_code(tenant_id=tenant_id, user_id=user_id, auth_method="saml")
+    )
+    assert result is not None
+    token = str(result["access_token"])
+    assert await store.resolve(token) is not None  # resolved AND cached in Redis
+    return token
+
+
+async def test_scim_deprovisioning_revokes_the_users_sessions(pg_url: str, redis_url: str) -> None:
+    """SCIM DELETE and PATCH active=false end every live session at once.
+
+    The resolved context is cached in Redis on another pod; the revocation must
+    be in Postgres (so it survives reactivation) AND purge that cache.
+    """
+    import redis.asyncio as aioredis
+
+    from app.auth.scim_handler import SCIMHandler
+
+    owner_engine, owner = session_factory(pg_url)
+    app_engine, app_factory = session_factory(await app_role_url(pg_url))
+    redis = aioredis.from_url(redis_url, decode_responses=True)
+    tenant_id = uuid.uuid4().hex
+    alice = f"alice.{tenant_id[:6]}@corp.test"
+    bob = f"bob.{tenant_id[:6]}@corp.test"
+    try:
+        await _seed_tenant(owner, tenant_id)
+        pod_a = UserSessionStore(app_factory, redis)
+        pod_b = UserSessionStore(app_factory, redis)
+        alice_id = await pod_a.provision_member(tenant_id=tenant_id, email=alice, name=None)
+        bob_id = await pod_a.provision_member(tenant_id=tenant_id, email=bob, name=None)
+        alice_tokens = [await _live_session(pod_b, tenant_id, alice_id) for _ in range(2)]
+        bob_token = await _live_session(pod_b, tenant_id, bob_id)
+
+        scim = SCIMHandler(
+            tenant_id=tenant_id,
+            config={"allow_user_delete": True},
+            db_factory=app_factory,
+            session_store=pod_a,
+        )
+        await scim.delete_user(alice_id)
+        for token in alice_tokens:
+            assert await pod_b.resolve(token) is None
+        assert await pod_b.resolve(bob_token) is not None  # only the deprovisioned user
+
+        await scim.update_user(
+            bob,
+            {"Operations": [{"op": "replace", "path": "active", "value": False}]},
+            partial=True,
+        )
+        assert await pod_b.resolve(bob_token) is None
+
+        # Reactivation does not resurrect the revoked sessions.
+        await scim.update_user(
+            alice_id,
+            {"Operations": [{"op": "replace", "path": "active", "value": True}]},
+            partial=True,
+        )
+        assert await pod_b.resolve(alice_tokens[0]) is None
+        async with owner() as s, s.begin():
+            live = (
+                await s.execute(
+                    text(
+                        "SELECT count(*) FROM user_sessions "
+                        "WHERE tenant_id = :t AND revoked_at IS NULL"
+                    ),
+                    {"t": tenant_id},
+                )
+            ).scalar_one()
+        assert live == 0
+    finally:
+        await _cleanup(owner, tenant_id, [alice, bob])
         await redis.aclose()
         await app_engine.dispose()
         await owner_engine.dispose()

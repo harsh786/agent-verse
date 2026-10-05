@@ -442,8 +442,13 @@ class UserSessionStore:
         except Exception as exc:  # caching is an optimisation; Postgres stays authoritative
             logger.debug("user_session_cache_write_failed", error=str(exc)[:200])
 
-    async def _purge_cache(self, token_hashes: list[str]) -> None:
-        """Delete cached contexts; a failure is a 503 (the revocation must take)."""
+    async def purge_cache(self, token_hashes: list[str]) -> None:
+        """Delete cached contexts of revoked sessions so every pod refuses them now.
+
+        A failure is a :class:`SessionStoreUnavailableError` (503): the
+        revocation is already in Postgres, but a cached context would keep
+        authenticating for up to :data:`CACHE_TTL_SECONDS`, so the caller retries.
+        """
         if self._redis is None or not token_hashes:
             return
         try:
@@ -498,14 +503,11 @@ class UserSessionStore:
             raise SessionStoreUnavailableError(
                 "Could not revoke the session; retry.", cause=exc
             ) from exc
-        await self._purge_cache([token_hash])
+        await self.purge_cache([token_hash])
         return revoked is not None
 
     async def revoke_user_sessions(self, tenant_id: str, user_id: str) -> int:
         """Revoke every live session of *user_id* in *tenant_id* (offboarding)."""
-        from sqlalchemy import update
-
-        from app.db.models.user_session import UserSession
         from app.db.rls import sqlalchemy_rls_context
 
         db = self._require_db()
@@ -515,29 +517,57 @@ class UserSessionStore:
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
-                hashes = (
-                    (
-                        await session.execute(
-                            update(UserSession)
-                            .where(
-                                UserSession.tenant_id == tenant_id,
-                                UserSession.user_id == user_id,
-                                UserSession.revoked_at.is_(None),
-                            )
-                            .values(revoked_at=datetime.now(UTC), login_code_hash=None)
-                            .returning(UserSession.token_hash)
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
+                hashes = await revoke_member_sessions_in_tx(session, tenant_id, user_id)
         except Exception as exc:
             raise SessionStoreUnavailableError(
                 "Could not revoke the user's sessions; retry.", cause=exc
             ) from exc
-        live = [str(h) for h in hashes if h]
-        await self._purge_cache(live)
+        await self.purge_cache(hashes)
         return len(hashes)
+
+
+async def revoke_member_sessions_in_tx(session: Any, tenant_id: str, user_id: str) -> list[str]:
+    """Revoke *user_id*'s sessions in *tenant_id* inside the caller's transaction.
+
+    The caller holds the tenant GUC (``sqlalchemy_rls_context``) — SCIM runs it
+    in the same transaction that deactivates the membership, so the two commit
+    or roll back together. Returns the token digests whose cached contexts must
+    then be purged (:meth:`UserSessionStore.purge_cache`) after the commit.
+
+    Sessions revoked within the last :data:`CACHE_TTL_SECONDS` are returned
+    again (their ``revoked_at`` is kept), so a retry after a failed cache purge
+    purges them too. Bounded by the person's unexpired sessions
+    (``ix_user_sessions_tenant_user``).
+    """
+    from sqlalchemy import func, or_, update
+
+    from app.db.models.user_session import UserSession
+
+    now = datetime.now(UTC)
+    rows = (
+        (
+            await session.execute(
+                update(UserSession)
+                .where(
+                    UserSession.tenant_id == tenant_id,
+                    UserSession.user_id == user_id,
+                    UserSession.expires_at > now,
+                    or_(
+                        UserSession.revoked_at.is_(None),
+                        UserSession.revoked_at > now - timedelta(seconds=CACHE_TTL_SECONDS),
+                    ),
+                )
+                .values(
+                    revoked_at=func.coalesce(UserSession.revoked_at, now),
+                    login_code_hash=None,
+                )
+                .returning(UserSession.token_hash)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [str(h) for h in rows if h]
 
 
 def get_user_session_store(app: Any) -> UserSessionStore:

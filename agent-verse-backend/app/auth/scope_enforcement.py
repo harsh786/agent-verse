@@ -181,6 +181,7 @@ SCOPE_NEUTRAL_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/tenants/stream-token"),  # read-only SSE token for the same key
         ("POST", "/auth/mfa/verify"),  # the second factor itself
         ("GET", "/auth/mfa/status"),
+        ("POST", "/auth/session/logout"),  # ends the caller's own SSO session
     }
 )
 

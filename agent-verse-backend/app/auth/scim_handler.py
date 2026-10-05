@@ -139,10 +139,44 @@ class SCIMHandler:
         tenant_id: str,
         config: dict[str, Any],
         db_factory: Any,
+        *,
+        session_store: Any = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._config = config
         self._db = db_factory
+        # app.auth.user_sessions.UserSessionStore: purges the shared cache of
+        # sessions revoked by deprovisioning (None: no cache wired).
+        self._session_store = session_store
+
+    async def _revoke_sessions(self, db: Any, user_id: str) -> list[str]:
+        """Revoke the member's SSO sessions in the deactivating transaction."""
+        from app.auth.user_sessions import revoke_member_sessions_in_tx
+
+        return await revoke_member_sessions_in_tx(db, self._tenant_id, str(user_id))
+
+    async def _purge_revoked_sessions(self, token_hashes: list[str]) -> None:
+        """Drop revoked sessions from the shared cache; 503 so the IdP retries.
+
+        The revocation is committed; a cached context could still authenticate
+        for up to a minute, and a retried request purges it again.
+        """
+        if not token_hashes or self._session_store is None:
+            return
+        from app.auth.user_sessions import SessionStoreUnavailableError
+
+        try:
+            await self._session_store.purge_cache(token_hashes)
+        except SessionStoreUnavailableError as exc:
+            logger.error("scim_session_cache_purge_failed", error=str(exc)[:200])
+            raise HTTPException(
+                status_code=503,
+                detail=_scim_error(
+                    "User deactivated, but their sessions could not be ended everywhere; retry",
+                    "serverError",
+                ),
+                headers={"Retry-After": "5"},
+            ) from exc
 
     @asynccontextmanager
     async def _tenant_tx(self) -> AsyncIterator[Any]:
@@ -312,6 +346,7 @@ class SCIMHandler:
 
         from app.db.models.user import TenantMembership, User
 
+        revoked: list[str] = []
         try:
             async with self._tenant_tx() as db:
                 user = (
@@ -343,6 +378,8 @@ class SCIMHandler:
                 else:
                     membership.role = role
                     membership.status = status
+                    if status != _ACTIVE:
+                        revoked = await self._revoke_sessions(db, user.id)
                 await db.flush()
                 await db.refresh(user)
                 await db.refresh(membership)
@@ -353,6 +390,7 @@ class SCIMHandler:
                 status_code=500,
                 detail=_scim_error("User creation failed", "serverError"),
             ) from exc
+        await self._purge_revoked_sessions(revoked)
         return resource
 
     async def update_user(
@@ -394,6 +432,7 @@ class SCIMHandler:
                 ),
             )
 
+        revoked: list[str] = []
         try:
             async with self._tenant_tx() as db:
                 found = await self._find_member(db, scim_id)
@@ -402,6 +441,8 @@ class SCIMHandler:
                     user, membership = found
                     if active is not None:
                         membership.status = _ACTIVE if active else _INACTIVE
+                    if active is False:
+                        revoked = await self._revoke_sessions(db, user.id)
                     if display_name and user.name is None:
                         user.name = display_name
                     await db.flush()
@@ -420,6 +461,7 @@ class SCIMHandler:
                 status_code=404,
                 detail=_scim_error(f"User {scim_id} not found", "notFound"),
             )
+        await self._purge_revoked_sessions(revoked)
         return resource
 
     async def delete_user(self, scim_id: str) -> None:
@@ -430,11 +472,14 @@ class SCIMHandler:
                 detail=_scim_error("User deletion disabled for this tenant", "mutability"),
             )
         found: tuple[Any, Any] | None = None
+        revoked: list[str] = []
         try:
             async with self._tenant_tx() as db:
                 found = await self._find_member(db, scim_id)
                 if found is not None:
                     found[1].status = _INACTIVE
+                    # Offboarding ends every live SSO session in the same commit.
+                    revoked = await self._revoke_sessions(db, found[0].id)
         except Exception as exc:
             logger.error("scim_delete_user_failed", error=str(exc))
             raise HTTPException(
@@ -446,6 +491,7 @@ class SCIMHandler:
                 status_code=404,
                 detail=_scim_error(f"User {scim_id} not found", "notFound"),
             )
+        await self._purge_revoked_sessions(revoked)
 
     def _map_groups_to_role(self, groups: list[dict[str, Any]]) -> str:
         group_role_map = self._config.get("group_role_map", {})

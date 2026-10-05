@@ -410,7 +410,14 @@ async def _resolve_agent_key(request: Request, raw_key: str) -> TenantContext | 
 # Endpoints a tenant with MFA enabled must reach BEFORE it holds an X-MFA-Token
 # (the second factor itself). Without this, enforcement 401'd /auth/mfa/verify
 # too, so no tenant with MFA enabled could ever obtain a token.
-_MFA_EXEMPT_ENDPOINTS = frozenset({("POST", "/auth/mfa/verify"), ("GET", "/auth/mfa/status")})
+_MFA_EXEMPT_ENDPOINTS = frozenset(
+    {
+        ("POST", "/auth/mfa/verify"),
+        ("GET", "/auth/mfa/status"),
+        # Ending one's own SSO session only removes access.
+        ("POST", "/auth/session/logout"),
+    }
+)
 
 
 def _mfa_exempt(request: Request) -> bool:

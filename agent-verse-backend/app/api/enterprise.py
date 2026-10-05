@@ -2706,7 +2706,13 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
         # Fail CLOSED: an unreadable config used to fall back to permissive
         # create/update defaults, bypassing a tenant's "no user creation" policy.
         raise HTTPException(503, "SCIM configuration unavailable; retry") from exc
-    return SCIMHandler(tenant_id=tenant_id, config=config, db_factory=db)
+    return SCIMHandler(
+        tenant_id=tenant_id,
+        config=config,
+        db_factory=db,
+        # Deprovisioning revokes the user's SSO sessions and purges their cache.
+        session_store=getattr(request.app.state, "user_session_store", None),
+    )
 
 
 @scim_router.get("/Users")

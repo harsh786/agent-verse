@@ -32,6 +32,7 @@ class FakeSessionStore:
         self.provisioned: list[dict[str, Any]] = []
         self.refuse: str | None = None
         self.unavailable = False
+        self.revoked: list[str] = []
 
     async def provision_member(self, **kw: Any) -> str:
         if self.unavailable:
@@ -57,10 +58,16 @@ class FakeSessionStore:
             "plan": "starter",
         }
 
+    async def revoke_token(self, token: str) -> bool:
+        if self.unavailable:
+            raise SessionStoreUnavailableError("down")
+        self.revoked.append(token)
+        return True
+
     async def resolve(self, token: str) -> TenantContext | None:
         if self.unavailable:
             raise SessionStoreUnavailableError("down")
-        if token != TOKEN:
+        if token != TOKEN or token in self.revoked:
             return None
         return TenantContext(
             tenant_id=TENANT,
@@ -199,4 +206,38 @@ def test_sessions_need_a_database() -> None:
 
     client = TestClient(create_app(), raise_server_exceptions=False)
     r = client.post("/auth/session/exchange", json={"code": "whatever-code-123456"})
+    assert r.status_code == 503
+
+
+def test_logout_revokes_the_session_token(app_and_store: tuple[Any, FakeSessionStore]) -> None:
+    app, store = app_and_store
+    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
+    auth = {"Authorization": f"Bearer {TOKEN}"}
+    r = client.post("/auth/session/logout", headers=auth)
+    assert r.status_code == 204, r.text
+    assert store.revoked == [TOKEN]
+    # The revoked token no longer authenticates anything — logout included.
+    assert client.get("/tenants/me", headers=auth).status_code == 401
+    assert client.post("/auth/session/logout", headers=auth).status_code == 401
+
+
+def test_logout_needs_a_session_token(app_and_store: tuple[Any, FakeSessionStore]) -> None:
+    app, store = app_and_store
+    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
+    # No credential: the middleware refuses it.
+    assert client.post("/auth/session/logout").status_code == 401
+    assert store.revoked == []
+
+
+def test_logout_store_outage_is_503_not_a_silent_success(
+    app_and_store: tuple[Any, FakeSessionStore],
+) -> None:
+    app, store = app_and_store
+    client = TestClient(app, base_url="http://sp.test", raise_server_exceptions=False)
+
+    async def _down(self: Any, token: str) -> bool:
+        raise SessionStoreUnavailableError("down")
+
+    store.revoke_token = _down.__get__(store)  # type: ignore[method-assign]
+    r = client.post("/auth/session/logout", headers={"Authorization": f"Bearer {TOKEN}"})
     assert r.status_code == 503
