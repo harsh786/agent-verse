@@ -36,18 +36,40 @@ _log = logging.getLogger(__name__)
 
 _DEFAULT_CURSOR_FIELD = "updated_at"
 _DEFAULT_BATCH_SIZE = 500
+_MAX_BATCH_SIZE = 10_000
+_LIVE_PAGE = 5_000
+# Sessions are read-only and bounded: a sync never writes to the tenant's
+# database, and one slow statement cannot hold the worker forever.
+_SERVER_SETTINGS = {
+    "application_name": "agentverse-ingestion",
+    "default_transaction_read_only": "on",
+    "statement_timeout": "300000",
+}
+
+
+def _quote(part: str) -> str:
+    return '"' + part.replace('"', '""') + '"'
+
+
+def _table_ref(table_def: str) -> tuple[str, str, str]:
+    """(schema, table, quoted reference) of ``schema.table`` / ``table`` (validated)."""
+    from app.ingestion.sql_safety import checked_identifier
+
+    parts = checked_identifier(table_def, what="table", max_parts=2)
+    schema, table = (parts[0], parts[1]) if len(parts) == 2 else ("public", parts[0])
+    return schema, table, f"{_quote(schema)}.{_quote(table)}"
 
 
 def _row_to_text(table: str, pk_cols: list[str], row: dict) -> str:
     """Convert a DB row to human-readable text for embedding."""
-    pk = ", ".join(f"{k}={row.get(k, '?')}" for k in (pk_cols or ["id"]))
-    parts = [f"{k}: {v}" for k, v in row.items() if v is not None and str(v).strip()]
-    return f"{table} record ({pk}): " + ", ".join(parts[:50]) + "."
+    from app.ingestion.connectors.sql_rows import key_desc, row_text
+
+    return row_text(table, key_desc(pk_cols or ["id"], row)[0], row)
 
 
 @register("postgresql", feature_flag="ingestion_connector_postgresql_enabled")
 class PostgreSQLConnector(BaseConnector):
-    """PostgreSQL incremental ingestion (query or CDC mode)."""
+    """PostgreSQL incremental ingestion: per-table keyset batches (P1b-7)."""
 
     source_type = "postgresql"
     supports_deletion_tracking = True
@@ -64,10 +86,29 @@ class PostgreSQLConnector(BaseConnector):
                 import asyncpg  # type: ignore[import-not-found]
 
                 conn = await asyncpg.connect(**_pinned_connect_kwargs(dsn, pins), timeout=10)
-            version = await conn.fetchval("SELECT version()")
-            await conn.close()
+            try:
+                version = await conn.fetchval("SELECT version()")
+                unreadable = []
+                for table_def in config.connection_config.get("tables", []):
+                    schema, table, _ref = _table_ref(table_def)
+                    ok = await conn.fetchval(
+                        "SELECT has_table_privilege(to_regclass($1), 'SELECT')",
+                        f"{_quote(schema)}.{_quote(table)}",
+                    )
+                    if not ok:
+                        unreadable.append(f"{schema}.{table}")
+            finally:
+                await conn.close()
             latency = (time.perf_counter() - t0) * 1000
             tables = config.connection_config.get("tables", [])
+            if unreadable:
+                return ConnectionHealth(
+                    ok=False,
+                    latency_ms=latency,
+                    error=f"connected, but these tables are missing or not readable: "
+                    f"{', '.join(unreadable)}",
+                    metadata={"version": str(version)[:50], "tables": tables},
+                )
             return ConnectionHealth(
                 ok=True,
                 latency_ms=latency,
@@ -76,25 +117,9 @@ class PostgreSQLConnector(BaseConnector):
         except ImportError:
             return ConnectionHealth(ok=False, error="asyncpg not installed — pip install asyncpg")
         except Exception as exc:
-            return ConnectionHealth(ok=False, error=str(exc))
+            return ConnectionHealth(ok=False, error=describe_fetch_error(exc))
 
-    async def get_delta(
-        self, config: SourceConfig, cursor: str | None
-    ) -> AsyncIterator[tuple[RawDocument, str]]:
-        """Yield rows from configured tables newer than cursor."""
-        from app.ingestion.source_config import RawDocument
-
-        cdc_mode = config.connection_config.get("cdc_mode", "query")
-        tables = config.connection_config.get("tables", [])
-        cursor_field = config.connection_config.get("cursor_field", _DEFAULT_CURSOR_FIELD)
-        batch_size = config.connection_config.get("batch_size", _DEFAULT_BATCH_SIZE)
-        dsn = config.connection_config.get("dsn") or _build_dsn(config.connection_config)
-
-        if cdc_mode != "query":
-            _log.warning(
-                "postgresql_cdc_mode=%s not yet implemented, falling back to query", cdc_mode
-            )
-
+    async def _connect(self, config: SourceConfig) -> Any:
         try:
             import asyncpg
         except ImportError as exc:
@@ -102,67 +127,166 @@ class PostgreSQLConnector(BaseConnector):
             raise ConnectorUnavailableError(
                 "asyncpg is not installed on this server; the connector cannot run"
             ) from exc
-
+        dsn = config.connection_config.get("dsn") or _build_dsn(config.connection_config)
         async with pin_source_dsn(dsn, context="postgresql") as pins:
             try:
-                conn = await asyncpg.connect(**_pinned_connect_kwargs(dsn, pins))
+                return await asyncpg.connect(
+                    **_pinned_connect_kwargs(dsn, pins),
+                    timeout=15,
+                    server_settings=_SERVER_SETTINGS,
+                )
             except Exception as exc:
-                # USR-1: a connection / auth failure fails the sync. It used to
-                # ``return`` — reported as a completed sync with 0 failures.
+                # USR-1: a connection / auth failure fails the sync.
                 _log.error("postgresql_connect_error: %s", exc)
                 raise ConnectorFetchError(
                     f"postgresql: cannot connect: {describe_fetch_error(exc)}"
                 ) from exc
 
+    async def _primary_key(self, conn: Any, config: SourceConfig, schema: str, table: str
+                           ) -> list[str]:
+        """Configured ``primary_keys[table]``, else the table's PRIMARY KEY, else ``id``."""
+        from app.ingestion.sql_safety import checked_identifier
+
+        configured = (config.connection_config.get("primary_keys") or {}).get(table)
+        if configured:
+            cols = [configured] if isinstance(configured, str) else list(configured)
+            return [checked_identifier(c, what="primary key", max_parts=1)[0] for c in cols]
+        regclass = f"{_quote(schema)}.{_quote(table)}"
+        if await conn.fetchval("SELECT to_regclass($1)", regclass) is None:
+            raise ConnectorFetchError(f"table {schema}.{table} does not exist")
+        rows = await conn.fetch(
+            "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
+            "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            "WHERE i.indrelid = to_regclass($1) AND i.indisprimary "
+            "ORDER BY array_position(i.indkey, a.attnum)",
+            f"{_quote(schema)}.{_quote(table)}",
+        )
+        if rows:
+            return [str(r["attname"]) for r in rows]
+        has_id = await conn.fetchval(
+            "SELECT count(*) FROM pg_attribute WHERE attrelid = to_regclass($1) "
+            "AND attname = 'id' AND NOT attisdropped",
+            f"{_quote(schema)}.{_quote(table)}",
+        )
+        if has_id:
+            return ["id"]
+        raise ConnectorFetchError(
+            f"{schema}.{table} has no primary key; set connection_config.primary_keys"
+        )
+
+    async def get_delta(
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        """Rows changed since each table's own position, in keyset batches."""
+        from app.ingestion.connectors.sql_rows import TableCursors
+        from app.ingestion.source_config import RawDocument
+        from app.ingestion.sql_safety import checked_identifier
+
+        cc = config.connection_config
+        if cc.get("cdc_mode", "query") != "query":
+            _log.warning(
+                "postgresql_cdc_mode=%s not yet implemented, falling back to query",
+                cc.get("cdc_mode"),
+            )
+        cursor_field = checked_identifier(
+            cc.get("cursor_field", _DEFAULT_CURSOR_FIELD), what="cursor field", max_parts=1
+        )[0]
+        batch_size = max(1, min(int(cc.get("batch_size", _DEFAULT_BATCH_SIZE)), _MAX_BATCH_SIZE))
+        positions = TableCursors.parse(cursor)
+        conn = await self._connect(config)
         failures = UnitFailures("postgresql")
         try:
-            new_cursor = cursor or "1970-01-01T00:00:00"
-            for table_def in tables:
-                # table_def is "schema.table" or just "table"
-                parts = table_def.split(".")
-                schema = parts[0] if len(parts) > 1 else "public"
-                table = parts[-1]
-                pk_cols = config.connection_config.get("primary_keys", {}).get(table, ["id"])
-
+            for table_def in cc.get("tables", []):
                 try:
-                    rows = await conn.fetch(
-                        f'SELECT * FROM "{schema}"."{table}" '
-                        f'WHERE "{cursor_field}" > $1 '
-                        f'ORDER BY "{cursor_field}" ASC LIMIT $2',
-                        cursor or "1970-01-01",
-                        batch_size,
-                    )
+                    schema, table, ref = _table_ref(table_def)
+                    pk_cols = await self._primary_key(conn, config, schema, table)
                 except Exception as exc:
-                    # USR-1: an unreadable table is a counted failure (partial).
-                    failures.add(f"table {schema}.{table}", exc)
+                    failures.add(f"table {table_def}", exc)
                     continue
-
-                for row in rows:
-                    row_dict = dict(row)
-                    row_cursor = str(row_dict.get(cursor_field, ""))
-                    if row_cursor > new_cursor:
-                        new_cursor = row_cursor
-
-                    text = _row_to_text(table, pk_cols, row_dict)
-                    pk_val = "_".join(str(row_dict.get(k, "")) for k in pk_cols)
-                    row_url = f"pg://{schema}.{table}/{pk_val}"
-                    doc_id = stable_doc_id(config, row_url)
-
-                    raw = RawDocument(
-                        doc_id=doc_id,
-                        source_id=config.source_id,
-                        tenant_id=config.tenant_id,
-                        content=text.encode("utf-8"),
-                        content_type="text/plain",
-                        source_url=row_url,
-                        title=f"{table} {pk_val}",
-                        modified_at=row_cursor,
-                        metadata={"table": table, "schema": schema, "pk": pk_val},
+                unit = f"{schema}.{table}"
+                cols = [cursor_field, *pk_cols]
+                order = ", ".join(_quote(c) for c in cols)
+                tuple_sql = "(" + order + ")"
+                pos = positions.get(unit)
+                while True:
+                    if pos.started and pos.key:
+                        marks = ", ".join(f"${i}" for i in range(1, len(cols) + 1))
+                        where = f"WHERE {tuple_sql} > ({marks})"
+                        params: list[Any] = [pos.cursor, *pos.key]
+                    elif pos.started:
+                        where = f"WHERE {_quote(cursor_field)} > $1"
+                        params = [pos.cursor]
+                    else:
+                        where = f"WHERE {_quote(cursor_field)} IS NOT NULL"
+                        params = []
+                    sql = (
+                        f"SELECT * FROM {ref} {where} ORDER BY {order} "
+                        f"LIMIT {batch_size}"
                     )
-                    yield raw, new_cursor
+                    try:
+                        rows = await conn.fetch(sql, *params)
+                    except Exception as exc:
+                        # USR-1: an unreadable table is a counted failure (partial);
+                        # its position is untouched, so the next sync retries it.
+                        failures.add(f"table {unit}", exc)
+                        break
+                    for row in rows:
+                        row_dict = dict(row)
+                        key = [row_dict.get(c) for c in pk_cols]
+                        position = positions.advance(unit, row_dict.get(cursor_field), key)
+                        pos = positions.get(unit)
+                        text = _row_to_text(table, pk_cols, row_dict)
+                        pk_val = "_".join(str(k) for k in key)
+                        row_url = f"pg://{schema}.{table}/{pk_val}"
+                        yield RawDocument(
+                            doc_id=stable_doc_id(config, row_url),
+                            source_id=config.source_id,
+                            tenant_id=config.tenant_id,
+                            content=text.encode("utf-8"),
+                            content_type="text/plain",
+                            source_url=row_url,
+                            title=f"{table} {pk_val}",
+                            modified_at=str(row_dict.get(cursor_field) or ""),
+                            metadata={"table": table, "schema": schema, "pk": pk_val},
+                        ), position
+                    if len(rows) < batch_size:
+                        break
         finally:
             await conn.close()
         failures.raise_if_any()
+
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Every configured table's primary keys, keyset-paged (KB-44 reconcile).
+
+        Any error propagates: a partial listing must never look complete.
+        """
+        conn = await self._connect(config)
+        try:
+            for table_def in config.connection_config.get("tables", []):
+                schema, table, ref = _table_ref(table_def)
+                pk_cols = await self._primary_key(conn, config, schema, table)
+                order = ", ".join(_quote(c) for c in pk_cols)
+                after: list[Any] | None = None
+                while True:
+                    if after is None:
+                        rows = await conn.fetch(
+                            f"SELECT {order} FROM {ref} ORDER BY {order} LIMIT {_LIVE_PAGE}"
+                        )
+                    else:
+                        marks = ", ".join(f"${i}" for i in range(1, len(pk_cols) + 1))
+                        rows = await conn.fetch(
+                            f"SELECT {order} FROM {ref} WHERE ({order}) > ({marks}) "
+                            f"ORDER BY {order} LIMIT {_LIVE_PAGE}",
+                            *after,
+                        )
+                    for row in rows:
+                        pk_val = "_".join(str(row[c]) for c in pk_cols)
+                        yield stable_doc_id(config, f"pg://{schema}.{table}/{pk_val}")
+                    if len(rows) < _LIVE_PAGE:
+                        break
+                    after = [rows[-1][c] for c in pk_cols]
+        finally:
+            await conn.close()
 
 
 _VERIFYING_SSLMODES = frozenset({"verify-full"})

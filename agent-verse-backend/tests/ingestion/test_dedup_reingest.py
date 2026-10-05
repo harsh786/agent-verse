@@ -195,3 +195,23 @@ async def test_no_zero_vector_chunks_written_when_embedder_fails() -> None:
     assert result.status in ("skipped", "failed")
     # And nothing was written to the store.
     assert store._data[("t1", "c1")].chunks == []
+
+
+@pytest.mark.asyncio
+async def test_the_same_bytes_under_another_document_id_are_indexed_too() -> None:
+    """P1b-6: a backup copy of an object (same bytes, another key) is its own
+    document; deleting one copy upstream must never remove the content the
+    other copy still holds."""
+    store = _store()
+    pipeline = IngestionPipeline(knowledge_store=store, embedder=FakeProvider(embed_dim=768))
+    content = ("Kandla weighbridge recalibration policy text. " * 30).encode()
+    original = RawDocument(doc_id="s3://b/policies/w.md", source_id="s1", tenant_id="t1",
+                           content=content, content_type="text/plain")
+    copy = RawDocument(doc_id="s3://b/backup/w.md", source_id="s1", tenant_id="t1",
+                       content=content, content_type="text/plain")
+    assert (await pipeline.ingest(original, _config())).status == "indexed"
+    assert (await pipeline.ingest(copy, _config())).status == "indexed"
+    again = await pipeline.ingest(original, _config())
+    assert (again.status, again.skip_reason) == ("skipped", "dedup")
+    docs = {c.document_id for c in store._data[("t1", "c1")].chunks}
+    assert docs == {"s3://b/policies/w.md", "s3://b/backup/w.md"}

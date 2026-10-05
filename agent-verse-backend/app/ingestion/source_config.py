@@ -155,6 +155,11 @@ def configuration_problem(config: SourceConfig) -> str | None:
             "no target knowledge collection (collection_id) is set; "
             "choose a collection for this source to resume syncing"
         )
+    if config.source_type == "minio" and not str(
+        (config.connection_config or {}).get("endpoint_url") or ""
+    ).strip():
+        # MinIO has no public default endpoint; the sync could only fail.
+        return "no MinIO endpoint (connection_config.endpoint_url) is set"
     return None
 
 

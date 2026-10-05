@@ -1,0 +1,11 @@
+failed test_obj_mixed_first_and_incremental[minio] 48.1
+     E       AssertionError: sync 2 re-processed 32 objects (incremental expected)
+failed test_obj_mixed_first_and_incremental[s3] 44.7
+     E       AssertionError: sync 2 re-processed 32 objects (incremental expected)
+passed test_obj_prefix_and_patterns 43.2
+passed test_obj_large_multipart[minio] 252.9
+failed test_obj_large_multipart[s3] 212.9
+     E       AssertionError: GET /sources/c7d6d2d11a7745e7b0fc25a421d074d6/sync/history -> 404: {"detail":"Source not found"}
+passed test_obj_failed_object_retry 19.8
+passed test_obj_honest_failures[minio] 26.4
+passed test_obj_honest_failures[s3] 28.0

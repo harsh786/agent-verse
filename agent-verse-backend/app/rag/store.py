@@ -1865,6 +1865,7 @@ class KnowledgeStore:
         content_hash: str,
         tenant_id: str,
         collection_id: str | None = None,
+        document_id: str | None = None,
     ) -> bool:
         """Return True if content with this hash is already indexed (WS-12 dedup).
 
@@ -1880,10 +1881,16 @@ class KnowledgeStore:
             tenant_id: tenant whose collections are searched (RLS-scoped).
             collection_id: when given, restrict the search to that collection;
                 otherwise search every collection in the tenant.
+            document_id: when given, only that document counts — "is THIS
+                document already indexed with this content" (a connector's
+                unchanged item), not "does any document hold it" (P1b-6).
         """
         return (
             await self.document_id_by_hash(
-                content_hash=content_hash, tenant_id=tenant_id, collection_id=collection_id
+                content_hash=content_hash,
+                tenant_id=tenant_id,
+                collection_id=collection_id,
+                document_id=document_id,
             )
             is not None
         )
@@ -1894,6 +1901,7 @@ class KnowledgeStore:
         content_hash: str,
         tenant_id: str,
         collection_id: str | None = None,
+        document_id: str | None = None,
     ) -> str | None:
         """The id of a document already holding this content (see :meth:`exists_by_hash`),
         or None. A deduplicated upload reports it, so the caller learns where the
@@ -1901,8 +1909,12 @@ class KnowledgeStore:
         if not content_hash:
             return None
         if self._db is None:
-            return self._document_id_by_hash_memory(content_hash, tenant_id, collection_id)
-        return await self._db_document_id_by_hash(content_hash, tenant_id, collection_id)
+            return self._document_id_by_hash_memory(
+                content_hash, tenant_id, collection_id, document_id
+            )
+        return await self._db_document_id_by_hash(
+            content_hash, tenant_id, collection_id, document_id
+        )
 
     def _exists_by_hash_memory(
         self, content_hash: str, tenant_id: str, collection_id: str | None
@@ -1912,7 +1924,11 @@ class KnowledgeStore:
         )
 
     def _document_id_by_hash_memory(
-        self, content_hash: str, tenant_id: str, collection_id: str | None
+        self,
+        content_hash: str,
+        tenant_id: str,
+        collection_id: str | None,
+        document_id: str | None = None,
     ) -> str | None:
         for (tid, cid), store in self._data.items():
             if tid != tenant_id:
@@ -1920,6 +1936,8 @@ class KnowledgeStore:
             if collection_id is not None and cid != collection_id:
                 continue
             for chunk in store.chunks:
+                if document_id is not None and chunk.document_id != document_id:
+                    continue
                 meta = chunk.metadata or {}
                 if (
                     meta.get("doc_content_hash") == content_hash
@@ -1929,7 +1947,11 @@ class KnowledgeStore:
         return None
 
     async def _db_document_id_by_hash(
-        self, content_hash: str, tenant_id: str, collection_id: str | None
+        self,
+        content_hash: str,
+        tenant_id: str,
+        collection_id: str | None,
+        document_id: str | None = None,
     ) -> str | None:
         from sqlalchemy import text
 
@@ -1951,6 +1973,9 @@ class KnowledgeStore:
         if collection_id is not None:
             collection_clause = "AND collection_id = :cid"
             params["cid"] = collection_id
+        if document_id is not None:
+            collection_clause += " AND document_id = :did"
+            params["did"] = document_id
 
         for dimension in dims:
             table = _chunk_table(dimension)
@@ -2885,9 +2910,15 @@ class KnowledgeStore:
         collection_id: str,
         tenant_ctx: TenantContext,
         replace_document: bool = False,
+        duplicates_within_document: bool = False,
         supersedes_document_id: str | None = None,
     ) -> list[str]:
         """Persist all chunks for one ingestion unit in a single transaction.
+
+        ``duplicates_within_document`` (with ``replace_document``; connector
+        syncs): only the SAME document holding this content is a duplicate. The
+        same bytes under another upstream item (a backup copy) are that item's
+        own document (P1b-6).
 
         ``replace_document`` (one document per call): the document's existing
         chunks are deleted in the same transaction, so a re-synced item with a
@@ -2941,9 +2972,10 @@ class KnowledgeStore:
                     cached.collection.document_count = len(
                         {c.document_id for c in cached.chunks}
                     )
-            if doc_hashes and self._exists_by_hash_memory(
-                next(iter(doc_hashes)), tenant_ctx.tenant_id, collection_id
-            ):
+            scope = replacement_id if duplicates_within_document else None
+            if doc_hashes and self._document_id_by_hash_memory(
+                next(iter(doc_hashes)), tenant_ctx.tenant_id, collection_id, scope
+            ) is not None:
                 if superseded:  # all or nothing: put the superseded copy back
                     cached = self._data[(tenant_ctx.tenant_id, collection_id)]
                     cached.chunks.extend(superseded)
@@ -2992,6 +3024,7 @@ class KnowledgeStore:
             tenant_id=tenant_ctx.tenant_id,
             replacement_document_id=replacement_id,
             check_duplicates_on_replace=True,
+            duplicates_within_document=duplicates_within_document,
             superseded_document_id=supersedes_document_id,
         )
 
@@ -3170,12 +3203,21 @@ class KnowledgeStore:
         *,
         collection_id: str,
         tenant_id: str,
+        document_id: str | None = None,
     ) -> None:
         from sqlalchemy import text
 
         doc_hashes = {str(record["metadata"].get("doc_content_hash") or "") for record in records}
         doc_hashes.discard("")
+        document_clause = "AND document_id = :document_id " if document_id is not None else ""
         for doc_hash in doc_hashes:
+            params: dict[str, Any] = {
+                "collection_id": collection_id,
+                "tenant_id": tenant_id,
+                "doc_hash": doc_hash,
+            }
+            if document_id is not None:
+                params["document_id"] = document_id
             duplicate = (
                 await session.execute(
                     text(
@@ -3183,13 +3225,10 @@ class KnowledgeStore:
                         "WHERE collection_id = :collection_id "
                         "AND tenant_id = :tenant_id "
                         "AND metadata->>'doc_content_hash' = :doc_hash "
+                        f"{document_clause}"
                         "LIMIT 1"
                     ),
-                    {
-                        "collection_id": collection_id,
-                        "tenant_id": tenant_id,
-                        "doc_hash": doc_hash,
-                    },
+                    params,
                 )
             ).scalar_one_or_none()
             if duplicate is not None:
@@ -3209,6 +3248,7 @@ class KnowledgeStore:
         completion_lease_owner: str | None = None,
         replacement_document_id: str | None = None,
         check_duplicates_on_replace: bool = False,
+        duplicates_within_document: bool = False,
         superseded_document_id: str | None = None,
     ) -> None:
         if self._db is None:
@@ -3340,7 +3380,12 @@ class KnowledgeStore:
                 # unchanged, or the same content under another id) is a duplicate,
                 # exactly as on the plain insert path below.
                 await self._raise_if_doc_hash_indexed(
-                    session, table, records, collection_id=collection_id, tenant_id=tenant_id
+                    session,
+                    table,
+                    records,
+                    collection_id=collection_id,
+                    tenant_id=tenant_id,
+                    document_id=replacement_document_id if duplicates_within_document else None,
                 )
             if replacement_document_id is not None:
                 # RETURNING the byte sizes lets the counter update below be an

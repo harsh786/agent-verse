@@ -631,7 +631,7 @@ describe('ApiKeySettings', () => {
         HttpResponse.json({ data: [] })
       ),
       http.post('/api/v1/settings/api-keys', () =>
-        HttpResponse.json({ key: 'sk_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx' })
+        HttpResponse.json({ key: 'sk_live_<redacted>' })
       )
     )
     render(<ApiKeySettings />, { wrapper })

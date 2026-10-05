@@ -260,7 +260,9 @@ class IngestionPipeline:
                     result.skip_reason = "dedup"
                     return result
             elif self._kb is not None and not dry:
-                existing = await self._check_existing_hash(content_hash, source_config)
+                existing = await self._check_existing_hash(
+                    content_hash, source_config, doc_id=raw_doc.doc_id
+                )
                 if existing:
                     result.status = "skipped"
                     result.skip_reason = "dedup"
@@ -520,15 +522,27 @@ class IngestionPipeline:
                 return None
         return self._ocr
 
-    async def _check_existing_hash(self, content_hash: str, config: SourceConfig) -> bool:
-        """Return True if this content hash is already indexed for this tenant."""
+    async def _check_existing_hash(
+        self, content_hash: str, config: SourceConfig, *, doc_id: str = ""
+    ) -> bool:
+        """True if THIS document is already indexed with this content (unchanged).
+
+        Scoped to the document (P1b-6): the same bytes under another key (a
+        backup copy, a second Source on the same prefix) used to be skipped as
+        "dedup", so that object was never represented — and when the indexed
+        copy was deleted upstream, reconciliation removed the only document and
+        the content vanished although the other copy still existed.
+        """
         try:
             if hasattr(self._kb, "exists_by_hash"):
-                return await self._kb.exists_by_hash(
-                    content_hash=content_hash,
-                    tenant_id=config.tenant_id,
-                    collection_id=config.collection_id,
-                )
+                kwargs: dict[str, Any] = {
+                    "content_hash": content_hash,
+                    "tenant_id": config.tenant_id,
+                    "collection_id": config.collection_id,
+                }
+                if doc_id:
+                    kwargs["document_id"] = doc_id
+                return bool(await self._kb.exists_by_hash(**kwargs))
         except Exception as e:
             _log.debug("pipeline_dedup_check_error: %s", e)
         return False
@@ -941,6 +955,7 @@ class IngestionPipeline:
                 collection_id=config.collection_id,
                 tenant_ctx=tenant_ctx,
                 replace_document=True,
+                duplicates_within_document=True,
                 **extra,
             )
             return list(chunk_ids)

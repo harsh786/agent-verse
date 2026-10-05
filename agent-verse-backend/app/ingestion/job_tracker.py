@@ -1236,6 +1236,27 @@ class IngestionJobTracker:
             op="resolve_dlq_entry",
         )
 
+    async def resolve_dlq_for_documents(
+        self, source_id: str, tenant_id: str, doc_ids: list[str]
+    ) -> None:
+        """Resolve the Source's open DLQ entries for documents indexed since (P1b-4).
+
+        A later sync that indexes a document whose earlier attempt failed (the
+        object was repaired upstream, access was restored) left the old entry
+        open: the DLQ kept reporting the failure, and the automatic retry would
+        replay the stale bytes over the newer version.
+        """
+        if not doc_ids:
+            return
+        await self._update_dlq_entry(
+            "UPDATE ingestion_dlq SET resolved_at = NOW() "
+            "WHERE tenant_id = :tid AND source_id = :sid AND resolved_at IS NULL "
+            "AND doc_id = ANY(:ids)",
+            {"tid": tenant_id, "sid": source_id, "ids": list(doc_ids)},
+            tenant_id=tenant_id,
+            op="resolve_dlq_for_documents",
+        )
+
     async def increment_dlq_retry(self, dlq_id: str, tenant_id: str, error: str = "") -> None:
         """Increment retry count on a DLQ entry."""
         # Exponential backoff (5 min x 2^attempt, capped at 6 h) recorded in

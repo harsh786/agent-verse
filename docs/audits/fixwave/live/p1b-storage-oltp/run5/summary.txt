@@ -1,0 +1,3 @@
+passed test_obj_mixed_first_and_incremental[minio] 47.4
+passed test_obj_mixed_first_and_incremental[s3] 47.0
+passed test_obj_large_multipart[s3] 243.0

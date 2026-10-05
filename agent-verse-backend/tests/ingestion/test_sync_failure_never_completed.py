@@ -319,13 +319,35 @@ async def test_every_registered_connector_is_covered() -> None:
 # ── Per-item failures: the rest syncs, the job is partial, never completed ─────
 
 
+def _real_pdf() -> bytes:
+    """A readable one-page PDF (a fake ``%PDF`` stub now fails as unreadable, P1b-2)."""
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=11)
+    pdf.multi_cell(0, 6, "Employee handbook: the Pune office opens at 09:00 on weekdays.")
+    return bytes(pdf.output())
+
+
 async def test_one_unreadable_url_makes_the_job_partial() -> None:
     async def _send(self: httpx.AsyncClient, request: httpx.Request, **_: Any) -> httpx.Response:
         if request.url.path.endswith("missing.pdf"):
             return httpx.Response(404, request=request)
-        return httpx.Response(200, content=b"%PDF-1.4 fake", request=request)
+        return httpx.Response(200, content=_real_pdf(), request=request)
 
-    with patch.object(httpx.AsyncClient, "send", _send):
+    real_ingest = IngestionPipeline.ingest
+
+    async def _ingest(self: IngestionPipeline, raw: Any, config: Any, **kw: Any) -> Any:
+        result = await real_ingest(self, raw, config, **kw)
+        if result.status == "dry_run":  # the harness pipeline is dry-run: parsed = indexed
+            result.status = "indexed"
+        return result
+
+    with (
+        patch.object(httpx.AsyncClient, "send", _send),
+        patch.object(IngestionPipeline, "ingest", _ingest),
+    ):
         job, _store = await _sync(
             "pdf_file",
             {"urls": ["https://example.com/ok.pdf", "https://example.com/missing.pdf"]},

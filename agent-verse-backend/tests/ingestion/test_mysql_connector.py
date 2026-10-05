@@ -6,6 +6,7 @@ and fallback connection paths.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -77,7 +78,8 @@ def test_connect_uses_pymysql_when_available() -> None:
     assert result is conn
     fake_pymysql.connect.assert_called_once_with(
         host="db", port=3306, user="u", password="p", database="d",
-        connect_timeout=10, cursorclass=fake_pymysql.cursors.DictCursor,
+        connect_timeout=10, read_timeout=300, charset="utf8mb4",
+        cursorclass=fake_pymysql.cursors.DictCursor,
     )
 
 
@@ -95,7 +97,7 @@ def test_connect_falls_back_to_mysqldb_when_pymysql_missing() -> None:
     assert result is conn
     fake_mysqldb.connect.assert_called_once_with(
         host="db", port=3306, user="u", passwd="p", db="d",
-        cursorclass=fake_mysqldb.cursors.DictCursor, connect_timeout=10,
+        cursorclass=fake_mysqldb.cursors.DictCursor, connect_timeout=10, charset="utf8mb4",
     )
 
 
@@ -105,43 +107,51 @@ async def test_get_delta_table_mode_builds_query_and_transforms_rows() -> None:
     cur = MagicMock()
     cur.fetchall = MagicMock(
         return_value=[
-            {"id": 1, "updated_at": "2026-01-01"},
-            {"id": 2, "updated_at": "2026-01-02"},
+            {"id": 1, "updated_at": "2026-01-01", "memo": None},
+            {"id": 2, "updated_at": "2026-01-02", "memo": None},
         ]
     )
     conn.cursor = MagicMock(return_value=cur)
 
-    cfg = _config(table="events", cursor_column="updated_at", batch_size=100)
+    cfg = _config(table="events", cursor_column="updated_at", batch_size=100,
+                  primary_keys={"events": ["id"]})
     with patch.object(MySQLConnector, "_connect", return_value=conn):
         docs = [d async for d in MySQLConnector().get_delta(cfg, None)]
 
     assert len(docs) == 2
     doc0, cursor0 = docs[0]
     assert b"id: 1" in doc0.content
-    assert cursor0 == "2026-01-01"
-    doc1, cursor1 = docs[1]
-    assert cursor1 == "2026-01-02"
+    assert b"None" not in doc0.content  # NULLs are left out
+    # P1b-7: a per-table keyset position (cursor value + primary key).
+    assert json.loads(cursor0)["tables"]["events"]["k"] == [{"t": "int", "v": "1"}]
+    _doc1, cursor1 = docs[1]
+    assert json.loads(cursor1)["tables"]["events"]["c"] == {"t": "str", "v": "2026-01-02"}
     conn.close.assert_called_once()
-    cur.execute.assert_called_once_with(
-        "SELECT * FROM `events` ORDER BY updated_at LIMIT 100", ()
+    cur.execute.assert_any_call(
+        "SELECT * FROM `events` WHERE `updated_at` IS NOT NULL ORDER BY `updated_at`, `id` "
+        "LIMIT 100",
+        (),
     )
 
 
 @pytest.mark.asyncio
-async def test_get_delta_table_mode_with_cursor_uses_placeholder() -> None:
+async def test_get_delta_table_mode_with_a_legacy_cursor() -> None:
+    import datetime
+
     conn = MagicMock()
     cur = MagicMock()
     cur.fetchall = MagicMock(return_value=[])
     conn.cursor = MagicMock(return_value=cur)
 
-    cfg = _config(table="events", cursor_column="updated_at", batch_size=50)
+    cfg = _config(table="events", cursor_column="updated_at", batch_size=50,
+                  primary_keys={"events": ["id"]})
     with patch.object(MySQLConnector, "_connect", return_value=conn):
         docs = [d async for d in MySQLConnector().get_delta(cfg, "2026-01-01")]
 
     assert docs == []
-    cur.execute.assert_called_once_with(
-        "SELECT * FROM `events` WHERE updated_at > %s ORDER BY updated_at LIMIT 50",
-        ("2026-01-01",),
+    cur.execute.assert_any_call(
+        "SELECT * FROM `events` WHERE `updated_at` > %s ORDER BY `updated_at`, `id` LIMIT 50",
+        (datetime.datetime(2026, 1, 1),),
     )
 
 
@@ -157,4 +167,4 @@ async def test_get_delta_custom_query_without_placeholder() -> None:
         docs = [d async for d in MySQLConnector().get_delta(cfg, "10")]
 
     assert len(docs) == 1
-    cur.execute.assert_called_once_with("SELECT * FROM t", ())
+    cur.execute.assert_any_call("SELECT * FROM t", ())

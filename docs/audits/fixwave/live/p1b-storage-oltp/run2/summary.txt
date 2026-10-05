@@ -1,0 +1,12 @@
+passed test_obj_prefix_and_patterns 45.8
+failed test_obj_failed_object_retry 258.4
+     E       AssertionError: operator retry after restoring access did not index the object; 2 DLQ entries still open after both objects were indexed: ['s3://rw-p1b/rw-retry-f5a8fcdc/broken.pdf', 's3://rw-p1b/rw-retry-f5a8fcdc/restricted/vault.md']
+failed test_obj_honest_failures[minio] 31.5
+     E       AssertionError: missing_bucket: error does not say why ('minio: AccessDenied Access Denied. (HTTP 403)')
+passed test_obj_honest_failures[s3] 23.0
+failed test_obj_session_token 9.5
+     E       AssertionError: validate with session-token credentials failed: ['Connection check failed: An error occurred (403) when calling the HeadBucket operation: Forbidden']; sync with session-token credentials did not index the object: {'status': 'failed', 'docs_discovered': 0, 'docs_indexed': 0, 'docs_skipped': 0, 'docs_failed': 1, 'chunks_created': 0, 'cursor_before': '', 'cursor_after': '', 'error_message': 'An error occurred (InvalidTokenId) when calling the ListObjectsV2 operation: The security token included in the request is invalid', 'started_at': '2026-10-05T15:03:16.829078+00:00', 'completed_at': '2026-10-05T15:03:17.100534+00:00', 'job_id': 'c768658342be42da902d79111b94cf5b', 'wa
+failed test_obj_internal_address_refusal 0.3
+     E       AssertionError: a minio source without endpoint_url is accepted as configured
+failed test_obj_duplicate_bytes_and_shared_prefix 6.8
+     E       AssertionError: second source on the same prefix holds 1 documents, expected 3

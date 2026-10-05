@@ -193,7 +193,7 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
             job.status === 'partial' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300' :
             'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
           }`} data-testid="sync-job-status">{job.status === 'partial' ? 'partially failed' : String(job.status)}</span>
-          <span className="text-muted-foreground text-xs">{String(job.sync_mode)} sync</span>
+          {Boolean(job.sync_mode) && <span className="text-muted-foreground text-xs">{String(job.sync_mode)} sync</span>}
         </div>
         <dl className="grid grid-cols-2 gap-1 text-xs">
           <dt className="text-muted-foreground">Indexed</dt><dd>{String(job.docs_indexed ?? 0)}</dd>
