@@ -69,12 +69,11 @@ class CodeParser:
 
 class HTMLParser:
     def parse(self, content: str, **kwargs: object) -> list[str]:
-        """Strip HTML tags and split into paragraphs."""
-        import re
+        """Readable text of the page (the upload HTML extractor, P1d-10)."""
+        from app.ingestion.parsers.html_parser import html_to_text
 
-        text = re.sub(r"<[^>]+>", " ", content)
-        text = re.sub(r"\s+", " ", text).strip()
-        return [text] if text else [content]
+        text = html_to_text(content)
+        return [text] if text else []
 
 
 class DOCXParser:

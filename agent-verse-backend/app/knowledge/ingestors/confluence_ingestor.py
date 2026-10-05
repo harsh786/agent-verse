@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import Any, cast
 
 from app.ingestion.connector_egress import assert_source_url, source_client
@@ -14,12 +13,10 @@ _CHUNK_SIZE = 1200
 
 
 def _html_to_text(html: str) -> str:
-    """Strip HTML tags, decode entities, normalize whitespace."""
-    import html as html_lib
+    """Readable text of a page body (the upload HTML extractor, P1d-10)."""
+    from app.ingestion.parsers.html_parser import html_to_text
 
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = html_lib.unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
+    return html_to_text(html)
 
 
 class ConfluenceIngestor:

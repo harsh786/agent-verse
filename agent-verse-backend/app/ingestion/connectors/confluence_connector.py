@@ -105,11 +105,11 @@ class ConfluenceConnector(BaseConnector):
                                     continue
                                 new_cursor = max(new_cursor, modified)
                                 body_html = page.get("body", {}).get("view", {}).get("value", "")
-                                # Strip HTML tags
-                                import re
+                                from app.ingestion.parsers.html_parser import (
+                                    html_to_text,
+                                )
 
-                                text = re.sub(r"<[^>]+>", " ", body_html)
-                                text = re.sub(r"\s+", " ", text).strip()
+                                text = html_to_text(body_html)
                                 title = page.get("title", "")
                                 full_text = f"# {title}\n\n{text}"
                                 doc = RawDocument(

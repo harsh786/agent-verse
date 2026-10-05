@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import html
 import inspect
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -156,8 +154,11 @@ def _combine_domain_constraints(
 
 
 def _html_to_text(content: str) -> str:
-    without_markup = re.sub(r"<[^>]+>", " ", content)
-    return " ".join(html.unescape(without_markup).split())
+    """Article text of a fetched page (the upload HTML extractor, P1d-10):
+    scripts, styles and page chrome never reach the model's context."""
+    from app.ingestion.parsers.html_parser import html_to_text
+
+    return html_to_text(content)
 
 
 # How long a last-known web backend health (from a search or a probe) is

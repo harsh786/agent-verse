@@ -1039,14 +1039,21 @@ class RPAExecutor:
                 allowed_domains=allowed_domains,
                 headers={"User-Agent": "AgentVerse-RPA/1.0"},
             )
-        raw = resp.text
+        from app.ingestion.parsers.html_parser import html_to_text
+        from app.ingestion.web_fetch import decode_web_text
+
+        body = getattr(resp, "content", None)
+        if isinstance(body, bytes):
+            # The page's own charset (header, BOM, <meta charset>), like a browser.
+            ctype = (getattr(resp, "headers", None) or {}).get("content-type", "")
+            raw = decode_web_text(body, ctype if isinstance(ctype, str) else "")
+        else:
+            raw = str(resp.text)
         title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
         title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else ""
-        cleaned = re.sub(
-            r"<(script|style)[^>]*>.*?</\1>", " ", raw, flags=re.IGNORECASE | re.DOTALL
-        )
-        text = re.sub(r"<[^>]+>", " ", cleaned)
-        text = re.sub(r"\s+", " ", text).strip()
+        # The upload HTML extractor (P1d-10): page chrome and script/style bodies
+        # dropped, headings / lists / table rows kept.
+        text = html_to_text(raw)
         return text, title
 
     async def scrape_to_kb(

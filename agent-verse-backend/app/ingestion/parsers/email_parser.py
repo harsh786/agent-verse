@@ -6,16 +6,14 @@ Handles multipart messages and strips HTML to plain text automatically.
 from __future__ import annotations
 
 import email as email_lib
-import re
 from email.message import Message
-
-_HTML_TAG_RE = re.compile(r"<[^>]+>", re.IGNORECASE)
-_WS_RE = re.compile(r"\s+")
 
 
 def _html_to_text(html: str) -> str:
-    text = _HTML_TAG_RE.sub(" ", html)
-    return _WS_RE.sub(" ", text).strip()
+    """Readable text of an HTML part (the upload HTML extractor, P1d-10)."""
+    from app.ingestion.parsers.html_parser import html_to_text
+
+    return html_to_text(html)
 
 
 class EmailParser:

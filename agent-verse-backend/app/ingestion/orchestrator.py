@@ -175,10 +175,12 @@ class IngestionOrchestrator:
                 blocks = re.split(r"(?m)^(?=def |class |function |const |let )", content)
                 return [b.strip() for b in blocks if b.strip()] or [content]
             if ct in (ContentType.HTML, ContentType.WEB_PAGE):
-                import re
+                from app.ingestion.parsers.html_parser import html_to_text
 
-                text = re.sub(r"<[^>]+>", " ", content).strip()
-                return [text] if text else [content]
+                text = html_to_text(content)
+                return [p.strip() for p in text.split("\n\n") if p.strip()] or (
+                    [text] if text else []
+                )
         paras = [p.strip() for p in content.split("\n\n") if p.strip()]
         return paras or [content]
 

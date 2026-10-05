@@ -166,9 +166,9 @@ class ZendeskConnector(BaseConnector):
                         if cursor and updated <= cursor:
                             continue
                         new_cursor = max(new_cursor, updated)
-                        import re
+                        from app.ingestion.parsers.html_parser import html_to_text
 
-                        text = re.sub(r"<[^>]+>", " ", article.get("body", ""))
+                        text = html_to_text(article.get("body") or "")
                         full_text = f"# {article.get('title', '')}\n\n{text}"
                         doc = RawDocument(
                             doc_id=stable_doc_id(config, "article", article.get("id")),
