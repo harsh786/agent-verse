@@ -3346,6 +3346,29 @@ class ExecutorMixin:
                                 else str(_approved_result.error)
                             )
                             raw_output_sanitized = False
+                            if state.steps:
+                                # GRD-1: the approved call is this step's evidence
+                                # (the final-answer grounding gates check against
+                                # step tool calls). It was never recorded, so the
+                                # high-risk answer had nothing to be grounded in.
+                                state.steps[-1].tool_calls.append(
+                                    {
+                                        "tool_name": tool_ref.name,
+                                        "server_id": tool_ref.server_id,
+                                        "success": bool(_approved_result.success),
+                                        "error": self._sanitize_tool_raw_output(
+                                            _approved_result.error or ""
+                                        ),
+                                        "output": (
+                                            self._sanitize_tool_raw_output(
+                                                _approved_result.output
+                                            )[:1000]
+                                            if _approved_result.output
+                                            else ""
+                                        ),
+                                        "approved": True,
+                                    }
+                                )
                             record_tool_call(
                                 tool_ref.name,
                                 tool_ref.server_id,
