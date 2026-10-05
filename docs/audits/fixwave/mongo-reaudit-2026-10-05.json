@@ -1,0 +1,650 @@
+[
+  {
+    "id": "A1",
+    "status": "PENDING",
+    "severity": "HIGH",
+    "evidence": [
+      "agent-verse-backend/app/mcp/registry.py:34-44 AuthType has no CONNECTION_STRING",
+      "agent-verse-backend/app/mcp/catalog.py:397 mongodb auth_type='connection_string'",
+      "agent-verse-backend/app/api/connectors.py:209 RegisterConnectorRequest.auth_type: AuthType"
+    ],
+    "fixed_by": "",
+    "gap": "Registering from the real catalog payload is a 422 (enum validation).",
+    "fix_needed": "Add CONNECTION_STRING to AuthType (and to frontend AUTH_TYPE_CONFIGS), or map catalog 'connection_string' to 'none' + typed DSN fields server-side.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): POST /connectors auth_type=connection_string -> 422 'Input should be bearer, api_key, ...'"
+  },
+  {
+    "id": "A2",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:30-232 AUTH_TYPE_CONFIGS (no connection_string)",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:545-549 options come only from AUTH_TYPE_CONFIGS (controlled <select> with an unknown value renders the first option, 'Bearer Token')",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:1021-1025 onChange sets auth_values: {}",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:389-390 SmartAuthFields returns null for an unknown type (edit shows no credential fields)"
+    ],
+    "fixed_by": "",
+    "gap": "Dropdown shows the wrong type; any change wipes the entered values; edit of a connection_string connector shows no fields.",
+    "fix_needed": "Add a connection_string entry with the MongoDB fields; keep values for keys shared by old and new type instead of resetting to {}.",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "A3",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/mcp/catalog.py:394-400 mongodb ConnectorSpec has no builtin_server_id",
+      "agent-verse-backend/app/api/connectors.py:507-508 has_builtin = bool(spec.builtin_server_id)",
+      "agent-verse-frontend/src/features/connectors/ConnectorsCatalogPage.tsx:288 type sent only when has_builtin"
+    ],
+    "fixed_by": "",
+    "gap": "Only the exact name 'mongodb'/'MongoDB' is rescued by name inference (registry_wiring.py:3461); a renamed connection (e.g. 'orders-db') becomes a remote MCP server with builtin_type ''.",
+    "fix_needed": "Set builtin_server_id='builtin-mongodb' (and category/display_name) on the catalog spec.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): catalog mongodb has_builtin=False builtin_server_id=''; POST name=orders-db (no type) -> 201 with builtin_type '' / has_builtin False"
+  },
+  {
+    "id": "A4",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/mcp/catalog.py:181 connection_string default fields = [url] only",
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:229-252,255-271 handler reads username, password, auth_source, auth_mechanism, tls, tls_allow_invalid_certificates, tls_ca_pem, database",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:18 AuthField.type has no checkbox/file",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:1040-1042 catalog fields render only password/email/text inputs"
+    ],
+    "fixed_by": "",
+    "gap": "No UI for any MongoDB option except the URI; no checkbox, textarea or file field types for catalog-driven fields.",
+    "fix_needed": "Add a MONGODB_AUTH_FIELDS spec (with field types bool/textarea/pem) and render those types.",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "A5",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/mcp/client.py:165-191 _extract_credentials_from_server keeps only isinstance(value, str) (line 180)",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:595-600 buildAuthConfig is Record<string,string>"
+    ],
+    "fixed_by": "",
+    "gap": "auth_config {tls: true, tls_allow_invalid_certificates: true, port: 27017} reaches the handler as {url} only; against a requireTLS server the call fails 'connection closed'.",
+    "fix_needed": "Pass bool/int values through (str() them or keep native) in _extract_credentials_from_server.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): credentials -> {'url': ...} (tls dropped). RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool) tls: without the tls flag the requireTLS server closes the connection."
+  },
+  {
+    "id": "A6",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/api/connectors.py:1225-1252 non-builtin connector falls to the generic HTTP check; assert_public_url_async('mongodb://...') -> 400 'SSRF protection: disallowed URL'",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:684-688 testMutation has no onError"
+    ],
+    "fixed_by": "",
+    "gap": "Test on a non-builtin MongoDB connection is a 400 and the table shows nothing.",
+    "fix_needed": "Route DSN schemes to the builtin mongodb test (or check_source_dsn) instead of the HTTP probe; add onError to the table's testMutation and render the result.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): POST /connectors/<orders-db>/test -> 400 {detail: 'SSRF protection: disallowed URL'}}"
+  },
+  {
+    "id": "A7",
+    "status": "PENDING",
+    "severity": "HIGH",
+    "evidence": [
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:985-1003 top-level URL input plus an <a href={form.url}> 'Open URL' link",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:1032-1048 catalog field 'url' (auth_config.url) entered again",
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:849-854 table prints c.url",
+      "agent-verse-backend/app/api/connectors.py:46-56 sensitive key parts exclude url/uri/connection_string"
+    ],
+    "fixed_by": "",
+    "gap": "URI entered twice, stored and returned plaintext (with password), shown in the table and as a clickable link.",
+    "fix_needed": "One URI field (auth_config only, url='builtin://'), treat url/uri/connection_string as secrets (vault ref + mask userinfo), never render a DSN as a link.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): GET returns url and auth_config.url = mongodb://alice:S3cretPw@..."
+  },
+  {
+    "id": "A8",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-backend/app/api/connectors.py:401-415 _upstream_url_for -> catalog default_url",
+      "agent-verse-backend/app/api/connectors.py:442-443 applied to every builtin:// connector",
+      "agent-verse-backend/app/mcp/catalog.py:398 default_url='mongodb://localhost:27017'"
+    ],
+    "fixed_by": "",
+    "gap": "A builtin:// MongoDB connection displays mongodb://localhost:27017 as its upstream.",
+    "fix_needed": "For DSN connectors derive the display host from the (masked) tenant URI, or omit it.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): builtin:// connection upstream_url = mongodb://localhost:27017"
+  },
+  {
+    "id": "A9",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx:684-688 no onError (4xx hidden)",
+      "agent-verse-frontend/src/features/connectors/ConnectorDetailPage.tsx:36,209 toast `Test failed: ${String(e)}`",
+      "agent-verse-frontend/src/features/connectors/ConnectorDetailPage.tsx:89-90 raw testResult.error",
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:332-334 returns str(exc) verbatim"
+    ],
+    "fixed_by": "",
+    "gap": "Table hides 4xx; detail pages show raw driver text (TopologyDescription dumps).",
+    "fix_needed": "onError on the table; map known driver errors (auth, TLS, timeout, egress) to short messages server-side.",
+    "probe": "partially, via MDB-20 probe (raw TopologyDescription returned)"
+  },
+  {
+    "id": "A10",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-frontend/src/features/connectors/__tests__/ConnectorsCatalogPage.test.tsx:151 mongodb entry faked as auth_type 'api_key', has_builtin true, builtin_server_id 'builtin-mongodb'",
+      "agent-verse-frontend/src/features/connectors/__tests__/ConnectorsRegisteredPage.test.tsx:674-675,731 auth_type 'api_key'/'none'"
+    ],
+    "fixed_by": "",
+    "gap": "No test uses the real catalog payload (connection_string, no builtin_server_id) \u2014 the reason A1-A3 went unnoticed.",
+    "fix_needed": "Fixture the real /connectors/catalog mongodb entry (or snapshot it from the backend).",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "B1",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-frontend/src/features/ingestion/components/SourceCreateWizard.tsx:72-82 mutate with onSuccess only",
+      "agent-verse-frontend/src/features/ingestion/components/SourceCreateWizard.tsx:198-209 footer renders no create.error",
+      "agent-verse-frontend/src/features/ingestion/hooks.ts:58-65 useCreateSource has no onError"
+    ],
+    "fixed_by": "",
+    "gap": "4xx on create (422 config/egress, quota) is silent; the dialog just stays open. user-7 branch (fix/user-7-items @ d66b0fe3f + uncommitted USR-1 work): USR-2 adds a save-time egress 422 (app/api/ingestion.py _refuse_internal_destinations), so more creates fail silently in this wizard.",
+    "fix_needed": "Render create.error (ApiError.message) in the wizard footer.",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "B2",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/api/ingestion.py:215-216 POST /sources/validate (check_connection)",
+      "agent-verse-backend/app/api/ingestion.py:649 POST /sources/{id}/preview",
+      "agent-verse-frontend/src/features/ingestion/hooks.ts useSourcePreview defined, used by no component",
+      "agent-verse-frontend/src/features/ingestion/components/SourceCreateWizard.tsx (no test/preview step)"
+    ],
+    "fixed_by": "",
+    "gap": "No Test Connection or preview before create.",
+    "fix_needed": "Add a 'Test connection' button calling /sources/validate?check_connection and show ConnectionHealth.",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "B3",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/api/ingestion.py:343-354 PATCH merges masked connection_config (merge_masked_update)",
+      "agent-verse-frontend/src/features/ingestion/components/SourceCard.tsx:26,39 useUpdateSource used only to toggle enabled",
+      "agent-verse-frontend/src/features/ingestion/components/SourceDetailDrawer.tsx (no edit form)"
+    ],
+    "fixed_by": "",
+    "gap": "connection_config cannot be edited in the UI.",
+    "fix_needed": "Reuse FamilyFormRouter in an edit mode that sends masked values back unchanged.",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "B4",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-frontend/src/features/ingestion/components/families/DatabaseForm.tsx:17-19 host/port hidden for mongo",
+      "agent-verse-frontend/src/features/ingestion/components/families/DatabaseForm.tsx:35-50 no replica_set, batch_size, max_documents_per_sync, timeout_ms",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:115-132,174-175,199-200,232-233 backend reads them"
+    ],
+    "fixed_by": "",
+    "gap": "Supported backend options have no UI. user-7 branch (fix/user-7-items @ d66b0fe3f + uncommitted USR-1 work): the save-time policy refuses the documented multi-host 'host' form (h1:27017,h2:27017) with 422 \u2014 probe below \u2014 so adding a host field on that branch would need a policy fix too.",
+    "fix_needed": "Add Host/Port (or a hosts list), Replica set, Batch size, Max docs per sync, Timeout (ms).",
+    "probe": "RUN on user-7 worktree: assert_source_config_egress('mongodb', {host: '8.8.8.8:27017,8.8.4.4:27017'}) -> refused 'malformed URL'"
+  },
+  {
+    "id": "B5",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-frontend/src/features/ingestion/components/families/fields.tsx:107-111 CA/cert/key fields rendered only when value.tls",
+      "agent-verse-frontend/src/features/ingestion/components/families/DatabaseForm.tsx:45 X.509 mechanism selectable without them",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:211-216 backend enables TLS itself when certs are given and requires a cert for X.509"
+    ],
+    "fixed_by": "",
+    "gap": "Choosing MONGODB-X509 does not reveal the certificate fields.",
+    "fix_needed": "Show cert fields when auth_mechanism is MONGODB-X509 (or always, collapsed).",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "B6",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-frontend/src/features/ingestion/components/SourceDetailDrawer.tsx:31-39 health.error raw",
+      "agent-verse-frontend/src/features/ingestion/components/SourceDetailDrawer.tsx:43 sync error raw",
+      "agent-verse-frontend/src/features/ingestion/components/SourceDetailDrawer.tsx:195-196 job.error_message raw",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:539-540 error=str(exc)"
+    ],
+    "fixed_by": "",
+    "gap": "Raw pymongo text (TopologyDescription, member hosts) reaches the UI.",
+    "fix_needed": "Classify driver exceptions server-side into short messages; keep the raw text in logs.",
+    "probe": "RUN probe_err_ing.py: health.error = '127.0.0.1:10: [Errno 61] ... Topology Description: <TopologyDescription ...>'"
+  },
+  {
+    "id": "C1",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:173-177 kwargs set only serverSelectionTimeoutMS/connectTimeoutMS (no socketTimeoutMS, no maxTimeMS on find at 511, no timeoutMS)",
+      "agent-verse-backend/app/ingestion/scheduler.py:66 sync_source_task has no time_limit/soft_time_limit"
+    ],
+    "fixed_by": "",
+    "gap": "A server that accepts and then stalls blocks the sync (and GET /sources/{id}/health via listCollections) indefinitely. The MCP path is bounded (socketTimeoutMS 30000, mongodb_server.py:233-235) but a retryable read takes ~60s.",
+    "fix_needed": "Set socketTimeoutMS (or timeoutMS) and maxTimeMS on find/list; add a Celery soft time limit for ingestion.sync_source.",
+    "probe": "RUN probe_member_and_stall.py (fake hostile mongod speaking OP_MSG/OP_QUERY) stall: ingestion _fetch_page still blocked after 45s; MCP find returned after 60.4s with 'timed out'"
+  },
+  {
+    "id": "C2",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:492-498 MongoClient(...) created and closed in every _call_sync"
+    ],
+    "fixed_by": "",
+    "gap": "Every tool call pays DNS check + TCP + TLS + SCRAM handshake; monitor threads per call.",
+    "fix_needed": "Cache clients per (tenant, connector, credential hash, pinned addresses) with an idle TTL, keeping the egress pins alive for the client's lifetime.",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "C3",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:431-454 wraps private pymongo.pool_shared._create_connection",
+      "agent-verse-backend/pyproject.toml:94 'pymongo>=4.10' (no upper bound; locked 4.18.2)"
+    ],
+    "fixed_by": "",
+    "gap": "Works on 4.18.2 (probe), but a pymongo refactor that moves socket creation silently disables the guard; a rename makes every MongoDB call fail (AttributeError caught in call_tool). The only canary (tests/mcp/test_mongodb_builtin_credentials.py::test_driver_never_dials_an_unlisted_member) calls the private function directly.",
+    "fix_needed": "Pin pymongo<4.19 (or <5) and add a behavioural canary through a real MongoClient against a hostile fake server; prefer the getaddrinfo-checked-scope approach which uses no private API.",
+    "probe": "RUN probe_member_and_stall.py (fake hostile mongod speaking OP_MSG/OP_QUERY) member: MCP replicaSet call -> victim never dialled (guard holds on 4.18.2)"
+  },
+  {
+    "id": "C4",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:307-342 members checked once at discovery",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:385-387 discovering client with only a server_selector (no socket guard)",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:374,385 asyncio.to_thread, not run_driver_call; pymongo monitor threads never carry the egress checked scope (agent-verse-backend/app/ingestion/connector_egress.py:416-442,462-481)"
+    ],
+    "fixed_by": "",
+    "gap": "A member advertised after discovery is dialled (monitor socket + hello) with no egress check; the selector only keeps operations off it.",
+    "fix_needed": "Reuse the MCP _MemberGuard (event listener + socket-factory check) in the ingestion client, or connect with directConnection per checked member.",
+    "probe": "RUN probe_member_and_stall.py (fake hostile mongod speaking OP_MSG/OP_QUERY) member: topology gained ('localhost', port) and the victim listener got a connection although only 127.0.0.1 was allowlisted"
+  },
+  {
+    "id": "C5",
+    "status": "PARTIAL",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:255-271,320-323 tls_ca_pem supported",
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:161-174,178 tlsCertificateKeyFile blocked, MONGODB-X509 not allowed, no tls_client_cert field"
+    ],
+    "fixed_by": "98cbeeedf (CA only)",
+    "gap": "CA verification exists on the MCP path; client certificate / mTLS / X.509 do not.",
+    "fix_needed": "Port _materialised_tls (mongodb_connector.py:243-270) to the MCP handler and allow MONGODB-X509 when a client cert is supplied.",
+    "probe": "RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool) tls/mtls: tls+tls_ca_pem OK; server requiring a client cert -> 'connection closed' even with tls_client_cert supplied"
+  },
+  {
+    "id": "C6",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:161-174,219-226,250-251",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:87-104,213-214"
+    ],
+    "fixed_by": "",
+    "gap": "tlsInsecure, tlsAllowInvalidCertificates, tlsAllowInvalidHostnames, tlsDisableOCSPEndpointCheck, tls=false, ssl=false, ssl_cert_reqs are accepted on both paths; the explicit tls_allow_invalid_certificates field is also honoured. user-7 branch (fix/user-7-items @ d66b0fe3f + uncommitted USR-1 work): save-time policy accepts ?tlsInsecure=true too.",
+    "fix_needed": "Refuse these URI options (and the field) unless an operator setting allows it; refuse tls=false when the tenant asked for TLS.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): all 7 options accepted on both paths. RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool) tls: requireTLS server with an untrusted cert -> ?tlsInsecure=true and ?tlsAllowInvalidCertificates=true connect OK"
+  },
+  {
+    "id": "C7",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:349-353 int(limit) passed straight to .limit() (0 = unlimited)",
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:377 list(coll.aggregate(...))[:1000]",
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:344-384 no max_time_ms anywhere"
+    ],
+    "fixed_by": "",
+    "gap": "limit 0 returns the whole collection; aggregate materialises everything before trimming; no server-side time limit.",
+    "fix_needed": "Clamp limit to 1..N (default 100), append {$limit: N+1} to pipelines / iterate the cursor with a cap, set maxTimeMS and batch_size.",
+    "probe": "RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool): find limit=0 -> 5000 docs; aggregate over 5000 docs materialised then cut to 1000"
+  },
+  {
+    "id": "C8",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-frontend/src/features/ingestion/hooks.ts:48-56 refetchInterval 5 min per SourceCard and drawer",
+      "agent-verse-frontend/src/main.tsx:10-22 default query retry up to 3 on errors",
+      "agent-verse-backend/app/api/ingestion.py:385-406 health_check runs validate_connection every call (no cache)",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:529-540 discovery + ping + listCollections each time"
+    ],
+    "fixed_by": "",
+    "gap": "Each open UI opens a full connection (plus discovery) per source every 5 min; a failing source is retried 3x (4 connections, each up to timeout_ms).",
+    "fix_needed": "Cache health server-side (e.g. 60s per source, shared), set retry:false on the health query, and poll only visible sources.",
+    "probe": "not run (code read)"
+  },
+  {
+    "id": "MDB-01",
+    "status": "PENDING",
+    "severity": "HIGH",
+    "evidence": [
+      "agent-verse-backend/app/api/connectors.py:46-56,239-241,342-346 masking keys exclude url/uri",
+      "agent-verse-backend/app/api/connectors.py:418-420 model_dump returns top-level url unmasked",
+      "agent-verse-backend/app/mcp/connector_store.py:83,95-99 url column + auth jsonb stored plain",
+      "agent-verse-backend/app/mcp/registry.py mcp:servers:{tenant}:{id} Redis JSON"
+    ],
+    "fixed_by": "",
+    "gap": "GET /connectors and /connectors/{id} return mongodb://user:pw@...; the password is plaintext in Redis and Postgres (a separate 'password' key IS vaulted and redacted).",
+    "fix_needed": "Store DSNs as connector secrets (vault ref) or split userinfo into a vaulted password; mask userinfo in every response; backfill existing rows.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): list+get return the URI with S3cretPw; 3 Redis keys hold the plaintext password"
+  },
+  {
+    "id": "MDB-02",
+    "status": "PENDING",
+    "severity": "HIGH",
+    "evidence": [
+      "agent-verse-backend/app/agent/tool_risk.py:202-238 substring match on f'{server_name} {tool_name}'",
+      "agent-verse-backend/app/agent/tool_risk.py:145-165 read token 'get' matches 'budget','target','widget'",
+      "agent-verse-backend/app/agent/tool_risk.py:204-207 high-risk connector override returns write_high BEFORE the destructive check",
+      "agent-verse-backend/app/agent/tool_gate.py:101 and nodes/executor_mixin.py:2837,3712 pass the connector display name"
+    ],
+    "fixed_by": "",
+    "gap": "'budget-db'/'target-db'/'widget-store' turn mongodb_insert_one and mongodb_aggregate into 'read' (no approval); 'settings-db' makes them write_low; 'prod-db' DOWNGRADES mongodb_delete_one from destructive (denied) to write_high (approvable / auto_approve); mongodb_update_one is write_low under every name.",
+    "fix_needed": "Give builtin tools a declared risk (mongodb_find/find_one/count/list_collections=read, insert/update=write_high, delete=destructive, aggregate=write_high unless the pipeline is verified read-only) and check it before any name heuristic; match tokens, not substrings; never let the connector override lower a tier.",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis): classify_tool_risk matrix (budget-db: insert_one=read, aggregate=read; prod-db: delete_one=write_high)"
+  },
+  {
+    "id": "MDB-03",
+    "status": "PENDING",
+    "severity": "HIGH",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:348-383 query/filter/pipeline forwarded unfiltered",
+      "agent-verse-backend/app/agent/tool_risk.py mongodb_find/mongodb_count classify as read"
+    ],
+    "fixed_by": "",
+    "gap": "$out and cross-database $merge write data from mongodb_aggregate; $where, $function and $accumulator run server-side JavaScript from find/count/aggregate (read-classified tools). update_one's $set wrapper blocks $-prefixed update keys only.",
+    "fix_needed": "Walk query/filter/pipeline and refuse $out, $merge, $where, $function, $accumulator (and $lookup/$unionWith into other DBs, $currentOp, $listSessions...); allow-list stages for aggregate.",
+    "probe": "RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool): $out -> shop.pwned_out has 2 docs; $merge -> otherdb.pwned_merge has 2 docs; find $where, count $function, aggregate $accumulator all executed"
+  },
+  {
+    "id": "MDB-07",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "same code as C6"
+    ],
+    "fixed_by": "",
+    "gap": "TLS validation can be switched off from the URI on both paths (and by a connector field).",
+    "fix_needed": "See C6.",
+    "probe": "RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool) tls: tlsInsecure / tlsAllowInvalidCertificates connect to an untrusted-cert server"
+  },
+  {
+    "id": "MDB-05",
+    "status": "PARTIAL",
+    "severity": "MED",
+    "evidence": [
+      "same code as C5"
+    ],
+    "fixed_by": "98cbeeedf (MCP CA); cee429d96 (ingestion CA + client cert)",
+    "gap": "MCP: CA only, no client cert/mTLS/X.509. Ingestion has full support (agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:206-216,243-270).",
+    "fix_needed": "See C5.",
+    "probe": "RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool) mtls: MCP cannot connect to a client-cert-requiring server"
+  },
+  {
+    "id": "MDB-11",
+    "status": "PARTIAL",
+    "severity": "MED",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:401-454,483-490 MCP guard (MONGO-MONITOR)",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:307-391 ingestion has no socket guard"
+    ],
+    "fixed_by": "8d6335c53 (MCP path only)",
+    "gap": "MCP path: fixed (unlisted members never dialled). Ingestion path: a member advertised after discovery is dialled unchecked \u2014 blind SSRF (TCP connect + hello to any host:port).",
+    "fix_needed": "See C4.",
+    "probe": "RUN probe_member_and_stall.py (fake hostile mongod speaking OP_MSG/OP_QUERY) member: MCP victim hits=[]; ingestion victim hit=1"
+  },
+  {
+    "id": "MDB-08",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "same code as C7"
+    ],
+    "fixed_by": "",
+    "gap": "limit 0 / negative tricks and unbounded aggregate; no maxTimeMS.",
+    "fix_needed": "See C7.",
+    "probe": "RUN probe_mongo_container.py (mongo:7.0 testcontainer, real MCP handler mongodb_server.call_tool): limit=0 -> 5000 docs"
+  },
+  {
+    "id": "MDB-12",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "same code as C1"
+    ],
+    "fixed_by": "",
+    "gap": "Ingestion worker / API health request hangs forever on a stalled server; MCP bounded at ~60s.",
+    "fix_needed": "See C1.",
+    "probe": "RUN probe_member_and_stall.py (fake hostile mongod speaking OP_MSG/OP_QUERY) stall"
+  },
+  {
+    "id": "MDB-10",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "same code as C3"
+    ],
+    "fixed_by": "",
+    "gap": "Egress control for replica members depends on a private pymongo function with no upper version bound.",
+    "fix_needed": "See C3.",
+    "probe": "RUN probe_member_and_stall.py (fake hostile mongod speaking OP_MSG/OP_QUERY) member (still effective on 4.18.2)"
+  },
+  {
+    "id": "MDB-20",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "agent-verse-backend/app/mcp/servers/mongodb_server.py:332-334 {'error': str(exc)}",
+      "agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:378-383,539-540",
+      "agent-verse-backend/app/api/ingestion.py:399-406 health returns health.error",
+      "tests/ingestion/test_mongodb_source_integration.py::test_replica_set_member_hosts_are_egress_checked asserts the internal member name IS in the error"
+    ],
+    "fixed_by": "",
+    "gap": "Errors carry the full TopologyDescription (every member address, rtt, nested errors) and the names of internal members the server advertised.",
+    "fix_needed": "Return a short classified message; log the topology server-side only.",
+    "probe": "RUN probe_err_ing.py and MCP error probe: TopologyDescription with server addresses returned to the caller"
+  },
+  {
+    "id": "TG-01",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "tests/api/test_connectors_mongodb_registration.py::test_public_mongodb_uri_registers (checks 201 only, no masking)"
+    ],
+    "fixed_by": "",
+    "gap": "No test asserts the URI/password is masked on register/list/get/update or absent from Redis (it is not \u2014 MDB-01).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-02",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "no test calls classify_tool_risk with mongodb_* tools"
+    ],
+    "fixed_by": "",
+    "gap": "Add a parametrised matrix over connector names incl. budget/target/settings/prod.",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-03",
+    "status": "PENDING",
+    "severity": "HIGH",
+    "evidence": [
+      "no test mentions $out/$merge/$where/$function/$accumulator"
+    ],
+    "fixed_by": "",
+    "gap": "One refusal test per operator (none refuse today \u2014 MDB-03).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-04",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "MCP: none. Ingestion-only equivalent: tests/ingestion/test_mongodb_source_integration.py::test_tls_with_custom_ca_and_client_certificate"
+    ],
+    "fixed_by": "",
+    "gap": "Add an MCP requireTLS container test: no CA fails, CA passes, invalid cert refused, mTLS, X.509.",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-05",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "no test mentions tlsInsecure/tlsAllowInvalid*; tests/ingestion/connectors/test_mongodb_connector.py::TestSettings::test_uri_options_touching_platform_files_or_proxies_are_refused and tests/mcp/test_mongodb_builtin_credentials.py::test_platform_reaching_uri_options_are_refused cover file/proxy options only"
+    ],
+    "fixed_by": "",
+    "gap": "Parametrise the TLS-weakening options on both paths (expect refusal).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-06",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "no frontend test uses auth_type 'connection_string' (grep: only ConnectorsCatalogPage.tsx source and org/ files)"
+    ],
+    "fixed_by": "",
+    "gap": "Register/edit with the real catalog payload (A10).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-07",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "tests/ingestion/test_mongodb_source_integration.py: no update/delete re-sync case"
+    ],
+    "fixed_by": "",
+    "gap": "With the default _id cursor an updated document is never re-read and a deleted one is never removed (MongoDB has no reconcile hook); add integration tests and fix (updated_at cursor default or change streams; KB-44 reconcile support).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-08",
+    "status": "PARTIAL",
+    "severity": "MED",
+    "evidence": [
+      "tests/mcp/test_mongodb_builtin_credentials.py::test_driver_never_dials_an_unlisted_member (calls pool_shared._create_connection directly)",
+      "tests/ingestion/test_mongodb_source_integration.py::test_replica_set_member_hosts_are_egress_checked (discovery-time member only)"
+    ],
+    "fixed_by": "",
+    "gap": "No test of a member advertised AFTER discovery, nor of the guard through a real MongoClient monitor/Pool (the probe in this audit is that test).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "RUN probe_member_and_stall.py (fake hostile mongod speaking OP_MSG/OP_QUERY) member (shows what the missing test would catch)"
+  },
+  {
+    "id": "TG-09",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "tests/ingestion/connectors/test_mongodb_connector.py::TestCursor::test_round_trips_bson_types (cursor ObjectId/datetime only)"
+    ],
+    "fixed_by": "",
+    "gap": "No Decimal128/Binary/Regex/Int64/null/>20-element array documents on either path (_flatten_doc silently drops array items past 20, mongodb_connector.py:426; MCP _serialize only stringifies _id, mongodb_server.py:337-341).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-10",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "none"
+    ],
+    "fixed_by": "",
+    "gap": "No limit/aggregate bound, maxTimeMS or stalled-server test (C1/C7).",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-11",
+    "status": "PARTIAL",
+    "severity": "LOW",
+    "evidence": [
+      "tests/api/test_connectors_functional.py::test_cross_tenant_test_connector_returns_404 (jira, /test)",
+      "tests/api/test_connectors_cross_tenant_extra.py::test_discover_tools_on_other_tenants_connector_discovers_nothing",
+      "tests/mcp/test_mongodb_builtin_isolation_integration.py::test_tenant_cannot_read_other_tenant_or_platform_database (DB-level, same tenant's server_id)"
+    ],
+    "fixed_by": "",
+    "gap": "No test for GET /connectors/{id}/tools or MCPClient.call_tool by tenant B on tenant A's mongodb server_id. Behaviour is correct (probe: 404 on /test, /tools, GET; call_tool 'not found').",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "RUN probe_connectors_api.py (FastAPI TestClient + fakeredis) + probe_tg11_toolcall.py: 404/404/404 and call_tool 'Server ... not found'"
+  },
+  {
+    "id": "TG-12",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "tests/ingestion/test_scheduler_jobs.py::test_sync_already_locked_skips (mocked tracker)"
+    ],
+    "fixed_by": "",
+    "gap": "Lock is process-local: every IngestionJobTracker is built without redis (agent-verse-backend/app/main.py:801, agent-verse-backend/app/ingestion/scheduler.py:132), so acquire_lock (agent-verse-backend/app/ingestion/job_tracker.py:62-92) uses the in-memory dict \u2014 two workers can sync one source at once, and the API's manual-sync lock is released by the worker in another process (a no-op), so it is never released in the API. No concurrency test.",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-13",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "none; tests/ingestion/test_stable_doc_ids_connectors.py has no mongodb case"
+    ],
+    "fixed_by": "",
+    "gap": "doc_id = uuid5(mongodb://{display_host}/{db}/{coll}/{_id}) (agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:568-570) \u2014 a host/URI change re-ids every document (duplicates); use stable_doc_id(config, db, coll, _id) like the other connectors.",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-14",
+    "status": "PENDING",
+    "severity": "LOW",
+    "evidence": [
+      "none for mongodb (generic DLQ: tests/ingestion/test_ingestion_read_models_integration.py::test_dlq_listing_backoff_and_monthly_usage)"
+    ],
+    "fixed_by": "",
+    "gap": "No manual-sync test where one MongoDB document fails and lands in the DLQ. user-7 branch (fix/user-7-items @ d66b0fe3f + uncommitted USR-1 work): uncommitted tests/ingestion/test_sync_failure_never_completed.py covers a mongodb connection failure being 'failed' (not completed), not a per-document DLQ entry.",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  },
+  {
+    "id": "TG-15",
+    "status": "PENDING",
+    "severity": "MED",
+    "evidence": [
+      "tests/ingestion/test_connector_feature_flags.py covers duckdb only"
+    ],
+    "fixed_by": "",
+    "gap": "The mongodb flag is not a kill switch: @register(feature_flag='ingestion_connector_mongodb_enabled') (agent-verse-backend/app/ingestion/connectors/mongodb_connector.py:523) names a field Settings does not declare (agent-verse-backend/app/core/config.py has none; extra='ignore'), and get_connector defaults it to True (agent-verse-backend/app/ingestion/connector_registry.py:101). The MCP builtin-mongodb has no flag at all.",
+    "fix_needed": "Add the test described in gap (and the code fix it implies).",
+    "probe": "not run (test search + code read)"
+  }
+]
