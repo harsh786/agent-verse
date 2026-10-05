@@ -9,6 +9,7 @@ drive the API exactly as the UI does, from GET /connectors/catalog.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import fakeredis.aioredis
@@ -179,3 +180,35 @@ def test_tenant_b_cannot_reach_tenant_a_connection(
     assert not result.success
     assert "not found" in (result.error or "").lower()
     assert _Mongo.dsns == []  # tenant B's call never reached tenant A's database
+
+
+def test_test_connection_uses_the_mongodb_handler(world: dict[str, Any]) -> None:
+    """A6: Test Connection on a MongoDB connection runs the MongoDB handler.
+
+    It used to fall to the generic HTTP probe, whose SSRF check refused the
+    mongodb:// scheme ('400 SSRF protection: disallowed URL').
+    """
+    sid = _register_like_the_ui(world["client"], "orders-db").json()["server_id"]
+    resp = world["client"].post(f"/connectors/{sid}/test", headers=HA)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "passed", resp.json()
+    assert "8.8.8.8" in _Mongo.dsns[-1]
+
+
+async def test_test_connection_on_a_legacy_remote_row(world: dict[str, Any]) -> None:
+    """A row stored before A3 as a remote MCP server (no builtin_type, DSN url)."""
+    from app.mcp.registry import MCPServerConfig
+
+    reg = world["app"].state.mcp_registry
+    raw = MCPServerConfig(server_id="legacy1", name="orders-db", url="builtin://")
+    data = raw.model_dump(mode="json") | {
+        "url": URI,
+        "builtin_type": "",
+        "auth_config": {"url": URI},
+    }
+    await reg._redis.set("mcp:servers:tid-cat-a:legacy1", json.dumps(data))
+    await reg._redis.sadd("mcp:server_ids:tid-cat-a", "legacy1")
+
+    resp = world["client"].post("/connectors/legacy1/test", headers=HA)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "passed", resp.json()
