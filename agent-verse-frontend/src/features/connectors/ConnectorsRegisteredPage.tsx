@@ -7,7 +7,7 @@ import { ApiError, connectorsApi, type ConnectorResponse, type CatalogAuthField,
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
 import { friendlyConnectionError } from '@/lib/friendlyError';
-import { connectorLabel, connectorTypeLabel, isDsn, isHttpUrl, isMaskedSecret, maskDsn } from '@/lib/connectors';
+import { connectorDisplayUrl, connectorLabel, connectorTypeLabel, isDsn, isHttpUrl, isMaskedSecret } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -1312,13 +1312,9 @@ export function ConnectorsRegisteredPage() {
                         </p>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate">
-                        {/* Plain text, userinfo masked: a DSN carries its password. */}
-                        {c.upstream_url
-                          ? maskDsn(c.upstream_url)
-                          : c.url === 'builtin://'
-                            ? 'Built-in'
-                            : maskDsn(c.url)}
-                        {c.upstream_url && (
+                        {/* Plain text, never a link: display_url (A8), userinfo masked. */}
+                        {connectorDisplayUrl(c)}
+                        {(c.display_url || c.upstream_url) && c.url === 'builtin://' && (
                           <span className="ml-1.5 not-italic font-sans text-[10px] uppercase tracking-wide text-muted-foreground/50">
                             built-in
                           </span>

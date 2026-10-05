@@ -456,3 +456,21 @@ describe('A9 register errors never echo the refused URI', () => {
     expect(alert).not.toHaveTextContent('10.0.0.7');
   });
 });
+
+// ── A8: display_url is what the UI shows ─────────────────────────────────────
+
+describe('A8 the table shows display_url', () => {
+  it('prefers display_url (masked by the backend) over upstream_url and the builtin marker', async () => {
+    mockFetch([listOf([{
+      server_id: 'builtin-mongodb:orders-db', name: 'orders-db', url: 'builtin://', auth_type: 'connection_string', has_builtin: true,
+      display_url: 'mongodb://8.8.8.8:27017,8.8.4.4:27017/shop?replicaSet=rs0&authSource=admin&appToken=<redacted>',
+      upstream_url: 'mongodb://localhost:27017', auth_config: { url: '<redacted>' },
+    }])]);
+    renderPage();
+    await screen.findByRole('link', { name: 'orders-db' });
+    const table = screen.getByTestId('connectors-table');
+    expect(table).toHaveTextContent('mongodb://8.8.8.8:27017,8.8.4.4:27017/shop?replicaSet=rs0&authSource=admin&appToken=<redacted>');
+    expect(table).not.toHaveTextContent('localhost');
+    expect(table.querySelector('a[href^="mongodb"]')).toBeNull();
+  });
+});

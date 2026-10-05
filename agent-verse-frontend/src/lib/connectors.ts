@@ -84,3 +84,15 @@ export function isMaskedSecret(value: string | null | undefined): boolean {
   if (!text) return false;
   return text.includes('<redacted>') || /\*{3,}/.test(text);
 }
+
+/**
+ * What the UI shows as a connection's address: the backend's `display_url`
+ * (masked URI, no userinfo — A8), else the built-in's upstream_url, else the
+ * url ('Built-in' for the builtin:// marker). Always userinfo-masked again.
+ */
+export function connectorDisplayUrl(
+  c: Pick<ConnectorResponse, 'url' | 'upstream_url' | 'display_url'>,
+): string {
+  const shown = c.display_url?.trim() || c.upstream_url?.trim() || (c.url === 'builtin://' ? 'Built-in' : c.url);
+  return maskDsn(shown);
+}

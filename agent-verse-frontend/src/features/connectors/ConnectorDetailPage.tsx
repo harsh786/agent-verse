@@ -7,7 +7,7 @@ import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
-import { maskDsn } from '@/lib/connectors';
+import { connectorDisplayUrl } from '@/lib/connectors';
 import { friendlyConnectionError } from '@/lib/friendlyError';
 import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -260,11 +260,9 @@ export function ConnectorDetailPage() {
     );
   }
 
-  // Plain text with userinfo masked — a DSN carries its password. A built-in
-  // connection's url is the "builtin://" marker; show its configured host.
-  const displayUrl = maskDsn(
-    connector.url === 'builtin://' && connector.upstream_url ? connector.upstream_url : connector.url,
-  );
+  // Plain text: the backend's masked display_url (A8), else the configured
+  // host; userinfo is masked again — a DSN carries its password.
+  const displayUrl = connectorDisplayUrl(connector);
 
   return (
     <JARVISPageShell>

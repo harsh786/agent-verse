@@ -85,3 +85,12 @@ describe('A9 connector detail test errors are friendly', () => {
     expect(useToastStore.getState().toasts.some((t) => t.message.includes('Error:') || t.message.includes('[object'))).toBe(false);
   });
 });
+
+describe('A8 connector detail shows display_url', () => {
+  test('display_url wins over upstream_url / url', async () => {
+    mockFetch({ server_id: ID, name: 'orders-db', url: 'builtin://', display_url: 'mongodb://8.8.8.8:27017/shop?authSource=admin', upstream_url: 'mongodb://localhost:27017', auth_type: 'connection_string', status: 'active' });
+    renderPage();
+    expect(await screen.findAllByText('mongodb://8.8.8.8:27017/shop?authSource=admin')).not.toHaveLength(0);
+    expect(document.body).not.toHaveTextContent('localhost');
+  });
+});
