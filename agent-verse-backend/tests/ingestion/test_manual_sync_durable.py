@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.api import ingestion as ingestion_mod
 from app.ingestion.source_config import IngestionJob, PipelineResult
+from tests.ingestion._lease import install_lease
 from tests.api.test_ingestion_api import _auth, _client, _make_source
 
 
@@ -63,7 +64,7 @@ async def test_the_task_adopts_the_lock_the_api_took_and_uses_its_job_id() -> No
     from app.ingestion.scheduler import _sync_source_async
 
     source = _make_source()
-    tracker = AsyncMock()
+    tracker = install_lease(AsyncMock())
     tracker.create_job = AsyncMock(
         return_value=IngestionJob(
             job_id="job-123",
@@ -103,4 +104,7 @@ async def test_the_task_adopts_the_lock_the_api_took_and_uses_its_job_id() -> No
     tracker.acquire_lock.assert_not_awaited()  # the API already holds it
     assert tracker.create_job.await_args.kwargs["job_id"] == "job-123"
     assert result["job_id"] == "job-123"
-    tracker.release_lock.assert_awaited_once()
+    # The worker holds the API's lock under its token (TG-12) and releases it.
+    tracker.hold.assert_awaited_once()
+    assert tracker.hold.await_args.args[2] == "job-123"
+    tracker.release_lock.assert_awaited_once_with(source.source_id, source.tenant_id, "job-123")

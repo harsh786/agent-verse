@@ -389,6 +389,9 @@ class Settings(BaseSettings):
     ingestion_mongodb_server_selection_timeout_ms: int = 10_000
     ingestion_mongodb_socket_timeout_ms: int = 60_000
     ingestion_mongodb_max_time_ms: int = 30_000
+    # TTL of a running sync's per-Source lock (TG-12). The worker renews it every
+    # third of the TTL; a worker that dies frees its Source within one TTL.
+    ingestion_sync_lock_ttl_seconds: int = 300
     # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
     # /pdf, /docx). The body used to be read whole into memory with no limit.
     knowledge_max_upload_bytes: int = 50 * 1024 * 1024

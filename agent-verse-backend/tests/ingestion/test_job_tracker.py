@@ -210,21 +210,26 @@ async def test_acquire_lock_redis_already_held() -> None:
     assert job_id is None
 
 
-async def test_acquire_lock_redis_error_falls_back_to_in_memory() -> None:
+async def test_acquire_lock_redis_error_is_refused_not_process_local() -> None:
+    # TG-12: a process-local fallback is no lock across replicas (fail closed).
+    from app.ingestion.job_tracker import SyncLockUnavailableError
+
     redis = AsyncMock()
     redis.set = AsyncMock(side_effect=RuntimeError("redis down"))
     tracker = IngestionJobTracker(redis=redis)
-    job_id = await tracker.acquire_lock("src-1", "t1")
-    assert job_id is not None
+    with pytest.raises(SyncLockUnavailableError):
+        await tracker.acquire_lock("src-1", "t1")
+    assert tracker._locks == {}
 
 
-async def test_release_lock_redis_matching_job_id_deletes() -> None:
+async def test_release_lock_redis_is_an_atomic_compare_and_delete() -> None:
+    from app.ingestion.job_tracker import _RELEASE_LUA
+
     redis = AsyncMock()
-    redis.get = AsyncMock(return_value=b"job-123")
-    redis.delete = AsyncMock()
     tracker = IngestionJobTracker(redis=redis)
     await tracker.release_lock("src-1", "t1", "job-123")
-    redis.delete.assert_awaited_once()
+    redis.eval.assert_awaited_once_with(_RELEASE_LUA, 1, "ingestion_lock:t1:src-1", "job-123")
+    redis.delete.assert_not_awaited()  # never a bare DEL (could free another run's lock)
 
 
 async def test_release_lock_redis_non_matching_job_id_skips_delete() -> None:
@@ -236,19 +241,19 @@ async def test_release_lock_redis_non_matching_job_id_skips_delete() -> None:
     redis.delete.assert_not_awaited()
 
 
-async def test_release_lock_redis_without_job_id_deletes_unconditionally() -> None:
+async def test_release_lock_redis_without_job_id_frees_nothing() -> None:
     redis = AsyncMock()
-    redis.delete = AsyncMock()
     tracker = IngestionJobTracker(redis=redis)
     await tracker.release_lock("src-1", "t1")
-    redis.delete.assert_awaited_once()
+    redis.delete.assert_not_awaited()
+    redis.eval.assert_not_awaited()
 
 
 async def test_release_lock_redis_error_is_swallowed() -> None:
     redis = AsyncMock()
-    redis.delete = AsyncMock(side_effect=RuntimeError("boom"))
+    redis.eval = AsyncMock(side_effect=RuntimeError("boom"))
     tracker = IngestionJobTracker(redis=redis)
-    await tracker.release_lock("src-1", "t1")  # must not raise
+    await tracker.release_lock("src-1", "t1", "job-1")  # must not raise (the TTL frees it)
 
 
 # ── Job lifecycle ─────────────────────────────────────────────────────────────

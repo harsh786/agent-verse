@@ -502,7 +502,13 @@ async def enqueue_source_sync(
     job stuck ``running``). Raises :class:`SyncEnqueueError` after releasing the
     lock when the broker refuses the task.
     """
-    job_id = await tracker.acquire_lock(source_id, tenant_id)  # LAW-14
+    from app.ingestion.job_tracker import SyncLockUnavailableError
+
+    try:
+        job_id = await tracker.acquire_lock(source_id, tenant_id)  # LAW-14 / TG-12
+    except SyncLockUnavailableError as exc:
+        # The shared lock cannot be checked: refuse rather than risk a second sync.
+        raise SyncEnqueueError(str(exc)) from exc
     if job_id is None:
         return None
     from app.ingestion.scheduler import sync_source_task
@@ -605,7 +611,14 @@ async def reindex_source(source_id: str, request: Request) -> dict:
     if tracker is None:
         raise HTTPException(status_code=503, detail="Ingestion framework not configured")
     await _refuse_reindex_of_held_collection(request, tenant.tenant_id, source.collection_id)
-    job_id = await tracker.acquire_lock(source_id, tenant.tenant_id)
+    from app.ingestion.job_tracker import SyncLockUnavailableError
+
+    try:
+        job_id = await tracker.acquire_lock(source_id, tenant.tenant_id)
+    except SyncLockUnavailableError as exc:
+        raise HTTPException(
+            status_code=503, detail="Reindex could not be queued; try again shortly"
+        ) from exc
     if job_id is None:
         raise HTTPException(status_code=409, detail="A sync is already running for this source")
     from app.ingestion.scheduler import sync_source_task
