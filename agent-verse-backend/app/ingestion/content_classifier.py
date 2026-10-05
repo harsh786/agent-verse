@@ -94,6 +94,10 @@ _MIME_MAP: dict[str, ContentType] = {
     "application/x-avro": ContentType.AVRO,
     "avro/binary": ContentType.AVRO,
     "application/x-ipynb+json": ContentType.NOTEBOOK,
+    # Extracted page text (the web crawl): read as markdown, never re-parsed
+    # as HTML because its URL ends in ``.html``.
+    "text/markdown": ContentType.MARKDOWN,
+    "text/x-markdown": ContentType.MARKDOWN,
 }
 
 _CODE_PATTERNS = re.compile(

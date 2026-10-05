@@ -163,7 +163,8 @@ async def test_web_crawl_redirect_to_internal_is_refused() -> None:
     cfg = _config("web_crawl", {"seed_urls": [old], "crawl_delay_seconds": 0})
     with patch.object(httpx.AsyncClient, "send", _site(routes, seen)):
         docs = [d async for d, _ in WebCrawlConnector().get_delta(cfg, None)]
-    assert seen == [old]
+    # robots.txt (404 here) and the seed; the redirect target is never requested.
+    assert seen == ["https://example.com/robots.txt", old]
     (doc,) = docs
     assert "blocked" in doc.metadata[CONNECTOR_FAILURE_KEY].lower()
 
