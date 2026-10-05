@@ -389,6 +389,9 @@ class Settings(BaseSettings):
     # Kill switch for the MongoDB ingestion connector (TG-15): false refuses new
     # MongoDB Sources, syncs (failed job with the reason) and health checks.
     ingestion_connector_mongodb_enabled: bool = True
+    # Kill switch for the MCP built-in MongoDB connector (NF-13): false refuses
+    # new/edited MongoDB connections (422), the connector test and every tool call.
+    mcp_connector_mongodb_enabled: bool = True
     # MongoDB ingestion connector bounds (C1 / MDB-12). A server that accepts and
     # then stalls used to block a sync (and the health check) forever. Every
     # wait is bounded: TCP connect, server selection, each socket read, and the

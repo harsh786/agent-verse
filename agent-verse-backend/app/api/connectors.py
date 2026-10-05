@@ -94,6 +94,15 @@ def _declared_type_on_update(body: RegisterConnectorRequest) -> str:
     return str(cfg["server_id"])
 
 
+def _assert_builtin_enabled(builtin_type: str) -> None:
+    """422 when the operator switched this built-in connector type off (NF-13)."""
+    from app.mcp.builtin_kill_switch import disabled_reason
+
+    reason = disabled_reason(builtin_type)
+    if reason is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=reason)
+
+
 def _infer_builtin_type(name: str, url: str = "") -> str | None:
     """The built-in type a connector NAME implies (``None`` when it implies none).
 
@@ -636,6 +645,7 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
         )
         _builtin_cfg = _builtin_config_for_type(_inferred) if _inferred else None
     _canonical_id = str(_builtin_cfg.get("server_id")) if _builtin_cfg else ""
+    _assert_builtin_enabled(_canonical_id)
     url = _effective_url(body.url, body.auth_config, _canonical_id)
     _assert_mongodb_policy(url, body.auth_config, _canonical_id)
     # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time
@@ -732,6 +742,7 @@ async def update_connector(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Connector {server_id} not found",
         )
+    _assert_builtin_enabled(existing.builtin_type or _declared_type_on_update(body))
     if _name_key(body.name) != _name_key(existing.name):
         await _assert_unique_name(reg, body.name, tenant_ctx=tenant_ctx, exclude_id=server_id)
     auth_config = _preserve_redacted_auth_config(body.auth_config, dict(existing.auth_config))
@@ -1176,6 +1187,20 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     cfg = await registry.get(server_id, tenant_ctx=tenant)
     if cfg is None:
         raise HTTPException(status_code=404, detail="Connector not found")
+
+    # NF-13: a built-in type the operator switched off is never contacted.
+    from app.mcp.builtin_kill_switch import DISABLED_STATUS, disabled_reason
+
+    _disabled = disabled_reason(cfg.builtin_type or "")
+    if _disabled is not None:
+        return {
+            "server_id": server_id,
+            "reachable": False,
+            "status": "failed",
+            "reason": DISABLED_STATUS,
+            "error": _disabled,
+            "latency_ms": round((time.time() - started) * 1000),
+        }
 
     # ── Resolve vault secret references in auth_config ─────────────────────
     # Tokens are stored as "secret://connector/<id>/token" vault refs.
