@@ -18,9 +18,11 @@ class AuditLog(Base):
 
     __tablename__ = "audit_log"
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
+    # id / tenant_id widened to 64 (migration d4e7a2c9b1f3, P4-2): a dashed UUID
+    # tenant id overflowed VARCHAR(32) and failed the audited action.
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
     # No FK to tenants — audit entries survive tenant deletion
-    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     # 64: workflow/run ids are dashed UUIDs (migration a7e3c9d2f4b1).
     goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tool_name: Mapped[str] = mapped_column(String(200), nullable=False)

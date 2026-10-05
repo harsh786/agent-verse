@@ -205,7 +205,7 @@ class AutoAuditMiddleware:
                 tool_name=f"workflow.{event_type}",
                 action_level=ActionLevel.ALLOW_LOG,
                 outcome=event_type,
-                step_id=str(data.get("step_id", "") or "")[:64],
+                step_id=str(data.get("step_id", "") or ""),
                 note=_note(data),
             )
             # AuditLog.record(event, *, tenant_ctx=...). It used to be called as
@@ -260,13 +260,14 @@ def record_workflow_action(
         key_id = str(getattr(tenant, "api_key_id", "") or "") or None
         audit_log.record(
             AuditEvent(
-                goal_id=str(workflow_id)[:64],  # audit_log.goal_id is VARCHAR(64)
+                # Never truncated: an overflowing id is refused loudly by the writer.
+                goal_id=str(workflow_id),
                 tool_name=f"workflow.{action}",
                 action_level=(
                     ActionLevel.DENY if outcome == "denied" else ActionLevel.ALLOW_LOG
                 ),
                 outcome=outcome[:100],
-                step_id=step_id[:64],
+                step_id=step_id,
                 approver=approver,
                 note=note[:1000],
                 ip_address=getattr(client, "host", None),

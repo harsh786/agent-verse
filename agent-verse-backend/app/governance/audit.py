@@ -84,6 +84,44 @@ class AuditPersistenceError(AuditWriteError):
     """
 
 
+class AuditFieldTooLongError(AuditWriteError):
+    """An audit value is wider than its ``audit_log`` column (P4-2).
+
+    Raised BEFORE the INSERT and never retried: a deterministic overflow must
+    surface loudly with the field name instead of being truncated (which would
+    corrupt an id) or retried three times into a generic DB error.
+    """
+
+
+# Widths of the bounded ``audit_log`` columns (migration d4e7a2c9b1f3 widened
+# id/tenant_id to 64). ``note`` is TEXT and unbounded.
+AUDIT_COLUMN_WIDTHS: dict[str, int] = {
+    "id": 64,
+    "tenant_id": 64,
+    "goal_id": 64,
+    "tool_name": 200,
+    "action_level": 20,
+    "outcome": 100,
+    "step_id": 64,
+    "approver": 200,
+    "ip_address": 45,
+    "user_agent": 500,
+    "api_key_id": 64,
+    "request_id": 64,
+    "connector_id": 64,
+}
+
+
+def check_audit_widths(row: dict[str, Any]) -> None:
+    """Raise :class:`AuditFieldTooLongError` when a value overflows its column."""
+    for column, width in AUDIT_COLUMN_WIDTHS.items():
+        value = row.get(column)
+        if value is not None and len(str(value)) > width:
+            raise AuditFieldTooLongError(
+                f"audit_log.{column} is {len(str(value))} chars; the column holds {width}"
+            )
+
+
 def _audit_row(event: AuditEvent, tenant_id: str) -> dict[str, Any]:
     return {
         "id": event.event_id,
@@ -247,6 +285,8 @@ class AuditLog:
             )
 
     async def _persist_with_retry(self, event: AuditEvent, tenant_id: str) -> None:
+        # Deterministic overflow: refuse loudly, never truncate, never retry.
+        check_audit_widths(_audit_row(event, tenant_id))
         last_exc: Exception | None = None
         for attempt in range(self._write_attempts):
             try:

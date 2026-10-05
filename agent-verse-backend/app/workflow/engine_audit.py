@@ -89,8 +89,12 @@ async def write_engine_audit(
     """
     from sqlalchemy import text as sa_text
 
+    from app.governance.audit import check_audit_widths
+
     tid = audit_tenant_id(tenant_id)
     try:
+        # Ids are never truncated (P4-2): an overflow is refused and logged.
+        check_audit_widths({"tenant_id": tid, "goal_id": str(run_id), "step_id": step_id or ""})
         async with session.begin_nested():
             # audit_log's policy compares tenant_id to app.tenant_id as TEXT, so
             # the GUC must carry the same (hex) form as the row. The workflow
@@ -109,10 +113,10 @@ async def write_engine_audit(
                 {
                     "id": uuid.uuid4().hex,
                     "tid": tid,
-                    "gid": str(run_id)[:64],
+                    "gid": str(run_id),
                     "tool": f"workflow.{kind}.{event}",
                     "outcome": event[:100],
-                    "step": (step_id or "")[:64],
+                    "step": step_id or "",
                     "note": note[:1000],
                     "actor": ENGINE_ACTOR,
                 },
