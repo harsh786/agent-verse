@@ -18,6 +18,13 @@ async def authed_client(app):
         yield c
 
 
+async def _own_connector(client: AsyncClient) -> str:
+    r = await client.post("/connectors", json={"name": "memory-test", "url": "builtin://",
+                                               "auth_type": "none", "type": "builtin-memory"})
+    assert r.status_code == 201, r.text
+    return str(r.json()["server_id"])
+
+
 @pytest.mark.asyncio
 async def test_health_history_requires_auth(app):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -28,8 +35,16 @@ async def test_health_history_requires_auth(app):
 @pytest.mark.asyncio
 async def test_health_history_is_503_without_db(authed_client):
     """MCPREG-02: no DB is not "never checked" — an honest 503, not []."""
-    r = await authed_client.get("/connectors/unknown-server/health")
+    sid = await _own_connector(authed_client)
+    r = await authed_client.get(f"/connectors/{sid}/health")
     assert r.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_health_history_of_an_unknown_connector_is_404(authed_client):
+    """P1c-5: not the caller's connector -> 404, like every other connector route."""
+    r = await authed_client.get("/connectors/unknown-server/health")
+    assert r.status_code == 404
 
 
 class _BrokenSession:
@@ -49,7 +64,8 @@ class _BrokenSession:
 @pytest.mark.asyncio
 async def test_health_history_db_error_is_503(app, authed_client):
     app.state.db_session_factory = lambda: _BrokenSession()
-    r = await authed_client.get("/connectors/srv/health")
+    sid = await _own_connector(authed_client)
+    r = await authed_client.get(f"/connectors/{sid}/health")
     assert r.status_code == 503
     assert "db down" not in r.text
 
