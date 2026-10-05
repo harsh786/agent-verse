@@ -40,6 +40,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
+from app.db.app_role import AppRoleSpec, ensure_app_role
 from app.tenancy.context import PlanTier, TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.quota import TriggerQuotaExceeded
@@ -48,7 +49,6 @@ from app.triggers.store import ScheduleStore
 pytestmark = pytest.mark.integration
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-_TABLES = ("schedules", "trigger_events", "goals", "channel_tenant_mappings", "tenants")
 
 
 @pytest.fixture(scope="module")
@@ -73,21 +73,11 @@ async def dbs(postgres_url: str) -> AsyncIterator[SimpleNamespace]:
     admin_engine = create_async_engine(postgres_url)
     t1, t2 = uuid.uuid4().hex, uuid.uuid4().hex
     async with admin_engine.begin() as conn:
-        quoted = (
-            await conn.execute(text("SELECT quote_literal(:p)"), {"p": password})
-        ).scalar_one()
-        await conn.execute(
-            text(
-                f"CREATE ROLE {role} LOGIN PASSWORD {quoted} "
-                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
-            )
-        )
-        await conn.execute(text(f"GRANT CONNECT ON DATABASE test TO {role}"))
-        await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
-        for table in _TABLES:
-            await conn.execute(
-                text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON {table} TO {role}")
-            )
+        # The application role comes from the SAME bootstrap production runs after
+        # every migration (app/db/app_role.py), not a hand-picked table list: the
+        # schedule store also reads other tenant-scoped tables (e.g. the per-tenant
+        # envelope key in tenant_vault_keys for webhook secrets), as in production.
+        await conn.run_sync(ensure_app_role, AppRoleSpec(role=role, password=password))
         for tid in (t1, t2):
             await conn.execute(
                 text(
