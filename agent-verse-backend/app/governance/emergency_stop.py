@@ -239,6 +239,34 @@ async def clear_org_stop(redis: Any, tenant_id: str, org_id: str) -> None:
         _log.warning("emergency_stop_index_clear_failed", tenant_id=tenant_id, error=str(exc))
 
 
+async def record_stop_outcome(
+    redis: Any,
+    key: str,
+    record: dict[str, Any],
+    *,
+    cancelled_goals: int,
+    rejected_approvals: int,
+) -> bool:
+    """Add the activation's outcome counts to the stored flag (best effort).
+
+    ``GET /governance/emergency-stop`` then reports them to every operator, not
+    just the browser that activated the stop. Written with ``SET XX`` so a stop
+    that was lifted in the meantime is never re-created. Returns whether the
+    counts were stored; a failure leaves the (already persisted) stop intact.
+    """
+    if redis is None:
+        return False
+    updated = {
+        **record,
+        "cancelled_goals": int(cancelled_goals),
+        "rejected_approvals": int(rejected_approvals),
+    }
+    try:
+        return bool(await redis.set(key, json.dumps(updated), xx=True))
+    except Exception:
+        return False
+
+
 async def clear_stop(redis: Any, key: str) -> None:
     if redis is None:
         raise EmergencyStopUnavailableError("no shared control store (Redis) is configured")

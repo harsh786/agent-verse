@@ -20,25 +20,42 @@ import { API_BASE, errorMessageFromBody, governanceApi } from "@/lib/api/client"
  */
 function useEmergencyStopSync() {
   const syncFromServer = useEmergencyStore((s) => s.syncFromServer);
-  const { data } = useQuery({
+  const query = useQuery({
     queryKey: ["governance", "emergency-stop"],
     queryFn: () => governanceApi.getEmergencyStop(),
     refetchInterval: 30_000,
     retry: false,
   });
+  const { data } = query;
   useEffect(() => {
     if (typeof data?.active === "boolean") {
-      syncFromServer({ active: data.active, activatedAt: data.activated_at ?? null });
+      syncFromServer({
+        active: data.active,
+        activatedAt: data.activated_at ?? null,
+        cancelledGoals: data.cancelled_goals ?? null,
+        rejectedApprovals: data.rejected_approvals ?? null,
+      });
     }
   }, [data, syncFromServer]);
+  return query;
 }
 
 function EmergencyBanner() {
-  useEmergencyStopSync();
+  const statusQuery = useEmergencyStopSync();
   const { isActive, activatedAt, cancelledGoals, clear } = useEmergencyStore();
   const qc = useQueryClient();
   const [clearError, setClearError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
+
+  // The status read failed (e.g. 503 while the control store is down): say so
+  // rather than showing — or hiding — a remembered value.
+  if (statusQuery.isError) {
+    return (
+      <div role="status" className="bg-amber-500 text-black px-4 py-1.5 text-sm font-medium shrink-0">
+        Emergency-stop status unknown — the server could not report it. Goals may be halted.
+      </div>
+    );
+  }
 
   if (!isActive) return null;
 

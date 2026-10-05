@@ -58,6 +58,34 @@ function mockStopState(active: boolean) {
 }
 
 describe('AppLayout emergency banner follows the server', () => {
+  test('a failing status read shows "status unknown", never a remembered local value', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).includes('/governance/emergency-stop') && (!init?.method || init.method === 'GET'))
+        return new Response(JSON.stringify({ detail: 'control store unavailable' }), {
+          status: 503, headers: { 'Content-Type': 'application/json' },
+        });
+      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    // A stale "active, 7 cancelled" from an earlier session in this browser.
+    useEmergencyStore.setState({ isActive: true, activatedAt: '2026-01-01T00:00:00Z', cancelledGoals: 7, rejectedApprovals: 0 });
+    renderLayout();
+    expect(await screen.findByText(/Emergency-stop status unknown/i)).toBeInTheDocument();
+    expect(screen.queryByText(/7 goals cancelled/i)).not.toBeInTheDocument();
+  });
+
+  test('the cancelled-goals count comes from the server (a stop activated elsewhere)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).includes('/governance/emergency-stop') && (!init?.method || init.method === 'GET'))
+        return new Response(
+          JSON.stringify({ active: true, activated_at: '2026-09-29T10:00:00+00:00', cancelled_goals: 5, rejected_approvals: 2 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderLayout();
+    expect(await screen.findByText(/5 goals cancelled/i)).toBeInTheDocument();
+  });
+
   test('shows the banner when the server reports an active stop', async () => {
     mockStopState(true);
     renderLayout();
@@ -169,8 +197,18 @@ describe('AppLayout', () => {
 
   test('a network failure clearing the stop keeps the banner and says so', async () => {
     // Regression: the banner claimed the stop was lifted even when the DELETE
-    // never reached the server (a false UI state for a safety control).
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
+    // never reached the server (a false UI state for a safety control). The
+    // status read still succeeds (a failing read is the "status unknown" case).
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).includes('/governance/emergency-stop') && init?.method === 'DELETE')
+        throw new Error('network down');
+      if (String(input).includes('/governance/emergency-stop'))
+        return new Response(
+          JSON.stringify({ active: true, activated_at: '2026-09-29T10:00:00+00:00', cancelled_goals: 5 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     useEmergencyStore.setState({
       isActive: true,
       activatedAt: new Date().toISOString(),

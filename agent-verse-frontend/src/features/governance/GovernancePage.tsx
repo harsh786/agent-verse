@@ -160,11 +160,13 @@ function BudgetGauge({
 function EmergencyStopBanner() {
   const { isActive, activatedAt, cancelledGoals, rejectedApprovals, setActive, clear } = useEmergencyStore();
   const [confirming, setConfirming] = useState(false);
+  const qc = useQueryClient();
 
   const stopMutation = useMutation({
     mutationFn: () => governanceApi.emergencyStop(),
     onSuccess: (d) => {
       setActive({ cancelledGoals: d.cancelled_goals, rejectedApprovals: d.rejected_approvals });
+      void qc.invalidateQueries({ queryKey: ['governance', 'emergency-stop'] });
       setConfirming(false);
       toast({ kind: 'error', message: 'Emergency stop activated.' });
     },
@@ -174,6 +176,7 @@ function EmergencyStopBanner() {
     mutationFn: () => governanceApi.clearEmergencyStop(),
     onSuccess: () => {
       clear();
+      void qc.invalidateQueries({ queryKey: ['governance', 'emergency-stop'] });
       toast({ kind: 'success', message: 'Emergency stop cleared.' });
     },
   });

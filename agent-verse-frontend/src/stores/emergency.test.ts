@@ -48,11 +48,17 @@ describe('useEmergencyStore', () => {
     expect(s.rejectedApprovals).toBe(0);
   });
 
-  it('persists state under the agentverse-emergency key', () => {
+  it('is never persisted to browser storage (the server is the source of truth)', () => {
     useEmergencyStore.getState().setActive({ cancelledGoals: 1, rejectedApprovals: 1 });
-    const raw = localStorage.getItem('agentverse-emergency');
-    expect(raw).not.toBeNull();
-    const parsed = JSON.parse(raw as string);
-    expect(parsed.state.isActive).toBe(true);
+    expect(localStorage.getItem('agentverse-emergency')).toBeNull();
+  });
+
+  it('syncFromServer takes the counts from the server payload', () => {
+    useEmergencyStore.getState().syncFromServer({
+      active: true, activatedAt: '2026-09-29T10:00:00Z', cancelledGoals: 5, rejectedApprovals: 2,
+    });
+    const s = useEmergencyStore.getState();
+    expect(s.cancelledGoals).toBe(5);
+    expect(s.rejectedApprovals).toBe(2);
   });
 });

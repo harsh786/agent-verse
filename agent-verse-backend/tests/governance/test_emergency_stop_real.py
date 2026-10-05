@@ -120,6 +120,37 @@ def test_stop_cancels_goals_running_on_other_replicas() -> None:
     assert resp.json()["cancelled_goals"] == 2
 
 
+def test_get_reports_the_stop_outcome_to_another_client() -> None:
+    """FE-01: the banner's counts come from the server, not the activating browser."""
+    server = fakeredis.FakeServer()
+    svc = _GoalServiceStub(["g-1", "g-2", "g-3"])
+    activating = TestClient(
+        _app(redis=fakeredis.aioredis.FakeRedis(server=server), goal_service=svc)
+    )
+    assert activating.post("/governance/emergency-stop", headers=H).status_code == 200
+
+    other = TestClient(_app(redis=fakeredis.aioredis.FakeRedis(server=server)))
+    state = other.get("/governance/emergency-stop", headers=H).json()
+    assert state["active"] is True
+    assert state["cancelled_goals"] == 3
+    assert state["rejected_approvals"] == 0
+    assert state["activated_by"] == "k-adm"
+
+
+def test_recording_the_outcome_never_resurrects_a_cleared_stop() -> None:
+    """The counts are written with SET XX: a stop lifted meanwhile stays lifted."""
+    import asyncio
+
+    from app.governance.emergency_stop import read_stop, record_stop_outcome
+
+    redis = fakeredis.aioredis.FakeRedis()
+    key = tenant_stop_key(TID)
+    record = asyncio.run(activate_stop(redis, key, activated_by="k"))
+    asyncio.run(redis.delete(key))  # cleared by another operator
+    asyncio.run(record_stop_outcome(redis, key, record, cancelled_goals=1, rejected_approvals=0))
+    assert asyncio.run(read_stop(redis, key)) is None
+
+
 def test_stop_flag_write_failure_is_503() -> None:
     redis = fakeredis.aioredis.FakeRedis()
     redis.set = AsyncMock(side_effect=ConnectionError("down"))  # type: ignore[method-assign]

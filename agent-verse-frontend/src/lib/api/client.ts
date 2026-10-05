@@ -1119,7 +1119,14 @@ export const governanceApi = {
     ),
   // Server-side stop state — the source of truth for the emergency banner.
   getEmergencyStop: () =>
-    request<{ active?: boolean; activated_at?: string | null; tenant_id?: string }>(
+    request<{
+      active?: boolean;
+      activated_at?: string | null;
+      tenant_id?: string;
+      activated_by?: string | null;
+      cancelled_goals?: number | null;
+      rejected_approvals?: number | null;
+    }>(
       "/governance/emergency-stop"
     ),
 };

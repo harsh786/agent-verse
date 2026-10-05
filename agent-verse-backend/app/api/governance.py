@@ -1355,6 +1355,9 @@ async def get_emergency_stop(request: Request) -> dict[str, Any]:
         "activated_at": record.get("activated_at"),
         "activated_by": record.get("activated_by"),
         "reason": record.get("reason", ""),
+        # Outcome of the activation, recorded on the flag (None until recorded).
+        "cancelled_goals": record.get("cancelled_goals"),
+        "rejected_approvals": record.get("rejected_approvals"),
     }
 
 
@@ -1415,6 +1418,7 @@ async def emergency_stop(
     from app.governance.emergency_stop import (
         EmergencyStopUnavailableError,
         activate_stop,
+        record_stop_outcome,
         tenant_stop_key,
     )
 
@@ -1543,6 +1547,17 @@ async def emergency_stop(
         except Exception as exc:
             _log.warning("emergency_stop_audit_failed: %s", exc)
             errors.append(f"audit_failed: {type(exc).__name__}")
+
+    # 5. Record the outcome on the flag so GET reports it to every operator
+    #    (FE-01: the banner's counts used to live only in the activating browser).
+    if not await record_stop_outcome(
+        _stop_redis(request),
+        tenant_stop_key(ctx.tenant_id),
+        record,
+        cancelled_goals=len(cancelled_goals),
+        rejected_approvals=len(rejected_approvals),
+    ):
+        _log.warning("emergency_stop_outcome_not_recorded")
 
     partial = bool(failed_goals or failed_approvals or errors)
     return {
