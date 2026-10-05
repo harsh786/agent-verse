@@ -3,14 +3,21 @@ import { useState } from 'react';
 import { ApiError } from '@/lib/api/client';
 import type { SourceConfig } from '../types';
 import { FAMILY_CONFIG } from '../types';
-import { useSourceHealth, useSyncStatus, useDocuments, useTriggerSync, useCancelSync, useReindexSource } from '../hooks';
+import { useSourceHealth, useSyncStatus, useDocuments, useTriggerSync, useCancelSync, useReindexSource, useUpdateSource } from '../hooks';
+import { FamilyFormRouter } from './families/FamilyFormRouter';
+import { formShowsFieldErrors } from './families/formSupport';
+import { restoreMaskedSecrets } from '../sourceSecrets';
+import { connectionConfigErrors, parseApiFieldErrors, type ApiFieldErrors } from '@/lib/apiFieldErrors';
+import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
+import { friendlyConnectionError } from '@/lib/friendlyError';
 
 interface Props { source: SourceConfig; onClose: () => void; }
 type Tab = 'overview' | 'documents' | 'history' | 'settings';
 
 export function SourceDetailDrawer({ source, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('overview');
-  const { data: health } = useSourceHealth(source.source_id);
+  // The open drawer is the one place that keeps polling health (C8).
+  const { data: health } = useSourceHealth(source.source_id, true, { poll: true });
   const { data: syncStatus } = useSyncStatus(source.source_id);
   const triggerSync = useTriggerSync();
   const cancelSync = useCancelSync();
@@ -29,19 +36,19 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
               <span className="rounded bg-muted px-2 py-0.5 text-xs font-mono">{source.source_type}</span>
               <span className="text-xs text-muted-foreground">{familyCfg.label}</span>
               {health && (
-                <span className={`text-xs ${health.ok ? 'text-emerald-600' : 'text-red-600'}`} title={health.ok ? undefined : health.error ?? undefined}>
+                <span className={`text-xs ${health.ok ? 'text-emerald-600' : 'text-red-600'}`}
+                  title={health.ok ? undefined : friendlyConnectionError(health.error, 'Connection error').message}>
                   {health.ok ? `● ${Math.round(health.latency_ms)}ms` : '✕ Error'}
                 </span>
               )}
             </div>
             <h2 className="mt-1 text-base font-semibold">{source.name}</h2>
+            {/* Raw driver text (TopologyDescription, member hosts) stays behind Details, sanitised (B6). */}
             {health && !health.ok && health.error && (
-              <p role="alert" className="mt-1 text-xs text-red-600 break-words">{health.error}</p>
+              <FriendlyErrorMessage role="alert" data-testid="health-error" className="mt-1 text-xs text-red-600" error={health.error} />
             )}
             {triggerSync.isError && (
-              <p role="alert" className="mt-1 text-xs text-red-600 break-words">
-                Sync failed to start: {triggerSync.error instanceof Error ? triggerSync.error.message : String(triggerSync.error)}
-              </p>
+              <FriendlyErrorMessage role="alert" className="mt-1 text-xs text-red-600" prefix="Sync failed to start: " error={triggerSync.error} />
             )}
             {reindex.isError && (
               <p role="alert" className="mt-1 text-xs text-red-600 break-words">
@@ -49,7 +56,7 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
                   ? reindex.error.message.toLowerCase().includes('legal hold')
                     ? 'Reindex refused: the collection is under legal hold.'
                     : 'Reindex refused: a sync is already running for this source.'
-                  : `Reindex failed: ${reindex.error instanceof Error ? reindex.error.message : String(reindex.error)}`}
+                  : `Reindex failed: ${friendlyConnectionError(reindex.error).message}`}
               </p>
             )}
           </div>
@@ -195,11 +202,16 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
           <dt className="text-muted-foreground">Chunks</dt><dd>{String(job.chunks_created ?? 0)}</dd>
         </dl>
         {Boolean(job.error_message) && (
-          // A completed job's message is a notice (USR-5: e.g. a URL that moved
-          // permanently), not an error.
-          <p data-testid="sync-job-message" className={`mt-2 text-xs ${job.status === 'completed' ? 'text-amber-700 dark:text-amber-300' : 'text-destructive'}`}>
-            {String(job.error_message)}
-          </p>
+          job.status === 'completed' ? (
+            // A completed job's message is a notice (USR-5: e.g. a URL that moved
+            // permanently), not an error — shown verbatim so the new URL is visible.
+            <p data-testid="sync-job-message" className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+              {String(job.error_message)}
+            </p>
+          ) : (
+            // A failure (or partial failure) is driver text: short reason, sanitised details (B6).
+            <FriendlyErrorMessage data-testid="job-error" className="mt-2 text-xs text-destructive" error={String(job.error_message)} />
+          )
         )}
       </div>
     </div>
@@ -208,7 +220,8 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
 
 function SettingsTab({ source }: { source: SourceConfig }) {
   return (
-    <div className="space-y-3">
+    <div className="space-y-5">
+      <ConnectionEditor source={source} />
       <Section title="Configuration">
         <dl className="grid grid-cols-2 gap-2 text-xs">
           <dt className="text-muted-foreground">Chunking</dt><dd>{source.chunking_strategy}</dd>
@@ -219,6 +232,67 @@ function SettingsTab({ source }: { source: SourceConfig }) {
         </dl>
       </Section>
     </div>
+  );
+}
+
+/**
+ * Edit connection_config in place (credential rotation). Secrets arrive masked
+ * ("********"), are shown as "saved", and are PATCHed back as the mask unless
+ * the user typed a replacement — the backend keeps the stored value for a mask.
+ */
+function ConnectionEditor({ source }: { source: SourceConfig }) {
+  const update = useUpdateSource();
+  const original = source.connection_config ?? {};
+  const [draft, setDraft] = useState<Record<string, unknown> | null>(null);
+  const [errors, setErrors] = useState<ApiFieldErrors | null>(null);
+  const [saved, setSaved] = useState(false);
+  const connErrors = errors ? connectionConfigErrors(errors) : {};
+  const placed = formShowsFieldErrors(source.family, source.source_type);
+  const listed = Object.entries(errors?.fields ?? {}).filter(([k]) => !placed || !k.startsWith('connection_config.'));
+
+  function save() {
+    if (!draft) return;
+    setErrors(null);
+    update.mutate(
+      { id: source.source_id, data: { connection_config: restoreMaskedSecrets(draft, original) } },
+      {
+        onSuccess: () => { setDraft(null); setSaved(true); },
+        onError: (e: unknown) => setErrors(parseApiFieldErrors(e)),
+      },
+    );
+  }
+
+  return (
+    <Section title="Connection">
+      {!draft ? (
+        <div className="space-y-2">
+          {saved && <p className="text-xs text-emerald-600">Connection saved.</p>}
+          <button
+            onClick={() => { setDraft({ ...original }); setSaved(false); setErrors(null); }}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted transition-colors"
+          >
+            Edit connection
+          </button>
+          <p className="text-xs text-muted-foreground">Change hosts or options, or rotate credentials. Saved secrets stay hidden.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          <FamilyFormRouter family={source.family} sourceType={source.source_type} value={draft} onChange={setDraft} errors={connErrors} />
+          {errors && (errors.general || listed.length > 0) && (
+            <div role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/20 dark:text-red-300">
+              {errors.general && <FriendlyErrorMessage className="text-xs" prefix="Could not save: " error={errors.general} />}
+              {listed.map(([k, msg]) => <p key={k}><code className="font-mono">{k.replace(/^connection_config\./, '')}</code>: {msg}</p>)}
+            </div>
+          )}
+          <div className="flex gap-2 justify-end">
+            <button onClick={() => { setDraft(null); setErrors(null); }} className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted">Cancel</button>
+            <button onClick={save} disabled={update.isPending} className="rounded-lg bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium hover:bg-primary/90 disabled:opacity-50">
+              {update.isPending ? 'Saving…' : 'Save connection'}
+            </button>
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }
 

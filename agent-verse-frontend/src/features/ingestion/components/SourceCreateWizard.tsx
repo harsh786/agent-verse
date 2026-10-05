@@ -2,21 +2,18 @@ import { useState } from 'react';
 import { X, ChevronRight } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SPRING_PAGE } from '@/components/ui/JARVISPageShell';
-import type { SourceFamily } from '../types';
+import type { SourceConfig, SourceFamily, SourceValidation } from '../types';
 import { FAMILY_CONFIG, ALL_FAMILIES } from '../types';
-import { useCreateSource } from '../hooks';
-import { ObjectStorageForm } from './families/ObjectStorageForm';
-import { DatabaseForm } from './families/DatabaseForm';
-import { RedisForm } from './families/RedisForm';
-import { StreamingForm } from './families/StreamingForm';
-import { CommunicationForm } from './families/CommunicationForm';
-import { CodeRepoForm } from './families/CodeRepoForm';
-import { WebForm } from './families/WebForm';
-import { GenericSourceForm } from './families/GenericSourceForm';
+import { useCreateSource, useSourcePreview, useValidateSource } from '../hooks';
+import { FieldError } from './families/fields';
+import { FamilyFormRouter } from './families/FamilyFormRouter';
+import { formShowsFieldErrors } from './families/formSupport';
+import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
+import { connectionConfigErrors, parseApiFieldErrors, type ApiFieldErrors } from '@/lib/apiFieldErrors';
 
 interface Props { onClose: () => void; onCreated?: () => void; }
 
-type Step = 'family' | 'type' | 'configure';
+type Step = 'family' | 'type' | 'configure' | 'preview';
 
 const SOURCE_TYPES_BY_FAMILY: Record<SourceFamily, string[]> = {
   object_storage:  ['s3', 'gcs', 'azure_blob', 'minio', 'r2', 'delta_lake', 'iceberg'],
@@ -39,25 +36,6 @@ const SOURCE_TYPES_BY_FAMILY: Record<SourceFamily, string[]> = {
   agent_generated: ['agent_generated', 'pdf_file', 'docx_file'],
 };
 
-function FamilyFormRouter({ family, sourceType, value, onChange }: {
-  family: SourceFamily; sourceType: string;
-  value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void;
-}) {
-  switch (family) {
-    case 'object_storage': return <ObjectStorageForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'nosql_database':
-      if (sourceType === 'redis') return <RedisForm sourceType={sourceType} value={value} onChange={onChange} />;
-      return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'olap_database':
-    case 'oltp_database': return <DatabaseForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'streaming':      return <StreamingForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'communication':  return <CommunicationForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'code_repository': return <CodeRepoForm sourceType={sourceType} value={value} onChange={onChange} />;
-    case 'web':            return <WebForm sourceType={sourceType} value={value} onChange={onChange} />;
-    default:               return <GenericSourceForm sourceType={sourceType} value={value} onChange={onChange} />;
-  }
-}
-
 export function SourceCreateWizard({ onClose, onCreated }: Props) {
   const [step, setStep] = useState<Step>('family');
   const [selectedFamily, setSelectedFamily] = useState<SourceFamily | null>(null);
@@ -68,20 +46,62 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
   const [syncMode, setSyncMode] = useState<'incremental' | 'full' | 'streaming'>('incremental');
 
   const create = useCreateSource();
+  const validate = useValidateSource();
+  const preview = useSourcePreview();
+  /** The source just created — the preview step needs its id. */
+  const [created, setCreated] = useState<{ source_id: string; name?: string } | null>(null);
+  /** The last create refusal (4xx/5xx), split per field (B1). */
+  const [createErrors, setCreateErrors] = useState<ApiFieldErrors | null>(null);
+  const connErrors = createErrors ? connectionConfigErrors(createErrors) : {};
+  // Field errors the form can't place go to the summary instead.
+  const unplacedConnErrors =
+    selectedFamily && selectedType && formShowsFieldErrors(selectedFamily, selectedType) ? {} : connErrors;
+  const otherFieldErrors = Object.entries(createErrors?.fields ?? {}).filter(
+    ([path]) => !path.startsWith('connection_config.') && !['name', 'collection_id', 'sync_mode'].includes(path),
+  );
 
-  function handleSubmit() {
-    if (!selectedFamily || !selectedType || !sourceName.trim()) return;
-    create.mutate({
+  function payload(): Partial<SourceConfig> {
+    return {
       name: sourceName,
-      family: selectedFamily,
-      source_type: selectedType,
+      family: selectedFamily ?? undefined,
+      source_type: selectedType ?? undefined,
       connection_config: connConfig,
       sync_mode: syncMode,
       collection_id: collectionId,
-    } as Record<string, unknown>, { onSuccess: () => { onCreated?.(); onClose(); } });
+    };
   }
 
-  const steps: Step[] = ['family', 'type', 'configure'];
+  function handleSubmit() {
+    if (!selectedFamily || !selectedType || !sourceName.trim()) return;
+    setCreateErrors(null);
+    create.mutate(payload(), {
+      onSuccess: (data?: Partial<SourceConfig>) => {
+        onCreated?.();
+        // Preview (POST /sources/{id}/preview) needs the saved source's id.
+        if (data?.source_id) {
+          setCreated({ source_id: data.source_id, name: data.name });
+          setStep('preview');
+        } else {
+          onClose();
+        }
+      },
+      onError: (e: unknown) => setCreateErrors(parseApiFieldErrors(e)),
+    });
+  }
+
+  /** Test connection: POST /sources/validate?check_connection=true — nothing is saved. */
+  function handleTest() {
+    if (!selectedFamily || !selectedType) return;
+    setCreateErrors(null);
+    validate.mutate({ ...payload(), name: sourceName.trim() || `${selectedType} source` }, {
+      onError: (e: unknown) => {
+        const parsed = parseApiFieldErrors(e);
+        if (Object.keys(parsed.fields).length) setCreateErrors({ ...parsed, general: null });
+      },
+    });
+  }
+
+  const steps: Step[] = ['family', 'type', 'configure', 'preview'];
   const stepIdx = steps.indexOf(step);
 
   return (
@@ -168,19 +188,21 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
                   <h2 className="text-base font-semibold mb-4">Configure <code className="font-mono bg-muted rounded px-1.5 py-0.5 text-sm">{selectedType}</code></h2>
 
                   <div className="space-y-4">
-                    <Field label="Source Name *">
+                    <Field label="Source Name *" error={createErrors?.fields.name}>
                       <input type="text" value={sourceName} onChange={e => setSourceName(e.target.value)}
+                        aria-invalid={createErrors?.fields.name ? true : undefined}
                         placeholder={`My ${selectedType} source`} className={inputCls} />
                     </Field>
 
-                    <FamilyFormRouter family={selectedFamily} sourceType={selectedType} value={connConfig} onChange={setConnConfig} />
+                    <FamilyFormRouter family={selectedFamily} sourceType={selectedType} value={connConfig} onChange={setConnConfig} errors={connErrors} />
 
-                    <Field label="Target Collection ID" hint="Leave blank to use the default collection">
+                    <Field label="Target Collection ID" hint="Leave blank to use the default collection" error={createErrors?.fields.collection_id}>
                       <input type="text" value={collectionId} onChange={e => setCollectionId(e.target.value)}
+                        aria-invalid={createErrors?.fields.collection_id ? true : undefined}
                         placeholder="col-abc123" className={`${inputCls} font-mono`} />
                     </Field>
 
-                    <Field label="Sync Mode">
+                    <Field label="Sync Mode" error={createErrors?.fields.sync_mode}>
                       <select value={syncMode} onChange={e => setSyncMode(e.target.value as typeof syncMode)} className={inputCls}>
                         <option value="incremental">Incremental (default)</option>
                         <option value="full">Full re-index</option>
@@ -190,13 +212,57 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
                   </div>
                 </div>
               )}
+
+              {/* Step 4: Preview the created source (dry run, nothing is indexed) */}
+              {step === 'preview' && created && (
+                <div className="space-y-4">
+                  <h2 className="text-base font-semibold">Source created{created.name ? `: ${created.name}` : ''}</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Preview parses and chunks the first few documents without embedding or indexing anything.
+                  </p>
+                  <button
+                    onClick={() => preview.mutate(created.source_id)}
+                    disabled={preview.isPending}
+                    className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50"
+                  >
+                    {preview.isPending ? 'Previewing…' : 'Preview documents'}
+                  </button>
+                  <PreviewResult preview={preview} />
+                </div>
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
 
         {/* Footer */}
+        {step === 'configure' && createErrors && (createErrors.general || otherFieldErrors.length > 0 || Object.keys(unplacedConnErrors).length > 0) && (
+          <div role="alert" className="border-t border-border bg-red-50 px-5 py-3 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
+            <p className="font-medium">Could not create the source</p>
+            {createErrors.general && <FriendlyErrorMessage className="text-xs" error={createErrors.general} />}
+            {[...otherFieldErrors, ...Object.entries(unplacedConnErrors)].map(([k, msg]) => (
+              <p key={k} className="text-xs"><code className="font-mono">{k}</code>: {msg}</p>
+            ))}
+          </div>
+        )}
+        {step === 'configure' && (validate.isPending || validate.data || validate.error) && (
+          <div data-testid="connection-test-result" className="border-t border-border px-5 py-3 text-sm">
+            <ConnectionTestResult pending={validate.isPending} data={validate.data} error={validate.error} />
+          </div>
+        )}
+        {step === 'preview' && (
+          <div className="border-t border-border px-5 py-4 flex gap-2 justify-end">
+            <button onClick={onClose} className="rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors">Done</button>
+          </div>
+        )}
         {step === 'configure' && (
           <div className="border-t border-border px-5 py-4 flex gap-2 justify-end">
+            <button
+              onClick={handleTest}
+              disabled={validate.isPending}
+              className="mr-auto rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50"
+            >
+              {validate.isPending ? 'Testing…' : 'Test connection'}
+            </button>
             <button onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm hover:bg-muted transition-colors">Cancel</button>
             <button
               onClick={handleSubmit}
@@ -212,12 +278,73 @@ export function SourceCreateWizard({ onClose, onCreated }: Props) {
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function ConnectionTestResult({ pending, data, error }: {
+  pending: boolean; data: SourceValidation | undefined; error: unknown;
+}) {
+  if (pending) return <p className="text-muted-foreground">Testing the connection…</p>;
+  if (error) {
+    const parsed = parseApiFieldErrors(error);
+    return parsed.general || !Object.keys(parsed.fields).length
+      ? <FriendlyErrorMessage role="alert" className="text-sm text-red-600" prefix="Test failed: " error={parsed.general ?? error} />
+      : <p className="text-red-600">Fix the highlighted fields and test again.</p>;
+  }
+  if (!data) return null;
+  if (data.valid) {
+    return data.connection
+      ? <p className="text-emerald-600">● Connection OK{data.connection.latency_ms != null ? ` · ${Math.round(data.connection.latency_ms)} ms` : ''}</p>
+      : <p className="text-emerald-600">Configuration valid (the connection was not checked).</p>;
+  }
+  // Prefer the connection's own error (the errors list wraps it in a prefix).
+  const reasons = data.connection?.error ? [data.connection.error, ...data.errors.filter(e => !e.startsWith('Connection check failed'))] : data.errors;
+  return (
+    <div className="space-y-1">
+      {(reasons.length ? reasons : ['The configuration is not valid.']).map((r, i) => (
+        <FriendlyErrorMessage key={i} className="text-sm text-red-600" prefix="✕ " error={r} />
+      ))}
+    </div>
+  );
+}
+
+function PreviewResult({ preview }: { preview: ReturnType<typeof useSourcePreview> }) {
+  if (preview.error) {
+    return <FriendlyErrorMessage role="alert" className="text-sm text-red-600" prefix="Preview failed: " error={preview.error} />;
+  }
+  const data = preview.data;
+  if (!data) return null;
+  // The endpoint answers HTTP 200 with {error} when the connector fails.
+  if (data.error) {
+    return <FriendlyErrorMessage role="alert" className="text-sm text-red-600" prefix="Preview failed: " error={data.error} />;
+  }
+  const sample = data.sample ?? [];
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-medium">{data.docs_previewed} documents previewed</p>
+      {sample.length > 0 && (
+        <table className="w-full text-xs">
+          <thead><tr className="text-left text-muted-foreground"><th className="py-1">Document</th><th>Status</th><th>Chunks</th><th>Tokens</th></tr></thead>
+          <tbody>
+            {sample.map(d => (
+              <tr key={d.doc_id} className="border-t border-border/50">
+                <td className="py-1 font-mono break-all">{d.doc_id}</td>
+                <td>{d.status}</td>
+                <td>{d.chunks_would_create ?? '—'}</td>
+                <td>{d.tokens_estimate ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string; children: React.ReactNode }) {
   return (
     <div>
       <label className="block text-sm font-medium mb-1">{label}</label>
       {hint && <p className="text-xs text-muted-foreground mb-1.5">{hint}</p>}
       {children}
+      <FieldError error={error} />
     </div>
   );
 }

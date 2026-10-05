@@ -21,7 +21,7 @@ Connection config (Sources UI: NoSQL / Relational -> mongodb):
     tls_client_cert      PEM client certificate (mutual TLS / MONGODB-X509) ...
     tls_client_private_key  ... and its private key (secret);
     tls_client_key_password optional key passphrase (secret).
-    tls_allow_invalid_certificates  Explicit opt-out of server certificate checks.
+    tls_allow_invalid_certificates  Refused (MDB-07): verification cannot be turned off.
     database             Database to ingest (required).
     collections          List of collections (or ``collections_csv`` / ``collection``);
                          empty -> every non-system collection in the database.
@@ -162,7 +162,13 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
     parts = urlsplit(uri)
     if parts.scheme.lower() not in ("mongodb", "mongodb+srv"):
         raise ValueError("MongoDB URI must start with mongodb:// or mongodb+srv://")
-    options = {k.lower(): v for k, v in parse_qsl(parts.query, keep_blank_values=True)}
+    # NF-1 / MDB-07: the shared policy reads the options the way the driver does
+    # ('&' or ';'), refuses file-path / proxy / provider-property options,
+    # ambient-identity mechanisms and anything that weakens TLS.
+    from app.net.mongodb_policy import assert_mongo_connection_allowed, uri_options
+
+    assert_mongo_connection_allowed(uri, cc)
+    options = {k.lower(): v for k, v in uri_options(uri)}
     forbidden = sorted(set(options) & _FORBIDDEN_URI_OPTIONS)
     if forbidden:
         raise ValueError(
@@ -210,8 +216,8 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
         raise ValueError("tls_client_cert and tls_client_private_key must be given together")
     if _truthy(cc.get("tls")) or tls_ca_pem or client_cert:
         kwargs["tls"] = True
-    if _truthy(cc.get("tls_allow_invalid_certificates")):
-        kwargs["tlsAllowInvalidCertificates"] = True
+    # MDB-07 / C6: TLS verification can never be weakened (checked above with
+    # the rest of the shared connection policy).
     if kwargs.get("authMechanism") == "MONGODB-X509" and not client_cert:
         raise ValueError("MONGODB-X509 authentication needs tls_client_cert and its private key")
 
@@ -375,11 +381,13 @@ async def _connected(settings: _Settings) -> AsyncIterator[tuple[Any, _Settings]
         try:
             await stack.enter_async_context(pin_source_hosts(members, context=_CONTEXT))
         except ConnectorEgressBlockedError as exc:
+            # MDB-20: the names the SERVER advertised stay in the server log only.
             names = ", ".join(f"{h}:{p}" for h, p in members)
+            _log.warning("mongodb_member_refused members=%s error=%s", names, exc)
             raise ConnectorEgressBlockedError(
-                f"replica-set member(s) {names} advertised by the server are not allowed "
-                f"by the egress policy ({exc}); set direct_connection to use only the "
-                "given host"
+                f"{len(members)} replica-set member(s) advertised by the server are not "
+                "allowed by the egress policy; set direct_connection to use only the given "
+                "host"
             ) from exc
         allowed = {_host_key(h, p) for h, p in _dsn_hosts(pins.dsn)} | set(members)
         client = await asyncio.to_thread(
@@ -520,6 +528,19 @@ def _dotted_get(doc: dict[str, Any], path: str) -> Any:
     return value
 
 
+def _public_error(exc: BaseException) -> str:
+    """MDB-20: our own policy / egress messages as-is; driver text never."""
+    from pymongo.errors import PyMongoError
+
+    if not isinstance(exc, PyMongoError) and isinstance(
+        exc, ValueError | ConnectorEgressBlockedError | ConnectorUnavailableError
+    ):
+        return str(exc) or type(exc).__name__
+    from app.net.mongodb_errors import public_mongo_error
+
+    return public_mongo_error(exc, context="ingestion mongodb")
+
+
 @register("mongodb", feature_flag="ingestion_connector_mongodb_enabled")
 class MongoDBConnector(BaseConnector):
     """MongoDB connector — collection-based incremental ingestion."""
@@ -537,7 +558,7 @@ class MongoDBConnector(BaseConnector):
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata=meta)
         except Exception as exc:
-            return ConnectionHealth(ok=False, error=str(exc) or type(exc).__name__)
+            return ConnectionHealth(ok=False, error=_public_error(exc))
 
     async def get_delta(
         self, config: SourceConfig, cursor: str | None

@@ -49,3 +49,50 @@ export function qualifiedToolName(connectionName: string, toolName: string): str
   const prefix = connectionSlug(connectionName).slice(0, room).replace(/_+$/, '') || 'c';
   return `${prefix}${SEP}${toolName}`;
 }
+
+// ── Connection URIs (DSNs) — secrets, never links ─────────────────────────────
+
+const DSN_SCHEME_RE = /^(mongodb(\+srv)?|postgres(ql)?|mysql|rediss?):\/\//i;
+
+/** True for a database connection URI (mongodb://, postgresql://, mysql://, redis://…). */
+export function isDsn(value: string | null | undefined): boolean {
+  return DSN_SCHEME_RE.test((value ?? '').trim());
+}
+
+/** True only for an http(s) URL — the only kind the UI may render as a link. */
+export function isHttpUrl(value: string | null | undefined): boolean {
+  return /^https?:\/\//i.test((value ?? '').trim());
+}
+
+/**
+ * The URL with its userinfo (user:password@) replaced by `***@`. Scheme, hosts,
+ * path and query stay readable so a user can still tell connections apart.
+ */
+export function maskDsn(value: string | null | undefined): string {
+  const text = value ?? '';
+  return text.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#]*@/i, '$1***@');
+}
+
+/**
+ * True when a value is a backend mask placeholder, not a real secret:
+ * connectors answer `<redacted>`, Sources `********`, and a masked URI keeps
+ * its shape with the password starred (`mongodb://alice:****@host`).
+ * Sending such a value back on save means "unchanged".
+ */
+export function isMaskedSecret(value: string | null | undefined): boolean {
+  const text = (value ?? '').trim();
+  if (!text) return false;
+  return text.includes('<redacted>') || /\*{3,}/.test(text);
+}
+
+/**
+ * What the UI shows as a connection's address: the backend's `display_url`
+ * (masked URI, no userinfo — A8), else the built-in's upstream_url, else the
+ * url ('Built-in' for the builtin:// marker). Always userinfo-masked again.
+ */
+export function connectorDisplayUrl(
+  c: Pick<ConnectorResponse, 'url' | 'upstream_url' | 'display_url'>,
+): string {
+  const shown = c.display_url?.trim() || c.upstream_url?.trim() || (c.url === 'builtin://' ? 'Built-in' : c.url);
+  return maskDsn(shown);
+}

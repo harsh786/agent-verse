@@ -421,14 +421,15 @@ describe('Auth type selector', () => {
     expect(hints.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('clears auth_values when auth type changes', async () => {
+  it('clears auth_values when auth type changes (after confirming)', async () => {
     mockFetch([EMPTY_LIST]);
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: /register connector/i }));
     // Type token for bearer
     await userEvent.type(screen.getByLabelText(/access token/i), 'old-token');
-    // Switch to basic — token field should disappear
+    // Switch to basic — the entered token would be dropped, so it asks first (A2)
     await userEvent.selectOptions(screen.getByRole('combobox', { name: /auth type/i }), 'basic');
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: /switch/i }));
     expect(screen.queryByLabelText(/access token/i)).not.toBeInTheDocument();
     expect((screen.getByLabelText(/username/i) as HTMLInputElement).value).toBe('');
   });
@@ -672,7 +673,8 @@ describe('Accessibility', () => {
 describe('Multiple instances of one connector type', () => {
   const ORDERS = {
     server_id: 'builtin-mongodb:orders-db', name: 'orders-db', display_name: 'orders-db', builtin_type: 'builtin-mongodb', builtin_type_name: 'MongoDB',
-    url: 'builtin://', auth_type: 'api_key', auth_config: { uri: '***' }, status: 'active', has_builtin: true,
+    // Real shape (A10): connection_string with the URI masked.
+    url: 'builtin://', auth_type: 'connection_string', auth_config: { uri: '<redacted>' }, status: 'active', has_builtin: true,
   };
   const ANALYTICS = {
     ...ORDERS, server_id: 'builtin-mongodb:analytics-db', name: 'analytics-db', display_name: 'analytics-db',
@@ -728,7 +730,7 @@ describe('Multiple instances of one connector type', () => {
       both,
       { match: (u, i) => u.endsWith('/connectors') && i?.method === 'POST', response: { server_id: 'builtin-mongodb:reports-db', name: 'reports-db' } },
     ]);
-    renderPage({ prefill: { connector_type: 'mongodb', type: 'builtin-mongodb', type_name: 'MongoDB', name: '', url: 'builtin://', auth_type: 'none' } });
+    renderPage({ prefill: { connector_type: 'mongodb', type: 'builtin-mongodb', type_name: 'MongoDB', name: '', url: 'mongodb://localhost:27017', auth_type: 'connection_string' } });
     await screen.findByTestId('register-modal');
     expect(screen.getByText((_, el) => el?.tagName === 'P' && el.textContent === 'Type: MongoDB')).toBeInTheDocument();
     const name = screen.getByLabelText(/^name/i);
@@ -738,6 +740,7 @@ describe('Multiple instances of one connector type', () => {
     await userEvent.clear(name);
     await userEvent.type(name, 'reports-db');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/connection uri/i), 'mongodb://reports.example.com/');
     await userEvent.click(screen.getByRole('button', { name: /^register$/i }));
     await waitFor(() => {
       const post = spy.mock.calls.find(([u, i]) => String(u).endsWith('/connectors') && (i as RequestInit)?.method === 'POST');

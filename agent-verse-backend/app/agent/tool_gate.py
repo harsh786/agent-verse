@@ -98,7 +98,7 @@ class GovernedToolGate:
         requires_approval: bool = False,
         auto_approve: bool = False,
     ) -> GateDecision:
-        risk = classify_tool_risk(tool_name, server_name)
+        risk = classify_tool_risk(tool_name, server_name, arguments)
         high_risk = risk in ("write_high", "destructive")
 
         # 1. Guardrails on the tool arguments.

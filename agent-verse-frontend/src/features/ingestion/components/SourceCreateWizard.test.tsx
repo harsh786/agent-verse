@@ -7,6 +7,8 @@ let isPending = false;
 
 vi.mock('../hooks', () => ({
   useCreateSource: () => ({ mutate, isPending }),
+  useValidateSource: () => ({ mutate: vi.fn(), isPending: false }),
+  useSourcePreview: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 afterEach(() => {

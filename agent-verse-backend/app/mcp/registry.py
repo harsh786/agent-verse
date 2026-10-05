@@ -41,6 +41,9 @@ class AuthType(enum.StrEnum):
     CUSTOM_HEADER = "custom_header"
     MTLS = "mtls"
     HMAC = "hmac"
+    # A database connection string (MongoDB, ...): the credentials are inside the
+    # URI, sealed as a connector secret (MDB-01); no HTTP auth header is sent.
+    CONNECTION_STRING = "connection_string"
     NONE = "none"
 
 
@@ -60,6 +63,10 @@ class MCPServerConfig(BaseModel):
     # url: existing field kept for backward compat; base_url is the new preferred name
     url: str = ""
     base_url: str = ""
+    # Non-secret display form of a database connection string (no userinfo;
+    # app.mcp.dsn_secrets.mask_dsn). The string itself is a sealed connector
+    # secret referenced from auth_config (MDB-01).
+    display_url: str = ""
     auth_type: AuthType = AuthType.NONE
     auth_config: dict[str, Any] = Field(default_factory=dict)
     status: ServerStatus = ServerStatus.ACTIVE
@@ -96,6 +103,13 @@ class MCPServerConfig(BaseModel):
         if not self.builtin_type and self.server_id.startswith("builtin-"):
             # Compat: legacy "builtin-<name>" ids and "builtin-<type>:<slug>" ids.
             self.builtin_type = self.server_id.split(":", 1)[0]
+        if not self.builtin_type and any(
+            isinstance(v, str) and v.strip().lower().startswith(("mongodb://", "mongodb+srv://"))
+            for v in (self.url, *self.auth_config.values())
+        ):
+            # A3: a legacy row saved as a "remote MCP server" with a MongoDB
+            # connection string is the MongoDB built-in (HTTP could never reach it).
+            self.builtin_type = "builtin-mongodb"
         return self
 
 

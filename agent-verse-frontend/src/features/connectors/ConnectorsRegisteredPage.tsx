@@ -1,24 +1,45 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef, useEffect, type CSSProperties } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuthStore } from '@/stores/auth';
 import { Eye, EyeOff, Plus, Trash2, ExternalLink, CheckCircle2, XCircle, Loader2, Info } from 'lucide-react';
-import { connectorsApi, type ConnectorResponse, type CatalogAuthField } from '@/lib/api/client';
+import { ApiError, connectorsApi, type ConnectorResponse, type CatalogAuthField, type ConnectorTestResult } from '@/lib/api/client';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
-import { connectorLabel, connectorTypeLabel } from '@/lib/connectors';
+import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
+import { friendlyConnectionError } from '@/lib/friendlyError';
+import { parseApiFieldErrors } from '@/lib/apiFieldErrors';
+import { connectorDisplayUrl, connectorLabel, connectorTypeLabel, isDsn, isHttpUrl, isMaskedSecret } from '@/lib/connectors';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Auth-type field definitions ─────────────────────────────────────────────
 
+type AuthFieldType = 'text' | 'password' | 'textarea' | 'email' | 'url' | 'checkbox' | 'file' | 'select';
+
+const AUTH_FIELD_TYPES: readonly AuthFieldType[] = ['text', 'password', 'textarea', 'email', 'url', 'checkbox', 'file', 'select'];
+
 interface AuthField {
   key: string;
   label: string;
   placeholder: string;
-  type: 'text' | 'password' | 'textarea' | 'email' | 'url';
+  /** checkbox stores 'true' / '' ; file reads the chosen file's text (or accepts a paste). */
+  type: AuthFieldType;
   required: boolean;
   hint?: string;
+  /** Choices for a `select` field. */
+  options?: { value: string; label: string }[];
+  /** File-picker filter for a `file` field. */
+  accept?: string;
+  /** Render the field only when this holds for the current values (e.g. TLS-only options). */
+  visibleWhen?: (values: Record<string, string>) => boolean;
+  /** Warning shown while a checkbox is on (a security-weakening switch). */
+  warning?: string;
+  /** Multi-line secret (a private key): shown masked. */
+  secret?: boolean;
 }
+
+const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const isTruthy = (v: string | undefined) => TRUE_VALUES.has(String(v ?? '').trim().toLowerCase());
 
 interface AuthTypeConfig {
   label: string;
@@ -86,6 +107,44 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
         type: 'password',
         required: true,
         hint: 'For JIRA: use an Atlassian API Token, not your account password',
+      },
+    ],
+  },
+  connection_string: {
+    label: 'Connection String',
+    description: 'Database connection URI (MongoDB, PostgreSQL, …) — stored as a secret and never shown in plain text',
+    color: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-400',
+    fields: [
+      {
+        // `url` — the key the backend catalog and the MongoDB handler use.
+        key: 'url',
+        label: 'Connection URI',
+        placeholder: 'mongodb+srv://cluster0.example.mongodb.net/',
+        type: 'password',
+        required: true,
+        hint: 'mongodb:// or mongodb+srv://. Put the credentials in the fields below instead (no URL-escaping needed).',
+      },
+      {
+        key: 'username',
+        label: 'Username',
+        placeholder: 'app-user',
+        type: 'text',
+        required: false,
+      },
+      {
+        key: 'password',
+        label: 'Password',
+        placeholder: '••••••••',
+        type: 'password',
+        required: false,
+      },
+      {
+        key: 'database',
+        label: 'Database',
+        placeholder: 'orders',
+        type: 'text',
+        required: false,
+        hint: 'Used when a tool call names no database (falls back to the URI path).',
       },
     ],
   },
@@ -231,6 +290,75 @@ const AUTH_TYPE_CONFIGS: Record<string, AuthTypeConfig> = {
   },
 };
 
+// ── MongoDB connection fields (the built-in handler's credential keys) ───────
+// Keys match GET /connectors/catalog `mongodb` auth_fields (app/mcp/catalog.py):
+// url, database, username, password, auth_source, auth_mechanism, tls,
+// tls_ca_pem, tls_client_cert, tls_client_private_key, tls_client_key_password.
+// There is no "allow invalid certificates" switch: the backend refuses every
+// TLS-weakening option at save time (422).
+
+const X509 = 'MONGODB-X509';
+const isX509 = (v: Record<string, string>) => (v.auth_mechanism ?? '').trim().toUpperCase() === X509;
+const mongoTlsOn = (v: Record<string, string>) =>
+  isTruthy(v.tls) ||
+  isX509(v) ||
+  ['tls_ca_pem', 'tls_client_cert', 'tls_client_private_key', 'tls_client_key_password'].some((k) => !!v[k]?.trim());
+
+const MONGODB_AUTH_FIELDS: AuthField[] = [
+  AUTH_TYPE_CONFIGS.connection_string.fields[0], // url (masked)
+  AUTH_TYPE_CONFIGS.connection_string.fields[3], // database
+  { key: 'username', label: 'Username', placeholder: 'app_user', type: 'text', required: false },
+  { key: 'password', label: 'Password', placeholder: '••••••••', type: 'password', required: false },
+  {
+    key: 'auth_source', label: 'Auth source', placeholder: 'admin', type: 'text', required: false,
+    hint: 'Database that holds the user (usually admin).',
+  },
+  {
+    key: 'auth_mechanism', label: 'Auth mechanism', placeholder: '', type: 'select', required: false,
+    options: [
+      { value: '', label: 'Default (SCRAM)' },
+      { value: 'SCRAM-SHA-256', label: 'SCRAM-SHA-256' },
+      { value: 'SCRAM-SHA-1', label: 'SCRAM-SHA-1' },
+      { value: 'PLAIN', label: 'PLAIN (LDAP)' },
+      { value: X509, label: 'X.509 client certificate' },
+    ],
+  },
+  {
+    key: 'tls', label: 'Use TLS', placeholder: '', type: 'checkbox', required: false,
+    hint: 'mongodb+srv:// URIs (Atlas) use TLS automatically. Certificate verification cannot be turned off.',
+  },
+  {
+    key: 'tls_ca_pem', label: 'CA certificate (PEM, optional)', placeholder: '-----BEGIN CERTIFICATE-----',
+    type: 'file', required: false, accept: '.pem,.crt,.cer,text/plain', visibleWhen: mongoTlsOn,
+    hint: 'The CA that signed the server certificate, if not a public CA. Paste it or choose a file.',
+  },
+  {
+    key: 'tls_client_cert', label: 'Client certificate (PEM)', placeholder: '-----BEGIN CERTIFICATE-----',
+    type: 'file', required: false, accept: '.pem,.crt,.cer,text/plain', visibleWhen: mongoTlsOn,
+    hint: 'For mutual TLS or X.509 authentication.',
+  },
+  {
+    key: 'tls_client_private_key', label: 'Client private key (PEM)', placeholder: '-----BEGIN PRIVATE KEY-----',
+    type: 'file', secret: true, required: false, accept: '.pem,.key,text/plain', visibleWhen: mongoTlsOn,
+  },
+  {
+    key: 'tls_client_key_password', label: 'Client key passphrase', placeholder: '', type: 'password',
+    required: false, visibleWhen: mongoTlsOn,
+  },
+];
+
+/** Why a MongoDB form can't be saved yet ('' = it can): X.509 needs the client cert + key. */
+function mongoBlocker(fields: AuthField[], v: Record<string, string>): string {
+  if (!fields.some((f) => f.key === 'tls_client_cert') || !isX509(v)) return '';
+  if (!v.tls_client_cert?.trim() || !v.tls_client_private_key?.trim()) {
+    return 'X.509 authentication needs the client certificate and its private key.';
+  }
+  return '';
+}
+
+/** auth_config keys that hold a connection URI (the handler accepts any of them). */
+const URI_KEYS = ['uri', 'connection_string', 'url', 'mongodb_uri', 'dsn'];
+
 // ── Connector-specific URL hints ────────────────────────────────────────────
 
 const CONNECTOR_URL_MAP: Record<string, { url: string; hint: string; label: string }> = {
@@ -332,12 +460,14 @@ function PasswordInput({
   placeholder,
   id,
   'aria-describedby': describedBy,
+  'aria-invalid': invalid,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
   id: string;
   'aria-describedby'?: string;
+  'aria-invalid'?: boolean;
 }) {
   const [visible, setVisible] = useState(false);
   return (
@@ -349,6 +479,7 @@ function PasswordInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         aria-describedby={describedBy}
+        aria-invalid={invalid || undefined}
         autoComplete="new-password"
         className="w-full border border-input rounded-lg px-3 py-2 pr-9 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
       />
@@ -377,20 +508,30 @@ function HintText({ id, text }: { id: string; text: string }) {
 
 function SmartAuthFields({
   authType,
+  fields,
   authValues,
   connectorName,
   onChange,
+  errors = {},
 }: {
   authType: string;
+  /** Resolved fields for this auth type (see resolveAuthFields). */
+  fields: AuthField[];
   authValues: Record<string, string>;
   connectorName: string;
   onChange: (values: Record<string, string>) => void;
+  /** Save refusals (422) keyed by auth_config key. */
+  errors?: Record<string, string>;
 }) {
-  const config = AUTH_TYPE_CONFIGS[authType];
-  if (!config) return null;
-
-  const setField = (key: string, value: string) =>
-    onChange({ ...authValues, [key]: value });
+  const setField = (key: string, value: string) => {
+    const next = { ...authValues, [key]: value };
+    // X.509 authenticates with a client certificate over TLS: turn TLS on so
+    // the certificate fields appear with the choice.
+    if (key === 'auth_mechanism' && value.trim().toUpperCase() === X509 && fields.some((f) => f.key === 'tls')) {
+      next.tls = 'true';
+    }
+    onChange(next);
+  };
 
   // custom_header: dynamic key-value pairs
   if (authType === 'custom_header') {
@@ -463,7 +604,7 @@ function SmartAuthFields({
   }
 
   // none
-  if (!config.fields.length) {
+  if (!fields.length) {
     return (
       <div className="rounded-lg bg-muted/40 border border-border px-4 py-3 text-sm text-muted-foreground">
         No authentication required for this connector type.
@@ -473,51 +614,264 @@ function SmartAuthFields({
 
   return (
     <div className="space-y-3">
-      {config.fields.map((field) => {
-        const fieldHint = getFieldHint(connectorName, field.key, field.hint);
-        const hintId = `hint-${field.key}`;
-        const inputId = `auth-${field.key}`;
-        return (
-          <div key={field.key}>
-            <label htmlFor={inputId} className="block text-sm font-medium mb-1">
-              {field.label}
-              {field.required && <span className="text-destructive ml-1">*</span>}
-            </label>
-            {field.type === 'password' ? (
-              <PasswordInput
-                id={inputId}
-                value={authValues[field.key] ?? ''}
-                onChange={(v) => setField(field.key, v)}
-                placeholder={field.placeholder}
-                aria-describedby={fieldHint ? hintId : undefined}
-              />
-            ) : field.type === 'textarea' ? (
-              <textarea
-                id={inputId}
-                value={authValues[field.key] ?? ''}
-                onChange={(e) => setField(field.key, e.target.value)}
-                placeholder={field.placeholder}
-                rows={4}
-                aria-describedby={fieldHint ? hintId : undefined}
-                className="w-full border border-input rounded-lg px-3 py-2 text-sm font-mono bg-background focus:ring-2 focus:ring-primary outline-none resize-none"
-              />
-            ) : (
-              <input
-                id={inputId}
-                type={field.type}
-                value={authValues[field.key] ?? ''}
-                onChange={(e) => setField(field.key, e.target.value)}
-                placeholder={field.placeholder}
-                aria-describedby={fieldHint ? hintId : undefined}
-                className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
-              />
-            )}
-            {fieldHint && <HintText id={hintId} text={fieldHint} />}
-          </div>
-        );
-      })}
+      {fields
+        .filter((field) => !field.visibleWhen || field.visibleWhen(authValues))
+        .map((field) => (
+          <AuthFieldInput
+            key={field.key}
+            field={field}
+            value={authValues[field.key] ?? ''}
+            hint={getFieldHint(connectorName, field.key, field.hint)}
+            error={errors[field.key]}
+            onChange={(v) => setField(field.key, v)}
+          />
+        ))}
     </div>
   );
+}
+
+/** A chosen file's text (FileReader: Blob.text() is missing in some runtimes). */
+function readFileText(file: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the file'));
+    reader.readAsText(file);
+  });
+}
+
+const SAVED_SECRET_PLACEHOLDER = '•••••••• saved — type to replace';
+
+const INPUT_CLS =
+  'w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none';
+
+/** One credential field — text/password/email/url/textarea/checkbox/file/select. */
+function AuthFieldInput({
+  field,
+  value,
+  hint,
+  error,
+  onChange,
+}: {
+  field: AuthField;
+  value: string;
+  hint: string;
+  /** The backend's refusal for this field (422 on save). */
+  error?: string;
+  onChange: (v: string) => void;
+}) {
+  const invalid = error ? true : undefined;
+  const errorText = error ? (
+    <p data-testid={`field-error-${field.key}`} className="mt-1 text-xs text-destructive">{error}</p>
+  ) : null;
+  const hintId = `hint-${field.key}`;
+  const inputId = `auth-${field.key}`;
+  const describedBy = hint ? hintId : undefined;
+  // A stored secret comes back masked ('<redacted>'): show it as "saved" (empty
+  // input) — left empty, the original mask is sent back and the backend keeps it.
+  const savedSecret =
+    (field.type === 'password' || field.type === 'textarea' || field.type === 'file') && isMaskedSecret(value);
+  const shownValue = savedSecret ? '' : value;
+  const shownPlaceholder = savedSecret ? SAVED_SECRET_PLACEHOLDER : field.placeholder;
+
+  if (field.type === 'checkbox') {
+    const checked = isTruthy(value);
+    return (
+      <div>
+        <label htmlFor={inputId} className="flex items-center gap-2 text-sm font-medium">
+          <input
+            id={inputId}
+            type="checkbox"
+            checked={checked}
+            onChange={(e) => onChange(e.target.checked ? 'true' : '')}
+            aria-describedby={describedBy}
+            aria-invalid={invalid}
+            className="h-4 w-4 rounded border-input accent-primary"
+          />
+          {field.label}
+        </label>
+        {hint && <HintText id={hintId} text={hint} />}
+        {errorText}
+        {checked && field.warning && (
+          <p className="mt-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+            {field.warning}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <label htmlFor={inputId} className="block text-sm font-medium mb-1">
+        {field.label}
+        {field.required && <span className="text-destructive ml-1">*</span>}
+      </label>
+      {field.type === 'password' ? (
+        <PasswordInput
+          id={inputId}
+          value={shownValue}
+          onChange={onChange}
+          placeholder={shownPlaceholder}
+          aria-describedby={describedBy}
+          aria-invalid={invalid}
+        />
+      ) : field.type === 'textarea' || field.type === 'file' ? (
+        <>
+          <textarea
+            id={inputId}
+            value={shownValue}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={shownPlaceholder}
+            rows={4}
+            spellCheck={false}
+            autoComplete="off"
+            aria-describedby={describedBy}
+            aria-invalid={invalid}
+            style={field.secret ? ({ WebkitTextSecurity: 'disc' } as CSSProperties) : undefined}
+            className={`${INPUT_CLS} font-mono resize-y`}
+          />
+          {field.type === 'file' && (
+            <input
+              type="file"
+              accept={field.accept}
+              aria-label={`Upload ${field.label}`}
+              onChange={async (e) => {
+                const input = e.currentTarget;
+                const file = input.files?.[0];
+                if (file) onChange(await readFileText(file));
+                input.value = '';
+              }}
+              className="mt-1 block text-xs text-muted-foreground file:mr-2 file:rounded file:border file:border-border file:bg-muted file:px-2 file:py-1 file:text-xs"
+            />
+          )}
+        </>
+      ) : field.type === 'select' ? (
+        <select
+          id={inputId}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-describedby={describedBy}
+          aria-invalid={invalid}
+          className={INPUT_CLS}
+        >
+          {(field.options ?? []).map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+          {/* A stored value not in the list stays selectable. */}
+          {value && !(field.options ?? []).some((o) => o.value === value) && (
+            <option value={value}>{value}</option>
+          )}
+        </select>
+      ) : (
+        <input
+          id={inputId}
+          type={field.type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={field.placeholder}
+          aria-describedby={describedBy}
+          aria-invalid={invalid}
+          className={INPUT_CLS}
+        />
+      )}
+      {hint && <HintText id={hintId} text={hint} />}
+      {errorText}
+    </div>
+  );
+}
+
+/**
+ * A 422 save refusal as per-field messages (keys: auth_config keys, or "name").
+ * FastAPI 'loc' paths map directly; the MongoDB save policy answers a string
+ * naming the setting ("MongoDB setting 'tls: false' …"), the URI option, the
+ * auth mechanism, or X.509's missing client certificate.
+ */
+function connectorSaveFieldErrors(e: unknown, fields: AuthField[]): Record<string, string> {
+  if (!(e instanceof ApiError) || e.status !== 422) return {};
+  const out: Record<string, string> = {};
+  const parsed = parseApiFieldErrors(e);
+  for (const [path, msg] of Object.entries(parsed.fields)) {
+    if (path === 'name') out.name = msg;
+    else if (path.startsWith('auth_config.')) out[path.slice('auth_config.'.length)] = msg;
+  }
+  const text = parsed.general ?? '';
+  if (!text) return out;
+  const keys = new Set(fields.map((f) => f.key));
+  const uriKey = fields.find((f) => URI_KEYS.includes(f.key))?.key;
+  const setting = text.match(/MongoDB setting '([a-z_]+)/i)?.[1];
+  const target =
+    setting && keys.has(setting) ? setting
+      : /X509|X\.509/i.test(text) && keys.has('tls_client_cert') ? 'tls_client_cert'
+        : /auth(entication)? mechanism/i.test(text) && keys.has('auth_mechanism') ? 'auth_mechanism'
+          : /\bURI\b|connection string|must start with mongodb/i.test(text) ? uriKey
+            : undefined;
+  if (target && !out[target]) out[target] = text;
+  return out;
+}
+
+function unknownAuthTypeConfig(authType: string, authValues: Record<string, string>): AuthTypeConfig {
+  return {
+    label: authType,
+    description: 'Auth type not known to this UI — stored values are shown masked',
+    color: 'bg-muted text-muted-foreground',
+    fields: Object.keys(authValues)
+      .filter((key) => key.trim())
+      .map((key) => ({ key, label: key, placeholder: '', type: 'password' as const, required: false })),
+  };
+}
+
+function isMongoConnector(connectorName: string, values: Record<string, string>): boolean {
+  return (
+    getConnectorKey(connectorName).includes('mongo') ||
+    Object.values(values).some((v) => /^mongodb(\+srv)?:\/\//i.test(String(v ?? '')))
+  );
+}
+
+/** A GET /connectors/catalog auth field as a renderable field (unknown types render as text). */
+function catalogFieldToAuthField(f: CatalogAuthField): AuthField {
+  const type = AUTH_FIELD_TYPES.includes(f.field_type as AuthFieldType) ? (f.field_type as AuthFieldType) : 'text';
+  return {
+    key: f.key,
+    label: f.label || f.key,
+    placeholder: f.placeholder ?? '',
+    type,
+    required: Boolean(f.required),
+    hint: f.hint || undefined,
+    options: f.options?.map((o) => (typeof o === 'string' ? { value: o, label: o } : o)),
+  };
+}
+
+/**
+ * The credential fields to collect for an auth type.
+ *
+ * - connection_string to MongoDB gets every option the built-in handler reads.
+ * - Catalog fields (from the catalog entry the form was opened from) win for
+ *   ordinary types; for connection_string they only ADD keys — the catalog's
+ *   generic `url` field is the same URI and is never collected twice.
+ * - The URI field binds to whichever URI key the stored config already uses
+ *   (an older registration may hold it under `url`), so edit shows it.
+ * - An auth type this UI doesn't know shows its stored keys, masked.
+ */
+function resolveAuthFields(
+  authType: string,
+  connectorName: string,
+  authValues: Record<string, string>,
+  catalogFields: CatalogAuthField[] = [],
+): AuthField[] {
+  let base: AuthField[] =
+    authType === 'connection_string' && isMongoConnector(connectorName, authValues)
+      ? MONGODB_AUTH_FIELDS
+      : AUTH_TYPE_CONFIGS[authType]?.fields ?? unknownAuthTypeConfig(authType, authValues).fields;
+  if (authType === 'connection_string') {
+    const uriKey = URI_KEYS.find((k) => k in authValues) ?? 'url';
+    base = base.map((f) => (f.key === 'url' ? { ...f, key: uriKey } : f));
+  }
+  if (!catalogFields.length) return base;
+  const fromCatalog = catalogFields.map(catalogFieldToAuthField);
+  if (authType !== 'connection_string') return fromCatalog;
+  const have = new Set(base.map((f) => f.key));
+  return [...base, ...fromCatalog.filter((f) => !have.has(f.key) && !URI_KEYS.includes(f.key))];
 }
 
 // ── Auth type selector with colored badge ────────────────────────────────────
@@ -547,6 +901,9 @@ function AuthTypeSelector({
               {cfg.label}
             </option>
           ))}
+          {/* A stored type this UI doesn't list must still be the selected one —
+              a controlled <select> with an unknown value shows the first option. */}
+          {value && !config && <option value={value}>{value}</option>}
         </select>
         {config && (
           <span className={`text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap ${config.color}`}>
@@ -578,6 +935,8 @@ interface FormState {
   url: string;
   auth_type: string;
   auth_values: Record<string, string>;
+  /** auth_config as loaded for edit — its masked secrets go back unchanged when left empty. */
+  original_auth: Record<string, string>;
   auto_approve: boolean;
 }
 
@@ -589,25 +948,132 @@ const EMPTY_FORM: FormState = {
   url: '',
   auth_type: 'bearer',
   auth_values: {},
+  original_auth: {},
   auto_approve: false,
 };
 
-function buildAuthConfig(_authType: string, authValues: Record<string, string>): Record<string, string> {
+/** True when the auth values hold a connection URI under any accepted key. */
+function hasUriValue(values: Record<string, string>): boolean {
+  return URI_KEYS.some((k) => (values[k] ?? '').trim() !== '');
+}
+
+/**
+ * The top-level `url` to send. A connection-string connector keeps its URI in
+ * auth_config (a secret) and sends the built-in marker; only a legacy row whose
+ * stored url is a MASKED DSN (unrecoverable here) is sent back unchanged.
+ */
+function payloadUrl(form: FormState): string {
+  if (form.auth_type !== 'connection_string') return form.url.trim();
+  if (isDsn(form.url) && isMaskedSecret(form.url)) return form.url;
+  return 'builtin://';
+}
+
+/**
+ * Edit-time migration of a legacy connection-string row that stored its DSN in
+ * the top-level url: move it into the masked URI field (it leaves `url`).
+ */
+function migrateLegacyDsn(form: FormState): FormState {
+  if (form.auth_type !== 'connection_string' || !isDsn(form.url) || isMaskedSecret(form.url)) return form;
+  if (hasUriValue(form.auth_values)) return { ...form, url: 'builtin://' };
+  return { ...form, url: 'builtin://', auth_values: { ...form.auth_values, url: form.url } };
+}
+
+function buildAuthConfig(
+  _authType: string,
+  authValues: Record<string, string>,
+  original: Record<string, string> = {},
+): Record<string, string> {
   // Strip empty values
-  return Object.fromEntries(
+  const out = Object.fromEntries(
     Object.entries(authValues).filter(([, v]) => v.trim() !== '')
+  );
+  // A stored secret the user left (or cleared to) empty goes back as its mask
+  // ('<redacted>'), which the backend reads as "unchanged" — dropping the key
+  // would delete the stored credential.
+  for (const [k, v] of Object.entries(original)) {
+    if (k in authValues && !(k in out) && typeof v === 'string' && isMaskedSecret(v)) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * auth_config as form values (strings). The backend may return non-strings
+ * (tls: true); a checkbox stores 'true' / '' — an explicit false is not sent
+ * back (the MongoDB policy refuses tls: false).
+ */
+function parseAuthConfigToValues(_authType: string, authConfig: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(authConfig).map(([k, v]) => [
+      k,
+      v === null || v === undefined || v === false ? '' : v === true ? 'true' : typeof v === 'object' ? JSON.stringify(v) : String(v),
+    ]),
   );
 }
 
-function parseAuthConfigToValues(_authType: string, authConfig: Record<string, string>): Record<string, string> {
-  return { ...authConfig };
-}
-
+/** POST /connectors/{id}/test outcome, or the request's own failure (4xx/5xx). */
 interface TestResult {
-  reachable: boolean;
+  /** null = nothing was contacted (status "not_tested"). */
+  reachable: boolean | null;
   status: string;
   latency_ms?: number;
   error?: string;
+  detail?: string;
+  http_status?: number;
+}
+
+function testResultFrom(data: ConnectorTestResult): TestResult {
+  return {
+    reachable: data.reachable ?? null,
+    status: data.status ?? (data.reachable ? 'passed' : 'failed'),
+    latency_ms: data.latency_ms,
+    error: data.error,
+    detail: data.detail,
+    http_status: data.http_status,
+  };
+}
+
+/** A refused/failed test REQUEST (e.g. a 400 SSRF refusal) is a failed test. */
+function testResultFromError(e: unknown): TestResult {
+  return {
+    reachable: false,
+    status: 'failed',
+    error: e instanceof Error && e.message ? e.message : 'The connection test could not be run',
+    http_status: e instanceof ApiError ? e.status : undefined,
+  };
+}
+
+function TestResultCell({ result }: { result: TestResult }) {
+  if (result.reachable === null && result.status === 'not_tested') {
+    return (
+      <div className="space-y-1">
+        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground">
+          <Info className="h-3 w-3" /> Not testable
+        </span>
+        {result.detail && <p className="text-xs text-muted-foreground max-w-xs">{result.detail}</p>}
+      </div>
+    );
+  }
+  const ok = result.reachable === true && result.status !== 'failed';
+  return (
+    <div className="space-y-1">
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+        ok
+          ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
+          : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
+      }`}>
+        {ok ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+        {ok ? `OK · ${result.latency_ms ?? '?'}ms` : 'Failed'}
+      </span>
+      {!ok && (
+        <FriendlyErrorMessage
+          data-testid="test-error"
+          className="text-xs text-destructive max-w-xs"
+          error={result.error}
+          fallback={`Test failed (${result.http_status ?? result.status})`}
+        />
+      )}
+    </div>
+  );
 }
 
 export function ConnectorsRegisteredPage() {
@@ -626,20 +1092,27 @@ export function ConnectorsRegisteredPage() {
         connector_type: prefill.connector_type ?? '',
         type_label: prefill.type_name ?? prefill.connector_type ?? '',
         builtin_type: prefill.type ?? '',
-        url: prefill.url ?? prefill.default_url ?? '',
+        // A connection string lives in auth_config only; the catalog's
+        // default_url ("mongodb://localhost:27017") is a sample, not a value.
+        url: prefill.auth_type === 'connection_string' ? '' : prefill.url ?? prefill.default_url ?? '',
         auth_type: prefill.auth_type ?? 'bearer',
         auth_values: {},
+        original_auth: {},
         auto_approve: false,
       };
     }
     return EMPTY_FORM;
   });
   const [formError, setFormError] = useState('');
+  /** 422 save refusals placed on their fields. */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [authFieldOverrides] = useState<CatalogAuthField[]>(() =>
     Array.isArray(prefill?.auth_fields) ? (prefill.auth_fields as CatalogAuthField[]) : []
   );
   const [testResults, setTestResults] = useState<Record<string, TestResult>>({});
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  /** An auth-type switch waiting for confirmation because it would drop entered values. */
+  const [pendingAuthType, setPendingAuthType] = useState<{ type: string; dropped: string[] } | null>(null);
   const editHandled = useRef(false);
 
   const { data: connectors = [], isLoading, error } = useQuery({
@@ -650,10 +1123,10 @@ export function ConnectorsRegisteredPage() {
 
   const registerMutation = useMutation({
     mutationFn: () => {
-      const auth_config = buildAuthConfig(form.auth_type, form.auth_values);
+      const auth_config = buildAuthConfig(form.auth_type, form.auth_values, form.original_auth);
       const payload = {
         name: form.name.trim(),
-        url: form.url.trim(),
+        url: payloadUrl(form),
         auth_type: form.auth_type,
         auth_config,
         auto_approve: form.auto_approve,
@@ -673,7 +1146,13 @@ export function ConnectorsRegisteredPage() {
       setForm(EMPTY_FORM);
       setFormError('');
     },
-    onError: (e: Error) => setFormError(e.message ?? 'Registration failed'),
+    onMutate: () => setFieldErrors({}),
+    // Backend refusals may quote the URI/host they rejected — show the reason only;
+    // a 422 also goes under the field it names.
+    onError: (e: Error) => {
+      setFormError(friendlyConnectionError(e, 'Registration failed').message);
+      setFieldErrors(connectorSaveFieldErrors(e, authFields));
+    },
   });
 
   const unregisterMutation = useMutation({
@@ -683,8 +1162,11 @@ export function ConnectorsRegisteredPage() {
 
   const testMutation = useMutation({
     mutationFn: (id: string) => connectorsApi.test(id),
-    onSuccess: (data: any, id: string) =>
-      setTestResults((prev) => ({ ...prev, [id]: data })),
+    onSuccess: (data, id) =>
+      setTestResults((prev) => ({ ...prev, [id]: testResultFrom(data) })),
+    // A 4xx (SSRF refusal, validation) used to leave the row at "Not tested".
+    onError: (e, id) =>
+      setTestResults((prev) => ({ ...prev, [id]: testResultFromError(e) })),
   });
 
   const openCreate = useCallback(() => {
@@ -696,7 +1178,7 @@ export function ConnectorsRegisteredPage() {
 
   const openEdit = useCallback((c: ConnectorResponse) => {
     setEditingId(c.server_id);
-    setForm({
+    setForm(migrateLegacyDsn({
       name: connectorLabel(c),
       connector_type: (c.builtin_type ?? '').replace(/^builtin-/, '').split(':')[0],
       type_label: connectorTypeLabel(c),
@@ -704,8 +1186,9 @@ export function ConnectorsRegisteredPage() {
       url: c.url,
       auth_type: c.auth_type ?? 'bearer',
       auth_values: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
+      original_auth: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
       auto_approve: Boolean(c.auto_approve),
-    });
+    }));
     setFormError('');
     setShowModal(true);
   }, []);
@@ -735,6 +1218,43 @@ export function ConnectorsRegisteredPage() {
 
   const urlConfig = getUrlConfig(form.connector_type || form.name);
 
+  // Fields the CURRENT auth type collects, including catalog-provided ones.
+  const prefillAuthType: string | undefined = prefill?.auth_type;
+  const connectorNameForHints = form.connector_type || form.name;
+  const fieldsFor = (authType: string, values: Record<string, string>) =>
+    resolveAuthFields(authType, connectorNameForHints, values, authType === prefillAuthType ? authFieldOverrides : []);
+  const currentFieldKeys = (authType: string) =>
+    new Set(fieldsFor(authType, form.auth_values).map((f) => f.key));
+  const authFields = fieldsFor(form.auth_type, form.auth_values);
+
+  const applyAuthType = useCallback((type: string, keep: Set<string>) => {
+    setForm((f) => {
+      const next: FormState = {
+        ...f,
+        auth_type: type,
+        auth_values: Object.fromEntries(Object.entries(f.auth_values).filter(([k]) => keep.has(k))),
+      };
+      if (type === 'connection_string') return migrateLegacyDsn(next);
+      // Leaving connection_string: the hidden built-in marker is not a URL to edit.
+      if (f.auth_type === 'connection_string' && !f.builtin_type && next.url === 'builtin://') next.url = '';
+      return next;
+    });
+  }, []);
+
+  /** Switch auth type keeping the values both types share; confirm before dropping any. */
+  const requestAuthTypeChange = (type: string) => {
+    if (type === form.auth_type) return;
+    const keep = currentFieldKeys(type);
+    const dropped = Object.entries(form.auth_values)
+      .filter(([k, v]) => k.trim() && v.trim() !== '' && !keep.has(k))
+      .map(([k]) => k);
+    if (dropped.length) {
+      setPendingAuthType({ type, dropped });
+      return;
+    }
+    applyAuthType(type, keep);
+  };
+
   // Each connection needs its own name — several of one type are allowed, but
   // two with the same name can't be told apart in pickers.
   const trimmedName = form.name.trim().toLowerCase();
@@ -745,9 +1265,12 @@ export function ConnectorsRegisteredPage() {
     );
 
   // Validation
+  const isConnectionString = form.auth_type === 'connection_string';
+  const authBlocker = isConnectionString ? mongoBlocker(authFields, form.auth_values) : '';
   const canSubmit =
+    !authBlocker &&
     form.name.trim() &&
-    form.url.trim() &&
+    (isConnectionString ? hasUriValue(form.auth_values) : form.url.trim()) &&
     !nameTaken &&
     !registerMutation.isPending;
 
@@ -847,12 +1370,9 @@ export function ConnectorsRegisteredPage() {
                         </p>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate">
-                        {c.upstream_url
-                          ? c.upstream_url
-                          : c.url === 'builtin://'
-                            ? 'Built-in'
-                            : c.url}
-                        {c.upstream_url && (
+                        {/* Plain text, never a link: display_url (A8), userinfo masked. */}
+                        {connectorDisplayUrl(c)}
+                        {(c.display_url || c.upstream_url) && c.url === 'builtin://' && (
                           <span className="ml-1.5 not-italic font-sans text-[10px] uppercase tracking-wide text-muted-foreground/50">
                             built-in
                           </span>
@@ -869,16 +1389,7 @@ export function ConnectorsRegisteredPage() {
                       </td>
                       <td className="px-4 py-3">
                         {result ? (
-                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                            result.reachable
-                              ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400'
-                              : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
-                          }`}>
-                            {result.reachable
-                              ? <CheckCircle2 className="h-3 w-3" />
-                              : <XCircle className="h-3 w-3" />}
-                            {result.reachable ? `OK · ${result.latency_ms ?? '?'}ms` : result.status}
-                          </span>
+                          <TestResultCell result={result} />
                         ) : (
                           <span className="text-muted-foreground text-xs">Not tested</span>
                         )}
@@ -962,8 +1473,12 @@ export function ConnectorsRegisteredPage() {
                   value={form.name}
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                   placeholder="my-jira, github-org, slack-engineering…"
+                  aria-invalid={fieldErrors.name ? true : undefined}
                   className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                 />
+                {fieldErrors.name && (
+                  <p data-testid="field-error-name" className="text-xs text-destructive mt-1">{fieldErrors.name}</p>
+                )}
                 {nameTaken ? (
                   <p role="alert" className="text-xs text-destructive mt-1">
                     A connector named “{form.name.trim()}” already exists — give this connection its own name.
@@ -976,7 +1491,9 @@ export function ConnectorsRegisteredPage() {
                 )}
               </div>
 
-              {/* URL — with connector-specific hint */}
+              {/* URL — with connector-specific hint. A connection string has no
+                  top-level URL: its URI is the masked field under Auth. */}
+              {!isConnectionString && (
               <div>
                 <label htmlFor="connector-url" className="block text-sm font-medium mb-1">
                   {urlConfig?.label ?? 'URL'} <span className="text-destructive">*</span>
@@ -990,7 +1507,8 @@ export function ConnectorsRegisteredPage() {
                     placeholder={urlConfig?.url ?? 'https://api.example.com'}
                     className="w-full border border-input rounded-lg px-3 py-2 pr-9 text-sm bg-background focus:ring-2 focus:ring-primary outline-none"
                   />
-                  {form.url && (
+                  {/* Only an http(s) URL is a link — never a DSN (it embeds a password). */}
+                  {isHttpUrl(form.url) && (
                     <a
                       href={form.url}
                       target="_blank"
@@ -1016,61 +1534,35 @@ export function ConnectorsRegisteredPage() {
                   </button>
                 )}
               </div>
+              )}
 
               {/* Auth Type */}
               <AuthTypeSelector
                 value={form.auth_type}
-                onChange={(v) =>
-                  setForm((f) => ({ ...f, auth_type: v, auth_values: {} }))
-                }
+                onChange={requestAuthTypeChange}
               />
 
-              {/* Auth Fields — type-aware (from catalog) or generic */}
-              {authFieldOverrides.length > 0 ? (
-                <div className="space-y-3">
-                  <label className="block text-sm font-semibold">Credentials</label>
-                  {authFieldOverrides.map((field) => {
-                    const inputId = `prefill-field-${field.key}`;
-                    return (
-                      <div key={field.key}>
-                        <label htmlFor={inputId} className="block text-xs font-medium text-muted-foreground mb-1">
-                          {field.label}
-                          {field.required && <span className="text-red-500 ml-0.5">*</span>}
-                        </label>
-                        <input
-                          id={inputId}
-                          type={field.field_type === 'password' ? 'password' : field.field_type === 'email' ? 'email' : 'text'}
-                          placeholder={field.placeholder}
-                          className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
-                          onChange={(e) => {
-                            setForm((f) => ({ ...f, auth_values: { ...f.auth_values, [field.key]: e.target.value } }));
-                          }}
-                        />
-                        {field.hint && (
-                          <p className="mt-1 text-xs text-muted-foreground">{field.hint}</p>
-                        )}
-                      </div>
-                    );
-                  })}
+              {/* Auth Fields — type-aware, with the catalog entry's own fields */}
+              {(form.auth_type !== 'none' || authFields.length > 0) && (
+                <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-1">
+                  <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${
+                      AUTH_TYPE_CONFIGS[form.auth_type]?.color?.split(' ')[0] ?? 'bg-primary'
+                    }`} />
+                    {AUTH_TYPE_CONFIGS[form.auth_type]?.label ?? (form.auth_type || 'Authentication')}
+                  </h3>
+                  <SmartAuthFields
+                    authType={form.auth_type}
+                    fields={authFields}
+                    authValues={form.auth_values}
+                    connectorName={connectorNameForHints}
+                    onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
+                    errors={fieldErrors}
+                  />
+                  {authBlocker && (
+                    <p data-testid="auth-blocker" className="pt-2 text-xs text-amber-700 dark:text-amber-300">{authBlocker}</p>
+                  )}
                 </div>
-              ) : (
-                /* Generic Smart Auth Fields */
-                form.auth_type !== 'none' && (
-                  <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-1">
-                    <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${
-                        AUTH_TYPE_CONFIGS[form.auth_type]?.color?.split(' ')[0] ?? 'bg-primary'
-                      }`} />
-                      {AUTH_TYPE_CONFIGS[form.auth_type]?.label ?? 'Authentication'}
-                    </h3>
-                    <SmartAuthFields
-                      authType={form.auth_type}
-                      authValues={form.auth_values}
-                      connectorName={form.connector_type || form.name}
-                      onChange={(values) => setForm((f) => ({ ...f, auth_values: values }))}
-                    />
-                  </div>
-                )
               )}
 
               {/* Autonomous execution opt-in */}
@@ -1129,6 +1621,24 @@ export function ConnectorsRegisteredPage() {
            </div>
          </div>
        )}
+
+      {/* ── Confirm auth-type switch that would drop entered values ── */}
+      <ConfirmModal
+        open={!!pendingAuthType}
+        title="Switch auth type?"
+        description={
+          pendingAuthType
+            ? `${AUTH_TYPE_CONFIGS[pendingAuthType.type]?.label ?? pendingAuthType.type} does not use: ${pendingAuthType.dropped.join(', ')}. Those values will be cleared.`
+            : undefined
+        }
+        confirmLabel="Switch and clear"
+        variant="warning"
+        onConfirm={() => {
+          if (pendingAuthType) applyAuthType(pendingAuthType.type, currentFieldKeys(pendingAuthType.type));
+          setPendingAuthType(null);
+        }}
+        onCancel={() => setPendingAuthType(null)}
+      />
 
       {/* ── Confirm Delete Modal ── */}
       <ConfirmModal

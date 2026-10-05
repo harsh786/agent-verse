@@ -755,6 +755,26 @@ def _check_dsn(dsn: str, context: str) -> tuple[str, dict[str, list[str]]]:
     return text, _check_hosts(_dsn_hosts(text), context)
 
 
+def hold_source_dsn_pins(dsn: object, *, context: str) -> tuple[EgressPins, Callable[[], None]]:
+    """Check every host a DSN would dial and pin them until ``release()`` is called.
+
+    For a driver client that outlives one call (a pooled MongoClient, C2): its
+    monitor threads resolve the hosts for the client's whole life, so the pins
+    must too. Blocking (DNS): call it off the event loop. ``release`` is
+    idempotent.
+    """
+    text, checked = _check_dsn(str(dsn or ""), context)
+    tokens = _register(checked)
+    released = threading.Event()
+
+    def _release_once() -> None:
+        if not released.is_set():
+            released.set()
+            _release(tokens)
+
+    return EgressPins(ips=checked, dsn=text), _release_once
+
+
 @contextlib.asynccontextmanager
 async def pin_source_dsn(dsn: object, *, context: str) -> AsyncIterator[EgressPins]:
     """Check every host a DSN would dial and pin them for the block.

@@ -708,9 +708,14 @@ export interface ConnectorResponse {
   // Real upstream API endpoint for a built-in connector (whose `url` is the
   // internal "builtin://" dispatch marker). Empty for local/unknown built-ins.
   upstream_url?: string;
+  /** Masked connection URI for display (no userinfo; secret query values '<redacted>'). */
+  display_url?: string;
+  /** Catalog type key of a built-in connection ("mongodb"). */
+  connector_type?: string;
   status?: string;
   auth_type?: string;
-  auth_config?: Record<string, string>;
+  /** Secrets and URI keys come back as '<redacted>'; values may be non-strings (tls: true). */
+  auth_config?: Record<string, unknown>;
   last_tested?: string;
   test_result?: { success: boolean; latency_ms?: number; error?: string };
   has_builtin?: boolean;
@@ -722,9 +727,14 @@ export interface CatalogAuthField {
   key: string;
   label: string;
   placeholder: string;
-  field_type: 'text' | 'password' | 'url' | 'email';
+  /** Renderer types the UI knows ('text' | 'password' | 'url' | 'email' |
+   *  'textarea' | 'checkbox' | 'file' | 'select'); any other value a newer
+   *  backend sends renders as text. */
+  field_type: string;
   required: boolean;
   hint: string;
+  /** Choices for a `select` field (optional; not every backend sends it). */
+  options?: Array<string | { value: string; label: string }>;
 }
 
 export interface CatalogEntry {
@@ -746,7 +756,8 @@ export interface CatalogEntry {
 
 export interface ConnectorTestResult {
   server_id: string;
-  reachable: boolean;
+  /** null when nothing was contacted (status "not_tested"). */
+  reachable: boolean | null;
   latency_ms?: number;
   error?: string;
   /** Human-readable success detail, e.g. "Authenticated as @username (Full Name) · scopes: repo,read:org" */

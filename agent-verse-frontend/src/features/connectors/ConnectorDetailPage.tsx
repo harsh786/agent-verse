@@ -7,6 +7,9 @@ import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { toast } from '@/stores/toast';
+import { connectorDisplayUrl } from '@/lib/connectors';
+import { friendlyConnectionError } from '@/lib/friendlyError';
+import { FriendlyErrorMessage } from '@/components/ui/FriendlyErrorMessage';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -30,10 +33,14 @@ function HealthTab({ connectorId, connector }: { connectorId: string; connector:
       if (data.reachable) {
         toast({ kind: 'success', message: data.detail ? `Connected: ${data.detail}` : 'Connection test passed!' });
       } else {
-        toast({ kind: 'error', message: data.error ?? 'Connection test failed' });
+        toast({ kind: 'error', message: friendlyConnectionError(data.error, 'Connection test failed').message });
       }
     },
-    onError: (e) => toast({ kind: 'error', message: `Test failed: ${String(e)}` }),
+    // A refused request (4xx) is a failed test too — shown, not swallowed.
+    onError: (e) => {
+      setLiveResult({ server_id: connectorId, reachable: false, status: 'failed', error: e instanceof Error ? e.message : '' });
+      toast({ kind: 'error', message: `Test failed: ${friendlyConnectionError(e).message}` });
+    },
   });
 
   const lastTested = connector?.last_tested;
@@ -87,7 +94,7 @@ function HealthTab({ connectorId, connector }: { connectorId: string; connector:
             </p>
           )}
           {testResult.error && (
-            <p className="text-xs text-red-600 dark:text-red-400 mt-1 whitespace-pre-line">{testResult.error}</p>
+            <FriendlyErrorMessage className="text-xs text-red-600 dark:text-red-400 mt-1" error={testResult.error} />
           )}
         </div>
       )}
@@ -202,11 +209,15 @@ export function ConnectorDetailPage() {
     onSuccess: (data) => {
       const msg = data.reachable
         ? `✓ Reachable (${data.latency_ms ?? '?'}ms)`
-        : `✗ Unreachable: ${data.error ?? 'unknown error'}`;
+        : `✗ Unreachable: ${friendlyConnectionError(data.error, 'unknown error').message}`;
       setTestResult(msg);
       toast({ kind: data.reachable ? 'success' : 'error', message: msg });
     },
-    onError: (e) => toast({ kind: 'error', message: `Test failed: ${e}` }),
+    onError: (e) => {
+      const msg = `✗ Test failed: ${friendlyConnectionError(e).message}`;
+      setTestResult(msg);
+      toast({ kind: 'error', message: msg });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -249,6 +260,10 @@ export function ConnectorDetailPage() {
     );
   }
 
+  // Plain text: the backend's masked display_url (A8), else the configured
+  // host; userinfo is masked again — a DSN carries its password.
+  const displayUrl = connectorDisplayUrl(connector);
+
   return (
     <JARVISPageShell>
     <JARVISStagger className="space-y-0">
@@ -263,7 +278,7 @@ export function ConnectorDetailPage() {
 
       <DetailLayout
         title={connector.name ?? connectorId}
-        subtitle={connector.url}
+        subtitle={displayUrl}
         status={connector.status ?? 'unknown'}
         meta={[
           { label: 'Auth type', value: connector.auth_type ?? '—' },
@@ -321,7 +336,7 @@ export function ConnectorDetailPage() {
               <h3 className="font-medium text-sm mb-3">Connector Info</h3>
               <dl className="grid grid-cols-2 gap-y-2 text-sm">
                 {[
-                  ['URL', connector.url],
+                  ['URL', displayUrl],
                   ['Auth type', connector.auth_type ?? '—'],
                   ['Status', connector.status ?? '—'],
                 ].map(([k, v]) => (

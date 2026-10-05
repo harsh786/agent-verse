@@ -177,8 +177,8 @@ describe('SourceDetailDrawer', () => {
     });
     renderDrawer();
     expect(await screen.findByText('✕ Error')).toBeInTheDocument();
-    // SRC-RSS: the reason is shown, not just a red cross.
-    expect(screen.getByRole('alert')).toHaveTextContent('timeout');
+    // SRC-RSS: the reason is shown, not just a red cross (as a friendly reason, B6).
+    expect(screen.getByRole('alert')).toHaveTextContent(/timed out/i);
   });
 
   test('a refused sync shows the server reason (e.g. a connector that failed to load)', async () => {

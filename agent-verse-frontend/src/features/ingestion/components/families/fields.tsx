@@ -1,18 +1,31 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
+import { isMaskedSecret } from '@/lib/connectors';
+
+/** Placeholder for a stored secret the API returned masked ("********"). */
+export const SAVED_SECRET_PLACEHOLDER = '•••••••• saved — type to replace';
 
 /** Shared building blocks for Source connection forms. */
 
 export const inputCls = 'w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring';
 
-export function Field({ label, hint, htmlFor, children }: { label: string; hint?: string; htmlFor?: string; children: ReactNode }) {
+export function Field({ label, hint, htmlFor, error, children }: {
+  label: string; hint?: string; htmlFor?: string; error?: string; children: ReactNode;
+}) {
   return (
     <div>
       <label htmlFor={htmlFor} className="block text-sm font-medium mb-1">{label}</label>
       {hint && <p className="text-xs text-muted-foreground mb-1.5">{hint}</p>}
       {children}
+      <FieldError error={error} />
     </div>
   );
+}
+
+/** A server-side validation message under its field (B1). */
+export function FieldError({ error }: { error?: string }) {
+  if (!error) return null;
+  return <p className="mt-1 text-xs text-destructive">{error}</p>;
 }
 
 const MASKED: CSSProperties = { WebkitTextSecurity: 'disc' } as CSSProperties;
@@ -22,21 +35,25 @@ const MASKED: CSSProperties = { WebkitTextSecurity: 'disc' } as CSSProperties;
  * embedded password). The backend returns stored secrets as "********"; sending
  * that value back unchanged keeps the stored secret.
  */
-export function SecretInput({ id, label, value, onChange, placeholder, hint }: {
-  id: string; label: string; value: unknown; onChange: (v: string) => void; placeholder?: string; hint?: string;
+export function SecretInput({ id, label, value, onChange, placeholder, hint, error }: {
+  id: string; label: string; value: unknown; onChange: (v: string) => void; placeholder?: string; hint?: string; error?: string;
 }) {
   const [shown, setShown] = useState(false);
+  // A stored secret comes back as a mask: show it as "saved", never as text to
+  // edit around. Left empty, the caller sends the mask back (= unchanged).
+  const saved = isMaskedSecret(String(value ?? ''));
   return (
-    <Field label={label} hint={hint} htmlFor={id}>
+    <Field label={label} hint={hint} htmlFor={id} error={error}>
       <div className="flex gap-2">
         <input
           id={id}
           type={shown ? 'text' : 'password'}
-          value={String(value ?? '')}
+          value={saved ? '' : String(value ?? '')}
           onChange={e => onChange(e.target.value)}
-          placeholder={placeholder}
+          placeholder={saved ? SAVED_SECRET_PLACEHOLDER : placeholder}
           autoComplete="new-password"
           spellCheck={false}
+          aria-invalid={error ? true : undefined}
           className={`${inputCls} font-mono`}
         />
         <button type="button" onClick={() => setShown(s => !s)} aria-label={`${shown ? 'Hide' : 'Show'} ${label}`}
@@ -57,9 +74,9 @@ export function SecretTextarea({ id, label, value, onChange, placeholder, hint }
       <textarea
         id={id}
         rows={4}
-        value={String(value ?? '')}
+        value={isMaskedSecret(String(value ?? '')) ? '' : String(value ?? '')}
         onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
+        placeholder={isMaskedSecret(String(value ?? '')) ? SAVED_SECRET_PLACEHOLDER : placeholder}
         autoComplete="off"
         spellCheck={false}
         data-secret="true"
@@ -82,13 +99,13 @@ export function PemTextarea({ id, label, value, onChange, hint }: {
   );
 }
 
-export function Checkbox({ id, label, checked, onChange, hint }: {
-  id: string; label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string;
+export function Checkbox({ id, label, checked, onChange, hint, disabled }: {
+  id: string; label: string; checked: boolean; onChange: (v: boolean) => void; hint?: string; disabled?: boolean;
 }) {
   return (
     <div>
       <label htmlFor={id} className="flex items-center gap-2 text-sm font-medium">
-        <input id={id} type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
+        <input id={id} type="checkbox" checked={checked} disabled={disabled} onChange={e => onChange(e.target.checked)} />
         {label}
       </label>
       {hint && <p className="text-xs text-muted-foreground mt-1">{hint}</p>}
@@ -101,13 +118,18 @@ export function Checkbox({ id, label, checked, onChange, hint }: {
  * custom CA, and a client certificate + key for mutual TLS. Field names match
  * the backend connectors (tls, tls_ca_pem, tls_client_cert, tls_client_private_key).
  */
-export function TlsFields({ prefix, value, set }: {
+export function TlsFields({ prefix, value, set, requiredReason, allowInsecure = true }: {
   prefix: string; value: Record<string, unknown>; set: (k: string, v: unknown) => void;
+  /** TLS is mandatory (e.g. X.509 auth): the switch is locked on and this explains why. */
+  requiredReason?: string;
+  /** Offer "skip certificate verification" (false where the backend refuses it, e.g. MongoDB). */
+  allowInsecure?: boolean;
 }) {
-  const enabled = Boolean(value.tls);
+  const enabled = Boolean(value.tls) || !!requiredReason;
   return (
     <div className="space-y-3">
-      <Checkbox id={`${prefix}-tls`} label="Use TLS" checked={enabled} onChange={v => set('tls', v)} />
+      <Checkbox id={`${prefix}-tls`} label="Use TLS" checked={enabled} disabled={!!requiredReason}
+        onChange={v => set('tls', v)} hint={requiredReason} />
       {enabled && <>
         <PemTextarea id={`${prefix}-tls-ca`} label="CA certificate (PEM, optional)" hint="Verify the server against this CA instead of the system trust store."
           value={value.tls_ca_pem} onChange={v => set('tls_ca_pem', v)} />
@@ -115,8 +137,10 @@ export function TlsFields({ prefix, value, set }: {
         <SecretTextarea id={`${prefix}-tls-key`} label="Client private key (PEM, mutual TLS)" placeholder="-----BEGIN PRIVATE KEY-----"
           value={value.tls_client_private_key} onChange={v => set('tls_client_private_key', v)} />
         <SecretInput id={`${prefix}-tls-key-pass`} label="Client key passphrase (optional)" value={value.tls_client_key_password} onChange={v => set('tls_client_key_password', v)} />
-        <Checkbox id={`${prefix}-tls-insecure`} label="Skip server certificate verification (not recommended)"
-          checked={Boolean(value.tls_allow_invalid_certificates)} onChange={v => set('tls_allow_invalid_certificates', v)} />
+        {allowInsecure && (
+          <Checkbox id={`${prefix}-tls-insecure`} label="Skip server certificate verification (not recommended)"
+            checked={Boolean(value.tls_allow_invalid_certificates)} onChange={v => set('tls_allow_invalid_certificates', v)} />
+        )}
       </>}
     </div>
   );

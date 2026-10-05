@@ -91,7 +91,7 @@ dependencies = [
     # RSS/Atom Sources connector (app/ingestion/connectors/rss_connector.py)
     "feedparser>=6.0.0",
     # MongoDB Sources connector (app/ingestion/connectors/mongodb_connector.py)
-    "pymongo>=4.10",
+    "pymongo>=4.10,<4.19",  # <4.19: the replica-member guard wraps a private hook (MDB-10)
     "aiomysql>=0.2.0",
     "snowflake-connector-python>=3.12",
 ]

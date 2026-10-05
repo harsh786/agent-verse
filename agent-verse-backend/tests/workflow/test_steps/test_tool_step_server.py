@@ -40,6 +40,9 @@ class _Mongo:
                 return 3
 
         class _DB:
+            def command(self, *_a: Any, **_k: Any) -> dict[str, Any]:
+                return {"ok": 1.0}  # the first-contact ping
+
             def __getitem__(self, coll: str) -> _Coll:
                 return _Coll()
 

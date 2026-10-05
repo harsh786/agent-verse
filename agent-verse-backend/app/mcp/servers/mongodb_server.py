@@ -3,7 +3,7 @@
 Credentials come ONLY from the calling connector (``credentials``): the
 connection URI (``uri`` / ``connection_string`` / ``url``), optional
 ``username`` / ``password`` / ``auth_source`` / ``auth_mechanism`` overrides,
-TLS options (``tls``, ``tls_allow_invalid_certificates``, ``tls_ca_pem``) and a
+TLS options (``tls``, ``tls_ca_pem``; nothing that weakens verification — MDB-07) and a
 default ``database``. There is deliberately no platform-env fallback: the old
 ``MONGODB_MCP_URL`` lookup ran every tenant's calls against the PLATFORM's
 database (confused deputy).
@@ -19,18 +19,20 @@ pool) to a member the server advertises but the tenant did not list
 
 URI options that would read platform files (``tlsCAFile`` ...), route through a
 proxy (``proxyHost`` ...) or authenticate as the PLATFORM's ambient identity
-(``MONGODB-AWS``, ``GSSAPI``, ``MONGODB-OIDC``, ``MONGODB-X509``) are refused.
+(``MONGODB-AWS``, ``GSSAPI``, ``MONGODB-OIDC``) are refused. TLS material comes
+from the connector as PEM text: ``tls_ca_pem`` and, for mutual TLS or
+``MONGODB-X509``, ``tls_client_cert`` + ``tls_client_private_key`` (MDB-05).
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
+import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
 from app.observability.logging import get_logger
 
@@ -156,26 +158,11 @@ TOOL_DEFINITIONS = [
 _URI_KEYS = ("uri", "connection_string", "url", "base_url", "mongodb_uri")
 _URI_SCHEMES = ("mongodb://", "mongodb+srv://")
 
-# URI options a tenant may not set (lower-cased): platform file reads, proxy
-# routing around the egress pinning, and ambient-identity auth settings.
-_BLOCKED_URI_OPTIONS = frozenset(
-    {
-        "tlscafile",
-        "tlscertificatekeyfile",
-        "tlscertificatekeyfilepassword",
-        "tlscrlfile",
-        "proxyhost",
-        "proxyport",
-        "proxyusername",
-        "proxypassword",
-        "authmechanismproperties",
-        "srvservicename",
-    }
-)
-# SCRAM / PLAIN (LDAP) authenticate with the credentials the tenant supplies.
-# MONGODB-AWS / GSSAPI / MONGODB-OIDC / MONGODB-X509 fall back to the platform's
-# ambient identity (env keys, instance metadata, keytab, local files).
-_ALLOWED_AUTH_MECHANISMS = frozenset({"DEFAULT", "SCRAM-SHA-1", "SCRAM-SHA-256", "PLAIN"})
+# URI options and auth mechanisms: the shared policy (app/net/mongodb_policy,
+# NF-1): options read the way the driver reads them ('&' or ';'), no file-path /
+# proxy / provider-property options, no ambient-identity mechanisms;
+# MONGODB-X509 only with the tenant's OWN client certificate (MDB-05).
+_X509 = "MONGODB-X509"
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
@@ -188,6 +175,39 @@ CONFIGURE_CREDENTIALS_ERROR = (
 
 class MongoCredentialError(ValueError):
     """The connector's MongoDB credentials are missing or not allowed."""
+
+
+class MongoArgumentError(ValueError):
+    """A tool argument is malformed (refused before any connection)."""
+
+
+def _bounds() -> tuple[int, int, int]:
+    """(default find limit, max documents, operation timeout ms) from Settings."""
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    max_docs = max(1, int(settings.mongodb_tool_max_documents))
+    default = min(max(1, int(settings.mongodb_tool_default_limit)), max_docs)
+    return default, max_docs, max(100, int(settings.mongodb_tool_timeout_ms))
+
+
+def _find_limit(arguments: dict[str, Any]) -> int:
+    """The find limit, clamped: none -> default; 0 / negative / above max -> max.
+
+    MongoDB treats ``limit 0`` as "no limit" (the whole collection) and a negative
+    limit as a single batch of ``abs(n)`` — neither may escape the maximum.
+    """
+    default, max_docs, _ = _bounds()
+    raw = arguments.get("limit")
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, int | str):
+        raise MongoArgumentError("limit must be an integer")
+    try:
+        limit = int(raw)
+    except ValueError as exc:
+        raise MongoArgumentError("limit must be an integer") from exc
+    return max_docs if limit <= 0 or limit > max_docs else limit
 
 
 def _truthy(value: object) -> bool:
@@ -208,22 +228,27 @@ def _connection_uri(credentials: dict[str, Any] | None) -> str:
     raise MongoCredentialError(CONFIGURE_CREDENTIALS_ERROR)
 
 
-def _check_auth_mechanism(value: str) -> None:
-    if value.strip().upper() not in _ALLOWED_AUTH_MECHANISMS:
-        raise MongoCredentialError(
-            f"MongoDB auth mechanism '{value}' is not allowed; use SCRAM or PLAIN with "
-            "credentials supplied on the connector"
-        )
+def _has_client_cert(credentials: dict[str, Any] | None) -> bool:
+    return bool(str((credentials or {}).get("tls_client_cert") or "").strip())
 
 
-def _check_uri_options(uri: str) -> None:
+def _check_auth_mechanism(value: str, credentials: dict[str, Any] | None = None) -> None:
+    from app.net.mongodb_policy import MongoUriPolicyError, assert_auth_mechanism_allowed
+
+    try:
+        assert_auth_mechanism_allowed(value, client_cert=_has_client_cert(credentials))
+    except MongoUriPolicyError as exc:
+        raise MongoCredentialError(str(exc)) from exc
+
+
+def _check_uri_options(uri: str, credentials: dict[str, Any] | None = None) -> None:
     """Refuse URI options that reach outside the tenant's own database."""
-    for key, value in parse_qsl(urlsplit(uri).query, keep_blank_values=True):
-        lowered = key.strip().lower()
-        if lowered in _BLOCKED_URI_OPTIONS:
-            raise MongoCredentialError(f"MongoDB URI option '{key}' is not allowed")
-        if lowered == "authmechanism":
-            _check_auth_mechanism(value)
+    from app.net.mongodb_policy import MongoUriPolicyError, assert_uri_options_allowed
+
+    try:
+        assert_uri_options_allowed(uri, client_cert=_has_client_cert(credentials))
+    except MongoUriPolicyError as exc:
+        raise MongoCredentialError(str(exc)) from exc
 
 
 def _client_kwargs(credentials: dict[str, Any] | None) -> dict[str, Any]:
@@ -243,32 +268,68 @@ def _client_kwargs(credentials: dict[str, Any] | None) -> dict[str, Any]:
         kwargs["authSource"] = str(auth_source)
     mechanism = creds.get("auth_mechanism") or creds.get("authMechanism")
     if mechanism:
-        _check_auth_mechanism(str(mechanism))
+        _check_auth_mechanism(str(mechanism), creds)
         kwargs["authMechanism"] = str(mechanism).strip().upper()
+        if kwargs["authMechanism"] == _X509:
+            # The identity is the certificate subject; a password makes no sense.
+            kwargs.pop("password", None)
+            kwargs.setdefault("authSource", "$external")
     if str(creds.get("tls", "")).strip() != "":
         kwargs["tls"] = _truthy(creds["tls"])
-    if _truthy(creds.get("tls_allow_invalid_certificates")):
-        kwargs["tlsAllowInvalidCertificates"] = True
+    # MDB-07: no certificate-verification opt-out exists (assert_tls_not_weakened).
     return kwargs
 
 
-@contextlib.contextmanager
-def _ca_file(credentials: dict[str, Any] | None) -> Iterator[str | None]:
-    """Materialise a tenant-supplied CA bundle (PEM text) for the driver."""
-    pem = str((credentials or {}).get("tls_ca_pem") or "").strip()
-    if not pem:
-        yield None
-        return
-    if "-----BEGIN CERTIFICATE-----" not in pem:
+def _pem(credentials: dict[str, Any] | None, key: str) -> str:
+    return str((credentials or {}).get(key) or "").strip()
+
+
+def _tls_files(credentials: dict[str, Any] | None) -> tuple[dict[str, Any], Callable[[], None]]:
+    """Driver TLS kwargs with tenant-supplied PEM material in private temp files.
+
+    pymongo only takes certificate PATHS; the connector holds PEM text: the CA
+    bundle (``tls_ca_pem``) and, for mutual TLS / MONGODB-X509, the client
+    certificate + private key (``tls_client_cert`` / ``tls_client_private_key``,
+    optional ``tls_client_key_password``). They are written to a 0700 directory
+    that lives as long as the (pooled) client; ``cleanup()`` removes it.
+    """
+    ca = _pem(credentials, "tls_ca_pem")
+    cert = _pem(credentials, "tls_client_cert")
+    key = _pem(credentials, "tls_client_private_key")
+    if ca and "-----BEGIN CERTIFICATE-----" not in ca:
         raise MongoCredentialError("tls_ca_pem must be a PEM-encoded certificate bundle")
-    fd, path = tempfile.mkstemp(prefix="mongo-ca-", suffix=".pem")
+    if bool(cert) != bool(key):
+        raise MongoCredentialError("tls_client_cert and tls_client_private_key go together")
+    if cert and "-----BEGIN CERTIFICATE-----" not in cert:
+        raise MongoCredentialError("tls_client_cert must be a PEM-encoded certificate")
+    if key and "PRIVATE KEY-----" not in key:
+        raise MongoCredentialError("tls_client_private_key must be a PEM-encoded private key")
+    if not ca and not cert:
+        return {}, lambda: None
+    tmpdir = tempfile.mkdtemp(prefix="av-mcp-mongo-tls-")
+
+    def _cleanup() -> None:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
     try:
-        with os.fdopen(fd, "w") as handle:
-            handle.write(pem)
-        yield path
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+        kwargs: dict[str, Any] = {"tls": True}
+        if ca:
+            path = os.path.join(tmpdir, "ca.pem")
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600), "w") as handle:
+                handle.write(ca + "\n")
+            kwargs["tlsCAFile"] = path
+        if cert:
+            path = os.path.join(tmpdir, "client.pem")
+            with open(os.open(path, os.O_WRONLY | os.O_CREAT, 0o600), "w") as handle:
+                handle.write(f"{cert}\n{key}\n")
+            kwargs["tlsCertificateKeyFile"] = path
+            password = _pem(credentials, "tls_client_key_password")
+            if password:
+                kwargs["tlsCertificateKeyFilePassword"] = password
+    except BaseException:
+        _cleanup()
+        raise
+    return kwargs, _cleanup
 
 
 def _db_name(uri: str, arguments: dict[str, Any], credentials: dict[str, Any] | None) -> str:
@@ -298,11 +359,29 @@ async def call_tool(
     tool_name: str,
     arguments: dict[str, Any],
     credentials: dict[str, Any] | None = None,
+    tenant_ctx: Any = None,
+    server_id: str = "",
 ) -> dict[str, Any]:
+    from app.net.mongodb_policy import (
+        MongoOperatorError,
+        MongoTlsPolicyError,
+        assert_safe_mongo_arguments,
+        assert_tls_not_weakened,
+    )
+
+    try:
+        # MDB-03: write stages / server-side JavaScript anywhere in the call are
+        # refused before any connection exists.
+        assert_safe_mongo_arguments(arguments or {})
+    except MongoOperatorError as exc:
+        return {"error": str(exc), "tool": tool_name, "status": "operator_refused"}
     try:
         uri = _connection_uri(credentials)
-        _check_uri_options(uri)
+        _check_uri_options(uri, credentials)
+        assert_tls_not_weakened(uri, credentials)
         kwargs = _client_kwargs(credentials)
+    except MongoTlsPolicyError as exc:
+        return {"error": str(exc), "status": "tls_refused"}
     except MongoCredentialError as exc:
         return {"error": str(exc), "status": "credentials_required"}
     try:
@@ -314,48 +393,146 @@ async def call_tool(
             "status": "dependency_missing",
         }
 
-    from app.ingestion.connector_egress import pin_source_dsn
+    from app.mcp import mongodb_clients
 
+    tenant_id = str(getattr(tenant_ctx, "tenant_id", "") or "")
+    key = (tenant_id, str(server_id or ""), mongodb_clients.fingerprint(uri, credentials))
     try:
-        with _ca_file(credentials) as ca_path:
-            if ca_path:
-                kwargs["tlsCAFile"] = ca_path
-                kwargs.setdefault("tls", True)
-            # Every URI host (SRV targets expanded) is checked and pinned for the call.
-            async with pin_source_dsn(uri, context="mcp builtin mongodb") as pins:
-                _check_uri_options(pins.dsn)  # includes SRV TXT-record options
-                return await asyncio.to_thread(
-                    _call_sync, pins.dsn, kwargs, tool_name, arguments, credentials
-                )
+        entry = mongodb_clients.acquire(key)
+        if entry is None:
+            entry = await _open_client(key, uri, kwargs, credentials)
+        try:
+            return await asyncio.to_thread(_call_sync, entry, tool_name, arguments, credentials)
+        except Exception as exc:
+            from pymongo.errors import ConfigurationError, ConnectionFailure
+
+            if isinstance(exc, ConnectionFailure | ConfigurationError):
+                mongodb_clients.discard(entry)  # rebuilt (and re-checked) next call
+            raise
+        finally:
+            mongodb_clients.release(entry)
+    except MongoTlsPolicyError as exc:
+        return {"error": str(exc), "status": "tls_refused"}
     except MongoCredentialError as exc:
         return {"error": str(exc), "status": "credentials_required"}
+    except MongoArgumentError as exc:
+        return {"error": str(exc), "tool": tool_name, "status": "invalid_arguments"}
     except Exception as exc:
-        logger.warning("mongodb_call_tool_error tool=%s error=%s", tool_name, str(exc)[:200])
-        return {"error": str(exc)}
+        from app.net.ssrf_guard import SSRFError
+
+        if isinstance(exc, SSRFError | MemberGuardUnavailableError):
+            # Our own policy messages: they name only the tenant's configured hosts.
+            logger.warning("mongodb_call_refused tool=%s error=%s", tool_name, str(exc)[:200])
+            return {"error": str(exc), "status": "egress_refused"}
+        # MDB-20: never the driver's text (topology, member hosts, command echo).
+        from app.net.mongodb_errors import public_mongo_error
+
+        return {"error": public_mongo_error(exc, context=f"mcp {tool_name}")}
+
+
+async def _open_client(
+    key: tuple[str, str, str],
+    uri: str,
+    kwargs: dict[str, Any],
+    credentials: dict[str, Any] | None,
+) -> Any:
+    """Build a pooled client: hosts checked + pinned for ITS lifetime, TLS files kept."""
+    from app.ingestion import connector_egress
+    from app.mcp import mongodb_clients
+    from app.net.mongodb_policy import assert_tls_not_weakened
+
+    # Every URI host (SRV targets expanded) is checked; the pins live as long as
+    # the client (its monitor threads resolve those names while it is open).
+    pins, release_pins = await asyncio.to_thread(
+        connector_egress.hold_source_dsn_pins, uri, context="mcp builtin mongodb"
+    )
+
+    def _no_tls_files() -> None:
+        return None
+
+    cleanup_tls: Callable[[], None] = _no_tls_files
+    try:
+        _check_uri_options(pins.dsn, credentials)  # incl. SRV TXT-record options
+        assert_tls_not_weakened(pins.dsn, credentials)
+        tls_kwargs, cleanup_tls = _tls_files(credentials)
+        client = await asyncio.to_thread(_build_client, pins.dsn, {**kwargs, **tls_kwargs})
+    except BaseException:
+        cleanup_tls()
+        release_pins()
+        raise
+    try:
+        await asyncio.to_thread(_first_contact, client, kwargs)
+    except BaseException:
+        client.close()
+        cleanup_tls()
+        release_pins()
+        raise
+
+    def _closer() -> None:
+        cleanup_tls()
+        release_pins()
+
+    return mongodb_clients.insert(key, client, _closer, dsn=pins.dsn)
 
 
 def _serialize(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for d in docs:
-        if "_id" in d:
-            d["_id"] = str(d["_id"])
-    return docs
+    """Documents as JSON-safe relaxed Extended JSON (TG-09), ``_id`` as a string.
+
+    Decimal128, Binary, Regex, datetimes, nested ObjectIds ... used to reach the
+    tool result as driver objects; relaxed Extended JSON keeps their type
+    (``{"$numberDecimal": "1.10"}``) while plain numbers stay numbers.
+    """
+    import json
+
+    from bson import json_util
+
+    out: list[dict[str, Any]] = []
+    for doc in docs:
+        rendered: dict[str, Any] = json.loads(
+            json_util.dumps(doc, json_options=json_util.RELAXED_JSON_OPTIONS)
+        )
+        if "_id" in doc:
+            rendered["_id"] = str(doc["_id"])
+        out.append(rendered)
+    return out
 
 
 def _run_tool(
     db: Any, db_name: str, coll_name: str, tool_name: str, arguments: dict[str, Any]
 ) -> dict[str, Any]:
+    """Run one tool under the per-call operation timeout (MDB-08).
+
+    ``pymongo.timeout`` (client-side operation timeout) bounds the whole call —
+    server selection, retries, every round trip — and makes the driver send
+    ``maxTimeMS`` with every command, writes included.
+    """
+    import pymongo
+
+    _, _, timeout_ms = _bounds()
+    with pymongo.timeout(timeout_ms / 1000.0):
+        return _run_tool_bounded(db, db_name, coll_name, tool_name, arguments)
+
+
+def _run_tool_bounded(
+    db: Any, db_name: str, coll_name: str, tool_name: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
     coll = db[coll_name]
     if tool_name == "mongodb_find":
-        limit = int(arguments.get("limit", 100))
-        docs = list(
-            coll.find(arguments.get("query") or {}, arguments.get("projection")).limit(limit)
+        limit = _find_limit(arguments)
+        cursor = coll.find(
+            arguments.get("query") or {},
+            arguments.get("projection"),
+            limit=limit,
+            batch_size=min(limit, 500),
         )
-        return {"documents": _serialize(docs), "count": len(docs)}
+        try:
+            docs = list(cursor)
+        finally:
+            cursor.close()
+        return {"documents": _serialize(docs), "count": len(docs), "limit": limit}
     if tool_name == "mongodb_find_one":
         doc = coll.find_one(arguments.get("query") or {}, arguments.get("projection"))
-        if doc:
-            doc["_id"] = str(doc["_id"])
-        return {"document": doc}
+        return {"document": _serialize([doc])[0] if doc else None}
     if tool_name == "mongodb_insert_one":
         inserted = coll.insert_one(arguments["document"])
         return {"inserted_id": str(inserted.inserted_id), "success": True}
@@ -374,14 +551,40 @@ def _run_tool(
         deleted = coll.delete_one(arguments["filter"])
         return {"deleted": deleted.deleted_count}
     if tool_name == "mongodb_aggregate":
-        docs = list(coll.aggregate(arguments["pipeline"]))[:1000]
-        return {"results": _serialize(docs), "count": len(docs)}
+        return _aggregate(coll, arguments)
     if tool_name == "mongodb_list_collections":
         return {"collections": db.list_collection_names(), "database": db_name}
     if tool_name == "mongodb_count":
         count = coll.count_documents(arguments.get("query") or {})
         return {"count": count, "collection": coll_name}
     return {"error": f"Unknown tool: {tool_name}"}
+
+
+def _aggregate(coll: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    """A bounded aggregate: final ``$limit``, no disk spill, streamed cursor.
+
+    The pipeline gets a final ``{$limit: max + 1}`` (the server stops producing
+    after it; the extra document only tells whether the result was cut) and
+    ``allowDiskUse: false``; the cursor streams in small batches and is read to
+    at most ``max`` documents — it used to be materialised whole, then sliced.
+    """
+    _, max_docs, _ = _bounds()
+    pipeline = arguments.get("pipeline")
+    if not isinstance(pipeline, list) or not all(isinstance(st, dict) for st in pipeline):
+        raise MongoArgumentError("pipeline must be a list of stage documents")
+    bounded = [*pipeline, {"$limit": max_docs + 1}]
+    cursor = coll.aggregate(bounded, allowDiskUse=False, batchSize=min(max_docs + 1, 101))
+    docs: list[dict[str, Any]] = []
+    truncated = False
+    try:
+        for doc in cursor:
+            if len(docs) >= max_docs:
+                truncated = True
+                break
+            docs.append(doc)
+    finally:
+        cursor.close()
+    return {"results": _serialize(docs), "count": len(docs), "truncated": truncated}
 
 
 # The driver's own socket factory, wrapped once by _install_member_guard().
@@ -428,11 +631,63 @@ class _MemberGuard(_ListenerBase):  # type: ignore[misc,valid-type]
         return None
 
 
+# The pymongo functions that open every driver socket (monitors and pools) and
+# must reach the factory through the module-global name the guard replaces.
+_SOCKET_FACTORY_CALLERS = ("_configured_socket", "_configured_socket_interface")
+
+
+class MemberGuardUnavailableError(RuntimeError):
+    """pymongo no longer exposes the hook the replica-member guard relies on."""
+
+
+def _calls_factory(func: Any) -> bool:
+    code = getattr(func, "__code__", None)
+    return code is not None and "_create_connection" in code.co_names
+
+
+def _assert_member_guard_hook() -> None:
+    """Fail closed unless the private hook the guard wraps still applies (MDB-10).
+
+    pymongo has no public socket-factory hook: a listener cannot veto a
+    connection, and monitor threads never carry the egress-checked lookup scope.
+    The guard therefore wraps ``pymongo.pool_shared._create_connection``. If a
+    pymongo release renames it, changes its ``(address, options)`` signature or
+    stops calling it by that global name, wrapping it would be silently inert —
+    so every MongoDB call is refused instead.
+    """
+    import inspect
+
+    import pymongo.pool_shared as pool_shared
+
+    hook = getattr(pool_shared, "_create_connection", None)
+    original = _ORIGINAL_CREATE_CONNECTION or hook
+    problem = ""
+    if not callable(hook) or not callable(original):
+        problem = "pymongo.pool_shared._create_connection is missing"
+    else:
+        try:
+            params = list(inspect.signature(original).parameters)
+        except (TypeError, ValueError):
+            params = []
+        if params[:2] != ["address", "options"]:
+            problem = f"pymongo.pool_shared._create_connection has signature {params}"
+        elif not all(
+            _calls_factory(getattr(pool_shared, name, None)) for name in _SOCKET_FACTORY_CALLERS
+        ):
+            problem = "pymongo's socket factories no longer call _create_connection"
+    if problem:
+        raise MemberGuardUnavailableError(
+            f"MongoDB replica-member guard unavailable ({problem}); MongoDB connections are "
+            "refused until the guard is ported to this pymongo version"
+        )
+
+
 def _install_member_guard() -> None:
     """Wrap pymongo's socket factory once (only acts for clients carrying a guard)."""
     global _ORIGINAL_CREATE_CONNECTION
     import pymongo.pool_shared as pool_shared
 
+    _assert_member_guard_hook()
     if getattr(pool_shared._create_connection, "_member_guard", False):
         return
     _ORIGINAL_CREATE_CONNECTION = pool_shared._create_connection
@@ -467,13 +722,22 @@ def _seed_selector(seeds: set[tuple[str, int]]) -> Any:
     return _select
 
 
-def _call_sync(
-    dsn: str,
-    kwargs: dict[str, Any],
-    tool_name: str,
-    arguments: dict[str, Any],
-    credentials: dict[str, Any] | None,
-) -> dict[str, Any]:
+def _first_contact(client: Any, kwargs: dict[str, Any]) -> None:
+    """Reach the server once, bounded by the server-selection timeout.
+
+    Under the per-call operation timeout pymongo ignores serverSelectionTimeoutMS,
+    so an unreachable / TLS-failing host would take the whole tool timeout to
+    fail. A new pooled client pings first (one round trip per client lifetime).
+    """
+    import pymongo
+
+    _, _, timeout_ms = _bounds()
+    selection_ms = min(int(kwargs.get("serverSelectionTimeoutMS") or 5000), timeout_ms)
+    with pymongo.timeout(selection_ms / 1000.0):
+        client["admin"].command("ping")
+
+
+def _build_client(dsn: str, kwargs: dict[str, Any]) -> Any:
     import pymongo
     from pymongo.uri_parser import parse_uri
 
@@ -488,11 +752,15 @@ def _call_sync(
     # Monitors and pools never open a socket to a member the URI did not list.
     _install_member_guard()
     kwargs["event_listeners"] = [*kwargs.get("event_listeners", []), _MemberGuard(seeds)]
-    # Closed before the pin block ends: monitor threads resolve hosts while open.
-    client: Any = pymongo.MongoClient(dsn, **kwargs)
-    try:
-        db_name = _db_name(dsn, arguments, credentials)
-        coll_name = str(arguments.get("collection") or "documents")
-        return _run_tool(client[db_name], db_name, coll_name, tool_name, arguments)
-    finally:
-        client.close()
+    return pymongo.MongoClient(dsn, **kwargs)
+
+
+def _call_sync(
+    entry: Any,
+    tool_name: str,
+    arguments: dict[str, Any],
+    credentials: dict[str, Any] | None,
+) -> dict[str, Any]:
+    db_name = _db_name(entry.dsn, arguments, credentials)
+    coll_name = str(arguments.get("collection") or "documents")
+    return _run_tool(entry.client[db_name], db_name, coll_name, tool_name, arguments)
