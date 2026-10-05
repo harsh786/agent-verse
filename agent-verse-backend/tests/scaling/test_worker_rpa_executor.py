@@ -82,6 +82,12 @@ def worker(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(
         "app.governance.policy_rules.load_active_policy_rules", AsyncMock(return_value=[])
     )
+    # TRUST-02: every tool call also reads the tenant's compliance bundles'
+    # required_hitl_for, failing closed when unreadable. This tenant has none.
+    monkeypatch.setattr(
+        "app.governance.compliance_bundles.bundle_hitl_requirement",
+        AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
     monkeypatch.setattr(tasks.celery_app.conf, "broker_url", "")
     monkeypatch.setattr(tasks, "_get_sync_redis", lambda: None)
