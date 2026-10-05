@@ -2,8 +2,10 @@
 
 ``stall=True``: answers the handshake (hello / ping), then never answers a data
 command (find, aggregate, count, listCollections, insert ...) — a server that
-accepts and stalls. ``error_hosts``: the hello reply advertises a replica set
-whose members are those internal names (for error-text tests).
+accepts and stalls. ``set_name`` + ``advertise``: the hello reply names a
+replica set whose members include hosts the client never listed (a hostile
+server steering the driver at internal addresses). :class:`Victim` records
+every TCP connection made to it.
 """
 
 from __future__ import annotations
@@ -23,8 +25,12 @@ _HANDSHAKE = {"hello", "ismaster", "ping", "buildinfo", "endsessions", "saslstar
 
 
 class FakeMongod:
-    def __init__(self, *, stall: bool = False) -> None:
+    def __init__(
+        self, *, stall: bool = False, set_name: str = "", advertise: tuple[str, ...] = ()
+    ) -> None:
         self.stall = stall
+        self.set_name = set_name
+        self.advertise = advertise
         self.commands: list[str] = []
         self._release = threading.Event()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -34,8 +40,12 @@ class FakeMongod:
         self.port = int(self.sock.getsockname()[1])
         threading.Thread(target=self._accept, daemon=True).start()
 
+    @property
+    def me(self) -> str:
+        return f"127.0.0.1:{self.port}"
+
     def _hello(self) -> dict[str, Any]:
-        return {
+        doc: dict[str, Any] = {
             "ok": 1.0,
             "isWritablePrimary": True,
             "ismaster": True,
@@ -49,6 +59,18 @@ class FakeMongod:
             "logicalSessionTimeoutMinutes": 30,
             "connectionId": 1,
         }
+        if self.set_name:
+            doc.update(
+                {
+                    "setName": self.set_name,
+                    "hosts": [self.me, *self.advertise],
+                    "primary": self.me,
+                    "me": self.me,
+                    "setVersion": 1,
+                    "electionId": bson.ObjectId("7fffffff0000000000000001"),
+                }
+            )
+        return doc
 
     def _answer(self, cmd: dict[str, Any]) -> dict[str, Any] | None:
         name = next(iter(cmd)).lower() if cmd else ""
@@ -118,4 +140,29 @@ class FakeMongod:
 
     def close(self) -> None:
         self._release.set()
+        self.sock.close()
+
+
+class Victim:
+    """A TCP listener that records every connection made to it."""
+
+    def __init__(self) -> None:
+        self.hits = 0
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(16)
+        self.port = int(self.sock.getsockname()[1])
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self) -> None:
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.hits += 1
+            conn.close()
+
+    def close(self) -> None:
         self.sock.close()

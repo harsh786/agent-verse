@@ -635,11 +635,63 @@ class _MemberGuard(_ListenerBase):  # type: ignore[misc,valid-type]
         return None
 
 
+# The pymongo functions that open every driver socket (monitors and pools) and
+# must reach the factory through the module-global name the guard replaces.
+_SOCKET_FACTORY_CALLERS = ("_configured_socket", "_configured_socket_interface")
+
+
+class MemberGuardUnavailableError(RuntimeError):
+    """pymongo no longer exposes the hook the replica-member guard relies on."""
+
+
+def _calls_factory(func: Any) -> bool:
+    code = getattr(func, "__code__", None)
+    return code is not None and "_create_connection" in code.co_names
+
+
+def _assert_member_guard_hook() -> None:
+    """Fail closed unless the private hook the guard wraps still applies (MDB-10).
+
+    pymongo has no public socket-factory hook: a listener cannot veto a
+    connection, and monitor threads never carry the egress-checked lookup scope.
+    The guard therefore wraps ``pymongo.pool_shared._create_connection``. If a
+    pymongo release renames it, changes its ``(address, options)`` signature or
+    stops calling it by that global name, wrapping it would be silently inert —
+    so every MongoDB call is refused instead.
+    """
+    import inspect
+
+    import pymongo.pool_shared as pool_shared
+
+    hook = getattr(pool_shared, "_create_connection", None)
+    original = _ORIGINAL_CREATE_CONNECTION or hook
+    problem = ""
+    if not callable(hook) or not callable(original):
+        problem = "pymongo.pool_shared._create_connection is missing"
+    else:
+        try:
+            params = list(inspect.signature(original).parameters)
+        except (TypeError, ValueError):
+            params = []
+        if params[:2] != ["address", "options"]:
+            problem = f"pymongo.pool_shared._create_connection has signature {params}"
+        elif not all(
+            _calls_factory(getattr(pool_shared, name, None)) for name in _SOCKET_FACTORY_CALLERS
+        ):
+            problem = "pymongo's socket factories no longer call _create_connection"
+    if problem:
+        raise MemberGuardUnavailableError(
+            f"MongoDB replica-member guard unavailable ({problem}); MongoDB connections are "
+            "refused until the guard is ported to this pymongo version"
+        )
+
+
 def _install_member_guard() -> None:
     """Wrap pymongo's socket factory once (only acts for clients carrying a guard)."""
     global _ORIGINAL_CREATE_CONNECTION
     import pymongo.pool_shared as pool_shared
 
+    _assert_member_guard_hook()
     if getattr(pool_shared._create_connection, "_member_guard", False):
         return
     _ORIGINAL_CREATE_CONNECTION = pool_shared._create_connection

@@ -226,7 +226,7 @@ requires-dist = [
     { name = "prometheus-client", specifier = ">=0.21.0" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.9.0" },
     { name = "pydantic-settings", specifier = ">=2.6.0" },
-    { name = "pymongo", specifier = ">=4.10" },
+    { name = "pymongo", specifier = ">=4.10,<4.19" },
     { name = "pymupdf", marker = "extra == 'multimodal'", specifier = ">=1.24.0" },
     { name = "pymysql", marker = "extra == 'connectors'", specifier = ">=1.1" },
     { name = "pyotp", specifier = ">=2.10.0" },
