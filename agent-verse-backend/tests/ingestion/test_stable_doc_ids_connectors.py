@@ -13,6 +13,8 @@ Fakes are the existing per-connector test doubles where they exist.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import copy
 import sys
 from collections.abc import Awaitable, Callable, Iterator
@@ -542,6 +544,8 @@ async def test_mqtt() -> None:
         client = MagicMock()
 
         def _connect(host: str, port: int, keepalive: int) -> None:
+            # A real broker always answers CONNECT with a CONNACK (USR-1).
+            client.on_connect(client, None, {}, SimpleNamespace(is_failure=False), None)
             for topic, payload in (("s/temp", b'{"t": 21}'), ("s/hum", b"55%")):
                 msg = MagicMock()
                 msg.topic, msg.payload, msg.qos = topic, payload, 0

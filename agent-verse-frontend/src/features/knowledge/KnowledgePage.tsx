@@ -25,7 +25,7 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-interface Collection { collection_id: string; name: string; doc_count?: number; embedder?: string; created_at?: string; }
+interface Collection { collection_id: string; name: string; doc_count?: number; embedder?: string; embedding_dim?: number | null; created_at?: string; }
 interface SearchResult { doc_id?: string; chunk_id?: string; content: string; score: number; source_url?: string; metadata?: Record<string, unknown>; }
 interface CollectionStats {
   collection_id: string; name: string; doc_count: number; chunk_count: number;
@@ -143,7 +143,6 @@ function CollectionsTab() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
-  const [newEmbedder, setNewEmbedder] = useState('voyage');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [deleteCollectionId, setDeleteCollectionId] = useState<string | null>(null);
 
@@ -158,7 +157,7 @@ function CollectionsTab() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => apiFetch('/knowledge/collections', { method: 'POST', body: JSON.stringify({ name: newName, embedder_type: newEmbedder }) }),
+    mutationFn: () => apiFetch('/knowledge/collections', { method: 'POST', body: JSON.stringify({ name: newName }) }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['knowledge-collections'] }); setShowCreate(false); setNewName(''); toast({ kind: 'success', message: 'Collection created.' }); },
     onError: (e) => toast({
       kind: 'error',
@@ -205,11 +204,10 @@ function CollectionsTab() {
                 className="w-full px-3 py-2 border border-border rounded-md text-sm bg-background" />
             </div>
             <div>
-              <label className="block text-xs text-muted-foreground mb-1">Embedder</label>
-              <select value={newEmbedder} onChange={(e) => setNewEmbedder(e.target.value)}
-                className="w-full px-3 py-2 border border-border rounded-md text-sm bg-background">
-                {['voyage', 'openai', 'sentence-transformers'].map((e) => <option key={e} value={e}>{e}</option>)}
-              </select>
+              <span className="block text-xs text-muted-foreground mb-1">Embedder</span>
+              {/* Every collection is embedded with the deployment's embedder; the
+                  card shows which one once the collection exists (USR-3). */}
+              <p className="px-3 py-2 text-sm text-muted-foreground">Deployment embedder</p>
             </div>
           </div>
           <div className="flex gap-2">
@@ -237,7 +235,7 @@ function CollectionsTab() {
                     <p className="font-semibold truncate">{c.name}</p>
                     <p className="text-xs text-muted-foreground font-mono mt-0.5">{c.collection_id.slice(0, 16)}…</p>
                   </div>
-                  <span className="text-xs bg-violet-100 text-violet-700 px-2 py-0.5 rounded shrink-0">{c.embedder ?? 'voyage'}</span>
+                  <span className="text-xs bg-violet-100 text-violet-700 px-2 py-0.5 rounded shrink-0">{c.embedder || 'unknown'}{c.embedding_dim ? ` · ${c.embedding_dim}d` : ''}</span>
                 </div>
                 <div className="flex items-center gap-3 text-sm">
                   <span className="flex items-center gap-1 text-muted-foreground"><FileText className="h-3.5 w-3.5" /> {c.doc_count ?? 0} docs</span>

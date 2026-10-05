@@ -1,0 +1,79 @@
+{
+  "_branch": "fix/mongo-fe",
+  "A2": {
+    "status": "done",
+    "commit": "0fa7199de",
+    "note": "connection_string in AUTH_TYPE_CONFIGS; unknown type kept + masked fields; type switch keeps shared values, confirms before clearing"
+  },
+  "A4": {
+    "status": "done",
+    "commit": "99df48e59",
+    "note": "MongoDB fields (uri masked, username, password, auth_source, auth_mechanism, database, tls, CA PEM paste/file, allow-invalid w/ warning); checkbox/textarea/file/select in shared renderer"
+  },
+  "A7": {
+    "status": "done",
+    "commit": "165e34841",
+    "note": "connection_string: single masked URI in auth_config, url=builtin://; links only for http(s); table+detail mask DSN userinfo; legacy DSN moved into URI on edit"
+  },
+  "A6": {
+    "status": "done",
+    "commit": "cc0586b16",
+    "note": "table testMutation onError -> failed row with error; not_tested neutral with reason; reachable typed boolean|null. Backend routing to Mongo handler is fix/mongo-mcp"
+  },
+  "A9": {
+    "status": "done",
+    "commit": "c36763c36",
+    "note": "friendlyConnectionError + sanitizeErrorDetail + FriendlyErrorMessage (details toggle); table, detail Health tab, toasts, register form; server-side classification is backend's"
+  },
+  "A10": {
+    "status": "done",
+    "commit": "eff5f310b",
+    "note": "real catalog fixture + catalog->register->edit flow test (fails on pre-fix page); faked api_key fixtures replaced"
+  },
+  "TG-06": {
+    "status": "done",
+    "commit": "eff5f310b",
+    "note": "same commit as A10"
+  },
+  "B1": {
+    "status": "done",
+    "commit": "97e338405",
+    "note": "create onError -> per-field (422 loc) under inputs + friendly general alert (egress/quota), dialog stays open"
+  },
+  "B2": {
+    "status": "done",
+    "commit": "0086395a6",
+    "note": "Test connection -> /sources/validate?check_connection=true before create; Preview step after create -> /sources/{id}/preview ({error} = failure)"
+  },
+  "B3": {
+    "status": "done",
+    "commit": "02a1f6f26",
+    "note": "drawer Edit connection (shared FamilyFormRouter); masked secrets shown as saved, sent back as mask unless retyped; PATCH errors shown"
+  },
+  "B4": {
+    "status": "done",
+    "commit": "197aae2db",
+    "note": "Advanced section: host/port, replica_set, batch_size, max_documents_per_sync, timeout_ms (numbers; empty dropped). Note: user-7 egress policy refuses multi-host 'host' (audit) - not on main"
+  },
+  "B5": {
+    "status": "done",
+    "commit": "955f68220",
+    "note": "X.509 sets tls:true; TLS locked on with reason; client cert/key always visible for X.509"
+  },
+  "B6": {
+    "status": "done",
+    "commit": "39b7d9c9b",
+    "note": "drawer health/sync/reindex/job errors via FriendlyErrorMessage (sanitised details); tooltip no longer raw. Server-side classification is backend's"
+  },
+  "C8": {
+    "status": "done",
+    "commit": "f0ab58fd7",
+    "note": "UI half: retry false, no focus refetch, poll only in open drawer + foreground, exp backoff 5->60min. Server-side 60s health cache is backend's"
+  },
+  "_new_findings": [
+    "ConnectorsRegisteredPage getUrlConfig('') matches the first CONNECTOR_URL_MAP entry (jira) because connKey.includes('') is true: a blank Register form shows 'JIRA Base URL' label/hints.",
+    "Catalog mongodb display_name is 'Mongodb' (spec has no display_name; title-cased name) - backend could set display_name='MongoDB'.",
+    "Catalog connection_string auth_fields are only [url]; the UI supplies the MongoDB field set itself. If the backend adds richer AuthFieldSpecs (checkbox/file/select + options), the renderer already supports them.",
+    "Owner decision: a NON-builtin connection_string connector (e.g. catalog mysql) now sends url='builtin://' with the URI in auth_config; it has no handler on main either way."
+  ]
+}

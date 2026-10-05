@@ -1,0 +1,82 @@
+{
+  "MDB-02": {
+    "status": "done",
+    "commit": "b3994890d",
+    "note": "declared per-operation mongodb risk; aggregate read only for verified pipeline; connector name can only raise; TG-02 matrix + gate test. Owner decision: mongodb_delete_one kept destructive (its tier without a name) rather than write_high."
+  },
+  "TG-02": {
+    "status": "done",
+    "commit": "b3994890d",
+    "note": "tests/agent/test_tool_risk_mongodb.py"
+  },
+  "MDB-03": {
+    "status": "done",
+    "commit": "4de10c794",
+    "note": "recursive refusal of $out/$merge/$where/$function/$accumulator/$code/Code/$currentOp before connecting"
+  },
+  "TG-03": {
+    "status": "done",
+    "commit": "4de10c794",
+    "note": "unit per operator + profiler-backed real mongo container test"
+  },
+  "MDB-01": {
+    "status": "done",
+    "commit": "24044b98d",
+    "note": "DSNs sealed in durable secret store, masked display_url, idempotent startup migration (PG+legacy Redis)"
+  },
+  "A7": {
+    "status": "done",
+    "commit": "24044b98d",
+    "note": "one sealed copy in auth_config; top-level url builtin://"
+  },
+  "TG-01": {
+    "status": "done",
+    "commit": "24044b98d",
+    "note": "unit + PG/Redis integration: no userinfo in responses/rows/keys"
+  },
+  "MDB-07": {
+    "status": "done",
+    "commit": "95708faa8",
+    "note": "shared assert_tls_not_weakened on MCP + ingestion; MONGODB_ALLOW_NON_TLS dev-only"
+  },
+  "C6": {
+    "status": "done",
+    "commit": "95708faa8",
+    "note": "same fix as MDB-07"
+  },
+  "TG-05": {
+    "status": "done",
+    "commit": "95708faa8",
+    "note": "tests/net/test_mongodb_tls_policy.py (both paths)"
+  },
+  "MDB-05": {
+    "status": "done",
+    "commit": "226d1fc25",
+    "note": "CA + client cert/key (mTLS) + X.509 (own cert only) on MCP path"
+  },
+  "C5": {
+    "status": "done",
+    "commit": "226d1fc25",
+    "note": "same as MDB-05"
+  },
+  "TG-04": {
+    "status": "done",
+    "commit": "226d1fc25",
+    "note": "tests/mcp/test_mongodb_tls_integration.py (requireTLS containers)"
+  },
+  "MDB-08": {
+    "status": "done",
+    "commit": "34cfaff65",
+    "note": "limit clamp from Settings, bounded streamed aggregate, CSOT timeout => maxTimeMS on every op"
+  },
+  "C7": {
+    "status": "done",
+    "commit": "34cfaff65",
+    "note": "same as MDB-08"
+  },
+  "TG-10": {
+    "status": "done",
+    "commit": "34cfaff65",
+    "note": "unit (stalled fake mongod) + container command-listener test"
+  }
+}

@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
+    describe_fetch_error,
+    fetch_failure_document,
+    is_retryable_status,
     stable_doc_id,
 )
 from app.ingestion.connector_registry import register
@@ -27,6 +31,9 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+# CONNECTOR_REPLAY_KEY "kind" of a failed GCS blob download (see replay_event).
+_REPLAY_KIND = "gcs_blob"
 
 
 def _make_client(storage: Any, creds_json: Any) -> Any:
@@ -132,16 +139,58 @@ class GCSConnector(BaseConnector):
                 continue
             try:
                 content = await run_blocking(blob.download_as_bytes)
-                doc = RawDocument(
-                    doc_id=stable_doc_id(config, f"gs://{bucket_name}/{blob.name}"),
-                    source_id=config.source_id,
-                    tenant_id=config.tenant_id,
-                    source_url=f"gs://{bucket_name}/{blob.name}",
-                    content=content,
-                    content_type=blob.content_type or "application/octet-stream",
-                    metadata={"bucket": bucket_name, "name": blob.name, "size": blob.size},
-                )
-                new_cursor = blob_ts or blob.name
-                yield doc, new_cursor
             except Exception as exc:
-                _log.warning("gcs: skip blob %s: %s", blob.name, exc)
+                # USR-1/USR-4: an unreadable blob is a counted failure (→ DLQ,
+                # re-fetched by replay_event) — it used to be logged and skipped.
+                _log.warning("gcs: cannot read blob %s: %s", blob.name, exc)
+                code = getattr(exc, "code", None)
+                yield fetch_failure_document(
+                    config,
+                    doc_id=stable_doc_id(config, f"gs://{bucket_name}/{blob.name}"),
+                    reason=describe_fetch_error(exc),
+                    retryable=is_retryable_status(code) if isinstance(code, int) else True,
+                    source_url=f"gs://{bucket_name}/{blob.name}",
+                    replay={"kind": _REPLAY_KIND, "bucket": bucket_name, "name": blob.name},
+                    metadata={"bucket": bucket_name, "name": blob.name},
+                ), new_cursor
+                continue
+            doc = RawDocument(
+                doc_id=stable_doc_id(config, f"gs://{bucket_name}/{blob.name}"),
+                source_id=config.source_id,
+                tenant_id=config.tenant_id,
+                source_url=f"gs://{bucket_name}/{blob.name}",
+                content=content,
+                content_type=blob.content_type or "application/octet-stream",
+                metadata={"bucket": bucket_name, "name": blob.name, "size": blob.size},
+            )
+            new_cursor = blob_ts or blob.name
+            yield doc, new_cursor
+
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Download again a blob a sync could not read (DLQ retry, USR-4)."""
+        from app.ingestion.source_config import RawDocument
+
+        bucket_name = str(reference.get("bucket") or "")
+        name = str(reference.get("name") or "")
+        if reference.get("kind") != _REPLAY_KIND or not bucket_name or not name:
+            raise ValueError(f"not a GCS blob replay reference: {reference!r}")
+        if bucket_name != config.connection_config.get("bucket", ""):
+            raise ConnectorFetchError(f"gcs: bucket {bucket_name!r} is not this Source's")
+        from google.cloud import storage  # type: ignore[import-not-found]
+
+        client = await run_blocking(
+            _make_client, storage, config.connection_config.get("service_account_json")
+        )
+        blob = client.bucket(bucket_name).blob(name)
+        content = await run_blocking(blob.download_as_bytes)
+        yield RawDocument(
+            doc_id=stable_doc_id(config, f"gs://{bucket_name}/{name}"),
+            source_id=config.source_id,
+            tenant_id=config.tenant_id,
+            source_url=f"gs://{bucket_name}/{name}",
+            content=content,
+            content_type=getattr(blob, "content_type", None) or "application/octet-stream",
+            metadata={"bucket": bucket_name, "name": name},
+        )

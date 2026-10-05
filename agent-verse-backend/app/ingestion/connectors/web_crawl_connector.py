@@ -18,15 +18,29 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+import httpx
+
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorFetchError,
+    ConnectorUnavailableError,
+    describe_fetch_error,
+    fetch_failure_document,
+    is_retryable_fetch_error,
+)
 from app.ingestion.connector_egress import (
+    ConnectorEgressBlockedError,
+    GuardedFetch,
     assert_source_url,
+    guarded_fetch,
     source_client,
     source_url_is_allowed,
 )
 from app.ingestion.connector_registry import register
+from app.ingestion.source_config import CONNECTOR_MOVED_KEY
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -56,6 +70,26 @@ async def _sitemap_urls(client: object, sitemap_url: str, limit: int) -> list[st
     # A regex, not an XML parser: no entity expansion on tenant-supplied XML.
     locs = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text, flags=re.I)
     return [u for u in dict.fromkeys(locs) if not u.lower().endswith(".xml")][:limit]
+
+
+# CONNECTOR_REPLAY_KEY "kind" of a page the crawl could not fetch (see replay_event).
+_REPLAY_KIND = "web_page"
+
+
+def _page_failure(
+    config: SourceConfig, url: str, error: object, *, retryable: bool
+) -> RawDocument:
+    """A counted failure for a page that could not be fetched (USR-1); a retryable
+    one carries a replay reference so the DLQ retry fetches it again (USR-4)."""
+    return fetch_failure_document(
+        config,
+        doc_id=f"web://{hashlib.md5(url.encode()).hexdigest()}",
+        reason=describe_fetch_error(error),
+        retryable=retryable,
+        source_url=url,
+        replay={"kind": _REPLAY_KIND, "url": url} if retryable else None,
+        metadata={"original_url": url},
+    )
 
 
 @register("web_crawl")
@@ -116,18 +150,29 @@ class WebCrawlConnector(BaseConnector):
         include_re = re.compile(include_pat) if include_pat else None
         exclude_re = re.compile(exclude_pat) if exclude_pat else None
 
+        if not seed_urls and not sitemap_url:
+            # USR-1: nothing to fetch is a misconfiguration, not an empty success.
+            raise ConnectorFetchError("web_crawl: no seed_urls (or sitemap_url) configured")
+
         urls_to_visit = list(seed_urls[:max_pages])
+        # URLs the tenant configured (the seeds; the sitemap itself below): any
+        # failure to fetch one is a counted failure. A URL the site supplied (a
+        # sitemap entry, a link on a page) counts only when retrying can help —
+        # a dead or blocked link is the site's, not the sync's.
+        requested: set[str] = set(urls_to_visit)
         visited = 0
+
+        def _failure(url: str, error: object, *, retryable: bool) -> RawDocument:
+            return _page_failure(config, url, error, retryable=retryable)
 
         import asyncio
 
-        # Redirects are not followed (source_client forces follow_redirects=False):
-        # httpx would follow a 302 without re-checking the target, so a public
-        # page could bounce the crawler to a link-local/metadata address past the
-        # egress guard. Redirect targets go back onto the frontier below, where
-        # they are guarded like any other URL. source_client also pins each
-        # connection to the address checked at connect time (a plain client
-        # re-resolved the name — DNS rebinding).
+        # httpx never follows redirects here (source_client forces
+        # follow_redirects=False): it would follow a 302 without re-checking the
+        # target. guarded_fetch follows them instead, re-validating every hop
+        # with the egress guard (a public page cannot bounce the crawler to a
+        # link-local/metadata address). source_client also pins each connection
+        # to the address checked at connect time (DNS rebinding).
         async with source_client(
             timeout=30,
             headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"},
@@ -138,10 +183,15 @@ class WebCrawlConnector(BaseConnector):
                         if loc not in urls_to_visit:
                             urls_to_visit.append(loc)
                 except Exception as exc:
-                    # The sitemap is optional discovery; seeds still crawl.
                     _log.warning("webcrawl_sitemap_failed url=%s: %s", sitemap_url[:200], exc)
                     if not urls_to_visit:
                         raise
+                    # Seeds still crawl, but the configured sitemap is a counted
+                    # failure (USR-1) — it used to be logged only.
+                    yield (
+                        _failure(sitemap_url, exc, retryable=is_retryable_fetch_error(exc)),
+                        json.dumps(sorted(new_seen)),
+                    )
             while urls_to_visit and visited < max_pages:
                 url = urls_to_visit.pop(0)
                 url_hash = hashlib.md5(url.encode()).hexdigest()
@@ -159,28 +209,58 @@ class WebCrawlConnector(BaseConnector):
                 if not source_url_is_allowed(url, context="web_crawl.fetch"):
                     _log.warning("webcrawl_url_blocked url=%s", url[:200])
                     new_seen.add(url_hash)
+                    if url in requested:
+                        yield (
+                            _failure(url, "blocked by the egress policy", retryable=False),
+                            json.dumps(sorted(new_seen)),
+                        )
                     continue
 
+                fetched: GuardedFetch | None = None
                 try:
                     await asyncio.sleep(crawl_delay)
-                    response = await client.get(url)
-                    if response.status_code in (301, 302, 303, 307, 308):
-                        location = response.headers.get("location", "")
-                        if location:
-                            from urllib.parse import urljoin
-
-                            target = urljoin(url, location)
-                            if target not in urls_to_visit:
-                                urls_to_visit.append(target)
-                        new_seen.add(url_hash)
-                        continue
+                    # USR-5: redirects are followed here — every hop re-checked
+                    # by the egress guard, at most 5 — and the final URL kept.
+                    fetched = await guarded_fetch(client, "GET", url, context="web_crawl.fetch")
+                    response = fetched.response
                     if response.status_code >= 400:
+                        retryable = is_retryable_fetch_error(response)
+                        if url in requested or retryable:
+                            # USR-1: a page that could not be fetched is a counted
+                            # failure (→ DLQ); it used to be skipped silently.
+                            yield (
+                                _failure(url, response, retryable=retryable),
+                                json.dumps(sorted(new_seen)),
+                            )
+                        else:
+                            _log.info("webcrawl_dead_link url=%s status=%d", url[:200],
+                                      response.status_code)
                         continue
-                    response.headers.get("content-type", "text/html")
                     html_bytes = response.content
-                except Exception as exc:
-                    _log.debug("webcrawl_fetch_error url=%s: %s", url, exc)
+                except ConnectorUnavailableError:
+                    raise
+                except (ConnectorEgressBlockedError, httpx.TooManyRedirects) as exc:
+                    # A redirect to a blocked destination, or a redirect loop:
+                    # retrying cannot help. Counted when the tenant asked for it.
+                    _log.warning("webcrawl_redirect_refused url=%s: %s", url[:200], exc)
+                    new_seen.add(url_hash)
+                    if url in requested:
+                        yield _failure(url, exc, retryable=False), json.dumps(sorted(new_seen))
                     continue
+                except Exception as exc:
+                    _log.warning("webcrawl_fetch_error url=%s: %s", url[:200], exc)
+                    yield _failure(url, exc, retryable=True), json.dumps(sorted(new_seen))
+                    continue
+                final_url = fetched.final_url
+                final_hash = hashlib.md5(final_url.encode()).hexdigest()
+                if final_hash != url_hash:
+                    if final_hash in new_seen:
+                        new_seen.add(url_hash)
+                        continue  # the redirect target was crawled already
+                    new_seen.add(final_hash)
+                page_meta: dict[str, Any] = {"final_url": final_url}
+                if (moved := fetched.move_notice()) is not None and url in requested:
+                    page_meta[CONNECTOR_MOVED_KEY] = moved
 
                 visited += 1
                 new_seen.add(url_hash)
@@ -199,7 +279,7 @@ class WebCrawlConnector(BaseConnector):
                     content_type="text/plain",
                     source_url=url,
                     title=self._extract_title(html_bytes.decode("utf-8", errors="replace")),
-                    metadata={"original_url": url, "content_hash": content_hash},
+                    metadata={"original_url": url, "content_hash": content_hash, **page_meta},
                 )
                 new_cursor = json.dumps(sorted(new_seen))
                 yield raw, new_cursor
@@ -207,12 +287,64 @@ class WebCrawlConnector(BaseConnector):
                 # Discover more URLs from this page (limited depth)
                 if visited < max_pages and max_depth > 1:
                     new_urls = self._extract_links(
-                        html_bytes.decode("utf-8", errors="replace"), url
+                        html_bytes.decode("utf-8", errors="replace"), final_url
                     )
                     for new_url in new_urls[:20]:
                         h = hashlib.md5(new_url.encode()).hexdigest()
                         if h not in new_seen and new_url not in urls_to_visit:
                             urls_to_visit.append(new_url)
+
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Fetch again one page the crawl could not read (DLQ retry, USR-4).
+
+        The page is re-checked by the egress guard; its links are not followed
+        (the next crawl discovers them). Yields the page, or a fresh failure
+        document when it still cannot be read.
+        """
+        from app.ingestion.source_config import RawDocument
+
+        url = str(reference.get("url") or "")
+        if reference.get("kind") != _REPLAY_KIND or not url:
+            raise ValueError(f"not a web page replay reference: {reference!r}")
+        if not source_url_is_allowed(url, context="web_crawl.replay"):
+            yield _page_failure(config, url, "blocked by the egress policy", retryable=False)
+            return
+        async with source_client(
+            timeout=30, headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"}
+        ) as client:
+            try:
+                fetched = await guarded_fetch(client, "GET", url, context="web_crawl.replay")
+            except (ConnectorEgressBlockedError, httpx.TooManyRedirects) as exc:
+                yield _page_failure(config, url, exc, retryable=False)
+                return
+            except Exception as exc:
+                yield _page_failure(config, url, exc, retryable=True)
+                return
+        response = fetched.response
+        if response.status_code >= 400 or response.is_redirect:
+            yield _page_failure(
+                config, url, response, retryable=is_retryable_fetch_error(response)
+            )
+            return
+        html = response.content.decode("utf-8", errors="replace")
+        text = self._extract_text(html, url)
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        yield RawDocument(
+            doc_id=f"web://{url_hash}",
+            source_id=config.source_id,
+            tenant_id=config.tenant_id,
+            content=text.encode("utf-8"),
+            content_type="text/plain",
+            source_url=url,
+            title=self._extract_title(html),
+            metadata={
+                "original_url": url,
+                "final_url": fetched.final_url,
+                "content_hash": hashlib.sha256(text.encode()).hexdigest(),
+            },
+        )
 
     @staticmethod
     def _extract_text(html: str, url: str = "") -> str:

@@ -12,7 +12,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -70,9 +76,12 @@ class SlackConnector(BaseConnector):
         ingestor = SlackIngestor(token=token)
 
         new_cursor = cursor or ""
+        failures = UnitFailures("slack")
         for channel_id in channels:
             try:
-                chunks = await ingestor.ingest_channel(channel_id, max_messages=max_messages)
+                chunks = await ingestor.ingest_channel(
+                    channel_id, max_messages=max_messages, raise_on_error=True
+                )
                 for chunk in chunks:
                     ts = chunk.get("metadata", {}).get("ts", "")
                     if cursor and ts and ts <= cursor:
@@ -92,8 +101,13 @@ class SlackConnector(BaseConnector):
                         metadata=chunk.get("metadata", {}),
                     )
                     yield raw, new_cursor
+            except ConnectorUnavailableError:
+                raise
             except Exception as exc:
-                _log.warning("slack_connector_channel_error channel=%s: %s", channel_id, exc)
+                # USR-1: an unreadable channel is a counted failure (partial sync),
+                # it used to be logged and dropped.
+                failures.add(f"channel {channel_id}", exc)
+        failures.raise_if_any()
 
     @property
     def supports_streaming(self) -> bool:

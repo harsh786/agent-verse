@@ -1,0 +1,145 @@
+FFFFFF..FF.FFFF.......F.F.F.....FssssFF...F..s....F.ss.......F           [100%]
+=================================== FAILURES ===================================
+___________________________ test_eval_golden_dataset ___________________________
+tests/real_world/test_eval_golden.py:133: in test_eval_golden_dataset
+    assert not soft, "; ".join(soft)
+E   AssertionError: only 0% of golden tasks pass their checks (min 70%); the eval run does not record which dataset version it ran
+E   assert not ['only 0% of golden tasks pass their checks (min 70%)', 'the eval run does not record which dataset version it ran']
+---------------------------- Captured stdout setup -----------------------------
+2026-10-05 14:02:39 [info     ] beat_schedule_registered: expire-hitl-approvals-every-60s
+____________________ test_eval_golden_edit_creates_version _____________________
+tests/real_world/test_eval_golden.py:154: in test_eval_golden_edit_creates_version
+    assert updated is not None, (
+E   AssertionError: no API edits a golden task (PATCH/PUT /ai-ops/datasets/{id} -> {'PATCH': 404, 'PUT': 404}); a versioned dataset cannot be maintained
+E   assert None is not None
+___________________________ test_goal_multistep_rag ____________________________
+tests/real_world/test_goal_complex.py:87: in test_goal_multistep_rag
+    assert final.get("status") == "complete", f"goal ended {final.get('status')}: " \
+E   AssertionError: goal ended failed: {"tool": null, "result": "INSUFFICIENT DATA: total H1 diesel cost in INR not provided in context"}
+E   assert 'failed' == 'complete'
+E     
+E     - complete
+E     + failed
+___________________ test_goal_strategy_low_risk[supervisor] ____________________
+tests/real_world/test_goal_complex.py:166: in test_goal_strategy_low_risk
+    assert final.get("status") == "complete", f"{strategy} goal ended {final.get('status')}: " \
+E   AssertionError: supervisor goal ended failed: No structured result was produced.
+E   assert 'failed' == 'complete'
+E     
+E     - complete
+E     + failed
+_____________________ test_goal_strategy_low_risk[debate] ______________________
+tests/real_world/test_goal_complex.py:166: in test_goal_strategy_low_risk
+    assert final.get("status") == "complete", f"{strategy} goal ended {final.get('status')}: " \
+E   AssertionError: debate goal ended failed: No structured result was produced.
+E   assert 'failed' == 'complete'
+E     
+E     - complete
+E     + failed
+________________ test_goal_strategy_low_risk[mixture_of_agents] ________________
+tests/real_world/test_goal_complex.py:161: in test_goal_strategy_low_risk
+    final = goals.wait_terminal(api, gid)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/real_world/goals.py:41: in wait_terminal
+    return dict(wait_until(lambda: get(api, goal_id), timeout=timeout, interval=5,
+tests/real_world/helpers.py:163: in wait_until
+    raise AssertionError(
+E   AssertionError: timed out after 480s waiting for goal f4643652594847a38b785dd6ec4c8088 to finish; last={"goal_id": "f4643652594847a38b785dd6ec4c8088", "status": "executing", "goal": "Draft a five-item checklist a dispatcher should follow before releasing a cold-chain pharmaceutical consignment (temperature logging, seals, paperwork, handover, escalation). Use general operations knowledge only; no tools are needed.", "priority": "normal", "dry_run": false, "agent_id": null, "workflow_mode": "single_agent", "created_at": "2026-10-05T08:41:44.419817+00:00", "event_count": 3, "provider_warning": null, "result_artifact": {"version": 1, "kind": "empty", "title": "Draft a five-item checklist a dispatcher should follow before releasing a cold-chain pharmaceutical consignment (temperature logging, seals, paperwork, handover, escalation). Use general operations knowledge only; no tools are needed.",
+________ test_goal_strategy_high_risk_needs_approval[mixture_of_agents] ________
+tests/real_world/test_goal_complex.py:221: in test_goal_strategy_high_risk_needs_approval
+    final = goals.wait_terminal(api, gid)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/real_world/goals.py:41: in wait_terminal
+    return dict(wait_until(lambda: get(api, goal_id), timeout=timeout, interval=5,
+tests/real_world/helpers.py:163: in wait_until
+    raise AssertionError(
+E   AssertionError: timed out after 480s waiting for goal 6567eaa602094a1d9b899fe517ca932b to finish; last={"goal_id": "6567eaa602094a1d9b899fe517ca932b", "status": "executing", "goal": "Demo list (in-memory sample data, no external systems): rec-201 env=staging last_used=2025-02-01; rec-202 env=production last_used=2026-09-30; rec-203 env=staging last_used=2025-03-09. Delete the stale staging records (last used before 2026) from the demo list and report which record IDs were deleted.", "priority": "normal", "dry_run": false, "agent_id": "ba77f0db18d1413ca8e45239d7600e5d", "workflow_mode": "single_agent", "created_at": "2026-10-05T08:50:42.401592+00:00", "event_count": 7, "provider_warning": null, "result_artifact": {"version": 1, "kind": "empty", "title": "Demo list (in-memory sample data, no external systems): rec-201 env=staging last_used=2025-02-01; rec-202 env=production last_used=2026-09-
+_________________________ test_goal_high_risk_approve __________________________
+tests/real_world/test_goal_high_risk.py:112: in test_goal_high_risk_approve
+    assert goal.get("status") == "complete", f"goal ended {goal.get('status')}: {answer[:300]}"
+E   AssertionError: goal ended failed: The condition for a stale staging record is: env equals 'staging' and last_used date is before 2026 [UNGROUNDED CLAIM — not found in tool outputs]-01 [UNGROUNDED CLAIM — not found in tool outputs]-01 [UNGROUNDED CLAIM — not found in tool outputs].
+E   assert 'failed' == 'complete'
+E     
+E     - complete
+E     + failed
+__________________________ test_output_pii_guardrail ___________________________
+tests/real_world/test_gov_guardrails.py:69: in test_output_pii_guardrail
+    assert not leaked, "the goal's answer returned the personal email/phone unredacted"
+E   AssertionError: the goal's answer returned the personal email/phone unredacted
+E   assert not True
+____________________________ test_grant_denies_tool ____________________________
+tests/real_world/test_gov_guardrails.py:108: in test_grant_denies_tool
+    assert "tool_call_blocked_by_grant" in types, (
+E   AssertionError: no tool_call_blocked_by_grant event (events: ['chunking_strategy_selected', 'execution_strategy_resolved', 'goal_created', 'goal_failed', 'goal_started', 'guardrail_profile_selected', 'knowledge_retrieved', 'model_route_selected', 'plan_ready', 'rag_strategy_selected', 'step_complete', 'step_started', 'tool_call_complete', 'verification_done', 'worker_complete', 'worker_started'])
+E   assert 'tool_call_blocked_by_grant' in ['goal_created', 'worker_started', 'goal_started', 'chunking_strategy_selected', 'knowledge_retrieved', 'rag_strategy_selected', ...]
+________________________ test_policy_requires_approval _________________________
+tests/real_world/test_gov_guardrails.py:148: in test_policy_requires_approval
+    assert "web_search" in mask(pending[0]), f"the approval is not for web_search: " \
+E   AssertionError: the approval is not for web_search: {"request_id": "b060e914e28e43b8be93a50d38883e9d", "goal_id": "6477961c85d24b35b246bcdb06bfe8f5", "action": "Step 1: Perform a web search for the current repo rate set by the Reserve Bank of India.", 
+E   assert 'web_search' in '{"request_id": "b060e914e28e43b8be93a50d38883e9d", "goal_id": "6477961c85d24b35b246bcdb06bfe8f5", "action": "Step 1: ...": "2026-10-05T09:10:02.898270+00:00", "note": "", "approver": null, "required_approvers": 1, "approvals_received": 0}'
+E    +  where '{"request_id": "b060e914e28e43b8be93a50d38883e9d", "goal_id": "6477961c85d24b35b246bcdb06bfe8f5", "action": "Step 1: ...": "2026-10-05T09:10:02.898270+00:00", "note": "", "approver": null, "required_approvers": 1, "approvals_received": 0}' = mask({'request_id': 'b060e914e28e43b8be93a50d38883e9d', 'goal_id': '6477961c85d24b35b246bcdb06bfe8f5', 'action': 'Step 1: Perform a web search for the current repo rate set by the Reserve Bank of India.', 'risk_level': 'high', ...})
+__________________________ test_budget_cap_stops_goal __________________________
+tests/real_world/test_gov_guardrails.py:166: in test_budget_cap_stops_goal
+    cap = api.put("/governance/budget", json={
+          ^^^^^^^
+E   AttributeError: 'LiveAPI' object has no attribute 'put'
+_______________________ test_kb_complex_format[scan_pdf] _______________________
+tests/real_world/test_kb_complex.py:69: in test_kb_complex_format
+    assert up["http"] in (200, 201), (
+E   AssertionError: scan_pdf upload of delivery-note-dn-58213-scan.pdf refused: HTTP 422 {"detail": "delivery-note-dn-58213-scan.pdf: the PDF has no extractable text (scanned images need OCR)"}
+E   assert 422 in (200, 201)
+_________________________ test_kb_complex_format[zip] __________________________
+tests/real_world/test_kb_complex.py:69: in test_kb_complex_format
+    assert up["http"] in (200, 201), (
+E   AssertionError: zip upload of people-ops-bundle.zip refused: HTTP 415 {"detail": "people-ops-bundle.zip: unsupported binary file; upload PDF, DOCX, XLSX or text"}
+E   assert 415 in (200, 201)
+_________________________ test_kb_dedup_update_delete __________________________
+tests/real_world/test_kb_complex.py:268: in test_kb_dedup_update_delete
+    assert not soft, "; ".join(soft)
+E   AssertionError: the superseded clause (75 days) is still served after the edit: the re-upload added a second copy instead of replacing the document; 2 documents listed for bramblewood-vendor-master-agreement.docx after the edit (want 1); chunk count grew from 9 to 17 on an edit that changed one clause
+E   assert not ['the superseded clause (75 days) is still served after the edit: the re-upload added a second copy instead of replaci...dor-master-agreement.docx after the edit (want 1)', 'chunk count grew from 9 to 17 on an edit that changed one clause']
+______________________________ test_kb_strategies ______________________________
+tests/real_world/test_kb_retrieval.py:234: in test_kb_strategies
+    assert not problems, "; ".join(problems)
+E   AssertionError: naive: 1 failed queries (pdf-cold-chain: /rag/query(naive) -> 503 {"detail": "Answer synthesis is unavailable"}); hyde: 1 failed queries (pdf-sla-nilgiri-express: /rag/query(hyde) -> 503 {"detail": "Retrieval service is unavailable"}); multi_hop: 6 failed queries (pdf-cold-chain: /rag/query(multi_hop) -> 503 {"detail": "Retrieval service is unavailable"}); graph: 10 failed queries (pdf-cold-chain: /rag/query(graph) -> 503 {"detail": "Answer synthesis is unavailable"}); corrective: 10 failed queries (pdf-cold-chain: /rag/query(corrective) -> 503 {"detail": "Retrieval service is unavailable"}); adaptive: 10 failed queries (pdf-cold-chain: /rag/query(adaptive) -> 503 {"detail": "Answer synthesis is unavailable"}); modular: 10 failed queries (pdf-cold-chain: /rag/query(modular) -> 503 {"detail": "Retrieval service is unavailable"}); speculative: 10 failed queries (pdf-cold-chain: /rag/query(speculative) -> 503 {"detail": "Retrieval service is unavailable"}); agentic: 10 failed queries (pdf-cold-chain: /rag/query(agentic) -> 503 {"detail": "Retrieval service is unavailable"}); web_augmented: 7 failed queries (pdf-cold-chain: /rag/query(web_augmented) -> 503 {"detail": "Answer synthesis is unavailable"}); self_rag: 5 failed queries (pdf-hazmat: /rag/query(self_rag) -> 503 {"detail": "Retrieval service is unavailable"}); flare: 7 failed queries (pdf-cold-chain: /rag/query(flare) -> 503 {"detail": "Retrieval service is unavailable"}); raptor: 10 failed queries (pdf-cold-chain: /rag/query(raptor) -> 503 {"detail": "RAG strategy is unavailable: raptor (requires RAPTOR indexing)"}); agentic_chunking: 10 failed queries (pdf-cold-chain: /rag/query(agentic_chunking) -> 503 {"detail": "RAG strategy is unavailable: agentic_chunking (requires agentic-chunking indexing)"}); colbert: 10 failed queries (pdf-cold-chain: /rag/query(colbert) -> 503 {"detail": "Answer synthesis is unavailable"}); memory_augmented: 10 failed queries (pdf-cold-chain: /rag/query(memory_augmented) -> 503 {"detail": "Answer synthesis is unavailable"}); code: 10 failed queries (pdf-cold-chain: /rag/query(code) -> 503 {"detail": "Answer synthesis is unavailable"})
+E   assert not ['naive: 1 failed queries (pdf-cold-chain: /rag/query(naive) -> 503 {"detail": "Answer synthesis is unavailable"})', '...e: 10 failed queries (pdf-cold-chain: /rag/query(adaptive) -> 503 {"detail": "Answer synthesis is unavailable"})', ...]
+____________________________ test_kb_real_documents ____________________________
+tests/real_world/test_knowledge.py:162: in test_kb_real_documents
+    assert final.get("status") == "complete", f"goal ended {final.get('status')}: {answer[:300]}"
+E   AssertionError: goal ended failed: No structured result was produced.
+E   assert 'failed' == 'complete'
+E     
+E     - complete
+E     + failed
+_____________________ test_kb_reembed_keeps_search_correct _____________________
+tests/real_world/test_knowledge.py:255: in test_kb_reembed_keeps_search_correct
+    assert not misses, f"search lost documents after re-embedding: {misses}"
+E   AssertionError: search lost documents after re-embedding: ['pep-0020 (url)']
+E   assert not ['pep-0020 (url)']
+___________________________ test_schedule_fires_goal ___________________________
+tests/real_world/test_sched_realistic.py:189: in test_schedule_fires_goal
+    hist = wait_until(
+tests/real_world/helpers.py:163: in wait_until
+    raise AssertionError(
+E   AssertionError: timed out after 240s waiting for the schedule to fire a goal; last={"runs": [{"run_id": "ef8d132f-7240-476d-95ae-40036394cab8", "goal_id": "7ae2e60ab1bf412cbb7d9edc4a6a090a", "status": "executing", "skip_reason": null, "started_at": "2026-10-05T09:38:42.486717", "duration_ms": null, "error": null}, {"run_id": "5197db8f-69e9-4109-84b0-b72cd72cbaff", "goal_id": "fa87de33a5c84387a99b35d09139135d", "status": "success", "skip_reason": null, "started_at": "2026-10-05T09:37:00.604644", "duration_ms": 22853, "error": null}, {"run_id": "2dc56370-90fc-4664-8955-5556bb8dcf25", "goal_id": "c1f45a73c01345afbb974f35f4c889d4", "status": "success", "skip_reason": null, "started_at": "2026-10-05T09:35:45.176183", "duration_ms": 30002, "error": null}], "total": 3, "schedule_id": "5cee448255414a0cad3b60a81ee4356d"}
+___________________ test_signed_webhook_chains_two_workflows ___________________
+tests/real_world/test_trigger_chain.py:124: in test_signed_webhook_chains_two_workflows
+    assert finished.get("status") == "complete", (
+E   AssertionError: the producer's completion event did not resume the consumer: failed code step 'book_dispatch': execution could not be audited
+E   assert 'failed' == 'complete'
+E     
+E     - complete
+E     + failed
+________________ test_workflow_publish_requires_second_approver ________________
+tests/real_world/test_workflow_publish.py:78: in test_workflow_publish_requires_second_approver
+    assert expected in names, f"missing audit row {expected}: {names}"
+E   AssertionError: missing audit row workflow.created: ['workflow.publish_approved', 'workflow.publish_submitted', 'workflow.published', 'workflow.updated']
+E   assert 'workflow.created' in ['workflow.publish_approved', 'workflow.publish_submitted', 'workflow.published', 'workflow.updated']
+=========================== short test summary info ============================
+SKIPPED [1] tests/real_world/test_kb_sources_sync.py:173: needs RW_FIXTURE_PUBLIC_URL (a tunnel to the local fixture server; the stack's connector egress guard refuses host.docker.internal) or RW_FIXTURE_REACHABLE=1 when the operator allowlisted the fixture host
+SKIPPED [1] tests/real_world/helpers.py:256: needs RW_REDIS_URL: a Redis the stack can reach (egress-allowlisted)
+SKIPPED [1] tests/real_world/helpers.py:256: needs RW_MONGO_URI: a MongoDB the stack can reach (egress-allowlisted)
+SKIPPED [1] tests/real_world/helpers.py:256: needs RW_S3_ENDPOINT, RW_S3_BUCKET, RW_S3_ACCESS_KEY, RW_S3_SECRET_KEY: an S3/MinIO bucket the stack can reach (egress-allowlisted)
+SKIPPED [1] tests/real_world/test_scheduled_workflow.py:117: plan enterprise allows every-minute schedules (floor 60)
+SKIPPED [2] tests/real_world/test_wf_complex.py:46: the workflow HTTP step's SSRF guard refused the local fixture server (SSRF guard [workflow]: hostname 'host.docker.internal' resolved to blocked IP '192.168.5.2' (anti-rebinding check)SSRF guard [workflow]: hostname 'host.docker.i); set RW_FIXTURE_PUBLIC_URL to a tunnel to RW_FIXTURE_PORT so the stack can reach it
+21 failed, 34 passed, 7 skipped in 4254.60s (1:10:54)

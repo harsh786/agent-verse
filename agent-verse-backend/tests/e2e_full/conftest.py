@@ -39,6 +39,24 @@ pytestmark = pytest.mark.asyncio(loop_scope="session")
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
+# ── Worker hygiene (USR-7) ─────────────────────────────────────────────────────
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _no_worker_outlives_its_module() -> Iterator[None]:
+    """Fail the module whose worker fixture leaked a Celery worker process.
+
+    Worker fixtures are module-scoped at most, so when a module's fixtures are
+    torn down none of its workers may still run. A survivor is killed and the
+    module errors (the session-wide backstop lives in ``tests/conftest.py``).
+    """
+    yield
+    from tests import _worker_procs
+
+    leaked = _worker_procs.reap_surviving_workers()
+    assert not leaked, f"Celery worker process group(s) outlived the module: {leaked}"
+
+
 # ── Backing services (testcontainers or external compose) ─────────────────────
 
 

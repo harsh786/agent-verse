@@ -9,7 +9,12 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ensure_success,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -78,8 +83,8 @@ class PagerDutyConnector(BaseConnector):
                 while True:
                     params["offset"] = offset
                     r = await client.get(f"{_PD_BASE}/incidents", params=params, headers=headers)
-                    if not r.is_success:
-                        break
+                    # USR-1: a failed listing fails the sync, never an empty success.
+                    ensure_success(r, source_type="pagerduty", what="incident listing")
                     data = r.json()
                     incidents = data.get("incidents", [])
                     if not incidents:

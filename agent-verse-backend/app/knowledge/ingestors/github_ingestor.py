@@ -152,7 +152,11 @@ class GitHubIngestor:
         branch: str = "HEAD",
         max_files: int = 300,
         file_patterns: list[str] | None = None,
+        failures: list[tuple[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
+        """Chunks of the repo's files. A file that cannot be fetched (other than
+        one deleted meanwhile) is appended to ``failures`` as ``(path, reason)``
+        when given, so callers can count it instead of losing it silently."""
         from app.knowledge.ingestors.limits import MAX_GITHUB_FILES, clamp_limit
 
         max_files = clamp_limit(max_files, MAX_GITHUB_FILES)
@@ -205,8 +209,12 @@ class GitHubIngestor:
                 if e.response.status_code == 404:
                     continue  # File deleted between tree fetch and content fetch
                 logger.warning("github_file_fetch_error", path=path, status=e.response.status_code)
+                if failures is not None:
+                    failures.append((path, f"HTTP {e.response.status_code}"))
             except Exception as exc:
                 logger.warning("github_file_fetch_failed", path=path, error=str(exc))
+                if failures is not None:
+                    failures.append((path, f"{type(exc).__name__}: {exc}"[:300]))
 
         logger.info(
             "github_repo_ingested",

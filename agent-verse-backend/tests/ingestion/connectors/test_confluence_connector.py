@@ -5,8 +5,10 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.ingestion.base_connector import ConnectorPartialFailureError
 from app.ingestion.connectors.confluence_connector import ConfluenceConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
 
 
 _DEFAULT_BASE_URL = "https://x.atlassian.net/wiki"
@@ -197,7 +199,8 @@ class TestGetDelta:
         combos = {(d.metadata["space"], d.metadata["type"]) for d, _ in results}
         assert combos == {("ENG", "page"), ("ENG", "blogpost"), ("SALES", "page"), ("SALES", "blogpost")}
 
-    async def test_failed_response_breaks_loop(self):
+    async def test_failed_response_fails_the_sync(self):
+        # USR-1: a failed listing is a counted failure, not an empty success.
         async def get(*a, **kw):
             resp = MagicMock()
             resp.is_success = False
@@ -207,10 +210,11 @@ class TestGetDelta:
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_async_client(get)
             connector = ConfluenceConnector()
-            results = [d async for d in connector.get_delta(_make_config(), None)]
+            results, exc = await drain(connector.get_delta(_make_config(), None))
         assert results == []
+        assert isinstance(exc, ConnectorPartialFailureError) and "HTTP 403" in str(exc)
 
-    async def test_auth_failure_401_breaks_loop_gracefully(self):
+    async def test_auth_failure_401_fails_the_sync(self):
         async def get(*a, **kw):
             resp = MagicMock()
             resp.is_success = False
@@ -220,8 +224,9 @@ class TestGetDelta:
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_async_client(get)
             connector = ConfluenceConnector()
-            results = [d async for d in connector.get_delta(_make_config(), None)]
+            results, exc = await drain(connector.get_delta(_make_config(), None))
         assert results == []
+        assert isinstance(exc, ConnectorPartialFailureError) and "HTTP 401" in str(exc)
 
     async def test_empty_result_set_yields_nothing(self):
         async def get(*a, **kw):
@@ -236,10 +241,9 @@ class TestGetDelta:
             results = [d async for d in connector.get_delta(_make_config(), None)]
         assert results == []
 
-    async def test_malformed_cql_400_response_breaks_loop_gracefully(self):
+    async def test_malformed_cql_400_response_fails_the_sync(self):
         # An invalid/unsupported space key or content type still builds a
-        # request; the connector must handle a 400-class error the same way
-        # as any other failed response — no crash, empty result.
+        # request; a 400-class error is a counted failure like any other.
         async def get(*a, **kw):
             resp = MagicMock()
             resp.is_success = False
@@ -250,8 +254,9 @@ class TestGetDelta:
             mock_cls.return_value = _mock_async_client(get)
             connector = ConfluenceConnector()
             config = _make_config({"base_url": "https://x.atlassian.net/wiki", "space_keys": ["!!!bad"]})
-            results = [d async for d in connector.get_delta(config, None)]
+            results, exc = await drain(connector.get_delta(config, None))
         assert results == []
+        assert isinstance(exc, ConnectorPartialFailureError) and "!!!bad" in str(exc)
 
     async def test_content_type_appears_in_metadata_for_blogpost(self):
         pages = {"results": [_page("1", "Blog Post", "<p>content</p>", "2026-01-01T00:00:00Z")]}

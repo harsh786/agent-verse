@@ -20,6 +20,8 @@ import pytest
 from app.ingestion.base_connector import ConnectorUnavailableError
 
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorFetchError, ConnectorPartialFailureError
 
 
 def _make_config(source_type: str, conn_config: dict | None = None) -> SourceConfig:
@@ -165,7 +167,7 @@ class TestJiraConnector:
         assert b"Comment by Carol" in doc.content
         assert cursor == "2026-01-02T00:00:00.000Z"
 
-    def test_get_delta_stops_on_failed_response(self):
+    def test_get_delta_fails_on_failed_response(self):
         from app.ingestion.connectors.jira_connector import JiraConnector
 
         config = _make_config("jira", {"base_url": "https://foo.atlassian.net"})
@@ -173,9 +175,11 @@ class TestJiraConnector:
 
         mock_client = _mock_httpx_client(get_responses=[_resp(is_success=False, status_code=500)])
         with patch("httpx.AsyncClient", return_value=mock_client):
-            docs = list(asyncio.run(_collect_async(connector.get_delta(config, None))))
+            docs, exc = asyncio.run(drain(connector.get_delta(config, None)))
 
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorFetchError) and "HTTP 500" in str(exc), exc
 
     def test_get_delta_no_more_issues_breaks(self):
         from app.ingestion.connectors.jira_connector import JiraConnector
@@ -316,7 +320,7 @@ class TestZendeskConnector:
         assert b"<b>" not in doc.content
         assert cursor == "2026-02-01T00:00:00Z"
 
-    def test_get_delta_tickets_failed_response_breaks(self):
+    def test_get_delta_tickets_failed_response_is_counted(self):
         from app.ingestion.connectors.zendesk_connector import ZendeskConnector
 
         config = _make_config(
@@ -327,9 +331,11 @@ class TestZendeskConnector:
 
         mock_client = _mock_httpx_client(get_responses=[_resp(is_success=False)])
         with patch("httpx.AsyncClient", return_value=mock_client):
-            docs = list(asyncio.run(_collect_async(connector.get_delta(config, None))))
+            docs, exc = asyncio.run(drain(connector.get_delta(config, None)))
 
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
 
 
 # ── GitLabConnector ───────────────────────────────────────────────────────────
@@ -423,7 +429,7 @@ class TestGitLabConnector:
         types = {d[0].metadata["type"] for d in docs}
         assert types == {"issue", "merge_request"}
 
-    def test_get_delta_failed_response_breaks(self):
+    def test_get_delta_failed_response_is_counted(self):
         from app.ingestion.connectors.gitlab_connector import GitLabConnector
 
         config = _make_config(
@@ -434,9 +440,11 @@ class TestGitLabConnector:
 
         mock_client = _mock_httpx_client(get_responses=[_resp(is_success=False)])
         with patch("httpx.AsyncClient", return_value=mock_client):
-            docs = list(asyncio.run(_collect_async(connector.get_delta(config, None))))
+            docs, exc = asyncio.run(drain(connector.get_delta(config, None)))
 
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
 
 
 # ── KafkaConnector (fake confluent_kafka module) ─────────────────────────────
@@ -700,6 +708,10 @@ class TestMQTTConnector:
         client_instance = MagicMock()
 
         def fake_connect(host, port, keepalive):
+            # A real broker answers CONNECT with a CONNACK (USR-1 checks it).
+            client_instance.on_connect(
+                client_instance, None, {}, SimpleNamespace(is_failure=False), None
+            )
             msg1 = MagicMock()
             msg1.topic = "sensors/temp"
             msg1.payload = b'{"temp": 21.5}'

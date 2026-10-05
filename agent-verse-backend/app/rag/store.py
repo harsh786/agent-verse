@@ -32,6 +32,8 @@ if TYPE_CHECKING:
 _VECTOR_WEIGHT = 0.7
 _TRIGRAM_WEIGHT = 0.3
 SUPPORTED_EMBEDDING_DIMENSIONS = (768, 1024, 1536, 2048, 3072)
+# Label of a collection whose embedder is not known — never a guessed vendor.
+_UNKNOWN_EMBEDDER = "unknown"
 
 _log = get_logger(__name__)
 
@@ -44,6 +46,23 @@ class EmbeddingDimensionError(ValueError):
 # DELETE over a large collection held row locks on the whole chunk table's
 # rows for the collection and produced one huge WAL burst.
 _COLLECTION_DELETE_BATCH = 1000
+
+
+def _batch_embedding_model(records: list[dict[str, Any]]) -> str | None:
+    """The embedding model a batch of chunk records names, if any (pipeline metadata)."""
+    for record in records:
+        metadata = record.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        effective = str(metadata.get("embedding_model_effective") or "").strip()
+        if effective:
+            # "default": the orchestrator fell back to the deployment embedder,
+            # so its *selected* model id (``embedding_model``) was not used.
+            return None if effective == "default" else effective[:200]
+        model = str(metadata.get("embedding_model") or "").strip()
+        if model:
+            return model[:200]
+    return None
 
 
 def _chunk_table(dimension: int) -> str:
@@ -229,7 +248,11 @@ class KnowledgeStore:
     """
 
     def __init__(
-        self, db_session_factory: Any = None, *, embedding_dim: int | None = None
+        self,
+        db_session_factory: Any = None,
+        *,
+        embedding_dim: int | None = None,
+        embedder_name: str | None = None,
     ) -> None:
         # Key: (tenant_id, collection_id) → _CollectionStore
         self._data: dict[tuple[str, str], _CollectionStore] = {}
@@ -244,6 +267,9 @@ class KnowledgeStore:
         # The active embedder's REAL output width, when known. New collections are
         # sized to it instead of the static settings.embedding_dim.
         self._embedding_dim = embedding_dim
+        # The active embedder's model name (USR-3): what new collections are
+        # labelled with instead of a hardcoded "voyage".
+        self._embedder_name = (embedder_name or "").strip() or None
 
     def add_change_listener(self, listener: Any) -> None:
         """Register ``async listener(tenant_id)`` for knowledge changes."""
@@ -262,6 +288,20 @@ class KnowledgeStore:
         """Bind the active embedder's real output dimension (None = unknown)."""
         self._embedding_dim = dimension
 
+    def set_embedder_name(self, name: str | None) -> None:
+        """Bind the active embedder's model name (None = unknown)."""
+        self._embedder_name = (name or "").strip() or None
+
+    @property
+    def embedder_name(self) -> str | None:
+        """The active embedder's model name, when known."""
+        return self._embedder_name
+
+    def _label_new_collection(self, collection: KnowledgeCollection) -> None:
+        """Name the embedder a new collection's vectors will come from (USR-3)."""
+        if not (collection.embedder or "").strip():
+            collection.embedder = self._embedder_name or _UNKNOWN_EMBEDDER
+
     def create_collection(
         self, collection: KnowledgeCollection, *, tenant_ctx: TenantContext
     ) -> str:
@@ -274,6 +314,9 @@ class KnowledgeStore:
         if key not in self._data:  # RATE-01: the plan's collection limit
             current = sum(1 for tid, _ in self._data if tid == tenant_ctx.tenant_id)
             check_knowledge_collection_limit(tenant_ctx, current)
+        self._label_new_collection(collection)
+        if collection.embedding_dim is None:
+            collection.embedding_dim = self._embedding_dim
         self._data[key] = _CollectionStore(collection=collection)
         return collection.collection_id
 
@@ -311,6 +354,7 @@ class KnowledgeStore:
         from app.tenancy.limits import check_knowledge_collection_limit
 
         tenant_id = tenant_ctx.tenant_id
+        self._label_new_collection(collection)
 
         # Size the collection to the ACTIVE embedder's real output width when it
         # is known (e.g. all-mpnet-base-v2 → 768 even with EMBEDDING_DIM=2048);
@@ -365,6 +409,7 @@ class KnowledgeStore:
             ).scalar_one_or_none()
             if created_id is None:
                 raise KeyError(f"Active tenant not found: {tenant_id}")
+        collection.embedding_dim = dim
 
     def get_collection(
         self, collection_id: str, *, tenant_ctx: TenantContext
@@ -397,7 +442,8 @@ class KnowledgeStore:
                 await session.execute(
                     text(
                         "SELECT collection.id, collection.name, collection.description, "
-                        "collection.document_count, collection.embedder "
+                        "collection.document_count, collection.embedder, "
+                        "collection.embedding_dim "
                         "FROM knowledge_collections AS collection "
                         "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
                         "WHERE collection.id = :id AND collection.tenant_id = :tid "
@@ -413,7 +459,8 @@ class KnowledgeStore:
             description=str(row[2] or ""),
             collection_id=str(row[0]),
             document_count=int(row[3] or 0),
-            embedder=str(row[4] or "voyage"),
+            embedder=str(row[4] or _UNKNOWN_EMBEDDER),
+            embedding_dim=int(row[5]) if row[5] is not None else None,
         )
 
     async def get_collection_embedding_dim(
@@ -485,7 +532,8 @@ class KnowledgeStore:
                 await session.execute(
                     text(
                         "SELECT collection.id, collection.name, collection.description, "
-                        "collection.document_count, collection.embedder "
+                        "collection.document_count, collection.embedder, "
+                        "collection.embedding_dim "
                         "FROM knowledge_collections AS collection "
                         "JOIN tenants AS tenant ON tenant.id = collection.tenant_id "
                         "WHERE collection.tenant_id = :tid AND collection.is_active IS TRUE "
@@ -500,7 +548,8 @@ class KnowledgeStore:
                 description=str(row[2] or ""),
                 collection_id=str(row[0]),
                 document_count=int(row[3] or 0),
-                embedder=str(row[4] or "voyage"),
+                embedder=str(row[4] or _UNKNOWN_EMBEDDER),
+                embedding_dim=int(row[5]) if row[5] is not None else None,
             )
             for row in rows
         ]
@@ -3003,7 +3052,25 @@ class KnowledgeStore:
                     f"embeddings but the active embedder produces {dimension}-dimensional "
                     "vectors; re-embed the collection or use a new one"
                 )
-            if not chunk_count and stored_dimension != dimension:
+            # The first write fixes what the collection holds: its vector width
+            # and (USR-3) the model those vectors came from — the label set at
+            # create time may predate the embedder that actually wrote them.
+            batch_model = _batch_embedding_model(records) or self._embedder_name
+            if not chunk_count and batch_model:
+                await session.execute(
+                    text(
+                        "UPDATE knowledge_collections SET embedding_dim = :dimension, "
+                        "embedder = :embedder, updated_at = now() "
+                        "WHERE id = :id AND tenant_id = :tid"
+                    ),
+                    {
+                        "dimension": dimension,
+                        "embedder": batch_model,
+                        "id": collection_id,
+                        "tid": tenant_id,
+                    },
+                )
+            elif not chunk_count and stored_dimension != dimension:
                 await session.execute(
                     text(
                         "UPDATE knowledge_collections SET embedding_dim = :dimension, "

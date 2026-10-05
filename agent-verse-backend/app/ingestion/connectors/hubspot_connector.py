@@ -9,7 +9,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -59,43 +65,54 @@ class HubSpotConnector(BaseConnector):
         headers = {"Authorization": f"Bearer {token}"}
         new_cursor = cursor or ""
 
+        failures = UnitFailures("hubspot")
         async with httpx.AsyncClient(timeout=30) as client:
             for obj_type in object_types:
-                params: dict = {"limit": batch_size, "sort": "updatedAt"}
-                if cursor:
-                    params["after"] = cursor  # paging token; not ideal for time but best available
+                try:
+                    params: dict = {"limit": batch_size, "sort": "updatedAt"}
+                    if cursor:
+                        # paging token; not ideal for time but best available
+                        params["after"] = cursor
 
-                url: str | None = f"{_HUBSPOT_BASE}/{obj_type}"
-                while url:
-                    r = await client.get(url, params=params, headers=headers)
-                    if not r.is_success:
-                        break
-                    data = r.json()
-                    for result in data.get("results", []):
-                        props = result.get("properties", {})
-                        updated = props.get("hs_lastmodifieddate") or props.get("updatedAt", "")
-                        new_cursor = max(new_cursor, updated)
-                        text_parts = [f"{k}: {v}" for k, v in props.items() if v]
-                        text = (
-                            f"HubSpot {obj_type.rstrip('s').capitalize()}: {result.get('id')}\n"
-                            + "\n".join(text_parts)
-                        )
-                        doc = RawDocument(
-                            doc_id=stable_doc_id(config, obj_type, result.get("id")),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=f"https://app.hubspot.com/contacts/{result.get('id')}",
-                            content=text.encode(),
-                            content_type="text/plain",
-                            metadata={
-                                "object_type": obj_type,
-                                "id": result.get("id"),
-                                "updated": updated,
-                            },
-                        )
-                        yield doc, new_cursor
-                    paging = data.get("paging", {}).get("next", {}).get("after")
-                    if paging:
-                        params = {"limit": batch_size, "sort": "updatedAt", "after": paging}
-                    else:
-                        url = None
+                    url: str | None = f"{_HUBSPOT_BASE}/{obj_type}"
+                    while url:
+                        r = await client.get(url, params=params, headers=headers)
+                        if not r.is_success:
+                            failures.add(f"object type {obj_type}", r)
+                            break
+                        data = r.json()
+                        for result in data.get("results", []):
+                            props = result.get("properties", {})
+                            updated = props.get("hs_lastmodifieddate") or props.get("updatedAt", "")
+                            new_cursor = max(new_cursor, updated)
+                            text_parts = [f"{k}: {v}" for k, v in props.items() if v]
+                            text = (
+                                f"HubSpot {obj_type.rstrip('s').capitalize()}: {result.get('id')}\n"
+                                + "\n".join(text_parts)
+                            )
+                            doc = RawDocument(
+                                doc_id=stable_doc_id(config, obj_type, result.get("id")),
+                                source_id=config.source_id,
+                                tenant_id=config.tenant_id,
+                                source_url=f"https://app.hubspot.com/contacts/{result.get('id')}",
+                                content=text.encode(),
+                                content_type="text/plain",
+                                metadata={
+                                    "object_type": obj_type,
+                                    "id": result.get("id"),
+                                    "updated": updated,
+                                },
+                            )
+                            yield doc, new_cursor
+                        paging = data.get("paging", {}).get("next", {}).get("after")
+                        if paging:
+                            params = {"limit": batch_size, "sort": "updatedAt", "after": paging}
+                        else:
+                            url = None
+                except ConnectorUnavailableError:
+                    raise
+                except Exception as exc:  # transport / response errors: this unit only
+                    failures.add(f"object type {obj_type}", exc)
+        # USR-1: an unreadable unit fails the sync (partial) instead of being
+        # logged and skipped with 0 failures reported.
+        failures.raise_if_any()

@@ -219,11 +219,47 @@ class IngestionJobTracker:
         job.docs_discovered += indexed + skipped + failed
 
     async def complete_job(
-        self, job: IngestionJob, *, error: str = "", cancelled: bool = False
+        self,
+        job: IngestionJob,
+        *,
+        error: str = "",
+        cancelled: bool = False,
+        partial: bool = False,
+        notices: list[str] | None = None,
     ) -> None:
-        """Mark the job as completed, failed, or cancelled (by an operator)."""
-        job.status = "failed" if error else ("cancelled" if cancelled else "completed")
-        job.error_message = error[:2048] if error else ""
+        """Finish the job: ``completed``, ``partial``, ``failed`` or ``cancelled``.
+
+        USR-1: a job with failures is never ``completed``. A sync-level ``error``
+        (connection / auth / listing failure) is ``failed`` and counts at least
+        one failure; ``partial`` (some units of the source could not be read,
+        the rest synced) is ``partial`` when anything was synced. Document
+        failures without an error make the job ``partial`` — or ``failed`` when
+        nothing was synced — with a message saying how many failed.
+        """
+        synced = job.docs_indexed + job.docs_skipped
+        if error:
+            job.docs_failed = max(job.docs_failed, 1)
+            job.status = "partial" if partial and synced else "failed"
+            job.error_message = error[:2048]
+        elif cancelled:
+            job.status = "cancelled"
+            job.error_message = ""
+        elif job.docs_failed:
+            job.status = "partial" if synced else "failed"
+            job.error_message = (
+                f"{job.docs_failed} document(s) failed to sync; the failures are in the "
+                "ingestion DLQ and are retried automatically"
+            )
+        else:
+            job.status = "completed"
+            job.error_message = ""
+        if notices:
+            # USR-5: things the tenant should act on (e.g. a URL that moved
+            # permanently) are shown on the job even when it succeeded.
+            text = "; ".join(notices)
+            job.error_message = (f"{job.error_message}; {text}" if job.error_message else text)[
+                :2048
+            ]
         job.completed_at = datetime.now(UTC).isoformat()
 
         _log.info(

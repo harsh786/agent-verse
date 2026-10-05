@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ingestion.connectors.salesforce_connector import SalesforceConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorPartialFailureError
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -184,7 +186,7 @@ class TestGetDelta:
         second_url = get_mock.await_args_list[1].args[0]
         assert second_url == "https://acme.my.salesforce.com/services/data/v58.0/query/next-page"
 
-    async def test_query_http_failure_stops_sobject(self):
+    async def test_query_http_failure_is_a_counted_failure(self):
         auth_resp = _auth_response()
         fail_resp = MagicMock(is_success=False, status_code=400)
         auth_client = _fake_client(post_impl=AsyncMock(return_value=auth_resp))
@@ -193,8 +195,9 @@ class TestGetDelta:
             {"username": "u", "password": "p", "sobjects": ["Lead"], "fields": {"Lead": ["Id"]}}
         )
         with patch("httpx.AsyncClient", side_effect=[auth_client, query_client]):
-            docs = await _collect(SalesforceConnector().get_delta(config, None))
+            docs, exc = await drain(SalesforceConnector().get_delta(config, None))
         assert docs == []
+        assert isinstance(exc, ConnectorPartialFailureError) and "SObject Lead" in str(exc)
 
     async def test_cursor_adds_systemmodstamp_filter(self):
         auth_resp = _auth_response()

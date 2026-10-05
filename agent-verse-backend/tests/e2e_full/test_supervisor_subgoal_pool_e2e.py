@@ -20,8 +20,6 @@ import asyncio
 import contextlib
 import os
 import re
-import signal
-import subprocess
 import sys
 import textwrap
 import time
@@ -86,8 +84,12 @@ _BOOT_MODULE = textwrap.dedent(
 )
 
 
-def _start_worker(workdir: Path, name: str, queues: str, concurrency: int) -> dict[str, Any]:
-    log_path = workdir / f"{name}.log"
+def _worker(
+    workdir: Path, name: str, queues: str, concurrency: int
+) -> contextlib.AbstractContextManager[Any]:
+    """A real pool worker, stopped (whole process group) on any exit — USR-7."""
+    from tests._worker_procs import node_name, worker_process
+
     env = dict(os.environ)
     # Run from the temp dir (no .env there): from the backend root the worker would
     # load the developer's .env and call real LLM providers.
@@ -96,46 +98,18 @@ def _start_worker(workdir: Path, name: str, queues: str, concurrency: int) -> di
     )
     assert env.get("DATABASE_URL") and env.get("REDIS_URL"), "app fixture must export DSNs"
     env["ENVIRONMENT"] = "development"  # FakeProvider is refused in production
-    log_file = open(log_path, "w")
-    proc = subprocess.Popen(
+    return worker_process(
         [
             sys.executable, "-m", "celery", "-A", "e2e_supervisor_boot:celery_app", "worker",
             "-Q", queues, "--loglevel=info", f"--concurrency={concurrency}",
-            "-n", f"{name}@%h",
+            "-n", node_name(name),
         ],
-        cwd=str(workdir),
+        cwd=workdir,
         env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
+        log_path=workdir / f"{name}.log",
+        ready_timeout=60.0,
+        name=name,
     )
-    return {"proc": proc, "log_path": log_path, "log_file": log_file}
-
-
-def _wait_ready(worker: dict[str, Any]) -> None:
-    proc, log_path = worker["proc"], worker["log_path"]
-    deadline = time.monotonic() + 60.0
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"worker exited: {log_path.read_text()[-3000:]}")
-        with contextlib.suppress(OSError):
-            if "ready." in log_path.read_text():
-                return
-        time.sleep(0.5)
-    raise RuntimeError(f"worker did not become ready: {log_path.read_text()[-3000:]}")
-
-
-def _stop_worker(worker: dict[str, Any]) -> None:
-    proc = worker["proc"]
-    if proc.poll() is None:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-        try:
-            proc.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    worker["log_file"].close()
 
 
 def _purge_stale_goal_messages(redis_url: str, queues: str) -> None:
@@ -166,15 +140,13 @@ def worker_pools(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     _purge_stale_goal_messages(os.environ["REDIS_URL"], f"{_MAIN_QUEUES},{_SUBGOAL_QUEUES}")
     workdir = tmp_path_factory.mktemp("supervisorpools")
     (workdir / "e2e_supervisor_boot.py").write_text(_BOOT_MODULE)
-    main = _start_worker(workdir, "mainpool", _MAIN_QUEUES, concurrency=1)
-    sub = _start_worker(workdir, "subgoalpool", _SUBGOAL_QUEUES, concurrency=1)
-    try:
-        _wait_ready(main)
-        _wait_ready(sub)
-        yield {"main": main, "sub": sub}
-    finally:
-        _stop_worker(main)
-        _stop_worker(sub)
+    # ExitStack: a failed second start (or a failing stop) still stops the first.
+    with contextlib.ExitStack() as stack:
+        main = stack.enter_context(_worker(workdir, "mainpool", _MAIN_QUEUES, concurrency=1))
+        sub = stack.enter_context(
+            _worker(workdir, "subgoalpool", _SUBGOAL_QUEUES, concurrency=1)
+        )
+        yield {"main": main.as_dict(), "sub": sub.as_dict()}
 
 
 def _goal_ids_run(log_text: str) -> set[str]:

@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ingestion.connectors.discord_connector import DiscordConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorPartialFailureError
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -112,8 +114,10 @@ class TestGetDelta:
         client = _fake_client(get_mock)
         config = _make_config({"bot_token": "tok", "channel_ids": ["bad_chan", "good_chan"]})
         with patch("httpx.AsyncClient", return_value=client):
-            docs = await _collect(DiscordConnector().get_delta(config, None))
-        assert len(docs) == 1
+            docs, exc = await drain(DiscordConnector().get_delta(config, None))
+        assert len(docs) == 1  # the other channel still synced...
+        # ...and the unreadable one is a counted failure (USR-1).
+        assert isinstance(exc, ConnectorPartialFailureError) and "bad_chan" in str(exc)
 
     async def test_pagination_stops_when_page_smaller_than_batch(self):
         messages = [{"id": "1", "author": {"username": "a"}, "content": "hi", "timestamp": "t"}]

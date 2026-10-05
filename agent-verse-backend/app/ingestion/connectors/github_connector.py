@@ -12,7 +12,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from app.ingestion.base_connector import BaseConnector, ConnectionHealth, stable_doc_id
+from app.ingestion.base_connector import (
+    BaseConnector,
+    ConnectionHealth,
+    ConnectorUnavailableError,
+    UnitFailures,
+    stable_doc_id,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -70,10 +76,12 @@ class GitHubConnector(BaseConnector):
         ingestor = GitHubIngestor(token=token)
         new_cursor = cursor or ""
 
+        failures = UnitFailures("github")
         for repo in repos:
             try:
                 if include_code:
                     owner, _, repo_name = repo.partition("/")
+                    file_failures: list[tuple[str, str]] = []
                     chunks = await ingestor.ingest_repo(
                         owner,
                         repo_name,
@@ -81,7 +89,10 @@ class GitHubConnector(BaseConnector):
                         file_patterns=config.connection_config.get(
                             "file_extensions", [".py", ".ts", ".md"]
                         ),
+                        failures=file_failures,
                     )
+                    for path, reason in file_failures:
+                        failures.add(f"{repo}:{path}", reason)
                     for chunk in chunks:
                         doc_id = (
                             f"{repo}_{chunk['source_doc_id']}"
@@ -100,5 +111,10 @@ class GitHubConnector(BaseConnector):
                             metadata=chunk.get("metadata", {}),
                         )
                         yield raw, new_cursor or doc_id
+            except ConnectorUnavailableError:
+                raise
             except Exception as exc:
-                _log.warning("github_connector_repo_error repo=%s: %s", repo, exc)
+                # USR-1: an unreadable repo (auth, not found, outage) is a counted
+                # failure — it used to be logged and the sync reported success.
+                failures.add(f"repo {repo}", exc)
+        failures.raise_if_any()

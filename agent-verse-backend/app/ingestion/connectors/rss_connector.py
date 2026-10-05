@@ -26,8 +26,14 @@ from app.ingestion.base_connector import (
     ConnectionHealth,
     ConnectorUnavailableError,
 )
-from app.ingestion.connector_egress import assert_source_url, guarded_request, source_client
+from app.ingestion.connector_egress import (
+    GuardedFetch,
+    assert_source_url,
+    guarded_fetch,
+    source_client,
+)
 from app.ingestion.connector_registry import register
+from app.ingestion.source_config import CONNECTOR_MOVED_KEY
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -62,6 +68,12 @@ def _feedparser() -> Any:
 
 
 async def _fetch_feed(url: str) -> bytes:
+    """The feed's bytes (see :func:`_fetch_feed_path`)."""
+    body, _fetched = await _fetch_feed_path(url)
+    return body
+
+
+async def _fetch_feed_path(url: str) -> tuple[bytes, GuardedFetch]:
     """Fetch the feed through the egress guard and return its bytes.
 
     ``feedparser.parse(url)`` must never see the tenant's string: it fetches with
@@ -72,9 +84,9 @@ async def _fetch_feed(url: str) -> bytes:
 
     assert_source_url(url, context="rss")
     async with source_client(timeout=30) as client:
-        r = await guarded_request(client, "GET", url, context="rss")
-        r.raise_for_status()
-        return bytes(r.content[:_MAX_FEED_BYTES])
+        fetched = await guarded_fetch(client, "GET", url, context="rss")
+        fetched.response.raise_for_status()
+        return bytes(fetched.response.content[:_MAX_FEED_BYTES]), fetched
 
 
 def _entry_timestamp(entry: Any) -> str:
@@ -153,7 +165,13 @@ class RSSConnector(BaseConnector):
         feedparser = _feedparser()  # raises: an empty sync must not look successful
 
         max_entries = int(config.connection_config.get("max_entries", 200))
-        feed = feedparser.parse(await _fetch_feed(url))
+        body, fetched = await _fetch_feed_path(url)
+        feed = feedparser.parse(body)
+        # USR-5: a moved feed is followed (every hop egress-checked); a
+        # permanent move is surfaced on the sync and recorded on the Source.
+        feed_meta: dict[str, Any] = {"final_url": fetched.final_url}
+        if (moved := fetched.move_notice()) is not None:
+            feed_meta[CONNECTOR_MOVED_KEY] = moved
         if not feed.entries and feed.bozo:
             raise ValueError(
                 f"URL did not return a valid RSS/Atom feed: {getattr(feed, 'bozo_exception', None)}"
@@ -189,7 +207,10 @@ class RSSConnector(BaseConnector):
                 source_url=link or url,
                 content=text.encode(),
                 content_type="text/plain",
-                metadata={"title": title, "link": link, "published": published, "feed": url},
+                metadata={
+                    "title": title, "link": link, "published": published, "feed": url,
+                    **feed_meta,
+                },
             )
             emitted += 1
             yield doc, new_cursor

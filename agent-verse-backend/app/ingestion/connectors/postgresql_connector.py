@@ -15,7 +15,10 @@ from typing import TYPE_CHECKING, Any
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
+    UnitFailures,
+    describe_fetch_error,
     stable_doc_id,
 )
 from app.ingestion.connector_egress import (
@@ -104,9 +107,14 @@ class PostgreSQLConnector(BaseConnector):
             try:
                 conn = await asyncpg.connect(**_pinned_connect_kwargs(dsn, pins))
             except Exception as exc:
+                # USR-1: a connection / auth failure fails the sync. It used to
+                # ``return`` — reported as a completed sync with 0 failures.
                 _log.error("postgresql_connect_error: %s", exc)
-                return
+                raise ConnectorFetchError(
+                    f"postgresql: cannot connect: {describe_fetch_error(exc)}"
+                ) from exc
 
+        failures = UnitFailures("postgresql")
         try:
             new_cursor = cursor or "1970-01-01T00:00:00"
             for table_def in tables:
@@ -125,7 +133,8 @@ class PostgreSQLConnector(BaseConnector):
                         batch_size,
                     )
                 except Exception as exc:
-                    _log.warning("postgresql_query_error table=%s: %s", table, exc)
+                    # USR-1: an unreadable table is a counted failure (partial).
+                    failures.add(f"table {schema}.{table}", exc)
                     continue
 
                 for row in rows:
@@ -153,6 +162,7 @@ class PostgreSQLConnector(BaseConnector):
                     yield raw, new_cursor
         finally:
             await conn.close()
+        failures.raise_if_any()
 
 
 _VERIFYING_SSLMODES = frozenset({"verify-full"})

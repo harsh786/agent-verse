@@ -1,0 +1,43 @@
+{
+  "USR-1": {
+    "verdict_before": "not_solved",
+    "evidence": "job_tracker.complete_job:225 set 'completed' whatever docs_failed was; scheduler except path left docs_failed=0; connectors swallowed failures (postgresql_connector.py:105 'return' on connect error, pdf_file_connector.py log-and-continue, confluence/jira/gitlab/... 'if not r.is_success: break'). Reproducer over all 49 types through the real sync task: 19 types completed/0, the rest failed/0",
+    "commit": "31e223669"
+  },
+  "USR-2": {
+    "verdict_before": "not_solved",
+    "evidence": "app/api/ingestion.py create_source (l.285) / update_source (l.343) stored connection_config with no egress check; 60/60 internal-address create+update cases returned 201/200 before the fix",
+    "commit": "6ad1d9794 + 3f36e2f41 (multi-host follow-up)"
+  },
+  "USR-3": {
+    "verdict_before": "not_solved",
+    "evidence": "app/api/knowledge.py:106 embedder_type default 'voyage' stored as the label (create_collection used body.embedder_type); app/rag/store.py:416,503 read fallback 'voyage'; app/rag/models.py:17 default 'voyage'; reproduced via API with a non-voyage embedder and on real Postgres",
+    "commit": "978789bfa"
+  },
+  "USR-4": {
+    "verdict_before": "not_solved",
+    "evidence": "pdf_file_connector.py (and gcs/s3/web_crawl/youtube/sharepoint) logged and dropped fetch errors, so scheduler.add_to_dlq never ran for them; real-Postgres reproducer: 0 ingestion_dlq rows after a 503 sync. Retry of a failure doc without a replay reference could never succeed; scheduler per-doc exception path skipped the DLQ",
+    "commit": "de85b5383"
+  },
+  "USR-5": {
+    "verdict_before": "not_solved",
+    "evidence": "pdf_file_connector.py and http_connector._fetch used c.get/client.request without following redirects (source_client forces follow_redirects=False), so a 301/302 raised 'Redirect response ...' and failed; no final URL or permanent-move record anywhere; web_crawl re-queued redirect targets without hop limit or move notice. Reproducer: 16/16 redirect tests failed before",
+    "commit": "58590584f"
+  },
+  "USR-6": {
+    "verdict_before": "not_solved",
+    "evidence": "app/providers/voyage_provider.py:115 called SentenceTransformer.get_sentence_embedding_dimension (FutureWarning in sentence-transformers 5.6); reproduced with a real offline model",
+    "commit": "086b826c6"
+  },
+  "USR-7": {
+    "verdict_before": "not_solved",
+    "evidence": "tests/e2e_full/_wf_worker.py:94 (and 6 copies: test_workflow_run_e2e, _hitl_crossproc, _two_gate_resume, test_goal_run_goal_worker, test_goal_stall_watchdog, test_supervisor_subgoal_pool) only killed the group 'if proc.poll() is None' - a pool child outlived a dead main and a SIGTERM-ignoring child outlived the stop (reproduced with a stand-in worker); supervisor fixture leaked the first worker if the second start failed; no outlives-the-session check",
+    "commit": "d66b0fe3f"
+  },
+  "_new_findings": [
+    "tests/ingestion/test_mongodb_source_integration.py: 6 tests fail at main independent of this branch - the harness creates Sources without collection_id, so POST /sources/{id}/sync answers 422 'needs configuration' (L-02)",
+    "tests/ingestion/test_ingestion_read_models_integration.py::test_dlq_listing_backoff_and_monthly_usage fails independent of this branch: its Source has no collection_id, so the DLQ retry scan skips it as parked (L-02)",
+    "Connector cursors are global high-water marks across units (postgresql tables, jira/confluence/gitlab projects): a unit that fails while others advance the cursor can skip that unit's older rows on the next sync unless the DLQ replays them",
+    "kafka_connector commits consumer offsets before the pipeline indexes the messages (at-most-once)"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "TEST-NEEDS-CONFIG": {
+    "status": "done",
+    "commit": "853fc0491",
+    "note": "mongodb source integration (6) + dlq_listing tests create Sources with collection_id; L-02 rule unchanged"
+  }
+}

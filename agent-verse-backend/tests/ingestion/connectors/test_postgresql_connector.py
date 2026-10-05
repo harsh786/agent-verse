@@ -20,6 +20,8 @@ from app.ingestion.connectors.postgresql_connector import (
 )
 from app.ingestion.base_connector import stable_doc_id
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorFetchError, ConnectorPartialFailureError
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -100,11 +102,13 @@ class TestGetDelta:
             with pytest.raises(ConnectorUnavailableError):
                 await _collect(PostgreSQLConnector().get_delta(config, None))
 
-    async def test_connect_failure_yields_nothing(self):
+    async def test_connect_failure_fails_the_sync(self):
+        # USR-1: it used to return — a completed sync with 0 failures.
         config = _make_config({"tables": ["orders"]})
         with patch("asyncpg.connect", AsyncMock(side_effect=OSError("no route"))):
-            docs = await _collect(PostgreSQLConnector().get_delta(config, None))
+            docs, exc = await drain(PostgreSQLConnector().get_delta(config, None))
         assert docs == []
+        assert isinstance(exc, ConnectorFetchError) and "no route" in str(exc)
 
     async def test_yields_rows_and_advances_cursor(self):
         rows = [
@@ -158,8 +162,10 @@ class TestGetDelta:
         config = _make_config({"tables": ["broken", "public.good"]})
 
         with patch("asyncpg.connect", AsyncMock(return_value=fake_conn)):
-            docs = await _collect(PostgreSQLConnector().get_delta(config, None))
+            docs, exc = await drain(PostgreSQLConnector().get_delta(config, None))
 
+        # The broken table is a counted failure (USR-1); the good one still synced.
+        assert isinstance(exc, ConnectorPartialFailureError) and "broken" in str(exc)
         assert len(docs) == 1
         assert docs[0][0].source_url == "pg://public.good/9"
         assert docs[0][0].doc_id == stable_doc_id(config, "pg://public.good/9")

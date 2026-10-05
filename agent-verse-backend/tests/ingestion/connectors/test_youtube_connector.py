@@ -17,6 +17,7 @@ from app.ingestion.base_connector import ConnectorUnavailableError
 
 from app.ingestion.connectors.youtube_connector import YouTubeConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import content_docs, failure_docs
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -222,23 +223,29 @@ class TestGetDelta:
         assert doc.metadata["title"] == "My Video"
         assert doc.metadata["video_id"] == "vidA"
 
-    async def test_transcripts_disabled_is_skipped(self):
+    async def test_transcripts_disabled_is_a_permanent_failure(self):
         _install_fake_ytapi(
             get_transcript_side_effect={"vid1": _FakeTranscriptsDisabledError("disabled")}
         )
         connector = YouTubeConnector()
         config = _make_config({"video_ids": ["vid1"]})
         results = [d async for d in connector.get_delta(config, None)]
-        assert results == []
+        # USR-1: reported (never indexed), and retrying cannot help.
+        (failed,) = failure_docs(results)
+        assert failed.metadata["video_id"] == "vid1"
+        assert failed.metadata["connector_failure_retryable"] is False
 
-    async def test_generic_exception_per_video_is_skipped(self):
+    async def test_generic_exception_per_video_is_a_counted_failure(self):
         _install_fake_ytapi(get_transcript_side_effect={"vid1": RuntimeError("boom")})
         connector = YouTubeConnector()
         config = _make_config({"video_ids": ["vid1", "vid2"]})
         # vid2 succeeds with default transcript
         results = [d async for d in connector.get_delta(config, None)]
-        assert len(results) == 1
-        assert results[0][0].metadata["video_id"] == "vid2"
+        (ok,) = content_docs(results)
+        assert ok.metadata["video_id"] == "vid2"
+        (failed,) = failure_docs(results)
+        assert failed.metadata["video_id"] == "vid1"
+        assert "boom" in failed.metadata["connector_failure"]
 
     async def test_max_videos_limits_results(self):
         _install_fake_ytapi(transcript_result=[{"text": "x"}])

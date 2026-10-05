@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ingestion.connectors.sentry_connector import SentryConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorPartialFailureError
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -111,14 +113,15 @@ class TestGetDelta:
         second_call_url = get_mock.await_args_list[1].args[0]
         assert second_call_url == "https://sentry.io/api/0/next"
 
-    async def test_http_failure_stops_iteration(self):
+    async def test_http_failure_is_a_counted_failure(self):
         resp = MagicMock()
         resp.is_success = False
         client = _fake_client(AsyncMock(return_value=resp))
         config = _make_config({"auth_token": "tok", "org_slug": "acme"})
         with patch("httpx.AsyncClient", return_value=client):
-            docs = await _collect(SentryConnector().get_delta(config, None))
+            docs, exc = await drain(SentryConnector().get_delta(config, None))
         assert docs == []
+        assert isinstance(exc, ConnectorPartialFailureError) and "acme" in str(exc)
 
     async def test_empty_issue_list_stops_iteration(self):
         resp = MagicMock()

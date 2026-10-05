@@ -11,13 +11,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import signal
-import subprocess
 import sys
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+
+from tests._worker_procs import node_name, worker_process
 
 API = "/api/v1"
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -35,7 +34,7 @@ def workflow_worker(
     extra_env: dict[str, str] | None = None,
     concurrency: int = 1,
 ) -> Iterator[dict[str, Any]]:
-    log_path = log_dir / "worker.log"
+    """A real workflow worker, stopped (whole process group) on any exit — USR-7."""
     env = dict(os.environ)
     env["PYTHONPATH"] = str(BACKEND_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env.update(extra_env or {})
@@ -53,46 +52,12 @@ def workflow_worker(
         "--loglevel=info",
         f"--concurrency={concurrency}",
         "-n",
-        f"{name}@%h",
+        node_name(name),
     ]
-    log_file = open(log_path, "w")
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(log_dir),
-        env=env,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    try:
-        deadline = time.monotonic() + 300.0
-        ready = False
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                break
-            with contextlib.suppress(OSError):
-                if "ready." in log_path.read_text():
-                    ready = True
-                    break
-            time.sleep(0.5)
-        if not ready:
-            tail = ""
-            with contextlib.suppress(OSError):
-                tail = log_path.read_text()[-3000:]
-            raise RuntimeError(
-                f"celery worker did not become ready (rc={proc.poll()}).\n{tail}"
-            )
-        yield {"proc": proc, "log_path": log_path}
-    finally:
-        if proc.poll() is None:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            try:
-                proc.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError):
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        log_file.close()
+    with worker_process(
+        cmd, cwd=log_dir, env=env, log_path=log_dir / "worker.log", name=name
+    ) as handle:
+        yield handle.as_dict()
 
 
 async def create_workflow(client: Any, definition: dict[str, Any], *, name: str) -> str:

@@ -9,6 +9,7 @@ LAW-21: Every connector exposes validate_connection() health probe
 from __future__ import annotations
 
 import functools
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
+
+_log = logging.getLogger(__name__)
 
 
 def stable_doc_id(config: SourceConfig, *key_parts: object) -> str:
@@ -61,6 +64,158 @@ class ConnectorUnavailableError(RuntimeError):
     Raised from ``get_delta`` so the sync fails loudly — returning no documents
     would be reported as a successful, empty sync.
     """
+
+
+class ConnectorFetchError(RuntimeError):
+    """The connector could not read its source: connection, authentication,
+    listing or query failed (USR-1).
+
+    Raised from ``get_delta`` so the sync is recorded as failed, with this
+    message and a counted failure. Connectors used to log such a failure and
+    ``return`` / ``break`` — reported as a successful sync with 0 failures.
+    """
+
+
+class ConnectorPartialFailureError(ConnectorFetchError):
+    """Some independent units of the source (tables, projects, channels …) could
+    not be read; the others were synced.
+
+    Raised at the end of ``get_delta`` once every readable unit was yielded: the
+    job is ``partial`` (``failed`` if nothing was synced) and each failed unit
+    counts as a failure.
+    """
+
+    def __init__(self, source_type: str, failures: list[str]) -> None:
+        self.failures = list(failures)
+        self.failed_units = len(self.failures)
+        shown = "; ".join(self.failures[:5])
+        more = f" (+{self.failed_units - 5} more)" if self.failed_units > 5 else ""
+        super().__init__(
+            f"{source_type}: {self.failed_units} unit(s) could not be read: {shown}{more}"
+        )
+
+
+class UnitFailures:
+    """Collects per-unit read failures of one sync and raises them at the end.
+
+    Usage::
+
+        failures = UnitFailures("jira")
+        for project in projects:
+            try:
+                ...yield documents...
+            except Exception as exc:
+                failures.add(f"project {project}", exc)
+        failures.raise_if_any()
+    """
+
+    def __init__(self, source_type: str) -> None:
+        self.source_type = source_type
+        self.failures: list[str] = []
+
+    def add(self, unit: str, error: object) -> None:
+        reason = describe_fetch_error(error)
+        _log.warning("connector_unit_failed source_type=%s unit=%s: %s",
+                     self.source_type, unit, reason)
+        self.failures.append(f"{unit}: {reason}"[:300])
+
+    def __bool__(self) -> bool:
+        return bool(self.failures)
+
+    def raise_if_any(self) -> None:
+        if self.failures:
+            raise ConnectorPartialFailureError(self.source_type, self.failures)
+
+
+def describe_fetch_error(error: object) -> str:
+    """A short, honest reason for a failed fetch (an exception or an HTTP response)."""
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int):  # an httpx.Response
+        reason = getattr(error, "reason_phrase", "") or ""
+        body = ""
+        try:
+            body = str(getattr(error, "text", "") or "")[:200]
+        except Exception:
+            body = ""
+        return f"HTTP {status} {reason}".strip() + (f": {body}" if body else "")
+    if isinstance(error, BaseException):
+        response = getattr(error, "response", None)
+        if response is not None and isinstance(getattr(response, "status_code", None), int):
+            return describe_fetch_error(response)
+        text = str(error) or type(error).__name__
+        return f"{type(error).__name__}: {text}"[:300]
+    return str(error)[:300]
+
+
+def is_retryable_status(status: int) -> bool:
+    """True when retrying a request that got ``status`` can help (5xx, 408, 425, 429)."""
+    return status >= 500 or status in (408, 425, 429)
+
+
+def is_retryable_fetch_error(error: object) -> bool:
+    """A failed fetch is retryable unless the source said it never will work
+    (4xx other than 408/425/429)."""
+    status = getattr(error, "status_code", None)
+    if not isinstance(status, int):
+        response = getattr(error, "response", None)
+        status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return is_retryable_status(status)
+    return True
+
+
+def ensure_success(response: Any, *, source_type: str, what: str) -> None:
+    """Raise :class:`ConnectorFetchError` unless ``response`` is a 2xx.
+
+    For a request whose failure means the source cannot be read at all
+    (authentication, the listing / search call) — instead of ``break``-ing out of
+    the loop and reporting an empty, successful sync.
+    """
+    if not getattr(response, "is_success", False):
+        raise ConnectorFetchError(f"{source_type}: {what} failed: {describe_fetch_error(response)}")
+
+
+def fetch_failure_document(
+    config: SourceConfig,
+    *,
+    doc_id: str,
+    reason: str,
+    retryable: bool,
+    source_url: str = "",
+    title: str = "",
+    replay: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> RawDocument:
+    """A stand-in for one item the connector could not fetch (USR-1 / USR-4).
+
+    The pipeline fails it with ``reason`` — counted in the job, written to the
+    DLQ — instead of the item vanishing. ``replay`` (a JSON-safe reference the
+    connector's :meth:`BaseConnector.replay_event` understands) lets the DLQ
+    retry fetch the item again; ``retryable=False`` (gone, access denied) makes
+    the retry give up at once.
+    """
+    from app.ingestion.source_config import (
+        CONNECTOR_FAILURE_KEY,
+        CONNECTOR_FAILURE_RETRYABLE_KEY,
+        CONNECTOR_REPLAY_KEY,
+        RawDocument,
+    )
+
+    meta: dict[str, Any] = dict(metadata or {})
+    meta[CONNECTOR_FAILURE_KEY] = reason[:500] or "fetch failed"
+    meta[CONNECTOR_FAILURE_RETRYABLE_KEY] = bool(retryable)
+    if replay is not None:
+        meta[CONNECTOR_REPLAY_KEY] = replay
+    return RawDocument(
+        doc_id=doc_id,
+        source_id=config.source_id,
+        tenant_id=config.tenant_id,
+        content=b"",
+        content_type="application/octet-stream",
+        source_url=source_url,
+        title=title,
+        metadata=meta,
+    )
 
 
 @dataclass

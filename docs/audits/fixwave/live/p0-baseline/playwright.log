@@ -1,0 +1,11 @@
+(node:19440) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+
+Running 2 tests using 1 worker
+
+(node:19603) [DEP0205] DeprecationWarning: `module.register()` is deprecated. Use `module.registerHooks()` instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+  ✓  1 [chromium-real-world] › real-world.spec.ts:121:3 › real-world UI › UI-APPROVALS-LIVE: pending workflow approval appears live, approve, run finishes (11.7s)
+  ✓  2 [chromium-real-world] › real-world.spec.ts:185:3 › real-world UI › UI-KB-DOCS: knowledge page lists uploaded documents as indexed (2.5s)
+
+  2 passed (14.9s)

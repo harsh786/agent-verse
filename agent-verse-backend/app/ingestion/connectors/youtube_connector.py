@@ -15,6 +15,9 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
+    describe_fetch_error,
+    ensure_success,
+    fetch_failure_document,
     stable_doc_id,
 )
 from app.ingestion.connector_registry import register
@@ -24,6 +27,9 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+# CONNECTOR_REPLAY_KEY "kind" of a video whose transcript a sync could not read.
+_REPLAY_KIND = "youtube_video"
 _YT_API = "https://www.googleapis.com/youtube/v3"
 # Per-request timeout for transcript fetches: they run on a worker thread that
 # cannot be interrupted, and requests has no default timeout.
@@ -122,9 +128,11 @@ class YouTubeConnector(BaseConnector):
                         **({"publishedAfter": cursor} if cursor else {}),
                     },
                 )
-                if r.is_success:
-                    for item in r.json().get("items", []):
-                        video_ids.append(item["id"]["videoId"])
+                # USR-1: a failed channel listing fails the sync (it used to sync
+                # nothing and report success).
+                ensure_success(r, source_type="youtube", what=f"video search of {channel_id}")
+                for item in r.json().get("items", []):
+                    video_ids.append(item["id"]["videoId"])
 
         for video_id in video_ids[:max_videos]:
             try:
@@ -162,7 +170,49 @@ class YouTubeConnector(BaseConnector):
                 new_cursor = max(new_cursor, video_id)
                 yield doc, new_cursor
 
-            except TranscriptsDisabled:
-                _log.info("youtube: transcripts disabled for %s", video_id)
+            except ConnectorUnavailableError:
+                raise
             except Exception as exc:
-                _log.warning("youtube: skip %s: %s", video_id, exc)
+                # USR-1: a video whose transcript cannot be read is a counted
+                # failure (→ DLQ) — it used to be logged and skipped.
+                disabled = isinstance(exc, TranscriptsDisabled)
+                _log.warning("youtube: cannot read %s: %s", video_id, exc)
+                yield fetch_failure_document(
+                    config,
+                    doc_id=stable_doc_id(config, video_id),
+                    reason=(
+                        "transcripts are disabled for this video"
+                        if disabled
+                        else describe_fetch_error(exc)
+                    ),
+                    retryable=not disabled,
+                    source_url=f"https://www.youtube.com/watch?v={video_id}",
+                    replay=None if disabled else {"kind": _REPLAY_KIND, "video_id": video_id},
+                    metadata={"video_id": video_id},
+                ), new_cursor
+
+    async def replay_event(
+        self, config: SourceConfig, reference: dict[str, Any]
+    ) -> AsyncIterator[RawDocument]:
+        """Fetch again the transcript of a video a sync could not read (DLQ retry)."""
+        from app.ingestion.source_config import RawDocument
+
+        video_id = str(reference.get("video_id") or "")
+        if reference.get("kind") != _REPLAY_KIND or not video_id:
+            raise ValueError(f"not a YouTube video replay reference: {reference!r}")
+        from youtube_transcript_api import YouTubeTranscriptApi  # type: ignore[import-not-found]
+
+        languages = config.connection_config.get("languages") or ["en"]
+        transcript_list = await run_blocking(
+            _fetch_transcript, YouTubeTranscriptApi, video_id, list(languages)
+        )
+        text = " ".join(seg["text"] for seg in transcript_list)
+        yield RawDocument(
+            doc_id=stable_doc_id(config, video_id),
+            source_id=config.source_id,
+            tenant_id=config.tenant_id,
+            source_url=f"https://www.youtube.com/watch?v={video_id}",
+            content=f"# {video_id}\n\n{text}".encode(),
+            content_type="text/plain",
+            metadata={"video_id": video_id, "title": video_id},
+        )

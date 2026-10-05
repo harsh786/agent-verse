@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ingestion.connectors.slack_connector import SlackConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorPartialFailureError
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -96,7 +98,9 @@ class TestGetDeltaOrchestration:
     async def test_yields_docs_across_multiple_channels(self):
         from app.knowledge.ingestors import slack_ingestor as si_mod
 
-        async def fake_ingest_channel(self, channel_id, *, channel_name="", max_messages=500):
+        async def fake_ingest_channel(
+            self, channel_id, *, channel_name="", max_messages=500, raise_on_error=False
+        ):
             return [
                 {
                     "content": f"content for {channel_id}",
@@ -113,10 +117,12 @@ class TestGetDeltaOrchestration:
         channel_ids = {d.metadata["channel_id"] for d, _c in docs}
         assert channel_ids == {"C1", "C2"}
 
-    async def test_channel_error_caught_other_channels_continue(self):
+    async def test_channel_error_counted_other_channels_continue(self):
         from app.knowledge.ingestors import slack_ingestor as si_mod
 
-        async def fake_ingest_channel(self, channel_id, *, channel_name="", max_messages=500):
+        async def fake_ingest_channel(
+            self, channel_id, *, channel_name="", max_messages=500, raise_on_error=False
+        ):
             if channel_id == "C-missing":
                 raise RuntimeError("channel_not_found")
             return [
@@ -129,15 +135,20 @@ class TestGetDeltaOrchestration:
 
         config = _make_config({"bot_token": "t", "channels": ["C-missing", "C-ok"]})
         with patch.object(si_mod.SlackIngestor, "ingest_channel", fake_ingest_channel):
-            docs = await _collect(SlackConnector().get_delta(config, None))
+            docs, exc = await drain(SlackConnector().get_delta(config, None))
 
         assert len(docs) == 1
         assert docs[0][0].metadata["channel_id"] == "C-ok"
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "C-missing" in str(exc)
 
     async def test_cursor_skips_already_seen_messages(self):
         from app.knowledge.ingestors import slack_ingestor as si_mod
 
-        async def fake_ingest_channel(self, channel_id, *, channel_name="", max_messages=500):
+        async def fake_ingest_channel(
+            self, channel_id, *, channel_name="", max_messages=500, raise_on_error=False
+        ):
             return [
                 {"content": "old", "source_url": "u", "metadata": {"ts": "100.000"}},
                 {"content": "new", "source_url": "u", "metadata": {"ts": "200.000"}},
@@ -163,7 +174,7 @@ class TestGetDeltaRealIngestorPath:
     """Exercises the real SlackIngestor via a mocked httpx client to cover
     rate limits, pagination cursors, channel-not-found, and attachments."""
 
-    async def test_rate_limited_response_is_handled_without_crash(self):
+    async def test_rate_limited_response_is_a_counted_failure(self):
         resp = MagicMock()
         resp.json.return_value = {"ok": False, "error": "ratelimited"}
 
@@ -173,10 +184,13 @@ class TestGetDeltaRealIngestorPath:
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"bot_token": "t", "channels": ["C123"]})
-            docs = await _collect(SlackConnector().get_delta(config, None))
+            docs, exc = await drain(SlackConnector().get_delta(config, None))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "ratelimited" in str(exc)
 
-    async def test_channel_not_found_error_yields_no_docs(self):
+    async def test_channel_not_found_is_a_counted_failure(self):
         resp = MagicMock()
         resp.json.return_value = {"ok": False, "error": "channel_not_found"}
 
@@ -186,8 +200,11 @@ class TestGetDeltaRealIngestorPath:
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"bot_token": "t", "channels": ["C-does-not-exist"]})
-            docs = await _collect(SlackConnector().get_delta(config, None))
+            docs, exc = await drain(SlackConnector().get_delta(config, None))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "channel_not_found" in str(exc)
 
     async def test_thread_pagination_via_next_cursor_across_pages(self):
         page1 = {
@@ -219,7 +236,7 @@ class TestGetDeltaRealIngestorPath:
         # Cursor should have advanced to the latest message timestamp seen.
         assert docs[-1][1] == "200.000"
 
-    async def test_bot_token_revoked_during_history_fetch_yields_no_docs(self):
+    async def test_bot_token_revoked_is_a_counted_failure(self):
         resp = MagicMock()
         resp.json.return_value = {"ok": False, "error": "token_revoked"}
 
@@ -229,8 +246,11 @@ class TestGetDeltaRealIngestorPath:
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"bot_token": "revoked-tok", "channels": ["C123"]})
-            docs = await _collect(SlackConnector().get_delta(config, None))
+            docs, exc = await drain(SlackConnector().get_delta(config, None))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "token_revoked" in str(exc)
 
     async def test_max_messages_limit_stops_pagination(self):
         page = {

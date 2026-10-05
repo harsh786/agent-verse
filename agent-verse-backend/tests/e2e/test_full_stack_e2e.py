@@ -322,7 +322,7 @@ async def test_create_collection_and_ingest_and_search(client_and_key):
     # Create collection
     r = await c.post(
         "/knowledge/collections",
-        json={"name": "E2E Docs", "embedder_type": "voyage"},
+        json={"name": "E2E Docs", "embedder_type": "default"},
         headers={"X-API-Key": key},
     )
     assert r.status_code == 201

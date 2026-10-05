@@ -103,7 +103,11 @@ _EMBEDDING_DIM = 768
 class CreateCollectionRequest(BaseModel):
     name: str
     description: str = ""
-    embedder_type: str = "voyage"
+    # Not a selector: every collection is embedded with the deployment's embedder
+    # (USR-3). Kept for compatibility — empty / "default" / "auto" or a name of
+    # that embedder is accepted; naming any other embedder is refused (422)
+    # instead of being stored as a label that does not match the vectors.
+    embedder_type: str | None = None
 
 
 class IngestRequest(BaseModel):
@@ -614,6 +618,49 @@ async def _already_indexed_or_http(
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_EMBEDDER_HINTS = frozenset({"", "default", "auto"})
+
+
+def _norm_embedder(value: str) -> str:
+    return value.strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _active_embedder_identity(request: Request, store: Any) -> tuple[str, int | None, str]:
+    """``(model name, output dimension, provider kind)`` of the deployment embedder.
+
+    The name is ``"unknown"`` when no embedder is configured — never a guessed
+    vendor (collections used to be labelled ``"voyage"`` whatever embedded them).
+    """
+    from app.providers.embedder_factory import embedder_dimension, embedder_model_name
+
+    embedder = getattr(request.app.state, "embedder", None)
+    resolution = getattr(request.app.state, "embedder_resolution", None)
+    name = embedder_model_name(embedder) if embedder is not None else ""
+    name = name or str(getattr(store, "embedder_name", None) or "") or "unknown"
+    dim = embedder_dimension(embedder) or getattr(resolution, "dimension", None)
+    if not isinstance(dim, int) or isinstance(dim, bool) or dim <= 0:
+        store_dim = getattr(store, "_embedding_dim", None)
+        dim = store_dim if isinstance(store_dim, int) and store_dim > 0 else None
+    provider = str(getattr(resolution, "provider", "") or "")
+    return name, dim, provider
+
+
+def _embedder_hint_matches(hint: str, name: str, provider: str) -> bool:
+    """True when ``hint`` names the deployment embedder (model id, its vendor
+    prefix, or the provider kind)."""
+    wanted = _norm_embedder(hint)
+    if wanted in _DEFAULT_EMBEDDER_HINTS:
+        return True
+    if name == "unknown":
+        return False
+    model = _norm_embedder(name)
+    return (
+        wanted == model
+        or model.startswith((wanted + "-", wanted + "/"))
+        or (bool(provider) and wanted == _norm_embedder(provider))
+    )
+
+
 @router.get("/collections")
 async def list_collections(request: Request) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -625,7 +672,8 @@ async def list_collections(request: Request) -> list[dict[str, Any]]:
             "name": c.name,
             "description": c.description,
             "document_count": c.document_count,
-            "embedder": c.embedder,
+            "embedder": c.embedder or "unknown",
+            "embedding_dim": c.embedding_dim,
         }
         for c in collections
     ]
@@ -635,10 +683,24 @@ async def list_collections(request: Request) -> list[dict[str, Any]]:
 async def create_collection(request: Request, body: CreateCollectionRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
+    embedder_name, embedder_dim, embedder_provider = _active_embedder_identity(request, store)
+    if body.embedder_type is not None and not _embedder_hint_matches(
+        body.embedder_type, embedder_name, embedder_provider
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"embedder_type {body.embedder_type!r} is not available: this deployment "
+                f"embeds every collection with {embedder_name!r}"
+                + (f" ({embedder_dim}-dimensional)" if embedder_dim else "")
+                + "; omit embedder_type or use 'default'"
+            ),
+        )
     collection = KnowledgeCollection(
         name=body.name,
         description=body.description,
-        embedder=body.embedder_type,
+        embedder=embedder_name,
+        embedding_dim=embedder_dim,
     )
     try:
         cid = await store.create_collection_async(collection, tenant_ctx=tenant_ctx)
@@ -668,7 +730,8 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
         "name": body.name,
         "description": body.description,
         "document_count": 0,
-        "embedder": body.embedder_type,
+        "embedder": collection.embedder,
+        "embedding_dim": collection.embedding_dim,
     }
 
 

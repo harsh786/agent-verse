@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.ingestion.connectors.web_crawl_connector import WebCrawlConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import content_docs, failure_docs
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -35,6 +36,13 @@ async def _collect(agen) -> list:
 def _fake_client(get_impl):
     client = AsyncMock()
     client.get = get_impl
+
+    async def _request(method, url, **kw):
+        # Pages are fetched with client.request (redirects followed by
+        # guarded_fetch, USR-5); route GETs to the test's get implementation.
+        return await get_impl(url)
+
+    client.request = _request
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
     return client
@@ -154,20 +162,25 @@ class TestGetDelta:
             docs = await _collect(WebCrawlConnector().get_delta(config, None))
         assert docs == []
 
-    async def test_skips_error_status_pages(self):
+    async def test_error_status_seed_page_is_a_counted_failure(self):
         resp = MagicMock(status_code=500, content=b"", headers={})
         client = _fake_client(AsyncMock(return_value=resp))
         config = _make_config({"seed_urls": ["https://example.com/broken"], "crawl_delay_seconds": 0})
         with patch("httpx.AsyncClient", return_value=client):
             docs = await _collect(WebCrawlConnector().get_delta(config, None))
-        assert docs == []
+        # USR-1: the seed could not be fetched — reported (→ DLQ), never indexed.
+        (failed,) = failure_docs(docs)
+        assert failed.source_url == "https://example.com/broken"
+        assert "HTTP 500" in failed.metadata["connector_failure"]
+        assert failed.metadata["connector_failure_retryable"] is True
 
-    async def test_fetch_exception_is_skipped(self):
+    async def test_fetch_exception_is_a_counted_failure(self):
         client = _fake_client(AsyncMock(side_effect=OSError("timeout")))
         config = _make_config({"seed_urls": ["https://example.com/"], "crawl_delay_seconds": 0})
         with patch("httpx.AsyncClient", return_value=client):
             docs = await _collect(WebCrawlConnector().get_delta(config, None))
-        assert docs == []
+        (failed,) = failure_docs(docs)
+        assert "timeout" in failed.metadata["connector_failure"]
 
     async def test_exclude_pattern_filters_url(self):
         html = b"<html><body>" + b"x" * 200 + b"</body></html>"
@@ -233,16 +246,16 @@ class TestGetDelta:
             docs = await _collect(WebCrawlConnector().get_delta(config, None))
         assert docs == []
 
-    async def test_redirect_loop_is_skipped_gracefully(self):
-        # httpx raises TooManyRedirects when follow_redirects=True hits a
-        # cycle; the per-URL try/except must swallow it and keep crawling.
+    async def test_redirect_loop_is_a_counted_failure(self):
+        # A redirect cycle must not crash the crawl; the seed is reported failed.
         import httpx as real_httpx
 
         client = _fake_client(AsyncMock(side_effect=real_httpx.TooManyRedirects("loop")))
         config = _make_config({"seed_urls": ["https://example.com/loop"], "crawl_delay_seconds": 0})
         with patch("httpx.AsyncClient", return_value=client):
             docs = await _collect(WebCrawlConnector().get_delta(config, None))
-        assert docs == []
+        (failed,) = failure_docs(docs)
+        assert "loop" in failed.metadata["connector_failure"]
 
     async def test_invalid_utf8_bytes_decoded_with_replacement_not_fatal(self):
         # Response body with invalid UTF-8 byte sequences must not crash the
@@ -261,11 +274,11 @@ class TestGetDelta:
         assert len(docs) == 1
         assert "Valid text content" in docs[0][0].content.decode()
 
-    async def test_malformed_url_in_seed_list_is_skipped_not_fatal(self):
-        # A malformed seed URL is now rejected by the egress guard *before* any
+    async def test_malformed_url_in_seed_list_is_reported_not_fatal(self):
+        # A malformed seed URL is rejected by the egress guard *before* any
         # request is made (it has no scheme, so it can never be shown to be
-        # public) — so no response is queued for it. The guarantee under test is
-        # unchanged: one bad URL must not abort the whole crawl.
+        # public) — so no response is queued for it. One bad URL must not abort
+        # the whole crawl, and it is a counted failure (USR-1), not skipped.
         good_html = (
             b"<html><head><title>Good</title></head><body>"
             + b"Good content here for the page. " * 10
@@ -292,8 +305,11 @@ class TestGetDelta:
         )
         with patch("httpx.AsyncClient", return_value=client):
             docs = await _collect(WebCrawlConnector().get_delta(config, None))
-        assert len(docs) == 1
-        assert docs[0][0].title == "Good"
+        (good,) = content_docs(docs)
+        assert good.title == "Good"
+        (bad,) = failure_docs(docs)
+        assert bad.source_url == "not-a-valid-url"
+        assert bad.metadata["connector_failure_retryable"] is False
 
 
 class TestExtractTextEdgeCases:

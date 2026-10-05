@@ -43,14 +43,19 @@ def build_worker_knowledge_services(db_factory: Any) -> tuple[Any, Any]:
     rules and its embeds count toward the tenant's usage.
     """
     from app.embedding.usage import configure_usage_redis_from_env
-    from app.providers.embedder_factory import resolve_embedder
+    from app.providers.embedder_factory import embedder_model_name, resolve_embedder
     from app.rag.semantic_cache import bump_knowledge_generation
     from app.rag.store import KnowledgeStore
 
     # The SAME embedder the API's retrieval embeds queries with (not the chat
     # provider); resolve_embedder applies the NVIDIA / on-prem endpoint itself.
     resolution = resolve_embedder()
-    store = KnowledgeStore(db_factory, embedding_dim=resolution.dimension)
+    store = KnowledgeStore(
+        db_factory,
+        embedding_dim=resolution.dimension,
+        # Collections this worker writes first record the real model (USR-3).
+        embedder_name=embedder_model_name(resolution.embedder) or None,
+    )
     # Indexed documents invalidate answers the API replicas cached from the
     # tenant's old knowledge (shared Redis generation).
     store.add_change_listener(bump_knowledge_generation)

@@ -17,6 +17,7 @@ from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
     ConnectorUnavailableError,
+    fetch_failure_document,
 )
 from app.ingestion.connector_egress import (
     pin_source_urls,
@@ -293,14 +294,41 @@ class S3Connector(BaseConnector):
 
                 # Check file size
                 if obj.get("Size", 0) > config.max_doc_size_bytes:
-                    _log.debug("s3_skip_too_large key=%s size=%d", key, obj["Size"])
+                    _log.info("s3_too_large key=%s size=%d", key, obj["Size"])
+                    new_cursor = max(new_cursor, last_modified)
+                    # USR-1: reported (a counted, permanent failure), not dropped.
+                    yield fetch_failure_document(
+                        config,
+                        doc_id=f"s3://{bucket}/{key}",
+                        reason=f"object exceeds the {config.max_doc_size_bytes}-byte size cap",
+                        retryable=False,
+                        source_url=f"s3://{bucket}/{key}",
+                        title=key.split("/")[-1],
+                        metadata={"s3_key": key, "s3_bucket": bucket, "size": obj["Size"]},
+                    ), new_cursor
                     continue
 
                 # Download object
                 try:
                     content_bytes, content_type = await run(_download, key)
+                except ConnectorUnavailableError:
+                    raise
                 except Exception as e:
-                    _log.warning("s3_download_error key=%s: %s", key, e)
+                    reason, retryable = _classify_fetch_error(e)
+                    _log.warning("s3_download_error key=%s retryable=%s: %s", key, retryable, e)
+                    new_cursor = max(new_cursor, last_modified)
+                    # USR-1/USR-4: a counted failure (→ DLQ); the retry re-fetches
+                    # the object (replay_event), so the cursor may pass it.
+                    yield fetch_failure_document(
+                        config,
+                        doc_id=f"s3://{bucket}/{key}",
+                        reason=reason,
+                        retryable=retryable,
+                        source_url=f"s3://{bucket}/{key}",
+                        title=key.split("/")[-1],
+                        replay={"kind": _REPLAY_KIND, "bucket": bucket, "key": key},
+                        metadata={"s3_key": key, "s3_bucket": bucket},
+                    ), new_cursor
                     continue
 
                 raw = RawDocument(

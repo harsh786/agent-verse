@@ -187,6 +187,29 @@ def _serialize_source(s: SourceConfig) -> dict:
     return d
 
 
+async def _refuse_internal_destinations(source_type: str, connection_config: Any) -> None:
+    """422 when the config names an internal destination (USR-2).
+
+    Every URL- / host-bearing field goes through the shared SSRF guard when a
+    Source is saved — not only at sync time or on the optional validate call.
+    DNS runs off the event loop.
+    """
+    import asyncio
+
+    from app.ingestion.source_egress_policy import assert_source_config_egress
+    from app.net.ssrf_guard import SSRFError
+
+    try:
+        await asyncio.to_thread(
+            assert_source_config_egress, source_type, connection_config or {}
+        )
+    except (SSRFError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"connection_config names a blocked destination: {str(exc)[:300]}",
+        ) from exc
+
+
 def _refuse_unconfigured_source(source: SourceConfig) -> None:
     """422 with the reason when the Source cannot index anything as configured."""
     problem = configuration_problem(source)
@@ -241,6 +264,10 @@ async def validate_source(
         connector_cls = None
     if connector_cls is None:
         errors.append(f"No connector for source_type={body.source_type!r}")
+    try:
+        await _refuse_internal_destinations(body.source_type, body.connection_config)
+    except HTTPException as exc:
+        errors.append(str(exc.detail))
     connection: dict | None = None
     if not errors and check_connection and family is not None:
         config = SourceConfig(
@@ -288,6 +315,8 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
         family = SourceFamily(body.family)
     except ValueError as _b904_exc:
         raise HTTPException(status_code=422, detail=f"Unknown family: {body.family!r}") from _b904_exc  # noqa: E501
+
+    await _refuse_internal_destinations(body.source_type, body.connection_config)
 
     # Source quota (plan limit) — counted in the DB; it was never enforced.
     enforcer = _get_quota_enforcer(request)
@@ -353,6 +382,7 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
         update_data["connection_config"] = merge_masked_update(
             source.connection_config, update_data["connection_config"]
         )
+        await _refuse_internal_destinations(source.source_type, update_data["connection_config"])
     store = _get_source_store(request)
     if store is not None:
         updated = await store.update(source_id, tenant.tenant_id, **update_data)
@@ -970,6 +1000,16 @@ async def _run_sync(
                 skipped += 1 if result.status == "skipped" else 0
                 failed += 1 if result.status == "failed" else 0
                 chunks += result.chunks_created
+                if result.status == "failed":
+                    # USR-4: the durable retry queue, as on the worker path.
+                    await tracker.add_to_dlq(
+                        source_id=source.source_id,
+                        tenant_id=source.tenant_id,
+                        doc_id=str(getattr(raw_doc, "doc_id", raw_doc)),
+                        error=getattr(result, "error", None) or "pipeline_failure",
+                        raw_doc=raw_doc,
+                        job_id=job.job_id,
+                    )
                 await tracker.increment_counters(
                     job,
                     indexed=1 if result.status == "indexed" else 0,
@@ -984,9 +1024,14 @@ async def _run_sync(
         await tracker.complete_job(job, cancelled=cancelled)
 
     except Exception as exc:
+        from app.ingestion.base_connector import ConnectorPartialFailureError
+
         _log.error("sync_error source=%s: %s", source.source_id, exc)
-        failed += 1
-        await tracker.complete_job(job, error=str(exc))
+        partial = isinstance(exc, ConnectorPartialFailureError)
+        units = exc.failed_units if partial else 1
+        failed += units
+        job.docs_failed += units
+        await tracker.complete_job(job, error=str(exc) or type(exc).__name__, partial=partial)
     finally:
         # Persist stats + advance last_synced_at/cursor so the beat due-scan
         # reschedules the next sync one interval out (item 6 durability).

@@ -15,6 +15,8 @@ import httpx
 
 from app.ingestion.connectors.github_connector import GitHubConnector
 from app.ingestion.source_config import SourceConfig
+from tests.ingestion._drain import drain
+from app.ingestion.base_connector import ConnectorPartialFailureError
 
 
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
@@ -134,7 +136,7 @@ class TestGetDeltaOrchestration:
         assert any("acme/widgets" in d for d in doc_ids)
         assert any("acme/gadgets" in d for d in doc_ids)
 
-    async def test_repo_level_error_is_caught_other_repos_continue(self):
+    async def test_repo_level_error_is_counted_other_repos_continue(self):
         from app.knowledge.ingestors import github_ingestor as gi_mod
 
         async def fake_ingest_repo(self, owner, repo, **kw):
@@ -151,10 +153,13 @@ class TestGetDeltaOrchestration:
 
         config = _make_config({"token": "t", "repos": ["acme/broken", "acme/ok"]})
         with patch.object(gi_mod.GitHubIngestor, "ingest_repo", fake_ingest_repo):
-            docs = await _collect(GitHubConnector().get_delta(config, None))
+            docs, exc = await drain(GitHubConnector().get_delta(config, None))
 
         assert len(docs) == 1
         assert "acme/ok" in docs[0][0].doc_id
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "acme/broken" in str(exc)
 
     async def test_include_code_false_skips_ingestor_entirely(self):
         from app.knowledge.ingestors import github_ingestor as gi_mod
@@ -184,35 +189,44 @@ class TestGetDeltaRealIngestorPath:
     the connector's error handling around the *actual* GitHub REST API
     behaviour (rate limits, auth, truncation, binary skip) is covered."""
 
-    async def test_rate_limit_403_on_tree_fetch_is_swallowed_by_connector(self):
+    async def test_rate_limit_403_on_tree_fetch_is_a_counted_failure(self):
         async def get(url, *a, **kw):
             raise _http_error(403)
 
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"token": "t", "repos": ["acme/widgets"]})
-            docs = await _collect(GitHubConnector().get_delta(config, None))
+            docs, exc = await drain(GitHubConnector().get_delta(config, None))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "403" in str(exc)
 
-    async def test_secondary_rate_limit_429_on_tree_fetch_is_swallowed(self):
+    async def test_secondary_rate_limit_429_on_tree_fetch_is_a_counted_failure(self):
         async def get(url, *a, **kw):
             raise _http_error(429)
 
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"token": "t", "repos": ["acme/widgets"]})
-            docs = await _collect(GitHubConnector().get_delta(config, None))
+            docs, exc = await drain(GitHubConnector().get_delta(config, None))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "429" in str(exc)
 
-    async def test_private_repo_auth_failure_401_on_tree_fetch_is_swallowed(self):
+    async def test_private_repo_auth_failure_401_is_a_counted_failure(self):
         async def get(url, *a, **kw):
             raise _http_error(401)
 
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"token": "bad-token", "repos": ["acme/private-repo"]})
-            docs = await _collect(GitHubConnector().get_delta(config, None))
+            docs, exc = await drain(GitHubConnector().get_delta(config, None))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "401" in str(exc)
 
     async def test_rate_limit_on_one_file_does_not_abort_remaining_files(self):
         # A 403 fetching an individual file's content is logged and skipped;
@@ -239,10 +253,13 @@ class TestGetDeltaRealIngestorPath:
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"token": "t", "repos": ["acme/widgets"]})
-            docs = await _collect(GitHubConnector().get_delta(config, None))
+            docs, exc = await drain(GitHubConnector().get_delta(config, None))
 
         assert len(docs) == 1
         assert "fine.py" in docs[0][0].metadata["path"]
+        # USR-1: the file that could not be fetched is a counted failure.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "rate_limited.py" in str(exc)
 
     async def test_binary_file_is_never_fetched(self):
         tree = _tree_response(
@@ -332,7 +349,7 @@ class TestGetDeltaRealIngestorPath:
         assert len(docs) > 1  # sliding-window chunking produced multiple docs
         assert all(d.metadata["path"] == "huge.py" for d, _c in docs)
 
-    async def test_malformed_repo_identifier_without_slash_skipped_gracefully(self):
+    async def test_malformed_repo_identifier_is_a_counted_failure(self):
         # `repo.partition("/")` on a bare name yields an empty repo_name,
         # producing a malformed GitHub API URL. The real API would 404; we
         # simulate that and confirm the connector doesn't crash the batch.
@@ -342,8 +359,11 @@ class TestGetDeltaRealIngestorPath:
         with patch("httpx.AsyncClient") as mock_cls:
             mock_cls.return_value = _mock_client(get)
             config = _make_config({"token": "t", "repos": ["not-a-valid-repo-slug"]})
-            docs = await _collect(GitHubConnector().get_delta(config, None))
+            docs, exc = await drain(GitHubConnector().get_delta(config, None))
         assert docs == []
+        # USR-1: the failure is counted, never an empty success.
+        assert isinstance(exc, ConnectorPartialFailureError), exc
+        assert "not-a-valid-repo-slug" in str(exc)
 
     async def test_truncated_tree_still_yields_available_files(self):
         tree = _tree_response(

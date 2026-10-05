@@ -116,6 +116,30 @@ describe('KnowledgePage – Collections tab', () => {
     );
   });
 
+  test('USR-3: the card shows the real embedder and create sends no embedder label', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/knowledge/collections') && init?.method === 'POST')
+        return new Response(JSON.stringify({ collection_id: 'col-new', name: 'N', embedder: 'all-mpnet-base-v2', embedding_dim: 768 }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/knowledge/collections'))
+        return new Response(JSON.stringify([{ ...COLLECTION, embedder: 'all-mpnet-base-v2', embedding_dim: 768 }]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    const card = await screen.findByTestId(`collection-card-${COLLECTION.collection_id}`);
+    expect(card).toHaveTextContent('all-mpnet-base-v2 · 768d');
+    expect(card).not.toHaveTextContent('voyage');
+    await userEvent.click(screen.getByRole('button', { name: /new collection/i }));
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    await userEvent.type(screen.getByPlaceholderText(/my-knowledge-base/i), 'N');
+    await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
+    await waitFor(() => {
+      const post = spy.mock.calls.find(([u, i]) => String(u).includes('/knowledge/collections') && (i as RequestInit)?.method === 'POST');
+      expect(post).toBeDefined();
+      expect(JSON.parse(String((post![1] as RequestInit).body))).toEqual({ name: 'N' });
+    });
+  });
+
   test('deletes a collection via DELETE', async () => {
     const spy = mockFetch();
     renderPage();
@@ -1063,7 +1087,7 @@ describe('KnowledgePage – Search tab (extended)', () => {
 });
 
 describe('KnowledgePage – Collections tab (error paths & inputs)', () => {
-  test('changes the embedder select and shows an error toast when creating a collection fails', async () => {
+  test('shows an error toast when creating a collection fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       const method = init?.method ?? 'GET';
@@ -1077,7 +1101,6 @@ describe('KnowledgePage – Collections tab (error paths & inputs)', () => {
     await screen.findByTestId('collections-grid');
     await userEvent.click(screen.getByRole('button', { name: /new collection/i }));
     await userEvent.type(screen.getByPlaceholderText(/my-knowledge-base/i), 'Dup');
-    await userEvent.selectOptions(screen.getByRole('combobox'), 'openai');
     await userEvent.click(screen.getByRole('button', { name: /^create$/i }));
     await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true));
   });

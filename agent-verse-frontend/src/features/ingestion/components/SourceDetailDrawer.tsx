@@ -189,8 +189,10 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
           <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
             job.status === 'completed' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' :
             job.status === 'failed' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300' :
+            // USR-1: some documents / parts of the source could not be read.
+            job.status === 'partial' ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300' :
             'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
-          }`}>{String(job.status)}</span>
+          }`} data-testid="sync-job-status">{job.status === 'partial' ? 'partially failed' : String(job.status)}</span>
           <span className="text-muted-foreground text-xs">{String(job.sync_mode)} sync</span>
         </div>
         <dl className="grid grid-cols-2 gap-1 text-xs">
@@ -200,7 +202,16 @@ function HistoryTab({ syncStatus }: { syncStatus: unknown }) {
           <dt className="text-muted-foreground">Chunks</dt><dd>{String(job.chunks_created ?? 0)}</dd>
         </dl>
         {Boolean(job.error_message) && (
-          <FriendlyErrorMessage data-testid="job-error" className="mt-2 text-xs text-destructive" error={String(job.error_message)} />
+          job.status === 'completed' ? (
+            // A completed job's message is a notice (USR-5: e.g. a URL that moved
+            // permanently), not an error — shown verbatim so the new URL is visible.
+            <p data-testid="sync-job-message" className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+              {String(job.error_message)}
+            </p>
+          ) : (
+            // A failure (or partial failure) is driver text: short reason, sanitised details (B6).
+            <FriendlyErrorMessage data-testid="job-error" className="mt-2 text-xs text-destructive" error={String(job.error_message)} />
+          )
         )}
       </div>
     </div>

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.ingestion.source_config import SourceConfig
+from app.ingestion.connector_egress import GuardedFetch
 
 
 def _make_config(source_type: str, conn_config: dict | None = None) -> SourceConfig:
@@ -121,9 +122,16 @@ class TestRSSConnector:
         # The feed is fetched through the egress guard now; stub the fetch.
         with (
             patch(
-                "app.ingestion.connectors.rss_connector._fetch_feed",
+                "app.ingestion.connectors.rss_connector._fetch_feed_path",
                 new_callable=AsyncMock,
-                return_value=b"<rss/>",
+                return_value=(
+                    b"<rss/>",
+                    GuardedFetch(
+                        response=None,
+                        requested_url="http://example.com/feed.rss",
+                        final_url="http://example.com/feed.rss",
+                    ),
+                ),
             ),
             patch("feedparser.parse") as mock_parse,
         ):
