@@ -48,7 +48,9 @@ async def test_late_delegate_and_escalate_cannot_reopen_a_decision(
 
     detail = await tenant_client.get(f"{API}/approvals/{rid}")
     assert detail.status_code == 200, detail.text
-    assert detail.json()["status"] == "decided", detail.json()
+    # An approve decision leaves the approval "approved" (WF-APPROVAL-WORKFLOW-ID,
+    # 703bcac38: approve/reject no longer fall through to the generic "decided").
+    assert detail.json()["status"] == "approved", detail.json()
     assert detail.json()["discussion"][0]["type"] == "delegation"
 
     done = await poll_run(tenant_client, run_id, {"complete", "failed", "paused"})
