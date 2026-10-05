@@ -187,6 +187,29 @@ def _serialize_source(s: SourceConfig) -> dict:
     return d
 
 
+async def _refuse_internal_destinations(source_type: str, connection_config: Any) -> None:
+    """422 when the config names an internal destination (USR-2).
+
+    Every URL- / host-bearing field goes through the shared SSRF guard when a
+    Source is saved — not only at sync time or on the optional validate call.
+    DNS runs off the event loop.
+    """
+    import asyncio
+
+    from app.ingestion.source_egress_policy import assert_source_config_egress
+    from app.net.ssrf_guard import SSRFError
+
+    try:
+        await asyncio.to_thread(
+            assert_source_config_egress, source_type, connection_config or {}
+        )
+    except (SSRFError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"connection_config names a blocked destination: {str(exc)[:300]}",
+        ) from exc
+
+
 def _refuse_unconfigured_source(source: SourceConfig) -> None:
     """422 with the reason when the Source cannot index anything as configured."""
     problem = configuration_problem(source)
@@ -241,6 +264,10 @@ async def validate_source(
         connector_cls = None
     if connector_cls is None:
         errors.append(f"No connector for source_type={body.source_type!r}")
+    try:
+        await _refuse_internal_destinations(body.source_type, body.connection_config)
+    except HTTPException as exc:
+        errors.append(str(exc.detail))
     connection: dict | None = None
     if not errors and check_connection and family is not None:
         config = SourceConfig(
@@ -288,6 +315,8 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
         family = SourceFamily(body.family)
     except ValueError as _b904_exc:
         raise HTTPException(status_code=422, detail=f"Unknown family: {body.family!r}") from _b904_exc  # noqa: E501
+
+    await _refuse_internal_destinations(body.source_type, body.connection_config)
 
     # Source quota (plan limit) — counted in the DB; it was never enforced.
     enforcer = _get_quota_enforcer(request)
@@ -353,6 +382,7 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
         update_data["connection_config"] = merge_masked_update(
             source.connection_config, update_data["connection_config"]
         )
+        await _refuse_internal_destinations(source.source_type, update_data["connection_config"])
     store = _get_source_store(request)
     if store is not None:
         updated = await store.update(source_id, tenant.tenant_id, **update_data)
