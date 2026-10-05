@@ -191,34 +191,41 @@ class CEFAdapter(SIEMAdapter):
     }
 
     async def send(self, events: list[dict[str, Any]], config: SIEMConfig) -> bool:
-        import socket
+        import asyncio
 
-        sock_type = socket.SOCK_DGRAM if config.protocol == "udp" else socket.SOCK_STREAM
+        # Blocking socket I/O (5 s timeout) runs in a worker thread (AUDIT-03: it
+        # ran on the event loop and stalled every other coroutine).
         try:
-            with socket.socket(socket.AF_INET, sock_type) as sock:
-                sock.settimeout(5.0)
-                if config.protocol == "tcp":
-                    sock.connect((config.host, config.port))
-                for e in events:
-                    sev = self._SEVERITY.get((e.get("metadata") or {}).get("severity", "low"), "3")
-                    cef_line = (
-                        f"CEF:0|AgentVerse|AgentVerse|1.0"
-                        f"|{e.get('event_type', 'unknown')}"
-                        f"|{e.get('action', 'unknown')}"
-                        f"|{sev}|"
-                        f"tenant={e.get('tenant_id', '')} "
-                        f"resource={e.get('resource_type', '')} "
-                        f"status={e.get('status', '')} "
-                        f"requestId={e.get('request_id', '')}\n"
-                    ).encode()
-                    if config.protocol == "udp":
-                        sock.sendto(cef_line, (config.host, config.port))
-                    else:
-                        sock.sendall(cef_line)
+            await asyncio.to_thread(self._send_blocking, events, config)
             return True
         except Exception as exc:
             logger.error("cef_siem_send_error", error=str(exc))
             return False
+
+    def _send_blocking(self, events: list[dict[str, Any]], config: SIEMConfig) -> None:
+        import socket
+
+        sock_type = socket.SOCK_DGRAM if config.protocol == "udp" else socket.SOCK_STREAM
+        with socket.socket(socket.AF_INET, sock_type) as sock:
+            sock.settimeout(5.0)
+            if config.protocol == "tcp":
+                sock.connect((config.host, config.port))
+            for e in events:
+                sev = self._SEVERITY.get((e.get("metadata") or {}).get("severity", "low"), "3")
+                cef_line = (
+                    f"CEF:0|AgentVerse|AgentVerse|1.0"
+                    f"|{e.get('event_type', 'unknown')}"
+                    f"|{e.get('action', 'unknown')}"
+                    f"|{sev}|"
+                    f"tenant={e.get('tenant_id', '')} "
+                    f"resource={e.get('resource_type', '')} "
+                    f"status={e.get('status', '')} "
+                    f"requestId={e.get('request_id', '')}\n"
+                ).encode()
+                if config.protocol == "udp":
+                    sock.sendto(cef_line, (config.host, config.port))
+                else:
+                    sock.sendall(cef_line)
 
 
 class LEEFAdapter(SIEMAdapter):
