@@ -35,6 +35,10 @@ class TenantVaultError(RuntimeError):
     """The tenant vault key is missing or cannot be read / used."""
 
 
+class TenantVaultUnwrapError(TenantVaultError):
+    """The platform vault key cannot unwrap the tenant key (wrong / missing master key)."""
+
+
 def is_tenant_encrypted(ciphertext: str) -> bool:
     return isinstance(ciphertext, str) and ciphertext.startswith(TENANT_CIPHER_PREFIX)
 
@@ -50,7 +54,7 @@ def _unwrap_keys(wrapped: str) -> list[bytes]:
         plain = _vault_mod.get_vault().decrypt(wrapped)
         keys = [base64.b64decode(part) for part in plain.split(",") if part]
     except Exception as exc:
-        raise TenantVaultError(f"tenant vault key cannot be unwrapped: {exc}") from exc
+        raise TenantVaultUnwrapError(f"tenant vault key cannot be unwrapped: {exc}") from exc
     if not keys or any(len(k) != 32 for k in keys):
         raise TenantVaultError("tenant vault key cannot be unwrapped: malformed key material")
     return keys
@@ -232,10 +236,15 @@ async def store_tenant_vault_key(db_factory: Any, tenant_id: str, key: bytes) ->
                 plain = old_vault.decrypt(str(row[0])[len(TENANT_CIPHER_PREFIX) :])
                 await session.execute(
                     text(
-                        "UPDATE tenant_llm_configs SET encrypted_key = :k "
-                        "WHERE tenant_id = :t"
+                        "UPDATE tenant_llm_configs SET encrypted_key = :k, "
+                        "vault_key_fingerprint = :fp WHERE tenant_id = :t"
                     ),
-                    {"k": TENANT_CIPHER_PREFIX + new_vault.encrypt(plain), "t": tenant_id},
+                    {
+                        "k": TENANT_CIPHER_PREFIX + new_vault.encrypt(plain),
+                        # The platform key that wraps the tenant key (BYOK-2).
+                        "fp": _vault_mod.get_vault().fingerprint(),
+                        "t": tenant_id,
+                    },
                 )
         await session.execute(
             text(
@@ -258,4 +267,13 @@ async def prepare_tenant_llm_config(
     encrypted = str(cfg.get("encrypted_key") or "")
     if not is_tenant_encrypted(encrypted):
         return cfg
-    return {**cfg, "decrypted_key": await decrypt_tenant_secret(db_factory, tenant_id, encrypted)}
+    try:
+        plain = await decrypt_tenant_secret(db_factory, tenant_id, encrypted)
+    except TenantVaultUnwrapError as exc:
+        # The tenant key is wrapped by the platform master key: name the side
+        # whose VAULT_MASTER_KEY differs (BYOK-2).
+        reason = _vault_mod.explain_decrypt_failure(
+            str(cfg.get("vault_key_fingerprint") or "") or None
+        )
+        raise TenantVaultUnwrapError(f"{exc}; {reason}") from exc
+    return {**cfg, "decrypted_key": plain}

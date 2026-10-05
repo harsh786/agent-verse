@@ -88,6 +88,9 @@ services:
       DATABASE_URL: postgresql+asyncpg://agentverse:agentverse@postgres:5432/agentverse
       REDIS_URL: redis://redis:6379/0
       ENVIRONMENT: development
+      # Must equal the key of the process that encrypts (the host-side API / test
+      # process, which uses the dev key unless VAULT_MASTER_KEY is exported).
+      VAULT_MASTER_KEY: ${VAULT_MASTER_KEY:-dev-insecure-master-key}
     depends_on:
       postgres:
         condition: service_healthy

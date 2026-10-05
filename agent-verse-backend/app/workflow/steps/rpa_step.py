@@ -43,8 +43,10 @@ class RPAStepNode:
         self._artifact_store = services.get("rpa_artifact_store")
         self._executor = services.get("rpa_executor")
         self._provider = services.get("llm_provider") or services.get("provider")
+        # BYOK-3: the run tenant's provider (vision) per execution when wired.
+        self._provider_resolver = services.get("llm_provider_resolver")
 
-    def _build_executor(self) -> tuple[Any, Any, Any]:
+    def _build_executor(self, provider: Any = None) -> tuple[Any, Any, Any]:
         from app.rpa.artifacts import RPAArtifactStore
         from app.rpa.executor import RPAExecutor
 
@@ -62,10 +64,22 @@ class RPAStepNode:
             _log.warning("rpa_session_manager_unavailable", error=str(exc)[:120])
         executor = self._executor or RPAExecutor(
             artifact_store=store,
-            vision_provider=self._provider,
+            vision_provider=provider,
             session_manager=session_manager,
         )
         return executor, store, session_manager
+
+    async def _step_provider(self, state: WorkflowState) -> Any:
+        """Tenant BYOK → platform; ``None`` (no vision) when neither is configured."""
+        from app.workflow.llm_provider import step_llm_provider
+
+        return await step_llm_provider(
+            resolver=self._provider_resolver,
+            fallback=self._provider,
+            state=state,
+            step_id=self.step.id,
+            required=False,
+        )
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         resolved = self.ctx.resolve_dict(self.step.input, state)
@@ -103,7 +117,7 @@ class RPAStepNode:
         from app.rpa.report import build_and_store_report_pdf, run_scrape_report
 
         session_id = _uuid.uuid4().hex
-        executor, store, session_manager = self._build_executor()
+        executor, store, session_manager = self._build_executor(await self._step_provider(state))
         try:
             report, _results = await run_scrape_report(
                 executor,

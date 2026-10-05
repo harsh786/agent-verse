@@ -59,15 +59,21 @@ class LLMConfigStore:
         model: str,
         base_url: str | None = None,
         masked_key: str | None = None,
+        vault_key_fingerprint: str | None = None,
     ) -> None:
         """Store the config for *tenant_id*. Raises LLMConfigPersistError if the
-        durable write fails (never report a key as saved that was not)."""
+        durable write fails (never report a key as saved that was not).
+
+        ``vault_key_fingerprint`` identifies (never reveals) the platform vault
+        key that sealed ``encrypted_key``: a worker whose key differs reports a
+        fingerprint mismatch instead of an opaque decrypt failure (BYOK-2)."""
         config = {
             "provider": provider,
             "encrypted_key": encrypted_key,
             "model": model,
             "base_url": base_url,
             "masked_key": masked_key,
+            "vault_key_fingerprint": vault_key_fingerprint,
         }
         if self._db is not None:
             try:
@@ -151,11 +157,13 @@ class LLMConfigStore:
             await session.execute(
                 text(
                     "INSERT INTO tenant_llm_configs "
-                    "(tenant_id, provider, encrypted_key, model, base_url, masked_key, updated_at) "
-                    "VALUES (:t, :p, :k, :m, :b, :mk, NOW()) "
+                    "(tenant_id, provider, encrypted_key, model, base_url, masked_key, "
+                    "vault_key_fingerprint, updated_at) "
+                    "VALUES (:t, :p, :k, :m, :b, :mk, :fp, NOW()) "
                     "ON CONFLICT (tenant_id) DO UPDATE SET provider = EXCLUDED.provider, "
                     "encrypted_key = EXCLUDED.encrypted_key, model = EXCLUDED.model, "
                     "base_url = EXCLUDED.base_url, masked_key = EXCLUDED.masked_key, "
+                    "vault_key_fingerprint = EXCLUDED.vault_key_fingerprint, "
                     "updated_at = NOW()"
                 ),
                 {
@@ -165,6 +173,7 @@ class LLMConfigStore:
                     "m": config["model"] or "",
                     "b": config["base_url"],
                     "mk": config["masked_key"],
+                    "fp": config.get("vault_key_fingerprint"),
                 },
             )
 
@@ -177,8 +186,8 @@ class LLMConfigStore:
             row = (
                 await session.execute(
                     text(
-                        "SELECT provider, encrypted_key, model, base_url, masked_key "
-                        "FROM tenant_llm_configs WHERE tenant_id = :t"
+                        "SELECT provider, encrypted_key, model, base_url, masked_key, "
+                        "vault_key_fingerprint FROM tenant_llm_configs WHERE tenant_id = :t"
                     ),
                     {"t": tenant_id},
                 )
@@ -191,6 +200,7 @@ class LLMConfigStore:
             "model": row[2],
             "base_url": row[3],
             "masked_key": row[4],
+            "vault_key_fingerprint": row[5],
         }
 
     async def _db_delete(self, tenant_id: str) -> None:

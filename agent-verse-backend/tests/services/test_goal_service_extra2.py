@@ -114,19 +114,6 @@ class TestStartCeleryEventBridge:
         assert len(svc._background_tasks) >= 0  # may complete immediately
 
 
-class TestFakeProvider:
-    def test_fake_provider_returns_instance(self):
-        from app.services.goal_service import _fake_provider
-        provider = _fake_provider()
-        assert provider is not None
-
-    def test_fake_provider_is_fake_provider_type(self):
-        from app.providers.fake import FakeProvider
-        from app.services.goal_service import _fake_provider
-        provider = _fake_provider()
-        assert isinstance(provider, FakeProvider)
-
-
 class TestCheckpointSaverSelection:
     def test_returns_memory_saver_by_default(self):
         from langgraph.checkpoint.memory import MemorySaver

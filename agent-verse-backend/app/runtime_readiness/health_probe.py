@@ -16,7 +16,6 @@ never block. This module derives each dependency's status from what the app actu
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -70,7 +69,11 @@ def _llm_status(state: Any, *, tenant_llm_configured: bool) -> DepStatus:
 
     if get_provider_env("ANTHROPIC_API_KEY") or get_provider_env("OPENAI_API_KEY"):
         return DepStatus.HEALTHY
-    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+    from app.providers.llm_resolution import fake_llm_allowed
+
+    # BYOK-3: only development/test may run on the canned FakeProvider; any other
+    # environment without a key has no LLM at all (it was only "production").
+    if not fake_llm_allowed():
         return DepStatus.UNAVAILABLE
     return DepStatus.DEGRADED
 

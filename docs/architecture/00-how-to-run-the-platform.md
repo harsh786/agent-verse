@@ -1521,7 +1521,7 @@ export SECRET_KEY=32_byte_random_secret
 export ANTHROPIC_API_KEY=sk-ant-...
 export KEYCLOAK_CLIENT_SECRET=strong_secret
 export GRAFANA_PASSWORD=strong_password
-export AGENTVERSE_VAULT_KEY=base64_encoded_32_byte_key
+export VAULT_MASTER_KEY=base64_encoded_32_byte_key   # same value on API, workers and beat
 export FRONTEND_URL=https://app.yourdomain.com
 export CORS_ORIGINS=https://app.yourdomain.com
 
@@ -1576,7 +1576,7 @@ ENVIRONMENT=production
 DATABASE_URL=postgresql+asyncpg://user:STRONG_PASS@db:5432/agentverse
 REDIS_URL=redis://:STRONG_PASS@redis:6379/0
 SECRET_KEY=<64-char random string>
-AGENTVERSE_VAULT_KEY=<base64 32-byte key: python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())">
+VAULT_MASTER_KEY=<same on API, every worker and beat; base64 32-byte key: python3 -c "import secrets,base64; print(base64.b64encode(secrets.token_bytes(32)).decode())">
 ANTHROPIC_API_KEY=sk-ant-...  # or another LLM key
 FRONTEND_URL=https://app.yourdomain.com
 CORS_ORIGINS=https://app.yourdomain.com

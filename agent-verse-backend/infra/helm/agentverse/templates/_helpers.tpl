@@ -27,6 +27,27 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ include "agentverse.fullname" . }}-secrets
 {{- end -}}
 
+{{- /*
+  BYOK-1: the vault master key (+ rotation companion) for EVERY app workload —
+  API, workers, beat. The API encrypts tenant BYOK keys with it and the workers
+  decrypt them; a workload without it (the worker used to be) decrypts with no /
+  another key and every BYOK run fails. Enforced by
+  tests/infra/test_vault_key_distribution.py.
+*/}}
+{{- define "agentverse.vaultEnv" -}}
+- name: VAULT_MASTER_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: VAULT_MASTER_KEY
+- name: VAULT_PREVIOUS_MASTER_KEYS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: VAULT_PREVIOUS_MASTER_KEYS
+      optional: true
+{{- end -}}
+
 {{- define "agentverse.postgresHost" -}}
 {{- if and (not .Values.postgresql.enabled) .Values.externalServices.postgresHost -}}
 {{- .Values.externalServices.postgresHost -}}

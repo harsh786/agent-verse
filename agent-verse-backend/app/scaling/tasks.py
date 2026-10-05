@@ -809,23 +809,19 @@ def _get_llm_provider(tenant_id: str) -> Any:
     if config is None:
         return None
 
-    # Built by the SAME helper as the API path. This copy used to send
+    # Built by the SAME helper as the API path and the workflow steps
+    # (app.providers.llm_resolution, BYOK-3). This copy used to send
     # groq/together keys to api.openai.com when base_url was empty, return None
     # (→ platform provider) for gemini/nvidia/openrouter configs, and swallow a
     # decrypt failure into the same platform fallback. A tenant with BYOK now
     # gets its provider or TenantProviderError, which run_goal turns into a
     # failed goal — never silent platform spend.
-    from app.providers.tenant_provider import build_tenant_provider
-    from app.providers.tenant_vault import TenantVaultError, prepare_tenant_llm_config
+    from app.providers.llm_resolution import abuild_tenant_byok_provider
 
-    try:
-        from app.db.session import get_session_factory
-
-        config = _run_async(prepare_tenant_llm_config(config, tenant_id, get_session_factory()))
-    except TenantVaultError as exc:  # PROV-15: tenant-vault key unreadable → fail closed
-        raise TenantProviderError(f"tenant vault key could not be loaded: {exc}") from exc
-    return build_tenant_provider(
-        config, tenant_id=tenant_id, embed_model=os.getenv("EMBEDDING_MODEL") or None
+    return _run_async(
+        abuild_tenant_byok_provider(
+            config, tenant_id, embed_model=os.getenv("EMBEDDING_MODEL") or None
+        )
     )
 
 
@@ -3720,27 +3716,20 @@ def run_goal(
             }
 
     try:
-        # Block fake execution in production — a real LLM provider is required
-        import os as _os
+        # Block fake execution outside development/test — a real LLM provider
+        # (the tenant's own key or the platform's) is required. BYOK-3: this used
+        # to block only ENVIRONMENT == "production"; staging ran canned answers.
+        from app.providers.llm_resolution import fake_llm_allowed, no_provider_message
 
-        _env = _os.getenv("ENVIRONMENT", "development")
-        if used_fake_provider and _env == "production":
-            _run_async(
-                mark_worker_failed(
-                    RuntimeError(
-                        "No real LLM provider configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
-                    )
-                )
-            )
+        if used_fake_provider and not fake_llm_allowed():
+            _no_llm_msg = no_provider_message(tenant_id)
+            _run_async(mark_worker_failed(RuntimeError(_no_llm_msg)))
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {
                 "status": "failed",
                 "goal_id": goal_id,
                 "reason": "no_llm_provider",
-                "message": (
-                    "Goal requires a real LLM provider. "
-                    "Configure ANTHROPIC_API_KEY or OPENAI_API_KEY."
-                ),
+                "message": _no_llm_msg,
             }
 
         async def worker_event_callback(event: dict[str, Any]) -> None:

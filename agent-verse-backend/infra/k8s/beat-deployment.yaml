@@ -28,17 +28,15 @@ spec:
             - beat
             - --scheduler=redbeat.RedBeatScheduler
             - --loglevel=info
-          env:
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: redis-url
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: database-url
+          # Same config + Secret as the API and workers (BYOK-1): beat runs the
+          # app's startup checks, which refuse to start without the vault key
+          # outside development. The `redis-url` / `database-url` keys this used
+          # to reference do not exist in agentverse-secrets.
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
           resources:
             requests:
               cpu: 50m

@@ -30,6 +30,25 @@ _DEV_KEY_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testi
 
 def _dev_key_allowed() -> bool:
     return os.getenv("ENVIRONMENT", "development").strip().lower() in _DEV_KEY_ENVIRONMENTS
+
+
+# The names the master key is read from, in precedence order (each also as *_FILE).
+MASTER_KEY_NAMES: tuple[str, ...] = ("AGENTVERSE_VAULT_KEY", "VAULT_MASTER_KEY")
+
+# Which kind of process this is ("api", "worker", "beat", "cli"): named in
+# decrypt-failure messages so an operator knows WHICH deployment lacks the key.
+_PROCESS_ROLE = "api"
+
+
+def set_process_role(role: str) -> None:
+    global _PROCESS_ROLE
+    _PROCESS_ROLE = role or "api"
+
+
+def process_role() -> str:
+    return _PROCESS_ROLE
+
+
 _CONNECTOR_SECRET_PREFIX = "vault://connectors/"
 
 
@@ -258,10 +277,14 @@ class CredentialVault:
         # (VAULT_PREVIOUS_MASTER_KEYS) so every replica reads both old and new
         # ciphertext while ``agentverse vault-rotate`` re-encrypts the stores.
         primary_key = _derive_fernet_key(master_key)
-        # Non-reversible identifier of the encryption key (rotation checkpoints).
-        self._fingerprint = hashlib.sha256(b"agentverse-vault-fp:" + primary_key).hexdigest()[:16]
+        # Non-reversible identifier of the encryption key (rotation checkpoints,
+        # stored with BYOK ciphertext so a decrypt failure can name the key that
+        # is missing — BYOK-2). Derived from the PBKDF2 output, never the key.
+        self._fingerprint = _key_fingerprint(primary_key)
+        previous = [_derive_fernet_key(k) for k in previous_master_keys if k]
+        self._previous_fingerprints = tuple(_key_fingerprint(k) for k in previous)
         keys = [Fernet(primary_key)]
-        keys += [Fernet(_derive_fernet_key(k)) for k in previous_master_keys if k]
+        keys += [Fernet(k) for k in previous]
         self._fernet: Any = MultiFernet(keys) if len(keys) > 1 else keys[0]
         self._key: bytes | None = None  # populated only by from_byok()
 
@@ -270,6 +293,10 @@ class CredentialVault:
         return getattr(self, "_fingerprint", "") or hashlib.sha256(
             b"agentverse-vault-fp:" + (self._key or b"")
         ).hexdigest()[:16]
+
+    def fingerprints(self) -> tuple[str, ...]:
+        """The current key's fingerprint, then those of the decrypt-only previous keys."""
+        return (self.fingerprint(), *getattr(self, "_previous_fingerprints", ()))
 
     def encrypt(self, plaintext: str) -> str:
         """Encrypt *plaintext* and return a URL-safe ciphertext string."""
@@ -306,23 +333,52 @@ class CredentialVault:
         return "CredentialVault(<key hidden>)"
 
 
-def get_vault() -> CredentialVault:
-    """Create a vault from the environment master key."""
+def _key_fingerprint(derived_key: bytes) -> str:
+    return hashlib.sha256(b"agentverse-vault-fp:" + derived_key).hexdigest()[:16]
+
+
+def _configured_master_key() -> str | None:
+    """The master key from AGENTVERSE_VAULT_KEY[_FILE] / VAULT_MASTER_KEY[_FILE].
+
+    An empty / blank value is NOT a key: production compose used to pass
+    ``AGENTVERSE_VAULT_KEY=${AGENTVERSE_VAULT_KEY:-}`` and the vault then
+    encrypted everything with the empty string. Two different values under the
+    two names are refused — one of them silently won, so a process configured
+    with only the other name used a different key (BYOK-2).
+    """
     from app.core.secrets import SecretNotFoundError, read_secret
 
-    dev_allowed = _dev_key_allowed()
-    for secret_name in ("AGENTVERSE_VAULT_KEY", "VAULT_MASTER_KEY"):
+    found: dict[str, str] = {}
+    for secret_name in MASTER_KEY_NAMES:
         try:
-            master_key = read_secret(secret_name)
-            if not dev_allowed and master_key == _DEV_INSECURE_MASTER_KEY:
-                raise RuntimeError(
-                    "The dev-insecure-master-key vault key is only allowed in "
-                    "development/test, not in ENVIRONMENT="
-                    f"{os.environ.get('ENVIRONMENT', '')!r}."
-                )
-            return _cached_vault(master_key, _previous_master_keys())
+            value = read_secret(secret_name).strip()
         except SecretNotFoundError:
-            pass
+            continue
+        if value:
+            found[secret_name] = value
+    if len(set(found.values())) > 1:
+        fps = {n: _key_fingerprint(_derive_fernet_key(v)) for n, v in found.items()}
+        raise RuntimeError(
+            "Conflicting vault master keys: "
+            + " and ".join(f"{n} (fingerprint {fp})" for n, fp in fps.items())
+            + " hold different values. Set only VAULT_MASTER_KEY, with the same value on "
+            "the API and every worker / beat process."
+        )
+    return next(iter(found.values()), None)
+
+
+def get_vault() -> CredentialVault:
+    """Create a vault from the environment master key."""
+    dev_allowed = _dev_key_allowed()
+    master_key = _configured_master_key()
+    if master_key is not None:
+        if not dev_allowed and master_key == _DEV_INSECURE_MASTER_KEY:
+            raise RuntimeError(
+                "The dev-insecure-master-key vault key is only allowed in "
+                "development/test, not in ENVIRONMENT="
+                f"{os.environ.get('ENVIRONMENT', '')!r}."
+            )
+        return _cached_vault(master_key, _previous_master_keys())
 
     if not dev_allowed:
         raise RuntimeError(
@@ -334,6 +390,75 @@ def get_vault() -> CredentialVault:
 
     master_key = _get_master_key()  # emits warning unless ALLOW_DEV_VAULT=true
     return _cached_vault(master_key, _previous_master_keys())
+
+
+def assert_vault_key_configured(role: str) -> CredentialVault:
+    """Startup check for a process that encrypts / decrypts vault data.
+
+    Raises ``RuntimeError`` (no key outside development/test, the dev key outside
+    development/test, conflicting names). The API always called ``get_vault()``
+    while building the app; Celery workers and beat never did, so a worker pod
+    deployed without VAULT_MASTER_KEY started and then failed every BYOK goal.
+    """
+    set_process_role(role)
+    return get_vault()
+
+
+class VaultKeyMismatchError(RuntimeError):
+    """A vault value does not open with this process's key (message names fingerprints)."""
+
+
+def explain_decrypt_failure(stored_fingerprint: str | None) -> str:
+    """Why a vault value does not open here, by key FINGERPRINT (never the key).
+
+    ``stored_fingerprint`` is the fingerprint recorded when the value was
+    encrypted. Compared with this process's current + previous keys (and, when
+    known, with the fleet's canary) it tells which side is misconfigured.
+    """
+    role = process_role()
+    try:
+        local = get_vault()
+    except Exception as exc:
+        return (
+            f"this {role} process has no usable vault master key ({exc}). Set "
+            "VAULT_MASTER_KEY to the same value as on the API"
+        )
+    fps = local.fingerprints()
+    here = f"this {role} process has vault key fingerprint {fps[0]}"
+    if len(fps) > 1:
+        here += f" (previous: {', '.join(fps[1:])})"
+    if not stored_fingerprint:
+        return (
+            f"no key fingerprint was stored with it (saved before fingerprints were "
+            f"recorded); {here}. If the API uses another VAULT_MASTER_KEY, set the same "
+            "value on every API, worker and beat process; otherwise re-save the key"
+        )
+    if stored_fingerprint in fps:
+        return (
+            f"it was encrypted with vault key fingerprint {stored_fingerprint}, which "
+            f"this {role} process holds, but it does not open: the stored value is "
+            "corrupt. Re-save it"
+        )
+    from app.providers.vault_canary import last_canary_result
+
+    blame = ""
+    canary = last_canary_result()
+    if canary is not None and canary.canary_fingerprint:
+        if canary.canary_fingerprint == stored_fingerprint:
+            blame = (
+                f" The API's vault canary is also under {stored_fingerprint}: this {role} "
+                "process is the misconfigured side."
+            )
+        elif canary.canary_fingerprint in fps:
+            blame = (
+                f" The API's vault canary opens here: the process that saved this value "
+                f"used another key ({stored_fingerprint}); re-save it."
+            )
+    return (
+        f"vault key mismatch: it was encrypted with vault key fingerprint "
+        f"{stored_fingerprint} but {here}. Set the same VAULT_MASTER_KEY on the API "
+        f"and on every worker and beat process.{blame}"
+    )
 
 
 def _previous_master_keys() -> tuple[str, ...]:

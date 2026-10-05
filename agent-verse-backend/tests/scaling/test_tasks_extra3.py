@@ -368,11 +368,12 @@ class TestRunGoalPaths:
             )
         assert result["status"] == "blocked"
 
-    def test_production_fake_provider_fails_goal(self, monkeypatch):
-        """Lines 630-636: fake provider blocked in production."""
+    @pytest.mark.parametrize("env", ["production", "staging"])
+    def test_production_fake_provider_fails_goal(self, monkeypatch, env):
+        """Fake provider blocked outside development/test (BYOK-3: staging too)."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("ENVIRONMENT", env)
         from app.scaling.tasks import run_goal
         # Patch get_session_factory to avoid asyncpg cross-loop teardown errors.
         # Patch vault to avoid production vault key requirement.
@@ -396,10 +397,12 @@ class TestRunGoalPaths:
                 goal_text="prod goal",
                 dry_run=False,
             )
-        # Goal must fail in production when no real LLM provider is configured.
+        # Goal must fail outside development when no real LLM provider is configured.
         assert result["status"] in ("failed", "dead_lettered", "no_llm_provider"), (
-            f"Expected failed/dead_lettered status in production without LLM, got: {result}"
+            f"Expected failed/dead_lettered status in {env} without LLM, got: {result}"
         )
+        if result["status"] == "failed" and result.get("reason") == "no_llm_provider":
+            assert "no LLM provider configured for tenant 't1'" in result["message"]
 
     def test_anthropic_env_provider_used(self, monkeypatch):
         """Lines 533-535: ANTHROPIC_API_KEY path."""
