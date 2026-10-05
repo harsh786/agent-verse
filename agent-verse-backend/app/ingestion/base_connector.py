@@ -37,6 +37,25 @@ def stable_doc_id(config: SourceConfig, *key_parts: object) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"agentverse-source:{config.source_id}:{key}"))
 
 
+def stable_doc_id_v8(config: SourceConfig, *key_parts: object) -> str:
+    """Like :func:`stable_doc_id`, as a UUID *version 8* (SHA-256 based).
+
+    For connectors whose earlier releases minted version-5 ids from something
+    unstable (a host name): the version tells a current id from a legacy one,
+    so reconciliation only ever deletes current ids and a one-time migration
+    can find the legacy ones (MongoDB TG-13 / D2, Redis OI-4).
+    """
+    import hashlib
+    import uuid
+
+    key = "\x1f".join(str(part) for part in key_parts)
+    digest = hashlib.sha256(f"agentverse-source:{config.source_id}:{key}".encode()).digest()
+    value = int.from_bytes(digest[:16], "big")
+    value = (value & ~(0xF << 76)) | (8 << 76)  # version 8
+    value = (value & ~(0x3 << 62)) | (0x2 << 62)  # RFC 4122 variant
+    return str(uuid.UUID(int=value))
+
+
 def row_identity(row: dict[str, Any], id_column: str | None = None) -> str:
     """Native identity of a database row: its configured / conventional primary
     key, or — with no key column — a hash of the row's values (identical rows

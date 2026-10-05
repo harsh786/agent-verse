@@ -38,7 +38,10 @@ What to ingest:
                           truncated and flagged ``truncated`` in the metadata.
     max_items             entries read from a hash/list/set/zset/stream (default 1000).
 
-Each key becomes one document (stable id per key). The cursor stores the SCAN
+Each key becomes one document. Its id is stable per Source + database + key
+(OI-4: it used to hash the URL with the host, so renaming the host re-ided every
+key); ids of earlier releases are moved by a one-time resumable migration (see
+``app/ingestion/mongodb_id_migration.py``). The cursor stores the SCAN
 position per node and pattern, so a keyspace larger than ``max_keys_per_sync``
 is covered over several runs; after a full pass the next run starts a new pass
 (unchanged values are deduplicated by the pipeline's content hash).
@@ -70,8 +73,10 @@ from urllib.parse import quote, unquote, urlsplit
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
     UnitFailures,
+    stable_doc_id_v8,
 )
 from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_hosts
 from app.ingestion.connector_registry import register
@@ -612,8 +617,33 @@ def _encode_cursor(state: dict[str, Any], patterns: list[str], *, done: bool = F
     )
 
 
-def _doc_id(config: SourceConfig, url: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{config.source_id}:{url}"))
+def _doc_id(config: SourceConfig, db: int, name: str) -> str:
+    """Stable id: the Source + database number + key name (OI-4).
+
+    It used to hash the key URL, whose host part changes when the Source is
+    pointed at the same server by another name (a DNS rename, an IP, a new
+    Sentinel master) — every key was re-ided and indexed again. UUID version 8,
+    so the legacy version-5 ids stay recognisable (``manages_doc_id``, D2-style
+    migration).
+    """
+    return stable_doc_id_v8(config, "redis", db, name)
+
+
+def _legacy_doc_id(source_id: str, url: str) -> str:
+    """The pre-OI-4 id: uuid5 of ``"<source id>:redis://<host>/<db>/<key>"``."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{url}"))
+
+
+def _parse_key_url(url: str) -> tuple[int, str] | None:
+    """``(db, key)`` of ``redis://<display>/<db>/<quoted key>``; the display part
+    may itself contain ``/`` (``sentinel/<master>``, ``cluster/<host>:<port>``)."""
+    if not url.startswith("redis://"):
+        return None
+    rest, _, quoted = url[len("redis://") :].rpartition("/")
+    display, _, db_text = rest.rpartition("/")
+    if not display or not quoted or not db_text.isdigit():
+        return None
+    return int(db_text), unquote(quoted)
 
 
 def _key_url(settings: _Settings, db: int, name: str) -> str:
@@ -640,6 +670,76 @@ class RedisConnector(BaseConnector):
 
     source_type = "redis"
     supports_deletion_tracking = True  # iter_live_doc_ids -> reconcile (KB-44)
+    # OI-4: one-time move of documents still under host-based (v5) ids.
+    legacy_id_migration = "redis_v8_doc_ids"
+
+    def manages_doc_id(self, doc_id: str) -> bool:
+        """Only current (UUID v8) ids are deletion candidates: a legacy copy whose
+        key is unchanged is never re-indexed under its new id (content-hash
+        dedup), so reconciling it away would lose it — the migration moves it."""
+        try:
+            return uuid.UUID(str(doc_id)).version == 8
+        except ValueError:
+            return False
+
+    def legacy_ref(self, document_id: str, source_url: str, config: SourceConfig) -> Any:
+        """The legacy reference of ``document_id`` (None unless provably legacy:
+        the v5 id recomputed from its stored ``source_url`` must match)."""
+        from app.ingestion.mongodb_id_migration import LegacyRef
+
+        try:
+            parsed = uuid.UUID(str(document_id))
+        except ValueError:
+            return None
+        if parsed.version != 5:
+            return None
+        where = _parse_key_url(str(source_url or ""))
+        if where is None or _legacy_doc_id(config.source_id, source_url) != str(parsed):
+            return None
+        db, key = where
+        return LegacyRef(str(parsed), str(db), "", key)
+
+    def legacy_scope(self, config: SourceConfig) -> tuple[str, list[str]]:
+        settings = _settings(config.connection_config)
+        return str(0 if settings.mode == "cluster" else settings.db), []
+
+    def legacy_ref_in_scope(self, config: SourceConfig, ref: Any) -> bool:
+        """A legacy key of another database, or one no configured pattern
+        matches any more, is kept (never deleted on a guess)."""
+        import fnmatch
+
+        settings = _settings(config.connection_config)
+        db = 0 if settings.mode == "cluster" else settings.db
+        if str(ref.database) != str(db):
+            return False
+        return any(fnmatch.fnmatchcase(ref.key, p) for p in settings.key_patterns)
+
+    async def read_legacy_documents(
+        self, config: SourceConfig, refs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], list[RawDocument] | None]:
+        """OI-4: re-read keys indexed under legacy ids, as a sync would index them now.
+
+        Per ref: ``[document]`` under its current id, ``[]`` when the key no
+        longer exists (a confirmed absence), or ``None`` when it exists but is
+        not indexed any more (its type is filtered out) — kept, never deleted.
+        Any connection error is raised, so nothing is deleted on a failed read.
+        """
+        if not refs:
+            return {}
+        out: dict[tuple[str, str], list[RawDocument] | None] = {}
+        try:
+            settings = _settings(config.connection_config)
+            db = 0 if settings.mode == "cluster" else settings.db
+            async with _connected(settings) as conn:
+                for ref in refs:
+                    out[ref] = await asyncio.to_thread(
+                        _read_legacy_key, conn, settings, config, db, ref[1]
+                    )
+        except ConnectorEgressBlockedError:
+            raise
+        except Exception as exc:
+            raise ConnectorFetchError(f"redis: {type(exc).__name__}: {exc}"[:300]) from exc
+        return out
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         t0 = time.perf_counter()
@@ -677,7 +777,7 @@ class RedisConnector(BaseConnector):
                     while True:
                         at, keys = await asyncio.to_thread(client.scan, at, pattern, _SCAN_COUNT)
                         for key in keys:
-                            yield _doc_id(config, _key_url(settings, db, _text(key)))
+                            yield _doc_id(config, db, _text(key))
                         if not int(at):
                             break
 
@@ -747,8 +847,6 @@ async def _scan_pass(
     never got further. A key that cannot be read (NOPERM, a type changed under
     us) is a counted failure; the other keys go on.
     """
-    from app.ingestion.source_config import RawDocument
-
     patterns = settings.key_patterns
     db = 0 if settings.mode == "cluster" else settings.db
     state.setdefault("o", {})
@@ -780,8 +878,6 @@ async def _scan_pass(
                         read = None
                     if read is None:
                         continue
-                    ktype, body, truncated = read
-                    url = _key_url(settings, db, name)
                     last = index == len(keys) - 1
                     cursor = _encode_cursor(
                         {
@@ -792,28 +888,68 @@ async def _scan_pass(
                         patterns,
                     )
                     budget[0] -= 1
-                    yield (
-                        RawDocument(
-                            doc_id=_doc_id(config, url),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=url,
-                            title=name,
-                            content=f"# {name}\n\ntype: {ktype}\n\n{body}".encode(),
-                            content_type="text/plain",
-                            metadata={
-                                "key": name,
-                                "type": ktype,
-                                "db": db,
-                                "node": label,
-                                "truncated": truncated,
-                            },
-                        ),
-                        cursor,
-                    )
+                    yield _raw_document(config, settings, db, name, label, read), cursor
                 state["n"][label] = following
                 state["o"][label] = 0
                 scan_at, skip = following, 0
         state["p"] += 1
         state["n"] = {}
         state["o"] = {}
+
+
+def _raw_document(
+    config: SourceConfig,
+    settings: _Settings,
+    db: int,
+    name: str,
+    label: str,
+    read: tuple[str, str, bool],
+) -> RawDocument:
+    """The RawDocument a sync indexes for one key (current, host-independent id)."""
+    from app.ingestion.source_config import RawDocument
+
+    ktype, body, truncated = read
+    url = _key_url(settings, db, name)
+    return RawDocument(
+        doc_id=_doc_id(config, db, name),
+        source_id=config.source_id,
+        tenant_id=config.tenant_id,
+        source_url=url,
+        title=name,
+        content=f"# {name}\n\ntype: {ktype}\n\n{body}".encode(),
+        content_type="text/plain",
+        metadata={
+            "key": name,
+            "type": ktype,
+            "db": db,
+            "node": label,
+            "truncated": truncated,
+        },
+    )
+
+
+def _read_legacy_key(
+    conn: _Connection, settings: _Settings, config: SourceConfig, db: int, name: str
+) -> list[RawDocument] | None:
+    """One key for the legacy-id migration: ``[doc]``, ``[]`` (gone) or None (filtered).
+
+    In a cluster the key lives on one primary; the others answer MOVED, which
+    is never followed — the owning primary's answer decides.
+    """
+    from redis import exceptions as rex
+
+    key = name.encode("utf-8", errors="surrogateescape")
+    for label, client in conn.nodes.items():
+        try:
+            exists = int(client.exists(key))
+        except rex.ResponseError as exc:
+            if "MOVED" in str(exc) or "ASK" in str(exc):
+                continue  # not this primary's slot
+            raise
+        if not exists:
+            return []
+        read = _read_key(client, key, settings)
+        if read is None:
+            return None  # exists, but its type is not indexed any more
+        return [_raw_document(config, settings, db, name, label, read)]
+    raise ConnectorFetchError(f"redis: no primary owns key {name!r}")
