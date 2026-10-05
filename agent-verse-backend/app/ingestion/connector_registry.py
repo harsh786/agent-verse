@@ -102,7 +102,7 @@ def get_connector(source_type: str, *, settings: object | None = None) -> type[B
         flag_attr = _FEATURE_FLAGS[source_type]
         enabled = getattr(settings, flag_attr, True)
         if not enabled:
-            raise RuntimeError(
+            raise ConnectorDisabledError(
                 f"Connector for source_type={source_type!r} is disabled by "
                 f"feature flag {flag_attr}=False. Set it to True to enable."
             )
@@ -120,6 +120,10 @@ def get_connector(source_type: str, *, settings: object | None = None) -> type[B
         )
 
     return _REGISTRY[source_type]
+
+
+class ConnectorDisabledError(RuntimeError):
+    """The operator turned this connector off with its feature flag (kill switch)."""
 
 
 def connector_load_error(source_type: str) -> str:

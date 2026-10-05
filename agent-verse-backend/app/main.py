@@ -2380,6 +2380,15 @@ def create_app(
                 except Exception as _ace_exc:
                     logger.warning("approval_chain_engine_wire_failed", error=str(_ace_exc))
 
+                # ── TG-12: the ingestion sync lock lives in the shared Redis ──────────
+                # (it was process-local: two replicas / workers could sync one
+                # Source at once, and the worker's release of the API's lock
+                # was a no-op). The worker's tracker gets the same Redis.
+                _ing_tracker_redis = getattr(app.state, "ingestion_job_tracker", None)
+                if _ing_tracker_redis is not None:
+                    _ing_tracker_redis._redis = redis_for_runtime
+                    logger.info("ingestion_job_tracker_redis_wired")
+
                 # ── CRDT manager: wire Redis for multi-process Yjs sync ───────────────
                 try:
                     from app.api.collab import _crdt_manager

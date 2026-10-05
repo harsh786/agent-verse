@@ -25,6 +25,7 @@ from app.ingestion.source_config import (
     configuration_problem,
 )
 from app.ingestion.source_store import SourceConfigStore
+from tests.ingestion._lease import install_lease
 from tests.api.test_ingestion_api import _auth, _client, _make_source
 
 
@@ -52,7 +53,7 @@ async def test_scheduled_sync_marks_the_source_once_and_runs_nothing() -> None:
 
     store = SourceConfigStore()
     await store.create(_config())
-    tracker = AsyncMock()
+    tracker = install_lease(AsyncMock())
     tracker.acquire_lock.return_value = "lock-1"
     pipeline = AsyncMock()
 
@@ -73,7 +74,7 @@ async def test_scheduled_sync_marks_the_source_once_and_runs_nothing() -> None:
     tracker.create_job.assert_not_awaited()
     tracker.add_to_dlq.assert_not_awaited()
     pipeline.ingest.assert_not_awaited()
-    tracker.release_lock.assert_awaited_once_with("src-legacy", "t1")
+    tracker.release_lock.assert_awaited_once_with("src-legacy", "t1", "lock-1")
     stored = await store.get("src-legacy", "t1")
     assert stored is not None
     assert stored.config_status == CONFIG_STATUS_NEEDS_CONFIGURATION

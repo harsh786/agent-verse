@@ -16,6 +16,7 @@ import pytest
 import app.api.ingestion as ingestion_mod
 from app.ingestion import connector_registry
 from app.ingestion.source_config import IngestionJob, SourceFamily
+from tests.ingestion._lease import install_lease
 from tests.api.test_ingestion_api import _auth, _client, _make_source
 
 _RSS_MODULE = "app.ingestion.connectors.rss_connector"
@@ -90,7 +91,7 @@ async def test_worker_records_a_failed_job_and_releases_the_lock(
         status="running",
         sync_mode="incremental",
     )
-    tracker = AsyncMock()
+    tracker = install_lease(AsyncMock())
     tracker.create_job = AsyncMock(return_value=job)
     source_store = AsyncMock()
     source_store.get = AsyncMock(return_value=source)
@@ -110,7 +111,9 @@ async def test_worker_records_a_failed_job_and_releases_the_lock(
     assert "failed to load" in result["error"]
     tracker.complete_job.assert_awaited_once()
     assert "failed to load" in tracker.complete_job.await_args.kwargs["error"]
+    # Released by its holder: with the token (TG-12), never unowned.
     tracker.release_lock.assert_awaited_once_with(
         source.source_id,  # type: ignore[attr-defined]
         source.tenant_id,  # type: ignore[attr-defined]
+        "job-7",
     )

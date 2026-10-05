@@ -22,6 +22,7 @@ from app.ingestion.scheduler import (
     sync_source_task,
 )
 from app.providers.embedder_factory import EmbedderResolution
+from tests.ingestion._lease import install_lease
 from app.ingestion.source_config import (
     IngestionJob,
     PipelineResult,
@@ -63,7 +64,7 @@ def _job(**overrides) -> IngestionJob:
 
 
 def _worker_mocks(tracker=None, pipeline=None, source_store=None):
-    tracker = tracker or AsyncMock()
+    tracker = install_lease(tracker or AsyncMock())  # TG-12: the worker holds a lease
     pipeline = pipeline or AsyncMock()
     source_store = source_store or AsyncMock()
     return patch(
@@ -113,9 +114,11 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     fake_tracker = MagicMock()
     fake_source_store = MagicMock()
 
+    fake_redis = MagicMock()
     with (
         patch("app.db.session.get_session_factory", return_value=fake_db_factory),
         patch("app.db.session.get_system_session_factory", return_value=fake_system_factory),
+        patch("app.ingestion.scheduler._reconcile_redis", return_value=fake_redis),
         # The chat LLM must NOT embed documents: queries are embedded with the
         # configured query embedder, so documents must be too (same vector space).
         patch("app.providers.registry.resolve_provider", return_value=MagicMock()),
@@ -157,7 +160,10 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     # Per-tenant work (job rows, cursors, the Source itself) runs on the
     # application factory under RLS; only the tracker's cross-tenant DLQ scan
     # gets the maintenance-role factory. The Source store gets no system access.
-    tracker_cls.assert_called_once_with(db=fake_db_factory, system_db=fake_system_factory)
+    # TG-12: and the shared Redis that holds the per-Source sync lock.
+    tracker_cls.assert_called_once_with(
+        db=fake_db_factory, system_db=fake_system_factory, redis=fake_redis
+    )
     store_cls.assert_called_once_with(db=fake_db_factory)
 
 
@@ -191,7 +197,7 @@ async def test_sync_source_not_found() -> None:
         )
 
     assert result == {"error": "source_not_found"}
-    tracker.release_lock.assert_called_once_with("src-1", "t1")
+    tracker.release_lock.assert_called_once_with("src-1", "t1", True)
     # The worker knows the tenant: a tenant-scoped (RLS) read, not a system read.
     source_store.get.assert_awaited_once_with("src-1", "t1")
 
@@ -254,7 +260,7 @@ async def test_sync_no_connector_registered() -> None:
 
     assert result == {"error": "No connector registered for source_type='no_such_type'"}
     tracker.complete_job.assert_awaited_once()
-    tracker.release_lock.assert_awaited_once_with("src-1", "t1")
+    tracker.release_lock.assert_awaited_once_with("src-1", "t1", True)
 
 
 @pytest.mark.asyncio
@@ -297,7 +303,9 @@ async def test_sync_success_counts_indexed_skipped_failed_and_dlq() -> None:
     assert dlq_kwargs["doc_id"] == "d3"
     assert dlq_kwargs["error"] == "boom"
     assert dlq_kwargs["job_id"] == "job-1"
-    tracker.update_cursor.assert_called_once_with(tracker.create_job.return_value, "c3", cfg)
+    tracker.update_cursor.assert_called_once_with(
+        tracker.create_job.return_value, "c3", cfg, fence=1  # fenced (TG-12)
+    )
     tracker.complete_job.assert_called_once()
     # mark_synced alone owns consecutive_failures (the tracker counter calls
     # would double-count against the backoff).
@@ -306,7 +314,7 @@ async def test_sync_success_counts_indexed_skipped_failed_and_dlq() -> None:
         "src-1", "t1", docs_indexed=1, chunks=0, failed=1
     )
     source_store.update.assert_called_once_with("src-1", "t1", cursor_value="c3")
-    tracker.release_lock.assert_called_once_with("src-1", "t1")
+    tracker.release_lock.assert_called_once_with("src-1", "t1", True)
 
 
 @pytest.mark.asyncio
@@ -404,7 +412,7 @@ async def test_sync_outer_exception_retries_and_releases_lock() -> None:
     source_store.mark_synced.assert_called_once_with(
         "src-1", "t1", docs_indexed=0, chunks=0, failed=1
     )
-    tracker.release_lock.assert_called_once_with("src-1", "t1")
+    tracker.release_lock.assert_called_once_with("src-1", "t1", True)
     task.retry.assert_called_once()
 
 

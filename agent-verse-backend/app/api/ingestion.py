@@ -262,8 +262,10 @@ async def validate_source(
         connector_cls = get_connector(body.source_type)
     except KeyError:
         connector_cls = None
-    if connector_cls is None:
         errors.append(f"No connector for source_type={body.source_type!r}")
+    except RuntimeError as exc:  # disabled by its feature flag / SDK missing
+        connector_cls = None
+        errors.append(str(exc))
     try:
         await _refuse_internal_destinations(body.source_type, body.connection_config)
     except HTTPException as exc:
@@ -315,6 +317,16 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
         family = SourceFamily(body.family)
     except ValueError as _b904_exc:
         raise HTTPException(status_code=422, detail=f"Unknown family: {body.family!r}") from _b904_exc  # noqa: E501
+
+    # TG-15: a connector the operator switched off cannot get new Sources.
+    from app.ingestion.connector_registry import ConnectorDisabledError, get_connector
+
+    try:
+        get_connector(body.source_type)
+    except ConnectorDisabledError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (KeyError, RuntimeError):
+        pass  # unknown / not installed here: reported at validate / sync time
 
     await _refuse_internal_destinations(body.source_type, body.connection_config)
 
@@ -424,16 +436,70 @@ async def health_check(source_id: str, request: Request) -> dict:
 
     try:
         connector_cls = _available_connector(source.source_type)
+    except Exception as exc:
+        return {"ok": False, "error": connector_error_message(exc)}
+
+    # C8: one probe per Source + connection config per TTL, shared by every
+    # replica and every open UI; a failure is cached too, so a client's
+    # immediate retries do not each open a new connection.
+    redis = getattr(request.app.state, "_redis", None)
+    cache_key = _health_cache_key(source)
+    cached = await _health_cache_get(redis, cache_key)
+    if cached is not None:
+        return {**cached, "cached": True}
+    try:
         connector = connector_cls()
-        health = await connector.validate_connection(source)
-        return {
+        probe = getattr(connector, "health_check", None) or connector.validate_connection
+        health = await probe(source)
+        result = {
             "ok": health.ok,
             "latency_ms": health.latency_ms,
             "error": health.error or None,
             "metadata": health.metadata,
         }
     except Exception as exc:
-        return {"ok": False, "error": connector_error_message(exc)}
+        result = {"ok": False, "error": connector_error_message(exc)}
+    await _health_cache_put(redis, cache_key, result)
+    return {**result, "cached": False}
+
+
+def _health_cache_key(source: SourceConfig) -> str:
+    import hashlib
+    import json
+
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            [source.source_type, source.connection_config], sort_keys=True, default=str
+        ).encode()
+    ).hexdigest()[:24]
+    return f"ingestion_health:{source.tenant_id}:{source.source_id}:{fingerprint}"
+
+
+async def _health_cache_get(redis: Any, key: str) -> dict[str, Any] | None:
+    if redis is None:
+        return None
+    import json
+
+    try:
+        raw = await redis.get(key)
+        return dict(json.loads(raw)) if raw else None
+    except Exception as exc:
+        _log.warning("ingestion_health_cache_read_failed", error=str(exc)[:200])
+        return None
+
+
+async def _health_cache_put(redis: Any, key: str, result: dict[str, Any]) -> None:
+    from app.core.config import get_settings
+
+    ttl = int(get_settings().ingestion_health_cache_seconds)
+    if redis is None or ttl <= 0:
+        return
+    import json
+
+    try:
+        await redis.set(key, json.dumps(result, default=str), ex=ttl)
+    except Exception as exc:
+        _log.warning("ingestion_health_cache_write_failed", error=str(exc)[:200])
 
 
 def _available_connector(source_type: str) -> Any:
@@ -502,7 +568,13 @@ async def enqueue_source_sync(
     job stuck ``running``). Raises :class:`SyncEnqueueError` after releasing the
     lock when the broker refuses the task.
     """
-    job_id = await tracker.acquire_lock(source_id, tenant_id)  # LAW-14
+    from app.ingestion.job_tracker import SyncLockUnavailableError
+
+    try:
+        job_id = await tracker.acquire_lock(source_id, tenant_id)  # LAW-14 / TG-12
+    except SyncLockUnavailableError as exc:
+        # The shared lock cannot be checked: refuse rather than risk a second sync.
+        raise SyncEnqueueError(str(exc)) from exc
     if job_id is None:
         return None
     from app.ingestion.scheduler import sync_source_task
@@ -605,7 +677,14 @@ async def reindex_source(source_id: str, request: Request) -> dict:
     if tracker is None:
         raise HTTPException(status_code=503, detail="Ingestion framework not configured")
     await _refuse_reindex_of_held_collection(request, tenant.tenant_id, source.collection_id)
-    job_id = await tracker.acquire_lock(source_id, tenant.tenant_id)
+    from app.ingestion.job_tracker import SyncLockUnavailableError
+
+    try:
+        job_id = await tracker.acquire_lock(source_id, tenant.tenant_id)
+    except SyncLockUnavailableError as exc:
+        raise HTTPException(
+            status_code=503, detail="Reindex could not be queued; try again shortly"
+        ) from exc
     if job_id is None:
         raise HTTPException(status_code=409, detail="A sync is already running for this source")
     from app.ingestion.scheduler import sync_source_task

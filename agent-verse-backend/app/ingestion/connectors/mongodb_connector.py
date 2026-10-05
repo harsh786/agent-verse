@@ -28,17 +28,31 @@ Connection config (Sources UI: NoSQL / Relational -> mongodb):
     cursor_field         Field for incremental sync (default ``_id``); ties are broken
                          by ``_id`` so paging never skips documents.
     batch_size           Documents per page (default 500).
+    timeout_ms           Lowers the connect / server-selection timeouts (never raises
+                         them). Socket reads and each query's server time (maxTimeMS)
+                         are bounded by operator settings (INGESTION_MONGODB_*).
     max_documents_per_sync  Cap per sync run (default 10000); the next sync resumes
                          from the cursor.
 
+Changes (TG-07): with the default ``_id`` cursor, new documents come from the
+``_id`` scan and updated / replaced ones from the collection's change stream
+(replica sets, Atlas; its resume token is kept in the cursor; a token that fell
+off the oplog re-reads the collection). A standalone server has no change
+stream: set ``cursor_field`` to an update timestamp to re-read edits. Deleted
+documents are removed by upstream-deletion reconciliation (KB-44), which lists
+every ``_id``. Document ids are UUID v8; ids of earlier releases (v5) are never
+reconciled away.
+
 Cursor: JSON (MongoDB canonical Extended JSON) holding, per collection, the last
-``cursor_field`` value and ``_id`` processed. A legacy cursor (a bare ObjectId
-string) is honoured for the single configured collection.
+``cursor_field`` value and ``_id`` processed (and the change-stream token). A
+legacy cursor (a bare ObjectId string) is honoured for the single configured
+collection.
 
 Egress: every seed host (and SRV target) must pass the connector egress policy
 and is pinned for the connection; replica-set members the server advertises are
-checked and pinned before the driver may dial them, and a server selector keeps
-operations on checked members only. URI options that read platform files
+checked and pinned before the driver may dial them; a member advertised later is
+refused in the driver's socket factory (no socket is ever opened to it), and a
+server selector keeps operations on checked members only. URI options that read platform files
 (``tlsCAFile``...), route through a proxy, or authenticate with the platform's
 own ambient credentials (MONGODB-AWS / OIDC / GSSAPI) are refused.
 """
@@ -60,6 +74,7 @@ from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 from app.ingestion.base_connector import (
     BaseConnector,
     ConnectionHealth,
+    ConnectorFetchError,
     ConnectorUnavailableError,
 )
 from app.ingestion.connector_egress import (
@@ -78,33 +93,8 @@ _log = logging.getLogger(__name__)
 _CONTEXT = "mongodb"
 _DEFAULT_BATCH = 500
 _DEFAULT_MAX_DOCS = 10_000
-_DEFAULT_TIMEOUT_MS = 10_000
 _MAX_COLLECTIONS = 200
 
-# URI options a tenant may not set: they read files on the platform's disk, send
-# traffic through an arbitrary (unchecked) proxy, or pass provider properties
-# that make the driver fetch the platform's own cloud credentials.
-_FORBIDDEN_URI_OPTIONS = frozenset(
-    {
-        "tlscafile",
-        "tlscertificatekeyfile",
-        "tlscertificatekeyfilepassword",
-        "tlscrlfile",
-        "ssl_ca_certs",
-        "ssl_certfile",
-        "ssl_keyfile",
-        "ssl_crlfile",
-        "ssl_pem_passphrase",
-        "authmechanismproperties",
-        "proxyhost",
-        "proxyport",
-        "proxyusername",
-        "proxypassword",
-    }
-)
-# MONGODB-AWS / MONGODB-OIDC / GSSAPI authenticate with ambient credentials
-# (instance metadata, env vars, Kerberos tickets) — the platform's, not the tenant's.
-_ALLOWED_AUTH_MECHANISMS = frozenset({"SCRAM-SHA-1", "SCRAM-SHA-256", "PLAIN", "MONGODB-X509"})
 _TRUE = frozenset({"1", "true", "yes", "on"})
 
 
@@ -132,6 +122,75 @@ def _mongo_uri(cc: dict[str, Any]) -> str:
     return f"mongodb://{','.join(hosts)}/"
 
 
+def _driver_bounds() -> tuple[int, int, int, int]:
+    """(connect, server selection, socket, maxTimeMS) in ms, from operator settings.
+
+    Never 0: pymongo reads 0 as "no timeout".
+    """
+    from app.core.config import get_settings
+
+    cfg = get_settings()
+    return (
+        max(1, int(cfg.ingestion_mongodb_connect_timeout_ms)),
+        max(1, int(cfg.ingestion_mongodb_server_selection_timeout_ms)),
+        max(1, int(cfg.ingestion_mongodb_socket_timeout_ms)),
+        max(1, int(cfg.ingestion_mongodb_max_time_ms)),
+    )
+
+
+# URI options that set (or unset: 0 = "no timeout") a wait. They are removed
+# from the tenant's URI; a positive value may only LOWER the matching bound.
+_URI_TIMEOUT_OPTIONS = frozenset(
+    {
+        "timeoutms",
+        "sockettimeoutms",
+        "connecttimeoutms",
+        "serverselectiontimeoutms",
+        "maxtimems",
+        "waitqueuetimeoutms",
+        "wtimeoutms",
+    }
+)
+
+
+def _strip_uri_timeouts(uri: str) -> tuple[str, dict[str, int]]:
+    """``uri`` without its timeout options, and the tenant's positive values.
+
+    C1 follow-up: ``?timeoutMS=0`` (client-side operation timeout off) or a
+    huge ``socketTimeoutMS`` let a stalled server hang the worker again. The
+    options are read the way the driver reads them (``&`` or ``;`` separators,
+    percent-encoded names) and dropped; the caller applies a value only when it
+    is lower than the operator's bound.
+    """
+    import re
+    from urllib.parse import unquote_plus
+
+    from app.net.mongodb_policy import _query_of
+
+    query = _query_of(uri)
+    if not query:
+        return uri, {}
+    kept: list[str] = []
+    found: dict[str, int] = {}
+    for item in re.split(r"[&;]", query):
+        if not item:
+            continue
+        key, _, value = item.partition("=")
+        name = unquote_plus(key).strip().lower()
+        if name not in _URI_TIMEOUT_OPTIONS:
+            kept.append(item)
+            continue
+        try:
+            number = int(float(unquote_plus(value).strip()))
+        except ValueError:
+            continue
+        if number > 0:
+            found[name] = min(number, found.get(name, number))
+    head, _sep, tail = uri.strip().rpartition("?" + query)
+    rebuilt = head + (("?" + "&".join(kept)) if kept else "") + tail
+    return rebuilt, found
+
+
 def _split_list(value: object) -> list[str]:
     if isinstance(value, list | tuple):
         items = [str(v) for v in value]
@@ -151,6 +210,7 @@ class _Settings:
     display_host: str
     discover_members: bool
     kwargs: dict[str, Any] = field(default_factory=dict)
+    max_time_ms: int = 30_000
     tls_ca_pem: str = ""
     tls_client_pem: str = ""
     tls_client_key_password: str = ""
@@ -158,7 +218,7 @@ class _Settings:
 
 def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings:
     """Parse and vet ``connection_config``; raises ValueError with an honest message."""
-    uri = _mongo_uri(cc)
+    uri, uri_timeouts = _strip_uri_timeouts(_mongo_uri(cc))
     parts = urlsplit(uri)
     if parts.scheme.lower() not in ("mongodb", "mongodb+srv"):
         raise ValueError("MongoDB URI must start with mongodb:// or mongodb+srv://")
@@ -168,17 +228,33 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
     from app.net.mongodb_policy import assert_mongo_connection_allowed, uri_options
 
     assert_mongo_connection_allowed(uri, cc)
+    # One validator (app/net/mongodb_policy): no parallel option / mechanism
+    # lists here — this only reads the options the connector acts on.
     options = {k.lower(): v for k, v in uri_options(uri)}
-    forbidden = sorted(set(options) & _FORBIDDEN_URI_OPTIONS)
-    if forbidden:
-        raise ValueError(
-            f"MongoDB URI option(s) {', '.join(forbidden)} are not allowed; use the "
-            "tls_ca_pem / tls_client_cert / tls_client_private_key fields for certificates"
-        )
 
+    # C1 / MDB-12: every wait is bounded. Driver kwargs override the same URI
+    # options, so ``socketTimeoutMS=0`` in a tenant URI cannot unbound a read;
+    # the tenant's ``timeout_ms`` may only lower connect / server selection.
+    connect_ms, selection_ms, socket_ms, max_time_ms = _driver_bounds()
+    tenant_ms = int(cc.get("timeout_ms") or 0)
+    if tenant_ms > 0:
+        connect_ms = min(connect_ms, tenant_ms)
+        selection_ms = min(selection_ms, tenant_ms)
+    # URI timeout options were removed from the URI; a positive one may lower
+    # its bound (timeoutMS lowers every bound), never raise or unbound it.
+    overall = uri_timeouts.get("timeoutms", 0)
+
+    def _lower(bound: int, option: str) -> int:
+        return min(v for v in (bound, uri_timeouts.get(option, 0), overall) if v > 0)
+
+    connect_ms = _lower(connect_ms, "connecttimeoutms")
+    selection_ms = _lower(selection_ms, "serverselectiontimeoutms")
+    socket_ms = _lower(socket_ms, "sockettimeoutms")
+    max_time_ms = _lower(max_time_ms, "maxtimems")
     kwargs: dict[str, Any] = {
-        "serverSelectionTimeoutMS": int(cc.get("timeout_ms") or _DEFAULT_TIMEOUT_MS),
-        "connectTimeoutMS": int(cc.get("timeout_ms") or _DEFAULT_TIMEOUT_MS),
+        "serverSelectionTimeoutMS": selection_ms,
+        "connectTimeoutMS": connect_ms,
+        "socketTimeoutMS": socket_ms,
         "appname": "agentverse-ingestion",
     }
     username = str(cc.get("username") or "")
@@ -194,12 +270,7 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
         kwargs["authSource"] = "admin"
 
     mechanism = str(cc.get("auth_mechanism") or options.get("authmechanism") or "").strip()
-    if mechanism:
-        if mechanism.upper() not in _ALLOWED_AUTH_MECHANISMS:
-            raise ValueError(
-                f"MongoDB auth mechanism {mechanism!r} is not allowed (it would use the "
-                f"platform's own credentials); use one of {sorted(_ALLOWED_AUTH_MECHANISMS)}"
-            )
+    if mechanism:  # allowed by the shared policy above
         kwargs["authMechanism"] = mechanism.upper()
 
     if cc.get("replica_set"):
@@ -240,6 +311,7 @@ def _settings(cc: dict[str, Any], *, require_database: bool = True) -> _Settings
         display_host=display_host,
         discover_members=not direct and not load_balanced,
         kwargs=kwargs,
+        max_time_ms=max_time_ms,
         tls_ca_pem=tls_ca_pem,
         tls_client_pem=f"{client_cert}\n{client_key}\n" if client_cert else "",
         tls_client_key_password=str(cc.get("tls_client_key_password") or ""),
@@ -304,10 +376,26 @@ def _single_host_uri(dsn: str, host: str, port: int) -> str:
     )
 
 
-def _client(dsn: str, kwargs: dict[str, Any], **extra: Any) -> Any:
+def _client(
+    dsn: str, kwargs: dict[str, Any], *, allowed: set[tuple[str, int]], **extra: Any
+) -> Any:
+    """A MongoClient that can open sockets to ``allowed`` (checked) hosts only.
+
+    C4 / MDB-11: pymongo's monitor threads dial every member a server lists in
+    ``hello`` — including one advertised AFTER discovery, which no egress check
+    ever saw (a blind SSRF: TCP connect + hello to any host:port). The member
+    guard shared with the MCP builtin (MONGO-MONITOR) refuses, in the driver's
+    socket factory, any address not in ``allowed`` before a socket exists; the
+    server selector additionally keeps operations off such members.
+    """
     from pymongo import MongoClient
 
-    return MongoClient(dsn, **{**kwargs, **extra})
+    from app.mcp.servers.mongodb_server import _install_member_guard, _MemberGuard
+
+    _install_member_guard()
+    options = {**kwargs, **extra}
+    options["event_listeners"] = [*options.get("event_listeners", []), _MemberGuard(allowed)]
+    return MongoClient(dsn, **options)
 
 
 def _discover_members(
@@ -329,6 +417,7 @@ def _discover_members(
         client = _client(
             _single_host_uri(dsn, host, port),
             {k: v for k, v in kwargs.items() if k not in ("replicaSet", "directConnection")},
+            allowed={(host, port)},
             directConnection=True,
         )
         try:
@@ -391,7 +480,7 @@ async def _connected(settings: _Settings) -> AsyncIterator[tuple[Any, _Settings]
             ) from exc
         allowed = {_host_key(h, p) for h, p in _dsn_hosts(pins.dsn)} | set(members)
         client = await asyncio.to_thread(
-            _client, pins.dsn, kwargs, server_selector=_selector(allowed)
+            _client, pins.dsn, kwargs, allowed=allowed, server_selector=_selector(allowed)
         )
         try:
             yield client, settings
@@ -400,12 +489,12 @@ async def _connected(settings: _Settings) -> AsyncIterator[tuple[Any, _Settings]
 
 
 def _probe(client: Any, settings: _Settings) -> dict[str, Any]:
-    client.admin.command("ping")
+    client.admin.command("ping", maxTimeMS=settings.max_time_ms)
     meta: dict[str, Any] = {"host": settings.display_host, "database": settings.database}
     if settings.database:
         # Listing needs an authenticated, authorised user — ping does not, so a
         # wrong password used to "validate" fine and fail only on sync.
-        names = _list_collections(client, settings.database)
+        names = _list_collections(client, settings)
         missing = [c for c in settings.collections if c not in names]
         if missing:
             raise ValueError(
@@ -415,29 +504,101 @@ def _probe(client: Any, settings: _Settings) -> dict[str, Any]:
     return meta
 
 
-def _list_collections(client: Any, database: str) -> list[str]:
-    names = client[database].list_collection_names(filter={"type": "collection"})
+def _list_collections(client: Any, settings: _Settings) -> list[str]:
+    names = client[settings.database].list_collection_names(
+        filter={"type": "collection"}, maxTimeMS=settings.max_time_ms
+    )
     return sorted(str(n) for n in names if not str(n).startswith("system."))
 
 
-def _flatten_doc(doc: dict[str, Any], max_depth: int = 5) -> str:
-    """Flatten a MongoDB document to key: value pairs."""
+_MAX_ARRAY_ITEMS = 100  # items rendered per array; the rest is summarised
+_MAX_DEEP_JSON_CHARS = 4000  # a subtree below max_depth, as JSON, at most this long
+
+
+def _scalar(value: object) -> str:
+    """A readable rendering of one BSON value (TG-09)."""
+    import datetime
+    import re
+
+    from bson import Binary, Regex
+
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, Binary):
+        # Raw bytes are not text: index what they are, never their content.
+        return f"<binary subtype {value.subtype}, {len(value)} bytes>"
+    if isinstance(value, bytes | bytearray):
+        return f"<binary {len(value)} bytes>"
+    if isinstance(value, Regex):
+        return f"/{value.pattern}/{_regex_flags(value.flags)}"
+    if isinstance(value, re.Pattern):
+        return f"/{value.pattern}/{_regex_flags(value.flags)}"
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    return str(value)  # Decimal128, Int64, ObjectId, UUID, Timestamp, numbers, str
+
+
+def _regex_flags(flags: object) -> str:
+    import re
+
+    if isinstance(flags, str):
+        return flags
+    out = ""
+    for flag, letter in ((re.IGNORECASE, "i"), (re.MULTILINE, "m"), (re.DOTALL, "s"),
+                         (re.VERBOSE, "x")):
+        if int(flags) & flag:  # type: ignore[call-overload]
+            out += letter
+    return out
+
+
+def _flatten(doc: dict[str, Any], max_depth: int = 5) -> tuple[str, dict[str, int]]:
+    """Flatten a MongoDB document to ``key: value`` lines, and what was shortened.
+
+    TG-09: nothing is dropped silently. Arrays render their first
+    ``_MAX_ARRAY_ITEMS`` items and a marker line saying how many more there
+    are; a subtree nested deeper than ``max_depth`` is kept as (bounded)
+    Extended JSON. The returned counts go on the document's metadata.
+    """
+    from bson import json_util
+
     parts: list[str] = []
+    truncation: dict[str, int] = {}
+
+    def _note(key: str, amount: int = 1) -> None:
+        truncation[key] = truncation.get(key, 0) + amount
 
     def _recurse(obj: object, prefix: str = "", depth: int = 0) -> None:
-        if depth > max_depth:
+        if depth > max_depth and isinstance(obj, dict | list | tuple):
+            dumped = json_util.dumps(obj, json_options=json_util.RELAXED_JSON_OPTIONS)
+            if len(dumped) > _MAX_DEEP_JSON_CHARS:
+                dumped = dumped[:_MAX_DEEP_JSON_CHARS] + " … (truncated)"
+                _note("deep_chars_truncated")
+            parts.append(f"{prefix}: [nested deeper than {max_depth} levels, as JSON] {dumped}")
+            _note("deep_fields")
             return
         if isinstance(obj, dict):
             for k, v in obj.items():
-                _recurse(v, f"{prefix}.{k}" if prefix else k, depth + 1)
+                _recurse(v, f"{prefix}.{k}" if prefix else str(k), depth + 1)
         elif isinstance(obj, list | tuple):
-            for i, v in enumerate(obj[:20]):
+            for i, v in enumerate(obj[:_MAX_ARRAY_ITEMS]):
                 _recurse(v, f"{prefix}[{i}]", depth + 1)
+            if len(obj) > _MAX_ARRAY_ITEMS:
+                omitted = len(obj) - _MAX_ARRAY_ITEMS
+                parts.append(f"{prefix}: … {omitted} more item(s) of {len(obj)} not indexed")
+                _note("arrays_truncated")
+                _note("array_items_omitted", omitted)
         else:
-            parts.append(f"{prefix}: {obj}")
+            parts.append(f"{prefix}: {_scalar(obj)}")
 
     _recurse(doc)
-    return "\n".join(parts)
+    return "\n".join(parts), truncation
+
+
+def _flatten_doc(doc: dict[str, Any], max_depth: int = 5) -> str:
+    """Flatten a MongoDB document to ``key: value`` lines (see :func:`_flatten`)."""
+    return _flatten(doc, max_depth)[0]
 
 
 # ── Cursor ─────────────────────────────────────────────────────────────────────
@@ -490,6 +651,8 @@ def _encode_cursor(settings: _Settings, positions: dict[str, dict[str, Any]]) ->
 
 
 def _page_query(field_name: str, position: dict[str, Any] | None) -> dict[str, Any]:
+    if position is not None and "_id" not in position:
+        position = None  # only a change-stream token so far: read from the start
     if field_name == "_id":
         return {"_id": {"$gt": position["_id"]}} if position else {}
     # Documents without the cursor field cannot be ordered by it; they are not
@@ -516,7 +679,122 @@ def _fetch_page(
     field_name = settings.cursor_field
     sort = [("_id", 1)] if field_name == "_id" else [(field_name, 1), ("_id", 1)]
     col = client[settings.database][collection]
-    return list(col.find(_page_query(field_name, position), sort=sort, limit=limit))
+    return list(
+        col.find(
+            _page_query(field_name, position),
+            sort=sort,
+            limit=limit,
+            max_time_ms=settings.max_time_ms,
+        )
+    )
+
+
+def _doc_id(config: SourceConfig, collection: str, oid: Any) -> str:
+    """Stable id: the Source + collection + the document's ``_id`` (TG-13).
+
+    It used to hash the URI host, so pointing the Source at the same server by
+    another name (a new replica-set seed, an Atlas SRV name, an IP) re-ided —
+    duplicated — every document. ``_id`` is keyed in canonical Extended JSON,
+    so an ObjectId and the string of its hex are different documents.
+
+    The id is a UUID *version 8* (same key derivation as ``stable_doc_id``,
+    SHA-256 based): the host-based ids of earlier releases were version 5, and
+    :meth:`MongoDBConnector.manages_doc_id` must tell them apart — such a
+    document's new-id copy is never indexed (the content-hash dedup skips it),
+    so reconciling it away would lose it.
+    """
+    import hashlib
+
+    from bson import json_util
+
+    key = json_util.dumps({"_id": oid}, json_options=json_util.CANONICAL_JSON_OPTIONS)
+    digest = hashlib.sha256(
+        f"agentverse-source:{config.source_id}:mongodb\x1f{collection}\x1f{key}".encode()
+    ).digest()
+    value = int.from_bytes(digest[:16], "big")
+    value = (value & ~(0xF << 76)) | (8 << 76)  # version 8
+    value = (value & ~(0x3 << 62)) | (0x2 << 62)  # RFC 4122 variant
+    return str(uuid.UUID(int=value))
+
+
+# Change streams (TG-07): server error codes meaning "not available here".
+_NO_CHANGE_STREAM_CODES = frozenset({40573, 40324, 13, 115})
+# ... and "the resume token fell off the oplog: re-read the collection".
+_HISTORY_LOST_CODES = frozenset({286, 280, 136})
+_CHANGE_TYPES = ["update", "replace"]
+
+
+def _change_stream_start(client: Any, settings: _Settings, collection: str) -> Any:
+    """A resume token for "now" on ``collection``, or None without change streams.
+
+    Taken BEFORE the collection is scanned, so an update made during or after
+    the scan is read from the stream by a later sync.
+    """
+    from pymongo.errors import OperationFailure
+
+    col = client[settings.database][collection]
+    try:
+        with col.watch(
+            [{"$match": {"operationType": {"$in": _CHANGE_TYPES}}}], max_await_time_ms=50
+        ) as stream:
+            stream.try_next()
+            return stream.resume_token
+    except OperationFailure as exc:
+        if exc.code in _NO_CHANGE_STREAM_CODES or "replica set" in str(exc).lower():
+            _log.warning(
+                "mongodb_change_stream_unavailable collection=%s: %s — updates are re-read "
+                "only with a cursor_field on an update timestamp",
+                collection,
+                exc,
+            )
+            return None
+        raise
+
+
+def _read_changes(
+    client: Any, settings: _Settings, collection: str, token: Any, limit: int
+) -> tuple[list[tuple[dict[str, Any], Any]], Any, bool]:
+    """Updated / replaced documents since ``token``: ([(doc, token_after)], token, lost)."""
+    from pymongo.errors import OperationFailure
+
+    col = client[settings.database][collection]
+    changes: list[tuple[dict[str, Any], Any]] = []
+    try:
+        with col.watch(
+            [{"$match": {"operationType": {"$in": _CHANGE_TYPES}}}],
+            full_document="updateLookup",
+            resume_after=token,
+            max_await_time_ms=50,
+        ) as stream:
+            # Bounded by events READ (not only documents kept): events whose
+            # document is gone since still count, so the loop always ends.
+            for _ in range(limit):
+                change = stream.try_next()
+                if change is None:
+                    break
+                doc = change.get("fullDocument")
+                if isinstance(doc, dict):  # None: deleted since (reconcile removes it)
+                    changes.append((doc, stream.resume_token))
+            return changes, stream.resume_token, False
+    except OperationFailure as exc:
+        if exc.code in _HISTORY_LOST_CODES or exc.has_error_label(
+            "NonResumableChangeStreamError"
+        ):
+            return [], None, True
+        raise
+
+
+def _live_id_page(
+    client: Any, settings: _Settings, collection: str, after: Any, limit: int
+) -> list[Any]:
+    col = client[settings.database][collection]
+    query = {"_id": {"$gt": after}} if after is not None else {}
+    return [
+        d["_id"]
+        for d in col.find(
+            query, {"_id": 1}, sort=[("_id", 1)], limit=limit, max_time_ms=settings.max_time_ms
+        )
+    ]
 
 
 def _dotted_get(doc: dict[str, Any], path: str) -> Any:
@@ -528,13 +806,23 @@ def _dotted_get(doc: dict[str, Any], path: str) -> Any:
     return value
 
 
+def _is_own_error(exc: BaseException) -> bool:
+    """Our own policy / egress / availability errors (never driver text)."""
+    try:
+        from pymongo.errors import PyMongoError
+    except ImportError:
+        return True  # no driver: nothing of its can be in the error
+    if isinstance(exc, PyMongoError):
+        return False
+    return isinstance(
+        exc,
+        ValueError | ConnectorEgressBlockedError | ConnectorUnavailableError | ConnectorFetchError,
+    )
+
+
 def _public_error(exc: BaseException) -> str:
     """MDB-20: our own policy / egress messages as-is; driver text never."""
-    from pymongo.errors import PyMongoError
-
-    if not isinstance(exc, PyMongoError) and isinstance(
-        exc, ValueError | ConnectorEgressBlockedError | ConnectorUnavailableError
-    ):
+    if _is_own_error(exc):
         return str(exc) or type(exc).__name__
     from app.net.mongodb_errors import public_mongo_error
 
@@ -546,6 +834,36 @@ class MongoDBConnector(BaseConnector):
     """MongoDB connector — collection-based incremental ingestion."""
 
     source_type = "mongodb"
+
+    def manages_doc_id(self, doc_id: str) -> bool:
+        """Only this connector's current (UUID v8) ids are deletion candidates."""
+        try:
+            return uuid.UUID(str(doc_id)).version == 8
+        except ValueError:
+            return False
+
+    async def iter_live_doc_ids(self, config: SourceConfig) -> AsyncIterator[str]:
+        """Every document id upstream (TG-07 / KB-44 deletes), keyset-paged by _id.
+
+        Only ``_id`` is read, 1000 per query; any error propagates, so a partial
+        listing never looks complete (nothing is deleted then).
+        """
+        settings = _settings(config.connection_config)
+        async with _connected(settings) as (client, _s):
+            collections = settings.collections or await asyncio.to_thread(
+                _list_collections, client, settings
+            )
+            for collection in collections:
+                after: Any = None
+                while True:
+                    page = await asyncio.to_thread(
+                        _live_id_page, client, settings, collection, after, 1000
+                    )
+                    for oid in page:
+                        yield _doc_id(config, collection, oid)
+                    if len(page) < 1000:
+                        break
+                    after = page[-1]
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
@@ -560,7 +878,46 @@ class MongoDBConnector(BaseConnector):
         except Exception as exc:
             return ConnectionHealth(ok=False, error=_public_error(exc))
 
+    async def health_check(self, config: SourceConfig) -> ConnectionHealth:
+        """C8: a ping only (no collection listing) — polled by every open UI.
+
+        With credentials the driver authenticates while opening the connection,
+        so a wrong password still fails here; missing collections are reported by
+        :meth:`validate_connection` (Test connection) and by the sync.
+        """
+        import time
+
+        t0 = time.perf_counter()
+        try:
+            settings = _settings(config.connection_config)
+            async with _connected(settings) as (client, _s):
+                await asyncio.to_thread(
+                    client.admin.command, "ping", maxTimeMS=settings.max_time_ms
+                )
+            latency = (time.perf_counter() - t0) * 1000
+            return ConnectionHealth(
+                ok=True,
+                latency_ms=latency,
+                metadata={"host": settings.display_host, "database": settings.database},
+            )
+        except Exception as exc:
+            return ConnectionHealth(ok=False, error=_public_error(exc))
+
     async def get_delta(
+        self, config: SourceConfig, cursor: str | None
+    ) -> AsyncIterator[tuple[RawDocument, str]]:
+        """The sync. A failure is raised as :class:`ConnectorFetchError` with the
+        sanitised message (MDB-20): the job shows a classified reason and an error
+        id, never pymongo's topology / host text (logged under that id)."""
+        try:
+            async for item in self._delta(config, cursor):
+                yield item
+        except Exception as exc:
+            if _is_own_error(exc):
+                raise  # policy / egress / unavailable: already honest, keep the type
+            raise ConnectorFetchError(f"mongodb: {_public_error(exc)}") from exc
+
+    async def _delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
@@ -568,39 +925,91 @@ class MongoDBConnector(BaseConnector):
         settings = _settings(config.connection_config)
         async with _connected(settings) as (client, _s):
             collections = settings.collections or await asyncio.to_thread(
-                _list_collections, client, settings.database
+                _list_collections, client, settings
             )
             positions = _decode_cursor(cursor, settings, collections)
             remaining = settings.max_documents
+            # TG-07: with the default _id cursor new documents come from the _id
+            # scan and updated / replaced ones from the collection's change
+            # stream (replica sets / Atlas); deletions are reconciled (KB-44).
+            track_changes = settings.cursor_field == "_id"
+
+            def _raw(collection: str, doc: dict[str, Any]) -> RawDocument:
+                oid = doc.get("_id")
+                doc_key = str(oid)
+                text, truncation = _flatten({**doc, "_id": doc_key})
+                url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
+                metadata: dict[str, Any] = {
+                    "database": settings.database,
+                    "collection": collection,
+                    "_id": doc_key,
+                }
+                if truncation:
+                    metadata["truncated"] = truncation  # TG-09: never silent
+                return RawDocument(
+                    doc_id=_doc_id(config, collection, oid),
+                    source_id=config.source_id,
+                    tenant_id=config.tenant_id,
+                    source_url=f"{url}/{quote(doc_key, safe='')}",
+                    content=text.encode(),
+                    content_type="text/plain",
+                    metadata=metadata,
+                )
+
             for collection in collections:
-                while remaining > 0:
-                    limit = min(settings.batch_size, remaining)
-                    page = await asyncio.to_thread(
-                        _fetch_page, client, settings, collection, positions.get(collection), limit
-                    )
-                    for doc in page:
-                        oid = doc.get("_id")
-                        value = oid if settings.cursor_field == "_id" else _dotted_get(
-                            doc, settings.cursor_field
+                # A second pass only when the change stream's history was lost.
+                for _pass in range(2):
+                    if track_changes and not (positions.get(collection) or {}).get("cs"):
+                        token = await asyncio.to_thread(
+                            _change_stream_start, client, settings, collection
                         )
-                        positions[collection] = {"value": value, "_id": oid}
-                        doc_key = str(oid)
-                        text = _flatten_doc({**doc, "_id": doc_key})
-                        url = f"mongodb://{settings.display_host}/{settings.database}/{collection}"
-                        raw_doc = RawDocument(
-                            doc_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"{url}/{doc_key}")),
-                            source_id=config.source_id,
-                            tenant_id=config.tenant_id,
-                            source_url=f"{url}/{quote(doc_key, safe='')}",
-                            content=text.encode(),
-                            content_type="text/plain",
-                            metadata={
-                                "database": settings.database,
-                                "collection": collection,
-                                "_id": doc_key,
-                            },
+                        if token is not None:
+                            positions[collection] = {**positions.get(collection, {}), "cs": token}
+                    while remaining > 0:
+                        limit = min(settings.batch_size, remaining)
+                        page = await asyncio.to_thread(
+                            _fetch_page,
+                            client,
+                            settings,
+                            collection,
+                            positions.get(collection),
+                            limit,
                         )
-                        yield raw_doc, _encode_cursor(settings, positions)
-                    remaining -= len(page)
-                    if len(page) < limit:
+                        for doc in page:
+                            oid = doc.get("_id")
+                            value = oid if settings.cursor_field == "_id" else _dotted_get(
+                                doc, settings.cursor_field
+                            )
+                            positions[collection] = {
+                                **positions.get(collection, {}),
+                                "value": value,
+                                "_id": oid,
+                            }
+                            yield _raw(collection, doc), _encode_cursor(settings, positions)
+                        remaining -= len(page)
+                        if len(page) < limit:
+                            break
+                    token = (positions.get(collection) or {}).get("cs")
+                    if not track_changes or token is None or remaining <= 0:
                         break
+                    changes, next_token, lost = await asyncio.to_thread(
+                        _read_changes, client, settings, collection, token, remaining
+                    )
+                    if lost:
+                        # The resume point fell off the oplog: updates in between
+                        # are unknown, so the collection is read again from the
+                        # start (unchanged documents are skipped by the dedup).
+                        _log.warning(
+                            "mongodb_change_stream_history_lost source=%s collection=%s — "
+                            "re-reading the collection",
+                            config.source_id,
+                            collection,
+                        )
+                        positions[collection] = {}
+                        continue
+                    for doc, after in changes:
+                        positions[collection] = {**positions[collection], "cs": after}
+                        remaining -= 1
+                        yield _raw(collection, doc), _encode_cursor(settings, positions)
+                    positions[collection] = {**positions[collection], "cs": next_token}
+                    break
