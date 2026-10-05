@@ -39,14 +39,57 @@ def _store(request: Request) -> Any:
     return getattr(request.app.state, "ai_ops_store", None)
 
 
+def _dstore(request: Request) -> Any:
+    """The versioned dataset store: durable, or the in-process fallback (P7-3)."""
+    from app.evals.dataset_versions import MemoryDatasetStore
+
+    return _store(request) or MemoryDatasetStore(_datasets)
+
+
+def _version_http_error(exc: Exception) -> HTTPException:
+    from app.evals.dataset_versions import (
+        DatasetNotFoundError,
+        NothingToPublishError,
+        VersionConflictError,
+        VersionNotFoundError,
+    )
+
+    if isinstance(exc, DatasetNotFoundError):
+        return HTTPException(404, "Dataset not found")
+    if isinstance(exc, VersionNotFoundError):
+        return HTTPException(404, str(exc))
+    if isinstance(exc, VersionConflictError | NothingToPublishError):
+        return HTTPException(409, str(exc))
+    return HTTPException(422, str(exc))
+
+
 class CreateDatasetRequest(BaseModel):
     name: str
     description: str = ""
     golden_tasks: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class UpdateDatasetRequest(BaseModel):
+    """Edit a dataset. ``golden_tasks`` replaces the task list: a published head
+    gets a new draft version; a draft head is edited in place (P7-3)."""
+
+    name: str | None = None
+    description: str | None = None
+    golden_tasks: list[dict[str, Any]] | None = None
+    # Optimistic concurrency: refuse (409) unless the head is still this version.
+    if_version: int | None = None
+
+
+class TaskEditRequest(BaseModel):
+    task: dict[str, Any]
+    if_version: int | None = None
+
+
 class RunEvalRequest(BaseModel):
     dataset_id: str = ""
+    # The dataset version to run; omitted → the head (a draft head is published
+    # first: a run only ever runs an immutable version).
+    dataset_version: int | None = Field(default=None, ge=1)
     goal_id: str | None = None
     # Agent that executes every case (a golden task's own ``agent_id`` wins);
     # omitted → the platform's goal auto-routing picks one.
@@ -77,45 +120,170 @@ class ComputeDriftRequest(BaseModel):
 
 @router.post("/datasets")
 async def create_eval_dataset(request: Request, body: CreateDatasetRequest) -> dict[str, Any]:
-    """Create an evaluation dataset with golden tasks."""
-    tenant = _require_tenant(request)
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    dataset_id = str(uuid.uuid4())
+    """Create an evaluation dataset; its golden tasks are published version 1."""
+    from app.evals.dataset_versions import DatasetVersionError, apply_edits
 
-    dataset = {
+    tenant = _require_tenant(request)
+    dataset_id = str(uuid.uuid4())
+    try:
+        tasks = apply_edits([], [{"op": "replace_all", "golden_tasks": body.golden_tasks}])
+    except DatasetVersionError as exc:
+        raise _version_http_error(exc) from exc
+    await _dstore(request).create_dataset(
+        tenant_id=tenant.tenant_id,
+        dataset_id=dataset_id,
+        name=body.name,
+        description=body.description,
+        golden_tasks=tasks,
+    )
+    return {
         "dataset_id": dataset_id,
-        "tenant_id": tenant.tenant_id,
-        "name": body.name,
-        "description": body.description,
-        "golden_tasks": body.golden_tasks,
-        "task_count": len(body.golden_tasks),
-        "created_at": now,
+        "task_count": len(tasks),
         "version": 1,
+        "status": "created",
     }
-    store = _store(request)
-    if store is not None:
-        await store.create_dataset(
-            tenant_id=tenant.tenant_id,
-            dataset_id=dataset_id,
-            name=body.name,
-            description=body.description,
-            golden_tasks=body.golden_tasks,
-        )
-    else:
-        _datasets[f"{tenant.tenant_id}:{dataset_id}"] = dataset
-    return {"dataset_id": dataset_id, "task_count": len(body.golden_tasks), "status": "created"}
 
 
 @router.get("/datasets")
 async def list_eval_datasets(request: Request) -> dict[str, Any]:
-    """List evaluation datasets for the tenant."""
+    """List evaluation datasets for the tenant (``version`` = the head version)."""
     tenant = _require_tenant(request)
-    store = _store(request)
-    if store is not None:
-        datasets = await store.list_datasets(tenant.tenant_id)
-        return {"datasets": datasets, "total": len(datasets)}
-    datasets = [v for k, v in _datasets.items() if k.startswith(f"{tenant.tenant_id}:")]
+    datasets = await _dstore(request).list_datasets(tenant.tenant_id)
     return {"datasets": datasets, "total": len(datasets)}
+
+
+@router.get("/datasets/{dataset_id}")
+async def get_eval_dataset(request: Request, dataset_id: str) -> dict[str, Any]:
+    """A dataset's head version with its golden tasks, plus its version history."""
+    from app.evals.dataset_versions import DatasetVersionError
+
+    tenant = _require_tenant(request)
+    store = _dstore(request)
+    found = await store.get_dataset(tenant.tenant_id, dataset_id)
+    if found is None:
+        raise HTTPException(404, "Dataset not found")
+    try:
+        versions = await store.list_dataset_versions(tenant.tenant_id, dataset_id)
+    except DatasetVersionError as exc:
+        raise _version_http_error(exc) from exc
+    return {**found, "versions": versions}
+
+
+@router.get("/datasets/{dataset_id}/versions")
+async def list_eval_dataset_versions(request: Request, dataset_id: str) -> dict[str, Any]:
+    from app.evals.dataset_versions import DatasetVersionError
+
+    tenant = _require_tenant(request)
+    try:
+        versions = await _dstore(request).list_dataset_versions(tenant.tenant_id, dataset_id)
+    except DatasetVersionError as exc:
+        raise _version_http_error(exc) from exc
+    return {"dataset_id": dataset_id, "versions": versions, "total": len(versions)}
+
+
+@router.get("/datasets/{dataset_id}/versions/{version}")
+async def get_eval_dataset_version(
+    request: Request, dataset_id: str, version: int
+) -> dict[str, Any]:
+    tenant = _require_tenant(request)
+    found = await _dstore(request).get_dataset_version(tenant.tenant_id, dataset_id, version)
+    if found is None:
+        raise HTTPException(404, "Dataset version not found")
+    return dict(found)
+
+
+async def _edit(
+    request: Request,
+    dataset_id: str,
+    ops: list[dict[str, Any]],
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    if_version: int | None = None,
+) -> dict[str, Any]:
+    from app.evals.dataset_versions import DatasetVersionError
+
+    tenant = _require_tenant(request)
+    try:
+        edited: dict[str, Any] = await _dstore(request).edit_dataset(
+            tenant.tenant_id,
+            dataset_id,
+            ops=ops,
+            name=name,
+            description=description,
+            if_version=if_version,
+        )
+    except DatasetVersionError as exc:
+        raise _version_http_error(exc) from exc
+    return edited
+
+
+@router.patch("/datasets/{dataset_id}")
+@router.put("/datasets/{dataset_id}")
+async def update_eval_dataset(
+    request: Request, dataset_id: str, body: UpdateDatasetRequest
+) -> dict[str, Any]:
+    """Edit a dataset. Published versions are immutable: changing the tasks of a
+    published head creates a new draft version; a draft head changes in place."""
+    ops = (
+        [{"op": "replace_all", "golden_tasks": body.golden_tasks}]
+        if body.golden_tasks is not None
+        else []
+    )
+    return await _edit(
+        request,
+        dataset_id,
+        ops,
+        name=body.name,
+        description=body.description,
+        if_version=body.if_version,
+    )
+
+
+@router.post("/datasets/{dataset_id}/tasks", status_code=201)
+async def add_eval_dataset_task(
+    request: Request, dataset_id: str, body: TaskEditRequest
+) -> dict[str, Any]:
+    """Append a golden task (to the draft head; a published head gets a new draft)."""
+    return await _edit(
+        request, dataset_id, [{"op": "add", "task": body.task}], if_version=body.if_version
+    )
+
+
+@router.put("/datasets/{dataset_id}/tasks/{index}")
+async def replace_eval_dataset_task(
+    request: Request, dataset_id: str, index: int, body: TaskEditRequest
+) -> dict[str, Any]:
+    return await _edit(
+        request,
+        dataset_id,
+        [{"op": "replace", "index": index, "task": body.task}],
+        if_version=body.if_version,
+    )
+
+
+@router.delete("/datasets/{dataset_id}/tasks/{index}")
+async def delete_eval_dataset_task(
+    request: Request, dataset_id: str, index: int, if_version: int | None = Query(None)
+) -> dict[str, Any]:
+    return await _edit(
+        request, dataset_id, [{"op": "delete", "index": index}], if_version=if_version
+    )
+
+
+@router.post("/datasets/{dataset_id}/publish")
+async def publish_eval_dataset(request: Request, dataset_id: str) -> dict[str, Any]:
+    """Publish the draft head (409 when the head is already published)."""
+    from app.evals.dataset_versions import DatasetVersionError
+
+    tenant = _require_tenant(request)
+    try:
+        published: dict[str, Any] = await _dstore(request).publish_version(
+            tenant.tenant_id, dataset_id
+        )
+    except DatasetVersionError as exc:
+        raise _version_http_error(exc) from exc
+    return published
 
 
 #: A ``queued`` / ``running`` result with no progress (heartbeat) for this long
@@ -186,7 +354,22 @@ class _MemoryRunStore:
         return True
 
     async def get_dataset(self, tenant_id: str, dataset_id: str) -> dict[str, Any] | None:
-        return _datasets.get(f"{tenant_id}:{dataset_id}")
+        from app.evals.dataset_versions import MemoryDatasetStore
+
+        found: dict[str, Any] | None = await MemoryDatasetStore(_datasets).get_dataset(
+            tenant_id, dataset_id
+        )
+        return found
+
+    async def get_dataset_version(
+        self, tenant_id: str, dataset_id: str, version: int
+    ) -> dict[str, Any] | None:
+        from app.evals.dataset_versions import MemoryDatasetStore
+
+        found: dict[str, Any] | None = await MemoryDatasetStore(
+            _datasets
+        ).get_dataset_version(tenant_id, dataset_id, version)
+        return found
 
     async def get_judge(self, tenant_id: str, judge_id: str) -> dict[str, Any] | None:
         return _judges.get(f"{tenant_id}:{judge_id}")
@@ -231,15 +414,20 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
     This used to score each case's ``expected_output`` against itself (1.0 →
     every run passed without executing anything) and ignored created judges.
     """
+    from app.evals.dataset_versions import DatasetVersionError
+
     tenant = _require_tenant(request)
     store = _store(request)
-    if store is not None:
-        dataset = await store.get_dataset(tenant.tenant_id, dataset_id)
-    else:
-        dataset = _datasets.get(f"{tenant.tenant_id}:{dataset_id}")
-    if not dataset:
+    dstore = _dstore(request)
+    head = await dstore.get_dataset(tenant.tenant_id, dataset_id)
+    if not head:
         raise HTTPException(404, "Dataset not found")
-    if not dataset.get("golden_tasks"):
+
+    wanted = body.dataset_version if body.dataset_version is not None else head["version"]
+    peek = await dstore.get_dataset_version(tenant.tenant_id, dataset_id, wanted)
+    if peek is None:
+        raise HTTPException(404, f"Dataset version {wanted} not found")
+    if not peek.get("golden_tasks"):
         raise HTTPException(422, "Dataset has no golden tasks to evaluate")
 
     goal_service = getattr(request.app.state, "goal_service", None)
@@ -258,6 +446,13 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
     if judge is not None and provider is None:
         raise HTTPException(503, "Judge configured but no LLM provider is available")
 
+    # The run executes ONE immutable version, recorded on the result (P7-3): a
+    # draft is published (frozen) here, so later edits never change this run.
+    try:
+        dataset = await dstore.pin_version_for_run(tenant.tenant_id, dataset_id, wanted)
+    except DatasetVersionError as exc:
+        raise _version_http_error(exc) from exc
+
     # A durable store + Celery (the goal queue is Celery-backed) → the run is
     # a worker task: it outlives this replica and resumes per case after a
     # worker restart. Otherwise (single-process dev / tests) it runs here.
@@ -267,6 +462,12 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
     result: dict[str, Any] = {
         "result_id": result_id,
         "dataset_id": dataset_id,
+        "dataset_version": int(dataset["version"]),
+        "dataset": {
+            "dataset_id": dataset_id,
+            "version": int(dataset["version"]),
+            "name": dataset.get("name") or head.get("name", ""),
+        },
         "tenant_id": tenant.tenant_id,
         "goal_id": body.goal_id,
         "agent_id": body.agent_id,
@@ -310,6 +511,7 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
         return {
             "result_id": result_id,
             "dataset_id": dataset_id,
+            "dataset_version": int(dataset["version"]),
             "status": "queued",
             "total": len(dataset["golden_tasks"]),
         }
@@ -334,6 +536,7 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
     return {
         "result_id": result_id,
         "dataset_id": dataset_id,
+        "dataset_version": int(dataset["version"]),
         "status": "running",
         "total": len(dataset["golden_tasks"]),
     }

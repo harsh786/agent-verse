@@ -280,9 +280,16 @@ async def run_step(
     done = _done_cases(result)
     inflight: dict[str, dict[str, Any]] = dict(result.get("inflight") or {})
     try:
-        dataset = await store.get_dataset(tenant_id, result["dataset_id"])
+        pinned = result.get("dataset_version")
+        if pinned is not None:
+            # The immutable version this run was started on (P7-3).
+            dataset = await store.get_dataset_version(
+                tenant_id, result["dataset_id"], int(pinned)
+            )
+        else:  # a result created before dataset versioning
+            dataset = await store.get_dataset(tenant_id, result["dataset_id"])
         if not dataset or not dataset.get("golden_tasks"):
-            raise LookupError("dataset no longer exists or has no golden tasks")
+            raise LookupError("dataset version no longer exists or has no golden tasks")
         judge = await _judge_for(store, tenant_id, result)
         if judge is not None and provider is None:
             raise RuntimeError("judge configured but no LLM provider is available")

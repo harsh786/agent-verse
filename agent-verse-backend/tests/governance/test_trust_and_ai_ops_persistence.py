@@ -54,6 +54,7 @@ TABLES = (
     "trust_approval_requests",
     "trust_approval_votes",
     "ai_ops_datasets",
+    "ai_ops_dataset_versions",
     "ai_ops_eval_results",
     "ai_ops_judges",
     "ai_ops_baselines",

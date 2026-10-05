@@ -72,7 +72,17 @@ class _Store:
         return True
 
     async def get_dataset(self, tenant_id: str, dataset_id: str) -> dict[str, Any] | None:
-        return {"dataset_id": dataset_id, "golden_tasks": _TASKS}
+        return {"dataset_id": dataset_id, "version": 1, "golden_tasks": _TASKS}
+
+    async def get_dataset_version(
+        self, tenant_id: str, dataset_id: str, version: int
+    ) -> dict[str, Any] | None:
+        return {"dataset_id": dataset_id, "version": version, "golden_tasks": _TASKS}
+
+    async def pin_version_for_run(
+        self, tenant_id: str, dataset_id: str, version: int | None = None
+    ) -> dict[str, Any]:
+        return {"dataset_id": dataset_id, "version": version or 1, "golden_tasks": _TASKS}
 
     async def get_judge(self, tenant_id: str, judge_id: str) -> dict[str, Any] | None:
         return None

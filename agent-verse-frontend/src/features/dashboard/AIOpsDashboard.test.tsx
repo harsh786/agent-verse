@@ -269,4 +269,35 @@ describe('AIOpsDashboard', () => {
     expect(screen.getByTestId('eval-run-r3')).toHaveTextContent(/abandoned/i);
     expect(screen.getByTestId('eval-run-r4')).toHaveTextContent(/passed · 82%/i);
   });
+
+  test('eval runs show the dataset name and the version they ran', async () => {
+    const runs = {
+      results: [
+        {
+          result_id: 'r5', dataset_id: 'ds-5', dataset_version: 3,
+          dataset: { dataset_id: 'ds-5', version: 3, name: 'Dispatch golden' },
+          status: 'completed', total_cases: 2, avg_score: 1, passed: true,
+        },
+        { result_id: 'r6', dataset_id: 'ds-legacy', status: 'completed', total_cases: 1, avg_score: 0, passed: false },
+      ],
+      total: 2,
+    };
+    const fetchMock = mockFetch();
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      const json = (b: unknown) =>
+        new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/ai-ops/eval-results')) return json(runs);
+      if (url.includes('/ai-ops/alerts')) return json(ALERTS);
+      if (url.includes('/ai-ops/regression-status')) return json(REGRESSION);
+      if (url.includes('/models/health')) return json(MODELS);
+      return json(GOALS);
+    });
+    renderDashboard();
+    expect(await screen.findByTestId('eval-run-r5')).toHaveTextContent(/Dispatch golden/);
+    expect(screen.getByTestId('eval-run-version-r5')).toHaveTextContent('v3');
+    // A run from before dataset versioning shows its id and no version.
+    expect(screen.getByTestId('eval-run-r6')).toHaveTextContent('ds-legacy');
+    expect(screen.queryByTestId('eval-run-version-r6')).not.toBeInTheDocument();
+  });
 });
