@@ -171,11 +171,19 @@ def _helm_blocks() -> dict[str, str]:
     return blocks
 
 
+_ENV_HELPERS = ("agentverse.appSecretEnv", "agentverse.vaultEnv")
+
+
 def _expand(block: str) -> str:
-    """Inline the vault env helper (the only include this check needs rendered)."""
-    return block.replace(
-        '{{- include "agentverse.vaultEnv" . | nindent 8 }}', _helm_define("agentverse.vaultEnv")
-    )
+    """Inline the env helpers (nested: appSecretEnv includes vaultEnv)."""
+    for _ in range(3):
+        for name in _ENV_HELPERS:
+            block = re.sub(
+                r'\{\{-? include "' + re.escape(name) + r'" \.(?: \| nindent \d+)? -?\}\}',
+                lambda _m, n=name: "\n" + _helm_define(n),
+                block,
+            )
+    return block
 
 
 def _helm_vault_sources(block: str) -> dict[str, tuple[str, str]]:
@@ -207,6 +215,115 @@ def test_helm_secret_provides_every_vault_variable() -> None:
     text = (HELM_DIR / "secrets.yaml").read_text()
     assert "VAULT_MASTER_KEY:" in text
     assert "VAULT_PREVIOUS_MASTER_KEYS:" in text
+
+
+# ── NF-15: every app workload gets the app secrets the API gets ──────────────
+
+# API-only secrets: nothing a worker / beat runs reads them.
+_API_ONLY = {"PLATFORM_ADMIN_KEY"}
+# What every app process needs (app.core.config Settings + os.getenv readers):
+# DB / Redis, MinIO (artifacts, training exports), JWT, the vault key pair,
+# goal / stream tokens (HITL links), manifest signing, provider keys, SMTP.
+_HELM_APP_SECRETS = {
+    "DATABASE_PASSWORD",
+    "REDIS_PASSWORD",
+    "MINIO_ACCESS_KEY",
+    "MINIO_SECRET_KEY",
+    "JWT_SECRET",
+    "VAULT_MASTER_KEY",
+    "VAULT_PREVIOUS_MASTER_KEYS",
+    "GOAL_TOKEN_SECRET",
+    "MANIFEST_SIGNING_SECRET",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "VOYAGE_API_KEY",
+    "GOOGLE_API_KEY",
+    "SMTP_USER",
+    "SMTP_PASSWORD",
+}
+_SECRET_REF = re.compile(
+    r"- name: (\w+)\s+valueFrom:\s+secretKeyRef:\s+name: (\{\{[^}]+\}\}|\S+)\s+key: ([\w-]+)"
+)
+_PLAIN_ENV = re.compile(r"- name: (\w+)\s+value: (.+)")
+
+
+def _secret_env(block: str) -> dict[str, tuple[str, str]]:
+    return {n: (sec.strip(), key) for n, sec, key in _SECRET_REF.findall(block)}
+
+
+def test_helm_every_app_workload_gets_the_api_app_secrets() -> None:
+    blocks = {c: _expand(b) for c, b in _helm_blocks().items() if c != "frontend"}
+    assert {"backend", "worker", "subgoal-worker", "beat"} <= set(blocks)
+    secrets = {c: _secret_env(b) for c, b in blocks.items()}
+    api = secrets["backend"]
+    assert set(api) == _HELM_APP_SECRETS | _API_ONLY, sorted(set(api) ^ _HELM_APP_SECRETS)
+    shared = {k: v for k, v in api.items() if k not in _API_ONLY}
+    for comp, env in secrets.items():
+        if comp == "backend":
+            continue
+        assert env == shared, f"{comp}: differs from the API: {set(env) ^ set(shared)}"
+    # DATABASE_URL / REDIS_URL are built the same way everywhere.
+    urls = {
+        c: {n: v for n, v in _PLAIN_ENV.findall(b) if n in {"DATABASE_URL", "REDIS_URL"}}
+        for c, b in blocks.items()
+    }
+    assert all(u == urls["backend"] and len(u) == 2 for u in urls.values()), urls
+
+
+def test_helm_secret_provides_every_app_secret() -> None:
+    text = (HELM_DIR / "secrets.yaml").read_text()
+    for key in _HELM_APP_SECRETS | _API_ONLY:
+        assert re.search(rf"^\s+{key}:", text, re.M), key
+
+
+LEGACY_HELM_DIR = INFRA.parent / "helm" / "agentverse" / "templates"
+
+
+def _legacy_env(fname: str) -> dict[str, tuple[str, str]]:
+    text = (LEGACY_HELM_DIR / fname).read_text()
+    helpers = (LEGACY_HELM_DIR / "_helpers.tpl").read_text()
+    match = re.search(
+        r'\{\{-? define "agentverse.appSecretEnv" -?\}\}(.*?)\{\{-? end -?\}\}', helpers, re.S
+    )
+    assert match, "legacy chart has no agentverse.appSecretEnv helper"
+    text = re.sub(
+        r'\{\{-? include "agentverse.appSecretEnv" \.(?: \| nindent \d+)? -?\}\}',
+        lambda _m: "\n" + match.group(1),
+        text,
+    )
+    return _secret_env(text)
+
+
+def test_legacy_helm_workers_get_the_api_secrets_and_the_vault_key() -> None:
+    api = _legacy_env("deployment.yaml")
+    assert api.get("VAULT_MASTER_KEY") == ("agentverse-secrets", "master-encryption-key")
+    assert "ANTHROPIC_API_KEY" in api
+    # The vault never read MASTER_ENCRYPTION_KEY: the API ran on the dev key.
+    assert "MASTER_ENCRYPTION_KEY" not in api
+    for fname in (
+        "worker-deployment.yaml",
+        "subgoal-worker-deployment.yaml",
+        "beat-deployment.yaml",
+    ):
+        assert _legacy_env(fname) == api, fname
+
+
+def test_k8s_every_backend_workload_gets_the_api_secret_sources() -> None:
+    """envFrom secretRefs + every explicit secretKeyRef of the API reach each workload."""
+    workloads = _k8s_app_workloads()
+
+    def refs(container: dict[str, Any]) -> set[str]:
+        return {
+            (r.get("secretRef") or {}).get("name", "")
+            for r in container.get("envFrom") or []
+            if r.get("secretRef")
+        }
+
+    api = next(c for _f, n, c in workloads if n == "agentverse-backend")
+    api_refs = refs(api)
+    assert api_refs
+    for fname, name, container in workloads:
+        assert refs(container) >= api_refs, f"{fname}:{name} lacks {api_refs - refs(container)}"
 
 
 # ── docker compose ────────────────────────────────────────────────────────────

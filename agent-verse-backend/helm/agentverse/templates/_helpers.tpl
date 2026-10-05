@@ -53,3 +53,33 @@ Full image references
 {{- define "agentverse.frontendImage" -}}
 {{ .Values.global.imageRegistry }}/{{ .Values.frontend.image.name }}:{{ .Values.frontend.image.tag }}
 {{- end }}
+
+{{/*
+NF-15: the app secrets EVERY app workload gets (API, workers, sub-goal workers,
+beat) from one helper, so a worker never lacks a secret the API has. The workers
+had only DATABASE_URL / REDIS_URL: no platform LLM key and no vault master key
+(which the API passed as MASTER_ENCRYPTION_KEY, a name the vault never reads —
+it reads VAULT_MASTER_KEY). Enforced by tests/infra/test_vault_key_distribution.py.
+*/}}
+{{- define "agentverse.appSecretEnv" -}}
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: database-url
+- name: REDIS_URL
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: redis-url
+- name: ANTHROPIC_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: anthropic-api-key
+- name: VAULT_MASTER_KEY
+  valueFrom:
+    secretKeyRef:
+      name: agentverse-secrets
+      key: master-encryption-key
+{{- end }}

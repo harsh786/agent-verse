@@ -35,26 +35,7 @@ spec:
             - configMapRef:
                 name: agentverse-config
           env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: database-url
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: redis-url
-            - name: ANTHROPIC_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: anthropic-api-key
-            - name: MASTER_ENCRYPTION_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: agentverse-secrets
-                  key: master-encryption-key
+            {{- include "agentverse.appSecretEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.backend.resources | nindent 12 }}
           readinessProbe:

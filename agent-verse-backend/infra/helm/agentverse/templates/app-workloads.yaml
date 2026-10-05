@@ -31,46 +31,8 @@ spec:
         - configMapRef:
             name: {{ include "agentverse.fullname" . }}-config
         env:
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: DATABASE_PASSWORD
-        - name: DATABASE_URL
-          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: REDIS_PASSWORD
-        - name: REDIS_URL
-          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
-        - name: MINIO_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: MINIO_ACCESS_KEY
-        - name: MINIO_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: MINIO_SECRET_KEY
-        - name: JWT_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: JWT_SECRET
-        {{- include "agentverse.vaultEnv" . | nindent 8 }}
-        - name: GOAL_TOKEN_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: GOAL_TOKEN_SECRET
-        - name: MANIFEST_SIGNING_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: MANIFEST_SIGNING_SECRET
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
+        # API-only: admin endpoints authenticate with it; no worker needs it.
         - name: PLATFORM_ADMIN_KEY
           valueFrom:
             secretKeyRef:
@@ -189,23 +151,9 @@ spec:
         - configMapRef:
             name: {{ include "agentverse.fullname" . }}-config
         env:
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: DATABASE_PASSWORD
-        - name: DATABASE_URL
-          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: REDIS_PASSWORD
-        - name: REDIS_URL
-          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
         - name: WORKER_PRELOAD_RETRIEVAL_MODELS
           value: {{ .Values.worker.preloadRetrievalModels | quote }}
-        {{- include "agentverse.vaultEnv" . | nindent 8 }}
         resources:
           {{- toYaml .Values.worker.resources | nindent 10 }}
 {{- end }}
@@ -245,23 +193,9 @@ spec:
         - configMapRef:
             name: {{ include "agentverse.fullname" . }}-config
         env:
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: DATABASE_PASSWORD
-        - name: DATABASE_URL
-          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: REDIS_PASSWORD
-        - name: REDIS_URL
-          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
         - name: WORKER_PRELOAD_RETRIEVAL_MODELS
           value: {{ .Values.subgoalWorker.preloadRetrievalModels | quote }}
-        {{- include "agentverse.vaultEnv" . | nindent 8 }}
         resources:
           {{- toYaml .Values.subgoalWorker.resources | nindent 10 }}
 {{- end }}
@@ -295,21 +229,7 @@ spec:
         - configMapRef:
             name: {{ include "agentverse.fullname" . }}-config
         env:
-        - name: REDIS_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: REDIS_PASSWORD
-        - name: REDIS_URL
-          value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
-        - name: DATABASE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ include "agentverse.secretName" . }}
-              key: DATABASE_PASSWORD
-        - name: DATABASE_URL
-          value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
-        {{- include "agentverse.vaultEnv" . | nindent 8 }}
+        {{- include "agentverse.appSecretEnv" . | nindent 8 }}
         resources:
           {{- toYaml .Values.beat.resources | nindent 10 }}
 {{- end }}

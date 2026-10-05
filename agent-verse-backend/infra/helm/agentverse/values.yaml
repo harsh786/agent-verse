@@ -34,6 +34,14 @@ secrets:
   goalTokenSecret: change-me-goal-token
   manifestSigningSecret: change-me-manifest
   platformAdminKey: change-me-admin-key
+  # Optional platform LLM / embedding keys and SMTP credentials (NF-15): every
+  # app workload (API, workers, beat) gets the same values.
+  anthropicApiKey: ""
+  openaiApiKey: ""
+  voyageApiKey: ""
+  googleApiKey: ""
+  smtpUser: ""
+  smtpPassword: ""
 
 backend:
   enabled: true

@@ -48,6 +48,94 @@ app.kubernetes.io/instance: {{ .Release.Name }}
       optional: true
 {{- end -}}
 
+{{- /*
+  NF-15: the app secrets EVERY app workload gets — API, workers, sub-goal
+  workers, beat — from one place, so a worker can never again run without a
+  secret the API has (it used to lack MinIO, JWT, goal-token and manifest
+  secrets: artifact uploads, training exports, HITL links and manifest checks
+  failed only on workers). Provider keys and SMTP credentials are optional
+  (BYOK-only / no-mail deployments). API-only secrets (PLATFORM_ADMIN_KEY) are
+  added by the backend alone. Enforced by tests/infra/test_vault_key_distribution.py.
+*/}}
+{{- define "agentverse.appSecretEnv" -}}
+- name: DATABASE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: DATABASE_PASSWORD
+- name: DATABASE_URL
+  value: postgresql+asyncpg://{{ .Values.postgresql.username }}:$(DATABASE_PASSWORD)@{{ include "agentverse.postgresHost" . }}:{{ .Values.postgresql.service.port }}/{{ .Values.postgresql.database }}
+- name: REDIS_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: REDIS_PASSWORD
+- name: REDIS_URL
+  value: redis://:$(REDIS_PASSWORD)@{{ include "agentverse.redisHost" . }}:{{ .Values.redis.service.port }}/0
+- name: MINIO_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: MINIO_ACCESS_KEY
+- name: MINIO_SECRET_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: MINIO_SECRET_KEY
+- name: JWT_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: JWT_SECRET
+{{ include "agentverse.vaultEnv" . }}
+- name: GOAL_TOKEN_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: GOAL_TOKEN_SECRET
+- name: MANIFEST_SIGNING_SECRET
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: MANIFEST_SIGNING_SECRET
+- name: ANTHROPIC_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: ANTHROPIC_API_KEY
+      optional: true
+- name: OPENAI_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: OPENAI_API_KEY
+      optional: true
+- name: VOYAGE_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: VOYAGE_API_KEY
+      optional: true
+- name: GOOGLE_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: GOOGLE_API_KEY
+      optional: true
+- name: SMTP_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: SMTP_USER
+      optional: true
+- name: SMTP_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "agentverse.secretName" . }}
+      key: SMTP_PASSWORD
+      optional: true
+{{- end -}}
+
 {{- define "agentverse.postgresHost" -}}
 {{- if and (not .Values.postgresql.enabled) .Values.externalServices.postgresHost -}}
 {{- .Values.externalServices.postgresHost -}}
