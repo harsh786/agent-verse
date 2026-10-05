@@ -6965,6 +6965,18 @@
             "title": "Dataset Id",
             "type": "string"
           },
+          "dataset_version": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dataset Version"
+          },
           "goal_id": {
             "anyOf": [
               {
@@ -7882,6 +7894,31 @@
           }
         },
         "title": "TakeoverRequest",
+        "type": "object"
+      },
+      "TaskEditRequest": {
+        "properties": {
+          "if_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Version"
+          },
+          "task": {
+            "additionalProperties": true,
+            "title": "Task",
+            "type": "object"
+          }
+        },
+        "required": [
+          "task"
+        ],
+        "title": "TaskEditRequest",
         "type": "object"
       },
       "TaskResponse": {
@@ -8975,6 +9012,61 @@
           }
         },
         "title": "UpdateBudgetRequest",
+        "type": "object"
+      },
+      "UpdateDatasetRequest": {
+        "description": "Edit a dataset. ``golden_tasks`` replaces the task list: a published head\ngets a new draft version; a draft head is edited in place (P7-3).",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "golden_tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Golden Tasks"
+          },
+          "if_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "If Version"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "UpdateDatasetRequest",
         "type": "object"
       },
       "UpdateDepartmentRequest": {
@@ -14433,7 +14525,7 @@
     },
     "/ai-ops/datasets": {
       "get": {
-        "description": "List evaluation datasets for the tenant.",
+        "description": "List evaluation datasets for the tenant (``version`` = the head version).",
         "operationId": "list_eval_datasets_ai_ops_datasets_get",
         "responses": {
           "200": {
@@ -14455,7 +14547,7 @@
         ]
       },
       "post": {
-        "description": "Create an evaluation dataset with golden tasks.",
+        "description": "Create an evaluation dataset; its golden tasks are published version 1.",
         "operationId": "create_eval_dataset_ai_ops_datasets_post",
         "requestBody": {
           "content": {
@@ -14492,6 +14584,202 @@
           }
         },
         "summary": "Create Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}": {
+      "get": {
+        "description": "A dataset's head version with its golden tasks, plus its version history.",
+        "operationId": "get_eval_dataset_ai_ops_datasets__dataset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Eval Dataset Ai Ops Datasets  Dataset Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      },
+      "patch": {
+        "description": "Edit a dataset. Published versions are immutable: changing the tasks of a\npublished head creates a new draft version; a draft head changes in place.",
+        "operationId": "update_eval_dataset_ai_ops_datasets__dataset_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Eval Dataset Ai Ops Datasets  Dataset Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      },
+      "put": {
+        "description": "Edit a dataset. Published versions are immutable: changing the tasks of a\npublished head creates a new draft version; a draft head changes in place.",
+        "operationId": "update_eval_dataset_ai_ops_datasets__dataset_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Eval Dataset Ai Ops Datasets  Dataset Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Eval Dataset",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/publish": {
+      "post": {
+        "description": "Publish the draft head (409 when the head is already published).",
+        "operationId": "publish_eval_dataset_ai_ops_datasets__dataset_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Publish Eval Dataset Ai Ops Datasets  Dataset Id  Publish Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Eval Dataset",
         "tags": [
           "ai-ops"
         ]
@@ -14547,6 +14835,288 @@
           }
         },
         "summary": "Run Eval",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/tasks": {
+      "post": {
+        "description": "Append a golden task (to the draft head; a published head gets a new draft).",
+        "operationId": "add_eval_dataset_task_ai_ops_datasets__dataset_id__tasks_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Eval Dataset Task Ai Ops Datasets  Dataset Id  Tasks Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Eval Dataset Task",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/tasks/{index}": {
+      "delete": {
+        "operationId": "delete_eval_dataset_task_ai_ops_datasets__dataset_id__tasks__index__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "if_version",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If Version"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Eval Dataset Task Ai Ops Datasets  Dataset Id  Tasks  Index  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Eval Dataset Task",
+        "tags": [
+          "ai-ops"
+        ]
+      },
+      "put": {
+        "operationId": "replace_eval_dataset_task_ai_ops_datasets__dataset_id__tasks__index__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskEditRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Replace Eval Dataset Task Ai Ops Datasets  Dataset Id  Tasks  Index  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replace Eval Dataset Task",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/versions": {
+      "get": {
+        "operationId": "list_eval_dataset_versions_ai_ops_datasets__dataset_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Eval Dataset Versions Ai Ops Datasets  Dataset Id  Versions Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Eval Dataset Versions",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/datasets/{dataset_id}/versions/{version}": {
+      "get": {
+        "operationId": "get_eval_dataset_version_ai_ops_datasets__dataset_id__versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "dataset_id",
+            "required": true,
+            "schema": {
+              "title": "Dataset Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Eval Dataset Version Ai Ops Datasets  Dataset Id  Versions  Version  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Eval Dataset Version",
         "tags": [
           "ai-ops"
         ]
