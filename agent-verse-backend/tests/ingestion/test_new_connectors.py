@@ -230,36 +230,51 @@ class TestElasticsearchConnector:
         assert get_connector("opensearch") is not None
 
     def test_get_delta_pagination(self):
+        """search_after pages through a point in time until a short page."""
+        from app.ingestion.connectors import elasticsearch_connector as esc
 
-        from app.ingestion.connectors.elasticsearch_connector import ElasticsearchConnector
+        config = _make_config("elasticsearch", {"url": "http://es:9200", "index": "logs",
+                                                "batch_size": 2})
+        hits = [{"_index": "logs", "_id": f"d{i}", "_source": {"@timestamp": i},
+                 "sort": [i, i]} for i in range(3)]
+        bodies: list[dict] = []
 
-        config = _make_config("elasticsearch", {"url": "http://es:9200", "index": "logs", "batch_size": 2})
-        connector = ElasticsearchConnector()
+        class _Resp:
+            def __init__(self, payload, status=200):
+                self._payload, self.status_code = payload, status
+                self.is_success, self.text = status < 400, ""
 
-        hit = {"_id": "abc", "_source": {"msg": "hello", "@timestamp": "2026-01-01"}, "sort": ["2026-01-01", "abc"]}
-        page1 = {"hits": {"hits": [hit, hit]}}
-        page2 = {"hits": {"hits": []}}  # empty page → stop
+            def json(self):
+                return self._payload
 
-        call_count = 0
-        async def mock_post(url, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            resp = MagicMock()
-            resp.is_success = True
-            resp.json = MagicMock(return_value=page1 if call_count == 1 else page2)
-            return resp
+        class _Client:
+            async def __aenter__(self):
+                return self
 
-        with patch("httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.post = mock_post
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_cls.return_value = mock_client
+            async def __aexit__(self, *exc):
+                return None
 
+            async def get(self, url, **kw):
+                return _Resp({"logs": {"mappings": {"@timestamp": {"mapping": {
+                    "@timestamp": {"type": "date"}}}}}})
+
+            async def post(self, url, **kw):
+                if url.endswith("/_pit"):
+                    return _Resp({"id": "pit-1"})
+                bodies.append(kw["json"])
+                start = 0 if "search_after" not in kw["json"] else kw["json"]["search_after"][0] + 1
+                return _Resp({"pit_id": "pit-1", "hits": {"hits": hits[start:start + 2]}})
+
+            async def request(self, method, url, **kw):
+                return _Resp({})
+
+        with patch.object(esc, "source_client", lambda **kw: _Client()):
             docs = list(asyncio.run(
-                _collect_async(connector.get_delta(config, None))
+                _collect_async(esc.ElasticsearchConnector().get_delta(config, None))
             ))
-        assert len(docs) == 2
+        assert len(docs) == 3
+        assert [b.get("search_after") for b in bodies] == [None, [1, 1]]
+        assert all(b["sort"][1] == "_shard_doc" for b in bodies)  # never _id (ES 8)
 
 
 # ── Neo4jConnector ────────────────────────────────────────────────────────────

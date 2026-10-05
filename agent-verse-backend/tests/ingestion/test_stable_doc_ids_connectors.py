@@ -182,11 +182,22 @@ async def test_discord() -> None:
 
 async def test_elasticsearch() -> None:
     hits = {"hits": {"hits": [
-        {"_id": "a", "_source": {"x": 1}, "sort": [1, "a"]},
-        {"_id": "b", "_source": {"x": 2}, "sort": [2, "b"]},
+        {"_index": "idx", "_id": "a", "_source": {"@timestamp": 1}, "sort": [1, 7]},
+        {"_index": "idx", "_id": "b", "_source": {"@timestamp": 2}, "sort": [2, 8]},
     ]}}
+
+    def router(method: str, url: str, kw: dict[str, Any]) -> _Resp:
+        if "/_mapping/field/" in url:
+            return _Resp({"idx": {"mappings": {"@timestamp": {"mapping": {
+                "@timestamp": {"type": "date"}}}}}})
+        if url.endswith("/_pit") and method == "POST":
+            return _Resp({"id": "pit-1"})
+        if method == "DELETE":
+            return _Resp({})
+        return _Resp(hits)
+
     await _assert_stable(
-        _http_run("elasticsearch", "ElasticsearchConnector", lambda m, u, k: _Resp(hits)),
+        _http_run("elasticsearch", "ElasticsearchConnector", router),
         "elasticsearch",
         {"url": "http://es:9200", "index": "idx"},
     )
