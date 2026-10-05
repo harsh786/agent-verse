@@ -415,6 +415,11 @@ function ExportSection(): JSX.Element {
     mutationFn: () => enterpriseApi.exportData(),
     onSuccess: (data) => {
       setResult(data);
+      if (data.status === 'failed') {
+        // An incomplete export is a failure, never a green "completed".
+        toast({ kind: 'error', message: 'Export failed — nothing was exported' });
+        return;
+      }
       toast({ kind: 'info', message: 'Export started — you\'ll be notified when ready' });
     },
     onError: (e) => toast({ kind: 'error', message: `Failed: export data. ${String(e)}` }),
@@ -454,7 +459,28 @@ function ExportSection(): JSX.Element {
         </button>
       </div>
 
-      {result && (
+      {result?.status === 'failed' && (
+        <div
+          role="alert"
+          className="mt-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg text-sm"
+        >
+          <p className="text-red-800 dark:text-red-300 font-medium">Export failed</p>
+          <p className="text-red-700 dark:text-red-400 text-xs mt-1">
+            {result.error ?? 'The export could not be completed.'}
+          </p>
+          {result.failed_sections && Object.keys(result.failed_sections).length > 0 && (
+            <ul className="mt-1.5 space-y-0.5 text-xs text-red-700 dark:text-red-400 list-disc list-inside">
+              {Object.entries(result.failed_sections).map(([section, reason]) => (
+                <li key={section}>
+                  <span className="font-medium">{section}</span>: {reason}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {result && result.status !== 'failed' && (
         <div className="mt-3 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg text-sm">
           {result.download_url ? (
             <div className="space-y-1.5">

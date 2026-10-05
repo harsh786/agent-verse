@@ -2540,7 +2540,13 @@ export interface DataResidencyInfo {
 }
 
 export interface EnterpriseExportResult {
-  download_url?: string;
+  request_id?: string;
+  /** ready | failed (a failed export carries `error` + `failed_sections`, no download_url). */
+  status?: string;
+  download_url?: string | null;
+  error?: string | null;
+  /** Section name -> why it could not be exported (failed exports only). */
+  failed_sections?: Record<string, string>;
   expires_at?: string;
   size_bytes?: number;
   message?: string;

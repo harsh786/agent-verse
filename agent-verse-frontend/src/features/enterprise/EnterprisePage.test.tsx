@@ -92,6 +92,43 @@ describe('EnterprisePage', () => {
     );
   });
 
+  test('a failed export is shown as failed with its reason and sections, never as completed', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/enterprise/compliance/export')) {
+        return new Response(
+          JSON.stringify({
+            request_id: 'req-9',
+            status: 'failed',
+            download_url: null,
+            error: 'export incomplete: goals: unavailable: OperationalError: db down',
+            failed_sections: {
+              goals: 'unavailable: OperationalError: db down',
+              audit_log: 'too_large: more than 50000 rows; use the asynchronous GDPR export',
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ region: 'us-east-1' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderEnterprisePage();
+    await userEvent.click(screen.getByRole('button', { name: /^export$/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Export failed');
+    expect(alert).toHaveTextContent(/export incomplete: goals/);
+    expect(alert).toHaveTextContent(/goals/);
+    expect(alert).toHaveTextContent(/audit_log/);
+    expect(alert).toHaveTextContent(/too_large/);
+    expect(screen.queryByText('Export completed.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Export ready')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /download export/i })).not.toBeInTheDocument();
+  });
+
   test('download button fetches the export as an authenticated blob, not a bare anchor href', async () => {
     // Regression: the download_url the backend returns is a bare relative
     // path (e.g. "/enterprise/compliance/export/{id}/download") meant for
