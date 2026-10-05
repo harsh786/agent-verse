@@ -803,7 +803,6 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
         from app.core.errors import ServiceUnavailableError
         from app.services.goal_service import SSE_HEARTBEAT_TYPE
 
-        seq = 0
         try:
             async for event in svc.subscribe_events(
                 goal_id=goal_id,
@@ -817,9 +816,14 @@ async def stream_goal(request: Request, goal_id: str) -> StreamingResponse:
                 if event.get("type") == SSE_HEARTBEAT_TYPE:
                     yield ": ping\n\n"
                     continue
-                seq += 1
-                event_seq = event.get("_seq", seq)
-                yield f"id: {event_seq}\ndata: {json.dumps(event)}\n\n"
+                # SVC-05: the id is the event's durable sequence only. A
+                # per-connection counter fallback made Last-Event-ID drift on
+                # every reconnect; an event without one (not stored) gets no id,
+                # so the client keeps resuming from the last real sequence.
+                event_seq = event.get("_seq")
+                has_seq = isinstance(event_seq, int) and not isinstance(event_seq, bool)
+                id_line = f"id: {event_seq}\n" if has_seq else ""
+                yield f"{id_line}data: {json.dumps(event)}\n\n"
         except ServiceUnavailableError as exc:
             # The headers are already sent: report a retryable stream error the
             # client can reconnect on, instead of an empty / silently ended stream.

@@ -183,9 +183,15 @@ async def test_idle_stream_ends_when_the_goal_row_turns_terminal(
         return _db_record("g-late", statuses.pop(0) if statuses else GoalStatus.FAILED)
 
     svc._db_get_goal_record = _record  # type: ignore[method-assign]
-    svc._list_events_since_persisted = AsyncMock(  # type: ignore[method-assign]
-        return_value=[{"type": "worker_failed", "_seq": 7, "error": "timeout"}]
-    )
+
+    async def _since(*_a: Any, after_sequence: int = 0, **_k: Any) -> list[dict[str, Any]]:
+        # The store, like the row, learns of the failure only once it happened
+        # (the replay right after SUBSCRIBE reads an empty history).
+        if statuses:
+            return []
+        return [{"type": "worker_failed", "_seq": 7, "error": "timeout"}]
+
+    svc._list_events_since_persisted = _since  # type: ignore[method-assign]
 
     async def _collect() -> list[dict[str, Any]]:
         return [e async for e in svc.subscribe_events("g-late", CTX)]

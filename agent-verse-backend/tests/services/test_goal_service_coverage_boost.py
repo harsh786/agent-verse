@@ -912,14 +912,17 @@ class TestSubscribeEventsCrossReplicaLive:
         with (
             patch.object(svc, "_db_get_goal_record", AsyncMock(return_value=db_record)),
             patch.object(
-                svc, "_list_persisted_events", AsyncMock(return_value=[{"type": "step_started"}])
+                svc,
+                "_list_events_since_persisted",
+                AsyncMock(return_value=[{"type": "step_started", "_seq": 1}]),
             ),
             pytest.raises(ServiceUnavailableError),
         ):
             async for e in svc.subscribe_events(goal_id, ctx):
                 events.append(e)
 
-        assert events == [{"type": "step_started"}]  # the replay was delivered first
+        # the replay was delivered first
+        assert events == [{"type": "step_started", "_seq": 1}]
 
     async def test_terminal_db_record_returns_after_replay_no_subscribe(self):
         svc = _svc()
@@ -931,7 +934,11 @@ class TestSubscribeEventsCrossReplicaLive:
 
         with (
             patch.object(svc, "_db_get_goal_record", AsyncMock(return_value=db_record)),
-            patch.object(svc, "_list_persisted_events", AsyncMock(return_value=[{"type": "goal_complete"}])),
+            patch.object(
+                svc,
+                "_list_events_since_persisted",
+                AsyncMock(return_value=[{"type": "goal_complete", "_seq": 1}]),
+            ),
         ):
             events = [e async for e in svc.subscribe_events(goal_id, ctx)]
 

@@ -333,11 +333,13 @@ async def test_subscribe_events_reconnect_dedupes_and_honours_sentinel() -> None
         return [dup_event]
 
     svc._list_events_since_persisted = _delayed_since_persisted  # type: ignore[method-assign]
+    svc._event_store = AsyncMock()  # a durable store: the replay reads it
 
     received: list[dict[str, Any] | None] = []
 
     async def _consume() -> None:
-        async for ev in svc.subscribe_events("g-sse-1", _ctx(tenant_id="cb2-t1"), since_sequence=5):
+        # The client saw up to seq 4; the replay delivers seq 5.
+        async for ev in svc.subscribe_events("g-sse-1", _ctx(tenant_id="cb2-t1"), since_sequence=4):
             received.append(ev)
 
     task = asyncio.create_task(_consume())

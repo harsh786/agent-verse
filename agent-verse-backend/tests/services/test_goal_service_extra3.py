@@ -802,11 +802,12 @@ class TestSubscribeEvents:
         _inject_goal(svc, "g1", status="executing")
         received = []
 
-        async def _emit_during_replay_gap(goal_id, record, tenant_ctx):
+        async def _emit_during_replay_gap(goal_id, record, tenant_ctx, since_sequence):
             await svc._dispatch_event(goal_id, {"type": "goal_started"}, tenant_ctx=tenant_ctx)
-            return []
+            return
+            yield  # an (empty) async generator, like the real replay
 
-        svc._events_for_replay = _emit_during_replay_gap  # type: ignore[method-assign]
+        svc._replay_events = _emit_during_replay_gap  # type: ignore[method-assign]
 
         async def _collect_first_event():
             async for evt in svc.subscribe_events("g1", _ctx()):
@@ -816,7 +817,7 @@ class TestSubscribeEvents:
         task = asyncio.create_task(_collect_first_event())
         await asyncio.wait_for(task, timeout=0.2)
 
-        assert received == [{"type": "goal_started"}]
+        assert received == [{"type": "goal_started", "_seq": 1}]
 
     async def test_not_found_raises(self):
         svc = _svc()
@@ -1047,14 +1048,15 @@ class TestDispatchEvent:
             await svc._dispatch_event("g1", {"type": "goal_complete"}, tenant_ctx=_ctx())
         # goal_events + platform_events + the goal-chain lifecycle channel.
         assert mock_redis.publish.await_count == 3
+        # The live copy carries its sequence (SVC-05; in-memory position here).
         mock_redis.publish.assert_any_await(
-            "goal_events:t1:g1", '{"type": "goal_complete"}'
+            "goal_events:t1:g1", '{"type": "goal_complete", "_seq": 1}'
         )
         assert any(
             c.args[0] == "goal.completed" for c in mock_redis.publish.await_args_list
         )
         mock_redis.publish.assert_any_await(
-            "platform_events:t1", '{"type": "goal_complete"}'
+            "platform_events:t1", '{"type": "goal_complete", "_seq": 1}'
         )
 
     async def test_unknown_goal_id_is_noop(self):

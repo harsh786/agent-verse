@@ -342,10 +342,11 @@ async def _append_event(
     ctx = TenantContext(
         tenant_id=goal["tenant_id"], plan=PlanTier.FREE, api_key_id="goal-watchdog"
     )
-    await EventStore(db_factory).append_event(goal["goal_id"], event, tenant_ctx=ctx)
+    seq = await EventStore(db_factory).append_event(goal["goal_id"], event, tenant_ctx=ctx)
     if publish is not None:
         with contextlib.suppress(Exception):
-            publish(goal["tenant_id"], goal["goal_id"], event)
+            # SVC-05: the live copy carries its durable sequence (the SSE id).
+            publish(goal["tenant_id"], goal["goal_id"], {**event, "_seq": seq})
 
 
 async def _requeue(

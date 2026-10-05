@@ -54,6 +54,22 @@ class FakeEventStore:
     ) -> list[dict[str, Any]]:
         return list(self.events)
 
+    async def list_events_since(
+        self,
+        goal_id: str,
+        after_sequence: int,
+        limit: int = 100,
+        *,
+        tenant_ctx: TenantContext | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = [{**e, "_seq": i} for i, e in enumerate(self.events, start=1)]
+        return [r for r in rows if r["_seq"] > after_sequence][:limit]
+
+
+def _with_seq(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*events* as a stream delivers them: each with its durable ``_seq`` (SVC-05)."""
+    return [{**e, "_seq": i} for i, e in enumerate(events, start=1)]
+
 
 async def test_submit_goal_returns_goal_id(svc: GoalService) -> None:
     result = await svc.submit_goal(
@@ -327,7 +343,7 @@ async def test_subscribe_events_replays_persisted_events_for_terminal_loaded_goa
 
     received = [event async for event in svc.subscribe_events("goal-loaded", tenant_ctx=_CTX_A)]
 
-    assert received == persisted
+    assert received == _with_seq(persisted)
 
 
 async def test_subscribe_events_returns_when_stale_memory_has_persisted_terminal_event() -> None:
@@ -348,7 +364,7 @@ async def test_subscribe_events_returns_when_stale_memory_has_persisted_terminal
             event async for event in svc.subscribe_events("goal-stale", tenant_ctx=_CTX_A)
         ]
 
-    assert received == persisted
+    assert received == _with_seq(persisted)
 
 
 async def test_sync_from_db_loads_goals_under_tenant_rls_context() -> None:
@@ -422,7 +438,7 @@ async def test_sync_from_db_loads_goals_under_tenant_rls_context() -> None:
     assert session.goal_queries_without_tenant == 0
     assert await svc.get_events("goal-loaded", tenant_ctx=_CTX_A) == persisted_events
     replayed = [event async for event in svc.subscribe_events("goal-loaded", tenant_ctx=_CTX_A)]
-    assert replayed == persisted_events
+    assert replayed == _with_seq(persisted_events)
 
 
 async def test_submit_get_and_list_preserve_agent_binding(svc: GoalService) -> None:

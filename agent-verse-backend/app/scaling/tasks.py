@@ -2601,7 +2601,30 @@ def run_goal(
         from app.agent.sanitization import sanitize_event
 
         event = sanitize_event(event)
-        # ── ALWAYS publish to Redis pub/sub first (SSE real-time feed) ────────
+        # ── Persist first, so the live event carries its durable sequence ─────
+        # SVC-05: that sequence is the SSE id / Last-Event-ID resume cursor; an
+        # event published before it was stored had none, so the id fell back to
+        # a per-connection counter. SVC-08: a failed append is buffered in the
+        # Redis outbox (replayed by the drain-goal-event-outbox beat task), never
+        # silently dropped, and the event is still published (without a sequence).
+        _seq: int | None = None
+        if event_store is not None:
+            try:
+                _, fresh_event_store, _ = _make_worker_goal_bridge()
+                _appended = await fresh_event_store.append_event(
+                    goal_id, event, tenant_ctx=tenant_ctx
+                )
+                if isinstance(_appended, int) and not isinstance(_appended, bool):
+                    _seq = _appended
+            except Exception as db_exc:
+                logger.warning("DB event append failed, buffering: %s", db_exc)
+                from app.services.event_store import buffer_failed_event_via_settings
+
+                await buffer_failed_event_via_settings(
+                    tenant_id=tenant_id, goal_id=goal_id, event=event
+                )
+
+        # ── ALWAYS publish to Redis pub/sub (SSE real-time feed) ──────────────
         # This must happen regardless of DB availability. Previously the function
         # returned early when event_store was None, silently dropping all events
         # from the SSE stream. Now Redis publish runs unconditionally.
@@ -2610,15 +2633,15 @@ def run_goal(
 
             _r = _get_sync_redis()
             if _r is not None:
-                _event_data = _json.dumps(
-                    {
-                        "goal_id": goal_id,
-                        "tenant_id": tenant_id,
-                        "type": event.get("type", ""),
-                        "payload": event,
-                    }
-                )
-                _r.publish(f"goal_events:{tenant_id}:{goal_id}", _event_data)
+                _envelope: dict[str, Any] = {
+                    "goal_id": goal_id,
+                    "tenant_id": tenant_id,
+                    "type": event.get("type", ""),
+                    "payload": event,
+                }
+                if _seq is not None:
+                    _envelope["_seq"] = _seq
+                _r.publish(f"goal_events:{tenant_id}:{goal_id}", _json.dumps(_envelope))
         except Exception as _pub_exc:
             logger.debug("redis_event_publish_failed (non-fatal): %s", _pub_exc)
 
@@ -2655,22 +2678,6 @@ def run_goal(
 
             await meter_tool_call(
                 _worker_usage_service(), tenant_id=tenant_id, goal_id=goal_id, event=event
-            )
-
-        # ── Also persist to event store (DB) for the historical Dev Log ───────
-        if event_store is None:
-            return
-        try:
-            _, fresh_event_store, _ = _make_worker_goal_bridge()
-            await fresh_event_store.append_event(goal_id, event, tenant_ctx=tenant_ctx)
-        except Exception as db_exc:
-            # SVC-08: buffered in the Redis outbox (replayed by the
-            # drain-goal-event-outbox beat task), never silently dropped.
-            logger.warning("DB event append failed, buffering: %s", db_exc)
-            from app.services.event_store import buffer_failed_event_via_settings
-
-            await buffer_failed_event_via_settings(
-                tenant_id=tenant_id, goal_id=goal_id, event=event
             )
 
     async def ensure_submitted_goal_row() -> None:
