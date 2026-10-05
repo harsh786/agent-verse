@@ -2712,6 +2712,10 @@ def create_app(
                 yield
             finally:
                 await _startup.cancel_all()
+                # C2: pooled MongoDB MCP clients (sockets, monitor threads, pins).
+                from app.mcp import mongodb_clients as _mongo_pool
+
+                _mongo_pool.close_all()
                 await stop_voice_runtime()
                 # HITL rejection subscriber + Celery event bridge (Redis pub/sub).
                 _gs_stop = getattr(app.state, "goal_service", None)
@@ -2783,6 +2787,10 @@ def create_app(
                 yield
             finally:
                 await _startup.cancel_all()
+                # C2: pooled MongoDB MCP clients (sockets, monitor threads, pins).
+                from app.mcp import mongodb_clients as _mongo_pool
+
+                _mongo_pool.close_all()
                 await stop_voice_runtime()
                 await close_retrieval_gateways()
                 await close_process_rerankers()

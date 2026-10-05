@@ -27,11 +27,10 @@ from the connector as PEM text: ``tls_ca_pem`` and, for mutual TLS or
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import shutil
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
@@ -310,15 +309,14 @@ def _pem(credentials: dict[str, Any] | None, key: str) -> str:
     return str((credentials or {}).get(key) or "").strip()
 
 
-@contextlib.contextmanager
-def _tls_files(credentials: dict[str, Any] | None) -> Iterator[dict[str, Any]]:
+def _tls_files(credentials: dict[str, Any] | None) -> tuple[dict[str, Any], Callable[[], None]]:
     """Driver TLS kwargs with tenant-supplied PEM material in private temp files.
 
     pymongo only takes certificate PATHS; the connector holds PEM text: the CA
     bundle (``tls_ca_pem``) and, for mutual TLS / MONGODB-X509, the client
     certificate + private key (``tls_client_cert`` / ``tls_client_private_key``,
     optional ``tls_client_key_password``). They are written to a 0700 directory
-    for the client's lifetime and removed after.
+    that lives as long as the (pooled) client; ``cleanup()`` removes it.
     """
     ca = _pem(credentials, "tls_ca_pem")
     cert = _pem(credentials, "tls_client_cert")
@@ -332,9 +330,12 @@ def _tls_files(credentials: dict[str, Any] | None) -> Iterator[dict[str, Any]]:
     if key and "PRIVATE KEY-----" not in key:
         raise MongoCredentialError("tls_client_private_key must be a PEM-encoded private key")
     if not ca and not cert:
-        yield {}
-        return
+        return {}, lambda: None
     tmpdir = tempfile.mkdtemp(prefix="av-mcp-mongo-tls-")
+
+    def _cleanup() -> None:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
     try:
         kwargs: dict[str, Any] = {"tls": True}
         if ca:
@@ -350,9 +351,10 @@ def _tls_files(credentials: dict[str, Any] | None) -> Iterator[dict[str, Any]]:
             password = _pem(credentials, "tls_client_key_password")
             if password:
                 kwargs["tlsCertificateKeyFilePassword"] = password
-        yield kwargs
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    except BaseException:
+        _cleanup()
+        raise
+    return kwargs, _cleanup
 
 
 def _db_name(uri: str, arguments: dict[str, Any], credentials: dict[str, Any] | None) -> str:
@@ -382,6 +384,8 @@ async def call_tool(
     tool_name: str,
     arguments: dict[str, Any],
     credentials: dict[str, Any] | None = None,
+    tenant_ctx: Any = None,
+    server_id: str = "",
 ) -> dict[str, Any]:
     from app.net.mongodb_policy import (
         MongoOperatorError,
@@ -414,18 +418,24 @@ async def call_tool(
             "status": "dependency_missing",
         }
 
-    from app.ingestion.connector_egress import pin_source_dsn
+    from app.mcp import mongodb_clients
 
+    tenant_id = str(getattr(tenant_ctx, "tenant_id", "") or "")
+    key = (tenant_id, str(server_id or ""), mongodb_clients.fingerprint(uri, credentials))
     try:
-        with _tls_files(credentials) as tls_kwargs:
-            kwargs.update(tls_kwargs)
-            # Every URI host (SRV targets expanded) is checked and pinned for the call.
-            async with pin_source_dsn(uri, context="mcp builtin mongodb") as pins:
-                _check_uri_options(pins.dsn, credentials)  # incl. SRV TXT-record options
-                assert_tls_not_weakened(pins.dsn, credentials)
-                return await asyncio.to_thread(
-                    _call_sync, pins.dsn, kwargs, tool_name, arguments, credentials
-                )
+        entry = mongodb_clients.acquire(key)
+        if entry is None:
+            entry = await _open_client(key, uri, kwargs, credentials)
+        try:
+            return await asyncio.to_thread(_call_sync, entry, tool_name, arguments, credentials)
+        except Exception as exc:
+            from pymongo.errors import ConfigurationError, ConnectionFailure
+
+            if isinstance(exc, ConnectionFailure | ConfigurationError):
+                mongodb_clients.discard(entry)  # rebuilt (and re-checked) next call
+            raise
+        finally:
+            mongodb_clients.release(entry)
     except MongoTlsPolicyError as exc:
         return {"error": str(exc), "status": "tls_refused"}
     except MongoCredentialError as exc:
@@ -435,6 +445,51 @@ async def call_tool(
     except Exception as exc:
         logger.warning("mongodb_call_tool_error tool=%s error=%s", tool_name, str(exc)[:200])
         return {"error": str(exc)}
+
+
+async def _open_client(
+    key: tuple[str, str, str],
+    uri: str,
+    kwargs: dict[str, Any],
+    credentials: dict[str, Any] | None,
+) -> Any:
+    """Build a pooled client: hosts checked + pinned for ITS lifetime, TLS files kept."""
+    from app.ingestion import connector_egress
+    from app.mcp import mongodb_clients
+    from app.net.mongodb_policy import assert_tls_not_weakened
+
+    # Every URI host (SRV targets expanded) is checked; the pins live as long as
+    # the client (its monitor threads resolve those names while it is open).
+    pins, release_pins = await asyncio.to_thread(
+        connector_egress.hold_source_dsn_pins, uri, context="mcp builtin mongodb"
+    )
+
+    def _no_tls_files() -> None:
+        return None
+
+    cleanup_tls: Callable[[], None] = _no_tls_files
+    try:
+        _check_uri_options(pins.dsn, credentials)  # incl. SRV TXT-record options
+        assert_tls_not_weakened(pins.dsn, credentials)
+        tls_kwargs, cleanup_tls = _tls_files(credentials)
+        client = await asyncio.to_thread(_build_client, pins.dsn, {**kwargs, **tls_kwargs})
+    except BaseException:
+        cleanup_tls()
+        release_pins()
+        raise
+    try:
+        await asyncio.to_thread(_first_contact, client, kwargs)
+    except BaseException:
+        client.close()
+        cleanup_tls()
+        release_pins()
+        raise
+
+    def _closer() -> None:
+        cleanup_tls()
+        release_pins()
+
+    return mongodb_clients.insert(key, client, _closer, dsn=pins.dsn)
 
 
 def _serialize(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -619,13 +674,22 @@ def _seed_selector(seeds: set[tuple[str, int]]) -> Any:
     return _select
 
 
-def _call_sync(
-    dsn: str,
-    kwargs: dict[str, Any],
-    tool_name: str,
-    arguments: dict[str, Any],
-    credentials: dict[str, Any] | None,
-) -> dict[str, Any]:
+def _first_contact(client: Any, kwargs: dict[str, Any]) -> None:
+    """Reach the server once, bounded by the server-selection timeout.
+
+    Under the per-call operation timeout pymongo ignores serverSelectionTimeoutMS,
+    so an unreachable / TLS-failing host would take the whole tool timeout to
+    fail. A new pooled client pings first (one round trip per client lifetime).
+    """
+    import pymongo
+
+    _, _, timeout_ms = _bounds()
+    selection_ms = min(int(kwargs.get("serverSelectionTimeoutMS") or 5000), timeout_ms)
+    with pymongo.timeout(selection_ms / 1000.0):
+        client["admin"].command("ping")
+
+
+def _build_client(dsn: str, kwargs: dict[str, Any]) -> Any:
     import pymongo
     from pymongo.uri_parser import parse_uri
 
@@ -640,11 +704,15 @@ def _call_sync(
     # Monitors and pools never open a socket to a member the URI did not list.
     _install_member_guard()
     kwargs["event_listeners"] = [*kwargs.get("event_listeners", []), _MemberGuard(seeds)]
-    # Closed before the pin block ends: monitor threads resolve hosts while open.
-    client: Any = pymongo.MongoClient(dsn, **kwargs)
-    try:
-        db_name = _db_name(dsn, arguments, credentials)
-        coll_name = str(arguments.get("collection") or "documents")
-        return _run_tool(client[db_name], db_name, coll_name, tool_name, arguments)
-    finally:
-        client.close()
+    return pymongo.MongoClient(dsn, **kwargs)
+
+
+def _call_sync(
+    entry: Any,
+    tool_name: str,
+    arguments: dict[str, Any],
+    credentials: dict[str, Any] | None,
+) -> dict[str, Any]:
+    db_name = _db_name(entry.dsn, arguments, credentials)
+    coll_name = str(arguments.get("collection") or "documents")
+    return _run_tool(entry.client[db_name], db_name, coll_name, tool_name, arguments)

@@ -578,6 +578,11 @@ class Settings(BaseSettings):
     mongodb_tool_default_limit: int = 100
     mongodb_tool_max_documents: int = 1000
     mongodb_tool_timeout_ms: int = 15000
+    # Pooled MongoClients per (tenant, connector, credentials) (C2): bounded LRU,
+    # closed after this idle time / total age (hosts are re-checked on rebuild).
+    mongodb_client_cache_size: int = 64
+    mongodb_client_idle_ttl_s: int = 300
+    mongodb_client_max_age_s: int = 1800
     ingestion_internal_source_allowlist: str = ""  # comma-separated hostnames
     # Connector drivers are pinned to the addresses the egress check validated
     # (no DNS-rebinding window). A driver that resolves hosts outside Python and

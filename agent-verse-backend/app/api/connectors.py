@@ -772,6 +772,7 @@ async def update_connector(
             detail="connector secret storage failed",
         ) from exc
     updated = await reg.update(server_id, cfg, tenant_ctx=tenant_ctx)
+    _close_pooled_clients(tenant_ctx.tenant_id, server_id)
     if not updated:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1699,6 +1700,18 @@ async def _purge_connector_rows(db: Any, tenant_id: str, server_id: str) -> None
         )
 
 
+def _close_pooled_clients(tenant_id: str, server_id: str) -> None:
+    """Close the pooled driver clients of a connector that changed or went away.
+
+    This replica's clients close now; other replicas never reuse them for new
+    credentials (the credential fingerprint is part of the pool key) and close
+    them by idle TTL.
+    """
+    from app.mcp import mongodb_clients
+
+    mongodb_clients.evict(tenant_id, server_id)
+
+
 @router.delete("/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def unregister_connector(request: Request, server_id: str) -> None:
     """Remove a connector AND everything it holds (MCPREG-05).
@@ -1735,6 +1748,7 @@ async def unregister_connector(request: Request, server_id: str) -> None:
     if drop is not None:
         drop((tenant_ctx.tenant_id, server_id))
     removed = await reg.unregister(server_id, tenant_ctx=tenant_ctx)
+    _close_pooled_clients(tenant_ctx.tenant_id, server_id)
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

@@ -34,6 +34,9 @@ class _FakeCollection:
 
 
 class _FakeDB:
+    def command(self, *_a: Any, **_k: Any) -> dict[str, Any]:
+        return {"ok": 1.0}  # the first-contact ping
+
     def __getitem__(self, name: str) -> _FakeCollection:
         return _FakeCollection(name)
 
@@ -103,7 +106,12 @@ async def test_tenant_uri_and_auth_options_are_used(
     assert client.kwargs["tls"] is True  # tls=false is refused (MDB-07)
     # Single host: no discovery of members the server advertises.
     assert client.kwargs["directConnection"] is True
-    assert client.db_names == ["tenant_db"]
+    assert client.db_names == ["admin", "tenant_db"]  # first-contact ping, then the call
+    # Pooled (C2): kept open for the next call, closed when evicted.
+    from app.mcp import mongodb_clients
+
+    assert not client.closed
+    mongodb_clients.close_all()
     assert client.closed
 
 

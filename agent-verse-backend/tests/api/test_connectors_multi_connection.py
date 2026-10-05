@@ -55,6 +55,9 @@ class _Mongo:
                 return 1
 
         class _DB:
+            def command(self, *_a: Any, **_k: Any) -> dict[str, Any]:
+                return {"ok": 1.0}  # the first-contact ping
+
             def __getitem__(self, coll: str) -> _Coll:
                 return _Coll(coll)
 
@@ -421,7 +424,9 @@ async def test_qualified_names_route_to_their_connection(world: dict[str, Any]) 
     )
 
     assert direct.success and by_dotted.success and by_slug.success
-    assert ["8.8.4.4" in d for d in _Mongo.dsns] == [True, True, False]
+    # One pooled client per connection (C2): analytics-db's served both of its
+    # calls, the orders-db call built its own.
+    assert ["8.8.4.4" in d for d in _Mongo.dsns] == [True, False]
     assert not ambiguous.success and "several connectors" in (ambiguous.error or "")
 
 
