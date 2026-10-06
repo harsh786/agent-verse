@@ -655,10 +655,13 @@ async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
         raise HTTPException(503, "Trigger dispatcher unavailable")
 
     from app.triggers.webhooks import ingress as _ingress
+    from app.triggers.webhooks import replay as _replay
 
     body_bytes = await _ingress.read_capped_body(request)
     spec = _spec_for_dispatch(rec)
     secret = str(getattr(spec, "webhook_signature_secret", "") or "")
+    message_id = _ingress.firing_message_id(request.headers, body_bytes)
+    guard_key = ""
     if secret:
         candidates = [secret]
         prev = str(rec.get("previous_webhook_secret", "") or "")
@@ -666,15 +669,36 @@ async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
             candidates.append(prev)
         # Constant-time HMAC, optional signed timestamp (replay window), B2.
         _ingress.check_signature(request.headers, body_bytes, candidates)
+        # B2-GAP-1: identity from the signed bytes, never the unsigned delivery
+        # id header; a legacy body-only signature dedupes on its body, unwindowed.
+        guard_key = _ingress.signed_replay_key(request.headers, body_bytes)
+        if guard_key.startswith("signed-body:"):
+            message_id = guard_key
 
     payload = _ingress.parse_body(body_bytes, request.headers.get("content-type", ""))
-    event = await dispatcher.dispatch(
-        spec,
-        payload,
-        tenant_ctx,
-        message_id=_ingress.firing_message_id(request.headers, body_bytes),
-        dead_letter_throttled=False,
-    )
+
+    async def _dispatch() -> Any:
+        return await dispatcher.dispatch(
+            spec, payload, tenant_ctx, message_id=message_id, dead_letter_throttled=False
+        )
+
+    try:
+        event = await _replay.guarded_dispatch(
+            getattr(request.app.state, "db_session_factory", None),
+            tenant_ctx.tenant_id,
+            str(getattr(spec, "trigger_id", "") or ""),
+            guard_key,
+            _dispatch,
+            webhook_type="webhook",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # The replay guard could not be read (or the dispatch failed): a
+        # retryable refusal, never a replay fired on a blind guard.
+        raise HTTPException(
+            status_code=503, detail="Webhook could not be dispatched; retry"
+        ) from exc
     _ingress.raise_for_skip(getattr(event, "skip_reason", None))
     return {
         "schedule_id": rec.get("schedule_id"),

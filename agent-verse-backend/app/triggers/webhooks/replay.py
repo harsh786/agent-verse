@@ -22,15 +22,28 @@ record. Per vendor:
   not the payload) for as long as the trigger exists and the secret that signed
   it is still accepted; the retention job deletes rows of deleted triggers and
   rows signed before a completed secret rotation (they no longer verify).
+* **Generic ``webhook`` triggers** (B2-GAP-1) — the legacy body-only signature
+  (no ``X-Webhook-Timestamp``) had the same hole: the delivery id is an unsigned
+  header, so a captured delivery replayed under a fresh one fired again. It now
+  follows the GitHub rule (``signed-body:`` key, dedup identity and guard row).
+  A timestamped delivery is guarded on its exact signed bytes (``signed-ts:``)
+  for the replay window only; those rows are dead once the window has passed.
 """
 
 from __future__ import annotations
 
 import os
 import time
+from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
+import structlog
 from fastapi import HTTPException
+
+from app.triggers.webhooks.ingress import REPLAY_WINDOW_SECONDS
+
+_log = structlog.get_logger(__name__)
 
 # How old a vendor-signed timestamp may be (capped by the dedup retention).
 SIGNED_MAX_AGE_SECONDS = 72 * 3600
@@ -132,9 +145,56 @@ async def record_delivered(db: Any, tenant_id: str, trigger_id: str, key: str) -
         )
 
 
+def _ran(event: Any) -> bool:
+    """The delivery reached its goal (or was already running / a dedup no-op)."""
+    return bool(getattr(event, "goal_id", None)) or getattr(event, "skip_reason", None) in (
+        "dedup",
+        "goal_in_progress",
+    )
+
+
+async def guarded_dispatch(
+    db: Any,
+    tenant_id: str,
+    trigger_id: str,
+    key: str,
+    dispatch: Callable[[], Awaitable[Any]],
+    *,
+    log_event: str = "webhook_replay_refused",
+    **log_fields: Any,
+) -> Any:
+    """``dispatch()`` unless a delivery with the signed ``key`` already ran.
+
+    A replay found in the guard is answered as a dedup no-op (never dispatched).
+    Only a delivery that RAN is remembered: a throttled / failed one must stay
+    deliverable by the sender's retry. A guard read error propagates (the caller
+    answers 503 rather than risk firing a replay); a write error is logged (the
+    dispatcher's trigger_events row still dedupes it until the purge). An empty
+    ``key`` or no ``db`` dispatches unguarded.
+    """
+    guarded = bool(key) and db is not None
+    if guarded and await already_delivered(db, tenant_id, trigger_id, key):
+        _log.warning(log_event, tenant_id=tenant_id, trigger_id=trigger_id, **log_fields)
+        return SimpleNamespace(skip_reason="dedup", goal_id=None, goal_created=False)
+    event = await dispatch()
+    if guarded and _ran(event):
+        try:
+            await record_delivered(db, tenant_id, trigger_id, key)
+        except Exception as exc:
+            _log.warning("webhook_replay_guard_write_failed", error=str(exc)[:200])
+    return event
+
+
+# A timestamped generic delivery (``signed-ts:``) can only verify inside the
+# replay window, so its guard row is dead well after it (the margin covers
+# clock skew between the API replicas and the database).
+TIMESTAMPED_GUARD_TTL_SECONDS = 2 * REPLAY_WINDOW_SECONDS + 600
+
+
 # Retention (app.scaling.tasks): a guard row is dead once its trigger is gone,
 # or once a secret rotation completed after it was recorded (the secret that
-# signed it is no longer accepted, so the delivery cannot verify again).
+# signed it is no longer accepted, so the delivery cannot verify again), or —
+# for a timestamped generic delivery — once its replay window has passed.
 def purge_sql(extra_filter: str = "") -> str:
     """Batched DELETE of dead guard rows; ``extra_filter`` ("AND ...", over the
     columns ``tenant_id`` / ``trigger_id``) narrows it (e.g. legal-hold exemption)."""
@@ -147,6 +207,8 @@ def purge_sql(extra_filter: str = "") -> str:
         "WHERE s.id IS NULL OR (s.webhook_secret_grace_until IS NOT NULL "
         " AND s.webhook_secret_grace_until < NOW() "
         " AND g.first_seen_at < s.webhook_secret_grace_until "
-        f"   - make_interval(secs => {SECRET_GRACE_SECONDS}))"
+        f"   - make_interval(secs => {SECRET_GRACE_SECONDS})) "
+        "OR (left(g.signed_key, 10) = 'signed-ts:' "
+        f" AND g.first_seen_at < NOW() - make_interval(secs => {TIMESTAMPED_GUARD_TTL_SECONDS}))"
         f") dead WHERE TRUE{extra_filter} LIMIT :lim)"
     )

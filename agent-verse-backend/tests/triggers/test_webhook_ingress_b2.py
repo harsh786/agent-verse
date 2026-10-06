@@ -177,9 +177,12 @@ def test_form_body_is_the_payload_and_the_delivery_id_its_identity() -> None:
     disp = _Dispatcher()
     client, _, _ = _client(disp)
     body = b"ticket=TCK-9&priority=P2"
+    # Timestamped scheme: the sender's delivery id is the identity (a legacy
+    # body-only signature keys on the signed body instead, B2-GAP-1).
+    ts = str(int(time.time()))
     r = client.post(f"/triggers/webhooks/webhook/{TOKEN}", content=body, headers={
-        "content-type": "application/x-www-form-urlencoded", "x-signature": _sig(SECRET, body),
-        "x-delivery-id": "dlv-77"})
+        "content-type": "application/x-www-form-urlencoded", "x-webhook-timestamp": ts,
+        "x-signature": _sig(SECRET, f"{ts}.".encode() + body), "x-delivery-id": "dlv-77"})
     assert r.status_code == 200, r.text
     call = disp.calls[0]
     assert call["payload"]["ticket"] == "TCK-9" and call["payload"]["priority"] == "P2"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import uuid
-from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -1057,6 +1056,14 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     ``"{X-Webhook-Timestamp}.{body}"`` with a 300 s replay window); the
     sender's delivery id makes a redelivery run once; a throttled delivery is
     answered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).
+
+    Replay protection of a signed generic delivery (B2-GAP-1): the delivery-id
+    headers are not signed, so identity comes from the signed bytes. A legacy
+    body-only signature dedupes on the signed body, unwindowed, and the body of
+    every delivery that ran is remembered (``vendor_webhook_replay_guard``) for as
+    long as the secret that signed it is accepted: the same signed body never
+    fires twice. Senders whose events can repeat a byte-identical body must use
+    the timestamped scheme, whose exact signed bytes are guarded for the window.
     """
     from app.triggers.webhooks import ingress as _ingress
 
@@ -1220,6 +1227,7 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     from app.triggers.webhooks import replay as _replay
 
     guard_db = _get_db(request)
+    generic_key = ""
     matched = 0
     failed = 0
     results: list[Any] = []
@@ -1253,6 +1261,7 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             if generic:
                 # Constant-time HMAC, optional signed timestamp (replay window).
                 _ingress.check_signature(request.headers, body_bytes, candidates)
+                generic_key = _ingress.signed_replay_key(request.headers, body_bytes)
             verified = generic
             # Jira Connect apps send "Authorization: JWT ..." instead of a body
             # signature header (DEF-5).
@@ -1280,6 +1289,13 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
         vendor_signed = bool(secret) and not generic and bool(signed_message_id)
         guard_key = ""
+        # B2-GAP-1: a legacy body-only generic signature keys on its signed body
+        # (the delivery id is an unsigned header) and, like GitHub, is guarded.
+        generic_body_signed = bool(secret) and generic and generic_key.startswith(
+            "signed-body:"
+        )
+        if bool(secret) and generic and guard_db is not None:
+            guard_key = generic_key
         if vendor_signed and webhook_type in _BODY_SIGNED_VENDORS:
             event_time = _replay.signed_event_time(webhook_type, body)
             if event_time is not None:
@@ -1312,39 +1328,32 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                 message_id = sf_message_id
             elif vendor_signed:
                 message_id = signed_message_id
+            elif generic_body_signed:
+                message_id = generic_key
             else:
                 message_id = delivery_message_id
-            guard_trigger = str(getattr(spec, "trigger_id", "") or "")
-            if guard_key and await _replay.already_delivered(
-                guard_db, tenant_id, guard_trigger, guard_key
-            ):
-                # Ran before and its trigger_events row is gone: a replay.
-                logger.warning(
-                    "vendor_webhook_replay_refused",
-                    webhook_type=webhook_type,
-                    tenant_id=tenant_id,
-                    trigger_id=guard_trigger,
-                )
-                results.append(SimpleNamespace(skip_reason="dedup", goal_id=None))
-                continue
+
             # A throttled delivery is answered 429 (the sender retries) rather
-            # than dead-lettered (B2-1).
-            event = await dispatcher.dispatch(
-                spec, enriched, caller, message_id=message_id, dead_letter_throttled=False
+            # than dead-lettered (B2-1). A delivery whose signed key already ran
+            # (its trigger_events row may be purged) is a dedup no-op.
+            async def _dispatch(
+                spec: Any = spec, message_id: str = message_id, enriched: Any = enriched
+            ) -> Any:
+                return await dispatcher.dispatch(
+                    spec, enriched, caller, message_id=message_id, dead_letter_throttled=False
+                )
+
+            results.append(
+                await _replay.guarded_dispatch(
+                    guard_db,
+                    tenant_id,
+                    str(getattr(spec, "trigger_id", "") or ""),
+                    guard_key,
+                    _dispatch,
+                    log_event="webhook_replay_refused",
+                    webhook_type=webhook_type,
+                )
             )
-            results.append(event)
-            ran = bool(getattr(event, "goal_id", None)) or getattr(
-                event, "skip_reason", None
-            ) in ("dedup", "goal_in_progress")
-            if guard_key and ran:
-                # Only a delivery that ran is remembered: a throttled / failed
-                # one must stay deliverable by the sender's retry.
-                try:
-                    await _replay.record_delivered(guard_db, tenant_id, guard_trigger, guard_key)
-                except Exception as exc:  # trigger_events still dedupes it for now
-                    logger.warning(
-                        "vendor_webhook_replay_guard_write_failed", error=str(exc)[:200]
-                    )
         except Exception as exc:
             # Was suppressed and still answered "accepted", so the platform never
             # redelivered an event that fired nothing.

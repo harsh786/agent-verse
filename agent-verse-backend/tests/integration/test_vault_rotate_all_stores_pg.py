@@ -63,7 +63,8 @@ async def _insert(conn: Any, table: str, values: dict[str, Any]) -> None:
     names = ", ".join(row)
     params = ", ".join(
         f"CAST(:{k} AS jsonb)" if isinstance(v, str) and v.startswith(("{", "["))
-        and k in ("connection_config", "config", "announcement", "evidence_refs", "metadata")
+        and k in ("connection_config", "config", "announcement", "evidence_refs", "metadata",
+                  "channel_config")
         else f":{k}"
         for k, v in row.items()
     )
@@ -142,6 +143,26 @@ async def env(pg_url: str, redis_url: str) -> Any:
                 {"id": f"au{i}-{t}", "tenant_id": t, "announcement": "{}", "state": "open",
                  "sealed_keys": old.encrypt(f"keys-{t}")},
             )
+        # Messaging-gateway bindings (B2-GAP-2): T2 sealed with the platform vault,
+        # T1 with its tenant envelope key (left alone by vault-rotate).
+        await _insert(
+            conn, "channel_tenant_mappings",
+            {"id": f"ctm-{T2}", "tenant_id": T2, "channel_type": "telegram",
+             "channel_id": f"bot-{T2}",
+             "channel_config": json.dumps(
+                 {"secret_enc": old.encrypt(f"bind-secret-{T2}"),
+                  "outbound_token_enc": old.encrypt(f"bind-out-{T2}"),
+                  "verify_token_enc": "", "org_id": "o"}
+             )},
+        )
+        await _insert(
+            conn, "channel_tenant_mappings",
+            {"id": f"ctm-{T1}", "tenant_id": T1, "channel_type": "telegram",
+             "channel_id": f"bot-{T1}",
+             "channel_config": json.dumps(
+                 {"secret_enc": TENANT_CIPHER_PREFIX + tenant_vault.encrypt("bind-t1")}
+             )},
+        )
     redis = aioredis.from_url(redis_url, decode_responses=True)
     await redis.set(f"mcp:connector_secrets:{T1}:srv:token", old.encrypt("conn-secret"))
     await redis.set(
@@ -184,6 +205,10 @@ async def _all_ciphertexts(env: Any) -> list[tuple[str, str]]:
             out.append(("agent_key", p[len("vault:v1:"):]))
         for (k,) in (await q("SELECT sealed_keys FROM auction_registry WHERE tenant_id IN (:a,:b)")):
             out.append(("auction", k))
+        for (c,) in (await q("SELECT channel_config FROM channel_tenant_mappings WHERE tenant_id = :b")):
+            cfg = c if isinstance(c, dict) else json.loads(c)
+            out += [("binding.secret", cfg["secret_enc"]),
+                    ("binding.outbound", cfg["outbound_token_enc"])]
     r = env["redis"]
     out.append(("redis.connector", await r.get(f"mcp:connector_secrets:{T1}:srv:token")))
     servers = json.loads(await r.get(f"mcp:servers:{T1}:srv"))["auth_config"]
@@ -250,6 +275,15 @@ async def test_rotation_moves_every_store_to_the_new_key(env: Any, monkeypatch: 
         )).fetchone()
     assert llm_t1.startswith("tv1:")
     assert env["tenant_vault"].decrypt(llm_t1[len("tv1:"):]) == "sk-t1"
+    async with env["engine"].connect() as conn:
+        (bind_t1,) = (await conn.execute(
+            text("SELECT channel_config FROM channel_tenant_mappings WHERE tenant_id = :t"),
+            {"t": T1},
+        )).fetchone()
+    bind_t1 = bind_t1 if isinstance(bind_t1, dict) else json.loads(bind_t1)
+    assert env["tenant_vault"].decrypt(bind_t1["secret_enc"][len("tv1:"):]) == "bind-t1"
+    assert done["stores"]["channel_binding_secrets"]["rotated"] >= 2
+    assert done["stores"]["channel_binding_secrets"]["tenant_key"] >= 1
 
     # 5. Idempotent: a re-run changes nothing and stays complete.
     snapshot = await _all_ciphertexts(env)

@@ -119,6 +119,10 @@ async def test_purge_deletes_only_rows_that_can_no_longer_verify(pg_url: str) ->
                 (live, "k-live", 400 * 86400),  # secret never rotated → kept
                 (rotated, "k-before", 7200),  # before the rotation → dead
                 (rotated, "k-after", 60),  # signed with the new secret → kept
+                # B2-GAP-1: a timestamped generic delivery is guarded only for
+                # its replay window.
+                (live, "signed-ts:old", replay.TIMESTAMPED_GUARD_TTL_SECONDS + 60),  # dead
+                (live, "signed-ts:fresh", 60),  # still inside the window → kept
             ]
             for trigger, key, age in rows:
                 await s.execute(
@@ -144,6 +148,6 @@ async def test_purge_deletes_only_rows_that_can_no_longer_verify(pg_url: str) ->
                     )
                 ).all()
             }
-        assert left == {"k-live", "k-after"}
+        assert left == {"k-live", "k-after", "signed-ts:fresh"}
     finally:
         await owner_engine.dispose()

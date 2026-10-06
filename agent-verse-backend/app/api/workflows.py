@@ -197,7 +197,14 @@ class _WorkflowStore:
         ``existing``, plaintext secrets vault-encrypted."""
         out = definition
         if _ws.has_masked_secret(out):
-            out = _ws.merge_masked_secrets(out, existing)
+            # B2-GAP-3: a mask nothing stored stands behind (a re-imported export,
+            # a fabricated placeholder) is refused, never stored as "".
+            from app.workflow.runner import WorkflowValidationError
+
+            try:
+                out = _ws.merge_masked_secrets(out, existing, strict=True)
+            except _ws.MaskedSecretError as exc:
+                raise WorkflowValidationError(str(exc)) from exc
         if _ws.has_plaintext_secret(out):
             out = _ws.seal_plaintext_secrets(out, await self._tenant_vault(tenant_id))
         return out
@@ -725,14 +732,19 @@ async def list_workflows(request: Request) -> list[WorkflowOut]:
 )
 async def create_workflow(request: Request, body: WorkflowCreate) -> WorkflowOut:
     """Create a new workflow definition."""
+    from app.workflow.runner import WorkflowValidationError
+
     tenant = _require_tenant(request)
     store = _get_store(request)
-    wf = await store.create(
-        tenant_id=tenant.tenant_id,
-        name=body.name,
-        description=body.description,
-        definition=body.definition,
-    )
+    try:
+        wf = await store.create(
+            tenant_id=tenant.tenant_id,
+            name=body.name,
+            description=body.description,
+            definition=body.definition,
+        )
+    except WorkflowValidationError as exc:  # e.g. a masked webhook secret (B2-GAP-3)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     from app.workflow.audit_middleware import record_workflow_created
 
     record_workflow_created(request, wf, name=body.name, source="api")
@@ -797,13 +809,18 @@ async def update_workflow(
         from app.workflow.service import PUBLISHED_EDIT_REFUSED
 
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=PUBLISHED_EDIT_REFUSED)
-    result = await store.update(
-        tenant_id=tenant.tenant_id,
-        workflow_id=workflow_id,
-        name=body.name,
-        description=body.description,
-        definition=body.definition,
-    )
+    from app.workflow.runner import WorkflowValidationError
+
+    try:
+        result = await store.update(
+            tenant_id=tenant.tenant_id,
+            workflow_id=workflow_id,
+            name=body.name,
+            description=body.description,
+            definition=body.definition,
+        )
+    except WorkflowValidationError as exc:  # e.g. a masked webhook secret (B2-GAP-3)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
     _audit(request, "updated", workflow_id, "changed=name,description,definition")

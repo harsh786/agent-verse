@@ -18,7 +18,10 @@ context, with an explicit ``tenant_id`` predicate as well):
 * ``mcp_credentials.encrypted_value`` — durable connector secrets;
 * ``workflows.definition`` / ``workflow_definitions.definition_json`` /
   ``workflow_definition_versions.definition_json`` ``enc:v1:`` values — workflow
-  webhook HMAC secrets (B2-OPEN-1).
+  webhook HMAC secrets (B2-OPEN-1);
+* ``channel_tenant_mappings.channel_config`` ``*_enc`` values — messaging-gateway
+  binding secrets (``secret_enc`` / ``outbound_token_enc`` / ``verify_token_enc``,
+  DEF-3) of tenants without an envelope key (B2-GAP-2).
 
 Redis: connector secrets (``mcp:connector_secrets:*``), OAuth tokens copied into
 connector configs (``mcp:servers:*``) and the tenant LLM-config cache
@@ -85,6 +88,9 @@ class PgStore:
     # tenant_id is a UUID column (the workflow engine tables): the tenant id is
     # matched as a UUID, and a tenant whose id is not a UUID has no rows there.
     uuid_tenant: bool = False
+    # With ``source_json``: the vault values are the (unprefixed) ``*_enc`` keys
+    # of the JSON (gateway bindings), not ``enc:v1:`` secret-named keys.
+    enc_fields: bool = False
 
 
 PG_STORES: tuple[PgStore, ...] = (
@@ -137,6 +143,18 @@ PG_STORES: tuple[PgStore, ...] = (
         ("definition_json",),
         source_json=True,
         uuid_tenant=True,
+    ),
+    # Messaging-gateway binding secrets (DEF-3, B2-GAP-2): ``channel_config.*_enc``
+    # — platform-vault ciphertext unless the tenant has an envelope key (``tv1:``,
+    # only its wrapping key depends on the master key). Last in the list, so a
+    # rotation checkpointed before this store existed resumes onto it.
+    PgStore(
+        "channel_binding_secrets",
+        "channel_tenant_mappings",
+        "id",
+        ("channel_config",),
+        source_json=True,
+        enc_fields=True,
     ),
 )
 REDIS_STORES: tuple[str, ...] = ("connector_secrets", "connector_oauth_copies", "llm_config_cache")
@@ -207,6 +225,34 @@ def _rotate_source_config(config: Any, old: Any, new: Any, report: StoreReport) 
     return out if changed else None
 
 
+def _rotate_enc_fields(config: Any, old: Any, new: Any, report: StoreReport) -> Any:
+    """A JSON config with every ``*_enc`` vault value re-encrypted (None = unchanged).
+
+    ``tv1:`` (tenant envelope) values are left alone; one that opens with neither
+    key is counted as failed and kept as it is."""
+    if isinstance(config, list):
+        items = [_rotate_enc_fields(item, old, new, report) for item in config]
+        if all(item is None for item in items):
+            return None
+        return [orig if item is None else item for orig, item in zip(config, items, strict=True)]
+    if not isinstance(config, dict):
+        return None
+    changed = False
+    out: dict[str, Any] = {}
+    for key, value in config.items():
+        new_value: Any = None
+        if str(key).endswith("_enc") and isinstance(value, str):
+            try:
+                new_value = _rotate_prefixed(value, "", old, new, report)
+            except _OpenFailedError:
+                new_value = None
+        elif isinstance(value, dict | list):
+            new_value = _rotate_enc_fields(value, old, new, report)
+        out[key] = value if new_value is None else new_value
+        changed = changed or new_value is not None
+    return out if changed else None
+
+
 # ── Postgres stores ───────────────────────────────────────────────────────────
 
 
@@ -268,7 +314,8 @@ async def _rotate_pg_batch(
             for col, value in zip(store.columns, values, strict=True):
                 if store.source_json:
                     data = json.loads(value) if isinstance(value, str) else value
-                    rotated = _rotate_source_config(data, old, new, report)
+                    codec = _rotate_enc_fields if store.enc_fields else _rotate_source_config
+                    rotated = codec(data, old, new, report)
                     if rotated is not None:
                         updates[col] = json.dumps(rotated)
                     continue
@@ -498,6 +545,7 @@ async def rotate_all_stores(
     }
     tenant_db = tenant_db or system_db
     position: dict[str, Any] = {}
+    already_recorded = False
     if system_db is not None and not dry_run:
         try:
             checkpoint = await _load_checkpoint(system_db, rotation_id)
@@ -512,6 +560,14 @@ async def rotate_all_stores(
                     run.reports[name] = StoreReport(**values)
             if checkpoint["status"] == "complete":
                 position = {"store": "__done__"}
+                # A store added after this rotation completed (e.g. gateway binding
+                # secrets, B2-GAP-2) still holds old-key values: rotate from the
+                # first such store on (the ones after it re-scan idempotently).
+                done = set((checkpoint["report"] or {}).keys())
+                missing = [s.name for s in pg_stores if s.name not in done]
+                if missing:
+                    position = {"store": missing[0]}
+                    already_recorded = True
 
     def _emit(store: str, tenant: str | None) -> None:
         if progress is not None:
@@ -592,7 +648,7 @@ async def rotate_all_stores(
         return result
     if system_db is not None:
         try:
-            if record_key_version:
+            if record_key_version and not already_recorded:
                 await _record_key_version(system_db, rotation_id)
             await _save_checkpoint(
                 system_db, rotation_id, {"store": "__done__"}, run.as_dict(), "complete"
