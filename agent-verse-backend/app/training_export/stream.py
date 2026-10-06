@@ -22,6 +22,7 @@ a 503; a failure mid-stream aborts the download).
 from __future__ import annotations
 
 import datetime
+import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -57,7 +58,7 @@ async def _candidate_batch(
     min_score: float,
     size: int,
     after: tuple[datetime.datetime, str] | None,
-) -> tuple[list[Any], dict[str, list[dict[str, Any]]]]:
+) -> tuple[list[Any], dict[str, list[dict[str, Any]]], dict[str, str]]:
     from sqlalchemy import text
 
     keyset = " AND (g.created_at, g.id) < (:after_ts, :after_id)" if after else ""
@@ -106,7 +107,41 @@ async def _candidate_batch(
                         "output": output or "",
                     }
                 )
-    return rows, steps
+        models = await _goal_models(session, tenant_id, goal_ids)
+    return rows, steps, models
+
+
+# The model a goal ran on comes from its cost attribution (``goal_cost_breakdowns``,
+# one additive row per (goal, role, model)): the executor's model when it has one
+# (most calls first — a failover can add a second), else the most-used model of
+# any role. The table is keyed by a UUID tenant id, so a tenant id that is not a
+# UUID cannot own rows there and its goals stay ``"unknown"``.
+_MODEL_SQL = (
+    "SELECT DISTINCT ON (goal_id) goal_id, model FROM goal_cost_breakdowns "
+    "WHERE tenant_id = CAST(:tid AS uuid) AND goal_id = ANY(:gids) AND model <> '' "
+    "ORDER BY goal_id, (role = 'executor') DESC, calls DESC, model"
+)
+UNKNOWN_MODEL = "unknown"
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
+async def _goal_models(session: Any, tenant_id: str, goal_ids: list[str]) -> dict[str, str]:
+    """goal_id -> model, inside the caller's RLS transaction (one indexed query)."""
+    from sqlalchemy import text
+
+    if not goal_ids or not _is_uuid(tenant_id):
+        return {}
+    rows = (
+        await session.execute(text(_MODEL_SQL), {"tid": tenant_id, "gids": goal_ids})
+    ).fetchall()
+    return {str(gid): str(model) for gid, model in rows}
 
 
 async def iter_training_examples(
@@ -122,7 +157,7 @@ async def iter_training_examples(
     after: tuple[datetime.datetime, str] | None = None
     while emitted < limit:
         size = min(batch_size, limit - emitted)
-        rows, steps = await _candidate_batch(db, tenant_id, min_score, size, after)
+        rows, steps, models = await _candidate_batch(db, tenant_id, min_score, size, after)
         for goal_id, goal_text, _created, score in rows:
             goal_steps = steps.get(str(goal_id), [])
             yield {
@@ -132,7 +167,7 @@ async def iter_training_examples(
                 "result": goal_steps[-1]["output"] if goal_steps else "",
                 "steps": goal_steps,
                 "eval_score": float(score or 0.0),
-                "model": "unknown",
+                "model": models.get(str(goal_id), UNKNOWN_MODEL),
             }
             emitted += 1
         if len(rows) < size:
@@ -146,7 +181,9 @@ async def preview_aggregate(
 ) -> dict[str, Any]:
     """Count / score stats of the first *limit* candidates in one aggregate query.
 
-    No example rows (or step outputs) are fetched.
+    No example rows (or step outputs) are fetched. ``min_score`` may be anything
+    from 0, so the histogram has a ``0.00-0.80`` bucket: scores below 0.80 used to
+    be counted in ``0.80-0.85``.
     """
     from sqlalchemy import text
 
@@ -155,7 +192,8 @@ async def preview_aggregate(
             await session.execute(
                 text(
                     "SELECT COUNT(*), AVG(score), MIN(score), MAX(score), "
-                    "COUNT(*) FILTER (WHERE score < 0.85), "
+                    "COUNT(*) FILTER (WHERE score < 0.80), "
+                    "COUNT(*) FILTER (WHERE score >= 0.80 AND score < 0.85), "
                     "COUNT(*) FILTER (WHERE score >= 0.85 AND score < 0.90), "
                     "COUNT(*) FILTER (WHERE score >= 0.90 AND score < 0.95), "
                     "COUNT(*) FILTER (WHERE score >= 0.95) "
@@ -165,13 +203,14 @@ async def preview_aggregate(
                 {"tid": tenant_id, "min_score": min_score, "lim": limit},
             )
         ).fetchone()
-    count, avg, lo, hi, b1, b2, b3, b4 = row if row is not None else (0,) * 8
+    count, avg, lo, hi, b0, b1, b2, b3, b4 = row if row is not None else (0,) * 9
     return {
         "count": int(count or 0),
         "avg_score": round(float(avg), 4) if avg is not None else 0.0,
         "min_score_found": round(float(lo), 4) if lo is not None else 0.0,
         "max_score_found": round(float(hi), 4) if hi is not None else 0.0,
         "score_distribution": {
+            "0.00-0.80": int(b0 or 0),
             "0.80-0.85": int(b1 or 0),
             "0.85-0.90": int(b2 or 0),
             "0.90-0.95": int(b3 or 0),

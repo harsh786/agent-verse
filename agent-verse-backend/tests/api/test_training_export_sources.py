@@ -44,8 +44,8 @@ def _client(goal_service: Any, *, db_state: Any = None) -> TestClient:
 
 def _rows(sql: str, _p: dict[str, Any]) -> list[Any]:
     if sql.startswith("SELECT COUNT(*)"):
-        # count, avg, min, max, then the four histogram buckets
-        return [(1, 0.93, 0.93, 0.93, 0, 0, 1, 0)]
+        # count, avg, min, max, then the five histogram buckets (a10-F234-04)
+        return [(1, 0.93, 0.93, 0.93, 0, 0, 0, 1, 0)]
     if "FROM goals g" in sql:
         return [("g1", "Summarise the Q3 report", _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC), 0.93)]
     if "FROM goal_steps" in sql:

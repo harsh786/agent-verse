@@ -84,7 +84,8 @@ def test_export_streams_every_line_from_batches() -> None:
 def test_preview_is_an_aggregate_not_a_collect() -> None:
     def rows_for(sql: str, p: dict[str, Any]) -> list[Any]:
         if sql.startswith("SELECT COUNT(*)"):
-            return [(5000, 0.9, 0.81, 0.99, 10, 20, 30, 40)]
+            # count, avg, min, max, then the five histogram buckets (a10-F234-04)
+            return [(5000, 0.9, 0.81, 0.99, 0, 10, 20, 30, 40)]
         return _paged_rows(_goal_rows(5000))(sql, p)
 
     db = RlsRecordingDb(rows_for=rows_for)

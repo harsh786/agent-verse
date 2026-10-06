@@ -86,14 +86,19 @@ def _sample(example: dict[str, Any]) -> dict[str, Any]:
 
 def _memory_preview(examples: list[dict[str, Any]]) -> dict[str, Any]:
     scores = [e["eval_score"] for e in examples]
+    # Same buckets as the DB preview (stream.preview_aggregate); min_score may be
+    # below 0.80, and those scores used to land in "0.80-0.85".
     buckets: dict[str, int] = {
+        "0.00-0.80": 0,
         "0.80-0.85": 0,
         "0.85-0.90": 0,
         "0.90-0.95": 0,
         "0.95-1.00": 0,
     }
     for s in scores:
-        if s < 0.85:
+        if s < 0.80:
+            buckets["0.00-0.80"] += 1
+        elif s < 0.85:
             buckets["0.80-0.85"] += 1
         elif s < 0.90:
             buckets["0.85-0.90"] += 1
