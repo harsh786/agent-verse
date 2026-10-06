@@ -320,7 +320,8 @@ def test_one_shot_types_fire_exactly_once(ent: LiveAPI, evidence: dict[str, Any]
             lateness = (started - due).total_seconds()
             evidence[f"{k}_lateness_s"] = round(lateness, 1)
             assert 0 <= lateness <= ONE_SHOT_LATENESS_S, f"{k} fired {lateness:.0f}s after due"
-            assert _ts(ent.json_ok("GET", f"/triggers/{sids[k]}").get("next_fire_at")).year == 9999
+            # B1-13: a fired one-shot has no next run (the column holds 9999-01-01).
+            assert ent.json_ok("GET", f"/triggers/{sids[k]}").get("next_fire_at") is None
     finally:
         _cleanup(ent, todo)
 
@@ -703,11 +704,15 @@ def test_cel_conditions_gate_beat_fires(ent: LiveAPI, evidence: dict[str, Any]) 
     -> goal; on an event-relative delay it sees the event's payload."""
     todo: list[str] = []
     try:
+        # B1-12: a condition the evaluator cannot run is refused on save (it was
+        # stored, and every fire was skipped as condition_error).
+        _trigger(ent, todo, {"trigger_type": "cron", "cron_expression": "* * * * *",
+                             "condition_cel": 'payload.goal_text.contains("ACK")'}, ACK, expect=422)
         blocked = str(_trigger(ent, todo, {"trigger_type": "cron", "cron_expression": "* * * * *",
-                                           "condition_cel": 'payload.goal_text.contains("night")'},
+                                           "condition_cel": 'payload.tenant_id == "nobody"'},
                                f"{ACK} (cel-blocked)")["schedule_id"])
         allowed = str(_trigger(ent, todo, {"trigger_type": "cron", "cron_expression": "* * * * *",
-                                           "condition_cel": 'payload.goal_text.contains("ACK")'},
+                                           "condition_cel": 'payload.goal_text != ""'},
                                f"{ACK} (cel-allowed)")["schedule_id"])
         channel = f"rw.incident.{tag()}"
         p1_only = str(_trigger(ent, todo, {"trigger_type": "relative_delay",
