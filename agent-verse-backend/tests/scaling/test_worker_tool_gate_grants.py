@@ -27,6 +27,8 @@ import pytest
 from app.governance.grants import Grant, InMemoryGrantStore
 from app.tenancy.context import PlanTier, TenantContext
 
+# Taken at import: the grant window must outlast a long full-suite run (the gate
+# checks against the real clock), so it spans days, not an hour.
 _NOW = datetime.now(UTC)
 
 
@@ -42,7 +44,7 @@ def _grant(*, tenant_id: str = "t-rv05", agent_id: str = "agent-1") -> Grant:
         grantee_agent_id=agent_id,
         scopes=("jira.*",),
         not_before=_NOW - timedelta(hours=1),
-        expires_at=_NOW + timedelta(hours=1),
+        expires_at=_NOW + timedelta(days=7),
     )
 
 
@@ -196,7 +198,7 @@ async def test_worker_gate_denies_destructive_tools_by_default_matrix(
             grantee_agent_id="agent-1",
             scopes=("*",),
             not_before=_NOW - timedelta(hours=1),
-            expires_at=_NOW + timedelta(hours=1),
+            expires_at=_NOW + timedelta(days=7),
         )
     ]
     decision = await _authorize(
