@@ -15,7 +15,8 @@ choice of an already-authorized internal path.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -35,6 +36,23 @@ _DEFAULT_SESSION_LIMIT = 500
 # A principal's folders (CHAT-D-1): the list is bounded, and so is how many one
 # principal may create (the sidebar renders them all).
 MAX_FOLDERS_PER_OWNER = 500
+
+# CHAT-D-2: a reply's thumbs (-1/0/1) on the 1..5 scale of ``goal_feedback``,
+# whose daily self-improvement pass turns a low rating with a comment into a
+# lesson (process_feedback_batch: rating <= 2).
+_GOAL_FEEDBACK_RATING = {-1: 1, 0: 3, 1: 5}
+
+
+def goal_feedback_id(tenant_id: str, message_id: str, principal: str) -> str:
+    """The ``goal_feedback`` row mirroring one person's feedback on one reply."""
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL, f"chat_feedback:{tenant_id}:{message_id}:{principal}"
+    ).hex
+
+
+class ChatFeedbackTargetError(ValueError):
+    """Feedback is given on assistant replies only."""
+
 
 # The folder a session is filed into must belong to the session's own owner.
 _FOLDER_OF_OWNER = (
@@ -708,6 +726,138 @@ class PostgresChatRepository:
                 )
             ).scalar()
             return int(value or 0)
+
+    # ── Feedback (chat_message_feedback, CHAT-D-2) ────────────────────────────
+    # One row per (message, rater). The rater is the scope's principal, who owns
+    # the session (chats are private), so every query carries both the owner
+    # predicate of the session and the rater's own.
+
+    async def upsert_feedback(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        message_id: str,
+        rating: int,
+        comment: str | None,
+        scope: ChatScope,
+    ) -> dict[str, Any] | None:
+        """Save (or edit) the caller's feedback on a reply; None when not visible.
+
+        When the reply carries a goal, the same transaction mirrors it into
+        ``goal_feedback`` (deterministic id, upserted and re-queued for the
+        self-improvement pass), so an edit never adds a second signal.
+        """
+        if scope.kind != "principal":
+            raise ValueError("feedback is given by a principal")
+        own, pp = scope.session_exists("chat_messages.session_id")
+        async with self._tx(tenant_id, scope) as s:
+            msg = (
+                await s.execute(
+                    text(
+                        "SELECT role, goal_id FROM chat_messages WHERE id = :mid "
+                        f"AND session_id = :sid AND tenant_id = :t{own} FOR KEY SHARE"
+                    ),
+                    {"mid": message_id, "sid": session_id, "t": tenant_id, **pp},
+                )
+            ).fetchone()
+            if msg is None:
+                return None
+            if msg[0] != "assistant":
+                raise ChatFeedbackTargetError("feedback is given on assistant replies only")
+            row = (
+                await s.execute(
+                    text(
+                        "INSERT INTO chat_message_feedback "
+                        "(id, tenant_id, session_id, message_id, owner_principal, rating, comment) "
+                        "VALUES (:id, :t, :sid, :mid, :p, :r, :c) "
+                        "ON CONFLICT (message_id, owner_principal) DO UPDATE SET "
+                        "rating = EXCLUDED.rating, comment = EXCLUDED.comment, "
+                        "updated_at = now() RETURNING *"
+                    ),
+                    {
+                        "id": uuid.uuid4().hex, "t": tenant_id, "sid": session_id,
+                        "mid": message_id, "p": scope.principal, "r": rating, "c": comment,
+                    },
+                )
+            ).mappings().one()
+            if msg[1]:
+                await s.execute(
+                    text(
+                        "INSERT INTO goal_feedback "
+                        "(id, goal_id, tenant_id, rating, correction, created_at) "
+                        "SELECT CAST(:id AS varchar), CAST(:gid AS varchar), "
+                        "CAST(:t AS varchar), CAST(:r AS smallint), CAST(:c AS text), now() "
+                        "WHERE EXISTS (SELECT 1 FROM goals WHERE id = :gid AND tenant_id = :t) "
+                        "ON CONFLICT (id) DO UPDATE SET rating = EXCLUDED.rating, "
+                        "correction = EXCLUDED.correction, processed_at = NULL"
+                    ),
+                    {
+                        "id": goal_feedback_id(tenant_id, message_id, str(scope.principal)),
+                        "gid": msg[1], "t": tenant_id,
+                        "r": _GOAL_FEEDBACK_RATING[rating], "c": comment,
+                    },
+                )
+            return dict(row)
+
+    async def delete_feedback(
+        self, *, tenant_id: str, session_id: str, message_id: str, scope: ChatScope
+    ) -> bool:
+        """Clear the caller's feedback on a reply (and its goal_feedback mirror)."""
+        if scope.kind != "principal":
+            raise ValueError("feedback is given by a principal")
+        own, pp = scope.session_exists("chat_message_feedback.session_id")
+        async with self._tx(tenant_id, scope) as s:
+            gone = (
+                await s.execute(
+                    text(
+                        "DELETE FROM chat_message_feedback WHERE message_id = :mid "
+                        "AND session_id = :sid AND tenant_id = :t AND owner_principal = :p"
+                        f"{own} RETURNING id"
+                    ),
+                    {
+                        "mid": message_id, "sid": session_id, "t": tenant_id,
+                        "p": scope.principal, **pp,
+                    },
+                )
+            ).fetchone()
+            if gone is None:
+                return False
+            await s.execute(
+                text("DELETE FROM goal_feedback WHERE id = :id AND tenant_id = :t"),
+                {"id": goal_feedback_id(tenant_id, message_id, str(scope.principal)),
+                 "t": tenant_id},
+            )
+            return True
+
+    async def list_feedback(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        message_ids: Sequence[str],
+        scope: ChatScope,
+    ) -> list[dict[str, Any]]:
+        """The caller's feedback on the given messages of a session (unique-index lookups)."""
+        if scope.kind != "principal" or not message_ids:
+            return []
+        own, pp = scope.session_exists("chat_message_feedback.session_id")
+        async with self._tx(tenant_id, scope) as s:
+            rows = (
+                await s.execute(
+                    text(
+                        "SELECT * FROM chat_message_feedback "
+                        "WHERE message_id = ANY(CAST(:mids AS varchar[])) "
+                        "AND owner_principal = :p AND session_id = :sid AND tenant_id = :t"
+                        f"{own}"
+                    ),
+                    {
+                        "mids": list(message_ids), "p": scope.principal, "sid": session_id,
+                        "t": tenant_id, **pp,
+                    },
+                )
+            ).mappings().all()
+            return [dict(r) for r in rows]
 
     # ── Artifacts (chat_artifacts, ORG-42) ────────────────────────────────────
     # Generated documents (kind='document', retention via expires_at) and saved

@@ -17,6 +17,8 @@ interface Props {
   streamingTokens: string;
   currentEvent: SSEEvent | null;
   onEditMessage?: (messageId: string, currentContent: string) => void;
+  onFeedback?: (messageId: string, rating: -1 | 1, comment: string | null) => void;
+  onClearFeedback?: (messageId: string) => void;
   /** When provided, an empty thread shows suggestion prompts that send on click. */
   onSuggestionSelect?: (prompt: string) => void;
 }
@@ -27,6 +29,8 @@ export function ChatThread({
   streamingTokens,
   currentEvent,
   onEditMessage,
+  onFeedback,
+  onClearFeedback,
   onSuggestionSelect,
 }: Props): JSX.Element {
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -80,6 +84,8 @@ export function ChatThread({
             isStreaming={isLastAssistant && isStreaming}
             streamingTokens={isLastAssistant && isStreaming ? streamingTokens : undefined}
             onEdit={onEditMessage}
+            onFeedback={onFeedback}
+            onClearFeedback={onClearFeedback}
           />
         );
       })}

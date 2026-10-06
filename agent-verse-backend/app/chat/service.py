@@ -334,6 +334,20 @@ class ChatFolderLimitError(ValueError):
 
 
 @dataclass
+class _Feedback:
+    """One person's feedback on one chat reply (CHAT-D-2)."""
+
+    message_id: str
+    session_id: str
+    tenant_id: str
+    owner_principal: str
+    rating: int
+    comment: str | None = None
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
+
+
+@dataclass
 class _Artifact:
     id: str
     session_id: str
@@ -399,6 +413,8 @@ class ChatService:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
         self._folders: dict[str, _Folder] = {}
+        # In-memory feedback store: (tenant, message_id, principal) -> feedback.
+        self._feedback: dict[tuple[str, str, str], _Feedback] = {}
         self._artifacts: dict[str, _Artifact] = {}
         self._usage: dict[str, _Usage] = {}
         self._router = IntentRouter()
@@ -1393,6 +1409,107 @@ class ChatService:
             },
             scope=scope,
         )
+
+    # ── Feedback on replies (CHAT-D-2) ────────────────────────────────────────
+    # Thumbs (-1/0/1) and an optional comment, one per person per reply: rating
+    # again edits it. Durable in chat_message_feedback when a repository is
+    # wired; a reply that carries a goal also feeds goal_feedback (the
+    # self-improvement signal) in the same transaction.
+
+    @staticmethod
+    def _feedback_from_row(row: dict[str, Any]) -> _Feedback:
+        return _Feedback(
+            message_id=str(row["message_id"]),
+            session_id=str(row["session_id"]),
+            tenant_id=str(row["tenant_id"]),
+            owner_principal=str(row["owner_principal"]),
+            rating=int(row["rating"]),
+            comment=row.get("comment"),
+            created_at=row.get("created_at") or _now(),
+            updated_at=row.get("updated_at") or _now(),
+        )
+
+    async def asubmit_feedback(
+        self,
+        *,
+        session_id: str,
+        message_id: str,
+        tenant_id: str,
+        rating: int,
+        comment: str | None,
+        scope: ChatScope,
+    ) -> _Feedback | None:
+        """Save or edit the caller's feedback; None when the reply is not theirs.
+
+        Raises ChatFeedbackTargetError for a message that is not an assistant
+        reply.
+        """
+        from app.chat.repository import ChatFeedbackTargetError
+
+        if scope.kind != "principal":
+            raise ValueError("feedback is given by a principal")
+        if self._repository is None:
+            msg = await self.aget_message(session_id, message_id, tenant_id, scope=scope)
+            if msg is None:
+                return None
+            if msg.role != "assistant":
+                raise ChatFeedbackTargetError("feedback is given on assistant replies only")
+            key = (tenant_id, message_id, str(scope.principal))
+            fb = self._feedback.get(key)
+            if fb is None:
+                fb = _Feedback(
+                    message_id=message_id, session_id=session_id, tenant_id=tenant_id,
+                    owner_principal=str(scope.principal), rating=rating, comment=comment,
+                )
+                self._feedback[key] = fb
+            else:
+                fb.rating, fb.comment, fb.updated_at = rating, comment, _now()
+            return fb
+        row = await self._repository.upsert_feedback(
+            tenant_id=tenant_id, session_id=session_id, message_id=message_id,
+            rating=rating, comment=comment, scope=scope,
+        )
+        return self._feedback_from_row(row) if row is not None else None
+
+    async def adelete_feedback(
+        self, *, session_id: str, message_id: str, tenant_id: str, scope: ChatScope
+    ) -> bool:
+        if scope.kind != "principal":
+            return False
+        if self._repository is None:
+            key = (tenant_id, message_id, str(scope.principal))
+            fb = self._feedback.get(key)
+            if fb is None or fb.session_id != session_id:
+                return False
+            del self._feedback[key]
+            return True
+        return bool(
+            await self._repository.delete_feedback(
+                tenant_id=tenant_id, session_id=session_id, message_id=message_id, scope=scope
+            )
+        )
+
+    async def alist_feedback(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        message_ids: list[str],
+        scope: ChatScope,
+    ) -> dict[str, _Feedback]:
+        """The caller's feedback on these messages of a session, by message id."""
+        if scope.kind != "principal" or not message_ids:
+            return {}
+        if self._repository is None:
+            found = (
+                self._feedback.get((tenant_id, mid, str(scope.principal)))
+                for mid in message_ids
+            )
+            return {f.message_id: f for f in found if f is not None and f.session_id == session_id}
+        rows = await self._repository.list_feedback(
+            tenant_id=tenant_id, session_id=session_id, message_ids=message_ids, scope=scope
+        )
+        return {str(r["message_id"]): self._feedback_from_row(r) for r in rows}
 
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
 

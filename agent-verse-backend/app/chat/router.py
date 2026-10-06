@@ -202,6 +202,12 @@ def _session_to_dict(s: Any) -> dict[str, Any]:
     }
 
 
+def _feedback_to_dict(f: Any) -> dict[str, Any] | None:
+    if f is None:
+        return None
+    return {"rating": f.rating, "comment": f.comment, "updated_at": f.updated_at.isoformat()}
+
+
 def _message_to_dict(m: Any) -> dict[str, Any]:
     return {
         "id": m.id,
@@ -406,7 +412,17 @@ async def list_messages(
 ) -> dict[str, Any]:
     tenant, svc, scope, _s = await _owned(request, session_id)
     msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=limit, scope=scope)
-    return {"messages": [_message_to_dict(m) for m in msgs]}
+    # CHAT-D-2: each reply carries the caller's own saved feedback (or None).
+    feedback = await svc.alist_feedback(
+        session_id=session_id, tenant_id=tenant.tenant_id,
+        message_ids=[m.id for m in msgs if m.role == "assistant"], scope=scope,
+    )
+    return {
+        "messages": [
+            {**_message_to_dict(m), "feedback": _feedback_to_dict(feedback.get(m.id))}
+            for m in msgs
+        ]
+    }
 
 
 @router.post("/sessions/{session_id}/messages")
@@ -1258,22 +1274,46 @@ async def disconnect_service(service_id: str, request: Request) -> None:
 # ── Feedback ──────────────────────────────────────────────────────────────────
 
 
+# CHAT-D-2: feedback is saved (chat_message_feedback), one per person per reply;
+# posting again edits it. A reply that carries a goal also feeds goal_feedback,
+# the signal the daily self-improvement pass learns from.
+
+
 class FeedbackRequest(BaseModel):
     rating: int = Field(..., ge=-1, le=1)
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=4000)
 
 
 @router.post("/sessions/{session_id}/messages/{message_id}/feedback")
 async def submit_feedback(
     session_id: str, message_id: str, body: FeedbackRequest, request: Request
 ) -> dict[str, Any]:
+    from app.chat.repository import ChatFeedbackTargetError
+
     tenant, svc, scope, _s = await _owned(request, session_id)
-    msg = await svc.aget_message(session_id, message_id, tenant.tenant_id, scope=scope)
-    if not msg:
+    comment = (body.comment or "").strip() or None
+    try:
+        fb = await svc.asubmit_feedback(
+            session_id=session_id, message_id=message_id, tenant_id=tenant.tenant_id,
+            rating=body.rating, comment=comment, scope=scope,
+        )
+    except ChatFeedbackTargetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if fb is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    # Store feedback in metadata
-    msg.metadata["feedback"] = {"rating": body.rating, "comment": body.comment}
-    return {"status": "ok", "rating": body.rating}
+    return {"status": "ok", "message_id": message_id, **(_feedback_to_dict(fb) or {})}
+
+
+@router.delete(
+    "/sessions/{session_id}/messages/{message_id}/feedback",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def clear_feedback(session_id: str, message_id: str, request: Request) -> None:
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    if not await svc.adelete_feedback(
+        session_id=session_id, message_id=message_id, tenant_id=tenant.tenant_id, scope=scope
+    ):
+        raise HTTPException(status_code=404, detail="Feedback not found")
 
 
 # ── Export ────────────────────────────────────────────────────────────────────

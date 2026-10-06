@@ -45,7 +45,7 @@ import {
   useDeleteFolder,
   useMoveSessionToFolder,
 } from './hooks/useChatSession';
-import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
+import { useChatHistory, useInvalidateHistory, useMessageFeedback } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
 import { governanceApi } from '@/lib/api/client';
@@ -127,6 +127,7 @@ export default function ChatPage() {
   // Messages
   const { data: dbMessages = [] } = useChatHistory(sessionId);
   const invalidate = useInvalidateHistory(sessionId ?? '');
+  const feedback = useMessageFeedback(sessionId ?? '');
 
   // Local optimistic messages, de-duplicated against the persisted DB copies so
   // a streamed reply (or optimistic user turn) is not shown twice after refetch.
@@ -626,6 +627,10 @@ export default function ChatPage() {
               streamingTokens={tokens}
               currentEvent={currentEvent}
               onEditMessage={handleEditMessage}
+              onFeedback={(messageId, rating, comment) =>
+                feedback.submit.mutate({ messageId, rating, comment })
+              }
+              onClearFeedback={(messageId) => feedback.clear.mutate(messageId)}
               onSuggestionSelect={(prompt) => void handleSend(prompt)}
             />
             {/* Agent transparency: collapsible reasoning stream */}

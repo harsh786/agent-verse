@@ -306,3 +306,22 @@ describe('chatApi folders (CHAT-D-1)', () => {
     await expect(chatApi.moveToFolder('s1', 'f-theirs')).rejects.toThrow('HTTP 404');
   });
 });
+
+describe('chatApi feedback (CHAT-D-2)', () => {
+  test('submitFeedback POSTs the rating and comment', async () => {
+    const spy = mockFetch({ message_id: 'm1', rating: -1, comment: 'off', updated_at: 'x' });
+    const out = await chatApi.submitFeedback('s1', 'm1', -1, 'off');
+    const c = lastCall(spy);
+    expect(c.url).toBe(`${BASE}/chat/sessions/s1/messages/m1/feedback`);
+    expect(c.method).toBe('POST');
+    expect(c.body).toEqual({ rating: -1, comment: 'off' });
+    expect(out.rating).toBe(-1);
+  });
+
+  test('clearFeedback DELETEs it and tolerates 204', async () => {
+    const spy = mockFetch(null, 204);
+    await chatApi.clearFeedback('s1', 'm1');
+    expect(lastCall(spy).method).toBe('DELETE');
+    expect(lastCall(spy).url).toBe(`${BASE}/chat/sessions/s1/messages/m1/feedback`);
+  });
+});

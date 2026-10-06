@@ -7,6 +7,7 @@ import { getMfaHeader, useAuthStore } from '@/stores/auth';
 import type {
   ChatSession,
   ChatMessage,
+  ChatMessageFeedback,
   ChatFolder,
   ChatArtifact,
   ChatUsageSummary,
@@ -162,6 +163,28 @@ export const chatApi = {
 
   deleteMessage: (sessionId: string, messageId: string): Promise<void> =>
     fetch(`${API_BASE}/chat/sessions/${sessionId}/messages/${messageId}`, {
+      method: 'DELETE',
+      headers: headers(),
+    }).then((r) => {
+      if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+    }),
+
+  // Feedback on a reply (CHAT-D-2): saved server-side, one per person per reply;
+  // submitting again edits it.
+  submitFeedback: (
+    sessionId: string,
+    messageId: string,
+    rating: -1 | 0 | 1,
+    comment: string | null = null,
+  ): Promise<ChatMessageFeedback & { message_id: string }> =>
+    fetch(`${API_BASE}/chat/sessions/${sessionId}/messages/${messageId}/feedback`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ rating, comment }),
+    }).then((r) => _json<ChatMessageFeedback & { message_id: string }>(r)),
+
+  clearFeedback: (sessionId: string, messageId: string): Promise<void> =>
+    fetch(`${API_BASE}/chat/sessions/${sessionId}/messages/${messageId}/feedback`, {
       method: 'DELETE',
       headers: headers(),
     }).then((r) => {

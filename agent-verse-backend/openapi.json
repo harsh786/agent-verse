@@ -11995,6 +11995,7 @@
           "comment": {
             "anyOf": [
               {
+                "maxLength": 4000,
                 "type": "string"
               },
               {
@@ -24156,6 +24157,48 @@
       }
     },
     "/chat/sessions/{session_id}/messages/{message_id}/feedback": {
+      "delete": {
+        "operationId": "clear_feedback_chat_sessions__session_id__messages__message_id__feedback_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Feedback",
+        "tags": [
+          "chat"
+        ]
+      },
       "post": {
         "operationId": "submit_feedback_chat_sessions__session_id__messages__message_id__feedback_post",
         "parameters": [

@@ -8,6 +8,7 @@
 import { useState, type JSX } from 'react';
 import { RichOutputRenderer } from './RichOutputRenderer';
 import { ChatChannelBadge } from './ChatChannelBadge';
+import { ChatFeedbackBar } from './ChatFeedbackBar';
 import type { ChatMessage as ChatMessageType } from './types/chat.types';
 
 interface Props {
@@ -16,6 +17,9 @@ interface Props {
   streamingTokens?: string;
   /** Called with the edited content when an inline edit is submitted. */
   onEdit?: (messageId: string, newContent: string) => void;
+  /** Save the caller's feedback on an assistant reply (CHAT-D-2). */
+  onFeedback?: (messageId: string, rating: -1 | 1, comment: string | null) => void;
+  onClearFeedback?: (messageId: string) => void;
 }
 
 const INTENT_BADGE: Record<string, { label: string; className: string }> = {
@@ -25,7 +29,14 @@ const INTENT_BADGE: Record<string, { label: string; className: string }> = {
   SCHEDULE: { label: 'Schedule', className: 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300' },
 };
 
-export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: Props): JSX.Element {
+export function ChatMessage({
+  message,
+  isStreaming,
+  streamingTokens,
+  onEdit,
+  onFeedback,
+  onClearFeedback,
+}: Props): JSX.Element {
   const isUser = message.role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
@@ -144,6 +155,19 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
                 </>
               )}
             </div>
+
+            {/* Feedback on a saved reply (local optimistic messages carry no feedback field) */}
+            {!isUser &&
+              message.role === 'assistant' &&
+              !isStreaming &&
+              onFeedback &&
+              message.feedback !== undefined && (
+                <ChatFeedbackBar
+                  feedback={message.feedback}
+                  onSubmit={(rating, comment) => onFeedback(message.id, rating, comment)}
+                  onClear={() => onClearFeedback?.(message.id)}
+                />
+              )}
 
             {/* Edit button for user messages */}
             {isUser && onEdit && !isStreaming && (
