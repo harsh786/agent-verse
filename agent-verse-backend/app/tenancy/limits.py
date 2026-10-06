@@ -159,8 +159,8 @@ def effective_goal_timeout(
     """The wall-clock budget one goal run gets, and which limit set it.
 
     The plan's ``goal_timeout_seconds`` is the ceiling; an agent's own
-    ``timeout_seconds`` (``agents.timeout_seconds``, default 300) can only
-    shorten it: effective = min(plan, agent). The agent field used to be stored,
+    ``timeout_seconds`` (``agents.timeout_seconds``; 0, the default, = no agent
+    limit) can only shorten it: effective = min(plan, agent). The agent field used to be stored,
     returned by the API and never read, so an agent configured for a 60 s budget
     ran for the whole plan budget (30 min - 24 h). A missing, non-numeric,
     non-positive or NaN agent value means "no agent limit".
