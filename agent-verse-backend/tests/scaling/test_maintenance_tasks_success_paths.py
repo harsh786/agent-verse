@@ -387,48 +387,7 @@ class TestFlushAuditWal:
         assert result == {"error": "no redis", "flushed": 0}
 
 
-# ── scan_cost_anomalies ───────────────────────────────────────────────────────
-
-
-class TestScanCostAnomalies:
-    def test_success_scans_tenants(self):
-        from app.scaling.tasks import scan_cost_anomalies
-
-        mock_redis = AsyncMock()
-        mock_redis.keys = AsyncMock(return_value=[b"cost:daily:t1:2024-01-01"])
-        mock_redis.aclose = AsyncMock(return_value=None)
-        mock_tracker = MagicMock()
-        mock_tracker.detect_anomaly = AsyncMock(return_value=[{"metric": "spend"}])
-
-        with (
-            patch("redis.asyncio.from_url", return_value=mock_redis),
-            patch("app.intelligence.cost_tracker.CostTracker", return_value=mock_tracker),
-        ):
-            result = scan_cost_anomalies.run()
-        assert result == {"tenants_scanned": 1, "anomalies_found": 1}
-
-    def test_per_tenant_error_is_swallowed(self):
-        from app.scaling.tasks import scan_cost_anomalies
-
-        mock_redis = AsyncMock()
-        mock_redis.keys = AsyncMock(return_value=["cost:daily:t1:2024-01-01"])
-        mock_redis.aclose = AsyncMock(return_value=None)
-        mock_tracker = MagicMock()
-        mock_tracker.detect_anomaly = AsyncMock(side_effect=RuntimeError("boom"))
-
-        with (
-            patch("redis.asyncio.from_url", return_value=mock_redis),
-            patch("app.intelligence.cost_tracker.CostTracker", return_value=mock_tracker),
-        ):
-            result = scan_cost_anomalies.run()
-        assert result == {"tenants_scanned": 1, "anomalies_found": 0}
-
-    def test_error_returns_error_dict(self):
-        from app.scaling.tasks import scan_cost_anomalies
-
-        with patch("redis.asyncio.from_url", side_effect=RuntimeError("no redis")):
-            result = scan_cost_anomalies.run()
-        assert result == {"error": "no redis", "anomalies_found": 0}
+# ── scan_cost_anomalies: tests/scaling/test_scan_cost_anomalies.py (fakeredis) ──
 
 
 # ── embed_marketplace_templates ───────────────────────────────────────────────

@@ -496,32 +496,68 @@ class CostTracker:
                 cursor, keys = await self._redis.scan(cursor, match=pattern, count=100)
                 for key in keys:
                     raw = await self._redis.get(key)
-                    if raw is None:
-                        continue
-                    state = json.loads(raw)
-                    mean: float = state.get("mean", 0.0)
-                    var: float = state.get("var", 0.0)
-                    std = math.sqrt(max(var, 1e-10))
-                    # Flag keys where the baseline itself indicates sustained high cost
-                    if mean > 1.0 and std / max(mean, 0.01) > 0.5:
-                        parts = key.split(":")
-                        agent_id = parts[-1] if parts[-1] != "tenant" else None
-                        anomalies.append(
-                            CostAnomaly(
-                                tenant_id=tenant_id,
-                                agent_id=agent_id,
-                                anomaly_type="sustained_high",
-                                cost_actual_usd=mean,
-                                cost_baseline_usd=mean * 0.5,
-                                sigma_deviation=std / max(mean, 0.01),
-                            )
-                        )
+                    anomaly = self._sustained_high(tenant_id, key, raw)
+                    if anomaly is not None:
+                        anomalies.append(anomaly)
                 if cursor == 0:
                     break
         except Exception as exc:
             logger.warning("detect_anomaly_scan_failed", error=str(exc))
 
         return anomalies
+
+    @staticmethod
+    def _sustained_high(tenant_id: str, key: Any, raw: Any) -> CostAnomaly | None:
+        """A ``sustained_high`` anomaly when the EWMA baseline itself is high and noisy."""
+        if raw is None:
+            return None
+        state = json.loads(raw)
+        mean: float = state.get("mean", 0.0)
+        var: float = state.get("var", 0.0)
+        std = math.sqrt(max(var, 1e-10))
+        if not (mean > 1.0 and std / max(mean, 0.01) > 0.5):
+            return None
+        name = key.decode() if isinstance(key, bytes) else str(key)
+        last = name.split(":")[-1]
+        return CostAnomaly(
+            tenant_id=tenant_id,
+            agent_id=last if last != "tenant" else None,
+            anomaly_type="sustained_high",
+            cost_actual_usd=mean,
+            cost_baseline_usd=mean * 0.5,
+            sigma_deviation=std / max(mean, 0.01),
+        )
+
+    async def detect_anomalies_for(self, tenant_ids: set[str]) -> dict[str, list[CostAnomaly]]:
+        """:meth:`detect_anomaly` for many tenants in ONE pass over the EWMA keys.
+
+        Per-tenant SCANs walk the whole keyspace once per tenant; this walks it
+        once (non-blocking SCAN, batched MGET). Redis errors propagate so a
+        scheduled scan fails visibly instead of reporting "no anomalies".
+        """
+        out: dict[str, list[CostAnomaly]] = {t: [] for t in tenant_ids}
+        if self._redis is None or not tenant_ids:
+            return out
+        batch: list[tuple[str, Any]] = []
+
+        async def _flush() -> None:
+            values = await self._redis.mget([k for _, k in batch])
+            for (tid, key), raw in zip(batch, values, strict=True):
+                anomaly = self._sustained_high(tid, key, raw)
+                if anomaly is not None:
+                    out[tid].append(anomaly)
+            batch.clear()
+
+        async for key in self._redis.scan_iter(match="cost_ewma:*", count=500):
+            name = key.decode() if isinstance(key, bytes) else str(key)
+            parts = name.split(":")
+            if len(parts) >= 3 and parts[1] in tenant_ids:
+                batch.append((parts[1], key))
+                if len(batch) >= 200:
+                    await _flush()
+        if batch:
+            await _flush()
+        return out
 
     # ------------------------------------------------------------------
     # Cost prediction

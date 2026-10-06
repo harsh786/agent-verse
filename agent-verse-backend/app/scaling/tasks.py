@@ -8650,39 +8650,104 @@ def cancel_goals_for_emergency_stop(
     return result
 
 
+# Tenants evaluated per hourly run; past it a random subset is taken (and the
+# rest reported as skipped), so every tenant is reached across runs.
+_COST_ANOMALY_MAX_TENANTS = 1000
+_COST_ANOMALY_ALERT_TIMEOUT_S = 5.0
+
+
+async def _alert_cost_anomaly(redis: Any, db_factory: Any, anomaly: Any) -> bool:
+    """Raise one anomaly once per UTC day: log, publish, notify the tenant's channels.
+
+    Returns True when this run raised it (False: already raised today).
+    """
+    import json as _json
+
+    day = datetime.datetime.now(UTC).strftime("%Y-%m-%d")
+    key = (
+        f"cost_anomaly_alert:{anomaly.tenant_id}:{anomaly.agent_id or 'tenant'}:"
+        f"{anomaly.anomaly_type}:{day}"
+    )
+    if not await redis.set(key, "1", nx=True, ex=2 * 86_400):
+        return False
+    alert = {
+        "type": "cost_anomaly_alert",
+        "tenant_id": anomaly.tenant_id,
+        "agent_id": anomaly.agent_id or "",
+        "anomaly_type": anomaly.anomaly_type,
+        "cost_actual_usd": round(float(anomaly.cost_actual_usd), 6),
+        "cost_baseline_usd": round(float(anomaly.cost_baseline_usd), 6),
+        "sigma_deviation": round(float(anomaly.sigma_deviation), 3),
+        "detected_at": anomaly.detected_at,
+    }
+    logger.warning("cost_anomaly_detected %s", _json.dumps(alert, sort_keys=True))
+    await redis.publish(f"cost:anomaly:{anomaly.tenant_id}", _json.dumps(alert))
+    if db_factory is not None:
+        from app.services.notification_service import NotificationService
+
+        svc = NotificationService()
+        svc.set_db(db_factory)
+        try:
+            await asyncio.wait_for(svc.notify_cost_anomaly(alert), _COST_ANOMALY_ALERT_TIMEOUT_S)
+        except Exception as exc:  # the alert is logged + published; delivery is best effort
+            logger.warning("cost_anomaly_delivery_failed: %s", type(exc).__name__)
+    return True
+
+
+async def _scan_cost_anomalies_async(redis: Any, db_factory: Any) -> dict[str, int]:
+    """Find tenants with cost activity (non-blocking SCAN), detect, and raise anomalies.
+
+    a10-F246-01..03/06: the scan used the blocking ``KEYS cost:daily:*``, kept an
+    arbitrary 50 tenants while reporting all of them as scanned, swallowed each
+    tenant's error, only *counted* anomalies (nothing persisted or alerted), and
+    returned errors as a SUCCESS result.
+    """
+    import random
+
+    from app.intelligence.cost_tracker import CostTracker
+
+    tenant_ids: set[str] = set()
+    async for key in redis.scan_iter(match="cost:daily:*", count=500):
+        name = key.decode() if isinstance(key, bytes) else str(key)
+        parts = name.split(":")  # cost:daily:{tenant}:{YYYY-MM-DD}
+        if len(parts) >= 4 and parts[2]:
+            tenant_ids.add(parts[2])
+    chosen = tenant_ids
+    if len(tenant_ids) > _COST_ANOMALY_MAX_TENANTS:
+        chosen = set(random.sample(sorted(tenant_ids), _COST_ANOMALY_MAX_TENANTS))
+    found = await CostTracker(redis=redis).detect_anomalies_for(chosen)
+    anomalies = [a for tid in sorted(found) for a in found[tid]]
+    alerted = 0
+    for anomaly in anomalies:
+        if await _alert_cost_anomaly(redis, db_factory, anomaly):
+            alerted += 1
+    return {
+        "tenants_found": len(tenant_ids),
+        "tenants_scanned": len(chosen),
+        "tenants_skipped": len(tenant_ids) - len(chosen),
+        "anomalies_found": len(anomalies),
+        "alerts_raised": alerted,
+    }
+
+
 @celery_app.task(name="app.scaling.tasks.scan_cost_anomalies", queue="maintenance")
 def scan_cost_anomalies() -> dict:
-    """Hourly anomaly scan for all tenants with recent cost activity."""
+    """Hourly anomaly scan for all tenants with recent cost activity.
+
+    A Redis failure raises, so Celery records the run as FAILED.
+    """
 
     async def _run() -> dict:
+        import redis.asyncio as aioredis
+
+        from app.db.session import get_session_factory
+
+        r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
         try:
-            import redis.asyncio as aioredis
-
-            r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
-            from app.intelligence.cost_tracker import CostTracker
-
-            tracker = CostTracker(redis=r)
-            anomalies_found = 0
-
-            # Discover tenants with recent cost activity via Redis key scan
-            keys = await r.keys("cost:daily:*")
-            tenant_ids: set[str] = set()
-            for key in keys:
-                parts = key.decode().split(":") if isinstance(key, bytes) else key.split(":")
-                if len(parts) >= 3:
-                    tenant_ids.add(parts[2])
-
-            for tenant_id in list(tenant_ids)[:50]:  # cap at 50 tenants per run
-                try:
-                    anomalies = await tracker.detect_anomaly(tenant_id)
-                    anomalies_found += len(anomalies)
-                except Exception:
-                    pass
-
-            await r.aclose()
-            return {"tenants_scanned": len(tenant_ids), "anomalies_found": anomalies_found}
-        except Exception as exc:
-            return {"error": str(exc), "anomalies_found": 0}
+            return await _scan_cost_anomalies_async(r, get_session_factory())
+        finally:
+            with contextlib.suppress(Exception):
+                await r.aclose()
 
     return _run_async(_run())
 
