@@ -51,6 +51,13 @@ spec:
             secretKeyRef:
               name: {{ include "agentverse.secretName" . }}
               key: PLATFORM_ADMIN_KEY
+        # API-only: signs/verifies inbound A2A tasks (empty in production = refused).
+        - name: A2A_SHARED_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "agentverse.secretName" . }}
+              key: A2A_SHARED_SECRET
+              optional: true
         readinessProbe:
           httpGet:
             path: /health/ready
