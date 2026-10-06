@@ -7,6 +7,7 @@ from app.ingestion.chunkers.pdf_layout import PDFLayoutChunker
 from app.ingestion.chunkers.region import RegionChunker
 from app.ingestion.chunkers.scene import SceneChunker
 from app.ingestion.chunkers.semantic import SemanticChunker
+from app.ingestion.chunkers.structure import DomChunker, ParagraphChunker
 from app.ingestion.chunkers.table import TableChunker
 from app.ingestion.chunkers.timestamp import TimestampChunker
 
@@ -44,13 +45,16 @@ class FixedSizeChunker(ChunkerBase):
 _STRATEGY_TO_CHUNKER: dict[str, ChunkerBase] = {
     "semantic": SemanticChunker(),
     "heading": HeadingChunker(),
-    "paragraph": SemanticChunker(),
+    # a04-F068-02: paragraph / dom used to alias SemanticChunker (blank-line
+    # splits only), so a DOCX / HTML document — one block per line — became one
+    # "paragraph" cut at sentence boundaries.
+    "paragraph": ParagraphChunker(),
     "ast": ASTChunker(),
     "code": ASTChunker(),
     "layout": PDFLayoutChunker(),
     "page": PDFLayoutChunker(),
     "section": PDFLayoutChunker(),
-    "dom": SemanticChunker(),
+    "dom": DomChunker(),
     "timestamp": TimestampChunker(),
     "scene": SceneChunker(),
     "row_group": TableChunker(),
@@ -86,9 +90,11 @@ __all__ = [
     "ASTChunker",
     "Chunk",
     "ChunkerBase",
+    "DomChunker",
     "FixedSizeChunker",
     "HeadingChunker",
     "PDFLayoutChunker",
+    "ParagraphChunker",
     "RegionChunker",
     "SceneChunker",
     "SemanticChunker",
