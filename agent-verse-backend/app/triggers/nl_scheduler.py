@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.providers.base import CompletionRequest, LLMProvider, Message
@@ -528,6 +529,16 @@ def _parse_single(obj: dict, plan: str | None = None) -> TriggerSpec:
         "email_subject_pattern",
         "hitl_queue_id",
         "memory_type",
+        # B1-10: time-family fields the model may now set.
+        "relative_offset_seconds",
+        "relative_to_field",
+        "deadline_warning_seconds",
+        "event_channel",
+        "catch_up",
+        "holidays",
+        "business_days",
+        "business_hours_start",
+        "business_hours_end",
     ]
     for field in field_map:
         if obj.get(field) is not None:
@@ -538,6 +549,69 @@ def _parse_single(obj: dict, plan: str | None = None) -> TriggerSpec:
         # (and refused by the create gate when it is below the plan floor).
         apply_plan_interval_defaults(spec, plan, explicit_fields=set(kwargs))
     return spec
+
+
+# B1-10: common abbreviations a model (or a user) writes instead of a zone.
+# "IST" is read as India Standard Time, the platform's most common use.
+_TZ_ABBREVIATIONS = {
+    "UTC": "UTC", "GMT": "UTC", "Z": "UTC",
+    "IST": "Asia/Kolkata",
+    "EST": "America/New_York", "EDT": "America/New_York", "ET": "America/New_York",
+    "CST": "America/Chicago", "CDT": "America/Chicago", "CT": "America/Chicago",
+    "MST": "America/Denver", "MDT": "America/Denver", "MT": "America/Denver",
+    "PST": "America/Los_Angeles", "PDT": "America/Los_Angeles", "PT": "America/Los_Angeles",
+    "BST": "Europe/London", "CET": "Europe/Berlin", "CEST": "Europe/Berlin",
+    "JST": "Asia/Tokyo", "SGT": "Asia/Singapore", "HKT": "Asia/Hong_Kong",
+    "AEST": "Australia/Sydney", "AEDT": "Australia/Sydney",
+}
+
+
+def normalize_timezone(name: str) -> str:
+    """An IANA zone for *name*: abbreviations are mapped, anything else is
+    returned as-is for ``validate_spec`` to accept or refuse."""
+    raw = (name or "").strip()
+    if not raw:
+        return "UTC"
+    return _TZ_ABBREVIATIONS.get(raw.upper(), raw)
+
+
+def _ground_in_time(spec: TriggerSpec, now: datetime) -> TriggerSpec:
+    """Resolve what the answer left relative to *now* (B1-10)."""
+    spec.timezone = normalize_timezone(spec.timezone)
+    if (
+        spec.trigger_type == TriggerType.RELATIVE_DELAY
+        and not spec.fire_at_iso.strip()
+        and not spec.event_channel.strip()
+        and int(spec.relative_offset_seconds or 0) > 0
+    ):
+        # "in 20 minutes": a one-off at now + offset.
+        spec.trigger_type = TriggerType.ONCE
+        spec.fire_at_iso = (
+            now + timedelta(seconds=int(spec.relative_offset_seconds))
+        ).isoformat()
+        spec.relative_offset_seconds = 0
+    return spec
+
+
+def _time_context(now: datetime) -> str:
+    return (
+        "\n\nCurrent time: "
+        + now.isoformat()
+        + " (UTC).\n"
+        "Rules:\n"
+        "- timezone must be an IANA zone name such as Asia/Kolkata or America/New_York, "
+        "never an abbreviation like IST or EST; omit it for UTC.\n"
+        "- A one-off time ('in 20 minutes', 'tomorrow at 8am', 'on 1 Nov at 17:00') is "
+        '{"trigger_type": "once", "fire_at_iso": "<absolute ISO 8601 with offset>"}, '
+        "computed from the current time above.\n"
+        "- A repeat every N seconds/minutes/hours is "
+        '{"trigger_type": "interval", "interval_seconds": <N in seconds>}.\n'
+        "- A delay after each event on a channel is "
+        '{"trigger_type": "relative_delay", "event_channel": "<channel>", '
+        '"relative_offset_seconds": <seconds>}.\n'
+        "- business_calendar takes cron_expression plus optional holidays "
+        "(YYYY-MM-DD list), business_days (0=Monday), business_hours_start/end (HH:MM)."
+    )
 
 
 def _tenant_plan(tenant_ctx: Any) -> str:
@@ -560,6 +634,7 @@ class NLScheduler:
         *,
         tenant_ctx: Any = None,
         tenant_id: str | None = None,
+        now: datetime | None = None,
     ) -> list[TriggerSpec]:
         """Parse *description*. The LLM call is charged to the tenant (when given)
         and circuit-broken; a provider failure or unusable answer falls back to
@@ -575,12 +650,13 @@ class NLScheduler:
         # Without a tenant context the plan is unknown: FREE's floor is the
         # conservative default (valid on every plan).
         plan = _tenant_plan(tenant_ctx)
+        current = now or datetime.now(UTC)
 
         # Primary path — LLM (preserves cron_expression, timezone, etc.)
         try:
             req = CompletionRequest(
                 messages=[
-                    Message(role="system", content=_NL_SCHEDULER_SYSTEM),
+                    Message(role="system", content=_NL_SCHEDULER_SYSTEM + _time_context(current)),
                     Message(role="user", content=description),
                 ],
                 model=_configured_default_model("claude-opus-4-8"),
@@ -601,8 +677,8 @@ class NLScheduler:
                 raise ValueError("non-json response") from None
 
             if "schedules" in obj and isinstance(obj["schedules"], list):
-                return [_parse_single(s, plan) for s in obj["schedules"]]
-            return [_parse_single(obj, plan)]
+                return [_ground_in_time(_parse_single(s, plan), current) for s in obj["schedules"]]
+            return [_ground_in_time(_parse_single(obj, plan), current)]
 
         except DecisionBudgetExceededError:
             raise
