@@ -345,6 +345,37 @@ class TestPlatformUsage:
         resp = TestClient(app).get("/admin/usage", headers=_ADMIN_HEADERS)
         assert resp.status_code == 503
 
+    def test_repeated_polls_reuse_one_computation(self, monkeypatch):
+        """a10-F239-05: every poll ran the whole-table aggregates again."""
+        import app.api.admin as admin_mod
+
+        app = _make_app()
+        opened: list[object] = []
+
+        def _factory():
+            session = self._usage_session()
+            opened.append(session)
+            return session
+
+        app.state.system_db_session_factory = _factory
+        client = TestClient(app)
+        first = client.get("/admin/usage", headers=_ADMIN_HEADERS).json()
+        second = client.get("/admin/usage", headers=_ADMIN_HEADERS).json()
+        assert len(opened) == 1
+        assert first == second and first["as_of"]
+        # Past the TTL the aggregates run again.
+        monkeypatch.setattr(admin_mod, "USAGE_CACHE_TTL_S", 0.0)
+        client.get("/admin/usage", headers=_ADMIN_HEADERS)
+        assert len(opened) == 2
+
+    def test_errors_are_not_cached(self):
+        app = _make_app()
+        sessions = [self._usage_session(fail=True), self._usage_session()]
+        app.state.system_db_session_factory = lambda: sessions.pop(0)
+        client = TestClient(app)
+        assert client.get("/admin/usage", headers=_ADMIN_HEADERS).status_code == 503
+        assert client.get("/admin/usage", headers=_ADMIN_HEADERS).status_code == 200
+
 
 class TestIncidents:
     """Regression: /admin/incidents read guardrail_engine._incidents, which no

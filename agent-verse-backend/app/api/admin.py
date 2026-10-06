@@ -18,6 +18,8 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -333,13 +335,29 @@ def build_tenant_count_stmt() -> Select[Any]:
     return select(func.count().label("total_tenants")).select_from(Tenant.__table__)
 
 
+# The aggregates scan the whole goals table. The console polls /admin/usage
+# every 15 s per open tab, so each replica serves one computed result for
+# USAGE_CACHE_TTL_S (``as_of`` says when it was computed) and concurrent
+# requests share one computation. Errors are never cached.
+USAGE_CACHE_TTL_S = 15.0
+
+
+def _usage_cache(app_state: Any) -> tuple[asyncio.Lock, dict[str, Any]]:
+    holder = getattr(app_state, "_admin_usage_cache", None)
+    if holder is None:
+        holder = (asyncio.Lock(), {})
+        app_state._admin_usage_cache = holder
+    return holder  # type: ignore[no-any-return]
+
+
 @router.get("/usage", dependencies=[Depends(_require_admin)])
 async def get_platform_usage(request: Request) -> dict[str, Any]:
     """Aggregate platform-wide usage from the goals and tenants tables.
 
     No database configured -> 501; database error -> 503 (never zeros).
     ``avg_latency_ms`` is the mean wall-clock time of goals completed today
-    (UTC), ``null`` when none has.
+    (UTC), ``null`` when none has. Results are reused for up to
+    :data:`USAGE_CACHE_TTL_S` seconds per replica (``as_of``).
     """
     system_db = getattr(request.app.state, "system_db_session_factory", None)
     if system_db is None:
@@ -347,9 +365,24 @@ async def get_platform_usage(request: Request) -> dict[str, Any]:
             status_code=501,
             detail="Platform usage is computed in Postgres and needs a database",
         )
+    lock, cache = _usage_cache(request.app.state)
+    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with lock:
+        hit = cache.get("usage")
+        if (
+            hit is not None
+            and hit["day_start"] == day_start
+            and time.monotonic() - hit["at"] < USAGE_CACHE_TTL_S
+        ):
+            return dict(hit["body"])
+        body = await _compute_platform_usage(system_db, day_start)
+        cache["usage"] = {"day_start": day_start, "at": time.monotonic(), "body": body}
+        return dict(body)
+
+
+async def _compute_platform_usage(system_db: Any, day_start: datetime) -> dict[str, Any]:
     from app.db.rls import system_session
 
-    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     try:
         async with system_db() as session, session.begin(), system_session(session):
             summary = (await session.execute(build_usage_summary_stmt(day_start))).mappings().one()
@@ -371,6 +404,7 @@ async def get_platform_usage(request: Request) -> dict[str, Any]:
         "avg_latency_ms": None if latency_s is None else round(float(latency_s) * 1000),
         "goals_by_status": {str(r["status"]): int(r["n"] or 0) for r in by_status},
         "source": "postgres",
+        "as_of": datetime.now(UTC).isoformat(),
     }
 
 
