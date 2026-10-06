@@ -7966,6 +7966,34 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
                     columns=("id", "goal_id", "tool_name", "outcome", "action_level", "created_at"),
                     tenant_id=tenant_id,
                 )
+                # The sync export sends a large tenant here, so this job carries
+                # every section that one does — agents (incl. inactive), schedules
+                # and knowledge collections were silently missing (salvage RV-08).
+                agents = await _gdpr_export_section(
+                    session,
+                    table="agents",
+                    columns=("id", "name", "is_active", "created_at"),
+                    tenant_id=tenant_id,
+                )
+                schedules = await _gdpr_export_section(
+                    session,
+                    table="schedules",
+                    columns=(
+                        "id",
+                        "agent_id",
+                        "trigger_type",
+                        "cron_expression",
+                        "description",
+                        "created_at",
+                    ),
+                    tenant_id=tenant_id,
+                )
+                collections = await _gdpr_export_section(
+                    session,
+                    table="knowledge_collections",
+                    columns=("id", "name", "description", "document_count", "created_at"),
+                    tenant_id=tenant_id,
+                )
 
             import json
             from datetime import datetime
@@ -7997,6 +8025,43 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
                     }
                     for r in audit
                 ],
+                "agents": [
+                    {
+                        "id": str(r[0]),
+                        "name": str(r[1]),
+                        "is_active": bool(r[2]),
+                        "created_at": _iso(r[3]),
+                    }
+                    for r in agents
+                ],
+                "schedules": [
+                    {
+                        "id": str(r[0]),
+                        "agent_id": r[1],
+                        "trigger_type": r[2],
+                        "cron_expression": r[3],
+                        "description": r[4],
+                        "created_at": _iso(r[5]),
+                    }
+                    for r in schedules
+                ],
+                "knowledge_collections": [
+                    {
+                        "id": str(r[0]),
+                        "name": str(r[1]),
+                        "description": r[2] or "",
+                        "document_count": int(r[3] or 0),
+                        "created_at": _iso(r[4]),
+                    }
+                    for r in collections
+                ],
+                "counts": {
+                    "goals": len(goals),
+                    "audit_entries": len(audit),
+                    "agents": len(agents),
+                    "schedules": len(schedules),
+                    "knowledge_collections": len(collections),
+                },
             }
 
             # Persist the export content itself (not just a job-status row), and
@@ -8039,17 +8104,13 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
                         "payload": json.dumps(export_data, default=str),
                     },
                 )
-
-            # gdpr_export_jobs is tenant-isolated by RLS. This task works for ONE
-            # tenant (it is enqueued by that tenant's own request), so it runs
-            # under that tenant's context — not the maintenance role. Unscoped,
-            # the UPDATE matched zero rows under a NOBYPASSRLS role and the job
-            # sat at 'pending' forever although the export had been written.
-            async with (
-                db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
+                # gdpr_export_jobs is tenant-isolated by RLS. This task works for
+                # ONE tenant (it is enqueued by that tenant's own request), so it
+                # runs under that tenant's context — not the maintenance role.
+                # Unscoped, the UPDATE matched zero rows under a NOBYPASSRLS role
+                # and the job sat at 'pending' forever. It commits in the SAME
+                # transaction as the payload: two transactions left a crash
+                # window with the export stored but the job never 'complete'.
                 await session.execute(
                     text("""
                     UPDATE gdpr_export_jobs
@@ -8073,8 +8134,14 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
                         ),
                         {"err": str(exc)[:500], "jid": job_id, "tid": tenant_id},
                     )
-            except Exception:
-                pass
+            except Exception as mark_exc:
+                # The job row stays 'pending'; say so instead of swallowing it.
+                logger.error(
+                    "gdpr_export_mark_failed_failed",
+                    job_id=job_id,
+                    tenant_id=tenant_id,
+                    error=str(mark_exc)[:200],
+                )
             raise
 
     return _run_async(_run())

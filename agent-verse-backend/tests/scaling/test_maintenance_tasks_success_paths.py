@@ -194,13 +194,15 @@ class TestRunGdprExport:
         assert "download_url" in result
         assert result["download_url"] == "/enterprise/compliance/export/job-1/download"
 
-        # gdpr_export_jobs is tenant-isolated by RLS: the completion UPDATE must
-        # run right after the tenant GUC is set, and carry its own tenant predicate.
+        # gdpr_export_jobs is tenant-isolated by RLS: the completion UPDATE runs in
+        # the payload's own tenant-GUC transaction (GUC, INSERT payload, UPDATE
+        # job — one commit) and carries its own tenant predicate.
         calls = session.execute.call_args_list
         update_idx = next(
             i for i, c in enumerate(calls) if "UPDATE gdpr_export_jobs" in str(c.args[0])
         )
-        guc = calls[update_idx - 1]
+        assert "INSERT INTO compliance_requests" in str(calls[update_idx - 1].args[0])
+        guc = calls[update_idx - 2]
         assert "set_config('app.tenant_id'" in str(guc.args[0])
         assert guc.args[1] == {"tid": "t1"}
         assert "tenant_id = :tid" in str(calls[update_idx].args[0])
