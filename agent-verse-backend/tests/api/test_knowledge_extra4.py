@@ -23,6 +23,15 @@ from app.rag.store import KnowledgeStore
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
+
+@pytest.fixture(autouse=True)
+def _deterministic_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outbound HTTP is mocked here; never depend on real DNS (see tests/_dns.py)."""
+    from tests._dns import stub_public_dns
+
+    stub_public_dns(monkeypatch)
+
+
 _CTX = TenantContext(tenant_id="tid-know4", plan=PlanTier.PROFESSIONAL, api_key_id="kid-k4")
 _VALID_KEY = "av_test_knowledge_extra4"
 

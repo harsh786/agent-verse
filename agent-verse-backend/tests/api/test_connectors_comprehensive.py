@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from typing import Any
 
 from fastapi import FastAPI
@@ -11,6 +13,15 @@ from app.api.connectors import router as connectors_router
 from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Outbound HTTP is mocked here; never depend on real DNS (see tests/_dns.py)."""
+    from tests._dns import stub_public_dns
+
+    stub_public_dns(monkeypatch)
+
 
 _CTX = TenantContext(tenant_id="tid-connectors", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
 _VALID_KEY = "av_test_connectors_comp"
