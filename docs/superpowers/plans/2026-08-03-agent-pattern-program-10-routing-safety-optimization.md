@@ -2,6 +2,14 @@
 
 > **Status note (2026-09-30, CORE-23):** this document predates the removal of unwired modules it references — `app/agent/pattern_assembler.py`, `app/agent/goal_classifier.py`, `app/agent/semantic_entropy.py`, `app/agent/errors.py`, `app/agent/patterns/dynamic_graph_assembler.py` and `app/orchestration/workflow_compatibility.py` no longer exist. The live equivalents are `app/orchestration/goal_classifier.py`, `app/orchestration/pattern_selector.py` and `app/agent/dynamic_graph.py`.
 
+> **Status note (2026-10-07, owner decision, critic backlog a10-F250-01..03):** AP10-T10's
+> data-classification part is **superseded** by the live screening layers — ingestion PII
+> handling, `guardrails_v2` output screening (`app/guardrails_v2/output_screening.py`),
+> `app/agent/sanitization.py` and log redaction (`app/observability/log_redaction.py`).
+> `app/data_classification/redaction.py`, `app/state_runtime/state_context.py` (also named by
+> AP10-T08) and the unread `DATA_CLASSIFICATION` runtime flag were removed; `DataClassifier`
+> stays only as the few-shot CoT example filter. Do not re-create them from this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development`
 > or `superpowers:executing-plans` to execute this plan task by task. Every implementation task
 > starts with a failing test and uses checkbox (`- [ ]`) tracking.
@@ -456,7 +464,7 @@ deadline, or quality constraints.
 - Modify: `agent-verse-backend/app/agent/prompt_compressor.py`
 - Modify: `agent-verse-backend/app/agent/tokenizer.py`
 - Modify: `agent-verse-backend/app/agent/graph.py`
-- Modify: `agent-verse-backend/app/state_runtime/state_context.py`
+- ~~Modify: `agent-verse-backend/app/state_runtime/state_context.py`~~ (removed 2026-10-07; unwired)
 - Create: `agent-verse-backend/tests/context/test_prompt_budget.py`
 - Modify: `agent-verse-backend/tests/agent/test_prompt_compressor.py`
 
@@ -543,6 +551,10 @@ uv run mypy app/agent/patterns/constitutional_ai.py app/policy_runtime
 Expected: tests pass; critique cannot turn a denied action into an allowed action.
 
 ### AP10-T10: Enforce plan verification, data classification, and claim-level provenance
+
+> **Superseded in part (2026-10-07):** the data-classification boundary below (and the
+> `redaction.py` file entry) is superseded — see the status note at the top. Plan
+> verification and claim-level provenance are not affected by that decision.
 
 **Files:**
 

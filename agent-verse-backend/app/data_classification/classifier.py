@@ -1,11 +1,13 @@
 """DataClassifier — regex-based data classification.
 
-Scope today (a10-F250-01): the only live caller is the few-shot CoT strategy
-(``app/agent/patterns/few_shot_cot.py``), which drops examples that are not
-``safe_for_prompt``. It is NOT a platform-wide prompt gate: other prompt inputs
-are protected by their own layers (ingestion PII handling, ``guardrails_v2``
-output screening, ``app.agent.sanitization``, log redaction). Making it a gate
-on every model call is the open AP10-T10 plan item (owner decision pending).
+Scope (a10-F250-01, owner decision 2026-10-07): the few-shot CoT strategy
+(``app/agent/patterns/few_shot_cot.py``) uses it to drop examples that are not
+``safe_for_prompt``. It is deliberately NOT a platform-wide prompt gate — the
+regexes are too coarse for that — and plan item AP10-T10 is superseded by the
+live screening layers: ingestion PII handling, ``guardrails_v2`` output
+screening, ``app.agent.sanitization`` and log redaction. The unused redactor,
+the never-wired ``state_context`` builder and the unread ``DATA_CLASSIFICATION``
+flag were removed.
 """
 
 from __future__ import annotations
