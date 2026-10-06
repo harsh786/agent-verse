@@ -23,3 +23,12 @@ data:
   # Enforced by tests/infra/test_vault_key_distribution.py (EGRESS-CFG).
   INGESTION_ALLOW_INTERNAL_SOURCES: "false"
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: ""
+  # OCR-PAR: OCR parallelism, one bounded pool per process shared by every document.
+  # "0" = the pod's CPU limit (cgroup quota), split between a prefork worker's
+  # children; page concurrency "0" = max - 1 (min 2). OMP_THREAD_LIMIT pins
+  # tesseract's OpenMP threads (pages already run in parallel).
+  OCR_MAX_CONCURRENCY: "0"
+  OCR_PAGE_CONCURRENCY: "0"
+  OCR_VISION_CONCURRENCY: "4"
+  OCR_RENDER_DPI: "300"
+  OMP_THREAD_LIMIT: "1"

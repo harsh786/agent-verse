@@ -13,6 +13,12 @@ data:
   # Every app workload (API, workers, beat) reads this one ConfigMap.
   INGESTION_ALLOW_INTERNAL_SOURCES: {{ .Values.ingestion.allowInternalSources | quote }}
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: {{ .Values.ingestion.internalSourceAllowlist | quote }}
+  # OCR-PAR: OCR parallelism (values: ocr.*). Every app workload reads this one ConfigMap.
+  OCR_MAX_CONCURRENCY: {{ .Values.ocr.maxConcurrency | quote }}
+  OCR_PAGE_CONCURRENCY: {{ .Values.ocr.pageConcurrency | quote }}
+  OCR_VISION_CONCURRENCY: {{ .Values.ocr.visionConcurrency | quote }}
+  OCR_RENDER_DPI: {{ .Values.ocr.renderDpi | quote }}
+  OMP_THREAD_LIMIT: {{ .Values.ocr.ompThreadLimit | quote }}
   {{- range $k, $v := .Values.backend.env }}
   {{ $k }}: {{ $v | quote }}
   {{- end }}

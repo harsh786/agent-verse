@@ -315,6 +315,27 @@ helm upgrade --install agentverse infra/helm/agentverse \
   (the `agentverse-config` ConfigMap). Docker Compose: set them in the backend `.env`
   (see `.env.example`); the production compose file passes them to every app service.
 
+### OCR parallelism (scanned documents)
+
+OCR runs pages of a document side by side and several documents at once, on ONE
+bounded pool per process (API and every worker). The defaults size it from the
+container's CPU limit (cgroup quota, not the node's core count) and split it
+between a prefork worker's children, so most deployments need no tuning. Knobs
+(helm `ocr.*`, raw k8s `agentverse-config`, prod compose shared env):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `OCR_MAX_CONCURRENCY` | `0` (= CPUs) | OCR threads and page bitmaps in flight per process |
+| `OCR_PAGE_CONCURRENCY` | `0` (= max - 1, min 2) | pages of one document at once; below the global cap so a huge scan never starves another document |
+| `OCR_VISION_CONCURRENCY` | `4` | LLM-vision fallback calls in flight per process |
+| `OCR_RENDER_DPI` | `300` | scanned-page rasterisation (one page at a time) |
+| `OMP_THREAD_LIMIT` | `1` | tesseract's own OpenMP threads (pages already run in parallel) |
+
+Memory: each page in flight holds one rasterised page (about 9 MB at 300 dpi for
+A4 grayscale, plus its preprocessed copy), so peak OCR memory per process is about
+`OCR_MAX_CONCURRENCY x 20 MB`. Give the CPU limit to the pods that OCR, and
+raise `OCR_MAX_CONCURRENCY` only together with it.
+
 ## GitHub Actions Pipelines
 
 The repository contains separate pipelines for each stage:

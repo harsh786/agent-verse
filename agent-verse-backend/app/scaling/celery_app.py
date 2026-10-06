@@ -677,6 +677,34 @@ def _on_worker_init_vault_check(**_kwargs: object) -> None:
     _vault_startup_check_worker()
 
 
+# ── OCR pool sizing (OCR-PAR) ─────────────────────────────────────────────────
+# Each prefork child runs its own process-wide OCR pool. Sized to all the CPUs,
+# `--concurrency=N` children would start N x CPUs tesseracts. worker_init runs in
+# the parent before the fork: record the pool size so every child sizes its pool
+# to its share (OCR_MAX_CONCURRENCY, when set, still wins).
+
+
+@worker_init.connect  # type: ignore[untyped-decorator]
+def _on_worker_init_ocr_share(sender: object = None, **_kwargs: object) -> None:
+    try:
+        from app.ocr.concurrency import available_cpus, note_worker_processes
+
+        pool_cls = getattr(sender, "pool_cls", None)
+        if isinstance(pool_cls, str):  # not resolved yet when worker_init fires
+            from celery.concurrency import get_implementation  # type: ignore[import-untyped]
+
+            pool_cls = get_implementation(pool_cls)
+        module = str(getattr(pool_cls, "__module__", "") or "")
+        if not module.endswith(".prefork"):
+            return  # threads / solo / gevent: one process, one shared OCR pool
+        # No --concurrency: celery starts one child per CPU.
+        note_worker_processes(int(getattr(sender, "concurrency", 0) or 0) or available_cpus())
+    except Exception as exc:  # never fail worker start over OCR sizing
+        import logging
+
+        logging.getLogger(__name__).warning("ocr_worker_share_failed: %s", exc)
+
+
 @beat_init.connect  # type: ignore[untyped-decorator]
 def _on_beat_init_vault_check(**_kwargs: object) -> None:
     _vault_startup_check_beat()
