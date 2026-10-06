@@ -372,14 +372,16 @@ def test_goal_score_below_threshold_and_dimension(
     base = {"trigger_type": "goal_score_below", "watch_agent_id": scored}
     codes = {}
     for label, extra in (("none", {}), ("zero", {"score_threshold": 0}),
-                         ("above_one", {"score_threshold": 1.5})):
+                         ("above_one", {"score_threshold": 1.5}),
+                         ("bad_dimension", {"score_threshold": 0.7,
+                                            "score_dimension": "acuracy"})):
         r = api.post("/triggers", json={"spec": {**base, "name": f"rw-b7-bad-{label}-{t}", **extra},
                                         "goal_template": "x" + ACK})
         codes[label] = r.status_code
         if r.status_code == 201:
             cleanup("DELETE", f"/triggers/{r.json()['schedule_id']}")
     evidence["invalid_create"] = codes
-    assert codes == {"none": 422, "zero": 422, "above_one": 422}, codes
+    assert codes == {"none": 422, "zero": 422, "above_one": 422, "bad_dimension": 422}, codes
     cases = {  # name -> (dimension, threshold)
         "overall_high": ("", 0.97),
         "overall_low": ("", 0.05),
