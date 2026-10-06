@@ -116,18 +116,66 @@ agent redeploys — rerun it. Behaviour changes made on purpose → update the o
 3. Only then `git push origin main`. GitHub push protection once rejected a fake `sk_live_...` test literal; if that
    happens, rewrite the unpushed range (filter-branch tree-filter to split the literal) — never use the bypass URL.
 
+## 3a. Task-wise status (owner's list) — 2026-10-06
+
+| # | Task | Code | Live verified | Status |
+|---|---|---|---|---|
+| A1 | File upload (PDF, DOCX, PPTX, XLSX, CSV, HTML, MD, OCR, ZIP) | ✅ | ✅ 9/10 (+table ranking fixed in P2) | DONE |
+| — | OCR parallelism (owner request 2026-10-06) | ✅ merged `36a353a61` | benchmark only (~5x on 20-page scan) | MERGED, NOT PUSHED — suite issues (§4); live check queued |
+| A2 | S3 / MinIO | ✅ | ✅ | DONE |
+| A3 | PostgreSQL / MySQL | ✅ | ✅ | DONE |
+| A5 | MongoDB / Redis / Elasticsearch | ✅ | ✅ 33/33 | DONE |
+| A10 | HTTP URL / web crawl | ✅ | ✅ 11/11 | DONE |
+| A12 | Agent-generated knowledge | ✅ | ✅ 5/5 | DONE (memory consolidations → P6) |
+| B1 | Time triggers | ✅ | ✅ 12/12 | DONE |
+| B2 | Webhook / REST / event triggers | ✅ | ✅ 10/10 + multi-replica 12/12 | DONE |
+| B7 | Platform events (goal completed/failed, score below, HITL approved/rejected, memory created) | ✅ B7-1..5 | ⏳ live agent running | IN PROGRESS |
+| B3 | GitHub / Stripe / Jira / Teams webhooks | ✅ DEF-5 | ❌ | code done; live check deferred (item 11) |
+| C1–C5 | Telegram / WhatsApp / Slack / Teams / generic-webhook channels | ✅ DEF-1..3 | ❌ | code done; live check deferred (item 13) |
+| A6 | Kafka | ✅ DEF-4 (commit after index, real Kafka container test) | ❌ | code done; live check deferred (item 14) |
+| A7 | Google Drive / SharePoint / Confluence / Notion | ❌ | ❌ | NOT STARTED (deferred, item 10) |
+| B8 | Conversational triggers | ❌ | ❌ | NOT STARTED (deferred, item 12) |
+| B9–B11 | — | — | — | PARKED by owner |
+| — | GDPR export gaps from orphaned worktree (RV-08) | ✅ merged (salvage) | n/a | MERGED, NOT PUSHED (pending suite) |
+| — | Live re-checks P2 retrieval, P4 workflows/HITL, P5 agent core, P7 evals, P8 guardrails/grants | ✅ code pushed | ❌ | NOT STARTED (queue §5 item 3) |
+| — | P6 memories & self-improvement | ❌ | ❌ | NOT STARTED |
+| — | P9 scale (million docs) · P10 frontend e2e · P11 full rerun | ❌ | ❌ | NOT STARTED |
+
 ## 4. In flight (resume these first)
 
-State at 2026-10-06 (main pushed to origin through `4d3f63be6`; later local commits are docs only).
+State at 2026-10-06 (origin/main = `871573514`). LOCAL main is ahead with two merges NOT yet pushed:
+`36a353a61` OCR parallelism and the worktree-salvage merge (GDPR export gaps). Do not push until the suite is green.
+
+**Suite status on `36a353a61` (OCR merge) — must fix before push:**
+- `tests/ocr/test_engine_parallel.py::test_real_render_is_page_by_page_at_the_configured_dpi` FAILS in the full run.
+- `tests/ingestion/test_ocr_pdf_pages_parallel.py::test_render_pdf_page_accepts_a_path_and_maps_poppler_errors` FAILS in the full run.
+- One chunk passes every test, then the interpreter aborts at exit:
+  `libc++abi: ... recursive_mutex lock failed: Invalid argument` (EXIT 134). This is new with the OCR merge. Likely the
+  OCR `ThreadPoolExecutor` / tesseract or poppler threads are still alive at interpreter shutdown; add an orderly
+  shutdown (atexit / pool `shutdown(wait=True)`) and a test-session teardown.
+
+Root-cause both failures (order dependence or host poppler), fix them, rerun the suite (`run.sh`), gate, push.
 
 | Item | Branch / worktree | State |
 |---|---|---|
 | B1, B2, B7-code, DEF-1..5, EGRESS-CFG | — | DONE, merged + pushed (B7 code `fcf68e1c9`, B2 `1d81f2cdc`, DEF `874712eb2`, egress `10c22195d`, test fixes `4d3f63be6`). |
 | **9. B7 platform events** (live) | `live/p3-b7-platform-events` · `.claude/worktrees/p3b7` | Live verification of all six platform-event types. Also asked to merge main (DEF-5 changed vendor-signed webhook dedup) and rerun ALL INGRESS-* scenarios. Report target `live/p3-b7-platform-events.md`. If its agent is gone: WIP-commit, read the report, continue. |
-| **OCR parallelism** (owner request) | `fix/ocr-parallelism` · `.claude/worktrees/ocrpar` | See below. Code + tests + one-off container benchmark (must NOT recreate the live compose services). |
-| **Worktree salvage** (owner: "merge all branches/worktrees into main") | `fix/worktree-salvage` · `.claude/worktrees/salvage` | See below. Report target `docs/audits/fixwave/worktree-salvage-2026-10-06.md`. |
+| **OCR parallelism** (owner request) | `fix/ocr-parallelism` — MERGED locally `36a353a61` | Commits OCR-PAR-1..6. Suite issues above. Then a live check on the stack (A1 upload scenarios plus concurrent multi-document scans). |
+| **Worktree salvage** (owner: "merge all branches/worktrees into main") | `fix/worktree-salvage` — MERGED locally | 17/17 checked; only the RV-08 GDPR gaps were missing (4a8bed96a, 0048fd34d, 080571bb5). Report `docs/audits/fixwave/worktree-salvage-2026-10-06.md`. |
 
-**OCR parallelism.** Owner request (2026-10-06): OCR must process multiple documents and multi-page documents at the
+**OCR parallelism (merged).** Benchmark: 20-page scan 18.2 s → 3.6 s; 12-page upload 16.2 s → 3.6 s; 5 docs × 4
+pages 6.1 s → 3.1 s; worst event-loop stall ~3 s → 0.05 s. The default render is now grayscale at 300 dpi (was colour
+at 200 dpi); `OCR_RENDER_DPI=200` restores the old cost. Settings: `OCR_MAX_CONCURRENCY` (0 = CPUs this process may
+use, cgroup-aware, split across prefork children), `OCR_PAGE_CONCURRENCY` (0 = max − 1), `OCR_VISION_CONCURRENCY` (4),
+`OCR_RENDER_DPI` (300), `OMP_THREAD_LIMIT` (1), wired into every deployment.
+
+Open from OCR:
+- fairness is per document, not per tenant;
+- connector syncs still ingest documents one at a time (pages within a document are parallel);
+- the vision cost guard can overshoot by up to `OCR_VISION_CONCURRENCY` calls;
+- remove the image `agentverse-ocrpar-bench:ocr-par` when done.
+
+Original request (2026-10-06): OCR must process multiple documents and multi-page documents at the
 same time. Root causes found:
 - pages OCR'd one after another in `OcrEngine.extract` and `document_text.ocr_pdf_pages`;
 - `pdf2image.convert_from_bytes` rasterises all pages on the event loop and holds them in memory;
@@ -152,7 +200,9 @@ After merge, verify live on the stack (A1 upload scenarios plus a concurrent mul
 - **Uncommitted work.** 17 old worktrees held uncommitted edits (most killed by the 2026-10-02 Mac restart; 4
   `wf_01f33451-68a-*` audit ones from 09-27). Copies are backed up in `/private/tmp/claude-501/wtcheck/`:
   `<name>.patch`, `untracked/<name>/`, `index.txt`.
-- **Verdicts so far: 16/17 already on main or superseded.** Evidence:
+- **Final: 17/17 checked.** 16 are already on main or superseded, including the SAML-01 user sessions →
+  `2572a5ba7` / migration `a7c3e9f1b2d4`. Only the RV-08 GDPR gaps were missing; they are ported and merged.
+  Evidence:
   - FE-01 → `9477db129`
   - system-jobs-scaling → `1e0942ab6`
   - system-jobs-ingestion → `826f92c7c`
@@ -167,7 +217,7 @@ After merge, verify live on the stack (A1 upload scenarios plus a concurrent mul
   - ORG-32 → `af1e9bb43`
   - MCP health → `3e31d3df8` (optional partial index skipped, as before)
   - KB-44 → `969c2eeef`
-- **MISSING, being ported** (from `agent-a9c06085c934d55b1`, RV-08 GDPR):
+- **MISSING, now ported and merged** (from `agent-a9c06085c934d55b1`, RV-08 GDPR):
   1. The async `run_gdpr_export` exports only goals + audit; add agents, schedules, knowledge_collections and
      api_keys metadata (never the hash).
   2. A strict save of the sync export result, with 503 if it cannot be recorded.
@@ -175,8 +225,6 @@ After merge, verify live on the stack (A1 upload scenarios plus a concurrent mul
   4. Log instead of `pass` when marking a job failed fails.
 
   Do NOT port the unlimited sync export (main caps it at 10k on purpose, a09-F212-11) or "no DB means failed".
-- **Still to check:** user-sessions worktrees `agent-a0a0da5120f3bd136` / `agent-a696307d9338941d4` (main has the
-  `a7c3e9f1b2d4_user_sessions` migration; never copy stale migrations, keep ONE alembic head).
 - **After the salvage merge:** ask the owner before deleting the 17 worktrees and superseded branches.
 
 **Live stack.**
@@ -189,6 +237,8 @@ After merge, verify live on the stack (A1 upload scenarios plus a concurrent mul
 
 ## 5. Queue (strict order)
 
+1. Fix the OCR-merge suite issues (§4), rerun the suite, gate, push.
+2. Finish B7 live (item 9), then a live OCR parallelism check.
 3. **Live re-checks** of code fixes already pushed: P2 retrieval/grounding, P4 workflows/HITL, P5 agent core, P7 evals,
    P8 guardrails/grants (each: redeploy, run the scenarios, fix, merge, push).
 4. **P6** memories & self-improvement (no scenarios yet; includes memory consolidations from A12).
@@ -199,9 +249,9 @@ After merge, verify live on the stack (A1 upload scenarios plus a concurrent mul
 8. **Deferred by owner to the very end** (after everything above is committed and pushed), in this order:
    10 A7 Google Drive/SharePoint/Confluence/Notion · 11 B3 GitHub/Stripe/Jira/Teams webhooks · 12 B8 conversational
    triggers · 13 C1–C5 channels Telegram/WhatsApp/Slack/Teams/generic webhook · 14 A6 Kafka.
-   Known: Teams routes by shared serviceUrl (cross-tenant), Slack slash commands single-tenant, channel binding only
-   via `CHANNEL_TENANT_MAP` env (per-org gateway config 501), Telegram/WhatsApp no e2e, Kafka commits offsets before
-   indexing. No real vendor accounts: use exact payload formats + signing and local mock vendor APIs.
+   Code fixes for B3, C1–C5 and A6 are already on main (DEF-1..5, `874712eb2`); these items are now the LIVE
+   verification, plus A7 and B8, which are not started. Wire `GATEWAY_PUBLIC_BASE_URL` into all deployments during
+   item 13. No real vendor accounts: use exact payload formats + signing and local mock vendor APIs.
 9. **Final sweep**: every branch/worktree merged (intentional skips: `backup-g04gov-pre-rv`, plus single duplicate
    commits on 3 old agent branches — already on main in another form), all tiers green (unit, frontend, integration,
    e2e_full normal + `E2E_LEAST_PRIVILEGE=1`, live real-world), push. Then ask the owner before deleting superseded
