@@ -1,0 +1,34 @@
+{
+  "OI-3": {
+    "status": "done",
+    "commit": "fbc645182",
+    "note": "stdlib LogRecord factory + structlog processor redact messages/exception text/tracebacks on API and workers"
+  },
+  "OI-1": {
+    "status": "done",
+    "commit": "79dc747ab",
+    "note": "goal action ledger (context+checkpoint+Redis): executed non-read calls replayed not re-run; exact-action approvals reused; planner told what already ran; worker-path test"
+  },
+  "OI-2": {
+    "status": "done",
+    "commit": "90cd8e6d1",
+    "note": "workflow tool steps classified like goal tool calls: destructive denied, write_high suspends on the durable workflow approval barrier; compiler holds dependents"
+  },
+  "OI-4": {
+    "status": "done",
+    "commit": "80ecddddd",
+    "note": "Redis ids = v8 of Source+db+key; manages_doc_id v8 only; D2 machinery generalized (per-connector hooks + migration name) with sync hook + maintenance dispatch; real Redis test"
+  },
+  "OI-5": {
+    "status": "done",
+    "commit": "484d0ab0a",
+    "note": "CE logits as probabilities (no min-max noise stretch), retrieval relative to best, equal weights, exact query identifiers tier first; P2-3 leg kept; real-PG test"
+  },
+  "_new_findings": [
+    "Gate 7 (keyword high-risk step gate) still files a step-level approval in addition to the write_high tool approval for the same delete, and gates report-only steps ('report that the order was deleted'); OI-1 reuses approvals only for the identical step text, so a replan that rewords the step asks once more at step level (the tool call itself is not re-run or re-asked).",
+    "On a high-risk goal the verifier's final-answer NLI grounding gate (final_claim_grounding_gate_replan) can fail a correct answer like 'The order was deleted' against tool evidence \"{'deleted': 1}\" and force replans; likely part of why MCP-MONGO-HITL replanned repeatedly.",
+    "Workflow tool steps now need approval for every write_high tool (unknown tool names default to write_high); published workflow templates with such tool steps will suspend for a reviewer on each run unless the connector opts into autonomous execution.",
+    "MongoDBConnector._doc_id duplicates the new base_connector.stable_doc_id_v8 derivation (identical output); could be switched to the shared helper."
+  ],
+  "_branch": "fix/open-items-a5-p8b (worktree .claude/worktrees/open5), 5 commits on main a450cd03c; main had not moved; one alembic head (e7b1c4d9a2f6); ruff + mypy app clean"
+}

@@ -1,0 +1,41 @@
+{
+  "_branch": "fix/b7-platform-events",
+  "B7-1": {
+    "status": "done",
+    "commit": "eca48f248",
+    "note": "loop guard + lineage for all six types; memory_created/hitl self-loop fixed; audited skips; allow_self_trigger opt-in; real PG+Redis chain test"
+  },
+  "B7-2": {
+    "status": "done",
+    "commit": "b6d6fa7f3",
+    "note": "goal.failed published by stuck-goal detector, watchdog, HITL-expiry sweep, DLQ and worker terminal status"
+  },
+  "B7-3": {
+    "status": "done",
+    "commit": "f44f9b4fd",
+    "note": "workflow approval decisions publish hitl.approved/hitl.rejected (API lifespan binds event redis)"
+  },
+  "B7-4": {
+    "status": "done",
+    "commit": "82e340f02",
+    "note": "feedback lessons (worker maintenance task) publish memory.created"
+  },
+  "B7-5": {
+    "status": "done",
+    "commit": "e37c40d83",
+    "note": "goal_score_below threshold required in (0,1], score_dimension honoured via per-dimension scores, UI sends shown default + self-trigger opt-in"
+  },
+  "_status": "complete: merged main 10c22195d (e8dde4f8e), one alembic head b8d0f2a4c6e7, ruff + mypy app clean",
+  "_per_type": {
+    "goal_completed": "fixed B7-1 (audited loop guard/opt-in), source/target agent split already fixed (TRG-04)",
+    "goal_failed": "fixed B7-1 + B7-2 (stuck/watchdog/HITL-expiry/DLQ/worker terminal publish goal.failed)",
+    "goal_score_below": "fixed B7-1 + B7-5 (threshold required, dimension honoured); worker publisher already existed (TRG-22)",
+    "hitl_approved": "fixed B7-1 (self-loop, dedup by request) + B7-3 (workflow approvals publish)",
+    "hitl_rejected": "fixed B7-1 + B7-3",
+    "memory_created": "fixed B7-1 (unbounded self-loop) + B7-4 (feedback lessons publish); worker publisher already existed (TRG-21)"
+  },
+  "_already": "tenant isolation (server-stamped tenant, plan from tenant record TRG-05), plan quotas (dispatcher rate/bulkhead + submit_goal limits), audit row per fire and per skip, cross-replica dedup (consumer groups + Redis SETNX + trigger_events UNIQUE)",
+  "_new_findings": [
+    "HITLGateway.approve publishes hitl.approved via a fire-and-forget loop.create_task (noqa RUF006); a cancelled loop can drop it \u2014 consider awaiting in approve_async"
+  ]
+}

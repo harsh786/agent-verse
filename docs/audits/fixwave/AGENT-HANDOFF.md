@@ -49,7 +49,11 @@ surface, workflow step guardrails, violations endpoint, 236 id columns → 64), 
 once, workflow tool-step risk gate, log redaction, Redis host-independent ids, reranker), GRD-1 (structured tool
 results ground answers), chat transcripts opt-in (decision 7), CHAT-SEC-1..3 (owner-scoped chats + RLS, real message
 delete, chat TTL), CHAT-D-1..3 (folders in PG, saved feedback, GOAL turns use session agent), run_goal heartbeat leak,
-collab presence dead-peer pruning, Stripe-literal guard test.
+collab presence dead-peer pruning, Stripe-literal guard test, EGRESS-CFG (operator egress allowlist in .env.example /
+both Helm charts / raw k8s / prod compose), B7-1..5 platform-event trigger code (loop guard, goal_failed publishers,
+score_below threshold+dimension, workflow HITL events, feedback memory.created), DEF-1..5 deferred code (Teams JWT
+binding, Slack workspace secrets, self-service channel bindings, Kafka commit-after-index, SaaS webhook signatures),
+suite fixes (Teams test timestamp stamped at run time; Slack button test stubs the async signature check).
 
 ## 3. Procedure (follow exactly)
 
@@ -114,30 +118,74 @@ agent redeploys — rerun it. Behaviour changes made on purpose → update the o
 
 ## 4. In flight (resume these first)
 
+State at 2026-10-06 (main pushed to origin through `4d3f63be6`; later local commits are docs only).
+
 | Item | Branch / worktree | State |
 |---|---|---|
-| B1, B2 | — | DONE (B2 merge on main). |
-| **9. B7 platform events** (live) | `live/p3-b7-platform-events` · `.claude/worktrees/p3b7` | Started from main after B2 merge. Report target `live/p3-b7-platform-events.md`. If its agent is gone: WIP-commit in the worktree, read the report, continue. |
+| B1, B2, B7-code, DEF-1..5, EGRESS-CFG | — | DONE, merged + pushed (B7 code `fcf68e1c9`, B2 `1d81f2cdc`, DEF `874712eb2`, egress `10c22195d`, test fixes `4d3f63be6`). |
+| **9. B7 platform events** (live) | `live/p3-b7-platform-events` · `.claude/worktrees/p3b7` | Live verification of all six platform-event types. Also asked to merge main (DEF-5 changed vendor-signed webhook dedup) and rerun ALL INGRESS-* scenarios. Report target `live/p3-b7-platform-events.md`. If its agent is gone: WIP-commit, read the report, continue. |
+| **OCR parallelism** (owner request) | `fix/ocr-parallelism` · `.claude/worktrees/ocrpar` | See below. Code + tests + one-off container benchmark (must NOT recreate the live compose services). |
+| **Worktree salvage** (owner: "merge all branches/worktrees into main") | `fix/worktree-salvage` · `.claude/worktrees/salvage` | See below. Report target `docs/audits/fixwave/worktree-salvage-2026-10-06.md`. |
 
-Note: the live stack currently mounts the p3b1/p3b2 worktree; B1 added a `schedule-worker` service. The launchd
-`run_forever.py` starts its own beat whenever compose's beat disappears (even briefly during redeploy) — owner decision pending.
+**OCR parallelism.** Owner request (2026-10-06): OCR must process multiple documents and multi-page documents at the
+same time. Root causes found:
+- pages OCR'd one after another in `OcrEngine.extract` and `document_text.ocr_pdf_pages`;
+- `pdf2image.convert_from_bytes` rasterises all pages on the event loop and holds them in memory;
+- tesseract runs on the unbounded default executor;
+- tesseract's OpenMP oversubscribes CPU when several run at once.
 
-Parallel code tracks (code + tests only, live-verified later in their queue slot):
-- `fix/ocr-parallelism` · `.claude/worktrees/ocrpar` — OWNER REQUEST (2026-10-06): OCR must process multiple documents
-  and multi-page documents at the same time. Root causes found: pages OCR'd sequentially (`OcrEngine.extract`,
-  `ocr_pdf_pages`), `convert_from_bytes` rasterises all pages on the event loop, tesseract on the unbounded default
-  executor. Fix: bounded concurrent pages, off-loop page-by-page render, one process-wide OCR limiter with
-  per-document fairness, concurrent multi-file/ZIP, `OMP_THREAD_LIMIT=1`; benchmark in a one-off container.
-- `fix/b7-platform-events` — MERGED into main (`fcf68e1c9`, commits B7-1..B7-5): trigger lineage + loop guard
-  (no self-trigger unless `allow_self_trigger`, chain depth cap 10, audit row per suppressed fire), every goal-failing
-  path publishes `goal.failed`, goal_score_below requires a 0..1 threshold and honours the dimension, workflow HITL
-  decisions publish hitl_approved/rejected, feedback lessons publish memory.created. Live verification = queue item 9.
-- `fix/deferred-channels-kafka` — MERGED into main (`874712eb2`): DEF-1 Teams Bot Framework JWT verify + tenant
-  binding (unbound org 403), DEF-2 Slack per-workspace signing secrets, DEF-3 self-service channel bindings with
-  envelope-sealed secrets + Telegram setWebhook + WhatsApp verify handshake (`CHANNEL_TENANT_MAP` deprecated),
-  DEF-4 Kafka commit only after index/skip/DLQ (real Kafka container test), DEF-5 exact GitHub/Stripe/Jira/Teams
-  signature schemes + replay windows; vendor-signed deliveries dedup on signed content. Live verification = deferred
-  items 11/13/14 at the end.
+Fix scope:
+- bounded concurrent pages, order and page numbers preserved;
+- off-loop page-by-page render;
+- one process-wide OCR limiter with per-document fairness;
+- concurrent multi-file/ZIP;
+- bounded vision fallback;
+- `OMP_THREAD_LIMIT=1`;
+- settings `OCR_MAX_CONCURRENCY`, `OCR_PAGE_CONCURRENCY`, `OCR_RENDER_DPI`;
+- before/after benchmark (1×20-page scan; 5 docs × 4 pages).
+
+After merge, verify live on the stack (A1 upload scenarios plus a concurrent multi-document scan).
+
+**Worktree salvage.**
+- **Committed work.** Every local/remote branch's committed work was verified on main by patch-id plus subject; the
+  4 leftover commits are covered by RV-05/RV-09, RV-07, NATIVE-05, and a no-longer-needed alembic merge.
+- **Uncommitted work.** 17 old worktrees held uncommitted edits (most killed by the 2026-10-02 Mac restart; 4
+  `wf_01f33451-68a-*` audit ones from 09-27). Copies are backed up in `/private/tmp/claude-501/wtcheck/`:
+  `<name>.patch`, `untracked/<name>/`, `index.txt`.
+- **Verdicts so far: 16/17 already on main or superseded.** Evidence:
+  - FE-01 → `9477db129`
+  - system-jobs-scaling → `1e0942ab6`
+  - system-jobs-ingestion → `826f92c7c`
+  - governance-startup → `fdb076128`
+  - request-paths → `bd64943cf`
+  - CORE-18 → `fd531b0bf`
+  - WF-TIMEOUT → `18a6a0482`
+  - real-world fixtures → `199cec12a` / `8f3630f09`
+  - OPS-37 → `03a897c8c`
+  - SVC-05 → `15be56b1c` / `fb988562f`
+  - CHAT-CHANNEL-DEAD → `ac6458380`
+  - ORG-32 → `af1e9bb43`
+  - MCP health → `3e31d3df8` (optional partial index skipped, as before)
+  - KB-44 → `969c2eeef`
+- **MISSING, being ported** (from `agent-a9c06085c934d55b1`, RV-08 GDPR):
+  1. The async `run_gdpr_export` exports only goals + audit; add agents, schedules, knowledge_collections and
+     api_keys metadata (never the hash).
+  2. A strict save of the sync export result, with 503 if it cannot be recorded.
+  3. The async payload write and job completion in one transaction.
+  4. Log instead of `pass` when marking a job failed fails.
+
+  Do NOT port the unlimited sync export (main caps it at 10k on purpose, a09-F212-11) or "no DB means failed".
+- **Still to check:** user-sessions worktrees `agent-a0a0da5120f3bd136` / `agent-a696307d9338941d4` (main has the
+  `a7c3e9f1b2d4_user_sessions` migration; never copy stale migrations, keep ONE alembic head).
+- **After the salvage merge:** ask the owner before deleting the 17 worktrees and superseded branches.
+
+**Live stack.**
+- The live stack currently runs app containers from the p3b7 worktree (B7 live agent).
+- The launchd `run_forever.py` starts its own beat whenever compose's beat disappears (even briefly during redeploy);
+  this is an owner decision, pending.
+- Local MinIO egress: `192.168.63.104` is on the local `.env` allowlist, but nothing listens there from this Mac. The
+  owner was asked which deployment hosts it (set the two `INGESTION_*` vars there; all deployment templates support
+  them since `10c22195d`).
 
 ## 5. Queue (strict order)
 
@@ -185,6 +233,18 @@ Remaining backlog after the queue: `pending-all-2026-10-05.json` (re-verify each
 - Postgres FTS splits `TJ-5531` into `tj` + `-5531` (bare "5531" misses FTS; other legs catch it).
 
 ## 7. Owner decisions (recorded in LIVE-E2E-PLAN.md)
+
+Pending owner questions (2026-10-06):
+- (a) Which deployment hosts MinIO 192.168.63.104?
+- (b) Remove the 501 per-org `/v1/gateway/{org}/config` and `/channels/status` from OpenAPI/UI?
+- (c) launchd `run_forever.py` beat takeover: keep it, add a longer grace period, or disable?
+- (d) Remote branch `origin/feature/isolated-agent-execution-environment` (one Jul-10 commit "Agent Isloation"):
+  PaymentSystemMatrix diagrams + `docs/merchant-onboarding-requirements.md` + pyc/SDK `dist` build output (SDKs were
+  removed). Bring in only the docs/diagrams, or skip?
+- (e) GDPR export: include the tenant row (name, email, created_at) in the profile section? Currently tenant_id + plan only.
+- (f) Per-Source reconcile interval override (from the KB-44 worktree) or keep the global
+  `ingestion_reconcile_interval_seconds`?
+
 1 scoped re-upload replace · 2 MongoDB auto id reindex · 3 A2A public directory opt-in · 4 Helm 4 procs/3.5Gi ·
 5 no RPA plan limit · 6 channels C1–C5 in scope (deferred to end) · 7 chat transcripts indexed with admin switch +
 per-user opt-in · `mongodb_delete_one` approvable via HITL · `LLM_REQUIRE_PLATFORM_KEY` for BYOK-only production ·
@@ -197,7 +257,7 @@ Redis doc ids host-independent.
   worktree (and after the final merge, from `main`).
 - Local-only egress allowlist in the main checkout's gitignored `agent-verse-backend/.env`:
   `INGESTION_ALLOW_INTERNAL_SOURCES=true`, `INGESTION_INTERNAL_SOURCE_ALLOWLIST=minio,rw-s3,rw-pg,rw-mysql,rw-mongo,
-  rw-mongo-alt,rw-mongo-tls,rw-mongo-stall,rw-redis,rw-redis-tls,rw-es,rw-web,rw-web-b` (backups under
+  rw-mongo-alt,rw-mongo-tls,rw-mongo-stall,rw-redis,rw-redis-tls,rw-es,rw-web,rw-web-b,192.168.63.104` (backups under
   `/private/tmp/claude-501/rw/p1*/dotenv.before-*`). Production defaults unchanged.
 - Test containers (labels `p1b=live-test`, `p1c=live-test`, `p1d=live-test`): agentverse-rw-{pg,mysql,s3,mongo,
   mongo-tls,mongo-stall,redis,redis-tls,es,web,ingestion-worker}. Throwaway creds in `/private/tmp/claude-501/rw/p1c/infra.env`.

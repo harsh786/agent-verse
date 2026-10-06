@@ -1,0 +1,28 @@
+{
+  "P8b-1": {
+    "status": "done",
+    "commit": "5c8de1f24",
+    "note": "screen_goal_event on API+worker event write (baseline PII/secret redaction + tenant output rules, fail closed), read backstop for legacy history, token stream holdback"
+  },
+  "P8b-2": {
+    "status": "done",
+    "commit": "086ef0500",
+    "note": "workflow llm/rag prompt+answer and http request+response screened by tenant rules + baseline; block fails step (not retried), redact applied, violations durable, fail closed"
+  },
+  "P8b-3": {
+    "status": "done",
+    "commit": "c1d9f12f3",
+    "note": "legacy /guardrails/violations + /stats read durable guardrails-v2 store (keyset cursor, tenant-scoped, Deprecation->v2); frontend uses /guardrails-v2/violations"
+  },
+  "P8b-4": {
+    "status": "done",
+    "commit": "69d6efaa5",
+    "note": "migration e7b1c4d9a2f6: 236 VARCHAR(32) id/tenant_id/*_id cols (generated from migrated testcontainer) + 6 VARCHAR(36) tenant_id -> 64, policies/views recreated, round-trip tested; models follow; guard tests"
+  },
+  "_new_findings": [
+    "run_goal logs 'goal_denied_by_governance goal_id=...: <exception text>' with the raw exception message (a bearer token in a PermissionError reached the worker log unredacted, seen in tests/scaling/test_worker_event_sanitization.py output)",
+    "GET /goals/{id}/replay loads every goal_events/goal_steps/decision_traces row of the goal without a LIMIT (unbounded read); goal_steps is never written (GoalService._db_persist_step has no caller)",
+    "ORM models drift from the live schema on many id columns (e.g. civilizations/cost_ledger/knowledge_* are TEXT in Postgres but String(32) in models; knowledge chunk mixin id/collection_id String(32)); there is no model-vs-migration drift check",
+    "GET /guardrails/stats and the v2 violations listing scan a tenant's 30-day window with GROUP BY; fine for now but a very noisy tenant would want a rollup table"
+  ]
+}

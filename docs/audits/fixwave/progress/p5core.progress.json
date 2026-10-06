@@ -1,0 +1,38 @@
+{
+  "P5-1": {
+    "status": "done",
+    "commit": "d004e8994",
+    "note": "429 retry w/ backoff+jitter+Retry-After within goal deadline; 429 never trips breaker; breaker keyed provider+model(+tenant BYOK)"
+  },
+  "P5-2": {
+    "status": "done",
+    "commit": "14922b8c1",
+    "note": "workflow_mode supervisor/debate becomes the v2 profile primary; legacy fallback records requested_workflow_mode; override conflict recorded as strategy_downgraded"
+  },
+  "P5-3": {
+    "status": "done",
+    "commit": "679a9700a",
+    "note": "DistributedStrategyLoop.run returns DistributedStrategyOutcome(AgentState); worker no longer crashes/retries finished v2 distributed goals"
+  },
+  "P5-4": {
+    "status": "done",
+    "commit": "3b84b70a2",
+    "note": "beat pushes 'expired' to hitl_result:{id} for every expired approval; waiter maps it to TIMED_OUT; goal fails honestly across replicas"
+  },
+  "P5-5": {
+    "status": "done",
+    "commit": "4159829de",
+    "note": "verb-as-action semantics (nominal modifiers, proper names, reduced passive, light verbs, goods release), clause-scoped verb-target pairs; P0 texts + true-positive matrix"
+  },
+  "P5-6": {
+    "status": "done",
+    "commit": "7dfa3e6cc",
+    "note": "goal text is a grounding source (executor + verifier); numbers inside dates/URLs/ids not separate claims; one marker per sentence at its end"
+  },
+  "_new_findings": [
+    "run_goal retries ANY exception as transient (tasks.py generic except -> self.retry), including programming errors (AttributeError/TypeError) and goals that already emitted a terminal event; a rerun repeats side effects (fresh approvals). Consider non-retryable classes + a terminal-status check before retry.",
+    "Supervised-mode goals SUSPENDED in waiting_human (no live waiter) are not failed when their approval expires; they stay waiting_human until someone calls POST /goals/{id}/resume (goal_service._suspend_for_approval / resume_goal). The beat could fail them with an 'approval expired' event.",
+    "tests/db/test_rls_context_coverage.py fails on main d0233a316: app/services/a2a_directory.py queries FORCE-RLS tables a2a_public_agents/agents without an RLS context (D3 public A2A directory)."
+  ],
+  "_branch": "fix/p5-agent-core (worktree .claude/worktrees/p5core), 6 commits on d0233a316, not pushed; live re-verification pending (P5 live phase)"
+}

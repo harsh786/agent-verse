@@ -1,0 +1,50 @@
+{
+ "P4-1": {
+  "status": "done",
+  "commit": "58bf7b986",
+  "note": "record_workflow_created on import/clone/instantiate/fork/api; NL builder saves via audited POST /workflows"
+ },
+ "P4-2": {
+  "status": "done",
+  "commit": "50659075c",
+  "note": "migration d4e7a2c9b1f3 widens id/tenant_id to 64 on 6 audit/event tables (RLS policies recreated); AuditFieldTooLongError instead of truncation; code step audits hex tenant"
+ },
+ "_new_findings": [
+  "~95 other tenant_id columns outside audit/event tables (e.g. approval_requests, goal_fanout_ledger, progress_ledger_revisions) are still VARCHAR(32); safe only while tenant ids stay 32-char hex",
+  "Legacy GET /guardrails/violations still reads the per-process _violations_store that no agent path writes; durable violations are only at /guardrails-v2/violations",
+  "The baseline FINAL_OUTPUT PII block only replaces cited_answer; GET /goals/{id} result_artifact is the last step output, so without a tenant output rule PII in a step output is still served (P8 live phase)",
+  "Workflow HTTP/LLM steps do not evaluate guardrails at all (only the agent graph and tool gate do)"
+ ],
+ "P7-2": {
+  "status": "done",
+  "commit": "31f020246",
+  "note": "final_answer_text shared by evals and GET /goals/{id} result_artifact; bridge-wrapped events unwrapped"
+ },
+ "P7-1": {
+  "status": "done",
+  "commit": "537c17991",
+  "note": "AI-Ops runs = non-blocking leased Celery steps polling goals + stalled-run sweeper (index e5b8c3d1a7f4); two-slot worker test"
+ },
+ "P7-3": {
+  "status": "done",
+  "commit": "c47ac57a7",
+  "note": "ai_ops_dataset_versions (f6a9d4e2b8c5): immutable published versions, draft edits, per-task CRUD, publish; runs pin+record dataset_version; UI shows name vN"
+ },
+ "P8-1": {
+  "status": "done",
+  "commit": "31ea9f645",
+  "note": "worker_binding for run_goal + workflow worker; /guardrails configs are durable v2 rules; step-output screening with tenant rules; intl phone PII"
+ },
+ "P8-2": {
+  "status": "done",
+  "commit": "3e126a578",
+  "note": "off-list tool calls go through the grant gate (event + DENY audit row); all grant refusals audited; tools_withheld_by_grant event; live test expectation updated"
+ },
+ "P8-3": {
+  "status": "done",
+  "commit": "7fedf0d2b",
+  "note": "LiveAPI.put; schedule_history_runs reads runs; offline contract tests"
+ },
+ "_branch": "fix/p4-p7-p8-code",
+ "_merged_main": "88a5d200a (merge 561ac1997); alembic single head f6a9d4e2b8c5"
+}

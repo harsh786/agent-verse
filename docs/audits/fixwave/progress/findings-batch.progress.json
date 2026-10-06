@@ -1,0 +1,60 @@
+{
+  "_branch": "fix/findings-batch (worktree .claude/worktrees/findings), from main 4224a432e, not pushed",
+  "NF-10": {
+    "status": "done",
+    "commit": "37a7f59e9",
+    "note": "app/scaling/retry_policy.is_transient_infra_error (conn/timeout/DB/Redis/httpx/429/5xx/circuit); non-transient fails once honestly; post-terminal errors never retried or rewritten; DLQ update conditional"
+  },
+  "NF-11": {
+    "status": "done",
+    "commit": "78458d7b8",
+    "note": "expire_hitl_approvals fails waiting_human goals parked on the expired approvals in the same tx ('approval expired: ...'), goal_failed event + SSE publish + mission finalize; PG+Redis testcontainer test"
+  },
+  "NF-12": {
+    "status": "done",
+    "commit": "c235bb2e1",
+    "note": "IngestionPersistenceError on job create/cursor/complete write failure; cursor never advances past a failed write; worker doc loop re-raises it (no DLQ swallow)"
+  },
+  "NF-13": {
+    "status": "done",
+    "commit": "e3d275648",
+    "note": "dedicated Settings.mcp_connector_mongodb_enabled; register/update 422, /test failed+connector_disabled, handler refuses every tool call before any client; unreadable settings fail closed"
+  },
+  "NF-14": {
+    "status": "done",
+    "commit": "7fb5989c9",
+    "note": "get_goal returns failure_reason (redacted, URLs/IPs/host:port/FQDN stripped, 500 chars) + terminal_reason code; error_message now loaded on DB read; GoalDetailPage prefers API reason"
+  },
+  "NF-15": {
+    "status": "done",
+    "commit": "98b547cdf",
+    "note": "infra/helm agentverse.appSecretEnv shared by backend/worker/subgoal/beat (+MinIO/JWT/goal-token/manifest/provider/SMTP); legacy chart workers got LLM key + VAULT_MASTER_KEY (API passed unread MASTER_ENCRYPTION_KEY); manifest test extended"
+  },
+  "NF-16": {
+    "status": "done",
+    "commit": "0cdf49d21+9fee39ac6+e42c79f21",
+    "note": "helm: app role DATABASE_URL + MAINTENANCE_DATABASE_URL on all app workloads, new db-migrate Job (owner MIGRATION_DATABASE_URL + APP_DB_USER), API runs uvicorn only; k8s: maintenance URL in main secret, owner DSN in separate migration secret, owner override removed, backup dumps as maintenance role; legacy chart wired; follow-ups: 9fee39ac6 k8s pgbouncer (edoburu + add-app-user.sh ConfigMap) lists the app role, e42c79f21 wait-for-schema initContainer on every helm/k8s app Deployment"
+  },
+  "NF-17": {
+    "status": "done",
+    "commit": "975703084",
+    "note": "Settings.training_export_retention_hours (168, 0=off) + batch settings; hourly beat agentverse.training_export.expire on maintenance role: FOR UPDATE SKIP LOCKED batches, DeleteObjects, mark expired only when object gone; partial index migration c3f9a1d7e5b2; 410 on download; UI 'Expired'; real MinIO+PG testcontainer test"
+  },
+  "NF-18": {
+    "status": "done",
+    "commit": "662557550",
+    "note": "scheduled/manual sync (all connector types), reconcile, mongo migration already locked; removed dead unlocked app.api.ingestion._run_sync; webhook delta_reingest_files now holds shared lock (hold_without_fence + lease checks, skip/fail closed); AST test pins get_delta call sites"
+  },
+  "_new_findings": [
+    "legacy helm/agentverse chart passed the vault key as MASTER_ENCRYPTION_KEY (never read): its API ran on the dev vault key; now VAULT_MASTER_KEY (NF-15) - data encrypted under the dev key in such deployments will not decrypt",
+    "k8s pg-backup-cronjob ran pg_dump on a postgresql+asyncpg:// DSN libpq cannot parse (backups never worked); fixed in NF-16 to dump as the maintenance role",
+    "webhook delta_reingest_files ingests under a synthetic source id 'webhook-<type>' with a full re-read (cursor None) instead of mapping to the tenant's real Source; lock now serialises it, but it is still a parallel ingestion path to the Source's own sync",
+    "failure_reason host scrubbing replaces 2+-dot dotted identifiers (e.g. python module paths) with [host]: conservative by design",
+    "legacy helm/agentverse workers/beat have no wait-for-schema initContainer (its API still migrates in its own CMD, so it cannot wait on itself)",
+    "k8s pgBouncer lists only the owner and the app role: a separate maintenance role (MAINTENANCE_DATABASE_URL other than the owner) also needs an auth entry"
+  ],
+  "_owner_decisions": [
+    "NF-13 uses a dedicated MCP_CONNECTOR_MONGODB_ENABLED flag (not the TG-15 ingestion flag): set both to turn MongoDB off everywhere",
+    "NF-16 switches helm/k8s app workloads to the least-privilege app role: operators must provide APP_DB_PASSWORD / maintenance + owner DSNs before upgrading"
+  ]
+}

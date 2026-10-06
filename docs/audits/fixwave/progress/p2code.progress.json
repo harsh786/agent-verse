@@ -1,0 +1,50 @@
+{
+  "P2-1": {
+    "status": "done",
+    "commit": "8d13f83c1",
+    "note": "FTS leg ORs significant terms (bounded, ranked, all-terms bonus); real-PG test (rebased onto 53a0ea0a3)"
+  },
+  "P2-2": {
+    "status": "done",
+    "commit": "c037d4122",
+    "note": "expansion max_tokens 1024; empty/invalid expansion falls back to original query, recorded in trace; outages still raise"
+  },
+  "P2-3": {
+    "status": "done",
+    "commit": "0a77efc9f",
+    "note": "word_similarity trigram, BM25 keeps codes whole, exact phrase leg x2 weight; real-PG test ranks table row / TJ-5531 first"
+  },
+  "P2-4": {
+    "status": "done",
+    "commit": "e3c2761a8",
+    "note": "MAX_RAG_TOP_K=20 shared; /knowledge/search + federated 422 with range; contract ValidationError -> 422 in both mappers"
+  },
+  "P2-5": {
+    "status": "done",
+    "commit": "3929f37da",
+    "note": "cause confirmed: URL fetch regex kept inline JS + nav; /ingest/url, re-ingest and web-crawl now use P1a HTML extractor"
+  },
+  "P2-6": {
+    "status": "done",
+    "commit": "577c44751",
+    "note": "PRECOMPUTED_INDEX per-collection probe (real-PG test), ?collection_id on /rag/strategies, web health probe + last-known"
+  },
+  "P2-7": {
+    "status": "done",
+    "commit": "f75ed9505",
+    "note": "agentic prompt requires [N] + 768-token budget; uncited strategy answer re-synthesized+re-verified; ungrounded /rag/query -> 422 answer_ungrounded"
+  },
+  "_new_findings": [
+    "openapi.json already drifts from create_app() on main (scripts/export_openapi.py --check fails before P2); not regenerated here to avoid unrelated churn \u2014 P2-4/P2-6 change /knowledge/search top_k bounds and add ?collection_id to /rag/strategies",
+    "other ingestion paths still regex-strip HTML without the lxml extractor: zendesk/confluence connectors, ingestion/orchestrator.py:180, parser_registry.py:42-51, rpa/executor.py:1048",
+    "Postgres english parser reads 'TJ-5531' as 'tj' + '-5531' (signed int), so FTS on a bare '5531' never matches the code; P2-3 works around it query-side",
+    "no frontend UI calls POST /rag/query; workflow-builder RAG node strategy lists (hybrid/vector/lexical, hybrid/semantic/keyword) are not RAG strategy ids and do not use /rag/strategies"
+  ],
+  "_rebase": "rebased onto main 53a0ea0a3 via git rebase --onto main a4b221e24 (coordinator request); P2-1/P2-2 SHAs are post-rebase",
+  "P2-6-ui": {
+    "status": "done",
+    "commit": "a09b5fdaf",
+    "note": "Search + Ask AI strategy picker passes collection_id to GET /rag/strategies; 'needs a collection' label; vitest"
+  },
+  "_merge": "merged main 537b179e1 (main had moved past 8965f46ca); single alembic head c3f9a1d7e5b2"
+}

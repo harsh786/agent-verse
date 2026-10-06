@@ -1,0 +1,38 @@
+{
+  "DEF-1": {
+    "status": "done",
+    "commit": "5900500af",
+    "note": "Teams events: verified BF JWT (serviceurl claim, endorsements, kid-rotation refetch), aud = platform bot or the org's bound app, unbound org 403, store outage 503"
+  },
+  "DEF-2": {
+    "status": "done",
+    "commit": "3957cb4d8",
+    "note": "core routing already fixed by TRG-02; added bound-workspace signing secret (select by team id, verify by HMAC+window), 503 on no secret/store outage, non-UTF-8 body no longer 500"
+  },
+  "DEF-3": {
+    "status": "done",
+    "commit": "6b8ceb4f2",
+    "note": "bindings API/UI/RLS/index existed (TRG-42); added tenant-envelope sealing + compaction, Telegram setWebhook w/ secret_token, WhatsApp per-binding verify-token handshake, hub.* alias fix, CHANNEL_TENANT_MAP deprecation; config routes remain honest 501 pointers"
+  },
+  "DEF-4": {
+    "status": "done",
+    "commit": "cee397196 + 30ec30d8a",
+    "note": "offsets committed only for acked (indexed/skipped/durably DLQ'd) msgs, contiguous per partition; loop aclosing; earliest reset; idempotent ids; Kafka testcontainer soft+hard crash test passes"
+  },
+  "DEF-5": {
+    "status": "done",
+    "commit": "d2a8f023e + a22e51025",
+    "note": "GitHub/Stripe exact (pinned by tests); Jira now exact sha256= + Connect JWT w/ qsh; Teams outgoing HMAC + 5-min signed-timestamp window; dedup stays on signed body (delivery-id headers unsigned); after merging main's B2-4 (header delivery ids), vendor-signed triggers key dedup on signed content (unsigned headers/windowed hash allowed replays)"
+  },
+  "_new_findings": [
+    "triggers/dedup.py: webhook family (E) ignores message_id, so SNS MessageId / Salesforce notification ids passed by api/triggers.py are unused; harmless today (both are inside the signed body) but misleading [low]",
+    "GitHub / Jira Cloud signatures carry no timestamp: replay protection is the durable trigger_events dedup row, so a replay after that row is purged by retention would fire again [low]",
+    "Per-org /v1/gateway/{org}/config and /channels/status remain honest 501s (unauthenticated prefix); replacement is /channels/bindings - owner may want them removed from the OpenAPI/UI [owner decision]"
+  ],
+  "_branch": {
+    "name": "fix/deferred-channels-kafka",
+    "head": "a22e51025",
+    "main_merged": "868bb9ee9",
+    "alembic_heads": 1
+  }
+}
