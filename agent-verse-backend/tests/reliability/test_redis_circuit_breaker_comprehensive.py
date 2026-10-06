@@ -178,8 +178,9 @@ class TestCanCallAsync:
         mock_redis.set.assert_any_call(
             "cb:t1:tool_a:half_open_claim", "1", nx=True, ex=30
         )
+        # With a TTL (a08-F198-02): a plain SET left HALF_OPEN forever.
         mock_redis.set.assert_any_call(
-            "cb:t1:tool_a:state", CircuitState.HALF_OPEN.value
+            "cb:t1:tool_a:state", CircuitState.HALF_OPEN.value, ex=120
         )
 
     async def test_open_no_opened_at_blocks(self) -> None:
@@ -206,6 +207,8 @@ class TestCanCallAsync:
         # the CircuitState(...) lookup and mask this branch behind the
         # generic except-fallback path instead of exercising it.
         mock_redis.get = AsyncMock(return_value="half_open")
+        # The in-flight probe still holds its claim: SET NX loses.
+        mock_redis.set = AsyncMock(return_value=None)
         breaker = _make_breaker(redis=mock_redis)
         result = await breaker.can_call_async()
         assert result is False

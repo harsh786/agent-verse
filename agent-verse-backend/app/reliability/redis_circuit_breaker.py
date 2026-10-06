@@ -120,21 +120,32 @@ class RedisCircuitBreaker:
                     if time.time() - opened_at >= self._cooldown:
                         claimed = await self._claim_half_open_probe()
                         if claimed:
+                            # With a TTL: a plain SET dropped the TTL that
+                            # record_failure put on the key, so a HALF_OPEN
+                            # whose probe never reported stayed forever.
                             await self._redis.set(
-                                self._key("state"), CircuitState.HALF_OPEN.value
+                                self._key("state"),
+                                CircuitState.HALF_OPEN.value,
+                                ex=self._state_ttl(),
                             )
                         return claimed
                 return False
 
             if state == CircuitState.HALF_OPEN:
-                # A probe is already in flight somewhere in the fleet (it
-                # claimed the slot when it flipped OPEN->HALF_OPEN above).
-                # Block everyone else until it reports success/failure.
-                return False
+                # A probe is in flight somewhere in the fleet while its claim
+                # key lives; everyone else is blocked until it reports. A
+                # prober that died without reporting lets its claim expire:
+                # the next caller claims a fresh probe (a08-F198-02 — this
+                # branch used to refuse forever, wedging the breaker
+                # HALF_OPEN fleet-wide).
+                return await self._claim_half_open_probe()
 
             return False
         except Exception:
             return self._fallback.can_call()
+
+    def _state_ttl(self) -> int:
+        return max(1, int(self._cooldown * 2))
 
     async def _claim_half_open_probe(self) -> bool:
         """Atomically claim the single HALF_OPEN probe slot.
