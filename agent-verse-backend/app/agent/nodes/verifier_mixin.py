@@ -41,6 +41,13 @@ from app.agent.nodes._helpers import (
     _guardrail_should_fail_closed,
 )
 
+# A final answer this short (a number, a name, an acknowledgement, a sentence or
+# two) may be grounded in the agent's own step outputs on a goal that requires no
+# retrieval, is not high-risk and gathered no evidence (B7 live open item 1).
+_SHORT_ANSWER_MAX_CHARS = 300
+_SHORT_ANSWER_MAX_WORDS = 40
+_OWN_OUTPUT_EVIDENCE_CHARS = 600
+
 
 class VerifierMixin:
     """Mixin: _node_verify."""
@@ -340,6 +347,63 @@ class VerifierMixin:
                 # high-risk answer repeating them was replanned as ungrounded.
                 if (agent_state.goal or "").strip():
                     _evidence.append(agent_state.goal)
+                # B7 live open item 1: a correct computed / short direct answer is
+                # not an ungrounded claim ("391" for "What is 17*23?" was flagged,
+                # and replanned on a high-risk goal, because no tool output held
+                # it). (1) Arithmetic in the goal and the agent's own step texts is
+                # recomputed deterministically and added as evidence: a correct
+                # result is grounded, a wrong one is not, and an answer stating a
+                # result the recomputation contradicts is flagged. (2) On a goal
+                # that requires no retrieval, is not high-risk and gathered no tool
+                # / retrieved evidence (pure reasoning or knowledge), a SHORT final
+                # answer may rest on the agent's own step outputs (it repeats what
+                # its steps produced). Retrieval-required and high-risk goals, and
+                # goals with gathered evidence, keep the strict check against it.
+                # This context evidence is not "real" evidence for the fail-closed
+                # decision below (_had_evidence is computed before it).
+                from app.agent.arithmetic_evidence import (
+                    derive_arithmetic,
+                    render_evidence,
+                    wrong_results,
+                )
+
+                _steps = list(agent_state.steps)
+                _arith = derive_arithmetic(
+                    [
+                        agent_state.goal or "",
+                        *(str(getattr(s, "description", "") or "") for s in _steps),
+                        *(s.output for s in _steps if s.output),
+                        _final_answer,
+                    ]
+                )
+                _context_evidence: list[str] = []
+                if _arith:
+                    _context_evidence.append(render_evidence(_arith))
+                _retrieval_required = bool(
+                    getattr(self, "_agent_collection_ids", None)
+                ) or bool(agent_state.context.get("retrieval_required"))
+                _short_answer = (
+                    len(_final_answer) <= _SHORT_ANSWER_MAX_CHARS
+                    and len(_final_answer.split()) <= _SHORT_ANSWER_MAX_WORDS
+                )
+                _own_outputs_used = False
+                if (
+                    _short_answer
+                    and not _retrieval_required
+                    and not _high_risk
+                    and not _had_evidence
+                ):
+                    _own = " ".join(s.output for s in _steps if s.output).strip()
+                    if _own:
+                        _context_evidence.append(_own[:_OWN_OUTPUT_EVIDENCE_CHARS])
+                        _own_outputs_used = True
+                _wrong = wrong_results(_final_answer, agent_state.goal or "")
+                agent_state.context["final_answer_grounding_basis"] = {
+                    "arithmetic_facts": len(_arith),
+                    "own_step_outputs": _own_outputs_used,
+                    "retrieval_required": _retrieval_required,
+                    "wrong_arithmetic": _wrong[:3],
+                }
                 # Run the grounding check whenever there is a final answer — NOT only
                 # when tool evidence exists. check_grounding's own "concrete claims
                 # present + no supporting evidence → ungrounded" branch is exactly the
@@ -349,9 +413,22 @@ class VerifierMixin:
                 if _final_answer:
                     _grounding = check_grounding(
                         output=_final_answer,
-                        tool_outputs=_evidence,
+                        tool_outputs=[*_evidence, *_context_evidence],
                         strict=_high_risk,
                     )
+                    if _wrong:
+                        # A stated result the recomputation contradicts is an
+                        # ungrounded claim whatever else grounds the number.
+                        from app.agent.grounding import GroundingResult
+
+                        _grounding = GroundingResult(
+                            grounded=False,
+                            ungrounded_claims=list(
+                                dict.fromkeys([*_wrong, *_grounding.ungrounded_claims])
+                            ),
+                            checked_claims=max(_grounding.checked_claims, len(_wrong)),
+                            evidence_length=_grounding.evidence_length,
+                        )
                     agent_state.context["final_answer_grounded"] = _grounding.grounded
                     if not _grounding.grounded:
                         agent_state.ungrounded_claims.extend(
@@ -400,7 +477,10 @@ class VerifierMixin:
                     _verdict = await verify_grounding(
                         _final_answer,
                         _evidence,
-                        nli=StructuredFactNLI(_facts, " ".join(_evidence)),
+                        nli=StructuredFactNLI(
+                            _facts, " ".join([*_context_evidence, *_evidence])
+                        ),
+                        context_evidence=_context_evidence,
                     )
                     agent_state.context["claim_grounding_safe"] = _verdict.safe_to_emit
                     agent_state.context["claim_grounding_score"] = _verdict.claim_score
