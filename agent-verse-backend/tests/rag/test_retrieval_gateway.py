@@ -1203,7 +1203,9 @@ async def test_app_resolver_uses_each_tenants_configured_provider_and_model() ->
         def __init__(self, configs: dict[str, dict[str, object]]) -> None:
             self.configs = configs
 
-        async def get_config(self, tenant_id: str) -> dict[str, object] | None:
+        async def get_config(
+            self, tenant_id: str, *, strict: bool = False
+        ) -> dict[str, object] | None:
             return self.configs.get(tenant_id)
 
     vault = get_vault()
@@ -1256,7 +1258,9 @@ async def test_app_resolver_preserves_azure_and_together_identity() -> None:
     from app.providers.vault import get_vault
 
     class TenantConfigStore:
-        async def get_config(self, tenant_id: str) -> dict[str, object] | None:
+        async def get_config(
+            self, tenant_id: str, *, strict: bool = False
+        ) -> dict[str, object] | None:
             configs = {
                 "tenant-azure": {
                     "provider": "azure",

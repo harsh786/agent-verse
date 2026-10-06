@@ -975,11 +975,22 @@ def create_app(
         strategy: RAGStrategy,
     ) -> ResolvedLLM | None:
         del strategy
+        from app.services.llm_config_store import get_llm_config_store
+
         tenant_config: dict[str, Any] | None = None
-        config_store = getattr(app.state, "llm_config_store", None)
+        config_store = getattr(app.state, "llm_config_store", None) or get_llm_config_store()
         if config_store is not None:
-            tenant_config = await config_store.get_config(tenant_context.tenant_id)
-        if tenant_config is None:
+            # a08-F195-02: strict. A DB read error used to read as "no BYOK" and
+            # fall to a stale per-replica copy or the platform provider, so a
+            # BYOK tenant's RAG LLM traffic (and cost) silently went to the
+            # platform vendor. LLMConfigReadError propagates: the gateway then
+            # refuses a strategy that needs an LLM and runs an optional one
+            # without one — never on platform spend. The per-replica dict is
+            # only for builds with no store at all (a08-F195-01).
+            tenant_config = await config_store.get_config(
+                tenant_context.tenant_id, strict=True
+            )
+        else:
             tenant_config = getattr(app.state, "_llm_configs", {}).get(tenant_context.tenant_id)
 
         if tenant_config is not None:
@@ -995,10 +1006,16 @@ def create_app(
                 # here sent together keys to api.openai.com and ollama keys to the
                 # platform's localhost:11434 when base_url was empty.
                 from app.providers.tenant_provider import build_tenant_provider
+                from app.providers.tenant_vault import prepare_tenant_llm_config
 
-                provider = build_tenant_provider(
-                    tenant_config, tenant_id=tenant_context.tenant_id
+                # A key sealed with the tenant's own vault key (PROV-15) is
+                # unwrapped first, as on the goal paths; the builder refused it.
+                prepared = await prepare_tenant_llm_config(
+                    dict(tenant_config),
+                    tenant_context.tenant_id,
+                    getattr(app.state, "db_session_factory", None),
                 )
+                provider = build_tenant_provider(prepared, tenant_id=tenant_context.tenant_id)
             except Exception as exc:
                 logger.warning(
                     "tenant_retrieval_provider_resolution_failed",
