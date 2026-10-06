@@ -1,0 +1,18 @@
+passed test_cron_fires_once_at_its_local_time 210.9
+passed test_interval_fires_once_per_interval 171.2
+passed test_one_shot_types_fire_exactly_once 195.7
+passed test_relative_delay_counts_from_each_event 173.9
+passed test_business_calendar_skips_holidays_and_off_days 110.4
+passed test_pause_resume_edit_delete 640.4
+passed test_plan_floors_free_vs_enterprise 4.2
+passed test_natural_language_time_schedules 9.9
+failed test_far_future_schedules_are_not_reread_every_tick 215.5
+     E           AssertionError: later ticks re-read the far-future rows: [12, 12, 23, 12, 14, 13, 13, 12, 12, 12, 13, 31, 12, 13, 12, 12, 312, 12]
+passed test_cel_conditions_gate_beat_fires 180.9
+passed test_schedule_lifecycle 0.2
+passed test_schedule_plan_floor 0.1
+passed test_schedule_from_natural_language 2.0
+passed test_schedule_fires_goal 50.3
+passed test_schedule_fires_workflow 60.4
+passed test_scheduled_workflow_with_approval_gate 63.6
+skipped test_workflow_cron_respects_plan_floor 0.0

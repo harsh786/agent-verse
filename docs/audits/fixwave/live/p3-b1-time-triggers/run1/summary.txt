@@ -1,0 +1,9 @@
+passed test_cron_fires_once_at_its_local_time 187.0
+passed test_interval_fires_once_per_interval 171.3
+passed test_one_shot_types_fire_exactly_once 195.7
+passed test_relative_delay_counts_from_each_event 174.0
+passed test_business_calendar_skips_holidays_and_off_days 110.5
+passed test_pause_resume_edit_delete 640.6
+passed test_plan_floors_free_vs_enterprise 8.2
+passed test_natural_language_time_schedules 10.8
+passed test_far_future_schedules_are_not_reread_every_tick 208.9
