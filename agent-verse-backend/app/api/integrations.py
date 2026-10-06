@@ -200,27 +200,69 @@ async def _redeem_slack_link(
     return _ephemeral("Your Slack account is now linked to your AgentVerse identity.")
 
 
-def _require_slack_signature(
-    body: bytes, timestamp: str, signature: str, *, bad_status: int = 403
+def _slack_team_from_body(body: bytes) -> str:
+    """The workspace team id named in a Slack request body (JSON event, form
+    slash command, or form ``payload=<json>`` interaction). Only SELECTS which
+    workspace binding's secret to try; the signature then authenticates it."""
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+    data: Any = None
+    try:
+        data = json.loads(text)
+    except ValueError:
+        params = dict(urllib.parse.parse_qsl(text))
+        if "payload" in params:
+            try:
+                data = json.loads(params["payload"])
+            except ValueError:
+                data = None
+        else:
+            data = params
+    return _slack_team_id(data) if isinstance(data, dict) else ""
+
+
+async def _require_slack_signature(
+    request: Request, body: bytes, timestamp: str, signature: str, *, bad_status: int = 403
 ) -> None:
     """Fail-closed Slack request authentication for the public /integrations routes.
 
-    These routes are in TenantMiddleware's bypass list, so the Slack signature is
-    their only authentication. Unconfigured → 503 (in every environment — the old
-    development fallback accepted unsigned requests that submit goals / resolve
-    approvals for SLACK_TENANT_ID); bad or stale signature → ``bad_status``.
+    These routes are in TenantMiddleware's bypass list, so the Slack signature
+    (``v0`` HMAC over ``v0:{timestamp}:{body}``, 5-minute window) is their only
+    authentication. It may be made with:
+
+    * the platform Slack app's signing secret (``SLACK_SIGNING_SECRET``), or
+    * DEF-2: the signing secret of the tenant's OWN Slack app bound to the
+      workspace the body names (a ``/channels/bindings`` Slack binding) — the
+      team id only selects that binding, its secret must verify the request.
+
+    Neither configured → 503 (in every environment — the old development
+    fallback accepted unsigned requests); bad or stale signature → ``bad_status``.
+    A binding-store outage is a 503, never a pass.
     """
+    from app.gateway.binding_store import ChannelBindingStoreUnavailableError, resolve_binding
     from app.integrations.slack.handler import (
         get_slack_signing_secret,
         verify_slack_signature,
     )
 
-    secret = get_slack_signing_secret()
-    if not secret:
+    platform_secret = get_slack_signing_secret()
+    if platform_secret and verify_slack_signature(body, timestamp, signature, platform_secret):
+        return
+    binding_secret = ""
+    team_id = _slack_team_from_body(body)
+    if team_id:
+        try:
+            binding = await resolve_binding(request.app.state, "slack", team_id)
+        except ChannelBindingStoreUnavailableError:
+            raise HTTPException(503, "Slack workspace bindings are unavailable; retry") from None
+        binding_secret = str(getattr(binding, "secret", "") or "") if binding else ""
+    if binding_secret and verify_slack_signature(body, timestamp, signature, binding_secret):
+        return
+    if not platform_secret and not binding_secret:
         raise HTTPException(503, "Slack integration is not configured (no signing secret)")
-    if not verify_slack_signature(body, timestamp, signature, secret):
-        raise HTTPException(bad_status, "Invalid Slack signature")
-
+    raise HTTPException(bad_status, "Invalid Slack signature")
 
 
 @router.post("/slack/commands")
@@ -232,7 +274,9 @@ async def slack_slash_command(
     """Handle /agentverse Slack slash command."""
     body = await request.body()
 
-    _require_slack_signature(body, x_slack_request_timestamp, x_slack_signature)
+    await _require_slack_signature(
+        request, body, x_slack_request_timestamp, x_slack_signature
+    )
 
     params = dict(urllib.parse.parse_qsl(body.decode()))
 
@@ -301,7 +345,9 @@ async def slack_events(
     """Handle Slack event callbacks (interactive buttons, etc.)."""
     body = await request.body()
 
-    _require_slack_signature(body, x_slack_request_timestamp, x_slack_signature)
+    await _require_slack_signature(
+        request, body, x_slack_request_timestamp, x_slack_signature
+    )
 
     try:
         data = json.loads(body)
@@ -382,7 +428,8 @@ async def slack_interactive_callback(request: Request) -> dict:
     # Slack sends payload as form-encoded
     body = await request.body()
 
-    _require_slack_signature(
+    await _require_slack_signature(
+        request,
         body,
         request.headers.get("X-Slack-Request-Timestamp", ""),
         request.headers.get("X-Slack-Signature", ""),

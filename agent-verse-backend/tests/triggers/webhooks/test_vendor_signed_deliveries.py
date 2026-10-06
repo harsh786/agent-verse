@@ -41,6 +41,10 @@ TOKEN = "vendor_" + "v" * 40
 SECRET = "whsec-vendor-test-secret"
 # Teams shows the outgoing-webhook security token base64-encoded.
 TEAMS_SECRET = base64.b64encode(b"teams-outgoing-webhook-key-012345").decode()
+# DEF-5: a Teams activity's signed timestamp must be fresh (replay window). The
+# cases are built at import, so ``_body`` stamps the real time when a test runs —
+# an import-time stamp goes stale once a long suite passes the 5-minute window.
+_NOW_ISO = "<now>"
 
 Signer = Callable[[bytes, str], dict[str, str]]
 
@@ -143,7 +147,7 @@ VENDORS: list[tuple[str, str, TriggerType, str, Signer, dict[str, Any]]] = [
         # Teams outgoing webhook: "Authorization: HMAC <base64 HMAC-SHA256>" keyed
         # by the base64-decoded security token.
         "teams", "teams", TriggerType.TEAMS_WEBHOOK, TEAMS_SECRET, _teams,
-        {"type": "message", "id": "1485983408511", "timestamp": "2026-09-30T10:00:00.000Z",
+        {"type": "message", "id": "1485983408511", "timestamp": _NOW_ISO,
          "text": "<at>AgentVerse</at> status", "from": {"id": "29:1abc", "name": "Ada"},
          "conversation": {"id": "19:abc@thread.skype"}, "channelData": {"tenant": {"id": "t"}}},
     ),
@@ -218,6 +222,9 @@ def _client(ttype: TriggerType, secret: str) -> tuple[TestClient, _Dispatcher]:
 
 
 def _body(payload: dict[str, Any]) -> bytes:
+    if payload.get("timestamp") == _NOW_ISO:
+        now = time.strftime("%Y-%m-%dT%H:%M:%S.0000000Z", time.gmtime())
+        payload = {**payload, "timestamp": now}
     return json.dumps(payload, separators=(",", ":")).encode()
 
 
@@ -303,7 +310,10 @@ def test_replayed_body_signed_delivery_collapses_onto_one_firing(
     assert first == replay  # the dispatcher dedups the replay as the same firing
 
     # ... while a genuinely different (signed) delivery is a separate firing.
-    other = _body({**payload, "delivery": "second"})
+    second = {**payload, "delivery": "second"}
+    if vid == "teams":  # Teams keys on its (signed) activity id: a new message has a new id
+        second["id"] = payload["id"] + "2"
+    other = _body(second)
     assert _post(client, path_type, other, sign(other, secret)).status_code == 200
     assert dispatcher.keys[2] != first
 

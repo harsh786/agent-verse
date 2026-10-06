@@ -131,17 +131,23 @@ def test_teams_without_valid_bot_framework_token_is_401() -> None:
 
 
 def test_teams_ignores_x_tenant_id_header(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.gateway.channels.teams import MicrosoftTeamsAdapter as TeamsAdapter
+    from app.gateway.channels import teams as teams_module
 
-    monkeypatch.setattr(TeamsAdapter, "verify_auth", AsyncMock(return_value=True))
+    monkeypatch.setenv("TEAMS_APP_ID", "platform-app")
+    monkeypatch.setattr(
+        teams_module,
+        "decode_bot_framework_token",
+        AsyncMock(return_value={"aud": "platform-app"}),
+    )
     client, gateway = _app()
     r = client.post(
         "/channels/teams/events",
         json={"type": "message", "serviceUrl": "https://x"},
         headers={"X-Tenant-ID": "victim", "Authorization": "Bearer tok"},
     )
-    assert r.status_code == 200
-    # No channel mapping resolves → the header must NOT pick the tenant.
+    # No channel mapping resolves → the header must NOT pick the tenant (DEF-1:
+    # an unbound org is refused outright).
+    assert r.status_code == 403
     gateway.ingest.assert_not_called()
 
 

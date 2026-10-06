@@ -57,6 +57,41 @@ describe('ChannelBindings (TRG-42)', () => {
     expect(JSON.parse(String(post?.[1]?.body)).channel).toBe('webhook');
   });
 
+  test('DEF-3: a WhatsApp binding shows its verify token once', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      if (init?.method === 'POST')
+        return json({
+          id: 'b3', channel: 'whatsapp', addressee: '1098765432', status: 'verified',
+          has_secret: true, has_outbound_token: true,
+          webhook_url: 'https://agents.example.com/v1/gateway/whatsapp/chat/1098765432',
+          verify_token: 'vt-once',
+        });
+      return json([]);
+    });
+    renderIt();
+    await userEvent.selectOptions(await screen.findByLabelText('Binding channel'), 'whatsapp');
+    await userEvent.type(screen.getByLabelText('Addressee'), '1098765432');
+    await userEvent.click(screen.getByRole('button', { name: 'Add binding' }));
+    expect(await screen.findByText('vt-once')).toBeInTheDocument();
+  });
+
+  test('DEF-3: an unregistered Telegram webhook is reported, not hidden', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
+      if (init?.method === 'POST')
+        return json({
+          id: 'b4', channel: 'telegram', addressee: '123456', status: 'verified',
+          has_secret: true, has_outbound_token: true, webhook_url: '/v1/gateway/telegram/chat/123456',
+          secret: 'gen', webhook_registered: false,
+          webhook_registration: 'Not registered: the server has no GATEWAY_PUBLIC_BASE_URL.',
+        });
+      return json([]);
+    });
+    renderIt();
+    await userEvent.type(await screen.findByLabelText('Addressee'), '123456');
+    await userEvent.click(screen.getByRole('button', { name: 'Add binding' }));
+    expect(await screen.findByText(/no GATEWAY_PUBLIC_BASE_URL/)).toBeInTheDocument();
+  });
+
   test("a refused binding shows the server's reason (no optimistic success)", async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u, init) => {
       if (init?.method === 'POST')

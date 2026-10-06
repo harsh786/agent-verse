@@ -62,6 +62,8 @@ async def env(pg_url: str, redis_url: str) -> AsyncIterator[SimpleNamespace]:
         await conn.execute(
             text(f"GRANT SELECT, INSERT, UPDATE, DELETE ON channel_tenant_mappings TO {role}")
         )
+        # DEF-3: binding secrets are sealed with the tenant's envelope key.
+        await conn.execute(text(f"GRANT SELECT ON tenant_vault_keys TO {role}"))
     app_url = (
         make_url(pg_url).set(username=role, password=password).render_as_string(hide_password=False)
     )
@@ -212,3 +214,141 @@ async def test_telegram_bot_bound_by_one_tenant_cannot_be_bound_by_another(
             json={"channel": "telegram", "addressee": bot, "outbound_token": token},
         )
         assert taken.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_def3_envelope_sealed_whatsapp_binding_handshake_and_delivery(
+    env: SimpleNamespace, monkeypatch: Any
+) -> None:
+    """DEF-3 on real Postgres: tenant A has its own envelope key, so the binding's
+    app secret / access token / verify token are stored ``tv1:`` (unreadable
+    with the platform key alone); replica B opens them to answer Meta's
+    subscription handshake with the binding's own verify token and to verify an
+    X-Hub-Signature-256 delivery; tenant B's verify token is refused."""
+    import app.gateway.binding_verification as bv
+    from app.providers.tenant_vault import (
+        TENANT_CIPHER_PREFIX,
+        invalidate_tenant_vault,
+        store_tenant_vault_key,
+    )
+
+    async def _owns(channel: str, addressee: str, *, outbound_token: str, http: Any = None) -> None:
+        return None
+
+    monkeypatch.setattr(bv, "verify_ownership", _owns)
+    async with env.admin() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO tenants (id, name, email, plan_tier, is_active) "
+                "VALUES (:id, 'A', :email, 'professional', true) ON CONFLICT DO NOTHING"
+            ),
+            {"id": env.tenant_a, "email": f"{env.tenant_a}@example.com"},
+        )
+    await store_tenant_vault_key(env.admin, env.tenant_a, secrets.token_bytes(32))
+    invalidate_tenant_vault()
+    phone = str(10**9 + secrets.randbelow(10**9))
+    app_secret = secrets.token_hex(16)
+    current: dict[str, Any] = {"ctx": _ctx(env.tenant_a)}
+    app_a, _ = _replica(env, current)
+    app_b, chat_b = _replica(env, current)
+    async with _client(app_a) as a, _client(app_b) as b:
+        created = await a.post(
+            "/channels/bindings",
+            json={
+                "channel": "whatsapp",
+                "addressee": phone,
+                "secret": app_secret,
+                "outbound_token": "EAAG" + secrets.token_hex(8),
+            },
+        )
+        assert created.status_code == 200, created.text
+        verify_token = created.json()["verify_token"]
+        async with env.admin() as session:
+            cfg = (
+                await session.execute(
+                    text("SELECT channel_config FROM channel_tenant_mappings WHERE id = :id"),
+                    {"id": created.json()["id"]},
+                )
+            ).scalar_one()
+        for field in ("secret_enc", "outbound_token_enc", "verify_token_enc"):
+            assert cfg[field].startswith(TENANT_CIPHER_PREFIX)
+        assert app_secret not in json.dumps(cfg) and verify_token not in json.dumps(cfg)
+
+        hub = {"hub.mode": "subscribe", "hub.verify_token": verify_token, "hub.challenge": "42"}
+        ok = await b.get(f"/v1/gateway/whatsapp/chat/{phone}", params=hub)
+        assert ok.status_code == 200 and ok.text == "42"
+        wrong = await b.get(
+            f"/v1/gateway/whatsapp/chat/{phone}", params={**hub, "hub.verify_token": "x"}
+        )
+        assert wrong.status_code == 403
+
+        payload = {
+            "object": "whatsapp_business_account",
+            "entry": [{"id": "WABA", "changes": [{"field": "messages", "value": {
+                "messaging_product": "whatsapp",
+                "metadata": {"display_phone_number": "15550001111", "phone_number_id": phone},
+                "contacts": [{"profile": {"name": "Ann"}, "wa_id": "15551234567"}],
+                "messages": [{"from": "15551234567", "id": "wamid.X1", "timestamp": "1700000000",
+                              "type": "text", "text": {"body": "status please"}}],
+            }}]}],
+        }
+        body = json.dumps(payload).encode()
+        sig = "sha256=" + hmac.new(app_secret.encode(), body, hashlib.sha256).hexdigest()
+        r = await b.post(
+            "/v1/gateway/whatsapp/chat",
+            content=body,
+            headers={"content-type": "application/json", "x-hub-signature-256": sig},
+        )
+        assert r.status_code == 200, r.text
+        assert chat_b.calls and chat_b.calls[0]["tenant_id"] == env.tenant_a
+    invalidate_tenant_vault()
+
+
+@pytest.mark.asyncio
+async def test_def3_telegram_binding_registers_its_webhook_with_the_secret_token(
+    env: SimpleNamespace, monkeypatch: Any
+) -> None:
+    import app.gateway.binding_verification as bv
+
+    async def _owns(channel: str, addressee: str, *, outbound_token: str, http: Any = None) -> None:
+        return None
+
+    registered: list[tuple[str, str, str]] = []
+
+    async def _set_webhook(token: str, url: str, secret_token: str, *, http: Any = None) -> None:
+        registered.append((token, url, secret_token))
+
+    monkeypatch.setattr(bv, "verify_ownership", _owns)
+    monkeypatch.setattr(bv, "register_telegram_webhook", _set_webhook)
+    monkeypatch.setenv("GATEWAY_PUBLIC_BASE_URL", "https://agents.example.com")
+    bot = str(20_000_000 + secrets.randbelow(1_000_000))
+    token = f"{bot}:" + "Q" * 30
+    current: dict[str, Any] = {"ctx": _ctx(env.tenant_b)}
+    app_a, chat_a = _replica(env, current)
+    async with _client(app_a) as a:
+        created = (
+            await a.post(
+                "/channels/bindings",
+                json={"channel": "telegram", "addressee": bot, "outbound_token": token},
+            )
+        ).json()
+        assert created["webhook_registered"] is True
+        url = f"https://agents.example.com/v1/gateway/telegram/chat/{bot}"
+        assert created["webhook_url"] == url
+        assert registered == [(token, url, created["secret"])]
+
+        update = {"update_id": 1, "message": {"message_id": 7, "text": "hi",
+                                              "chat": {"id": 55}, "from": {"id": 55}}}
+        r = await a.post(
+            f"/v1/gateway/telegram/chat/{bot}",
+            json=update,
+            headers={"x-telegram-bot-api-secret-token": created["secret"]},
+        )
+        assert r.status_code == 200, r.text
+        assert chat_a.calls and chat_a.calls[0]["tenant_id"] == env.tenant_b
+        forged = await a.post(
+            f"/v1/gateway/telegram/chat/{bot}",
+            json={**update, "update_id": 2},
+            headers={"x-telegram-bot-api-secret-token": "nope"},
+        )
+        assert forged.status_code == 401

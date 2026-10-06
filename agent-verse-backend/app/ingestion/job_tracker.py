@@ -996,8 +996,11 @@ class IngestionJobTracker:
         job_id: str | None = None,
         failed_stage: str = "pipeline",
         failure_type: str = "pipeline_failure",
-    ) -> None:
-        """Add a failed document to the DLQ.
+    ) -> bool:
+        """Add a failed document to the DLQ; True only when the entry was written.
+
+        (DEF-4: a broker-offset connector commits a failed message only once its
+        DLQ entry is durable, so the caller needs to know.)
 
         ``raw_doc`` is serialized into ``raw_doc_json`` so the entry carries the
         payload needed to retry (e.g. the repo-ingest parameters). It may be a
@@ -1011,7 +1014,7 @@ class IngestionJobTracker:
         could never succeed — and runs under the row's tenant RLS context.
         """
         if self._db is None:
-            return
+            return False
         import dataclasses as _dc
         import uuid as _uuid
 
@@ -1063,6 +1066,8 @@ class IngestionJobTracker:
                 )
         except Exception as exc:
             _log.warning("add_to_dlq_error source=%s doc=%s: %s", source_id, doc_id, exc)
+            return False
+        return True
 
     async def get_retryable_dlq_entries(self, max_entries: int = 50) -> list[dict[str, Any]]:
         """Return unresolved, non-permanent DLQ entries, oldest first.

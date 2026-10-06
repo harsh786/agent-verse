@@ -106,7 +106,7 @@ def test_whatsapp_verify_unset_token_is_503(client: TestClient) -> None:
     # An unset verify token used to match an empty hub_verify_token ("" == "").
     r = client.get(
         "/v1/gateway/org1/whatsapp/webhook",
-        params={"hub_mode": "subscribe", "hub_verify_token": "", "hub_challenge": "5"},
+        params={"hub.mode": "subscribe", "hub.verify_token": "", "hub.challenge": "5"},
     )
     assert r.status_code == 503
 

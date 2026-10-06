@@ -20,6 +20,62 @@ SLACK_TOLERANCE_SECONDS = 300
 # AgentVerse documents this one for the "Timestamp header" setting.
 GRAFANA_TIMESTAMP_HEADER = "x-grafana-alerting-timestamp"
 GRAFANA_TOLERANCE_SECONDS = 300
+# Teams outgoing webhooks sign only the body; the activity's own (signed)
+# ``timestamp`` bounds how long a captured delivery can be replayed. Teams waits
+# at most 5 s for the reply, so a genuine delivery is never minutes old.
+TEAMS_TOLERANCE_SECONDS = 300
+# Atlassian Connect JWTs are short-lived (3 min by default); allow small skew.
+JIRA_JWT_LEEWAY_SECONDS = 60
+
+
+def _parse_iso_timestamp(value: object) -> float | None:
+    """Epoch seconds of an ISO-8601 timestamp like Teams' ``2026-10-06T10:00:00.1234567Z``
+    (more than 6 fractional digits allowed), or None when absent / unparseable."""
+    from datetime import datetime
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip().replace("Z", "+00:00")
+    head, dot, rest = raw.partition(".")
+    if dot:
+        n = 0
+        while n < len(rest) and rest[n].isdigit():
+            n += 1
+        digits, tz = rest[:n], rest[n:]
+        raw = f"{head}.{digits[:6].ljust(6, '0')}{tz}"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
+
+
+def atlassian_qsh(method: str, path: str, query: str) -> str:
+    """Atlassian Connect query-string hash (``qsh``) of a request.
+
+    ``METHOD&canonical-path&canonical-query``, SHA-256 hex: the path without a
+    trailing slash ("/" when empty, "&" escaped), the query without ``jwt``,
+    keys sorted, every key / value RFC 3986 percent-encoded, repeated values
+    sorted and comma-joined.
+    """
+    from urllib.parse import parse_qsl, quote
+
+    canonical_path = path or "/"
+    if len(canonical_path) > 1:
+        canonical_path = canonical_path.rstrip("/")
+    canonical_path = canonical_path.replace("&", "%26")
+    grouped: dict[str, list[str]] = {}
+    for key, value in parse_qsl(query or "", keep_blank_values=True):
+        if key == "jwt":
+            continue
+        grouped.setdefault(quote(key, safe="~"), []).append(quote(value, safe="~"))
+    canonical_query = "&".join(
+        f"{k}={','.join(sorted(v))}" for k, v in sorted(grouped.items())
+    )
+    canonical = f"{method.upper()}&{canonical_path}&{canonical_query}"
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 class WebhookSignatureVerifier:
@@ -130,11 +186,22 @@ class WebhookSignatureVerifier:
         expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature)
 
-    def verify_teams(self, payload_bytes: bytes, authorization: str, secret: str) -> bool:
+    def verify_teams(
+        self,
+        payload_bytes: bytes,
+        authorization: str,
+        secret: str,
+        *,
+        tolerance_seconds: int = TEAMS_TOLERANCE_SECONDS,
+        now: float | None = None,
+    ) -> bool:
         """Verify a Teams outgoing webhook ``Authorization: HMAC <base64>`` header.
 
         Teams signs the raw body with HMAC-SHA256 keyed by the BASE64-DECODED
-        security token shown when the outgoing webhook is created.
+        security token shown when the outgoing webhook is created. DEF-5: the
+        activity's signed ``timestamp`` must also be within the tolerance, so a
+        captured delivery cannot be replayed later (the signature alone has no
+        freshness).
         """
         scheme, _, presented = authorization.strip().partition(" ")
         if not secret or scheme.upper() != "HMAC" or not presented:
@@ -144,7 +211,71 @@ class WebhookSignatureVerifier:
         except (binascii.Error, ValueError):
             return False
         expected = base64.b64encode(hmac.new(key, payload_bytes, hashlib.sha256).digest())
-        return hmac.compare_digest(expected, presented.strip().encode())
+        if not hmac.compare_digest(expected, presented.strip().encode()):
+            return False
+        try:
+            import json
+
+            activity = json.loads(payload_bytes)
+        except ValueError:
+            return False
+        sent_at = _parse_iso_timestamp(
+            activity.get("timestamp") if isinstance(activity, dict) else None
+        )
+        if sent_at is None:
+            return False
+        current = time.time() if now is None else now
+        return abs(current - sent_at) <= tolerance_seconds
+
+    def verify_jira_connect_jwt(
+        self,
+        authorization: str,
+        secret: str,
+        *,
+        method: str,
+        paths: tuple[str, ...],
+        query: str = "",
+    ) -> bool:
+        """Verify an Atlassian Connect ``Authorization: JWT <token>`` webhook.
+
+        HS256 with the app installation's ``sharedSecret``; ``exp`` required
+        (short-lived, which is the replay window); ``qsh`` must equal the hash of
+        THIS request (:func:`atlassian_qsh`) so a token minted for another
+        request/path cannot be reused. ``paths`` are the candidate request paths
+        relative to the app's base URL (the full path, and the path from the
+        ``/triggers/`` mount when the API sits under a prefix).
+        """
+        scheme, _, token = authorization.strip().partition(" ")
+        if not secret or scheme != "JWT" or not token.strip():
+            return False
+        try:
+            from jose import JWTError
+            from jose import jwt as _jwt
+        except ImportError:  # pragma: no cover - python-jose is a dependency
+            return False
+        try:
+            if _jwt.get_unverified_header(token.strip()).get("alg") != "HS256":
+                return False
+            claims = _jwt.decode(
+                token.strip(),
+                secret,
+                algorithms=["HS256"],
+                options={
+                    "verify_aud": False,
+                    "require_exp": True,
+                    "require_iat": True,
+                    "leeway": JIRA_JWT_LEEWAY_SECONDS,
+                },
+            )
+        except (JWTError, ValueError) as exc:
+            _log.warning("jira_connect_jwt_invalid: %s", exc)
+            return False
+        qsh = str(claims.get("qsh") or "")
+        if not qsh or not claims.get("iss"):
+            return False
+        return any(
+            hmac.compare_digest(qsh, atlassian_qsh(method, p, query)) for p in paths if p
+        )
 
     @staticmethod
     def _hmac_sha256(secret: str, data: bytes) -> bytes:
@@ -223,11 +354,15 @@ class WebhookSignatureVerifier:
         secret: str,
         *,
         headers: Mapping[str, str] | None = None,
+        method: str = "POST",
+        paths: tuple[str, ...] = (),
+        query: str = "",
     ) -> bool:
         """Verify with the scheme the sending platform actually uses.
 
         ``headers`` carries the request headers for schemes that sign more than
-        the body (Slack's request timestamp).
+        the body (Slack's request timestamp); ``method`` / ``paths`` / ``query``
+        describe the request for Atlassian Connect's query-string hash.
         """
         if webhook_type == "slack":
             timestamp = (headers or {}).get("x-slack-request-timestamp", "")
@@ -244,6 +379,17 @@ class WebhookSignatureVerifier:
             return self.verify_pagerduty(payload_bytes, header, secret)
         if webhook_type == "confluence":
             return self.verify_hub_signature(payload_bytes, header, secret)
+        if webhook_type == "jira":
+            # DEF-5: Jira Cloud admin webhooks with a secret send
+            # "X-Hub-Signature: sha256=<hex>" (exactly; the generic check took
+            # whatever followed the last "="); Connect apps authenticate with an
+            # "Authorization: JWT" query-string-hash token instead.
+            authorization = (headers or {}).get("authorization", "")
+            if header:
+                return self.verify_hub_signature(payload_bytes, header, secret)
+            return self.verify_jira_connect_jwt(
+                authorization, secret, method=method, paths=paths, query=query
+            )
         if webhook_type == "salesforce":
             return self.verify_salesforce(payload_bytes, header, secret)
         if webhook_type == "grafana":
