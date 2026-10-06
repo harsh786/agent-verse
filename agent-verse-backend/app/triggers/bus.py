@@ -173,6 +173,8 @@ Handler = Callable[[dict[str, Any]], Awaitable[None]]
 # Upper bound on XAUTOCLAIM batches per reclaim pass, so a large backlog of
 # stale entries cannot starve new reads.
 _MAX_CLAIM_BATCHES = 10
+# Group consumers idle this long with no pending entries are deleted (B2-8).
+_STALE_CONSUMER_IDLE_MS = 3_600_000
 
 
 def _text(value: Any) -> str:
@@ -222,6 +224,8 @@ class TriggerStreamReader:
         self._max_deliveries = max(1, int(s.trigger_bus_max_deliveries))
         # Look for stale pending entries twice per idle threshold.
         self._claim_interval_s = self._claim_idle_ms / 2000
+        # A consumer idle this long with nothing pending is a dead process (B2-8).
+        self._stale_consumer_idle_ms = _STALE_CONSUMER_IDLE_MS
 
     async def ensure_group(self) -> None:
         """Create the group at the start of the stream (idempotent).
@@ -235,6 +239,34 @@ class TriggerStreamReader:
         except Exception as exc:
             if "BUSYGROUP" not in str(exc):
                 raise
+        await self.prune_stale_consumers()
+
+    async def prune_stale_consumers(self) -> int:
+        """Delete group consumers idle past the threshold with no pending entries.
+
+        Every process joins under a fresh name, and Redis keeps a consumer
+        forever, so each restart or deploy added one dead consumer per group
+        (B2-8). A consumer still holding pending entries is kept (XAUTOCLAIM
+        recovers them). Best effort: a failure never blocks joining.
+        """
+        removed = 0
+        try:
+            consumers = await self.redis.xinfo_consumers(self.stream, self.group)
+            for info in consumers or []:
+                name = _text(info.get("name"))
+                if not name or name == self.consumer:
+                    continue
+                if int(info.get("pending", 0) or 0) > 0:
+                    continue
+                if int(info.get("idle", 0) or 0) < self._stale_consumer_idle_ms:
+                    continue
+                await self.redis.xgroup_delconsumer(self.stream, self.group, name)
+                removed += 1
+        except Exception as exc:
+            _log.warning("trigger_bus_consumer_prune_failed group=%s: %s", self.group, exc)
+        if removed:
+            _log.info("trigger_bus_consumers_pruned group=%s removed=%d", self.group, removed)
+        return removed
 
     async def run(self, handler: Handler, is_running: Callable[[], bool]) -> None:
         await self.ensure_group()

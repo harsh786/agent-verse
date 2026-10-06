@@ -107,6 +107,35 @@ async def _enforce_rate_limit(
         )
 
 
+def _verify_declared_auth(request: Request, triggers: list[dict[str, Any]], raw: bytes) -> None:
+    """Enforce ``trigger.webhook.auth: hmac`` (B2-9).
+
+    The DSL accepted ``auth: hmac`` + ``hmac_secret`` but nothing read them, so
+    an unsigned or forged delivery started a run. Any webhook/api trigger that
+    declares hmac requires an HMAC-SHA256 signature of the body
+    (``X-AgentVerse-Signature`` / ``X-Signature``; with ``X-Webhook-Timestamp``
+    over ``"{ts}.{body}"``, replay-windowed). Declared without a secret it fails
+    closed. ``bearer`` / ``none`` keep the path token as the credential.
+    """
+    from app.triggers.webhooks.ingress import check_signature
+
+    for trig in triggers:
+        if trig.get("type") not in ("webhook", "api"):
+            continue
+        cfg = trig.get("webhook") if isinstance(trig.get("webhook"), dict) else trig
+        if str((cfg or {}).get("auth") or "").lower() != "hmac":
+            continue
+        secret = str((cfg or {}).get("hmac_secret") or "")
+        if not secret:
+            _log.warning("workflow_webhook_hmac_without_secret")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Webhook declares HMAC auth but has no secret configured",
+            )
+        check_signature(request.headers, raw, [secret])
+        return
+
+
 @router.post("/{token}")
 async def fire_workflow_webhook(token: str, request: Request) -> Any:
     """Fire a run for the workflow the signed token points at.
@@ -158,6 +187,8 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
     triggers = extract_triggers(wf.get("definition"))
     if not any(t.get("type") in ("webhook", "api") for t in triggers):
         raise HTTPException(status_code=400, detail="Workflow has no webhook/api trigger")
+
+    _verify_declared_auth(request, triggers, raw)
 
     await _enforce_rate_limit(request, runner, tenant_id=tenant_id, workflow_id=workflow_id)
 

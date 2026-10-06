@@ -1,0 +1,41 @@
+create webhook 201 
+W1 unsigned -> 401
+W2 bad sig -> 401
+W3 signed -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+W4 same delivery again -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+   events: [["dedup", false], [null, true]]
+   goal text: Probe ticket  prio P1. Reply ACK only.
+W5 1h-old timestamp header (legacy sig) -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+W6 form -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+W7 text -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+W8 5MB -> 413 {"detail": "Request body exceeds 1048576 bytes"} 0.0s
+W9 tenant B key on /webhooks/{A token} -> 404 {"detail":"Unknown webhook token"}
+W10 tenant B reads A's events -> 200 0
+W11 rotate-secret -> 200
+W12 new secret -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+W13 rotate-token endpoint -> 404
+W14 PATCH spec -> 200 token kept: True
+   events: [[null, true], ["dedup", false], [null, true], ["dedup", false], ["dedup", false], [null, true]]
+create webhook 201 
+C P3 -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+C P1 -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+   events: [[null, true], ["condition_false", false]]
+create webhook 201 
+R0 -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+R1 -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+R2 -> 200 {"status":"accepted","webhook_type":"webhook","dispatched":1,"failed":0}
+   events: [["rate_limit", false], [null, true], [null, true]]
+create event 201 
+E1 publish -> 202 {"published":true,"event_channel":"b2.orders.d49e07"}
+E2 same event id again -> 202
+E3 tenant B same channel -> 202
+   events: [["dedup", false], [null, true]]
+create rest 201 
+   rest token: False
+REST1 -> 200 {"goal_id":"256080d0006c4aad90a131e50243af01","goal_created":true,"skip_reason":null,"fired_at":"2026-10-06T05:55:06.288170Z"}
+REST2 same idem key -> 200 {"goal_id":null,"goal_created":false,"skip_reason":"dedup","fired_at":"2026-10-06T05:55:06.302324Z"}
+REST3 tenant B -> 404
+REST4 no key -> 401
+   events: [["dedup", false], [null, true]]
+   goal text: REST call R-1. Reply ACK only.
+cleaned 5

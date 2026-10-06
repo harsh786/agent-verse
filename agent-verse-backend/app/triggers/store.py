@@ -1067,6 +1067,39 @@ class ScheduleStore:
             return None
         return str(row[0])
 
+    async def find_by_webhook_token_async(
+        self,
+        token: str,
+        *,
+        tenant_id: str,
+        trigger_type: str,
+        strict: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The tenant's active trigger of ``trigger_type`` holding ``token``.
+
+        One indexed read (``uq_schedules_webhook_token``) instead of loading
+        every trigger of the type and comparing tokens in Python (B2-3: an
+        O(N) scan per delivery). The token is re-confirmed in constant time.
+        """
+        import hmac
+
+        if not token:
+            return []
+        fetched = await self._db_fetch_tenant(
+            tenant_id, trigger_type=trigger_type, webhook_token=token, strict=strict
+        )
+        candidates = (
+            fetched if fetched is not None else self.find_by_type(trigger_type, tenant_id=tenant_id)
+        )
+        out: list[dict[str, Any]] = []
+        for rec in candidates:
+            if rec.get("paused", False):
+                continue
+            stored = str(getattr(rec.get("spec"), "webhook_token", "") or "")
+            if stored and hmac.compare_digest(stored.encode(), token.encode()):
+                out.append(rec)
+        return out
+
     async def find_by_type_async(
         self,
         trigger_type: str | None = None,

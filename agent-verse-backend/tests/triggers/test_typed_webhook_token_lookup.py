@@ -40,7 +40,9 @@ class _Dispatcher:
     def __init__(self) -> None:
         self.fired: list[tuple[str, str]] = []
 
-    async def dispatch(self, spec: Any, payload: dict[str, Any], tenant_ctx: Any) -> None:
+    async def dispatch(
+        self, spec: Any, payload: dict[str, Any], tenant_ctx: Any, **kw: Any
+    ) -> None:
         self.fired.append((tenant_ctx.tenant_id, spec.webhook_token))
 
 

@@ -31,7 +31,9 @@ class _Dispatcher:
         self.fail = fail
         self.fired = 0
 
-    async def dispatch(self, spec: Any, payload: dict[str, Any], tenant_ctx: Any) -> None:
+    async def dispatch(
+        self, spec: Any, payload: dict[str, Any], tenant_ctx: Any, **kw: Any
+    ) -> None:
         if self.fail:
             raise RuntimeError("queue down")
         self.fired += 1
