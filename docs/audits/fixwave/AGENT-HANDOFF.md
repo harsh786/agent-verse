@@ -122,16 +122,18 @@ Note: the live stack currently mounts the p3b1/p3b2 worktree; B1 added a `schedu
 `run_forever.py` starts its own beat whenever compose's beat disappears (even briefly during redeploy) — owner decision pending.
 
 Parallel code tracks (code + tests only, live-verified later in their queue slot):
-- `fix/b7-platform-events` · `.claude/worktrees/b7code` — B7 platform-event trigger fixes (loop guard, memory.created
-  published, goal_score_below on worker goals). Progress: `progress/b7code.progress.json`.
+- `fix/b7-platform-events` — MERGED into main (`fcf68e1c9`, commits B7-1..B7-5): trigger lineage + loop guard
+  (no self-trigger unless `allow_self_trigger`, chain depth cap 10, audit row per suppressed fire), every goal-failing
+  path publishes `goal.failed`, goal_score_below requires a 0..1 threshold and honours the dimension, workflow HITL
+  decisions publish hitl_approved/rejected, feedback lessons publish memory.created. Live verification = queue item 9.
 - `fix/deferred-channels-kafka` · `.claude/worktrees/deferredcode` — DEF-1 Teams JWT/tenant binding, DEF-2 Slack
   team_id binding, DEF-3 self-service channel binding (Telegram/WhatsApp/Slack/Teams/webhook, vault secrets), DEF-4
   Kafka commit-after-index, DEF-5 GitHub/Stripe/Jira/Teams signature schemes. Progress: `progress/deferredcode.progress.json`.
 
 ## 5. Queue (strict order)
 
-1. **9. B7** platform events (live): goal_completed/goal_failed self-loop, goal_score_below, hitl_approved/rejected,
-   memory_created (worker never publishes it).
+1. **9. B7** platform events (live): code fixes already on main (`fcf68e1c9`); redeploy and run live scenarios for
+   all six types (chain A→B fires once, no self-loop, score_below with threshold, workflow HITL, memory_created).
 3. **Live re-checks** of code fixes already pushed: P2 retrieval/grounding, P4 workflows/HITL, P5 agent core, P7 evals,
    P8 guardrails/grants (each: redeploy, run the scenarios, fix, merge, push).
 4. **P6** memories & self-improvement (no scenarios yet; includes memory consolidations from A12).
@@ -153,6 +155,9 @@ Parallel code tracks (code + tests only, live-verified later in their queue slot
 Remaining backlog after the queue: `pending-all-2026-10-05.json` (re-verify each item first).
 
 ## 6. Open findings not yet assigned
+
+- B7-NEW-1: goal approvals publish `hitl.approved` via a fire-and-forget background task — lost if the process
+  shuts down mid-publish (should be awaited or outboxed).
 - Chat clarify-round counter is per-process; ORM declares a chat-folder FK the DB lacks (chatd.progress.json).
 - URL ingest is synchronous (no retry queue for single URLs); pipeline skips very short pages; crawl live set in cursor.
 - Two S3 sources over the same objects in one collection share one document.
