@@ -34,7 +34,7 @@ import contextvars
 import logging
 import os
 import uuid
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -273,20 +273,30 @@ async def _charge(
         raise DecisionBudgetExceededError("tenant LLM budget exhausted by this call")
 
 
-async def _traced_call(provider: Any, request: Any, role: str, timeout: float) -> Any:
+async def _traced_call(
+    provider: Any,
+    request: Any,
+    role: str,
+    timeout: float,
+    fallback_models: Sequence[str] = (),
+) -> Any:
     """complete_with_failover inside a GenAI span (PROV-23): decision calls were
     untraced. A provider that is already a TracedProvider records its own span."""
     from app.observability.traced_provider import TracedProvider
 
     if isinstance(provider, TracedProvider):
-        return await complete_with_failover(provider, request, timeout_seconds=timeout)
+        return await complete_with_failover(
+            provider, request, timeout_seconds=timeout, fallback_models=fallback_models
+        )
     from app.observability.genai import record_generation
     from app.observability.traced_provider import provider_system_of, record_response
 
     async with record_generation(
         request, provider_system=provider_system_of(provider), role=role
     ) as rec:
-        resp = await complete_with_failover(provider, request, timeout_seconds=timeout)
+        resp = await complete_with_failover(
+            provider, request, timeout_seconds=timeout, fallback_models=fallback_models
+        )
         record_response(rec, resp)
         return resp
 
@@ -385,8 +395,13 @@ async def complete_decision(
     goal_id: str | None = None,
     timeout_seconds: float | None = None,
     charge: bool = True,
+    fallback_models: Sequence[str] = (),
 ) -> Any:
     """``provider.complete(request)`` with circuit breaker, timeout and cost charging.
+
+    ``fallback_models`` are tried in order when ``request.model`` fails (down,
+    timing out, empty answer) — see :func:`complete_with_failover`. The model that
+    actually answered is the one charged and recorded.
 
     ``charge=False`` is for providers already metered by an outer budget guard
     (the RAG strategy LLM is a ``_BudgetedProvider``), so a call is not charged
@@ -413,7 +428,9 @@ async def complete_decision(
     model = str(getattr(request, "model", "") or "")
     started = time.monotonic()
     try:
-        resp = await _traced_call(provider, request, role, _timeout(timeout_seconds))
+        resp = await _traced_call(
+            provider, request, role, _timeout(timeout_seconds), fallback_models
+        )
     except Exception as exc:
         if getattr(exc, "provider_failure", True):
             record_llm_outcome(
@@ -422,6 +439,10 @@ async def complete_decision(
             )
         raise
     _latency_ms = (time.monotonic() - started) * 1000
+    # After a failover the answer came from another model: record and charge that one.
+    answered = str(getattr(resp, "model", "") or "")
+    if fallback_models and answered in fallback_models:
+        model = answered
     record_llm_outcome(provider=provider, model=model, ok=True, latency_ms=_latency_ms)
     # PROV-24: sampled shadow of a candidate model (flag-gated, uncharged, metered).
     from app.ai_router.shadow_router import maybe_fire_shadow
@@ -433,7 +454,7 @@ async def complete_decision(
             tenant,
             resp=resp,
             role=role,
-            model=str(getattr(request, "model", "") or ""),
+            model=model,
             goal_id=goal_id,
         )
     return resp

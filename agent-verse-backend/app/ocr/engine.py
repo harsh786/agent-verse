@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -44,7 +45,36 @@ def _ocr_model() -> str:
 
     return resolve_vision_model("")
 
+
+def _ocr_fallback_models(primary: str) -> list[str]:
+    """Other configured vision/OCR models, cheapest first, tried in order when the
+    primary vision model fails (down, timing out, empty answer)."""
+    from app.ai_router.selection import resolve_vision_fallback_models
+
+    return resolve_vision_fallback_models(primary)
+
+
+def _summarise_pages(pages: list[tuple[str, float, str]]) -> tuple[float, str, int, bool]:
+    """``(overall_confidence, engine_used, vision_pages, confidence_measured)``.
+
+    Only measured confidences are averaged: Tesseract pages, plus pages that
+    produced no text at all (a measured 0). A page LLM vision did read has no
+    real score, so it is counted in ``vision_pages`` instead of skewing the
+    average with a constant. When nothing was measured, the configured assumed
+    confidence is reported and ``confidence_measured`` is False.
+    """
+    engines = {e for _, _, e in pages}
+    engine_used = engines.pop() if len(engines) == 1 else "mixed"
+    vision_pages = sum(1 for t, _, e in pages if e == "llm_vision" and t.strip())
+    measured = [c for t, c, e in pages if e != "llm_vision" or not t.strip()]
+    if measured:
+        return sum(measured) / len(measured), engine_used, vision_pages, True
+    return (VISION_ASSUMED_CONFIDENCE if vision_pages else 0.0), engine_used, vision_pages, False
+
 CONFIDENCE_THRESHOLD = 0.6
+# LLM vision gives no confidence score. A page it read is reported with this
+# assumed value and excluded from the measured average (see _summarise_pages).
+VISION_ASSUMED_CONFIDENCE = float(os.getenv("OCR_VISION_ASSUMED_CONFIDENCE", "") or 0.85)
 # Below this English confidence a page may be Hindi: the hin+eng model is tried.
 HINDI_RETRY_CONFIDENCE = 0.85
 # Share of letters that must be Devanagari for the hin+eng reading to be kept.
@@ -181,8 +211,12 @@ class OcrEngine:
             )
 
         raw_text = "\n\n".join(t for t, _, _ in raw_texts)
-        overall_conf = sum(c for _, c, _ in raw_texts) / len(raw_texts)
-        engine_used = raw_texts[0][2] if raw_texts else "tesseract"
+        overall_conf, engine_used, vision_pages, measured = _summarise_pages(raw_texts)
+        provenance: dict[str, Any] = {
+            "page_engines": [e for _, _, e in raw_texts],
+            "vision_pages": vision_pages,
+            "confidence_measured": measured,
+        }
 
         if not extract_fields:
             return OcrResult(
@@ -191,6 +225,7 @@ class OcrEngine:
                 engine_used=engine_used,  # type: ignore[arg-type]
                 overall_confidence=overall_conf,
                 page_count=len(pages),
+                **provenance,
             )
 
         doc_type = self._classifier.classify(raw_text)
@@ -211,6 +246,7 @@ class OcrEngine:
             engine_used=engine_used,  # type: ignore[arg-type]
             overall_confidence=overall_conf,
             page_count=len(pages),
+            **provenance,
         )
 
     async def extract_any(
@@ -427,7 +463,13 @@ class OcrEngine:
 
         if not vision_fallback:
             return low_conf
-        return await self._llm_vision_ocr(img, provider=provider)
+        vision = await self._llm_vision_ocr(img, provider=provider)
+        if not vision[0].strip() and low_conf[0].strip():
+            # Vision failed or read nothing: the weaker Tesseract text is still
+            # better than an empty page (it used to be dropped here).
+            _log.info("ocr_vision_empty_kept_tesseract conf=%.2f", low_conf[1])
+            return low_conf
+        return vision
 
     async def _tesseract_best(self, pytesseract: Any, img: Any) -> tuple[str, float]:
         """The best Tesseract reading of one page: ``(text, mean confidence)``.
@@ -546,8 +588,11 @@ class OcrEngine:
                 role="ocr_vision",
                 tenant_id=tenant_id,
                 timeout_seconds=generation_timeout_seconds(),
+                # Another configured vision model takes over when this one is down,
+                # times out or answers empty (it used to be a single-model call).
+                fallback_models=_ocr_fallback_models(req.model),
             )
-            return response.content, 0.85, "llm_vision"
+            return response.content, VISION_ASSUMED_CONFIDENCE, "llm_vision"
         except DecisionBudgetExceededError:
             raise
         except Exception as exc:

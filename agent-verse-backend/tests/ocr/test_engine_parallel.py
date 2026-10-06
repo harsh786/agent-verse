@@ -311,11 +311,15 @@ async def test_vision_fallback_pages_run_concurrently_but_bounded() -> None:
                                            extract_fields=False)
     assert provider.calls == 6
     assert provider.peak == 2  # OCR_VISION_CONCURRENCY
-    # Page 3's vision failure loses only page 3; every other page keeps its text.
-    assert result.raw_text.split("\n\n") == [
-        "vision page 1", "vision page 2", "", "vision page 4", "vision page 5", "vision page 6"
-    ]
-    assert result.engine_used == "llm_vision"
+    # Page 3's vision failure falls back to that page's own (weak) Tesseract
+    # reading instead of an empty page; every other page keeps its vision text.
+    pages = result.raw_text.split("\n\n")
+    assert pages[:2] == ["vision page 1", "vision page 2"]
+    assert pages[2] == "w103"
+    assert pages[3:] == ["vision page 4", "vision page 5", "vision page 6"]
+    assert result.engine_used == "mixed"
+    assert result.page_engines[2] == "tesseract"
+    assert result.vision_pages == 5
 
 
 async def test_vision_budget_refusal_fails_closed_and_stops_the_other_pages() -> None:

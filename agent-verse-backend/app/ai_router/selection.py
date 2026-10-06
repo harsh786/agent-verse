@@ -171,6 +171,37 @@ def resolve_vision_model(fallback: str = "") -> str:
     )
 
 
+def resolve_vision_fallback_models(primary: str, *, limit: int = 3) -> list[str]:
+    """Other configured vision/OCR models to try after *primary*, cheapest first.
+
+    Vision-capable models of the VISION capability, then OCR models, then the
+    env-configured vision model; *primary* and duplicates are skipped. Empty
+    when nothing else is configured (the caller simply has no failover).
+    """
+    from app.providers.model_defaults import configured_vision_model
+
+    reg = model_registry
+    _ensure_seeded(reg)
+    ordered: list[str] = []
+    for task_type, need_vision in ((TaskType.VISION, True), (TaskType.OCR, False)):
+        capability = _TASK_CAPABILITY.get(task_type)
+        if capability is None:
+            continue
+        candidates = list(reg.list_configured(capability))
+        if need_vision:
+            candidates = [m for m in candidates if m.supports_vision]
+        candidates.sort(
+            key=lambda m: (m.cost_per_1k_input, -m.quality_score, m.avg_latency_ms or 1_000_000)
+        )
+        ordered.extend(m.model_id for m in candidates)
+    ordered.append(configured_vision_model(""))
+    out: list[str] = []
+    for model_id in ordered:
+        if model_id and model_id != primary and model_id not in out:
+            out.append(model_id)
+    return out[:limit]
+
+
 def resolve_rerank_model(fallback: str = "") -> str:
     """Cheapest configured reranker model, else *fallback*."""
     return select_configured_model_id(TaskType.RERANK) or fallback

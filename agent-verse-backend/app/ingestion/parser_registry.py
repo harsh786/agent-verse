@@ -540,6 +540,8 @@ class ParserRegistry:
                 meta["ocr_engine"] = engine_used
                 if engine_used and engine_used != "tesseract":
                     meta["ocr_fallback"] = engine_used
+                if getattr(ocr_res, "vision_pages", 0):
+                    meta["ocr_vision_pages"] = ocr_res.vision_pages  # type: ignore[attr-defined]
         return text, meta
 
     async def _parse_image(
@@ -563,6 +565,8 @@ class ParserRegistry:
                 meta["ocr_engine"] = engine_used
                 if engine_used != "tesseract":
                     meta["ocr_fallback"] = engine_used
+            if getattr(ocr_res, "vision_pages", 0):
+                meta["ocr_vision_pages"] = ocr_res.vision_pages  # type: ignore[attr-defined]
 
         # Vision description — only when a provider is configured (avoids
         # blind SDK calls when no credentials are available).

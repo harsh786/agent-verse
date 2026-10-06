@@ -37,9 +37,18 @@ class OcrResult:
     raw_text: str
     document_type: DocumentType
     fields: dict[str, ExtractedField] = field(default_factory=dict)
-    engine_used: Literal["tesseract", "llm_vision"] = "tesseract"
+    # "mixed" when some pages were read by Tesseract and others by LLM vision.
+    engine_used: Literal["tesseract", "llm_vision", "mixed"] = "tesseract"
     overall_confidence: float = 0.0
     page_count: int = 1
+    # Per-page provenance, in page order: which engine produced each page's text.
+    page_engines: list[str] = field(default_factory=list)
+    # Pages whose text came from LLM vision (its confidence is not measured).
+    vision_pages: int = 0
+    # False when no page's confidence was measured (every page came from LLM
+    # vision): ``overall_confidence`` is then the configured assumption
+    # (OCR_VISION_ASSUMED_CONFIDENCE), not a measurement.
+    confidence_measured: bool = True
     # WS-6: universal-ingestion provenance. When an input format cannot be
     # rasterized to images for OCR, ``degraded`` is set and ``degradation_reason``
     # records why (honest metadata, never a silent drop). ``source_format`` names
