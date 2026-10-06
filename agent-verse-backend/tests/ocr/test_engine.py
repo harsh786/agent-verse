@@ -116,7 +116,9 @@ async def test_extract_multi_page_pdf():
     mock_tess = _mock_pytesseract(high_conf_data)
 
     with (
-        patch("app.ocr.engine.OcrEngine._to_images", return_value=imgs),
+        patch("app.ocr.engine.pdf_page_count", return_value=len(imgs)),
+        patch("app.ocr.engine.render_pdf_page_image",
+              side_effect=lambda _path, n, *, dpi: imgs[n - 1]),
         patch.dict("sys.modules", {"pytesseract": mock_tess}),
     ):
         result = await engine.extract(pdf_bytes=b"fake_pdf")
@@ -124,11 +126,11 @@ async def test_extract_multi_page_pdf():
     assert result.page_count == 2
 
 
-async def test_to_images_returns_empty_for_import_error():
+async def test_pdf_without_pdf2image_yields_no_pages():
     engine = OcrEngine()
     with patch.dict("sys.modules", {"pdf2image": None}):
-        pages = engine._to_images(image_bytes=None, pdf_bytes=b"fake")
-    assert pages == []
+        result = await engine.extract(pdf_bytes=b"fake", extract_fields=False)
+    assert result.page_count == 0
 
 
 def test_preprocess_image_returns_image():
