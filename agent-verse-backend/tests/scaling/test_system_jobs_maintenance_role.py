@@ -101,7 +101,7 @@ def _sql(session: MagicMock) -> list[str]:
 async def test_stuck_goal_scan_runs_on_maintenance_role() -> None:
     from app.scaling.tasks import _find_and_fail_stuck_goals
 
-    session = _session([MagicMock(fetchall=MagicMock(return_value=[("g1",), ("g2",)]))])
+    session = _session([MagicMock(fetchall=MagicMock(return_value=[("g1", "t", "", {}, True), ("g2", "t", "", {}, True)]))])
     sys_session = _Recorder()
     p = _system_patches(_factory(session), sys_session)
     with p[0], p[1], p[2]:

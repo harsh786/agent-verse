@@ -125,6 +125,7 @@ class _Recorder:
         self.released: list[str] = []
         self.released_goals: list[str] = []  # the slot is a lease keyed by goal id
         self.published: list[tuple[str, str]] = []
+        self.failed_goals: list[str] = []
 
     def enqueue(self, goal: dict[str, Any]) -> None:
         self.enqueued.append(goal["goal_id"])
@@ -136,6 +137,9 @@ class _Recorder:
     def publish(self, tenant_id: str, goal_id: str, event: dict[str, Any]) -> None:
         self.published.append((goal_id, str(event.get("type"))))
 
+    def on_failed(self, goal: dict[str, Any]) -> None:
+        self.failed_goals.append(goal["goal_id"])
+
 
 async def _reap(db: Any, redis_client: Any, rec: _Recorder, **kw: Any) -> dict[str, Any]:
     return await reap_stale_goal_runners(
@@ -144,6 +148,7 @@ async def _reap(db: Any, redis_client: Any, rec: _Recorder, **kw: Any) -> dict[s
         enqueue=rec.enqueue,
         release_slot=rec.release,
         publish=rec.publish,
+        on_failed=rec.on_failed,
         stale_s=kw.pop("stale_s", 60),
         max_requeues=kw.pop("max_requeues", 1),
     )
@@ -291,6 +296,8 @@ async def test_dead_runner_after_a_tool_ran_is_failed_not_rerun(
     events = await _events(db, gid)
     assert events[-2:] == ["goal_runner_lost", "goal_failed"]
     assert (gid, "goal_failed") in rec.published
+    # B7-2: the worker publishes goal.failed (goal_failed triggers) from this.
+    assert rec.failed_goals == [gid]
     assert rec.released == [tenant]
     assert rec.released_goals == [gid]
 

@@ -476,16 +476,20 @@ class LongTermMemoryStore:
         tenant_ctx: TenantContext,
         db: Any = None,
         embedder: Any = None,
+        goal_id: str = "",
     ) -> LongTermMemory:
         """Extract a learning from a completed goal and persist it.
 
         Adds to the in-memory cache immediately (same-session recall) AND
         persists to DB via store_async so the learning survives restarts.
+        ``goal_id`` is recorded as the memory's source goal: the
+        ``memory.created`` event carries it, so a memory_created trigger never
+        re-fires on the learning of a goal it started itself (B7).
         """
         content = f"Goal: {goal[:200]} → Result: {result[:200]}"
         memory = LongTermMemory(
             content=content,
-            source_goal_id="",
+            source_goal_id=goal_id or "",
             memory_type="success_pattern",
             confidence=0.8,
             tags=["auto-extracted"],

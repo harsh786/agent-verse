@@ -278,6 +278,13 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
         if (reason := queue_id_error(spec.hitl_queue_id)) is not None:
             raise ValueError(reason)
 
+    # B7-5: the 0.0 default can never be undercut, so the trigger never fired.
+    if v == "goal_score_below" and not 0.0 < float(spec.score_threshold or 0.0) <= 1.0:
+        raise ValueError(
+            "goal_score_below trigger requires a score_threshold in (0, 1] "
+            "(it fires when the goal's score is below it)"
+        )
+
     # ── Type-specific required fields ────────────────────────────────────────
     if v == "cron":
         if not spec.cron_expression.strip():
