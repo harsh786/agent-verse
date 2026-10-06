@@ -1426,6 +1426,15 @@ def test_delete_policy_with_db() -> None:
         )
         pid = create_resp.json()["policy_id"]
 
+        # The DB (authoritative for the lookup, QA-13) now holds the policy.
+        listed = MagicMock()
+        listed.fetchall.return_value = [(pid, "del-db-policy", "del_*", "deny", 0, "", None)]
+
+        async def _execute(stmt: Any, params: Any = None) -> Any:
+            return listed if "FROM governance_policies gp" in str(stmt) else MagicMock()
+
+        session.execute = AsyncMock(side_effect=_execute)
+
         # Delete
         del_resp = client.delete(f"/governance/policies/{pid}", headers=_headers())
         assert del_resp.status_code == 204

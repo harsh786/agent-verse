@@ -156,14 +156,24 @@ def _budget_config(request: Request) -> dict[str, BudgetConfig]:
 
 
 # ---------------------------------------------------------------------------
-# DB-backed policy helpers (fall back gracefully if DB is unavailable)
+# DB-backed policy helpers (the DB is authoritative whenever one is configured)
 # ---------------------------------------------------------------------------
 
 
-async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, Any]]:
+class PolicyListUnavailableError(RuntimeError):
+    """The configured policy DB could not be read."""
+
+
+async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, Any]] | None:
+    """The tenant's policies from the DB; ``None`` when no DB is configured.
+
+    QA-13: a DB error used to be swallowed into ``[]``, which callers read as
+    "no DB" and answered from this replica's stale in-memory registry. It now
+    raises :class:`PolicyListUnavailableError`; an empty list is a real answer.
+    """
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
-        return []
+        return None
     try:
         from sqlalchemy import text
 
@@ -204,8 +214,30 @@ async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, 
                 }
             )
         return out
-    except Exception:
-        return []
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("policy_list_db_failed: %s", type(exc).__name__)
+        raise PolicyListUnavailableError("policies could not be read") from exc
+
+
+async def _tenant_policies(request: Request, tenant_id: str) -> list[dict[str, Any]]:
+    """The tenant's policy records: the DB's when one is configured, else in-memory.
+
+    The per-replica registry only knows what THIS replica created and never sees
+    deletes made elsewhere, so it is used only in the no-DB (in-memory) build.
+    """
+    try:
+        db_policies = await _db_list_policies(request, tenant_id)
+    except PolicyListUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Policies could not be read; retry shortly.",
+            headers={"Retry-After": "5"},
+        ) from exc
+    if db_policies is not None:
+        return db_policies
+    return list(_policy_registry(request).get(tenant_id, {}).values())
 
 
 class PolicyPersistError(RuntimeError):
@@ -387,13 +419,9 @@ async def _db_delete_policy(
 @router.get("/policies")
 async def list_policies(request: Request) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
-    # Try DB-backed first
-    db_policies = await _db_list_policies(request, tenant_ctx.tenant_id)
-    if db_policies:
-        return db_policies
-    # Fall back to in-memory (no DB available)
-    registry = _policy_registry(request)
-    return list(registry.get(tenant_ctx.tenant_id, {}).values())
+    # QA-13: DB-authoritative (an empty list is valid, an error is a 503); the
+    # in-memory registry only when no DB is configured.
+    return await _tenant_policies(request, tenant_ctx.tenant_id)
 
 
 @router.post("/policies", status_code=status.HTTP_201_CREATED)
@@ -466,16 +494,15 @@ async def delete_policy(request: Request, policy_id: str) -> None:
 
     # DB-authoritative lookup: the per-pod registry only holds policies THIS pod
     # created, so looking up there 404'd a DELETE on any other pod even though the
-    # policy exists in the DB. Resolve the record from the DB first (cross-pod),
-    # falling back to the registry only in the no-DB build.
+    # policy exists in the DB. Resolve the record from the DB (cross-pod); the
+    # registry is used only in the no-DB build — a policy this pod still holds
+    # but the DB no longer has was deleted elsewhere (QA-13: 404, DB error 503).
     tenant_policies = registry.get(tenant_ctx.tenant_id, {})
     record: dict[str, Any] | None = None
-    for p in await _db_list_policies(request, tenant_ctx.tenant_id):
+    for p in await _tenant_policies(request, tenant_ctx.tenant_id):
         if p.get("policy_id") == policy_id:
             record = p
             break
-    if record is None:
-        record = tenant_policies.get(policy_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1088,10 +1115,7 @@ async def stream_policies(request: Request) -> StreamingResponse:
     snapshot then ``stream_unavailable``.
     """
     tenant_ctx: TenantContext = _require_tenant(request)
-    db_policies = await _db_list_policies(request, tenant_ctx.tenant_id)
-    if not db_policies:
-        registry = _policy_registry(request)
-        db_policies = list(registry.get(tenant_ctx.tenant_id, {}).values())
+    db_policies = await _tenant_policies(request, tenant_ctx.tenant_id)  # QA-13
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
 
     async def gen() -> AsyncGenerator[str, None]:

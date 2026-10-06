@@ -359,9 +359,10 @@ def test_create_policy_db_exception_is_503_not_fake_created() -> None:
     )
     assert create.status_code == 503
 
+    # The DB is still down: the list is a 503 (QA-13), never a replica-local copy.
     listing = client.get("/governance/policies", headers=_h())
-    assert listing.status_code == 200
-    assert listing.json() == []
+    assert listing.status_code == 503
+    assert "p1" not in listing.text
 
 
 def test_delete_policy_db_exception_is_503_and_policy_kept() -> None:
