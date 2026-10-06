@@ -1,4 +1,5 @@
 """Tests for Phase 1c — durable TenantService with Redis cache."""
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -162,6 +163,13 @@ class TestTenantServiceCachedLookup:
         assert result.tenant_id == "t4"
 
 
+def _admin_request(admin_key: str) -> Any:
+    """A request carrying only an X-Admin-Key header (no tenant context)."""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(state=SimpleNamespace(), headers={"x-admin-key": admin_key})
+
+
 class TestAdminRouter:
     def test_admin_router_importable(self):
         from app.api.admin import router
@@ -183,7 +191,8 @@ class TestAdminRouter:
         assert any("plan" in p for p in paths), "Missing plan change endpoint"
 
     def test_admin_requires_admin_key(self):
-        """Admin endpoints must reject invalid X-Admin-Key with 401."""
+        """Admin endpoints must reject an invalid X-Admin-Key with 403 (QA-6: never
+        401, which the web client treats as an expired session and logs out)."""
         import os
 
         from fastapi import HTTPException
@@ -193,8 +202,8 @@ class TestAdminRouter:
         os.environ["PLATFORM_ADMIN_KEY"] = "secret-key"
         try:
             with pytest.raises(HTTPException) as exc:
-                _require_admin(x_admin_key="wrong-key")
-            assert exc.value.status_code == 401
+                _require_admin(_admin_request("wrong-key"))
+            assert exc.value.status_code == 403
         finally:
             del os.environ["PLATFORM_ADMIN_KEY"]
 
@@ -208,7 +217,7 @@ class TestAdminRouter:
 
         os.environ.pop("PLATFORM_ADMIN_KEY", None)
         with pytest.raises(HTTPException) as exc:
-            _require_admin(x_admin_key="any-key")
+            _require_admin(_admin_request("any-key"))
         assert exc.value.status_code == 503
 
     def test_plan_change_request_schema(self):
