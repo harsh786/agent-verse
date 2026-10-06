@@ -12,6 +12,7 @@ from datetime import UTC
 
 import pytest
 
+from app.chat.ownership import SYSTEM_SCOPE
 from app.chat.repository import PostgresChatRepository, _decode_cursor
 
 
@@ -66,11 +67,11 @@ class _ExplodingSessionFactory:
 @pytest.mark.asyncio
 async def test_update_session_no_valid_fields_short_circuits() -> None:
     repo = PostgresChatRepository(_ExplodingSessionFactory())  # type: ignore[arg-type]
-    result = await repo.update_session("sid", "tenant", not_a_real_column="x")
+    result = await repo.update_session("sid", "tenant", scope=SYSTEM_SCOPE, not_a_real_column="x")
     assert result is False
 
 
 @pytest.mark.asyncio
 async def test_update_session_empty_kwargs_short_circuits() -> None:
     repo = PostgresChatRepository(_ExplodingSessionFactory())  # type: ignore[arg-type]
-    assert await repo.update_session("sid", "tenant") is False
+    assert await repo.update_session("sid", "tenant", scope=SYSTEM_SCOPE) is False

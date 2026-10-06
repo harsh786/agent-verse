@@ -16,29 +16,34 @@ class _FakeRepo:
 
     async def create_session(self, *, session_id: str, tenant_id: str, title: str = "New Chat",
                              system_prompt: Any = None, agent_id: Any = None,
-                             folder_id: Any = None, owner_user_id: Any = None) -> None:
+                             folder_id: Any = None, owner_user_id: Any = None,
+                             owner_principal: Any = None) -> None:
         self._rows[session_id] = {
             "id": session_id, "tenant_id": tenant_id, "title": title,
             "system_prompt": system_prompt, "agent_id": agent_id, "folder_id": folder_id,
-            "owner_user_id": owner_user_id,
+            "owner_user_id": owner_user_id, "owner_principal": owner_principal,
             "pinned": False, "created_at": datetime.now(UTC), "updated_at": datetime.now(UTC),
         }
 
-    async def get_session(self, session_id: str, tenant_id: str) -> dict[str, Any] | None:
+    async def get_session(
+        self, session_id: str, tenant_id: str, *, scope: Any = None
+    ) -> dict[str, Any] | None:
         r = self._rows.get(session_id)
         return r if r and r["tenant_id"] == tenant_id else None
 
-    async def list_sessions(self, tenant_id: str) -> list[dict[str, Any]]:
+    async def list_sessions(self, tenant_id: str, *, scope: Any = None) -> list[dict[str, Any]]:
         return [r for r in self._rows.values() if r["tenant_id"] == tenant_id]
 
-    async def update_session(self, session_id: str, tenant_id: str, **fields: Any) -> bool:
+    async def update_session(
+        self, session_id: str, tenant_id: str, *, scope: Any = None, **fields: Any
+    ) -> bool:
         r = self._rows.get(session_id)
         if not r or r["tenant_id"] != tenant_id:
             return False
         r.update(fields)
         return True
 
-    async def delete_session(self, session_id: str, tenant_id: str) -> bool:
+    async def delete_session(self, session_id: str, tenant_id: str, *, scope: Any = None) -> bool:
         return self._rows.pop(session_id, None) is not None
 
 
@@ -75,7 +80,7 @@ class _FakeRepoWithMessages(_FakeRepo):
 
     async def save_message(self, *, message_id: str, session_id: str, tenant_id: str,
                            role: str, content: str, intent: Any = None, goal_id: Any = None,
-                           metadata: Any = None) -> None:
+                           metadata: Any = None, scope: Any = None) -> None:
         # Monotonic timestamps so branch-prune's strict > ordering is deterministic.
         ts = datetime.now(UTC) + timedelta(microseconds=len(self._msgs))
         self._msgs.append({
@@ -84,16 +89,22 @@ class _FakeRepoWithMessages(_FakeRepo):
             "metadata": {}, "created_at": ts,
         })
 
-    async def list_messages(self, session_id: str, tenant_id: str) -> list[dict[str, Any]]:
+    async def list_messages(
+        self, session_id: str, tenant_id: str, *, scope: Any = None
+    ) -> list[dict[str, Any]]:
         return [m for m in self._msgs if m["session_id"] == session_id and m["tenant_id"] == tenant_id]
 
-    async def get_message(self, message_id: str, tenant_id: str) -> dict[str, Any] | None:
+    async def get_message(
+        self, message_id: str, tenant_id: str, *, scope: Any = None
+    ) -> dict[str, Any] | None:
         for m in self._msgs:
             if m["id"] == message_id and m["tenant_id"] == tenant_id:
                 return m
         return None
 
-    async def update_message_content(self, message_id: str, tenant_id: str, content: str) -> bool:
+    async def update_message_content(
+        self, message_id: str, tenant_id: str, content: str, *, scope: Any = None
+    ) -> bool:
         for m in self._msgs:
             if m["id"] == message_id and m["tenant_id"] == tenant_id:
                 m["content"] = content
@@ -101,7 +112,7 @@ class _FakeRepoWithMessages(_FakeRepo):
         return False
 
     async def delete_messages_after(self, session_id: str, tenant_id: str,
-                                    after_created_at: Any) -> list[str]:
+                                    after_created_at: Any, *, scope: Any = None) -> list[str]:
         doomed = [
             m for m in self._msgs
             if m["session_id"] == session_id and m["tenant_id"] == tenant_id

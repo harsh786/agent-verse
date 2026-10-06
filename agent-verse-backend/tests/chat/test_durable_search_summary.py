@@ -34,16 +34,24 @@ class _Repo:
         self.search_calls: list[tuple[str, str, str | None, int]] = []
         self.total = 2
 
-    async def get_session(self, session_id: str, tenant_id: str) -> dict[str, Any] | None:
+    async def get_session(
+        self, session_id: str, tenant_id: str, *, scope: Any = None
+    ) -> dict[str, Any] | None:
         if session_id == "s1" and tenant_id == "t1":
             return {"id": "s1", "tenant_id": "t1", "title": "keys"}
         return None
 
-    async def count_messages(self, session_id: str, tenant_id: str) -> int:
+    async def count_messages(self, session_id: str, tenant_id: str, *, scope: Any = None) -> int:
         return self.total if (session_id, tenant_id) == ("s1", "t1") else 0
 
     async def search_messages(
-        self, tenant_id: str, query: str, *, session_id: str | None = None, limit: int = 20
+        self,
+        tenant_id: str,
+        query: str,
+        *,
+        scope: Any = None,
+        session_id: str | None = None,
+        limit: int = 20,
     ) -> list[dict[str, Any]]:
         self.search_calls.append((tenant_id, query, session_id, limit))
         return [r for r in self.rows if r["tenant_id"] == tenant_id and "rotat" in r["content"]]

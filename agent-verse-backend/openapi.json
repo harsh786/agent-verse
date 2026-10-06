@@ -463,6 +463,21 @@
         "title": "ApproveRequest",
         "type": "object"
       },
+      "AssignSessionRequest": {
+        "properties": {
+          "owner_user_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Owner User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner_user_id"
+        ],
+        "title": "AssignSessionRequest",
+        "type": "object"
+      },
       "AuthType": {
         "enum": [
           "bearer",
@@ -9729,6 +9744,7 @@
           "title": {
             "anyOf": [
               {
+                "maxLength": 500,
                 "type": "string"
               },
               {
@@ -9736,6 +9752,19 @@
               }
             ],
             "title": "Title"
+          },
+          "ttl_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Days"
           }
         },
         "title": "UpdateSessionRequest",
@@ -22546,9 +22575,190 @@
         ]
       }
     },
+    "/chat/admin/sessions/unowned": {
+      "get": {
+        "description": "Sessions with no owner (channels, older sessions); admin only, audited.",
+        "operationId": "admin_list_unowned_sessions_chat_admin_sessions_unowned_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin List Unowned Sessions Chat Admin Sessions Unowned Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin List Unowned Sessions",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/admin/sessions/{session_id}/assign": {
+      "post": {
+        "description": "Give a session with no owner to a person (it becomes theirs, privately).",
+        "operationId": "admin_assign_unowned_session_chat_admin_sessions__session_id__assign_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Assign Unowned Session Chat Admin Sessions  Session Id  Assign Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Assign Unowned Session",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/admin/sessions/{session_id}/messages": {
+      "get": {
+        "description": "Read a session with no owner; admin only, audited before it is read.",
+        "operationId": "admin_read_unowned_session_chat_admin_sessions__session_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Read Unowned Session Chat Admin Sessions  Session Id  Messages Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Read Unowned Session",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/admin/sessions/{session_id}/messages/{message_id}": {
+      "delete": {
+        "description": "A tenant admin deletes a message from any session of the tenant (CHAT-SEC-2).\n\nModeration without reading: nothing of the message is returned. Audited\ndurably before the delete (audit failure: 503, nothing deleted). The\nsession's transcript leaves the knowledge index like an owner's delete.",
+        "operationId": "admin_delete_message_chat_admin_sessions__session_id__messages__message_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Delete Message",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/chat/artifacts/{artifact_id}/download": {
       "get": {
-        "description": "Download a chat-generated document (Phase 4), tenant-scoped.",
+        "description": "Download a chat-generated document (Phase 4), tenant-scoped.\n\nA document generated in a chat session is the session owner's: anyone else\ngets 404 (CHAT-SEC-1).",
         "operationId": "download_artifact_chat_artifacts__artifact_id__download_get",
         "parameters": [
           {
@@ -22913,6 +23123,7 @@
     },
     "/chat/search": {
       "post": {
+        "description": "Full-text search over the caller's own sessions only.",
         "operationId": "search_messages_chat_search_post",
         "requestBody": {
           "content": {
@@ -23100,6 +23311,7 @@
     },
     "/chat/sessions": {
       "get": {
+        "description": "The caller's own sessions only (newest first, bounded).",
         "operationId": "list_sessions_chat_sessions_get",
         "responses": {
           "200": {
@@ -23757,6 +23969,7 @@
     },
     "/chat/sessions/{session_id}/messages/{message_id}": {
       "delete": {
+        "description": "Delete one of the caller's own messages (CHAT-SEC-2).\n\nThe message is removed from the database, not hidden. The session's\ntranscript leaves the knowledge index at once (a held one is kept), and the\nnext sync re-indexes the session without it.",
         "operationId": "delete_message_chat_sessions__session_id__messages__message_id__delete",
         "parameters": [
           {

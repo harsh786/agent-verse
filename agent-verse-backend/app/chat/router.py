@@ -1,6 +1,13 @@
 """Chat API router — 33 endpoints for the chat feature.
 
 All endpoints require a valid tenant (API key auth via TenantMiddleware).
+
+CHAT-SEC-1: a chat session is private to the principal that created it (see
+:mod:`app.chat.ownership`). Every session endpoint resolves the session within
+the caller's own scope first and answers 404 for anyone else's; the list and the
+searches return only the caller's own sessions and messages. Sessions with no
+owner (channels, older sessions) are reachable only through the admin routes
+under ``/chat/admin``, each durably audited before anything is returned.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from starlette.responses import Response, StreamingResponse
 from app.chat.execution import ChatCodeExecutor
 from app.chat.intent import IntentRouter
 from app.chat.memory_api import MemoryAPI
+from app.chat.ownership import UNOWNED_SCOPE, ChatScope, principal_of, scope_of
 from app.chat.search import ChatSearchEngine
 from app.chat.service import ChatService
 from app.chat.services_api import ServicesAPI
@@ -59,6 +67,33 @@ def _tenant(request: Request) -> TenantContext:
     return ctx
 
 
+def _scope(request: Request) -> tuple[TenantContext, ChatScope]:
+    """The caller and the chat scope it may act in; 403 without a principal."""
+    tenant = _tenant(request)
+    scope = scope_of(tenant)
+    if scope is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Chat needs an identified caller (a signed-in person or an API key).",
+        )
+    return tenant, scope
+
+
+async def _owned(
+    request: Request, session_id: str
+) -> tuple[TenantContext, ChatService, ChatScope, Any]:
+    """The caller's own session, or 404 (another principal's session does not exist)."""
+    tenant = _tenant(request)
+    scope = scope_of(tenant)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    svc = _svc(request)
+    s = await svc.aget_session(session_id, tenant.tenant_id, scope=scope)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return tenant, svc, scope, s
+
+
 def _svc(request: Request) -> ChatService:
     svc: ChatService | None = getattr(request.app.state, "chat_service", None)
     if svc is None:
@@ -81,13 +116,16 @@ class CreateSessionRequest(BaseModel):
 
 
 class UpdateSessionRequest(BaseModel):
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=500)
     system_prompt: str | None = None
     pinned: bool | None = None
     folder_id: str | None = None
     show_reasoning: bool | None = None
     proactive_suggestions: bool | None = None
     preferred_model: str | None = None
+    # CHAT-SEC-3: days of inactivity after which the session (unless pinned) is
+    # deleted; an explicit null clears it (never expires).
+    ttl_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class SendMessageRequest(BaseModel):
@@ -142,6 +180,8 @@ def _session_to_dict(s: Any) -> dict[str, Any]:
         "preferred_model": s.preferred_model,
         # The person who created the session (None: an API key or a channel).
         "owner_user_id": getattr(s, "owner_user_id", None),
+        # CHAT-SEC-1: the principal the session belongs to (None: no owner).
+        "owner_principal": getattr(s, "owner_principal", None),
         "created_at": s.created_at.isoformat(),
         "updated_at": s.updated_at.isoformat(),
     }
@@ -167,7 +207,7 @@ def _message_to_dict(m: Any) -> dict[str, Any]:
 
 @router.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session(body: CreateSessionRequest, request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
+    tenant, scope = _scope(request)
     svc = _svc(request)
     s = await svc.acreate_session(
         tenant.tenant_id,
@@ -176,16 +216,21 @@ async def create_session(body: CreateSessionRequest, request: Request) -> dict[s
         agent_id=body.agent_id,
         folder_id=body.folder_id,
         owner_user_id=tenant.user_id,
+        owner_principal=scope.principal,
     )
     return _session_to_dict(s)
 
 
 @router.get("/sessions")
 async def list_sessions(request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
+    """The caller's own sessions only (newest first, bounded)."""
+    tenant, scope = _scope(request)
     svc = _svc(request)
-    sessions = await svc.alist_sessions(tenant.tenant_id)
-    return {"sessions": [_session_to_dict(s) for s in sessions]}
+    sessions = await svc.alist_sessions(tenant.tenant_id, scope=scope)
+    return {
+        "sessions": [_session_to_dict(s) for s in sessions],
+        "principal": scope.principal,
+    }
 
 
 @router.get("/skills")
@@ -201,8 +246,7 @@ async def upload_attachment(
     session_id: str, request: Request, file: UploadFile = File(...)
 ) -> dict[str, Any]:
     """Upload a file; it's parsed and added to the conversation as context (Phase 4)."""
-    tenant = _tenant(request)
-    svc = _svc(request)
+    tenant, svc, scope, _s = await _owned(request, session_id)
     data = await file.read()
     msg = await svc.attach_file(
         session_id=session_id,
@@ -210,6 +254,7 @@ async def upload_attachment(
         content_bytes=data,
         filename=file.filename or "document",
         author_user_id=tenant.user_id,
+        scope=scope,
     )
     if msg is None:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -218,13 +263,24 @@ async def upload_attachment(
 
 @router.get("/artifacts/{artifact_id}/download")
 async def download_artifact(artifact_id: str, request: Request) -> Response:
-    """Download a chat-generated document (Phase 4), tenant-scoped."""
+    """Download a chat-generated document (Phase 4), tenant-scoped.
+
+    A document generated in a chat session is the session owner's: anyone else
+    gets 404 (CHAT-SEC-1).
+    """
     tenant = _tenant(request)
+    scope = scope_of(tenant)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="Artifact not found or expired")
     store = getattr(request.app.state, "chat_artifact_store", None)
     if store is None:
         raise HTTPException(status_code=503, detail="Artifact storage is not available")
     try:
-        art = await store.get(artifact_id, tenant.tenant_id)
+        art = await store.get(artifact_id, tenant.tenant_id, scope=scope)
+        if art is not None and art.session_id and not await _svc(request).aget_session(
+            art.session_id, tenant.tenant_id, scope=scope
+        ):
+            art = None
     except Exception as exc:
         # A storage outage is not "not found" (and never leaks driver text).
         logger.warning("chat_artifact_read_failed", error=type(exc).__name__)
@@ -242,11 +298,7 @@ async def download_artifact(artifact_id: str, request: Request) -> Response:
 
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str, request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
+    _tc, _sv, _sc, s = await _owned(request, session_id)
     return _session_to_dict(s)
 
 
@@ -254,10 +306,11 @@ async def get_session(session_id: str, request: Request) -> dict[str, Any]:
 async def update_session(
     session_id: str, body: UpdateSessionRequest, request: Request
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
+    tenant, svc, scope, _s = await _owned(request, session_id)
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    s = await svc.aupdate_session(session_id, tenant.tenant_id, **updates)
+    if "ttl_days" in body.model_fields_set and body.ttl_days is None:
+        updates["ttl_days"] = None  # an explicit null: the session never expires
+    s = await svc.aupdate_session(session_id, tenant.tenant_id, scope=scope, **updates)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -265,10 +318,8 @@ async def update_session(
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(session_id: str, request: Request) -> None:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    existing = await svc.aget_session(session_id, tenant.tenant_id)
-    ok = await svc.adelete_session(session_id, tenant.tenant_id)
+    tenant, svc, scope, existing = await _owned(request, session_id)
+    ok = await svc.adelete_session(session_id, tenant.tenant_id, scope=scope)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
     owner = getattr(existing, "owner_user_id", None)
@@ -277,7 +328,7 @@ async def delete_session(session_id: str, request: Request) -> None:
 
 
 async def _remove_session_transcript(
-    request: Request, tenant_id: str, owner: str, session_id: str
+    request: Request, tenant_id: str, owner: str, session_id: str, *, what: str = "chat"
 ) -> None:
     """CHAT-KB: a deleted chat leaves the knowledge index too (held: kept).
 
@@ -307,17 +358,17 @@ async def _remove_session_transcript(
         raise HTTPException(
             status_code=503,
             detail=(
-                "The chat was deleted, but its transcript in the knowledge base could not be "
-                f"removed yet ({reason}); the knowledge Source's next reconciliation removes it."
+                f"The {what} was deleted, but the chat's transcript in the knowledge base could "
+                f"not be removed yet ({reason}); the knowledge Source's next reconciliation "
+                "removes it."
             ),
         ) from exc
 
 
 @router.post("/sessions/{session_id}/pin")
 async def pin_session(session_id: str, request: Request, pinned: bool = True) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aupdate_session(session_id, tenant.tenant_id, pinned=pinned)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    s = await svc.aupdate_session(session_id, tenant.tenant_id, scope=scope, pinned=pinned)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -332,12 +383,8 @@ async def list_messages(
     request: Request,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
-    msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=limit)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=limit, scope=scope)
     return {"messages": [_message_to_dict(m) for m in msgs]}
 
 
@@ -349,15 +396,14 @@ async def send_message(
 
     The actual streaming response comes from the /stream endpoint.
     """
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    result = await svc.adispatch(
-        session_id, tenant.tenant_id, body.content, author_user_id=tenant.user_id
-    )
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    try:
+        result = await svc.adispatch(
+            session_id, tenant.tenant_id, body.content, author_user_id=tenant.user_id,
+            scope=scope,
+        )
+    except (ValueError, LookupError) as exc:  # gone (deleted) since the check above
+        raise HTTPException(status_code=404, detail="Session not found") from exc
     return result
 
 
@@ -368,15 +414,10 @@ async def stream_session(
     message_id: str = Query(...),
 ) -> StreamingResponse:
     """SSE endpoint — streams the response for a dispatched message."""
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
+    tenant, svc, scope, s = await _owned(request, session_id)
 
-    # Find the message to determine intent
-    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
-    msg = next((m for m in msgs if m.id == message_id), None)
+    # Find the message to determine intent (one indexed lookup, owner-scoped).
+    msg = await svc.aget_message(session_id, message_id, tenant.tenant_id, scope=scope)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
 
@@ -491,12 +532,12 @@ async def stream_session(
 async def edit_message(
     session_id: str, message_id: str, body: EditMessageRequest, request: Request
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
-    msg, pruned = await svc.aedit_message(message_id, tenant.tenant_id, body.content)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    if await svc.aget_message(session_id, message_id, tenant.tenant_id, scope=scope) is None:
+        raise HTTPException(status_code=404, detail="Message not found or not editable")
+    msg, pruned = await svc.aedit_message(
+        message_id, tenant.tenant_id, body.content, scope=scope
+    )
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found or not editable")
     return {"message": _message_to_dict(msg), "pruned_message_ids": pruned}
@@ -506,11 +547,21 @@ async def edit_message(
     "/sessions/{session_id}/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 async def delete_message(session_id: str, message_id: str, request: Request) -> None:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    ok = svc.delete_message(message_id, tenant.tenant_id)
+    """Delete one of the caller's own messages (CHAT-SEC-2).
+
+    The message is removed from the database, not hidden. The session's
+    transcript leaves the knowledge index at once (a held one is kept), and the
+    next sync re-indexes the session without it.
+    """
+    tenant, svc, scope, s = await _owned(request, session_id)
+    ok = await svc.adelete_message(session_id, message_id, tenant.tenant_id, scope=scope)
     if not ok:
         raise HTTPException(status_code=404, detail="Message not found")
+    owner = getattr(s, "owner_user_id", None)
+    if owner:  # only an owned session can have been indexed as knowledge
+        await _remove_session_transcript(
+            request, tenant.tenant_id, owner, session_id, what="message"
+        )
 
 
 # ── Chat transcripts as knowledge: the person's own opt-in (owner decision 7) ──
@@ -607,11 +658,7 @@ async def set_chat_knowledge_opt_in(
 
 @router.get("/sessions/{session_id}/usage")
 async def session_usage(session_id: str, request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
+    tenant, svc, _sc, _s = await _owned(request, session_id)
     return svc.session_usage_summary(session_id, tenant.tenant_id)
 
 
@@ -620,12 +667,8 @@ async def session_usage(session_id: str, request: Request) -> dict[str, Any]:
 
 @router.post("/sessions/{session_id}/summarize")
 async def summarize_session(session_id: str, request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
-    summary = await svc.asummarize_session(session_id, tenant.tenant_id)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    summary = await svc.asummarize_session(session_id, tenant.tenant_id, scope=scope)
     return {"summary": summary}
 
 
@@ -634,10 +677,12 @@ async def summarize_session(session_id: str, request: Request) -> dict[str, Any]
 
 @router.post("/search")
 async def search_messages(body: SearchRequest, request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
+    """Full-text search over the caller's own sessions only."""
+    tenant, scope = _scope(request)
     svc = _svc(request)
     results = await svc.asearch_messages(
-        tenant.tenant_id, body.query, session_id=body.session_id, limit=body.limit
+        tenant.tenant_id, body.query, session_id=body.session_id, limit=body.limit,
+        scope=scope,
     )
     return {"results": [_message_to_dict(m) for m in results], "total": len(results)}
 
@@ -676,9 +721,8 @@ async def move_to_folder(
     request: Request,
     folder_id: str | None = None,
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = svc.move_session_to_folder(session_id, tenant.tenant_id, folder_id)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    s = svc.move_session_to_folder(session_id, tenant.tenant_id, folder_id, scope=scope)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -691,22 +735,18 @@ async def move_to_folder(
 async def create_artifact(
     session_id: str, body: CreateArtifactRequest, request: Request
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
+    tenant, svc, scope, _s = await _owned(request, session_id)
     a = await svc.acreate_artifact(
-        session_id, tenant.tenant_id, body.title, body.language, body.content, body.message_id
+        session_id, tenant.tenant_id, body.title, body.language, body.content, body.message_id,
+        scope=scope,
     )
     return {"id": a.id, "title": a.title, "language": a.language, "content": a.content}
 
 
 @router.get("/sessions/{session_id}/artifacts")
 async def list_artifacts(session_id: str, request: Request) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    artifacts = await svc.alist_artifacts(session_id, tenant.tenant_id)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    artifacts = await svc.alist_artifacts(session_id, tenant.tenant_id, scope=scope)
     return {
         "artifacts": [
             {"id": a.id, "title": a.title, "language": a.language, "content": a.content}
@@ -719,9 +759,10 @@ async def list_artifacts(session_id: str, request: Request) -> dict[str, Any]:
 async def update_artifact(
     session_id: str, artifact_id: str, body: UpdateArtifactRequest, request: Request
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    a = await svc.aupdate_artifact(artifact_id, session_id, tenant.tenant_id, body.content)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    a = await svc.aupdate_artifact(
+        artifact_id, session_id, tenant.tenant_id, body.content, scope=scope
+    )
     if not a:
         raise HTTPException(status_code=404, detail="Artifact not found")
     return {"id": a.id, "title": a.title, "language": a.language, "content": a.content}
@@ -731,9 +772,8 @@ async def update_artifact(
     "/sessions/{session_id}/artifacts/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 async def delete_artifact(session_id: str, artifact_id: str, request: Request) -> None:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    ok = await svc.adelete_artifact(artifact_id, session_id, tenant.tenant_id)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    ok = await svc.adelete_artifact(artifact_id, session_id, tenant.tenant_id, scope=scope)
     if not ok:
         raise HTTPException(status_code=404, detail="Artifact not found")
 
@@ -764,11 +804,7 @@ async def execute_code(
     # Running code is an operator action; a viewer key used to be enough.
     _rbac: None = Depends(require_role("operator")),
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
+    tenant, _sv, _sc, _s = await _owned(request, session_id)
     from app.tools.code_execution import AuditPersistenceError, CodeExecutionBusyError
 
     try:
@@ -812,13 +848,12 @@ async def within_session_search(
     q: str = Query(..., min_length=1, max_length=500),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    if not await svc.aget_session(session_id, tenant.tenant_id):
-        raise HTTPException(status_code=404, detail="Session not found")
+    tenant, svc, scope, _s = await _owned(request, session_id)
     # a08-F186-01: the whole session's history through the Postgres full-text
     # index (in DB mode), not a substring scan of the most recent 500 messages.
-    msgs = await svc.asearch_messages(tenant.tenant_id, q, session_id=session_id, limit=limit)
+    msgs = await svc.asearch_messages(
+        tenant.tenant_id, q, session_id=session_id, limit=limit, scope=scope
+    )
     return {
         "results": [
             {
@@ -1159,10 +1194,8 @@ class FeedbackRequest(BaseModel):
 async def submit_feedback(
     session_id: str, message_id: str, body: FeedbackRequest, request: Request
 ) -> dict[str, Any]:
-    tenant = _tenant(request)
-    svc = _svc(request)
-    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
-    msg = next((m for m in msgs if m.id == message_id), None)
+    tenant, svc, scope, _s = await _owned(request, session_id)
+    msg = await svc.aget_message(session_id, message_id, tenant.tenant_id, scope=scope)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
     # Store feedback in metadata
@@ -1176,14 +1209,147 @@ async def submit_feedback(
 @router.get("/sessions/{session_id}/export")
 async def export_session(session_id: str, request: Request) -> dict[str, Any]:
     """Export session as clean Markdown."""
-    tenant = _tenant(request)
-    svc = _svc(request)
-    s = await svc.aget_session(session_id, tenant.tenant_id)
-    if not s:
-        raise HTTPException(status_code=404, detail="Session not found")
-    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
+    tenant, svc, scope, s = await _owned(request, session_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id, scope=scope)
     lines = [f"# {s.title}\n"]
     for m in msgs:
         prefix = "**User**" if m.role == "user" else "**Assistant**"
         lines.append(f"{prefix}: {m.content}\n")
     return {"markdown": "\n".join(lines), "session_id": session_id, "title": s.title}
+
+
+# ── Admin: chat sessions with no owner (CHAT-SEC-1) ───────────────────────────
+# Sessions created by a channel (Telegram, Slack, voice ...) or before session
+# ownership existed have no owner. No ordinary route reaches them. A tenant admin
+# can list them, read one, or assign one to a person (after which it is that
+# person's private session and leaves this view). Every call is durably audited
+# BEFORE anything is returned or changed; an audit failure is a 503 and nothing
+# is read or changed. These routes never reach a session that has an owner.
+
+
+class AssignSessionRequest(BaseModel):
+    owner_user_id: str = Field(..., min_length=1, max_length=64)
+
+
+async def _audit_admin(request: Request, tenant: TenantContext, action: str, note: str) -> None:
+    from app.governance.audit import AuditEvent, AuditWriteError
+    from app.governance.permissions import ActionLevel
+
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is None:
+        raise HTTPException(status_code=503, detail="Audit log unavailable; nothing was done.")
+    try:
+        await audit_log.record_durable(
+            AuditEvent(
+                goal_id="chat.admin",
+                tool_name=f"chat.admin.{action}",
+                action_level=ActionLevel.ALLOW_LOG,
+                outcome="allowed",
+                api_key_id=tenant.api_key_id,
+                note=note[:500],
+            ),
+            tenant_ctx=tenant,
+        )
+    except AuditWriteError as exc:
+        logger.warning("chat_admin_audit_failed", action=action, error=type(exc).__name__)
+        raise HTTPException(
+            status_code=503, detail="The access could not be audited; nothing was done."
+        ) from exc
+
+
+async def _unowned_session(request: Request, session_id: str) -> tuple[TenantContext, Any]:
+    tenant = _tenant(request)
+    s = await _svc(request).aget_session(session_id, tenant.tenant_id, scope=UNOWNED_SCOPE)
+    if s is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return tenant, s
+
+
+@router.get("/admin/sessions/unowned", dependencies=[Depends(require_role("admin"))])
+async def admin_list_unowned_sessions(request: Request) -> dict[str, Any]:
+    """Sessions with no owner (channels, older sessions); admin only, audited."""
+    tenant = _tenant(request)
+    await _audit_admin(
+        request, tenant, "list_unowned",
+        f"admin {principal_of(tenant)} listed the chat sessions with no owner",
+    )
+    sessions = await _svc(request).alist_sessions(tenant.tenant_id, scope=UNOWNED_SCOPE)
+    return {"sessions": [_session_to_dict(s) for s in sessions]}
+
+
+@router.get(
+    "/admin/sessions/{session_id}/messages", dependencies=[Depends(require_role("admin"))]
+)
+async def admin_read_unowned_session(
+    session_id: str,
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> dict[str, Any]:
+    """Read a session with no owner; admin only, audited before it is read."""
+    tenant, _s = await _unowned_session(request, session_id)
+    await _audit_admin(
+        request, tenant, "read_unowned",
+        f"admin {principal_of(tenant)} read chat session {session_id} (no owner)",
+    )
+    msgs = await _svc(request).alist_messages(
+        session_id, tenant.tenant_id, limit=limit, scope=UNOWNED_SCOPE
+    )
+    return {"messages": [_message_to_dict(m) for m in msgs]}
+
+
+@router.post(
+    "/admin/sessions/{session_id}/assign", dependencies=[Depends(require_role("admin"))]
+)
+async def admin_assign_unowned_session(
+    session_id: str, body: AssignSessionRequest, request: Request
+) -> dict[str, Any]:
+    """Give a session with no owner to a person (it becomes theirs, privately)."""
+    tenant, _s = await _unowned_session(request, session_id)
+    await _audit_admin(
+        request, tenant, "assign",
+        f"admin {principal_of(tenant)} assigned chat session {session_id} "
+        f"to user {body.owner_user_id}",
+    )
+    s = await _svc(request).aassign_unowned_session(
+        session_id, tenant.tenant_id, owner_user_id=body.owner_user_id
+    )
+    if s is None:  # assigned or deleted meanwhile
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _session_to_dict(s)
+
+
+@router.delete(
+    "/admin/sessions/{session_id}/messages/{message_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def admin_delete_message(session_id: str, message_id: str, request: Request) -> None:
+    """A tenant admin deletes a message from any session of the tenant (CHAT-SEC-2).
+
+    Moderation without reading: nothing of the message is returned. Audited
+    durably before the delete (audit failure: 503, nothing deleted). The
+    session's transcript leaves the knowledge index like an owner's delete.
+    """
+    from app.chat.ownership import SYSTEM_SCOPE
+
+    tenant = _tenant(request)
+    svc = _svc(request)
+    s = await svc.aget_session(session_id, tenant.tenant_id, scope=SYSTEM_SCOPE)
+    if s is None or await svc.aget_message(
+        session_id, message_id, tenant.tenant_id, scope=SYSTEM_SCOPE
+    ) is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    await _audit_admin(
+        request, tenant, "delete_message",
+        f"admin {principal_of(tenant)} deleted message {message_id} of chat session "
+        f"{session_id} (owner {getattr(s, 'owner_principal', None) or 'none'})",
+    )
+    if not await svc.adelete_message(
+        session_id, message_id, tenant.tenant_id, scope=SYSTEM_SCOPE
+    ):
+        raise HTTPException(status_code=404, detail="Message not found")
+    owner = getattr(s, "owner_user_id", None)
+    if owner:
+        await _remove_session_transcript(
+            request, tenant.tenant_id, owner, session_id, what="message"
+        )

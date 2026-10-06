@@ -30,6 +30,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
+from app.chat.ownership import SYSTEM_SCOPE
 from app.chat.repository import PostgresChatRepository
 from app.chat.service import ChatService
 
@@ -142,7 +143,7 @@ async def test_tenant_isolation_and_cascade(urls: dict[str, str]) -> None:
         assert {r[0] for r in rows} == {t2}
 
         await repo.claim_principal_session(tenant_id=t1, principal_id="p1", session_id=a.id)
-        assert await repo.delete_session(a.id, t1) is True
+        assert await repo.delete_session(a.id, t1, scope=SYSTEM_SCOPE) is True
         assert await _count(
             urls["admin"],
             "SELECT count(*) FROM chat_channel_sessions WHERE chat_session_id = :s", s=a.id,

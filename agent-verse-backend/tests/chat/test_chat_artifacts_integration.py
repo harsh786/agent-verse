@@ -30,6 +30,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
+from app.chat.ownership import SYSTEM_SCOPE
 from app.chat.artifact_store import ChatArtifactStore, purge_expired_chat_artifacts
 from app.chat.repository import PostgresChatRepository
 from app.chat.service import ChatService
@@ -107,16 +108,16 @@ async def test_document_crosses_replicas_and_restart_tenant_isolated(
         aid = await _store(a).put(
             tenant_id=t1, content=b"%PDF-1.4 body", mime="application/pdf", filename="r.pdf"
         )
-        got = await _store(b).get(aid, t1)
+        got = await _store(b).get(aid, t1, scope=SYSTEM_SCOPE)
         assert got is not None
         assert got.content == b"%PDF-1.4 body" and got.filename == "r.pdf"
         assert got.mime == "application/pdf"
-        assert await _store(b).get(aid, t2) is None
+        assert await _store(b).get(aid, t2, scope=SYSTEM_SCOPE) is None
 
         # Restart: a brand-new engine and store still serve it.
         await a.dispose()
         a = create_async_engine(urls["app"])
-        assert (await _store(a).get(aid, t1)) is not None
+        assert (await _store(a).get(aid, t1, scope=SYSTEM_SCOPE)) is not None
 
         # RLS, not just the WHERE clause: under t2's GUC the row is invisible.
         async with b.connect() as conn, conn.begin():
@@ -144,7 +145,7 @@ async def test_expired_documents_are_hidden_and_purged(urls: dict[str, str]) -> 
         kept = await _store(engine).put(
             tenant_id=tenant, content=b"y", mime="text/plain", filename="k"
         )
-        assert await _store(engine).get(ids[0], tenant) is None
+        assert await _store(engine).get(ids[0], tenant, scope=SYSTEM_SCOPE) is None
     finally:
         await engine.dispose()
 

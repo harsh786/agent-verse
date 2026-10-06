@@ -72,6 +72,31 @@ describe('chatApi sessions', () => {
     expect(result.sessions).toHaveLength(3);
   });
 
+  test('listSessions keeps only the caller\'s own sessions (CHAT-SEC-1)', async () => {
+    mockFetch({
+      principal: 'user:user-a',
+      sessions: [
+        { id: 'mine', owner_principal: 'user:user-a' },
+        { id: 'theirs', owner_principal: 'user:user-b' },
+        { id: 'key', owner_principal: 'key:k1' },
+        { id: 'unowned', owner_principal: null },
+        { id: 'mine2', owner_principal: 'user:user-a' },
+      ],
+    });
+    const result = await chatApi.listSessions();
+    expect(result.sessions.map((s) => s.id)).toEqual(['mine', 'mine2']);
+  });
+
+  test('listSessions applies the cap after the ownership filter', async () => {
+    const sessions = [
+      { id: 'x', owner_principal: 'user:other' },
+      ...Array.from({ length: 4 }, (_, i) => ({ id: `s${i}`, owner_principal: 'key:k1' })),
+    ];
+    mockFetch({ principal: 'key:k1', sessions });
+    const result = await chatApi.listSessions(3);
+    expect(result.sessions.map((s) => s.id)).toEqual(['s0', 's1', 's2']);
+  });
+
   test('listSessions tolerates a missing sessions array', async () => {
     mockFetch({});
     const result = await chatApi.listSessions();
