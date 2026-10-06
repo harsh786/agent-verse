@@ -2956,12 +2956,28 @@ def run_goal(
     try:
         _broker_url = str(celery_app.conf.broker_url or "")
         # The lock lives in Redis: the broker when it is Redis, else REDIS_URL.
-        # Neither configured (eager/test mode) is the only lock-less path.
         _redis_url = (
             _broker_url
             if _broker_url.startswith(("redis://", "rediss://", "unix://"))
             else (os.getenv("REDIS_URL", "") if _broker_url else "")
         )
+        if not _redis_url:
+            if _broker_url:
+                # A real (non-Redis) broker delivers this task, but there is no
+                # Redis for the lock: a redelivered or duplicated message could
+                # run the goal twice. Fail closed like an unreachable lock
+                # (a08-F193-05: this ran lock-less with no warning at all).
+                raise RuntimeError(
+                    "no Redis for the per-goal execution lock "
+                    "(non-Redis broker and REDIS_URL unset)"
+                )
+            # No broker at all: an inline / eager run (tests, CLI), never a
+            # worker consuming a queue. Said out loud rather than silently.
+            logger.warning(
+                "goal_execution_lock_skipped goal_id=%s: no broker configured "
+                "(inline run, no duplicate delivery possible)",
+                goal_id,
+            )
         if _redis_url:
             import uuid as _uuid
 
