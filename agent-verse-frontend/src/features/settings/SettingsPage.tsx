@@ -46,6 +46,23 @@ interface CreatedKey extends ApiKey {
   raw_key: string;
 }
 
+// POST /tenants/me/keys/{id}/rotate answers with the new key NESTED under
+// `new_key` (plus whether the old one was revoked), not as a flat key.
+interface RotatedKeyResponse {
+  new_key: CreatedKey;
+  old_key_id: string;
+  old_revoked: boolean;
+  revoke_error?: string;
+}
+
+// What the "copy it now" banner shows after a key is created or rotated.
+interface NewKeyBanner {
+  raw_key: string;
+  kind: 'created' | 'rotated';
+  // Set when a rotation minted the new key but could not revoke the old one.
+  warning?: string;
+}
+
 // Roles a key can be minted with (backend VALID_ROLES). Operator is the default;
 // viewer is read-only, approver reviews HITL requests, admin is full control.
 const KEY_ROLES = ['operator', 'viewer', 'approver', 'admin'] as const;
@@ -369,7 +386,7 @@ function ApiKeysSection({ apiKey }: { apiKey: string }) {
   // Role of the new key. The backend only grants roles the caller holds itself.
   const [newKeyRole, setNewKeyRole] = useState<KeyRole>('operator');
   const [showCreateInput, setShowCreateInput] = useState(false);
-  const [newlyCreated, setNewlyCreated] = useState<CreatedKey | null>(null);
+  const [newlyCreated, setNewlyCreated] = useState<NewKeyBanner | null>(null);
   const [copied, setCopied] = useState(false);
   const [deleteKeyId, setDeleteKeyId] = useState<string | null>(null);
 
@@ -387,7 +404,7 @@ function ApiKeysSection({ apiKey }: { apiKey: string }) {
       }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] });
-      setNewlyCreated(data);
+      setNewlyCreated({ raw_key: data.raw_key, kind: 'created' });
       setNewKeyName('');
       setNewKeyRole('operator');
       setShowCreateInput(false);
@@ -396,10 +413,20 @@ function ApiKeysSection({ apiKey }: { apiKey: string }) {
 
   const rotateMutation = useMutation({
     mutationFn: (id: string) =>
-      apiClient<CreatedKey>(`/tenants/me/keys/${id}/rotate`, { method: 'POST' }),
+      apiClient<RotatedKeyResponse>(`/tenants/me/keys/${id}/rotate`, {
+        method: 'POST',
+        // The endpoint requires a JSON body; revoke the old key with the swap.
+        body: JSON.stringify({ revoke_old: true }),
+      }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['api-keys'] });
-      setNewlyCreated(data);
+      setNewlyCreated({
+        raw_key: data.new_key.raw_key,
+        kind: 'rotated',
+        warning: data.old_revoked
+          ? undefined
+          : `The previous key was not revoked${data.revoke_error ? ` (${data.revoke_error})` : ''}. Revoke it from the list.`,
+      });
     },
   });
 
@@ -465,8 +492,14 @@ function ApiKeysSection({ apiKey }: { apiKey: string }) {
         {newlyCreated && (
           <div className="mb-4 p-3 bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-lg">
             <p className="text-xs font-medium text-green-800 dark:text-green-300 mb-1">
-              Key created — copy it now, it won't be shown again
+              {newlyCreated.kind === 'rotated' ? 'Key rotated' : 'Key created'} — copy it now, it
+              won't be shown again
             </p>
+            {newlyCreated.warning && (
+              <p className="text-xs text-amber-700 dark:text-amber-400 mb-1">
+                {newlyCreated.warning}
+              </p>
+            )}
             <div className="flex items-center gap-2">
               <code className="flex-1 text-xs font-mono bg-card border border-green-300 dark:border-green-700 rounded px-2 py-1 overflow-auto">
                 {newlyCreated.raw_key}

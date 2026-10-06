@@ -1072,7 +1072,12 @@ export const tenantsApi = {
   revokeKey: (keyId: string) =>
     request<void>(`/tenants/me/keys/${keyId}`, { method: "DELETE" }),
   rotateKey: (keyId: string) =>
-    request<{ raw_key: string; key_id: string }>(
+    request<{
+      new_key: { raw_key: string; key_id: string };
+      old_key_id: string;
+      old_revoked: boolean;
+      revoke_error?: string;
+    }>(
       `/tenants/me/keys/${keyId}/rotate`,
       { method: "POST", body: JSON.stringify({ revoke_old: true }) }
     ),

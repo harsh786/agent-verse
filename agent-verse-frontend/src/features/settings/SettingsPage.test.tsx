@@ -497,14 +497,14 @@ describe('SettingsPage – API Keys section', () => {
     expect(screen.queryByText('av_copy_me_raw')).not.toBeInTheDocument();
   });
 
-  test('rotates an API key when the rotate button is clicked', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  function mockRotate(rotateBody: unknown) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
       if (url.includes('/tenants/me/keys/key-1/rotate') && init?.method === 'POST') {
-        return new Response(
-          JSON.stringify({ key_id: 'key-1', name: 'prod-key', created_at: new Date().toISOString(), raw_key: 'av_rotated' }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
+        return new Response(JSON.stringify(rotateBody), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
       if (url.endsWith('/tenants/me/keys')) {
         return new Response(
@@ -514,18 +514,40 @@ describe('SettingsPage – API Keys section', () => {
       }
       return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
+  }
+
+  // The real response nests the replacement key under `new_key`.
+  const ROTATED = {
+    new_key: { key_id: 'key-2', name: 'Rotated Key', created_at: '2026-10-06T00:00:00Z', raw_key: 'av_rotated' },
+    old_key_id: 'key-1',
+    old_revoked: true,
+  };
+
+  test('rotates an API key and shows the NEW key in the banner (not "undefined")', async () => {
+    const fetchMock = mockRotate(ROTATED);
 
     renderSettingsPage('apikeys');
     await waitFor(() => expect(screen.getByText('prod-key')).toBeInTheDocument());
     await userEvent.click(screen.getByTitle('Rotate'));
 
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/tenants\/me\/keys\/key-1\/rotate$/),
-        expect.objectContaining({ method: 'POST' })
-      )
-    );
     expect(await screen.findByText('av_rotated')).toBeInTheDocument();
+    expect(screen.getByText(/Key rotated/)).toBeInTheDocument();
+    expect(screen.queryByText('undefined')).not.toBeInTheDocument();
+    // The endpoint requires a JSON body: it is sent, and asks to revoke the old key.
+    const call = fetchMock.mock.calls.find(([u]) => String(u).endsWith('/keys/key-1/rotate'));
+    expect(call).toBeTruthy();
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toEqual({ revoke_old: true });
+  });
+
+  test('warns when the rotation could not revoke the old key', async () => {
+    mockRotate({ ...ROTATED, old_revoked: false, revoke_error: 'database busy' });
+
+    renderSettingsPage('apikeys');
+    await waitFor(() => expect(screen.getByText('prod-key')).toBeInTheDocument());
+    await userEvent.click(screen.getByTitle('Rotate'));
+
+    expect(await screen.findByText('av_rotated')).toBeInTheDocument();
+    expect(screen.getByText(/previous key was not revoked \(database busy\)/i)).toBeInTheDocument();
   });
 });
 
