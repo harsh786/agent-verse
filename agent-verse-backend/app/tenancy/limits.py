@@ -153,6 +153,37 @@ def concurrent_goal_lease_key(tenant_id: str) -> str:
     return f"concurrent_goal_leases:{tenant_id}"
 
 
+def effective_goal_timeout(
+    plan_timeout_s: float, agent_timeout_s: Any = None
+) -> tuple[float, str]:
+    """The wall-clock budget one goal run gets, and which limit set it.
+
+    The plan's ``goal_timeout_seconds`` is the ceiling; an agent's own
+    ``timeout_seconds`` (``agents.timeout_seconds``, default 300) can only
+    shorten it: effective = min(plan, agent). The agent field used to be stored,
+    returned by the API and never read, so an agent configured for a 60 s budget
+    ran for the whole plan budget (30 min - 24 h). A missing, non-numeric,
+    non-positive or NaN agent value means "no agent limit".
+
+    Returns ``(seconds, source)`` with ``source`` = ``"agent"`` when the agent
+    limit is the binding one, else ``"plan"``.
+    """
+    plan_s = float(plan_timeout_s)
+    # Only a real number counts (a bool, a string or a test double never does).
+    is_number = isinstance(agent_timeout_s, int | float) and not isinstance(agent_timeout_s, bool)
+    agent_s = float(agent_timeout_s) if is_number else 0.0
+    if not agent_s > 0 or agent_s == float("inf"):
+        return _tidy_seconds(plan_s), "plan"
+    if agent_s < plan_s:
+        return _tidy_seconds(agent_s), "agent"
+    return _tidy_seconds(plan_s), "plan"
+
+
+def _tidy_seconds(value: float) -> float:
+    """``300.0`` -> ``300`` so "timed out after 300s" reads as it always did."""
+    return int(value) if value.is_integer() else value
+
+
 def concurrent_goal_limit(plan: Any) -> int:
     plan_str = plan.value if hasattr(plan, "value") else str(plan)
     return _CONCURRENT_LIMITS.get(plan_str, _CONCURRENT_LIMITS["free"])

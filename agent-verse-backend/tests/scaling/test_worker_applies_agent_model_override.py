@@ -13,7 +13,12 @@ def test_worker_reads_and_applies_the_agent_model_override() -> None:
     from app.scaling import tasks
 
     src = inspect.getsource(tasks.run_goal)
-    assert "model_override FROM agents" in src
+    # The agent query lives in _lookup_worker_agent_config (it also reads the
+    # agent's timeout_seconds); run_goal unpacks its model_override.
+    assert "model_override, timeout_seconds FROM agents" in inspect.getsource(
+        tasks._lookup_worker_agent_config
+    )
+    assert "_lookup_worker_agent_config(db_factory, agent_id, tenant_id)" in src
     assert "with_override(_effective_override)" in src
     assert "_effective_override = _goal_level_override or _agent_model_override" in src
 

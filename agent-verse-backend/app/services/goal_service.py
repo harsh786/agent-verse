@@ -1995,6 +1995,9 @@ class GoalService:
         graph._simulated_provider = simulated
         # Store agent system prompt so callers can inject it into initial_context
         graph._agent_system_prompt = _system_prompt
+        # The agent's own wall-clock budget; the runner caps the goal at
+        # min(plan goal_timeout_seconds, this) (it used to be stored and ignored).
+        graph._agent_timeout_seconds = _agent_config.get("timeout_seconds")
         graph._prompt_optimizer = _prompt_optimizer
         # Wire RPA executor for direct RPA tool dispatch without MCP
         _rpa_exec = getattr(app_state, "rpa_executor", None)
@@ -4039,10 +4042,14 @@ class GoalService:
             # goal_timeout_seconds via asyncio.wait_for; mirror it here so the
             # in-process path gets the identical hard stop.
             from app.tenancy.context import PLAN_LIMITS as _PLAN_LIMITS
+            from app.tenancy.limits import effective_goal_timeout
 
-            _goal_timeout_s = getattr(
-                _PLAN_LIMITS.get(tenant_ctx.plan), "goal_timeout_seconds", 3600
+            # The agent's timeout_seconds can only shorten the plan's budget.
+            _goal_timeout_s, _timeout_source = effective_goal_timeout(
+                getattr(_PLAN_LIMITS.get(tenant_ctx.plan), "goal_timeout_seconds", 3600),
+                getattr(loop, "_agent_timeout_seconds", None),
             )
+            _timeout_note = " (agent timeout_seconds)" if _timeout_source == "agent" else ""
 
             try:
                 from app.providers.rate_limit import run_with_llm_deadline
@@ -4069,10 +4076,10 @@ class GoalService:
             except TimeoutError:
                 if record is not None:
                     record.status = GoalStatus.FAILED
-                    record.error_message = f"Goal timed out after {_goal_timeout_s}s"
+                    record.error_message = f"Goal timed out after {_goal_timeout_s}s{_timeout_note}"
                     timeout_event: dict[str, Any] = {
                         "type": "goal_failed",
-                        "reason": f"timeout after {_goal_timeout_s}s",
+                        "reason": f"timeout after {_goal_timeout_s}s{_timeout_note}",
                     }
                     await self._dispatch_event(goal_id, timeout_event, tenant_ctx=tenant_ctx)
                 await self._learn_from_goal_outcome(
