@@ -8,6 +8,11 @@ the dedup key the firing was dispatched under, and ``POST /triggers/dlq/{id}/ret
 dispatches under that key: the replay and the redelivery dedupe against each
 other. Rows written before this column have NULL and keep the old retry key.
 
+``workflow_webhook_events.idempotency_key`` does the same for the workflow
+webhook DLQ: the retry task runs a dead-lettered ``/wf-hooks`` delivery under
+the delivery's live dedup key (``webhook:<delivery id>``), so a retry and a
+sender redelivery start one run.
+
 Revision ID: d4e6f8a0b2c4
 Revises: b8d0f2a4c6e7
 Create Date: 2026-10-06
@@ -27,7 +32,11 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     op.execute("ALTER TABLE trigger_dlq ADD COLUMN IF NOT EXISTS idempotency_key TEXT")
+    op.execute(
+        "ALTER TABLE workflow_webhook_events ADD COLUMN IF NOT EXISTS idempotency_key TEXT"
+    )
 
 
 def downgrade() -> None:
+    op.execute("ALTER TABLE workflow_webhook_events DROP COLUMN IF EXISTS idempotency_key")
     op.execute("ALTER TABLE trigger_dlq DROP COLUMN IF EXISTS idempotency_key")

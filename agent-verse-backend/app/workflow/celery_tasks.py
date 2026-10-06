@@ -541,6 +541,11 @@ async def retry_dead_letter_webhooks_async(runner: Any) -> dict[str, int]:
     attempt increments ``attempts``; success marks the row ``succeeded`` (never
     retried again), and the ``WEBHOOK_DLQ_MAX_ATTEMPTS``-th failure marks it
     ``dead``.
+
+    A retry runs under the delivery's own dedup key (``idempotency_key``, the
+    key the live ``/wf-hooks`` path used — B2-OPEN-2): if the sender's
+    redelivery already started the run, the runner returns that run instead of
+    starting a second one, and the row is marked succeeded with it.
     """
     counts = {"retried": 0, "succeeded": 0, "failed": 0, "dead": 0}
     run_store = getattr(runner, "_run_store", None) if runner else None
@@ -551,6 +556,9 @@ async def retry_dead_letter_webhooks_async(runner: Any) -> dict[str, int]:
         counts["retried"] += 1
         run_id: str | None = None
         error: str | None = None
+        identity: dict[str, Any] = (
+            {"idempotency_key": event["idempotency_key"]} if event.get("idempotency_key") else {}
+        )
         try:
             run_id = await runner.run(
                 workflow_id=event["workflow_id"],
@@ -558,6 +566,7 @@ async def retry_dead_letter_webhooks_async(runner: Any) -> dict[str, int]:
                 inputs=event["payload"],
                 trigger_type="webhook",
                 trigger_payload=event["payload"],
+                **identity,
             )
         except Exception as exc:
             error = str(exc) or type(exc).__name__

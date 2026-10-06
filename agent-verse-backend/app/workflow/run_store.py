@@ -1199,7 +1199,8 @@ class PostgresWorkflowRunStore:
             rows = (
                 await session.execute(
                     sa_text(
-                        "SELECT id, tenant_id, workflow_id, payload FROM workflow_webhook_events "
+                        "SELECT id, tenant_id, workflow_id, payload, idempotency_key "
+                        "FROM workflow_webhook_events "
                         "WHERE status IN ('pending', 'failed') AND attempts < :max_attempts "
                         # Exponential backoff: ``base`` after the delivery and
                         # after the 1st retry, then 2x, 4x, ... per failed retry.
@@ -1216,6 +1217,7 @@ class PostgresWorkflowRunStore:
                     "tenant_id": str(r["tenant_id"]),
                     "workflow_id": str(r["workflow_id"]) if r["workflow_id"] else None,
                     "payload": _as_obj(r["payload"]) or {},
+                    "idempotency_key": r["idempotency_key"] or None,
                 }
                 for r in rows
             ]
@@ -1686,11 +1688,15 @@ class PostgresWorkflowRunStore:
         token_fingerprint: str,
         payload: dict[str, Any],
         error: str,
+        idempotency_key: str | None = None,
     ) -> str:
         """Dead-letter a webhook delivery whose run could not be started.
 
         ``attempts`` starts at 0; the retry task owns every later attempt. Only a
         fingerprint of the webhook token is stored — the token is a credential.
+        ``idempotency_key`` is the delivery's dedup key on the live path
+        (``webhook:<delivery id>``); the retry runs under it (B2-OPEN-2), so a
+        retry and a sender redelivery of the same delivery start ONE run.
         """
         from sqlalchemy import text as sa_text
 
@@ -1701,9 +1707,9 @@ class PostgresWorkflowRunStore:
                     sa_text(
                         "INSERT INTO workflow_webhook_events "
                         "(tenant_id, workflow_id, webhook_token, payload, status, attempts, "
-                        " last_error) "
+                        " last_error, idempotency_key) "
                         "VALUES (CAST(:tid AS uuid), CAST(:wid AS uuid), :token, "
-                        " CAST(:payload AS jsonb), 'failed', 0, :error) RETURNING id"
+                        " CAST(:payload AS jsonb), 'failed', 0, :error, :ikey) RETURNING id"
                     ),
                     {
                         "tid": tenant_id,
@@ -1711,6 +1717,7 @@ class PostgresWorkflowRunStore:
                         "token": token_fingerprint,
                         "payload": json.dumps(payload, default=str),
                         "error": error[:2000],
+                        "ikey": (idempotency_key or None),
                     },
                 )
             ).first()

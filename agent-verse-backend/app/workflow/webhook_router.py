@@ -222,6 +222,7 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
             token=token,
             payload=inputs,
             exc=exc,
+            idempotency_key=extra.get("idempotency_key"),
         )
     _log.info("workflow_webhook_fired", workflow_id=workflow_id, run_id=run_id)
     return {"status": "accepted", "run_id": run_id, "workflow_id": workflow_id}
@@ -235,6 +236,7 @@ async def _dead_letter(
     token: str,
     payload: dict[str, Any],
     exc: BaseException,
+    idempotency_key: str | None = None,
 ) -> JSONResponse:
     """Keep a delivery whose run could not start, for the retry task.
 
@@ -249,6 +251,9 @@ async def _dead_letter(
     recorder = getattr(run_store, "record_webhook_failure", None)
     if recorder is None:
         raise HTTPException(status_code=503, detail="Workflow run could not be started")
+    # The delivery's dedup key rides along so the retry is idempotent with a
+    # sender redelivery of the same delivery (B2-OPEN-2).
+    identity = {"idempotency_key": idempotency_key} if idempotency_key else {}
     try:
         event_id = await recorder(
             tenant_id=tenant_id,
@@ -256,6 +261,7 @@ async def _dead_letter(
             token_fingerprint=hashlib.sha256(token.encode()).hexdigest()[:16],
             payload=payload,
             error=error,
+            **identity,
         )
     except Exception as dlq_exc:
         _log.error("workflow_webhook_dead_letter_failed", error=str(dlq_exc))
