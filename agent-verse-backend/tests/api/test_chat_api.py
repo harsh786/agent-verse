@@ -394,13 +394,16 @@ async def test_message_feedback(client_with_tenant) -> None:
     r = await client_with_tenant.post("/chat/sessions", json={"title": "Fb"})
     sid = r.json()["id"]
     r2 = await client_with_tenant.post(f"/chat/sessions/{sid}/messages", json={"content": "Test?"})
-    mid = r2.json()["message_id"]
-    r3 = await client_with_tenant.post(
-        f"/chat/sessions/{sid}/messages/{mid}/feedback",
+    user_mid = r2.json()["message_id"]
+    # CHAT-D-2: feedback is accepted on assistant replies only — rating your own
+    # message is a 422, not a silently stored no-op.
+    r_user = await client_with_tenant.post(
+        f"/chat/sessions/{sid}/messages/{user_mid}/feedback",
         json={"rating": 1, "comment": "Great"},
     )
-    assert r3.status_code == 200
-    assert r3.json()["rating"] == 1
+    assert r_user.status_code == 422
+    # Rating an assistant reply (200, saved, editable) is covered end to end in
+    # tests/chat/test_message_feedback.py and its real-Postgres integration test.
 
 
 @pytest.mark.asyncio
