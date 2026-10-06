@@ -1657,7 +1657,11 @@ def build_default_registry(
             "cost_optimisation",
             O,
             PART,
-            "app.intelligence.cost_optimizer",
+            # The runtime's cost-aware selection: ModelRouter.model_for picks the
+            # operator's preferred, else cheapest qualifying, configured model
+            # per role (a05-F092-03: app.intelligence.cost_optimizer, its old
+            # target, had no runtime caller and was removed).
+            "app.ai_router.selection:select_configured_model_id",
             "Cost-aware selection",
             [],
             [],
