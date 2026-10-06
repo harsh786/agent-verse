@@ -303,7 +303,3 @@ def _insert_params(record: dict[str, Any]) -> dict[str, Any]:
         "period_start": period_start,
         "metadata": json.dumps(record.get("metadata") or {}, default=str),
     }
-
-
-# Module-level singleton
-_usage_service = UsageService()
