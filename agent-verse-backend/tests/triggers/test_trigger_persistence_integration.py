@@ -545,3 +545,25 @@ async def test_resume_and_edit_rearm_the_schedule(
     )
     edited = (await _row(dbs, sid))["armed_at"]
     assert edited is not None and edited > resumed
+
+
+@pytest.mark.asyncio
+async def test_fire_state_sees_pause_delete_and_other_tenants(dbs: SimpleNamespace) -> None:
+    """B1-3: the worker re-reads the schedule (app role, RLS + tenant predicate)
+    before a queued beat fire creates a goal."""
+    from app.scaling import tasks
+
+    ctx = _ctx(dbs.t1)
+    store = _replica(dbs)
+    spec = TriggerSpec(trigger_type=TriggerType.INTERVAL, interval_seconds=60)
+    sid = await store.create_async(goal_id="", spec=spec, tenant_ctx=ctx, goal_template="go")
+    key = f"schedule:{dbs.t1}:{sid}"
+    assert await tasks._schedule_fire_state(dbs.app, dbs.t1, key) is None
+    # Another tenant naming this schedule sees nothing.
+    assert await tasks._schedule_fire_state(dbs.app, dbs.t2, f"schedule:{dbs.t2}:{sid}") == (
+        "deleted"
+    )
+    await store.set_paused_async(sid, paused=True, tenant_ctx=ctx)
+    assert await tasks._schedule_fire_state(dbs.app, dbs.t1, key) == "paused"
+    assert await store.delete_async(sid, tenant_ctx=ctx)
+    assert await tasks._schedule_fire_state(dbs.app, dbs.t1, key) == "deleted"

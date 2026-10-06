@@ -13,6 +13,7 @@ import re
 import signal as _signal
 import threading
 import time
+import types
 import uuid
 from datetime import UTC
 from typing import Any, cast
@@ -4710,6 +4711,34 @@ def _worker_async_redis() -> Any:
         return None
 
 
+async def _schedule_fire_state(db_factory: Any, tenant_id: str, schedule_key: str) -> str | None:
+    """``"deleted"`` / ``"paused"`` when a queued fire must not run, else None (B1-3).
+
+    Reads the schedule row on the tenant's RLS context with an explicit
+    ``tenant_id`` predicate. Without a database (Redis-only schedules) there is
+    nothing to re-check. A database error propagates so the task retries
+    instead of firing a schedule it could not verify.
+    """
+    if db_factory is None:
+        return None
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db_factory() as session, session.begin(), sqlalchemy_rls_context(
+        session, tenant_id
+    ):
+        row = (
+            await session.execute(
+                text("SELECT paused FROM schedules WHERE id = :sid AND tenant_id = :tid"),
+                {"sid": _bare_schedule_id(schedule_key), "tid": tenant_id},
+            )
+        ).first()
+    if row is None:
+        return "deleted"
+    return "paused" if bool(row.paused) else None
+
+
 async def _run_scheduled_goal_governed(
     schedule_id: str,
     tenant_id: str,
@@ -4726,6 +4755,19 @@ async def _run_scheduled_goal_governed(
 ) -> Any:
     """Async body of ``run_scheduled_goal`` — governed scheduled dispatch (WT-9)."""
     goal_service, db_factory = _build_worker_goal_service()
+    # B1-3: the fire may have waited in the queue; a schedule deleted or paused
+    # since it was enqueued creates no goal.
+    state = await _schedule_fire_state(db_factory, tenant_id, schedule_id)
+    if state is not None:
+        logger.info(
+            "scheduled_fire_suppressed schedule=%s state=%s fire=%s",
+            schedule_id,
+            state,
+            fire_instance_id,
+        )
+        return types.SimpleNamespace(
+            goal_created=False, goal_id=None, skip_reason=f"schedule_{state}"
+        )
     redis = _worker_async_redis()
     sched: dict[str, Any] = {
         "trigger_type": trigger_type or "cron",
