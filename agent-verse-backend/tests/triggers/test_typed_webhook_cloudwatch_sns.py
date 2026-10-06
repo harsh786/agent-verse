@@ -159,7 +159,7 @@ def test_alarm_notification_dispatches_the_alarm(fetched: list[str]) -> None:
     assert payload["AlarmName"] == "HighErrors"
     assert payload["NewStateValue"] == "ALARM"
     assert payload["sns_topic_arn"] == TOPIC
-    assert kw == {"message_id": "n-1"}  # SNS redeliveries dedup on MessageId
+    assert kw["message_id"] == "n-1"  # SNS redeliveries dedup on MessageId
     assert SUB_URL not in fetched
 
 

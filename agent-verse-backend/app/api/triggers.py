@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import uuid
 from typing import Any
 
 import structlog
@@ -683,13 +684,27 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
     if dispatcher is None:
         raise HTTPException(status_code=503, detail="Dispatcher unavailable")
 
+    # REST trigger (B2-7): an ``Idempotency-Key`` header is the firing's
+    # identity, so a client retry runs once and two distinct calls with the same
+    # body both run. A throttled REST call is answered 429 (the client retries)
+    # instead of a 200 that reads like success.
+    push_rest = spec.trigger_type.value in {TriggerType.REST.value, TriggerType.WEBHOOK.value}
+    idem = (getattr(request, "headers", {}).get("idempotency-key") or "").strip()[:200]
     event = await dispatcher.dispatch(
         spec,
         sample,
         tenant_ctx,
         caller_role=role,
         scheduled_fire_time=getattr(body, "scheduled_fire_time", None),
+        message_id=(f"delivery:{idem}" if idem else f"call:{uuid.uuid4().hex}")
+        if push_rest
+        else None,
+        dead_letter_throttled=False,  # the caller sees the skip itself
     )
+    if push_rest:
+        from app.triggers.webhooks.ingress import raise_for_skip
+
+        raise_for_skip(getattr(event, "skip_reason", None))
     return {
         "goal_id": getattr(event, "goal_id", None),  # WT-2/G3: field is goal_id
         "goal_created": getattr(event, "goal_created", None),
@@ -888,6 +903,39 @@ async def rotate_secret(schedule_id: str, request: Request) -> dict[str, Any]:
     }
 
 
+@router.post("/{schedule_id}/rotate-token", response_model=dict[str, Any])
+async def rotate_webhook_token(schedule_id: str, request: Request) -> dict[str, Any]:
+    """Issue a new webhook URL token; the old one stops working at once (B2-6).
+
+    The path token is the credential a third party holds: a leaked URL used to
+    be revocable only by deleting the trigger. The new token is persisted on
+    the schedules row (the indexed pre-auth lookup), so every replica rejects
+    the old token immediately; the signing secret is unchanged.
+    """
+    import dataclasses
+    import secrets
+
+    tenant_ctx = _require_tenant(request)  # same access as PATCH / rotate-secret
+    store = _get_store(request)
+    rec = await _store_get(store, schedule_id, tenant_ctx)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    spec = rec.get("spec")
+    if spec is None or spec.trigger_type.value not in _push_webhook_types():
+        raise HTTPException(status_code=400, detail="Only webhook triggers have a URL token")
+    if not _has_async(store, "update_async"):
+        raise HTTPException(status_code=503, detail="Trigger store unavailable")
+    new_token = secrets.token_urlsafe(32)
+    updated = await store.update_async(
+        schedule_id,
+        tenant_ctx=tenant_ctx,
+        spec=dataclasses.replace(spec, webhook_token=new_token),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    return {"trigger_id": schedule_id, "webhook_token": new_token, "status": "rotated"}
+
+
 # ── Validate condition (CEL) ──────────────────────────────────────────────────
 
 
@@ -942,12 +990,27 @@ async def _mark_sns_confirmed(store: Any, records: list[dict[str, Any]], caller:
 
 @router.post("/webhooks/{webhook_type}/{token}")
 async def receive_typed_webhook(webhook_type: str, token: str, request: Request) -> Any:
-    """Unified typed webhook endpoint — routes GitHub, Stripe, Jira, etc."""
-    body_bytes = await request.body()
-    try:
-        body = __import__("json").loads(body_bytes)
-    except Exception:
-        body = {}
+    """Unified typed webhook endpoint — routes GitHub, Stripe, Jira, etc.
+
+    ``webhook_type == "webhook"`` is the generic signed webhook (B2): JSON, form
+    or text bodies; ``X-Signature`` HMAC-SHA256 (optionally over
+    ``"{X-Webhook-Timestamp}.{body}"`` with a 300 s replay window); the
+    sender's delivery id makes a redelivery run once; a throttled delivery is
+    answered 429 so the sender retries (see ``app.triggers.webhooks.ingress``).
+    """
+    from app.triggers.webhooks import ingress as _ingress
+
+    generic = webhook_type == "webhook"
+    body_bytes = await _ingress.read_capped_body(request)
+    body: dict[str, Any]
+    if generic:
+        body = _ingress.parse_body(body_bytes, request.headers.get("content-type", ""))
+    else:
+        try:
+            parsed_json = __import__("json").loads(body_bytes)
+        except Exception:
+            parsed_json = {}
+        body = parsed_json if isinstance(parsed_json, dict) else {"data": parsed_json}
 
     # Determine signature header per type
     sig_header_map = {
@@ -1066,11 +1129,26 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         sf_message_id = _sf.message_id(sf_payload) or None
 
     try:
-        triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id, strict=True)
+        # B2-3: one indexed read by token, not every trigger of the type.
+        finder_by_token = getattr(store, "find_by_webhook_token_async", None)
+        if finder_by_token is not None:
+            triggers = await finder_by_token(
+                token, tenant_id=tenant_id, trigger_type=trigger_type, strict=True
+            )
+        else:
+            triggers = await store.find_by_type_async(
+                trigger_type, tenant_id=tenant_id, strict=True
+            )
     except ScheduleStoreUnavailableError as exc:
         raise HTTPException(status_code=503, detail="Webhook triggers unavailable; retry") from exc
+    # The firing's identity: the sender's delivery id, else the body within the
+    # replay window (B2-4). SNS / Salesforce carry their own message ids below.
+    delivery_message_id = _ingress.firing_message_id(request.headers, body_bytes)
+    if webhook_type == "stripe" and str(body.get("id", "")).startswith("evt_"):
+        delivery_message_id = f"delivery:{body['id']}"
     matched = 0
     failed = 0
+    results: list[Any] = []
     for trigger in triggers:
         # Bind the record-level goal_template / agent refs onto the spec (as the
         # manual fire and simulate paths do) so an inbound webhook renders the
@@ -1098,13 +1176,16 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
 
             if prev and _time.time() < grace_until:
                 candidates.append(prev)
-            verified = False
+            if generic:
+                # Constant-time HMAC, optional signed timestamp (replay window).
+                _ingress.check_signature(request.headers, body_bytes, candidates)
+            verified = generic
             # Jira Connect apps send "Authorization: JWT ..." instead of a body
             # signature header (DEF-5).
             jira_jwt = webhook_type == "jira" and request.headers.get(
                 "authorization", ""
             ).startswith("JWT ")
-            if sig_header or jira_jwt:
+            if (sig_header or jira_jwt) and not generic:
                 path = request.url.path
                 mount = path.find("/triggers/webhooks/")
                 paths = (path, path[mount:]) if mount > 0 else (path,)
@@ -1140,14 +1221,19 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         try:
             if sns_type:
                 # SNS redelivers until it gets a 2xx: dedup on its MessageId.
-                await dispatcher.dispatch(
-                    spec, enriched, caller, message_id=str(body.get("MessageId") or "")
-                )
+                message_id = str(body.get("MessageId") or "") or delivery_message_id
             elif sf_message_id:
                 # Salesforce redelivers the same notification ids until acked.
-                await dispatcher.dispatch(spec, enriched, caller, message_id=sf_message_id)
+                message_id = sf_message_id
             else:
-                await dispatcher.dispatch(spec, enriched, caller)
+                message_id = delivery_message_id
+            # A throttled delivery is answered 429 (the sender retries) rather
+            # than dead-lettered (B2-1).
+            results.append(
+                await dispatcher.dispatch(
+                    spec, enriched, caller, message_id=message_id, dead_letter_throttled=False
+                )
+            )
         except Exception as exc:
             # Was suppressed and still answered "accepted", so the platform never
             # redelivered an event that fired nothing.
@@ -1177,13 +1263,22 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         return {"status": "unsubscribe_acknowledged", "webhook_type": webhook_type}
     if failed == matched:
         raise HTTPException(status_code=503, detail="Webhook could not be dispatched; retry")
+    # A throttled / gate-unavailable / oversized delivery is not "accepted": the
+    # sender must know to retry (or that it never will fit). Every skip is
+    # still audited in trigger_events by the dispatcher.
+    skips = [getattr(r, "skip_reason", None) for r in results]
+    for reason in skips:
+        _ingress.raise_for_skip(reason)
     if webhook_type == "salesforce" and "notifications" in enriched:
         from fastapi.responses import Response as _Response
 
         return _Response(content=_sf.ACK_XML, media_type="text/xml")
+    goal_ids = [g for r in results if (g := getattr(r, "goal_id", None))]
     return {
         "status": "accepted",
         "webhook_type": webhook_type,
         "dispatched": matched - failed,
         "failed": failed,
+        "goal_ids": goal_ids,
+        "skipped": [s for s in skips if s],
     }

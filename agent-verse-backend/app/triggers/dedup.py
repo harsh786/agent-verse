@@ -70,6 +70,14 @@ def derive_idempotency_key(
     ):
         stable = f"{trigger_id}:{message_id or _payload_hash(payload)}"
 
+    # Push deliveries (webhook / REST / typed vendor webhooks) and custom bus
+    # events: keyed on the sender's delivery id when there is one (B2-4). Keyed
+    # on the payload alone, an identical body sent as a NEW delivery (a daily
+    # "run the report" call) was dropped forever as a replay by the durable
+    # trigger_events gate, while a retry with a re-ordered body ran twice.
+    elif message_id and trigger_type in _DELIVERY_KEYED_TYPES:
+        stable = f"{trigger_id}:msg:{message_id}"
+
     # Family D: Condition/State — keyed on trigger + payload hash
     elif trigger_type in (
         "condition",
@@ -117,6 +125,29 @@ def derive_idempotency_key(
 
     digest = hashlib.sha256(stable.encode()).hexdigest()
     return digest[:32]
+
+
+_DELIVERY_KEYED_TYPES = frozenset(
+    {
+        "webhook",
+        "rest",
+        "event",
+        "github_webhook",
+        "jira_webhook",
+        "stripe_webhook",
+        "slack_event",
+        "teams_webhook",
+        "salesforce_event",
+        "confluence_webhook",
+        "linear_webhook",
+        "alertmanager",
+        "datadog",
+        "pagerduty",
+        "grafana_alert",
+        "cloudwatch",
+        "sentry_issue",
+    }
+)
 
 
 def _payload_hash(payload: dict) -> str:
