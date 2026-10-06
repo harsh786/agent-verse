@@ -2,13 +2,14 @@
 
 Requires a platform admin (app.tenancy.platform_admin): a tenant admin of an
 operator tenant (PLATFORM_ADMIN_TENANT_IDS), or a caller presenting the
-platform admin key as X-Admin-Key. Operates cross-tenant.
+platform admin key as X-Admin-Key. Operates cross-tenant. The routes sit
+behind the standard tenant middleware like every other route (the caller
+authenticates as usual; the X-Admin-Key is checked on top of that).
 
 Endpoints:
-  GET  /admin/tenants                 — list all tenants
+  GET  /admin/tenants                 — list all tenants (Postgres)
   GET  /admin/tenants/{tenant_id}     — get tenant detail + usage
   PUT  /admin/tenants/{tenant_id}/plan — change plan
-  POST /admin/tenants/{tenant_id}/keys/revoke — revoke API key
   GET  /admin/usage                   — aggregated platform usage (Postgres)
   GET  /admin/incidents               — 501: guardrail incidents are not persisted
   GET  /admin/channel-mappings/review — sms/email claims awaiting operator approval
@@ -17,10 +18,12 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import Select, extract, func, select
 
@@ -63,18 +66,88 @@ def _tenant_to_dict(t: Any) -> dict[str, str]:
     }
 
 
+# ── Tenant list / detail ──────────────────────────────────────────────────────
+# Both used to read ``TenantService._tenants`` — this replica's in-memory copy,
+# loaded once at startup. A tenant created (or deactivated, or re-planned) on
+# another replica after that was missing or stale here, so the operator console
+# showed a different tenant set on every pod. With a database they now read the
+# ``tenants`` table (no tenant RLS; cross-tenant by design) on the maintenance
+# session. The in-memory dict remains only the no-DB (test/dev) path.
+
+
+def build_tenant_list_stmts(
+    search: str | None, limit: int, offset: int
+) -> tuple[Select[Any], Select[Any]]:
+    """(page, total) statements over ``tenants``, newest first, optional search."""
+    from sqlalchemy import or_
+
+    from app.db.models.tenant import Tenant
+
+    t = Tenant.__table__
+    where = []
+    if search:
+        needle = f"%{search.lower()}%"
+        where.append(
+            or_(
+                func.lower(t.c.name).like(needle),
+                func.lower(t.c.email).like(needle),
+                func.lower(t.c.id).like(needle),
+            )
+        )
+    page = (
+        select(t.c.id, t.c.name, t.c.plan_tier, t.c.is_active, t.c.created_at)
+        .where(*where)
+        .order_by(t.c.created_at.desc(), t.c.id)
+        .limit(limit)
+        .offset(offset)
+    )
+    total = select(func.count().label("n")).select_from(t).where(*where)
+    return page, total
+
+
+def _tenant_row(row: Any) -> dict[str, Any]:
+    created = row["created_at"]
+    return {
+        "tenant_id": str(row["id"]),
+        "name": row["name"],
+        "plan": str(row["plan_tier"]),
+        "is_active": bool(row["is_active"]),
+        "created_at": created.isoformat() if created is not None else None,
+    }
+
+
 @router.get("/tenants", dependencies=[Depends(_require_admin)])
 async def list_tenants(
     request: Request,
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
     search: str | None = None,
 ) -> dict[str, Any]:
-    """List all tenants with basic stats. Optional ``search`` filters by name/email/id
-    server-side (so it covers all tenants, not just the current page)."""
+    """List all tenants. Optional ``search`` filters by name/email/id server-side
+    (so it covers all tenants, not just the current page). Database errors are a
+    503, never an empty list."""
     app_state = request.app.state
-    tenant_svc = getattr(app_state, "tenant_service", None)
+    system_db = getattr(app_state, "system_db_session_factory", None)
+    if system_db is not None:
+        from app.db.rls import system_session
 
+        page_stmt, total_stmt = build_tenant_list_stmts(search, limit, offset)
+        try:
+            async with system_db() as session, session.begin(), system_session(session):
+                rows = (await session.execute(page_stmt)).mappings().all()
+                total = (await session.execute(total_stmt)).scalar_one()
+        except Exception as exc:
+            logger.warning("admin_list_tenants_query_failed", error=str(exc)[:200])
+            raise HTTPException(status_code=503, detail="Tenant list unavailable") from exc
+        return {
+            "tenants": [_tenant_row(r) for r in rows],
+            "total": int(total or 0),
+            "limit": limit,
+            "offset": offset,
+            "source": "postgres",
+        }
+
+    tenant_svc = getattr(app_state, "tenant_service", None)
     if tenant_svc is None:
         raise HTTPException(status_code=503, detail="Tenant service unavailable")
 
@@ -102,34 +175,85 @@ async def list_tenants(
         raise HTTPException(status_code=500, detail="Failed to list tenants") from exc
 
 
+async def _db_tenant(system_db: Any, tenant_id: str) -> dict[str, Any] | None:
+    from app.db.models.tenant import Tenant
+    from app.db.rls import system_session
+
+    t = Tenant.__table__
+    stmt = select(t.c.id, t.c.name, t.c.plan_tier, t.c.is_active, t.c.created_at).where(
+        t.c.id == tenant_id
+    )
+    try:
+        async with system_db() as session, session.begin(), system_session(session):
+            row = (await session.execute(stmt)).mappings().one_or_none()
+    except Exception as exc:
+        logger.warning("admin_tenant_detail_query_failed", error=str(exc)[:200])
+        raise HTTPException(status_code=503, detail="Tenant detail unavailable") from exc
+    return None if row is None else _tenant_row(row)
+
+
+def _budget_source(app_state: Any) -> Any:
+    """The object that serves today's spend for a tenant, as /costs shows it.
+
+    ``app.state.cost_controller`` is the plain in-memory ``CostController``,
+    which has no ``get_budget_status``; reading it made the detail's usage
+    always ``{}`` (the error was swallowed). The cost tracker is what
+    ``GET /costs/summary`` reads (Redis daily counter + the tenant's budget);
+    the Redis cost controller serves the same figures.
+    """
+    for name in ("cost_tracker", "redis_cost_controller", "cost_controller"):
+        source = getattr(app_state, name, None)
+        if source is not None and callable(getattr(source, "get_budget_status", None)):
+            return source
+    return None
+
+
 @router.get("/tenants/{tenant_id}", dependencies=[Depends(_require_admin)])
 async def get_tenant_detail(tenant_id: str, request: Request) -> dict[str, Any]:
-    """Get tenant detail with usage."""
+    """Get tenant detail with today's spend against its daily budget.
+
+    ``usage`` is ``null`` with ``usage_error`` set when the spend cannot be
+    read — never an empty object that looks like "no spend".
+    """
     app_state = request.app.state
-    tenant_svc = getattr(app_state, "tenant_service", None)
-    cost_ctrl = getattr(app_state, "cost_controller", None)
+    system_db = getattr(app_state, "system_db_session_factory", None)
 
-    tenant = None
-    if tenant_svc is not None:
-        tenant = getattr(tenant_svc, "_tenants", {}).get(tenant_id)
+    detail: dict[str, Any]
+    if system_db is not None:
+        found = await _db_tenant(system_db, tenant_id)
+        if found is None:
+            raise HTTPException(status_code=404, detail=f"Tenant {tenant_id} not found")
+        detail = found
+    else:
+        tenant_svc = getattr(app_state, "tenant_service", None)
+        tenant = None
+        if tenant_svc is not None:
+            tenant = getattr(tenant_svc, "_tenants", {}).get(tenant_id)
+        if tenant is None:
+            raise HTTPException(status_code=404, detail=f"Tenant {tenant_id} not found")
+        detail = {
+            "tenant_id": tenant_id,
+            "plan": tenant.get("plan", "unknown")
+            if isinstance(tenant, dict)
+            else (tenant.plan.value if hasattr(tenant, "plan") else "unknown"),
+        }
 
-    if tenant is None:
-        raise HTTPException(status_code=404, detail=f"Tenant {tenant_id} not found")
-
-    usage: dict[str, Any] = {}
-    if cost_ctrl is not None:
+    usage: dict[str, Any] | None = None
+    usage_error: str | None = None
+    source = _budget_source(app_state)
+    if source is None:
+        usage_error = "No cost tracker is configured on this deployment"
+    else:
         try:
-            usage = await cost_ctrl.get_budget_status(tenant_id)
-        except Exception:
-            usage = {}
+            usage = dict(await source.get_budget_status(tenant_id))
+        except Exception as exc:
+            logger.warning("admin_tenant_usage_failed", tenant_id=tenant_id, error=str(exc)[:200])
+            usage_error = "Usage could not be read; retry shortly"
 
-    return {
-        "tenant_id": tenant_id,
-        "plan": tenant.get("plan", "unknown")
-        if isinstance(tenant, dict)
-        else (tenant.plan.value if hasattr(tenant, "plan") else "unknown"),
-        "usage": usage,
-    }
+    result = {**detail, "usage": usage}
+    if usage_error is not None:
+        result["usage_error"] = usage_error
+    return result
 
 
 @router.put("/tenants/{tenant_id}/plan", dependencies=[Depends(_require_admin)])
@@ -211,13 +335,29 @@ def build_tenant_count_stmt() -> Select[Any]:
     return select(func.count().label("total_tenants")).select_from(Tenant.__table__)
 
 
+# The aggregates scan the whole goals table. The console polls /admin/usage
+# every 15 s per open tab, so each replica serves one computed result for
+# USAGE_CACHE_TTL_S (``as_of`` says when it was computed) and concurrent
+# requests share one computation. Errors are never cached.
+USAGE_CACHE_TTL_S = 15.0
+
+
+def _usage_cache(app_state: Any) -> tuple[asyncio.Lock, dict[str, Any]]:
+    holder = getattr(app_state, "_admin_usage_cache", None)
+    if holder is None:
+        holder = (asyncio.Lock(), {})
+        app_state._admin_usage_cache = holder
+    return holder  # type: ignore[no-any-return]
+
+
 @router.get("/usage", dependencies=[Depends(_require_admin)])
 async def get_platform_usage(request: Request) -> dict[str, Any]:
     """Aggregate platform-wide usage from the goals and tenants tables.
 
     No database configured -> 501; database error -> 503 (never zeros).
     ``avg_latency_ms`` is the mean wall-clock time of goals completed today
-    (UTC), ``null`` when none has.
+    (UTC), ``null`` when none has. Results are reused for up to
+    :data:`USAGE_CACHE_TTL_S` seconds per replica (``as_of``).
     """
     system_db = getattr(request.app.state, "system_db_session_factory", None)
     if system_db is None:
@@ -225,9 +365,24 @@ async def get_platform_usage(request: Request) -> dict[str, Any]:
             status_code=501,
             detail="Platform usage is computed in Postgres and needs a database",
         )
+    lock, cache = _usage_cache(request.app.state)
+    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with lock:
+        hit = cache.get("usage")
+        if (
+            hit is not None
+            and hit["day_start"] == day_start
+            and time.monotonic() - hit["at"] < USAGE_CACHE_TTL_S
+        ):
+            return dict(hit["body"])
+        body = await _compute_platform_usage(system_db, day_start)
+        cache["usage"] = {"day_start": day_start, "at": time.monotonic(), "body": body}
+        return dict(body)
+
+
+async def _compute_platform_usage(system_db: Any, day_start: datetime) -> dict[str, Any]:
     from app.db.rls import system_session
 
-    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     try:
         async with system_db() as session, session.begin(), system_session(session):
             summary = (await session.execute(build_usage_summary_stmt(day_start))).mappings().one()
@@ -249,6 +404,7 @@ async def get_platform_usage(request: Request) -> dict[str, Any]:
         "avg_latency_ms": None if latency_s is None else round(float(latency_s) * 1000),
         "goals_by_status": {str(r["status"]): int(r["n"] or 0) for r in by_status},
         "source": "postgres",
+        "as_of": datetime.now(UTC).isoformat(),
     }
 
 

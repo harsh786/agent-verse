@@ -1,8 +1,6 @@
 """Governance: audit v3, HITL, compliance bundles, RBAC, cost hard stop."""
 from __future__ import annotations
 
-from app.lifecycle.export_policy import ExportPolicy
-from app.lifecycle.retention_policy import DataCategory, RetentionPolicy, RetentionTier
 from app.tenancy.context import PlanTier, TenantContext
 
 
@@ -66,14 +64,3 @@ def test_governance_selector_regulated_for_gdpr():
     gov = selector.select(profile, tenant_ctx=TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k1"))
     assert gov.compliance_reporting_enabled is True
     assert gov.name == GovernanceBundle.REGULATED
-
-
-def test_export_policy_cross_tenant_blocked():
-    policy = ExportPolicy()
-    result = policy.can_export("t1", "admin", DataCategory.GOAL_ARTIFACT, requesting_tenant_id="t2")
-    assert result is False
-
-
-def test_retention_pii_regulated():
-    policy = RetentionPolicy()
-    assert policy.get_tier(DataCategory.PII_DATA) == RetentionTier.REGULATED

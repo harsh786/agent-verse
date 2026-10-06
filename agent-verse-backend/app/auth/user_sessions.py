@@ -526,6 +526,126 @@ class UserSessionStore:
         return len(hashes)
 
 
+    # ── self-service management (/auth/sessions, /tenants/me/sessions) ──────
+
+    async def list_user_sessions(
+        self, tenant_id: str, user_id: str, *, current_token: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The person's live sessions in *tenant_id*, newest first.
+
+        Live = exchanged for a token, not revoked, not expired. ``current`` marks
+        the session holding *current_token*. Tenant GUC + explicit tenant and
+        user predicates (``ix_user_sessions_tenant_user``).
+        """
+        from sqlalchemy import select
+
+        from app.db.models.user_session import UserSession
+        from app.db.rls import sqlalchemy_rls_context
+
+        current_hash = _digest(current_token) if current_token else None
+        now = datetime.now(UTC)
+        db = self._require_db()
+        try:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        select(
+                            UserSession.id,
+                            UserSession.auth_method,
+                            UserSession.created_at,
+                            UserSession.expires_at,
+                            UserSession.token_hash,
+                        )
+                        .where(
+                            UserSession.tenant_id == tenant_id,
+                            UserSession.user_id == user_id,
+                            UserSession.token_hash.is_not(None),
+                            UserSession.revoked_at.is_(None),
+                            UserSession.expires_at > now,
+                        )
+                        .order_by(UserSession.created_at.desc(), UserSession.id)
+                        .limit(200)
+                    )
+                ).all()
+        except Exception as exc:
+            raise SessionStoreUnavailableError(
+                "Could not list the sessions; retry.", cause=exc
+            ) from exc
+        return [
+            {
+                "session_id": str(sid),
+                "auth_method": str(method),
+                "created_at": created.isoformat() if created else None,
+                "expires_at": expires.isoformat() if expires else None,
+                "current": current_hash is not None and token_hash == current_hash,
+            }
+            for sid, method, created, expires, token_hash in rows
+        ]
+
+    async def revoke_own_sessions(
+        self,
+        tenant_id: str,
+        user_id: str,
+        *,
+        session_id: str | None = None,
+        keep_token: str | None = None,
+    ) -> int:
+        """Revoke the person's own live sessions; returns how many were revoked.
+
+        With *session_id*: only that session, and only when it is this person's
+        in this tenant (anything else revokes nothing). Without it: every live
+        session except the one holding *keep_token* ("sign out other devices").
+        Cached contexts are purged so every replica refuses the tokens at once.
+        """
+        from sqlalchemy import update
+
+        from app.db.models.user_session import UserSession
+        from app.db.rls import sqlalchemy_rls_context
+
+        now = datetime.now(UTC)
+        conditions = [
+            UserSession.tenant_id == tenant_id,
+            UserSession.user_id == user_id,
+            UserSession.token_hash.is_not(None),
+            UserSession.revoked_at.is_(None),
+            UserSession.expires_at > now,
+        ]
+        if session_id is not None:
+            conditions.append(UserSession.id == session_id)
+        elif keep_token:
+            conditions.append(UserSession.token_hash != _digest(keep_token))
+        db = self._require_db()
+        try:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                hashes = (
+                    (
+                        await session.execute(
+                            update(UserSession)
+                            .where(*conditions)
+                            .values(revoked_at=now)
+                            .returning(UserSession.token_hash)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+        except Exception as exc:
+            raise SessionStoreUnavailableError(
+                "Could not revoke the session; retry.", cause=exc
+            ) from exc
+        revoked = [str(h) for h in hashes if h]
+        await self.purge_cache(revoked)
+        return len(revoked)
+
+
 async def revoke_member_sessions_in_tx(session: Any, tenant_id: str, user_id: str) -> list[str]:
     """Revoke *user_id*'s sessions in *tenant_id* inside the caller's transaction.
 

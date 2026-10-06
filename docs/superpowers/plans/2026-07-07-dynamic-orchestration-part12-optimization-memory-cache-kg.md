@@ -1,5 +1,7 @@
 # AgentVerse Dynamic Orchestration — Part 12: Optimization — LTM, STM, KG, Cache, A/B Testing
 
+> **Removed 2026-10-07 (owner decision, a10-F250-01..03):** `app/state_runtime/state_context.py` (never wired) and `app/data_classification/redaction.py` were deleted, with the unread `DATA_CLASSIFICATION` flag; screening is done by guardrails_v2 output screening, `app/agent/sanitization.py`, ingestion PII handling and log redaction. `DataClassifier` remains for the few-shot CoT filter.
+
 > **Prerequisite:** Complete Parts 1–11 first.
 
 ## Gap Summary (39 of 43 items missing)

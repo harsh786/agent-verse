@@ -138,7 +138,9 @@ class TestGetTenantDetail:
         assert resp.status_code == 200
         assert resp.json()["plan"] == "professional"
 
-    def test_cost_controller_error_yields_empty_usage(self):
+    def test_cost_controller_error_is_reported_not_an_empty_usage(self):
+        # a10-F239-02: a failed read used to be swallowed into usage == {},
+        # indistinguishable from "no spend today".
         app = _make_app()
         app.state.tenant_service = types.SimpleNamespace(
             _tenants={"t1": {"tenant_id": "t1", "plan": "free"}}
@@ -149,7 +151,37 @@ class TestGetTenantDetail:
         client = TestClient(app)
         resp = client.get("/admin/tenants/t1", headers=_ADMIN_HEADERS)
         assert resp.status_code == 200
-        assert resp.json()["usage"] == {}
+        assert resp.json()["usage"] is None
+        assert resp.json()["usage_error"]
+
+    def test_usage_reads_the_cost_tracker_not_the_plain_controller(self):
+        """a10-F239-02: the plain in-memory CostController has no get_budget_status,
+        so usage was always {}. The cost tracker (what /costs shows) is read."""
+        from app.governance.cost import CostController
+
+        app = _make_app()
+        app.state.tenant_service = types.SimpleNamespace(
+            _tenants={"t1": {"tenant_id": "t1", "plan": "free"}}
+        )
+        app.state.cost_controller = CostController()
+        tracker = AsyncMock()
+        tracker.get_budget_status.return_value = {"daily_spent": 1.5, "daily_limit": 10.0}
+        app.state.cost_tracker = tracker
+        resp = TestClient(app).get("/admin/tenants/t1", headers=_ADMIN_HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["usage"] == {"daily_spent": 1.5, "daily_limit": 10.0}
+        tracker.get_budget_status.assert_awaited_once_with("t1")
+
+    def test_no_budget_source_is_reported(self):
+        from app.governance.cost import CostController
+
+        app = _make_app()
+        app.state.tenant_service = types.SimpleNamespace(
+            _tenants={"t1": {"tenant_id": "t1", "plan": "free"}}
+        )
+        app.state.cost_controller = CostController()
+        resp = TestClient(app).get("/admin/tenants/t1", headers=_ADMIN_HEADERS)
+        assert resp.json()["usage"] is None and resp.json()["usage_error"]
 
     def test_no_tenant_service_returns_404(self):
         client = TestClient(_make_app())
@@ -313,6 +345,37 @@ class TestPlatformUsage:
         resp = TestClient(app).get("/admin/usage", headers=_ADMIN_HEADERS)
         assert resp.status_code == 503
 
+    def test_repeated_polls_reuse_one_computation(self, monkeypatch):
+        """a10-F239-05: every poll ran the whole-table aggregates again."""
+        import app.api.admin as admin_mod
+
+        app = _make_app()
+        opened: list[object] = []
+
+        def _factory():
+            session = self._usage_session()
+            opened.append(session)
+            return session
+
+        app.state.system_db_session_factory = _factory
+        client = TestClient(app)
+        first = client.get("/admin/usage", headers=_ADMIN_HEADERS).json()
+        second = client.get("/admin/usage", headers=_ADMIN_HEADERS).json()
+        assert len(opened) == 1
+        assert first == second and first["as_of"]
+        # Past the TTL the aggregates run again.
+        monkeypatch.setattr(admin_mod, "USAGE_CACHE_TTL_S", 0.0)
+        client.get("/admin/usage", headers=_ADMIN_HEADERS)
+        assert len(opened) == 2
+
+    def test_errors_are_not_cached(self):
+        app = _make_app()
+        sessions = [self._usage_session(fail=True), self._usage_session()]
+        app.state.system_db_session_factory = lambda: sessions.pop(0)
+        client = TestClient(app)
+        assert client.get("/admin/usage", headers=_ADMIN_HEADERS).status_code == 503
+        assert client.get("/admin/usage", headers=_ADMIN_HEADERS).status_code == 200
+
 
 class TestIncidents:
     """Regression: /admin/incidents read guardrail_engine._incidents, which no
@@ -336,3 +399,21 @@ def test_tenant_context_replace_smoke():
     ctx = TenantContext(tenant_id="t", plan=PlanTier.FREE, api_key_id="k")
     updated = replace(ctx, plan=PlanTier.ENTERPRISE)
     assert updated.plan == PlanTier.ENTERPRISE
+
+
+def test_module_docstring_lists_only_mounted_routes() -> None:
+    """a10-F239-04: the docstring advertised POST .../keys/revoke, which never existed."""
+    import re
+
+    import app.api.admin as admin_mod
+
+    mounted = {(m, r.path) for r in router.routes for m in getattr(r, "methods", ())}
+    listed = re.findall(
+        r"^\s+(GET|POST|PUT|DELETE|PATCH)\s+(/admin/\S+)", admin_mod.__doc__ or "", re.M
+    )
+    assert listed
+    for method, path in listed:
+        head, _, tail = path.rpartition("/")
+        for leaf in tail.split("|"):
+            variant = f"{head}/{leaf}".replace("{id}", "{mapping_id}")
+            assert (method, variant) in mounted, (method, variant)

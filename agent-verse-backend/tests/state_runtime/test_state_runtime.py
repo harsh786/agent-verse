@@ -1,4 +1,4 @@
-"""StateRuntime: MemoryPolicyEngine, CachePolicyEngine, ReflexionStore, SessionMemory, StateRuntimeContext."""
+"""StateRuntime: MemoryPolicyEngine, CachePolicyEngine, ReflexionStore, SessionMemory."""
 from __future__ import annotations
 
 from app.orchestration.runtime_profile import (
@@ -15,7 +15,6 @@ from app.state_runtime.cache_policy import CachePolicyEngine
 from app.state_runtime.memory_policy import MemoryPolicyEngine
 from app.state_runtime.reflexion_store import ReflexionStore
 from app.state_runtime.session_memory import SessionMemory
-from app.state_runtime.state_context import StateRuntimeContext
 
 
 def _make_profile(
@@ -193,43 +192,3 @@ def test_session_memory_multiple_entries():
 def test_session_memory_empty_goal():
     mem = SessionMemory()
     assert mem.get(goal_id="unknown") == []
-
-
-# ── StateRuntimeContext ───────────────────────────────────────────────────────
-
-def test_state_runtime_context_to_prompt_bundle():
-    ctx = StateRuntimeContext(
-        knowledge_chunks=[{"content": "KB chunk", "score": 0.9}],
-        reflexion_lessons=["lesson 1"],
-        session_memory=[{"key": "k", "value": "v"}],
-    )
-    bundle = ctx.to_prompt_bundle("explain orchestration")
-    assert bundle.goal_context == "explain orchestration"
-    assert len(bundle.knowledge_chunks) == 1
-    assert len(bundle.reflexion_lessons) == 1
-    assert len(bundle.session_memory) == 1
-
-
-def test_state_runtime_context_defaults_empty():
-    ctx = StateRuntimeContext()
-    assert ctx.session_memory == []
-    assert ctx.execution_memory == []
-    assert ctx.long_term_memory == []
-    assert ctx.knowledge_chunks == []
-    assert ctx.reflexion_lessons == []
-    assert ctx.degradation_notes == []
-
-
-def test_state_runtime_context_web_results_in_bundle():
-    ctx = StateRuntimeContext(
-        web_results=[{"title": "Result", "snippet": "text"}],
-    )
-    bundle = ctx.to_prompt_bundle("web query")
-    assert len(bundle.web_results) == 1
-
-
-def test_state_runtime_context_degradation_notes():
-    ctx = StateRuntimeContext()
-    ctx.degradation_notes.append("execution_memory recall failed")
-    bundle = ctx.to_prompt_bundle("goal")
-    assert len(bundle.degradation_notes) == 1

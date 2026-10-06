@@ -86,6 +86,14 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     # can do in Slack is re-checked against the key's live scopes per action).
     # goals:read is held by every role, including approver keys, which are
     # otherwise barred from unregistered writes outside /approvals.
+    # a10-F240-01: a signed-in person lists / revokes ITS OWN login sessions
+    # (the routes only ever touch the caller's sessions). Any role may, so the
+    # unregistered-write rule (viewers refused) and "DELETE /tenants/me" ->
+    # tenancy:write (admins only) must not apply; goals:read is held by every role.
+    ("GET", "/auth/sessions"): "goals:read",
+    ("DELETE", "/auth/sessions"): "goals:read",
+    ("GET", "/tenants/me/sessions"): "goals:read",
+    ("DELETE", "/tenants/me/sessions"): "goals:read",
     ("GET", "/channels/identities"): "goals:read",
     ("POST", "/channels/identities"): "goals:read",
     ("DELETE", "/channels/identities"): "goals:read",
@@ -124,6 +132,13 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     # A tenant's OWN routing policy is not a registry mutation: operators set it
     # (longest prefix wins over the "/models" rule above).
     ("PUT", "/models/routing-policies"): "goals:write",
+    # Training-data export (/intelligence/export-training-data…): a bulk copy of
+    # the tenant's goal transcripts. It had no entry, so every GET (preview, job
+    # status, the job download) passed for any key, including one minted with
+    # explicit scopes that exclude goal data. Reads need goals:read; starting an
+    # export (sync stream or durable job) needs goals:write (operator/admin).
+    ("GET", "/intelligence/export-training-data"): "goals:read",
+    ("POST", "/intelligence/export-training-data"): "goals:write",
     # Schedules
     ("GET", "/schedules"): "goals:read",
     ("POST", "/schedules"): "goals:write",

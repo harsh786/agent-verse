@@ -368,3 +368,94 @@ async def test_prune_deletes_only_sessions_expired_past_the_grace_in_batches(
         for t in tenants:
             await _cleanup(owner, t, [email])
         await owner_engine.dispose()
+
+
+async def test_self_service_session_management(pg_url: str, redis_url: str) -> None:
+    """a10-F240-01: /auth/sessions + /tenants/me/sessions on the real app, real
+    Postgres (app role, FORCE RLS) and real Redis. A viewer lists its own live
+    sessions, cannot touch another person's, revokes one, then signs out every
+    other device; revoked tokens stop authenticating at once on every replica."""
+    import httpx
+    import redis.asyncio as aioredis
+
+    from app.main import create_app
+
+    owner_engine, owner = session_factory(pg_url)
+    app_engine, app_factory = session_factory(await app_role_url(pg_url))
+    redis = aioredis.from_url(redis_url, decode_responses=True)
+    tenant_id = uuid.uuid4().hex
+    other_tenant = uuid.uuid4().hex
+    alice = f"alice.{tenant_id[:6]}@corp.test"
+    bob = f"bob.{tenant_id[:6]}@corp.test"
+    try:
+        await _seed_tenant(owner, tenant_id)
+        await _seed_tenant(owner, other_tenant)
+        store = UserSessionStore(app_factory, redis)
+        alice_id = await store.provision_member(tenant_id=tenant_id, email=alice, name="A")
+        bob_id = await store.provision_member(tenant_id=tenant_id, email=bob, name="B")
+        a1 = await _live_session(store, tenant_id, alice_id)
+        a2 = await _live_session(store, tenant_id, alice_id)
+        a3 = await _live_session(store, tenant_id, alice_id)
+        b1 = await _live_session(store, tenant_id, bob_id)
+
+        app = create_app()
+        app.state.db_session_factory = app_factory
+        app.state._redis = redis
+        app.state.user_session_store.set_db(app_factory)
+        app.state.user_session_store.set_redis(redis)
+
+        def h(token: str) -> dict[str, str]:
+            return {"Authorization": f"Bearer {token}"}
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.get("/auth/sessions", headers=h(a1))
+            assert r.status_code == 200, r.text
+            mine = r.json()
+            assert len(mine) == 3
+            assert [s["current"] for s in mine].count(True) == 1
+            assert {s["auth_method"] for s in mine} == {"saml"}
+            r = await client.get("/tenants/me/sessions", headers=h(b1))
+            assert r.status_code == 200, r.text
+            bob_sessions = r.json()
+            assert len(bob_sessions) == 1
+            bob_session_id = bob_sessions[0]["session_id"]
+
+            # Alice cannot revoke Bob's session (404, and it keeps working).
+            r = await client.delete(f"/auth/sessions/{bob_session_id}", headers=h(a1))
+            assert r.status_code == 404, r.text
+            assert (await client.get("/auth/sessions", headers=h(b1))).status_code == 200
+
+            # Revoke one of her own (a viewer may: it is her session).
+            current_id = next(s["session_id"] for s in mine if s["current"])
+            victim = next(s["session_id"] for s in mine if not s["current"])
+            r = await client.delete(f"/tenants/me/sessions/{victim}", headers=h(a1))
+            assert r.status_code == 204, r.text
+            r = await client.get("/auth/sessions", headers=h(a1))
+            assert {s["session_id"] for s in r.json()} == (
+                {s["session_id"] for s in mine} - {victim}
+            )
+
+            # Sign out every other device: only the current session survives.
+            r = await client.delete("/auth/sessions", headers=h(a1))
+            assert r.status_code == 200 and r.json() == {"revoked": 1}, r.text
+            for token in (a2, a3):
+                assert (await client.get("/auth/sessions", headers=h(token))).status_code == 401
+            r = await client.get("/auth/sessions", headers=h(a1))
+            assert [s["session_id"] for s in r.json()] == [current_id]
+            # Bob is untouched.
+            assert (await client.get("/auth/sessions", headers=h(b1))).status_code == 200
+
+        # The revocations are in Postgres (and purged from the shared cache):
+        # a second store ("another pod") refuses the tokens too.
+        pod_b = UserSessionStore(app_factory, redis)
+        assert await pod_b.resolve(a2) is None and await pod_b.resolve(a3) is None
+        assert await pod_b.resolve(a1) is not None and await pod_b.resolve(b1) is not None
+        # Another tenant (its own GUC + predicate) sees none of these sessions.
+        assert await pod_b.list_user_sessions(other_tenant, alice_id) == []
+    finally:
+        await _cleanup(owner, tenant_id, [alice, bob])
+        await _cleanup(owner, other_tenant, [])
+        await redis.aclose()
+        await app_engine.dispose()
+        await owner_engine.dispose()

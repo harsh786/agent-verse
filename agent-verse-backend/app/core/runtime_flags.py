@@ -28,7 +28,6 @@ class RuntimeFlags:
     # Core orchestration + RAG (first-class)
     dynamic_orchestration: bool = True
     agentic_rag: bool = True
-    data_classification: bool = True
     # Safety
     guardrail_profile: bool = True
     readiness_gate: bool = True
@@ -69,7 +68,6 @@ class RuntimeFlags:
         return cls(
             dynamic_orchestration=_bool_env("DYNAMIC_ORCHESTRATION", True),
             agentic_rag=_bool_env("AGENTIC_RAG", True),
-            data_classification=_bool_env("DATA_CLASSIFICATION", True),
             guardrail_profile=_bool_env("GUARDRAIL_PROFILE", True),
             readiness_gate=_bool_env("READINESS_GATE", True),
             enable_runtime_scorecard=_bool_env("ENABLE_RUNTIME_SCORECARD"),
@@ -95,7 +93,6 @@ def get_runtime_flags() -> RuntimeFlags:
     flags = RuntimeFlags(
         dynamic_orchestration=_env_bool("DYNAMIC_ORCHESTRATION", True),
         agentic_rag=_env_bool("AGENTIC_RAG", True),
-        data_classification=_env_bool("DATA_CLASSIFICATION", True),
         guardrail_profile=_env_bool("GUARDRAIL_PROFILE", True),
         readiness_gate=_env_bool("READINESS_GATE", True),
         enable_runtime_scorecard=_env_bool("ENABLE_RUNTIME_SCORECARD"),

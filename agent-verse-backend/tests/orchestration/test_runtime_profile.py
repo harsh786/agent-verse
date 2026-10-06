@@ -36,7 +36,6 @@ def test_flags_default_values():
     flags = RuntimeFlags()
     # Advanced orchestration + safety/compliance are now first-class (default on).
     assert flags.dynamic_orchestration is True
-    assert flags.data_classification is True
     assert flags.guardrail_profile is True
     assert flags.readiness_gate is True
     assert flags.enable_guardrail_profile is True

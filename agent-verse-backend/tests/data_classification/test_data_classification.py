@@ -4,18 +4,12 @@ from __future__ import annotations
 import pytest
 
 from app.data_classification.classifier import DataClassifier
-from app.data_classification.redaction import Redactor
 from app.data_classification.schema import DataClass
 
 
 @pytest.fixture
 def clf() -> DataClassifier:
     return DataClassifier()
-
-
-@pytest.fixture
-def redactor() -> Redactor:
-    return Redactor()
 
 
 def test_public_text(clf: DataClassifier) -> None:
@@ -58,20 +52,19 @@ def test_public_safe_for_prompt(clf: DataClassifier) -> None:
     assert result.safe_for_prompt is True
 
 
-def test_redact_email(redactor: Redactor) -> None:
-    text = "Contact alice@company.com for help."
-    redacted = redactor.redact(text, classes=[DataClass.PII])
-    assert "alice@company.com" not in redacted
-    assert "[REDACTED-PII]" in redacted
-
-
-def test_redact_credit_card(redactor: Redactor) -> None:
-    text = "Card: 4111-1111-1111-1111"
-    redacted = redactor.redact(text, classes=[DataClass.PCI])
-    assert "4111" not in redacted
-
-
 def test_classify_fallback_never_raises(clf: DataClassifier) -> None:
     result = clf.classify_or_safe_fallback("")
     assert result is not None
     assert len(result.classes) > 0
+
+
+def test_removed_modules_and_flag_stay_gone() -> None:
+    """a10-F250-02/03 (owner decision): unused redactor, state_context builder and
+    the unread DATA_CLASSIFICATION flag were removed; AP10-T10 is superseded."""
+    import importlib.util
+
+    from app.core.runtime_flags import RuntimeFlags
+
+    assert importlib.util.find_spec("app.data_classification.redaction") is None
+    assert importlib.util.find_spec("app.state_runtime.state_context") is None
+    assert not hasattr(RuntimeFlags(), "data_classification")

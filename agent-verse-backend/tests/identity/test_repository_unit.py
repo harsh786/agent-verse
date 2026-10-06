@@ -18,9 +18,16 @@ _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 class _Result:
-    def __init__(self, mapping_one=None, mapping_all=None):
+    def __init__(self, mapping_one=None, mapping_all=None, scalar=None):
         self._mapping_one = mapping_one
         self._mapping_all = mapping_all if mapping_all is not None else []
+        self._scalar = scalar
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+    def one(self):
+        return self._mapping_one
 
     def mappings(self):
         return self
@@ -175,6 +182,7 @@ async def test_create_link_inserts_with_expected_params():
         sql = str(query)
         if "INSERT INTO identity_links" in sql:
             captured["params"] = params
+            return _Result(scalar="p9")  # RETURNING principal_id: this insert won
         return _Result()
 
     store = PostgresIdentityStore(_fake_session_factory(fake_execute))
@@ -182,7 +190,7 @@ async def test_create_link_inserts_with_expected_params():
         tenant_id="t1", channel="sms", channel_user_id="+15551234", principal_id="p9",
         created_at=_NOW,
     )
-    await store.create_link(link)
+    assert await store.create_link(link) == link
 
     assert captured["params"]["t"] == "t1"
     assert captured["params"]["c"] == "sms"

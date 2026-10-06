@@ -1,3 +1,14 @@
+"""Data categories named by the deletion orchestrator.
+
+This module also held an in-process ``RetentionPolicy`` tier table, plus
+``ArchivePolicy`` / ``ExportPolicy`` / ``LegalHoldPolicy`` siblings, that no
+code ever consulted (a10-F245-01). Retention is enforced by the maintenance
+beat tasks against each store's own retention settings, legal holds live in the
+``legal_holds`` table (checked by the deletion orchestrator), and exports are
+tenant-scoped in their routes. The dead classes were removed so they cannot be
+mistaken for the controls.
+"""
+
 from __future__ import annotations
 
 import enum
@@ -13,29 +24,3 @@ class DataCategory(enum.StrEnum):
     VIDEO = "video"
     PII_DATA = "pii_data"
     PHI_DATA = "phi_data"
-
-
-class RetentionTier(enum.StrEnum):
-    SHORT = "short"
-    DEFAULT = "default"
-    LONG = "long"
-    REGULATED = "regulated"
-    LEGAL_HOLD = "legal_hold"
-
-
-_POLICY: dict[DataCategory, RetentionTier] = {
-    DataCategory.GOAL_ARTIFACT: RetentionTier.DEFAULT,
-    DataCategory.AUDIT_LOG: RetentionTier.LONG,
-    DataCategory.MEMORY: RetentionTier.SHORT,
-    DataCategory.EMBEDDING: RetentionTier.DEFAULT,
-    DataCategory.KNOWLEDGE: RetentionTier.DEFAULT,
-    DataCategory.SCREENSHOT: RetentionTier.SHORT,
-    DataCategory.VIDEO: RetentionTier.SHORT,
-    DataCategory.PII_DATA: RetentionTier.REGULATED,
-    DataCategory.PHI_DATA: RetentionTier.REGULATED,
-}
-
-
-class RetentionPolicy:
-    def get_tier(self, category: DataCategory) -> RetentionTier:
-        return _POLICY.get(category, RetentionTier.DEFAULT)

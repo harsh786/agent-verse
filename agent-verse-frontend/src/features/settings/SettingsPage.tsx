@@ -637,25 +637,35 @@ function SecurityTab() {
   const { apiKey } = useAuthStore();
   const qc = useQueryClient();
 
-  // The backend does not record login sessions yet: GET/DELETE
-  // /tenants/me/sessions answer 501. That used to be swallowed into `[]`, which
-  // read as a verified "no other sessions" — surface it instead, and never offer
-  // a Revoke control that cannot end a session.
+  // GET /tenants/me/sessions lists the caller's own SSO sign-in sessions
+  // (`current` marks this one). A caller signed in with an API key holds no
+  // sign-in session: the backend answers 409 (older servers: 501). Never turn
+  // that into `[]` (it would read as a verified "no other sessions") and never
+  // offer a Revoke control that cannot end a session.
   const sessionsQuery = useQuery({
     queryKey: ['tenant-sessions'],
     queryFn: () =>
-      apiClient<{ session_id?: string; id?: string; device?: string; last_seen?: string }[]>(
-        '/tenants/me/sessions',
-        {},
-        { silenceServerErrorToast: true },
-      ),
+      apiClient<
+        {
+          session_id?: string;
+          id?: string;
+          device?: string;
+          last_seen?: string;
+          auth_method?: string;
+          created_at?: string;
+          current?: boolean;
+        }[]
+      >('/tenants/me/sessions', {}, { silenceServerErrorToast: true }),
     staleTime: 60_000,
     retry: false,
     enabled: !!apiKey,
   });
-  const sessions = Array.isArray(sessionsQuery.data) ? sessionsQuery.data : [];
+  const sessions = (Array.isArray(sessionsQuery.data) ? sessionsQuery.data : []).filter(
+    (s) => !s.current,
+  );
   const sessionsUnsupported =
-    sessionsQuery.error instanceof ApiError && sessionsQuery.error.status === 501;
+    sessionsQuery.error instanceof ApiError &&
+    (sessionsQuery.error.status === 501 || sessionsQuery.error.status === 409);
   const sessionsUnsupportedReason =
     sessionsUnsupported && typeof sessionsQuery.error?.message === 'string'
       ? sessionsQuery.error.message
@@ -731,8 +741,16 @@ function SecurityTab() {
           {!sessionsUnsupported && sessions.slice(0, 5).map((s, i) => (
             <div key={i} className="flex items-center justify-between p-4 border border-border rounded-xl">
               <div>
-                <p className="text-sm font-medium">{s.device ?? 'Unknown device'}</p>
-                <p className="text-xs text-muted-foreground">Last seen {s.last_seen ?? 'recently'}</p>
+                <p className="text-sm font-medium">
+                  {s.device ?? (s.auth_method ? `${s.auth_method.toUpperCase()} sign-in` : 'Unknown device')}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {s.last_seen
+                    ? `Last seen ${s.last_seen}`
+                    : s.created_at
+                      ? `Signed in ${new Date(s.created_at).toLocaleString()}`
+                      : 'Last seen recently'}
+                </p>
               </div>
               <button
                 onClick={() => revokeSessionMutation.mutate(s.session_id ?? s.id ?? '')}

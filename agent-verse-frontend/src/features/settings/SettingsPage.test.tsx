@@ -759,6 +759,27 @@ describe('SettingsPage – Security tab', () => {
     );
   });
 
+  test('lists SSO sessions by sign-in method and hides the current one', async () => {
+    mockSecurityFetch({
+      sessions: [
+        { session_id: 'sess-cur', auth_method: 'saml', created_at: '2026-10-06T10:00:00Z', current: true },
+        { session_id: 'sess-old', auth_method: 'saml', created_at: '2026-10-05T09:00:00Z', current: false },
+      ],
+    });
+    renderSettingsPage('security');
+    expect(await screen.findByText('SAML sign-in')).toBeInTheDocument();
+    // Only the other session gets a Revoke control; the current one is the "This device" row.
+    expect(screen.getAllByRole('button', { name: /revoke/i })).toHaveLength(1);
+  });
+
+  test('a 409 (API-key sign-in holds no session) shows the notice and no Revoke', async () => {
+    mockSecurityFetch({ sessionsStatus: 409 });
+    renderSettingsPage('security');
+    const notice = await screen.findByTestId('sessions-unavailable');
+    expect(notice).toHaveTextContent('Session management is not available');
+    expect(screen.queryByRole('button', { name: /revoke/i })).not.toBeInTheDocument();
+  });
+
   test('a 501 from the sessions endpoint shows "Session management is not available" and no Revoke', async () => {
     useToastStore.setState({ toasts: [] });
     mockSecurityFetch({ sessionsStatus: 501 });

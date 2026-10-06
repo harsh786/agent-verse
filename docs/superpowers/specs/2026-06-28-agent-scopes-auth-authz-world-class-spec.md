@@ -401,11 +401,9 @@ def downgrade() -> None:
 
 **DELETE /api/auth/roles/{role_id}** — Errors: `409 ROLE_HAS_ASSIGNMENTS` (pass `force=true` or `migrate_to=uuid`)
 
-**POST /api/auth/roles/from-template**
+~~**POST /api/auth/roles/from-template**~~
 
-- Body: `{ "template_id": "uuid", "overrides": { "conditions": {...} } }`
-- Instantiates a domain template for this tenant
-- Response 201: new role object
+> **Removed (2026-10-07, owner decision, a10-F250-04):** domain role templates and `POST /api/auth/roles/from-template` were never built as a route, their ABAC conditions were never evaluated, and `app/tenancy/domain_role_templates.py` was deleted. Not to be implemented from this spec without an enforced ABAC evaluator.
 
 #### Role Assignments
 
@@ -873,7 +871,9 @@ class RoleResolver:
         return perms
 ```
 
-### 3.5 Domain Role Templates
+### 3.5 Domain Role Templates (removed)
+
+> **Removed (2026-10-07, owner decision, a10-F250-04):** domain role templates and `POST /api/auth/roles/from-template` were never built as a route, their ABAC conditions were never evaluated, and `app/tenancy/domain_role_templates.py` was deleted. Not to be implemented from this spec without an enforced ABAC evaluator.
 
 ```python
 # agent-verse-backend/app/tenancy/domain_role_templates.py
