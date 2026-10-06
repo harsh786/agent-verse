@@ -4758,12 +4758,27 @@ def _publish_worker_score_below(
                 trigger_chain_depth=trigger_chain_depth,
                 score=score,
                 source_trigger_id=source_trigger_id,
+                scores=_dimension_scores(scorecard),
             ),
         )
         return True
     except Exception as exc:
         logger.warning("goal_score_below_publish_failed goal=%s: %s", goal_id, exc)
         return False
+
+
+def _dimension_scores(scorecard: Any) -> dict[str, float] | None:
+    """A scorecard's per-dimension scores (for dimension score_below triggers)."""
+    scores = getattr(scorecard, "scores", None)
+    if not isinstance(scores, dict):
+        return None
+    out: dict[str, float] = {}
+    for key, value in scores.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out or None
 
 
 def _worker_long_term_memory() -> Any:

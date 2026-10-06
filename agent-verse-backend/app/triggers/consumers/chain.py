@@ -59,6 +59,7 @@ def build_chain_event(
     trigger_chain_depth: int = 0,
     score: float | None = None,
     source_trigger_id: str = "",
+    scores: dict[str, float] | None = None,
 ) -> str:
     """JSON payload for a goal lifecycle channel.
 
@@ -78,9 +79,33 @@ def build_chain_event(
     }
     if score is not None:
         payload["score"] = score
+    if scores:
+        # Per-dimension scores, for triggers that watch one dimension (B7-5).
+        numeric = {str(k): _as_float(v) for k, v in scores.items()}
+        payload["scores"] = {k: v for k, v in numeric.items() if v is not None}
     if source_trigger_id:
         payload["source_trigger_id"] = source_trigger_id
     return json.dumps(payload)
+
+
+def _as_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _observed_score(spec: object, data: dict) -> float | None:
+    """The score a goal_score_below trigger compares: its ``score_dimension``
+    from the event's per-dimension scores, else (blank / ``overall``) the
+    overall average. ``None`` when the event does not carry it."""
+    dimension = str(getattr(spec, "score_dimension", "") or "").strip()
+    if dimension and dimension.lower() != "overall":
+        scores = data.get("scores")
+        return _as_float(scores.get(dimension)) if isinstance(scores, dict) else None
+    return _as_float(data.get("score"))
 
 
 def goal_failed_chain_event(
@@ -189,7 +214,6 @@ class ChainTriggerConsumer:
         tenant_id = data.get("tenant_id", "")
         goal_id = data.get("goal_id", "")
         agent_id = data.get("agent_id", "")
-        score = data.get("score", 1.0)
 
         # Find all enabled triggers of this type for this tenant
         try:
@@ -229,10 +253,12 @@ class ChainTriggerConsumer:
             if getattr(spec, "watch_goal_id", "") and spec.watch_goal_id != goal_id:
                 continue
 
-            # Filter by score threshold for GOAL_SCORE_BELOW
+            # GOAL_SCORE_BELOW: the watched score (one dimension, or the overall
+            # average) must be below the threshold; no score, no fire (B7-5).
             if trigger_type == "goal_score_below":
-                threshold = getattr(spec, "score_threshold", 0.8)
-                if score >= threshold:
+                observed = _observed_score(spec, data)
+                threshold = _as_float(getattr(spec, "score_threshold", None))
+                if observed is None or threshold is None or observed >= threshold:
                     continue
 
             # Plan from the tenant record — never from the event payload.

@@ -133,6 +133,7 @@ export interface TriggerSpec {
   score_dimension?: string;
   hitl_queue_id?: string;
   memory_type?: string;
+  allow_self_trigger?: boolean; // B7: may fire on events from goals it started
   // ── C: Conversational ──
   channel_type?: string;
   channel_id?: string;
