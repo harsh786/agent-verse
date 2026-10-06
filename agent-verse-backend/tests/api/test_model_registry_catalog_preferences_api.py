@@ -308,3 +308,29 @@ def test_importing_the_deployments_own_model_does_not_demote_it(monkeypatch):
     assert tg["selected_model_id"] == "nvidia/nemotron-3-super-120b-a12b"
     own = next(m for m in tg["models"] if m["model_id"] == "nvidia/nemotron-3-super-120b-a12b")
     assert own["origin"] == "deployment" and own["source"] == "env"
+
+
+def test_embedding_rows_show_their_width_and_an_index_mismatch(monkeypatch):
+    """A model whose vectors do not fit the index (EMBEDDING_DIM) is flagged."""
+    from app.core.config import Settings
+
+    client = _client(monkeypatch)
+    client.app.state.settings = Settings(_env_file=None, embedding_dim=1024)  # type: ignore[attr-defined,call-arg]
+    _add(client, "voyage-3.5", 0.0, provider="voyage", caps=["embedding"])
+    _add(client, "text-embedding-3-large", 0.0, provider="openai", caps=["embedding"])
+    _add(client, "unknown-embedder", 0.0, caps=["embedding"])
+    groups = client.get("/models/configured", headers=_ADMIN).json()["capabilities"]
+    emb = next(g for g in groups if g["capability"] == "embedding")
+    rows = {r["model_id"]: r for r in emb["models"]}
+    assert rows["voyage-3.5"]["dimensions"] == 1024
+    assert rows["voyage-3.5"]["dimension_mismatch"] is False
+    assert rows["text-embedding-3-large"]["dimensions"] == 3072
+    assert rows["text-embedding-3-large"]["dimension_mismatch"] is True
+    assert "3072" in rows["text-embedding-3-large"]["dimension_reason"]
+    assert rows["text-embedding-3-large"]["index_dimension"] == 1024
+    # Unknown width: not checked, never flagged.
+    assert rows["unknown-embedder"]["dimensions"] is None
+    assert rows["unknown-embedder"]["dimension_mismatch"] is False
+    # Embeddings never list another MODEL as failover.
+    assert emb["fallback_model_ids"] == []
+    assert "SAME model" in emb["note"]
