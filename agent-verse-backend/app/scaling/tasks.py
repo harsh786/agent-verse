@@ -4941,7 +4941,7 @@ def _to_utc_naive(dt: datetime.datetime, assume_tz: datetime.tzinfo) -> datetime
     """
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=assume_tz)
-    return dt.astimezone(datetime.UTC).replace(tzinfo=None)
+    return dt.astimezone(datetime.UTC).replace(tzinfo=None, fold=0)
 
 
 def _norm_utc_naive(dt: datetime.datetime | None) -> datetime.datetime | None:
@@ -4991,10 +4991,19 @@ def _cron_missed_runs_utc(
     assert now_naive is not None
     now_local = now_naive.replace(tzinfo=datetime.UTC).astimezone(tz)
 
+    fixed_hour = _cron_hour_is_fixed(cron_expr)
+
+    def _repeated(slot_utc: datetime.datetime) -> bool:
+        # B1-11: on a fall-back day the repeated hour's second occurrence
+        # (fold=1) of a fixed-hour job is the same wall-clock slot again.
+        # (croniter tags its results fold=1 whatever the zone: recompute it.)
+        local = slot_utc.replace(tzinfo=datetime.UTC, fold=0).astimezone(tz)
+        return fixed_hour and local.fold == 1
+
     if last_fired_utc is None:
         itr = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
-        prev = cast(datetime.datetime, itr.get_prev(datetime.datetime))
-        return [_to_utc_naive(prev, tz)]
+        prev = _to_utc_naive(cast(datetime.datetime, itr.get_prev(datetime.datetime)), tz)
+        return [] if _repeated(prev) else [prev]
 
     last_naive = _norm_utc_naive(last_fired_utc)
     itr = _croniter_pkg.croniter(cron_expr, now_local + datetime.timedelta(seconds=1))
@@ -5004,9 +5013,17 @@ def _cron_missed_runs_utc(
         prev_naive = _to_utc_naive(prev_local, tz)
         if last_naive is not None and prev_naive <= last_naive:
             break
-        runs.append(prev_naive)
+        if not _repeated(prev_naive):
+            runs.append(prev_naive)
     runs.reverse()
     return runs
+
+
+def _cron_hour_is_fixed(cron_expr: str) -> bool:
+    """True when the cron's hour field names specific hours (not ``*`` / ``*/n``):
+    such a job runs once in a repeated (fall-back) hour, as cron does (B1-11)."""
+    fields = cron_expr.split()
+    return len(fields) >= 2 and "*" not in fields[1]
 
 
 def _naive(dt: datetime.datetime) -> datetime.datetime:
