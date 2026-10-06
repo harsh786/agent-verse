@@ -32,22 +32,13 @@ def test_semantic_cache_skips_empty_warmup_entries():
     assert cache is not None
 
 
-def test_redis_dedup_cache_importable():
-    """RedisDeduplicationCache must be importable."""
-    from app.reliability.dedup import RedisDeduplicationCache
-    assert RedisDeduplicationCache is not None
+def test_per_process_hash_redis_dedup_cache_is_gone():
+    """a08-F192-02: the caller-less RedisDeduplicationCache keyed on the
+    per-process ``hash(goal)`` (random per interpreter); goal-submission dedup
+    is ``app.services.dedup`` (content SHA-256)."""
+    import app.reliability.dedup as dedup_mod
 
-
-async def test_redis_dedup_no_redis_no_crash():
-    """RedisDeduplicationCache must not crash when Redis is unavailable."""
-    from unittest.mock import AsyncMock
-
-    from app.reliability.dedup import RedisDeduplicationCache
-    mock_redis = AsyncMock()
-    mock_redis.get = AsyncMock(side_effect=Exception("no redis"))
-    cache = RedisDeduplicationCache(redis=mock_redis)
-    result = await cache.get_existing("t1", "test goal")
-    assert result is None  # Fail-open, no crash
+    assert not hasattr(dedup_mod, "RedisDeduplicationCache")
 
 
 def test_embedding_orchestrator_select_returns_policy():

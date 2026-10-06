@@ -511,13 +511,11 @@ def _build_dedup_cache(redis: Any) -> Any:
     goal executes on one worker — so the in-memory ``DeduplicationCache`` is the
     correct backing here.
 
-    It must NOT be a ``RedisDeduplicationCache``: that class implements a
-    completely different, *async* goal-submission dedup API
-    (``get_existing``/``register``) and has no ``is_duplicate``/``mark_seen``.
-    Wiring it into this slot made every goal crash on its first step whenever
-    Redis was available (``'RedisDeduplicationCache' object has no attribute
-    'is_duplicate'``) — a production-only failure invisible to the in-memory
-    unit tests. Cross-replica *goal-submission* dedup is handled separately by
+    It must not be a goal-submission dedup (an async ``get_existing`` /
+    ``register`` API without ``is_duplicate``/``mark_seen``): wiring the old
+    ``RedisDeduplicationCache`` (since removed, a08-F192-02) into this slot made
+    every goal crash on its first step whenever Redis was available.
+    Cross-replica *goal-submission* dedup is handled separately by
     ``app.services.dedup._default_deduplicator`` in ``submit_goal``.
 
     ``redis`` is accepted for call-site compatibility but intentionally unused.
