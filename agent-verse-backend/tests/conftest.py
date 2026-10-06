@@ -307,6 +307,22 @@ def _restore_model_registry_store():
 
 
 @pytest.fixture(autouse=True)
+def _restore_default_calibration_store():
+    """Undo the API lifespan binding the process-wide verifier calibration store to
+    a database (a05-F092-01): left bound, later worker tests saw a DB-bound default."""
+    import sys
+
+    mod = sys.modules.get("app.intelligence.verifier_calibration")
+    store = getattr(mod, "_default_calibration_store", None) if mod else None
+    saved = getattr(store, "_db", None) if store is not None else None
+    yield
+    mod = sys.modules.get("app.intelligence.verifier_calibration")
+    store = getattr(mod, "_default_calibration_store", None) if mod else None
+    if store is not None and getattr(store, "_db", None) is not saved:
+        store._db = saved
+
+
+@pytest.fixture(autouse=True)
 def _reset_provider_circuit_breaker():
     """Close the process-wide provider circuits after each test.
 
