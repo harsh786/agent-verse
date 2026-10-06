@@ -10,7 +10,7 @@ from datetime import UTC
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
@@ -51,6 +51,16 @@ class SetBudgetRequest(BaseModel):
 class CreateNotificationChannelRequest(BaseModel):
     channel_type: str = "webhook"  # slack | webhook | teams
     config: dict[str, Any] = {}
+
+    @model_validator(mode="after")
+    def _validate_channel(self) -> CreateNotificationChannelRequest:
+        """QA-5: refuse (422) a channel that could never deliver; store its URL
+        under the key delivery reads (``url`` / Slack ``webhook_url``)."""
+        from app.services.notification_service import normalize_channel_config
+
+        self.config = normalize_channel_config(self.channel_type, self.config)
+        self.channel_type = self.channel_type.strip().lower()
+        return self
 
 
 class PolicySimulateRequest(BaseModel):

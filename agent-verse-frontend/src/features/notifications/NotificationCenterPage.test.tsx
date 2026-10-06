@@ -149,6 +149,31 @@ describe('NotificationCenterPage', () => {
     expect(screen.getByText(/connectors in your teams channel settings/i)).toBeInTheDocument();
   });
 
+  test('creating a Teams channel sends its webhook under config.url (QA-5)', async () => {
+    const spy = mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByTestId('add-channel-btn')).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId('add-channel-btn'));
+    await waitFor(() => expect(screen.getByTestId('channel-form')).toBeInTheDocument());
+    await userEvent.click(within(screen.getByTestId('channel-type-select')).getByText(/teams/i));
+    await userEvent.type(
+      screen.getByPlaceholderText(/outlook\.office\.com/i),
+      'https://contoso.webhook.office.com/abc',
+    );
+    const addButtons = screen.getAllByRole('button', { name: /add channel/i });
+    await userEvent.click(addButtons[addButtons.length - 1]);
+    await waitFor(() => {
+      const post = spy.mock.calls.find(([u, i]) =>
+        String(u).includes('/governance/notifications') && (i as RequestInit)?.method === 'POST');
+      expect(post).toBeDefined();
+      const body = JSON.parse(String((post![1] as RequestInit).body));
+      expect(body).toEqual({
+        channel_type: 'teams',
+        config: { url: 'https://contoso.webhook.office.com/abc' },
+      });
+    });
+  });
+
   test('toggling a channel updates its enabled badge', async () => {
     mockFetch([{ channel_id: 'c1', type: 'slack', enabled: true }]);
     renderPage();

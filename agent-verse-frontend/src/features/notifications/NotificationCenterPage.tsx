@@ -36,7 +36,9 @@ const NOTIFICATION_EVENTS = [
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function buildConfig(type: ChannelType, fields: Record<string, string>): Record<string, unknown> {
-  if (type === "slack" || type === "teams") return { webhook_url: fields.webhook_url };
+  if (type === "slack") return { webhook_url: fields.webhook_url };
+  // Teams delivery reads config.url (QA-5); the form field keeps its webhook_url key.
+  if (type === "teams") return { url: fields.webhook_url };
   return { url: fields.url, auth_header: fields.auth_header || undefined, method: fields.method || "POST" };
 }
 

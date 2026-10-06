@@ -11,18 +11,62 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.net.ssrf_guard import assert_public_url_async, public_async_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
+# channel_type → the config key its delivery URL lives under. ``url`` and
+# ``webhook_url`` are accepted for every type (QA-5: the UI saved Teams channels
+# under ``webhook_url`` while delivery read ``url``) and normalized at create.
+_URL_KEY: dict[str, str] = {"slack": "webhook_url", "teams": "url", "webhook": "url"}
+_URL_ALIASES = ("url", "webhook_url")
+SUPPORTED_CHANNEL_TYPES = tuple(sorted(_URL_KEY))
+
+
+def _configured_url(config: dict[str, Any], channel_type: str) -> str:
+    """The channel's delivery URL: its canonical key first, then the alias."""
+    primary = _URL_KEY.get(channel_type, "url")
+    for key in (primary, *(k for k in _URL_ALIASES if k != primary)):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def normalize_channel_config(channel_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Validate a new channel's config and store its URL under one canonical key.
+
+    Raises ``ValueError`` (a clear message the API answers with 422) for an
+    unsupported ``channel_type`` or a missing / non-http(s) delivery URL — such
+    a channel could never deliver, and used to fail only when it was needed.
+    """
+    ctype = str(channel_type or "").strip().lower()
+    if ctype not in _URL_KEY:
+        raise ValueError(
+            f"channel_type must be one of: {', '.join(SUPPORTED_CHANNEL_TYPES)}"
+            f" (got {channel_type!r})"
+        )
+    key = _URL_KEY[ctype]
+    url = _configured_url(config, ctype)
+    if not url:
+        raise ValueError(
+            f"a {ctype} channel requires config.{key} (its incoming webhook URL)"
+        )
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"config.{key} must be an http(s) URL")
+    rest = {k: v for k, v in config.items() if k not in _URL_ALIASES}
+    return {**rest, key: url}
+
 
 @dataclass
 class NotificationChannel:
     channel_id: str
     tenant_id: str
-    channel_type: str  # "slack" | "webhook" | "teams"
+    channel_type: str  # "slack" | "webhook" | "teams" (SUPPORTED_CHANNEL_TYPES)
     config: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
 
@@ -370,14 +414,18 @@ class NotificationService:
         through the SSRF guard (no internal / metadata addresses, redirects
         re-validated) — they used to be posted with raw httpx.
         """
-        if channel.channel_type == "slack":
-            url = str(channel.config.get("webhook_url", "") or "")
-            payload: dict[str, Any] = {"text": message.get("text", json.dumps(message))}
-        elif channel.channel_type in {"webhook", "teams"}:
-            url = str(channel.config.get("url", "") or "")
-            payload = message
+        ctype = channel.channel_type
+        if ctype not in _URL_KEY:
+            raise ValueError(f"unsupported notification channel type {ctype!r}")
+        # Either key: channels created before QA-5 stored Teams under webhook_url.
+        url = _configured_url(channel.config or {}, ctype)
+        payload: dict[str, Any]
+        if ctype in {"slack", "teams"}:
+            # Slack and Teams incoming webhooks take a ``{"text": ...}`` message;
+            # Teams answered the raw internal dict with an error.
+            payload = {"text": str(message.get("text") or json.dumps(message))}
         else:
-            raise ValueError(f"unsupported notification channel type {channel.channel_type!r}")
+            payload = message
         if not url:
             raise ValueError(f"{channel.channel_type} channel has no URL configured")
         await _post_public(url, payload)
