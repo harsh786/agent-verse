@@ -104,10 +104,45 @@ async def _run_repo_ingest_async(
     )
 
 
+# How often a delivery that found the job leased by another worker retries
+# (each after one lease period). A dead holder's lease expires within one; a
+# holder still heartbeating after all of them is alive, and the duplicate
+# delivery is dropped.
+LEASE_HELD_MAX_RETRIES = 3
+
+
 @shared_task(name="ingestion.ingest_repository", bind=True, acks_late=True)
 def ingest_repository_task(self: Any, **params: Any) -> dict[str, Any]:
-    """Celery entry point; failures are recorded on the job row and dead-lettered."""
-    _run_task_loop(_run_repo_ingest_async(**params))
+    """Celery entry point; failures are recorded on the job row and dead-lettered.
+
+    a04-F066-03: a redelivery of a job whose worker died mid-clone (acks_late +
+    reject_on_worker_lost) finds the job ``running`` under the dead worker's
+    lease; it retries after the lease period and then takes the job over.
+    """
+    from app.api.knowledge import RepositoryJobLeaseHeldError
+
+    try:
+        _run_task_loop(_run_repo_ingest_async(**params))
+    except RepositoryJobLeaseHeldError as exc:
+        retries = int(getattr(self.request, "retries", 0) or 0)
+        if retries >= LEASE_HELD_MAX_RETRIES:
+            _log.warning(
+                "repo_ingest_lease_still_held_dropping_duplicate",
+                job_id=exc.job_id,
+                retries=retries,
+            )
+            return {"job_id": params.get("job_id"), "status": "lease_held"}
+        _log.info(
+            "repo_ingest_lease_held_retrying",
+            job_id=exc.job_id,
+            countdown=exc.retry_after_seconds,
+            retry=retries + 1,
+        )
+        raise self.retry(
+            exc=exc,
+            countdown=exc.retry_after_seconds,
+            max_retries=LEASE_HELD_MAX_RETRIES,
+        ) from exc
     return {"job_id": params.get("job_id")}
 
 

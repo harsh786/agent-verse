@@ -37,6 +37,10 @@ _UNKNOWN_EMBEDDER = "unknown"
 
 _log = get_logger(__name__)
 
+# error_message reconciliation writes on a durable ingestion job whose worker
+# vanished (lease expired / stale queue); such a job may be claimed again.
+INGESTION_JOB_INTERRUPTED = "Repository ingestion interrupted"
+
 
 class EmbeddingDimensionError(ValueError):
     """An embedding width has no chunk table, or disagrees with a collection."""
@@ -1646,6 +1650,17 @@ class KnowledgeStore:
         lease_seconds: int,
         tenant_ctx: TenantContext,
     ) -> bool:
+        """Take the job's lease: a queued job, or one whose holder is gone.
+
+        a04-F066-03: a worker that died mid-clone never released its lease, and
+        the acks_late redelivery of its task could not re-claim the job (only
+        ``queued`` was claimable): it dead-lettered a duplicate and the job sat
+        ``running`` until reconciliation failed it as interrupted. A running job
+        whose lease has EXPIRED is now taken over (running -> running). A live
+        lease is never stolen, and the previous holder is fenced: its heartbeats
+        and its completion require its own lease_owner. Terminal jobs stay
+        immutable (DB trigger, migration 0092).
+        """
         if self._db is None:
             raise RuntimeError("Durable ingestion jobs require a database")
         from sqlalchemy import text
@@ -1669,8 +1684,11 @@ class KnowledgeStore:
                       AND collection_id = :collection_id
                       AND source_type = 'repository'
                       AND source_url = :source_url AND job_source_hash = :source_hash
-                      AND status = 'queued'
                       AND domain_metadata->>'record_type' = 'ingestion_job'
+                      AND (
+                          status = 'queued'
+                          OR (status = 'running' AND lease_expires_at < now())
+                      )
                 """),
                 {
                     "id": job_id,
@@ -1836,7 +1854,7 @@ class KnowledgeStore:
                 text("""
                     UPDATE knowledge_documents
                     SET status = 'failed',
-                        error_message = 'Repository ingestion interrupted',
+                        error_message = :interrupted,
                         lease_owner = NULL, lease_expires_at = NULL
                     WHERE tenant_id = :tenant_id
                       AND source_type = 'repository'
@@ -1851,6 +1869,7 @@ class KnowledgeStore:
                 {
                     "tenant_id": tenant_ctx.tenant_id,
                     "stale_after_seconds": stale_after_seconds,
+                    "interrupted": INGESTION_JOB_INTERRUPTED,
                 },
             )
         return result.rowcount or 0

@@ -20,8 +20,10 @@ _CTX = TenantContext(tenant_id="tid-dlq", plan=PlanTier.PROFESSIONAL, api_key_id
 def test_repo_ingest_failure_is_dead_lettered() -> None:
     async def _run() -> None:
         store = MagicMock()
-        # Lease can't be claimed → deterministic terminal failure before any git.
+        # Lease can't be claimed while the job is still queued (collection /
+        # source mismatch) → deterministic terminal failure before any git.
         store.claim_ingestion_job_async = AsyncMock(return_value=False)
+        store.get_ingestion_job_async = AsyncMock(return_value={"status": "queued"})
         store.fail_ingestion_job_async = AsyncMock()
 
         tracker = MagicMock()
@@ -65,6 +67,7 @@ def test_repo_ingest_without_tracker_still_completes() -> None:
     async def _run() -> None:
         store = MagicMock()
         store.claim_ingestion_job_async = AsyncMock(return_value=False)
+        store.get_ingestion_job_async = AsyncMock(return_value={"status": "queued"})
         store.fail_ingestion_job_async = AsyncMock()
 
         await _ingest_repo_background(

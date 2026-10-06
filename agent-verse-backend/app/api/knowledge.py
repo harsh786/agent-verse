@@ -77,6 +77,7 @@ from app.rag.gateway import CollectionNotFoundError
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import (
+    INGESTION_JOB_INTERRUPTED,
     DuplicateContentError,
     EmbeddingDimensionError,
     EmbeddingProviderUnavailableError,
@@ -1821,6 +1822,20 @@ async def get_ingestion_job(request: Request, job_id: str) -> dict[str, Any]:
     return job
 
 
+class RepositoryJobLeaseHeldError(RuntimeError):
+    """Another worker holds this repository job's live lease (a04-F066-03).
+
+    Raised to the Celery task, which retries after ``retry_after_seconds`` — by
+    then a dead holder's lease has expired and the job can be taken over, while
+    a live holder keeps heartbeating and the duplicate delivery is dropped.
+    """
+
+    def __init__(self, job_id: str, *, retry_after_seconds: int) -> None:
+        self.job_id = job_id
+        self.retry_after_seconds = retry_after_seconds
+        super().__init__(f"repository ingestion job {job_id} is leased by another worker")
+
+
 async def _ingest_repo_background(
     job_id: str,
     repo_url: str,
@@ -1924,6 +1939,29 @@ async def _ingest_repo_background(
             tenant_ctx=tenant_ctx,
         )
         if not claimed:
+            # a04-F066-03: why not? A redelivered task (acks_late) or a
+            # duplicate delivery must neither fail nor dead-letter a job another
+            # worker holds or already finished.
+            job = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant_ctx)
+            job_status = str((job or {}).get("status") or "")
+            if job_status == "running":
+                # Live lease (an expired one would have been taken over): its
+                # holder is still working, or died less than a lease ago.
+                raise RepositoryJobLeaseHeldError(job_id, retry_after_seconds=lease_seconds + 1)
+            if job_status == "failed" and (job or {}).get("error_message") == (
+                INGESTION_JOB_INTERRUPTED
+            ):
+                # Reconciliation failed it while its dead worker's task waited
+                # for redelivery: that worker never dead-lettered it, so this
+                # delivery does — the DLQ retry re-runs the ingestion.
+                logger.warning("repo_ingest_interrupted_job_dead_lettered", job_id=job_id)
+                await _dead_letter("Repository ingestion interrupted")
+                return
+            if job_status in ("completed", "failed"):
+                logger.info(
+                    "repo_ingest_duplicate_delivery_ignored", job_id=job_id, status=job_status
+                )
+                return
             raise RuntimeError("Repository ingestion job lease could not be claimed")
         # Clone using git — non-blocking async subprocess
         proc = await asyncio.create_subprocess_exec(
@@ -2108,6 +2146,8 @@ async def _ingest_repo_background(
             repo=repo_url,
             files=len(repository_files),
         )
+    except RepositoryJobLeaseHeldError:
+        raise  # not a failure of this job: the task retries it
     except asyncio.CancelledError:
         if proc is not None and proc.returncode is None:
             proc.kill()

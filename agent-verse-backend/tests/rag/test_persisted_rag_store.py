@@ -2429,6 +2429,218 @@ async def test_expired_repository_lease_cannot_be_heartbeated_or_resurrected(
     assert status is not None and status["status"] == "failed"
 
 
+async def _leased_job(
+    postgres_database: _Database,
+    tenant: TenantContext,
+    *,
+    name: str,
+    owner: str = "dead-worker",
+    lease_seconds: int = 60,
+) -> tuple[KnowledgeStore, str, str, str]:
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    collection_id = uuid.uuid4().hex
+    source_url = "https://github.com/example/repository"
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"{name}-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url=source_url,
+        source_type="repository",
+        title="repository",
+        tenant_ctx=tenant,
+    )
+    assert await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner=owner,
+        lease_seconds=lease_seconds,
+        tenant_ctx=tenant,
+    )
+    return store, collection_id, source_url, job_id
+
+
+async def _expire_lease(postgres_database: _Database, job_id: str) -> None:
+    async with postgres_database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE knowledge_documents SET lease_expires_at = now() - interval '1 second' "
+                "WHERE id = :id"
+            ),
+            {"id": job_id},
+        )
+
+
+async def test_redelivery_takes_over_a_dead_workers_expired_lease_and_fences_it(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """a04-F066-03: worker died mid-clone; its acks_late redelivery takes over."""
+    from app.rag.models import Chunk
+
+    tenant, _ = tenants
+    store, collection_id, source_url, job_id = await _leased_job(
+        postgres_database, tenant, name="takeover"
+    )
+    await _expire_lease(postgres_database, job_id)
+
+    assert await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="redelivered-worker",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+    # The dead worker (were it only paused) is fenced out.
+    assert not await store.heartbeat_ingestion_job_async(
+        job_id, lease_owner="dead-worker", lease_seconds=60, tenant_ctx=tenant
+    )
+    chunk = Chunk(
+        "doc-a", "takeover content", _embedding(768), 0, metadata={"repo_url": source_url}
+    )
+    with pytest.raises(KeyError):
+        await store.ingest_repository_chunks_async(
+            [chunk],
+            job_id=job_id,
+            collection_id=collection_id,
+            source_url=source_url,
+            lease_owner="dead-worker",
+            tenant_ctx=tenant,
+        )
+    await store.ingest_repository_chunks_async(
+        [
+            Chunk(
+                "doc-a", "takeover content", _embedding(768), 0, metadata={"repo_url": source_url}
+            )
+        ],
+        job_id=job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="redelivered-worker",
+        tenant_ctx=tenant,
+    )
+    status = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    assert status is not None
+    assert status["status"] == "completed" and status["chunk_count"] == 1
+
+
+async def test_a_live_lease_is_never_taken_over(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    tenant, _ = tenants
+    store, collection_id, source_url, job_id = await _leased_job(
+        postgres_database, tenant, name="live-lease", owner="live-worker", lease_seconds=300
+    )
+    assert not await store.claim_ingestion_job_async(
+        job_id,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="duplicate-delivery",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+    assert await store.heartbeat_ingestion_job_async(
+        job_id, lease_owner="live-worker", lease_seconds=300, tenant_ctx=tenant
+    )
+
+
+async def test_terminal_jobs_are_never_reclaimed(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """A job reconciliation failed as interrupted, or one its worker failed,
+    stays terminal (immutable, migration 0092): the redelivery dead-letters an
+    interrupted one instead (unit-tested in tests/api/test_repo_ingest_redelivery.py)."""
+    tenant, _ = tenants
+    store, collection_id, source_url, interrupted = await _leased_job(
+        postgres_database, tenant, name="interrupted"
+    )
+    await _expire_lease(postgres_database, interrupted)
+    assert await store.reconcile_stale_ingestion_jobs_async(
+        tenant_ctx=tenant, stale_after_seconds=60
+    ) == 1
+    status = await store.get_ingestion_job_async(interrupted, tenant_ctx=tenant)
+    assert status is not None and status["status"] == "failed"
+    assert status["error_message"] == "Repository ingestion interrupted"
+    assert not await store.claim_ingestion_job_async(
+        interrupted,
+        collection_id=collection_id,
+        source_url=source_url,
+        lease_owner="late-redelivery",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+
+    store2, collection2, source2, failed = await _leased_job(
+        postgres_database, tenant, name="failed", owner="worker-x"
+    )
+    await store2.fail_ingestion_job_async(
+        failed,
+        lease_owner="worker-x",
+        error_message="Repository ingestion failed",
+        tenant_ctx=tenant,
+    )
+    assert not await store2.claim_ingestion_job_async(
+        failed,
+        collection_id=collection2,
+        source_url=source2,
+        lease_owner="duplicate-delivery",
+        lease_seconds=60,
+        tenant_ctx=tenant,
+    )
+
+
+async def test_repository_job_is_finished_by_the_redelivery_end_to_end(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+    tmp_path: Path,
+) -> None:
+    """The whole worker path on Postgres: dead worker's lease expires, the
+    redelivered task clones (faked git), indexes and completes the SAME job."""
+    from unittest.mock import AsyncMock, patch
+
+    from app.api.knowledge import _ingest_repo_background
+    from app.providers.fake import FakeProvider
+
+    tenant, _ = tenants
+    store, collection_id, source_url, job_id = await _leased_job(
+        postgres_database, tenant, name="e2e-redelivery"
+    )
+    await _expire_lease(postgres_database, job_id)
+    (tmp_path / "service.py").write_text("def handler():\n    return 'redelivered'\n")
+    process = AsyncMock()
+    process.returncode = 0
+    process.communicate = AsyncMock(return_value=(b"", b""))
+    tracker = AsyncMock()
+    with (
+        patch("asyncio.create_subprocess_exec", return_value=process),
+        patch("tempfile.mkdtemp", return_value=str(tmp_path)),
+        patch("shutil.rmtree"),
+    ):
+        await _ingest_repo_background(
+            job_id=job_id,
+            repo_url=source_url,
+            collection_id=collection_id,
+            branch="main",
+            file_patterns=["**/*.py"],
+            max_files=10,
+            store=store,
+            embedder=FakeProvider(embed_dim=768),
+            tenant_ctx=tenant,
+            curl_resolve="github.com:443:203.0.113.10",
+            job_tracker=tracker,
+        )
+    status = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    assert status is not None
+    assert status["status"] == "completed", status
+    assert status["chunk_count"] >= 1
+    tracker.dead_letter_sourceless.assert_not_awaited()
+
+
 async def test_zero_chunk_repository_completion_clears_all_lease_fields(
     postgres_database: _Database,
     tenants: tuple[TenantContext, TenantContext],
