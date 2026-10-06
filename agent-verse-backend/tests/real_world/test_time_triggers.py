@@ -610,6 +610,18 @@ def test_far_future_schedules_are_not_reread_every_tick(ent: LiveAPI,
 # ── TIME-CATCH-UP (disruptive) ────────────────────────────────────────────────
 
 
+def _first_tick_after(when: datetime) -> datetime | None:
+    """When the schedule worker received the first fire_due_schedules after *when*."""
+    proc = _docker("logs", "--since", when.strftime("%Y-%m-%dT%H:%M:%S"), SCHEDULE_WORKER)
+    for m in re.finditer(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+: INFO/MainProcess\] "
+                         r"Task app\.scaling\.tasks\.fire_due_schedules\[[^\]]+\] received",
+                         proc.stdout + proc.stderr):
+        ts = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").replace(tzinfo=UTC)
+        if ts >= when:
+            return ts
+    return None
+
+
 @pytest.mark.scenario("TIME-CATCH-UP")
 def test_missed_runs_after_a_beat_outage_follow_catch_up(ent: LiveAPI,
                                                          evidence: dict[str, Any]) -> None:
@@ -630,8 +642,10 @@ def test_missed_runs_after_a_beat_outage_follow_catch_up(ent: LiveAPI,
         assert _docker("start", BEAT).returncode == 0
         started = _now()
         missed = int((started - stopped).total_seconds() // 60)
-        # The first tick after the restart replays per policy.
-        first_tick = _next_slot(0)
+        # The first tick after the restart (RedBeat may wait for its lock)
+        # replays per policy; read when it ran from the schedule worker's log.
+        first_tick = wait_until(lambda: _first_tick_after(started), timeout=420, interval=10,
+                                desc="the first beat tick after the restart")
         _sleep_until(first_tick + timedelta(seconds=50))
         burst = {p: len([r for r in _goal_runs(ent, sid, after=stopped)
                          if _ts(r["started_at"]) <= first_tick + timedelta(seconds=40)])  # type: ignore[operator]
@@ -689,7 +703,9 @@ def test_two_beats_and_two_workers_fire_each_slot_once(ent: LiveAPI,
                 for c in (BEAT, second_beat)}
         report["ticks_sent_by_beat"] = sent
         evidence.update(report)
-        assert all(v >= 3 for v in sent.values()), f"both beats must be ticking: {sent}"
+        # RedBeat lets one beat hold the lock (the other is a hot standby); with
+        # plain beats both send. Either way the slots above fired exactly once.
+        assert sum(sent.values()) >= 3, f"no beat was ticking: {sent}"
     finally:
         _cleanup(ent, todo)
 
