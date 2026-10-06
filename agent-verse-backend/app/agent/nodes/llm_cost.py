@@ -26,6 +26,70 @@ def llm_call_tokens(resp: Any) -> tuple[int, int]:
     return int(getattr(resp, "input_tokens", 0) or 0), int(getattr(resp, "output_tokens", 0) or 0)
 
 
+def charge_goal_id(agent_state: Any) -> str:
+    """The goal id an LLM call made for ``agent_state`` is charged (and ledgered) to.
+
+    A goal-tree sub-agent runs under its own child id but spends its parent's
+    budget: charge the parent goal, never an unrelated id.
+    """
+    context = getattr(agent_state, "context", None)
+    if isinstance(context, dict) and context.get("_budget_goal_id"):
+        return str(context["_budget_goal_id"])
+    return str(getattr(agent_state, "goal_id", "") or "")
+
+
+def can_reserve_llm_spend(cost_controller: Any) -> bool:
+    """Whether ``cost_controller`` can hold a reservation (charge now, give back later)."""
+    return callable(getattr(cost_controller, "check_and_record", None)) and callable(
+        getattr(cost_controller, "refund_async", None)
+    )
+
+
+async def reserve_llm_spend(
+    cost_controller: Any, *, goal_id: str, tenant_ctx: Any, amount: float
+) -> bool:
+    """Reserve ``amount`` USD of budget BEFORE an LLM call (atomic check-and-record).
+
+    Concurrent calls each passing a "budget left?" preflight before any of them
+    is charged could together overshoot the budget; a reservation counts against
+    the budget at once, so the next call sees it. Settle it with
+    :func:`charge_llm_call` (``reserved_usd=``) or give it back with
+    :func:`refund_llm_spend` when the call failed. False = the budget cannot
+    cover it (nothing was recorded).
+    """
+    if amount <= 0:
+        return True
+    from app.governance.cost import llm_spend
+
+    return bool(
+        await llm_spend(
+            cost_controller.check_and_record(
+                goal_id=goal_id, cost_usd=amount, tenant_ctx=tenant_ctx
+            )
+        )
+    )
+
+
+async def refund_llm_spend(
+    cost_controller: Any, *, goal_id: str, tenant_ctx: Any, amount: float, reason: str
+) -> None:
+    """Give back ``amount`` USD of a reservation. Never raises (logged instead)."""
+    if amount <= 0:
+        return
+    try:
+        await cost_controller.refund_async(
+            goal_id=goal_id, cost_usd=amount, tenant_ctx=tenant_ctx, reason=reason
+        )
+    except Exception as exc:
+        logger.warning(
+            "llm_cost_refund_failed",
+            goal_id=goal_id,
+            amount=amount,
+            reason=reason,
+            error=f"{type(exc).__name__}: {exc}"[:300],
+        )
+
+
 async def charge_llm_call(
     graph: Any,
     *,
@@ -34,30 +98,42 @@ async def charge_llm_call(
     model: str,
     agent_state: Any,
     tenant_ctx: Any,
+    reserved_usd: float = 0.0,
 ) -> float:
     """Charge one LLM call to the goal/tenant. Returns its USD cost.
 
     Never raises. When the cost controller denies the spend the goal is latched
     ``_budget_exhausted`` (the same latch the executor sets), so the routing layer
     hard-stops it with a budget reason.
+
+    ``reserved_usd``: the budget already reserved for this call through
+    :func:`reserve_llm_spend` on the same controller and goal. The budget step
+    then only settles the difference (charges the excess, refunds the rest);
+    the ledger, grant spend and role breakdown record the real cost as usual.
     """
+    cost_controller = getattr(graph, "_cost_controller", None)
+    goal_id = charge_goal_id(agent_state)
+
+    async def _refund_reservation() -> float:
+        if reserved_usd > 0 and cost_controller is not None and tenant_ctx is not None:
+            await refund_llm_spend(
+                cost_controller, goal_id=goal_id, tenant_ctx=tenant_ctx,
+                amount=reserved_usd, reason=f"{role}:no_usage",
+            )
+        return 0.0
+
     try:
         from app.intelligence.cost_tracker import calculate_cost
 
         served_model = str(getattr(resp, "model", "") or model or "")
         prompt_tokens, completion_tokens = llm_call_tokens(resp)
         if prompt_tokens <= 0 and completion_tokens <= 0:
-            return 0.0
+            return await _refund_reservation()
         cost = float(calculate_cost(served_model, prompt_tokens, completion_tokens))
     except Exception:
-        return 0.0
+        return await _refund_reservation()
 
     context = getattr(agent_state, "context", None)
-    goal_id = str(getattr(agent_state, "goal_id", "") or "")
-    # A goal-tree sub-agent runs under its own child id but spends its parent's
-    # budget: charge (and ledger) the parent goal, never an unrelated id.
-    if isinstance(context, dict) and context.get("_budget_goal_id"):
-        goal_id = str(context["_budget_goal_id"])
     lock = getattr(graph, "_state_lock", None)
     if isinstance(context, dict):
         if lock is not None:
@@ -67,16 +143,26 @@ async def charge_llm_call(
             context["total_cost_usd"] = float(context.get("total_cost_usd", 0.0)) + cost
 
     # 1. Budget (per-goal + per-tenant-daily). Denial latches the goal.
-    cost_controller = getattr(graph, "_cost_controller", None)
     if cost_controller is not None and tenant_ctx is not None:
         try:
             from app.governance.cost import llm_spend
 
-            ok = await llm_spend(
-                cost_controller.check_and_record(
-                    goal_id=goal_id, cost_usd=cost, tenant_ctx=tenant_ctx
+            # A reserved call only settles the difference against its reservation.
+            due = cost - reserved_usd if reserved_usd > 0 else cost
+            if due < 0:
+                await refund_llm_spend(
+                    cost_controller, goal_id=goal_id, tenant_ctx=tenant_ctx,
+                    amount=-due, reason=f"{role}:settle",
                 )
-            )
+                ok = True
+            elif due == 0 and reserved_usd > 0:
+                ok = True
+            else:
+                ok = await llm_spend(
+                    cost_controller.check_and_record(
+                        goal_id=goal_id, cost_usd=due, tenant_ctx=tenant_ctx
+                    )
+                )
         except Exception as exc:
             # Fail closed: a controller outage must not crash planning/verification,
             # but it also must not let spend through unmetered (this used to set

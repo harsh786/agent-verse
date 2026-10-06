@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +18,7 @@ from app.ocr.classifier import DocumentClassifier
 from app.ocr.concurrency import (
     current_limits,
     map_bounded,
+    ocr_document_scope,
     ocr_page_slot,
     ocr_vision_slot,
     run_ocr_work,
@@ -84,6 +85,40 @@ def tesseract_enabled() -> bool:
     tests and operators can toggle it."""
     raw = os.getenv("OCR_TESSERACT_ENABLED", "false").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+# Vision cost reservation (OCR-VISION-BUDGET): the most one page's vision call
+# may cost. Image tokens are estimated at ~750 pixels per token (the common
+# provider rule), never below a small image's floor nor above a large one's cap
+# (providers downscale big images), plus the fixed instruction text.
+_VISION_PIXELS_PER_TOKEN = 750
+_VISION_MIN_IMAGE_TOKENS = 258
+_VISION_MAX_IMAGE_TOKENS = 6_400
+_VISION_PROMPT_TOKENS = 64
+
+
+def vision_reserve_usd(img: Any, models: Sequence[str], *, max_output_tokens: int) -> float:
+    """Worst-case USD cost of one vision OCR call: the page image plus the full
+    output allowance, at the priciest of the models that may answer (failover)."""
+    from app.intelligence.cost_tracker import calculate_cost
+
+    try:
+        width, height = (int(v) for v in img.size)
+    except Exception:
+        width = height = 0
+    image_tokens = min(
+        _VISION_MAX_IMAGE_TOKENS,
+        max(_VISION_MIN_IMAGE_TOKENS, -(-width * height // _VISION_PIXELS_PER_TOKEN)),
+    )
+    prompt_tokens = image_tokens + _VISION_PROMPT_TOKENS
+    output_tokens = max(1, int(max_output_tokens or 0))
+    costs: list[float] = []
+    for model in list(dict.fromkeys(str(m or "") for m in models)) or [""]:
+        try:
+            costs.append(float(calculate_cost(model, prompt_tokens, output_tokens)))
+        except Exception:
+            continue
+    return max(costs, default=0.0)
 
 
 # LLM vision gives no confidence score. A page it read is reported with this
@@ -204,6 +239,26 @@ class OcrEngine:
         Tesseract text is returned as-is (the caller has no vision-capable
         provider, and the system default one might return canned text).
         """
+        # One fairness queue per document (OCR-FAIR): its pages share the
+        # process-wide slots round-robin with other documents and tenants.
+        with ocr_document_scope():
+            return await self._extract(
+                image_bytes=image_bytes,
+                pdf_bytes=pdf_bytes,
+                provider=provider,
+                extract_fields=extract_fields,
+                vision_fallback=vision_fallback,
+            )
+
+    async def _extract(
+        self,
+        *,
+        image_bytes: bytes | None,
+        pdf_bytes: bytes | None,
+        provider: Any,
+        extract_fields: bool,
+        vision_fallback: bool,
+    ) -> OcrResult:
         async with self._open_pages(image_bytes=image_bytes, pdf_bytes=pdf_bytes) as pages:
             if not pages:
                 return OcrResult(
@@ -541,7 +596,7 @@ class OcrEngine:
     ) -> tuple[str, float, str]:
         """LLM-vision OCR of one page, holding one of the process-wide vision
         slots (OCR_VISION_CONCURRENCY): pages fall back concurrently, bounded."""
-        async with ocr_vision_slot():
+        async with ocr_vision_slot(tenant_id):
             return await self._llm_vision_ocr_unbounded(
                 img, provider=provider, tenant_id=tenant_id
             )
@@ -601,6 +656,7 @@ class OcrEngine:
                 vision_timeout_seconds,
             )
 
+            fallbacks = _ocr_fallback_models(req.model)
             response = await complete_decision(
                 provider,
                 req,
@@ -609,7 +665,13 @@ class OcrEngine:
                 timeout_seconds=vision_timeout_seconds(),
                 # Another configured vision model takes over when this one is down,
                 # times out or answers empty (it used to be a single-model call).
-                fallback_models=_ocr_fallback_models(req.model),
+                fallback_models=fallbacks,
+                # Up to OCR_VISION_CONCURRENCY pages fall back at once: each one
+                # reserves its worst-case cost BEFORE the call, so together they
+                # can never spend past the budget (settled to the real cost after).
+                reserve_usd=vision_reserve_usd(
+                    img, [req.model, *fallbacks], max_output_tokens=req.max_tokens
+                ),
             )
             return response.content, VISION_ASSUMED_CONFIDENCE, "llm_vision"
         except DecisionBudgetExceededError:

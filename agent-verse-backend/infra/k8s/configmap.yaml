@@ -32,3 +32,5 @@ data:
   OCR_VISION_CONCURRENCY: "4"
   OCR_RENDER_DPI: "300"
   OMP_THREAD_LIMIT: "1"
+  # Documents one connector sync ingests at once (cursor still advances in order).
+  INGESTION_SYNC_DOC_CONCURRENCY: "4"

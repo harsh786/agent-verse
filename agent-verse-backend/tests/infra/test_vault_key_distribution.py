@@ -666,6 +666,7 @@ def test_helm_every_app_workload_gets_the_egress_settings_from_one_config_map() 
         "allowInternalSources": False,
         "internalSourceAllowlist": "",
         "allowPrivateNetworkAccess": True,
+        "syncDocConcurrency": 4,  # SYNC-CONC (tests/infra/test_ocr_concurrency_config.py)
     }
     cm = (HELM_DIR / "configmaps.yaml").read_text()
     _assert_helm_egress_config_map(cm)
@@ -695,6 +696,7 @@ def test_legacy_helm_every_app_workload_gets_the_egress_settings_from_one_config
         "allowInternalSources": False,
         "internalSourceAllowlist": "",
         "allowPrivateNetworkAccess": True,
+        "syncDocConcurrency": 4,  # SYNC-CONC (tests/infra/test_ocr_concurrency_config.py)
     }
     _assert_helm_egress_config_map((LEGACY_HELM_DIR / "configmap.yaml").read_text())
     for fname in (

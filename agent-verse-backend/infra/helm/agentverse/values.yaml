@@ -59,6 +59,9 @@ ingestion:
   # Private / internal hosts and IPs for ingestion, connectors and model
   # endpoints (cloud metadata / link-local still blocked). false = public only.
   allowPrivateNetworkAccess: true
+  # Documents one connector sync ingests at once (fetch, parse / OCR, embed,
+  # index); the cursor still advances in source order. 1 = one at a time.
+  syncDocConcurrency: 4
 
 # OCR-PAR: OCR parallelism, one bounded pool per process shared by every document
 # (uploads, /ocr, ZIP members, ingestion jobs). maxConcurrency = OCR threads and
