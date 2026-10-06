@@ -130,3 +130,84 @@ def test_extract_response_shape(client):
     assert "engine_used" in data
     assert "overall_confidence" in data
     assert "page_count" in data
+
+
+# ── OCR-FB-3: per-page provenance reaches the API ────────────────────────────
+
+_MIXED_RESULT = {
+    **_FIXTURE_RESULT,
+    "engine_used": "mixed",
+    "overall_confidence": 0.9,
+    "page_count": 2,
+    "page_engines": ["tesseract", "llm_vision"],
+    "vision_pages": 1,
+    "confidence_measured": True,
+    "degraded": False,
+    "degradation_reason": None,
+    "source_format": "pdf",
+}
+
+
+def test_extract_exposes_per_page_provenance(client, mock_tool):
+    mock_tool.return_value = _MIXED_RESULT
+    response = client.post(
+        "/ocr/extract",
+        json={"pdf_base64": base64.b64encode(b"fake_pdf").decode()},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["engine_used"] == "mixed"
+    assert data["page_engines"] == ["tesseract", "llm_vision"]
+    assert data["vision_pages"] == 1
+    assert data["confidence_measured"] is True
+    assert data["source_format"] == "pdf"
+    assert data["degraded"] is False
+
+
+def test_batch_exposes_per_page_provenance(client, mock_tool):
+    mock_tool.return_value = {**_MIXED_RESULT, "confidence_measured": False,
+                              "engine_used": "llm_vision", "page_engines": ["llm_vision"],
+                              "page_count": 1}
+    response = client.post(
+        "/ocr/batch",
+        json={"documents": [{"image_base64": base64.b64encode(b"img").decode()}]},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert response.status_code == 200
+    item = response.json()["results"][0]
+    assert item["page_engines"] == ["llm_vision"]
+    assert item["vision_pages"] == 1
+    assert item["confidence_measured"] is False
+
+
+def test_old_tool_results_without_provenance_still_serialise(client, mock_tool):
+    mock_tool.return_value = _FIXTURE_RESULT  # no provenance keys at all
+    response = client.post(
+        "/ocr/extract",
+        json={"image_base64": base64.b64encode(b"img").decode()},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    data = response.json()
+    assert data["page_engines"] == [] and data["vision_pages"] == 0
+    assert data["confidence_measured"] is True
+
+
+@pytest.mark.asyncio
+async def test_extract_document_tool_output_carries_provenance():
+    """The agent-callable tool's dict carries the same fields (real tool, fake engine)."""
+    from app.ocr.models import DocumentType, OcrResult
+    from app.tools.ocr_tool import OcrDocumentTool
+
+    engine = AsyncMock()
+    engine.extract = AsyncMock(return_value=OcrResult(
+        raw_text="a\n\nb", document_type=DocumentType.GENERAL, engine_used="mixed",
+        overall_confidence=0.9, page_count=2, page_engines=["tesseract", "llm_vision"],
+        vision_pages=1, confidence_measured=True,
+    ))
+    out = await OcrDocumentTool(ocr_engine=engine).execute(
+        image_base64=base64.b64encode(b"img").decode()
+    )
+    assert out["page_engines"] == ["tesseract", "llm_vision"]
+    assert out["vision_pages"] == 1
+    assert out["confidence_measured"] is True

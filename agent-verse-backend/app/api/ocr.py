@@ -42,6 +42,18 @@ class OcrFieldResult(BaseModel):
     raw_value: str | None = None
 
 
+def _provenance(res: dict[str, Any]) -> dict[str, Any]:
+    """The per-page provenance / degradation fields of a tool result (OCR-FB-3)."""
+    return {
+        "page_engines": list(res.get("page_engines") or []),
+        "vision_pages": int(res.get("vision_pages") or 0),
+        "confidence_measured": bool(res.get("confidence_measured", True)),
+        "degraded": bool(res.get("degraded", False)),
+        "degradation_reason": res.get("degradation_reason"),
+        "source_format": res.get("source_format"),
+    }
+
+
 class OcrResponse(BaseModel):
     raw_text: str
     document_type: str
@@ -49,6 +61,17 @@ class OcrResponse(BaseModel):
     engine_used: str
     overall_confidence: float
     page_count: int
+    # OCR-FB-3: per-page provenance. ``page_engines`` names the engine that read
+    # each page ("tesseract" / "llm_vision"); ``vision_pages`` counts pages read by
+    # LLM vision; ``confidence_measured`` is False when no page had a measured
+    # confidence (every page came from vision; overall_confidence is then assumed).
+    page_engines: list[str] = Field(default_factory=list)
+    vision_pages: int = 0
+    confidence_measured: bool = True
+    # WS-6: set when the input could not be OCR'd, with the reason.
+    degraded: bool = False
+    degradation_reason: str | None = None
+    source_format: str | None = None
     # WS-13: populated only when persist_to_kb was requested.
     kb_persisted: bool = False
     kb_deduplicated: bool = False
@@ -272,6 +295,7 @@ async def extract_document(
         engine_used=result["engine_used"],
         overall_confidence=result["overall_confidence"],
         page_count=result["page_count"],
+        **_provenance(result),
         kb_persisted=bool(kb_info.get("kb_persisted", False)),
         kb_deduplicated=bool(kb_info.get("kb_deduplicated", False)),
         kb_chunks_ingested=int(kb_info.get("kb_chunks_ingested", 0)),
@@ -338,6 +362,7 @@ async def extract_documents_batch(
                 engine_used=res["engine_used"],
                 overall_confidence=res["overall_confidence"],
                 page_count=res["page_count"],
+                **_provenance(res),
             )
         except DecisionBudgetExceededError:
             raise  # the whole batch answers 429, not N silent item failures
