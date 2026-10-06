@@ -30058,7 +30058,7 @@
     },
     "/goals/{goal_id}/pattern-selection": {
       "get": {
-        "description": "Return the agent pattern this goal was routed to, and why.\n\nSurfaces the ONE selector's decision for the frontend selection UX: the\nauto-selected (or explicitly overridden) primary pattern, the reasoning /\nmulti-agent topology, plain-language rationale, and the registry-driven catalog\nof patterns available to override with. Falls back to computing the summary\non demand for goals persisted before the record existed.",
+        "description": "Return the agent pattern this goal was routed to, and why.\n\nSurfaces the ONE selector's decision for the frontend selection UX: the\nauto-selected (or explicitly overridden) primary pattern, the reasoning /\nmulti-agent topology, plain-language rationale, and the registry-driven catalog\nof patterns available to override with. Falls back to computing the summary\non demand for goals persisted before the record existed.\n\nThe selection is the selector's recommendation from the goal text\n(``selection_kind``); ``execution`` / ``executed_patterns`` /\n``matches_execution`` report what the goal's runtime actually ran.",
         "operationId": "get_goal_pattern_selection_goals__goal_id__pattern_selection_get",
         "parameters": [
           {
