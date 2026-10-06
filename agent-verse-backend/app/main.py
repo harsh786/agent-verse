@@ -2296,6 +2296,11 @@ def create_app(
 
                 configure_usage_redis(redis_for_runtime)
 
+                # Provider circuits shared by every replica and worker (a01-F023-02).
+                from app.providers.shared_circuit import configure_shared_circuit_redis
+
+                configure_shared_circuit_redis(redis_for_runtime)
+
                 # SemanticCache: wire Redis so cache is shared across all workers.
                 _sem_cache = getattr(app.state, "semantic_cache", None)
                 if _sem_cache is not None and hasattr(_sem_cache, "_redis"):

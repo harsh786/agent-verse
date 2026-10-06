@@ -690,6 +690,11 @@ def _preload_retrieval_models() -> None:
 @worker_process_init.connect  # type: ignore[untyped-decorator]
 def _on_worker_process_init(**_kwargs: object) -> None:
     from app.core.config import get_settings
+    from app.providers.shared_circuit import configure_shared_circuit_redis_from_env
+
+    # Provider circuits are fleet-wide (a01-F023-02): every child reads and
+    # reports the shared Redis state (a client per task loop, built lazily).
+    configure_shared_circuit_redis_from_env()
 
     if bool(getattr(get_settings(), "worker_preload_retrieval_models", False)):
         _preload_retrieval_models()

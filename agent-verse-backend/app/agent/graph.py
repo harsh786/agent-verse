@@ -1026,33 +1026,39 @@ class AgentGraph(
             # PROV-21: the same per-model circuit the non-streaming path uses — a
             # model whose circuit is open is skipped, outcomes feed the circuit.
             _key = _cb.breaker_key(self._executor, attempt)
-            if _cb._provider_cb.is_open(_key):
+            # The circuit is fleet-wide (a01-F023-02): a model another replica or
+            # worker found broken is skipped here too.
+            if await _cb.circuit_open_anywhere(_key):
                 last_exc = _cb.ProviderCircuitOpenError(f"circuit open for {_key}")
                 self._logger.warning("executor_model_circuit_open", model=model)
                 continue
             emitted[0] = 0
 
             async def _stream_once(_attempt: Any = attempt, _key: str = _key) -> Any:
-                _cb._provider_cb.before_call(_key)
+                admission = await _cb.admit_call(_key)
                 recorded = False
                 try:
                     out = await asyncio.wait_for(
                         self._executor.stream_tokens(_attempt, _counting_on_token),
                         timeout=timeout,
                     )
-                    _cb._provider_cb.record_success(_key)
                     recorded = True
+                    await _cb.report_success(admission)
                     return out
                 except Exception as exc:
                     # A 429 is throttling, not a failure: it never trips the
                     # circuit (P5-1); it is retried below with backoff.
-                    if getattr(exc, "provider_failure", True) and not is_rate_limit_error(exc):
-                        _cb._provider_cb.record_failure(_key)
+                    if (
+                        not recorded
+                        and getattr(exc, "provider_failure", True)
+                        and not is_rate_limit_error(exc)
+                    ):
                         recorded = True
+                        await _cb.report_failure(admission)
                     raise
                 finally:
                     if not recorded:
-                        _cb._provider_cb.release_probe(_key)
+                        await _cb.report_no_verdict(admission)
 
             try:
                 # Retry a throttled attempt only while no token of it reached the
