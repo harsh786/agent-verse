@@ -2,19 +2,32 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import io
 import logging
 import shutil
 import subprocess
 import tempfile
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
 from app.ocr.classifier import DocumentClassifier
+from app.ocr.concurrency import (
+    current_limits,
+    map_bounded,
+    ocr_page_slot,
+    ocr_vision_slot,
+    run_ocr_work,
+)
 from app.ocr.extractors import get_extractor
 from app.ocr.models import DocumentType, OcrResult
+from app.ocr.rasterize import pdf_page_count, render_pdf_page_image
+
+# A page to OCR: a blocking zero-argument loader (decode / rasterise) that returns
+# the page's PIL image, run on the OCR pool when the page gets its slot.
+PageLoader = Callable[[], Any]
 
 _log = logging.getLogger(__name__)
 
@@ -147,21 +160,25 @@ class OcrEngine:
         Tesseract text is returned as-is (the caller has no vision-capable
         provider, and the system default one might return canned text).
         """
-        pages = self._to_images(image_bytes=image_bytes, pdf_bytes=pdf_bytes)
-        if not pages:
-            return OcrResult(
-                raw_text="",
-                document_type=DocumentType.GENERAL,
-                overall_confidence=0.0,
-                page_count=0,
-            )
+        async with self._open_pages(image_bytes=image_bytes, pdf_bytes=pdf_bytes) as pages:
+            if not pages:
+                return OcrResult(
+                    raw_text="",
+                    document_type=DocumentType.GENERAL,
+                    overall_confidence=0.0,
+                    page_count=0,
+                )
 
-        raw_texts: list[tuple[str, float, str]] = []
-        for page_img in pages:
-            text, conf, engine_name = await self._ocr_page(
-                page_img, provider=provider, vision_fallback=vision_fallback
+            async def _page(load: PageLoader) -> tuple[str, float, str]:
+                return await self._ocr_loaded_page(
+                    load, provider=provider, vision_fallback=vision_fallback
+                )
+
+            # Pages run concurrently (bounded per document and process-wide);
+            # results stay in page order, so each page keeps its own text.
+            raw_texts = await map_bounded(
+                pages, _page, limit=current_limits().page_concurrency
             )
-            raw_texts.append((text, conf, engine_name))
 
         raw_text = "\n\n".join(t for t, _, _ in raw_texts)
         overall_conf = sum(c for _, c, _ in raw_texts) / len(raw_texts)
@@ -224,7 +241,8 @@ class OcrEngine:
                 await self.extract(pdf_bytes=data, provider=provider), source_format="pdf"
             )
         if fmt == "office":
-            pdf_bytes = self._office_to_pdf(data, filename)
+            # LibreOffice runs up to 120 s: on the OCR pool, never on the event loop.
+            pdf_bytes = await run_ocr_work(self._office_to_pdf, data, filename)
             if pdf_bytes is None:
                 return self._degraded(
                     "office",
@@ -283,8 +301,20 @@ class OcrEngine:
             with tempfile.TemporaryDirectory() as tmp:
                 src = Path(tmp) / f"input{suffix}"
                 src.write_bytes(data)
+                # Its own LibreOffice profile: concurrent conversions sharing the
+                # default profile lock each other out (the second one fails).
+                profile = (Path(tmp) / "lo-profile").as_uri()
                 subprocess.run(
-                    [soffice, "--headless", "--convert-to", "pdf", "--outdir", tmp, str(src)],
+                    [
+                        soffice,
+                        f"-env:UserInstallation={profile}",
+                        "--headless",
+                        "--convert-to",
+                        "pdf",
+                        "--outdir",
+                        tmp,
+                        str(src),
+                    ],
                     check=True,
                     capture_output=True,
                     timeout=120,
@@ -296,13 +326,8 @@ class OcrEngine:
             _log.warning("office_to_pdf failed: %s", exc)
         return None
 
-    def _to_images(
-        self,
-        *,
-        image_bytes: bytes | None,
-        pdf_bytes: bytes | None,
-    ) -> list[Any]:
-        """Convert input bytes to a list of PIL Images."""
+    def _to_images(self, *, image_bytes: bytes | None) -> list[Any]:
+        """The (lazily decoded) PIL image of an image input, else ``[]``."""
         if image_bytes:
             try:
                 from PIL import Image
@@ -312,21 +337,65 @@ class OcrEngine:
             except Exception as exc:
                 _log.warning("Failed to open image bytes: %s", exc)
                 return []
+        return []
 
-        if pdf_bytes:
+    @asynccontextmanager
+    async def _open_pages(
+        self,
+        *,
+        image_bytes: bytes | None,
+        pdf_bytes: bytes | None,
+    ) -> AsyncIterator[list[PageLoader]]:
+        """One loader per page of the input, in page order (``[]``: no pages).
+
+        A PDF is written to a temporary file ONCE and each loader renders one
+        page from it (``first_page == last_page``) when that page gets its slot,
+        so a 200-page scan never holds every page bitmap at once; the page count
+        and every render run on the OCR pool, never on the event loop.
+        """
+        if image_bytes:
+            images = self._to_images(image_bytes=image_bytes)
+            yield [(lambda img=img: img) for img in images]
+            return
+        if not pdf_bytes:
+            yield []
+            return
+        with tempfile.TemporaryDirectory(prefix="ocr-pdf-") as tmp:
+            path = Path(tmp) / "document.pdf"
             try:
-                from pdf2image import convert_from_bytes
-
-                pages: list[Any] = convert_from_bytes(pdf_bytes)
-                return pages
+                await run_ocr_work(path.write_bytes, pdf_bytes)
+                count = await run_ocr_work(pdf_page_count, path)
             except ImportError:
                 _log.debug("pdf2image not installed; skipping PDF rendering")
-                return []
+                count = 0
             except Exception as exc:
-                _log.warning("Failed to convert PDF: %s", exc)
-                return []
+                _log.warning("Failed to read PDF for OCR: %s", exc)
+                count = 0
+            dpi = current_limits().render_dpi
+            yield [
+                (lambda n=n: self._render_page(path, n, dpi)) for n in range(1, count + 1)
+            ]
 
-        return []
+    @staticmethod
+    def _render_page(path: Path, page_number: int, dpi: int) -> Any:
+        """One rendered page, or None (that page is OCR'd as empty, the others
+        keep their text)."""
+        try:
+            return render_pdf_page_image(path, page_number, dpi=dpi)
+        except Exception as exc:
+            _log.warning("Failed to render PDF page %d for OCR: %s", page_number, exc)
+            return None
+
+    async def _ocr_loaded_page(
+        self, load: PageLoader, *, provider: Any, vision_fallback: bool
+    ) -> tuple[str, float, str]:
+        """Render / decode one page and OCR it, holding one process-wide page
+        slot for as long as its bitmap is alive."""
+        async with ocr_page_slot():
+            img = await run_ocr_work(load)
+            if img is None:
+                return "", 0.0, "tesseract"
+            return await self._ocr_page(img, provider=provider, vision_fallback=vision_fallback)
 
     async def _ocr_page(
         self,
@@ -341,7 +410,7 @@ class OcrEngine:
             import pytesseract
 
             plain = img
-            img = self._preprocess_image(img)
+            img = await run_ocr_work(self._preprocess_image, img)
             text, avg_conf = await self._tesseract_best(pytesseract, img)
             if not text.strip():
                 # Never trust preprocessing blindly: it once blacked out sparse pages.
@@ -370,28 +439,31 @@ class OcrEngine:
         text really is Devanagari: on Latin pages it misreads digits with high
         confidence (TJ-5531 -> TJ-5534).
         """
-        loop = asyncio.get_running_loop()
-
+        # Every pass runs on the process-wide OCR pool (bounded by
+        # OCR_MAX_CONCURRENCY), never on the shared default executor.
         def _read(image: Any, lang: str) -> tuple[str, float]:
             data = pytesseract.image_to_data(
                 image, lang=lang, output_type=pytesseract.Output.DICT
             )
             return _tesseract_text_conf(data)
 
-        best = await loop.run_in_executor(None, _read, img, "eng")
+        def _rotate(image: Any, degrees: int) -> Any:
+            return image.rotate(-degrees, expand=True, fillcolor=255)
+
+        best = await run_ocr_work(_read, img, "eng")
         if best[1] >= HINDI_RETRY_CONFIDENCE:
             return best  # a confident English reading: no OSD / Hindi pass needed
-        osd = await loop.run_in_executor(None, _tesseract_osd, pytesseract, img)
+        osd = await run_ocr_work(_tesseract_osd, pytesseract, img)
         if best[1] < CONFIDENCE_THRESHOLD and osd is not None:
             rotate = int(osd.get("rotate") or 0) % 360
             if rotate and float(osd.get("orientation_conf") or 0) >= OSD_MIN_CONFIDENCE:
-                rotated = img.rotate(-rotate, expand=True, fillcolor=255)
-                again = await loop.run_in_executor(None, _read, rotated, "eng")
+                rotated = await run_ocr_work(_rotate, img, rotate)
+                again = await run_ocr_work(_read, rotated, "eng")
                 if again[1] > best[1]:
                     best, img = again, rotated
-        if "hin" in _tesseract_languages(pytesseract):
+        if "hin" in await run_ocr_work(_tesseract_languages, pytesseract):
             try:
-                hindi = await loop.run_in_executor(None, _read, img, "hin+eng")
+                hindi = await run_ocr_work(_read, img, "hin+eng")
             except Exception as exc:
                 _log.debug("Tesseract hin+eng unavailable: %s", exc)
             else:
@@ -400,6 +472,20 @@ class OcrEngine:
         return best
 
     async def _llm_vision_ocr(
+        self,
+        img: Any,
+        *,
+        provider: Any = None,
+        tenant_id: str | None = None,
+    ) -> tuple[str, float, str]:
+        """LLM-vision OCR of one page, holding one of the process-wide vision
+        slots (OCR_VISION_CONCURRENCY): pages fall back concurrently, bounded."""
+        async with ocr_vision_slot():
+            return await self._llm_vision_ocr_unbounded(
+                img, provider=provider, tenant_id=tenant_id
+            )
+
+    async def _llm_vision_ocr_unbounded(
         self,
         img: Any,
         *,
@@ -430,7 +516,7 @@ class OcrEngine:
                 _log.warning("No provider for LLM vision OCR (%s); empty text", exc)
                 return "", 0.0, "llm_vision"
 
-        img_b64 = self._image_to_base64(img)
+        img_b64 = await run_ocr_work(self._image_to_base64, img)  # PNG encode: off the loop
         try:
             from app.providers.base import CompletionRequest, Message
 

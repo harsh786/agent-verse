@@ -51,6 +51,15 @@ x-common-env: &common-env
   INGESTION_ALLOW_INTERNAL_SOURCES: ${INGESTION_ALLOW_INTERNAL_SOURCES:-false}
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: ${INGESTION_INTERNAL_SOURCE_ALLOWLIST:-}
 
+  # OCR parallelism (OCR-PAR): one bounded pool per process shared by every document.
+  # 0 = the container's CPUs (quota aware, split between a prefork worker's children);
+  # page concurrency 0 = max - 1 (min 2). Shared by the API and every worker.
+  OCR_MAX_CONCURRENCY: ${OCR_MAX_CONCURRENCY:-0}
+  OCR_PAGE_CONCURRENCY: ${OCR_PAGE_CONCURRENCY:-0}
+  OCR_VISION_CONCURRENCY: ${OCR_VISION_CONCURRENCY:-4}
+  OCR_RENDER_DPI: ${OCR_RENDER_DPI:-300}
+  OMP_THREAD_LIMIT: ${OMP_THREAD_LIMIT:-1}
+
   # Observability — export traces/metrics to the in-stack otel-collector.
   OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
 

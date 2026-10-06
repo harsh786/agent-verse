@@ -57,10 +57,14 @@ COPY --from=builder --chown=app:app /app/.venv /app/.venv
 
 # PYTHONPATH makes `app` importable for uvicorn, alembic and celery without installing
 # the project into the venv (which would tie the venv layer to the source).
+# OMP_THREAD_LIMIT=1: OCR runs pages side by side on its own bounded pool
+# (OCR_MAX_CONCURRENCY); each tesseract spawning one OpenMP thread per core on top
+# of that oversubscribes the CPU (app/ocr/concurrency.py).
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    OMP_THREAD_LIMIT=1
 
 USER app
 EXPOSE 8000

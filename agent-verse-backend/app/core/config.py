@@ -411,6 +411,20 @@ class Settings(BaseSettings):
     # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
     # /pdf, /docx). The body used to be read whole into memory with no limit.
     knowledge_max_upload_bytes: int = 50 * 1024 * 1024
+    # OCR parallelism (OCR-PAR, app/ocr/concurrency.py). Every OCR caller in a
+    # process (API requests, ZIP members, ingestion jobs) shares ONE pool:
+    # OCR threads AND pages in flight (page bitmaps in memory) per process;
+    # 0 = the CPUs this process may use (cgroup quota aware, split between a
+    # prefork worker's children).
+    ocr_max_concurrency: int = Field(default=0, ge=0, le=256)
+    # Pages of ONE document OCR'd at once; 0 = one less than the global cap
+    # (min 2 when the cap is 2), so another document still progresses beside a
+    # huge scan. Never more than ocr_max_concurrency.
+    ocr_page_concurrency: int = Field(default=0, ge=0, le=256)
+    # LLM-vision fallback calls in flight per process (low-confidence pages).
+    ocr_vision_concurrency: int = Field(default=4, ge=1, le=64)
+    # Resolution scanned PDF pages are rasterised at (one page at a time).
+    ocr_render_dpi: int = Field(default=300, ge=72, le=600)
     voice_persona_bucket: str = "agentverse-voice-personas"
     voice_greeting_cache_ttl: int = 300
     voice_max_audio_mb: int = 25

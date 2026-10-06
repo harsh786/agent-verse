@@ -1412,6 +1412,10 @@ class _UploadUnit:
     archive_member: str | None = None
 
 
+# One outcome per archive entry, in archive order: (unit, None) or (None, skip).
+type _ArchiveOutcome = tuple[_UploadUnit | None, dict[str, str] | None]
+
+
 async def _extract_upload_unit(
     request: Request,
     data: bytes,
@@ -1460,18 +1464,20 @@ async def _extract_archive_units(
     limits, unreadable) and 422 when no member could be indexed."""
     from app.ingestion.archive import (
         ArchiveLimits,
+        ArchiveMember,
         ArchiveRejectedError,
         ArchiveSkip,
         iter_archive,
     )
     from app.ingestion.document_text import IMAGE_UPLOAD_EXTS, OCR_MAX_PDF_PAGES
+    from app.ocr.concurrency import current_limits, map_bounded_stream
 
     limits = ArchiveLimits.for_upload_limit(int(get_settings().knowledge_max_upload_bytes))
     members = iter_archive(data, filename=filename, limits=limits)
-    units: list[_UploadUnit] = []
-    skipped: list[dict[str, str]] = []
     images_ocrd = 0
-    while True:
+
+    async def _pull() -> _ArchiveOutcome | ArchiveMember | None:
+        nonlocal images_ocrd
         try:
             # Inflating runs in a worker thread, one member at a time.
             item = await asyncio.to_thread(next, members, None)
@@ -1480,33 +1486,44 @@ async def _extract_archive_units(
         except ValueError as exc:  # DocumentParseError: unreadable archive / member
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if item is None:
-            break
+            return None
         if isinstance(item, ArchiveSkip):
-            skipped.append({"name": item.name, "reason": item.reason})
-            continue
-        ext = item.ext or "txt"
-        if ext in IMAGE_UPLOAD_EXTS:
+            return None, {"name": item.name, "reason": item.reason}
+        if (item.ext or "txt") in IMAGE_UPLOAD_EXTS:
             if images_ocrd >= OCR_MAX_PDF_PAGES:
-                skipped.append({"name": item.path, "reason": "OCR limit for one upload reached"})
-                continue
+                return None, {"name": item.path, "reason": "OCR limit for one upload reached"}
             images_ocrd += 1
+        return item
+
+    async def _extract(entry: _ArchiveOutcome | ArchiveMember) -> _ArchiveOutcome:
+        if isinstance(entry, tuple):
+            return entry  # skipped while reading the archive
+        item = entry
         try:
             unit = await _extract_upload_unit(
                 request,
                 item.data,
-                ext=ext,
+                ext=item.ext or "txt",
                 filename=item.path,
                 source_file=f"{filename}/{item.path}",
                 archive_member=item.path,
             )
         except HTTPException as exc:  # this member only: unsupported / unreadable / no OCR
-            skipped.append({"name": item.path, "reason": str(exc.detail)})
-            continue
+            return None, {"name": item.path, "reason": str(exc.detail)}
         unit.warnings = [f"{item.path}: {w}" for w in unit.warnings]
         if unit.segments:
-            units.append(unit)
-        else:
-            skipped.append({"name": item.path, "reason": "no extractable text"})
+            return unit, None
+        return None, {"name": item.path, "reason": "no extractable text"}
+
+    # OCR-PAR-4: members are extracted / OCR'd concurrently - at most
+    # OCR_PAGE_CONCURRENCY inflated members at once (their OCR pages are bounded
+    # by the process-wide OCR pool) - and keep their archive order. The first
+    # non-member error (zip bomb, budget refusal) stops reading the archive.
+    outcomes = await map_bounded_stream(
+        _pull, _extract, limit=current_limits().page_concurrency
+    )
+    units = [unit for unit, _ in outcomes if unit is not None]
+    skipped = [skip for _, skip in outcomes if skip is not None]
     if not units:
         reasons = "; ".join(f"{s['name']}: {s['reason']}" for s in skipped[:5])
         raise HTTPException(
@@ -1538,12 +1555,14 @@ async def _extract_image_text_or_http(
     )
 
     try:
-        async with _upload_parse_slot():  # OCR is bounded like parsing
-            return await extract_image_text(
-                content_bytes,
-                filename=filename,
-                vision_provider=getattr(request.app.state, "llm_provider", None),
-            )
+        # OCR is bounded by the process-wide OCR pool (app/ocr/concurrency.py),
+        # not by the upload *parse* slots: holding one of those for a whole scan
+        # capped a replica at two OCR jobs and stalled unrelated parsing behind it.
+        return await extract_image_text(
+            content_bytes,
+            filename=filename,
+            vision_provider=getattr(request.app.state, "llm_provider", None),
+        )
     except DocumentParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ParserUnavailableError as exc:
@@ -1574,13 +1593,13 @@ async def _ocr_textless_pdf_pages_or_http(
 
     has_text_layer = any(t.strip() for _, t in segments)
     try:
-        async with _upload_parse_slot():  # OCR is bounded like parsing
-            ocr = await ocr_pdf_pages(
-                content_bytes,
-                filename=filename,
-                page_numbers=textless,
-                vision_provider=getattr(request.app.state, "llm_provider", None),
-            )
+        # Bounded by the process-wide OCR pool, not the upload parse slots.
+        ocr = await ocr_pdf_pages(
+            content_bytes,
+            filename=filename,
+            page_numbers=textless,
+            vision_provider=getattr(request.app.state, "llm_provider", None),
+        )
     except DocumentParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ParserUnavailableError as exc:  # incl. OcrUnavailableError
