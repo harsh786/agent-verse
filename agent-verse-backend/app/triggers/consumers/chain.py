@@ -27,10 +27,16 @@ from types import SimpleNamespace
 
 from app.triggers.bus import run_stream_consumer
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx
+from app.triggers.lineage import MAX_CHAIN_DEPTH, chained_payload, lineage_from_context
 
 _log = logging.getLogger(__name__)
 
-MAX_CHAIN_DEPTH = 10
+__all__ = [
+    "CHAIN_CHANNEL_FOR_EVENT",
+    "MAX_CHAIN_DEPTH",
+    "ChainTriggerConsumer",
+    "build_chain_event",
+]
 
 # Goal event type → lifecycle channel this consumer listens on. Published by
 # GoalService._dispatch_event (in-process goals) and the run_goal worker.
@@ -126,9 +132,11 @@ class ChainTriggerConsumer:
             data = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
         except Exception:
             return
+        if not isinstance(data, dict):
+            return
 
         # Enforce chain depth limit
-        chain_depth = data.get("trigger_chain_depth", 0)
+        chain_depth = lineage_from_context(data).depth
         if chain_depth >= MAX_CHAIN_DEPTH:
             _log.warning(
                 "chain_depth_exceeded depth=%d goal_id=%s",
@@ -158,7 +166,6 @@ class ChainTriggerConsumer:
         goal_id = data.get("goal_id", "")
         agent_id = data.get("agent_id", "")
         score = data.get("score", 1.0)
-        source_trigger_id = str(data.get("source_trigger_id", "") or "")
 
         # Find all enabled triggers of this type for this tenant
         try:
@@ -187,14 +194,8 @@ class ChainTriggerConsumer:
             # HITLTriggerConsumer / MemoryTriggerConsumer) fixes the extraction.
             spec = trigger.get("spec", trigger) if isinstance(trigger, dict) else trigger
 
-            # Self-chain guard: never fire a trigger on a goal it created itself.
-            trigger_id = str(
-                getattr(spec, "trigger_id", "")
-                or (trigger.get("schedule_id", "") if isinstance(trigger, dict) else "")
-                or ""
-            )
-            if source_trigger_id and trigger_id == source_trigger_id:
-                continue
+            # The self-chain guard (a trigger never fires on a goal it created,
+            # unless allow_self_trigger) runs in the dispatcher, which audits it.
 
             # Filter by watch_agent_id / watch_goal_id if set. watch_agent_id is
             # the SOURCE filter (whose goals to watch); the agent the trigger
@@ -214,7 +215,7 @@ class ChainTriggerConsumer:
             if tenant_ctx is None:
                 tenant_ctx = await event_tenant_ctx(self._dispatcher, tenant_id)
 
-            enriched = {**data, "trigger_chain_depth": chain_depth + 1}
+            enriched = chained_payload(data, lineage_from_context(data))
             try:
                 await self._dispatcher.dispatch(
                     spec,

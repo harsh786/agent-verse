@@ -149,6 +149,9 @@ class TriggerSpec:
     score_dimension: str = ""  # "overall" | specific dimension name
     hitl_queue_id: str = ""  # for HITL_APPROVED / HITL_REJECTED
     memory_type: str = ""  # for MEMORY_CREATED: type of memory
+    # B7: may this trigger fire on events produced by a goal it started itself?
+    # Off by default (loop guard); MAX_CHAIN_DEPTH still caps a chain when on.
+    allow_self_trigger: bool = False
 
     # ── Family C: Conversational ──────────────────────────────────────────────
     channel_type: str = ""  # "slack" | "teams" | "discord" | "sms" | ...
