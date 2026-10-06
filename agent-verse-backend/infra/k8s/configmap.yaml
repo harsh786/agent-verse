@@ -28,6 +28,11 @@ data:
   # Enforced by tests/infra/test_vault_key_distribution.py (EGRESS-CFG).
   INGESTION_ALLOW_INTERNAL_SOURCES: "false"
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: ""
+  # a06-F099-03: dead-worker message restore. Workers heart-beat every grace / 4 s;
+  # a beat job requeues the messages of a worker silent for the grace at once
+  # (the ~25 h broker visibility timeout stays the backstop).
+  CELERY_DEAD_WORKER_RESTORE_ENABLED: "true"
+  CELERY_DEAD_WORKER_GRACE_SECONDS: "120"
   # OCR-PAR: OCR parallelism, one bounded pool per process shared by every document.
   # "0" = the pod's CPU limit (cgroup quota), split between a prefork worker's
   # children; page concurrency "0" = max - 1 (min 2). OMP_THREAD_LIMIT pins

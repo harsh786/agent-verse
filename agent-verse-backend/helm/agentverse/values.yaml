@@ -256,6 +256,15 @@ ingestion:
   # index); the cursor still advances in source order. 1 = one at a time.
   syncDocConcurrency: 4
 
+# a06-F099-03: dead-worker message restore. Workers heart-beat (every
+# graceSeconds / 4) and record the messages they hold; a beat job puts the
+# messages of a worker silent for graceSeconds back on their queue at once
+# instead of after the ~25 h broker visibility timeout (kept as the backstop).
+# Rendered into the shared config map (workers and beat read the same values).
+celeryDeadWorkerRestore:
+  enabled: true
+  graceSeconds: 120
+
 # OCR-PAR: OCR parallelism, one bounded pool per process shared by every document
 # (uploads, /ocr, ZIP members, ingestion jobs). maxConcurrency = OCR threads and
 # page bitmaps in flight per process (0 = the pod's CPU limit / quota, split

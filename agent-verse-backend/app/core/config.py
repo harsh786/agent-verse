@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     goal_loop_stall_seconds: float = Field(default=600.0, ge=1.0)
     goal_watchdog_max_requeues: int = Field(default=1, ge=0, le=5)
 
+    # --- dead-worker message restore (a06-F099-03) ---
+    # The Redis broker redelivers an unacked message only after its one
+    # visibility timeout (~25 h, sized for the longest goal). With this on, each
+    # worker records which of its processes holds each message and heart-beats
+    # (every grace / 4 s); a beat job puts the messages of a worker whose
+    # heartbeat is older than the grace back on their queue at once. The 25 h
+    # timeout stays as the backstop (old workers, unrecorded messages).
+    celery_dead_worker_restore_enabled: bool = True
+    celery_dead_worker_grace_seconds: float = Field(default=120.0, ge=10.0)
+
     # --- networking / security ---
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173"]

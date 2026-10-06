@@ -20,6 +20,9 @@ data:
   INGESTION_INTERNAL_SOURCE_ALLOWLIST: {{ .Values.ingestion.internalSourceAllowlist | quote }}
   ALLOW_PRIVATE_NETWORK_ACCESS: {{ .Values.ingestion.allowPrivateNetworkAccess | quote }}
   INGESTION_SYNC_DOC_CONCURRENCY: {{ .Values.ingestion.syncDocConcurrency | quote }}
+  # a06-F099-03: dead-worker message restore (values: celeryDeadWorkerRestore.*).
+  CELERY_DEAD_WORKER_RESTORE_ENABLED: {{ .Values.celeryDeadWorkerRestore.enabled | quote }}
+  CELERY_DEAD_WORKER_GRACE_SECONDS: {{ .Values.celeryDeadWorkerRestore.graceSeconds | quote }}
   # OCR-PAR: OCR parallelism (values: ocr.*). Every app workload reads this one ConfigMap.
   OCR_TESSERACT_ENABLED: {{ .Values.ocr.tesseractEnabled | quote }}
   OCR_MAX_CONCURRENCY: {{ .Values.ocr.maxConcurrency | quote }}
