@@ -254,6 +254,20 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
         raise ValueError(
             f"catch_up must be one of: {', '.join(CATCH_UP_POLICIES)} (got {spec.catch_up!r})"
         )
+    # B1-12: a condition the evaluator cannot run was stored, and every fire
+    # was then skipped as condition_error.
+    conditions = (("condition_cel", spec.condition_expression), ("condition", spec.condition))
+    for label, expr in conditions:
+        if expr and expr.strip():
+            from app.triggers.condition.evaluator import CELEvaluator
+
+            try:
+                CELEvaluator().check(expr)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{label} cannot be evaluated ({exc}); conditions support payload fields "
+                    "(payload.a.b), literals, == != < <= > >=, in, and/or/not (&& || !)"
+                ) from exc
     # B1-2: an unknown zone used to be stored and then silently evaluated as UTC.
     if (reason := timezone_error(spec.timezone)) is not None:
         raise ValueError(reason)
