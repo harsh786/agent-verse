@@ -463,6 +463,21 @@
         "title": "ApproveRequest",
         "type": "object"
       },
+      "AssignSessionRequest": {
+        "properties": {
+          "owner_user_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Owner User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "owner_user_id"
+        ],
+        "title": "AssignSessionRequest",
+        "type": "object"
+      },
       "AuthType": {
         "enum": [
           "bearer",
@@ -1028,6 +1043,32 @@
           }
         },
         "title": "ChannelMappingDecision",
+        "type": "object"
+      },
+      "ChatKnowledgeOptIn": {
+        "properties": {
+          "opted_in": {
+            "title": "Opted In",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "opted_in"
+        ],
+        "title": "ChatKnowledgeOptIn",
+        "type": "object"
+      },
+      "ChatTranscriptsKnowledgeSetting": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ChatTranscriptsKnowledgeSetting",
         "type": "object"
       },
       "CheckoutRequest": {
@@ -9698,6 +9739,7 @@
           "title": {
             "anyOf": [
               {
+                "maxLength": 500,
                 "type": "string"
               },
               {
@@ -9705,6 +9747,19 @@
               }
             ],
             "title": "Title"
+          },
+          "ttl_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Days"
           }
         },
         "title": "UpdateSessionRequest",
@@ -22515,9 +22570,190 @@
         ]
       }
     },
+    "/chat/admin/sessions/unowned": {
+      "get": {
+        "description": "Sessions with no owner (channels, older sessions); admin only, audited.",
+        "operationId": "admin_list_unowned_sessions_chat_admin_sessions_unowned_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin List Unowned Sessions Chat Admin Sessions Unowned Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin List Unowned Sessions",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/admin/sessions/{session_id}/assign": {
+      "post": {
+        "description": "Give a session with no owner to a person (it becomes theirs, privately).",
+        "operationId": "admin_assign_unowned_session_chat_admin_sessions__session_id__assign_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Assign Unowned Session Chat Admin Sessions  Session Id  Assign Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Assign Unowned Session",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/admin/sessions/{session_id}/messages": {
+      "get": {
+        "description": "Read a session with no owner; admin only, audited before it is read.",
+        "operationId": "admin_read_unowned_session_chat_admin_sessions__session_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Admin Read Unowned Session Chat Admin Sessions  Session Id  Messages Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Read Unowned Session",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/admin/sessions/{session_id}/messages/{message_id}": {
+      "delete": {
+        "description": "A tenant admin deletes a message from any session of the tenant (CHAT-SEC-2).\n\nModeration without reading: nothing of the message is returned. Audited\ndurably before the delete (audit failure: 503, nothing deleted). The\nsession's transcript leaves the knowledge index like an owner's delete.",
+        "operationId": "admin_delete_message_chat_admin_sessions__session_id__messages__message_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Delete Message",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/chat/artifacts/{artifact_id}/download": {
       "get": {
-        "description": "Download a chat-generated document (Phase 4), tenant-scoped.",
+        "description": "Download a chat-generated document (Phase 4), tenant-scoped.\n\nA document generated in a chat session is the session owner's: anyone else\ngets 404 (CHAT-SEC-1).",
         "operationId": "download_artifact_chat_artifacts__artifact_id__download_get",
         "parameters": [
           {
@@ -22882,6 +23118,7 @@
     },
     "/chat/search": {
       "post": {
+        "description": "Full-text search over the caller's own sessions only.",
         "operationId": "search_messages_chat_search_post",
         "requestBody": {
           "content": {
@@ -23069,6 +23306,7 @@
     },
     "/chat/sessions": {
       "get": {
+        "description": "The caller's own sessions only (newest first, bounded).",
         "operationId": "list_sessions_chat_sessions_get",
         "responses": {
           "200": {
@@ -23726,6 +23964,7 @@
     },
     "/chat/sessions/{session_id}/messages/{message_id}": {
       "delete": {
+        "description": "Delete one of the caller's own messages (CHAT-SEC-2).\n\nThe message is removed from the database, not hidden. The session's\ntranscript leaves the knowledge index at once (a held one is kept), and the\nnext sync re-indexes the session without it.",
         "operationId": "delete_message_chat_sessions__session_id__messages__message_id__delete",
         "parameters": [
           {
@@ -24206,6 +24445,72 @@
           }
         },
         "summary": "Session Usage",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/settings/knowledge": {
+      "get": {
+        "description": "Whether the caller's own chats are indexed as knowledge (off by default).",
+        "operationId": "get_chat_knowledge_opt_in_chat_settings_knowledge_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Chat Knowledge Opt In Chat Settings Knowledge Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Chat Knowledge Opt In",
+        "tags": [
+          "chat"
+        ]
+      },
+      "put": {
+        "description": "Opt the caller's own chats in or out of the workspace's knowledge.\n\nOpting in needs the workspace switch (an admin's) to be on; only the chat\nsessions the caller created are indexed, under the caller's id, with PII and\nsecrets redacted. Revoking stops indexing at once and removes the caller's\ntranscripts already indexed (a document under legal hold is kept and\nreported), never anyone else's.",
+        "operationId": "set_chat_knowledge_opt_in_chat_settings_knowledge_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatKnowledgeOptIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Chat Knowledge Opt In Chat Settings Knowledge Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Chat Knowledge Opt In",
         "tags": [
           "chat"
         ]
@@ -26817,7 +27122,7 @@
     },
     "/connectors/{server_id}/health": {
       "get": {
-        "description": "Return health check history for a connector.\n\nNo database or a failed read is a 503 \u2014 never ``[]``, which the UI shows as\n\"never checked\" (MCPREG-02).",
+        "description": "Return health check history for a connector.\n\nNo database or a failed read is a 503 \u2014 never ``[]``, which the UI shows as\n\"never checked\" (MCPREG-02). Another tenant's (or an unknown) connector is a\n404, as on every other connector route (P1c-5).",
         "operationId": "get_connector_health_history_connectors__server_id__health_get",
         "parameters": [
           {
@@ -37030,7 +37335,7 @@
     },
     "/knowledge/ingest/url": {
       "post": {
-        "description": "Ingest content from a URL (web page, GitHub file, Confluence page, etc.).",
+        "description": "Ingest the web page or file at a URL (HTML, text, PDF, DOCX, PPTX, XLSX, images, ZIP).\n\nOne document per (collection, URL): ingesting the URL again replaces its\nprevious version (unchanged chunks keep their ids), unless that document\nis under legal hold (409, the held version is kept). An unchanged page is\nreported ``deduplicated``. Redirects are followed safely; a permanent move\nis reported in ``moved_permanently``.",
         "operationId": "ingest_from_url_knowledge_ingest_url_post",
         "requestBody": {
           "content": {
@@ -45013,6 +45318,74 @@
           }
         },
         "summary": "Set A2A Directory",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/me/chat-transcripts-knowledge": {
+      "get": {
+        "description": "Whether chat transcripts may become knowledge in this workspace (owner\ndecision 7). Off by default; each person must also opt in for their own chats.",
+        "operationId": "get_chat_transcripts_knowledge_tenants_me_chat_transcripts_knowledge_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Get Chat Transcripts Knowledge Tenants Me Chat Transcripts Knowledge Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Chat Transcripts Knowledge",
+        "tags": [
+          "tenants"
+        ]
+      },
+      "put": {
+        "description": "Enable or disable the ``chat_transcript`` knowledge kind (admin only).\n\nOn: an ``agent_generated`` Source may list the kind, and it indexes the chats\nof the people who opted in. Off: the kind is refused on save, Sources index no\ntranscript, and every transcript already indexed is removed (bounded batches;\na document under legal hold is kept and reported).",
+        "operationId": "set_chat_transcripts_knowledge_tenants_me_chat_transcripts_knowledge_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatTranscriptsKnowledgeSetting"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Set Chat Transcripts Knowledge Tenants Me Chat Transcripts Knowledge Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Chat Transcripts Knowledge",
         "tags": [
           "tenants"
         ]
