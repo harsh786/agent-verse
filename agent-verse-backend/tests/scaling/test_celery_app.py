@@ -1517,3 +1517,22 @@ def test_the_beat_never_waits_for_results_and_wakes_inside_its_lock() -> None:
                lambda self, e, producer=None, advance=True, **kw: sent.append(dict(e.options))):
         AgentVerseRedBeatScheduler.apply_async(object.__new__(AgentVerseRedBeatScheduler), entry)
     assert sent == [{"queue": "schedules", "expires": 55, "ignore_result": True}]
+
+
+def test_beat_redis_clients_fail_fast_on_a_dead_connection() -> None:
+    """B1-15: the live beat stalled 86 s once and 15 min several times (a
+    blocked Redis call with no socket timeout waits for the kernel's TCP
+    give-up, ~924 s). Broker and RedBeat clients carry timeouts + keepalive."""
+    from urllib.parse import parse_qs, urlparse
+
+    import redis
+
+    opts = celery_app.conf.broker_transport_options
+    assert opts["socket_timeout"] == 30 and opts["socket_keepalive"] is True
+    assert opts["health_check_interval"] > 0
+    assert opts["visibility_timeout"] > 86_400  # unchanged
+    url = celery_app.conf.redbeat_redis_url
+    query = parse_qs(urlparse(url).query)
+    assert query["socket_timeout"] == ["15"] and query["socket_keepalive"] == ["true"]
+    kwargs = redis.StrictRedis.from_url(url).connection_pool.connection_kwargs
+    assert kwargs["socket_timeout"] == 15.0 and kwargs["socket_keepalive"] is True

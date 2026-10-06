@@ -518,7 +518,26 @@ def _goal_visibility_timeout_s() -> int:
 
 _BROKER_TRANSPORT_OPTIONS: dict[str, object] = {
     "visibility_timeout": _goal_visibility_timeout_s(),
+    # B1-15: a dead TCP connection to Redis must fail fast, not block a send
+    # (the beat's publish) until the kernel gives up (~15 min).
+    "socket_timeout": 30,
+    "socket_connect_timeout": 10,
+    "socket_keepalive": True,
+    "health_check_interval": 25,
 }
+
+# B1-15: query options redis-py applies to RedBeat's own client (RedBeat builds
+# it with StrictRedis.from_url and ignores redbeat_redis_options there).
+_REDBEAT_CLIENT_QUERY = (
+    "socket_timeout=15&socket_connect_timeout=5&socket_keepalive=true"
+    "&health_check_interval=25&retry_on_timeout=true"
+)
+
+
+def _with_client_timeouts(url: str) -> str:
+    if url.startswith("sentinel://"):
+        return url
+    return f"{url}{'&' if '?' in url else '?'}{_REDBEAT_CLIENT_QUERY}"
 celery_app.conf.broker_transport_options = dict(_BROKER_TRANSPORT_OPTIONS)
 
 # ── RedBeat HA Beat Scheduler ──────────────────────────────────────────────────
@@ -529,7 +548,7 @@ try:
 
     # B1-14: RedBeat that never subscribes the beat to task results.
     celery_app.conf.beat_scheduler = "app.scaling.beat_scheduler:AgentVerseRedBeatScheduler"
-    celery_app.conf.redbeat_redis_url = REDIS_URL
+    celery_app.conf.redbeat_redis_url = _with_client_timeouts(REDIS_URL)
     celery_app.conf.redbeat_lock_key = "agentverse:beat:lock"
     celery_app.conf.redbeat_lock_timeout = 300  # 5 minutes
     # B1-14: wake at least every 30 s, well inside the 300 s lock (the default
