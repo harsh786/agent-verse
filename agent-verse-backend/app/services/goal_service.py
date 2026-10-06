@@ -5033,12 +5033,14 @@ class GoalService:
     async def get_pattern_selection(
         self, goal_id: str, tenant_ctx: TenantContext
     ) -> dict[str, Any]:
-        """Return the agent pattern this goal was routed to (+ why).
+        """Return the agent pattern selected for this goal (+ why) and what ran.
 
         Reads the ``pattern_selection`` record persisted at goal creation (which
         reflects any explicit strategy override); recomputes the summary on demand
         for goals persisted before the record existed. ``get_goal`` intentionally
         does not surface ``execution_context``, so this reads the record directly.
+        The selection is a recommendation; ``execution`` / ``matches_execution``
+        report the runtime's own ``strategy_execution`` record.
         """
         record = self._goals.get(goal_id)
         if record is None or record.tenant_id != tenant_ctx.tenant_id:
@@ -5059,6 +5061,11 @@ class GoalService:
                 tenant_id=tenant_ctx.tenant_id,
                 agent_config=strategy_runtime if isinstance(strategy_runtime, dict) else None,
             )
+        # The selection is the selector's recommendation from the goal text; the
+        # runtime's own record says what actually ran (a01-F013-02).
+        from app.orchestration.pattern_selection_summary import with_execution
+
+        selection = with_execution(selection, ctx)
         return {"goal_id": goal_id, "status": record.status.value, **selection}
 
     async def list_goals(

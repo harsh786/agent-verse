@@ -715,6 +715,10 @@ async def get_goal_pattern_selection(request: Request, goal_id: str) -> dict[str
     multi-agent topology, plain-language rationale, and the registry-driven catalog
     of patterns available to override with. Falls back to computing the summary
     on demand for goals persisted before the record existed.
+
+    The selection is the selector's recommendation from the goal text
+    (``selection_kind``); ``execution`` / ``executed_patterns`` /
+    ``matches_execution`` report what the goal's runtime actually ran.
     """
     tenant = _require_tenant(request)
     try:

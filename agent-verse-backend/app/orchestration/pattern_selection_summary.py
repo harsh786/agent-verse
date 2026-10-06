@@ -161,3 +161,45 @@ def summarize_pattern_selection(
         "rationale": rationale,
         "available_patterns": _available_agent_patterns(reg),
     }
+
+
+def with_execution(selection: dict[str, Any], execution_context: dict[str, Any]) -> dict[str, Any]:
+    """*selection* plus what the goal's runtime actually ran (a01-F013-02).
+
+    The selection is computed from the goal text for every goal — it is the
+    selector's recommendation, not a record of execution: an agent's pattern
+    flags, a ``workflow_mode``, a downgraded strategy override or the legacy
+    kernel can run something else. ``strategy_execution`` is written from the
+    constructed runtime (``build_profiled_graph`` / the StrategyRunner), so it is
+    the ground truth this adds:
+
+    * ``execution`` — ``{"state": "pending"}`` before the runtime is built, else
+      ``{"state": "recorded", "driver", "patterns", "requested_primary",
+      "downgrades"}``;
+    * ``executed_patterns`` and ``matches_execution`` (``None`` while pending);
+    * ``strategy_downgraded`` / ``strategy_downgrade`` for an override the
+      tenant's runtime could not honour.
+    """
+    out = dict(selection)
+    out["selection_kind"] = "recommendation"
+    raw = execution_context.get("strategy_execution")
+    if isinstance(raw, dict) and raw.get("patterns") is not None:
+        patterns = [str(p) for p in raw.get("patterns") or ()]
+        execution: dict[str, Any] = {
+            "state": "recorded",
+            "driver": str(raw.get("driver") or ""),
+            "patterns": patterns,
+            "requested_primary": raw.get("requested_primary"),
+            "downgrades": list(raw.get("downgrades") or ()),
+        }
+        out["execution"] = execution
+        out["executed_patterns"] = patterns
+        out["matches_execution"] = str(out.get("primary_pattern") or "") in patterns
+    else:
+        out["execution"] = {"state": "pending"}
+        out["executed_patterns"] = []
+        out["matches_execution"] = None
+    downgraded = bool(execution_context.get("strategy_downgraded"))
+    out["strategy_downgraded"] = downgraded
+    out["strategy_downgrade"] = execution_context.get("strategy_downgrade") if downgraded else None
+    return out

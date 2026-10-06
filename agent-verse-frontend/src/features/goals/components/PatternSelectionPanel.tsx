@@ -112,6 +112,29 @@ export function PatternSelectionPanel({ goalId, goalText }: Props) {
           <PropChip label="autonomy" value={data.autonomy_mode} />
         </div>
 
+        {data.execution?.state === 'recorded' && (
+          <div className="mt-3 text-xs" data-testid="pattern-execution">
+            <span className="text-muted-foreground">Ran: </span>
+            <span className="font-medium" data-testid="pattern-executed">
+              {(data.executed_patterns ?? []).map(humanizePattern).join(' + ') || 'unknown'}
+            </span>
+            {data.matches_execution === false && (
+              <p
+                className="mt-2 flex items-start gap-1.5 rounded-lg bg-amber-500/10 p-2 text-amber-500"
+                role="note"
+                data-testid="pattern-execution-mismatch"
+              >
+                <Info className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" aria-hidden />
+                <span>
+                  The runtime ran a different pattern than the selection above, which is the
+                  selector&apos;s recommendation from the goal text
+                  {data.strategy_downgraded ? ' (the requested strategy was downgraded)' : ''}.
+                </span>
+              </p>
+            )}
+          </div>
+        )}
+
         {data.advanced_tier_gated && data.multi_agent_patterns.some((p) => p !== 'single_agent') && (
           <p
             className="mt-3 flex items-start gap-1.5 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-500"
@@ -203,6 +226,13 @@ export function PatternSelectionPanel({ goalId, goalText }: Props) {
       </section>
     </div>
   );
+}
+
+function humanizePattern(id: string): string {
+  return id
+    .split('_')
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(' ');
 }
 
 function PropChip({ label, value }: { label: string; value: string }) {
