@@ -63,7 +63,14 @@ def _build() -> tuple[Any, Any]:
         controller = _process_controller
     if db_factory is not None:
         controller.set_budget_db(db_factory)
-    return controller, CostTracker(redis=redis_client, db_factory=db_factory)
+    # The Redis controller's check_and_record owns the tenant daily counter (the
+    # same Redis key): the tracker writes the ledger + its per-goal counter only.
+    tracker = CostTracker(
+        redis=redis_client,
+        db_factory=db_factory,
+        count_daily_spend=not isinstance(controller, RedisCostController),
+    )
+    return controller, tracker
 
 
 def worker_cost_services() -> tuple[Any, Any]:
@@ -74,6 +81,25 @@ def worker_cost_services() -> tuple[Any, Any]:
         services = _build()
         _by_loop[loop] = services
     return services
+
+
+class WorkerCostTracker:
+    """The goal graph's ``cost_tracker`` in a Celery worker (the token ledger).
+
+    ``run_goal`` builds the AgentGraph synchronously and runs it in a fresh event
+    loop, so it cannot hold a loop-bound ``CostTracker`` (async Redis / DB
+    clients). This facade resolves, at call time, the SAME per-loop tracker the
+    worker's decision-call charges use (:func:`worker_cost_services`), so the
+    planner / executor / verifier / reasoning calls of a worker goal write their
+    ``cost_ledger`` row and per-goal / per-tenant Redis counters exactly once —
+    ``run_goal`` used to pass ``cost_tracker=None`` and every such charge silently
+    skipped the ledger (only out-of-goal decision calls, e.g. OCR, were recorded).
+    """
+
+    async def record_llm_usage(self, **kwargs: Any) -> float:
+        tracker = worker_cost_services()[1]
+        cost: float = await tracker.record_llm_usage(**kwargs)
+        return cost
 
 
 def install_worker_cost_services() -> None:

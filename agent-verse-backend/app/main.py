@@ -1230,8 +1230,11 @@ def create_app(
 
                 _redis_cost_ctrl = RedisCostController(redis=real_redis)
                 app.state.redis_cost_controller = _redis_cost_ctrl
-                # Upgrade CostTracker to use real Redis
+                # Upgrade CostTracker to use real Redis. The Redis controller's
+                # check_and_record now owns the tenant daily counter (same key):
+                # the tracker must not add every charged call to it a second time.
                 _cost_tracker._redis = real_redis
+                _cost_tracker._count_daily_spend = False
                 # Also patch _redis on the in-memory controller so it can fall back
                 if hasattr(app.state, "cost_controller"):
                     app.state.cost_controller._redis = real_redis
