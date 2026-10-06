@@ -331,3 +331,53 @@ async def map_bounded[T, R](
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+async def map_bounded_stream[T, R](
+    pull: Callable[[], Awaitable[T | None]],
+    fn: Callable[[T], Awaitable[R]],
+    *,
+    limit: int,
+) -> list[R]:
+    """:func:`map_bounded` over items pulled one at a time (``None`` ends).
+
+    The next item is pulled only when one of the ``limit`` slots is free, so at
+    most ``limit`` items (e.g. inflated archive members) are held at once.
+    Results come back in pull order; the first error (from ``pull`` or ``fn``)
+    stops pulling and cancels the items still running.
+    """
+    gate = asyncio.Semaphore(max(1, limit))
+    failed = False
+    tasks: list[asyncio.Future[R]] = []
+
+    async def _run(item: T) -> R:
+        nonlocal failed
+        try:
+            return await fn(item)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            gate.release()
+
+    try:
+        while True:
+            await gate.acquire()
+            if failed:
+                gate.release()
+                break
+            try:
+                item = await pull()
+            except BaseException:
+                gate.release()
+                raise
+            if item is None:
+                gate.release()
+                break
+            tasks.append(asyncio.ensure_future(_run(item)))
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise

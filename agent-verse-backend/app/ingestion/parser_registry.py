@@ -414,20 +414,20 @@ class ParserRegistry:
         import asyncio
 
         from app.core.config import get_settings
-        from app.ingestion.archive import ArchiveLimits, ArchiveSkip, iter_archive
+        from app.ingestion.archive import ArchiveLimits, ArchiveMember, ArchiveSkip, iter_archive
         from app.ingestion.document_text import IMAGE_UPLOAD_EXTS, extract_upload_text
+        from app.ocr.concurrency import current_limits, map_bounded_stream
 
         limits = ArchiveLimits.for_upload_limit(int(get_settings().knowledge_max_upload_bytes))
         members = iter_archive(content, filename=name, limits=limits)
-        sections: list[str] = []
-        skipped: list[str] = []
-        while True:
-            item = await asyncio.to_thread(next, members, None)  # inflate off the loop
-            if item is None:
-                break
+
+        async def _pull() -> ArchiveMember | ArchiveSkip | None:
+            return await asyncio.to_thread(next, members, None)  # inflate off the loop
+
+        async def _member(item: ArchiveMember | ArchiveSkip) -> tuple[str | None, str | None]:
+            """``(section, None)`` or ``(None, skip reason)`` for one entry."""
             if isinstance(item, ArchiveSkip):
-                skipped.append(f"{item.name}: {item.reason}")
-                continue
+                return None, f"{item.name}: {item.reason}"
             ext = item.ext or "txt"
             try:
                 if ext in IMAGE_UPLOAD_EXTS:
@@ -440,15 +440,24 @@ class ParserRegistry:
                         item.data, ContentType.TEXT, filename=item.path,
                         ocr_engine=ocr_engine, vision_provider=vision_provider,
                     )
-                else:
-                    text = extract_upload_text(item.data, ext=ext, filename=item.path)
+                else:  # CPU-bound parsing: off the event loop
+                    text = await asyncio.to_thread(
+                        extract_upload_text, item.data, ext=ext, filename=item.path
+                    )
             except Exception as exc:  # this member only
-                skipped.append(f"{item.path}: {str(exc)[:160]}")
-                continue
+                return None, f"{item.path}: {str(exc)[:160]}"
             if text.strip():
-                sections.append(f"{name}/{item.path}\n{text.strip()}")
-            else:
-                skipped.append(f"{item.path}: no extractable text")
+                return f"{name}/{item.path}\n{text.strip()}", None
+            return None, f"{item.path}: no extractable text"
+
+        # OCR-PAR-4: members are parsed / OCR'd concurrently (at most
+        # OCR_PAGE_CONCURRENCY inflated members at once; OCR itself is bounded by
+        # the process-wide OCR pool) and keep their archive order.
+        outcomes = await map_bounded_stream(
+            _pull, _member, limit=current_limits().page_concurrency
+        )
+        sections = [section for section, _ in outcomes if section is not None]
+        skipped = [skip for _, skip in outcomes if skip is not None]
         if skipped:
             meta["archive_members_skipped"] = skipped[:50]
         meta["archive_members_indexed"] = len(sections)

@@ -308,3 +308,47 @@ async def test_map_bounded_first_error_cancels_the_other_pages() -> None:
     assert 2 in started
     assert sorted(cancelled) == [1, 3]
     assert 4 not in started and 5 not in started  # never started once one failed
+
+
+async def test_map_bounded_stream_pulls_only_when_a_slot_is_free() -> None:
+    source = iter(range(1, 9))
+    held = peak_held = 0
+
+    async def _pull() -> int | None:
+        nonlocal held, peak_held
+        item = next(source, None)
+        if item is not None:
+            held += 1
+            peak_held = max(peak_held, held)
+        return item
+
+    async def _work(n: int) -> int:
+        nonlocal held
+        await asyncio.sleep(0.01 * (9 - n))
+        held -= 1
+        return n * n
+
+    out = await oc.map_bounded_stream(_pull, _work, limit=3)
+    assert out == [n * n for n in range(1, 9)]
+    assert peak_held == 3  # never more items pulled (held in memory) than slots
+
+
+async def test_map_bounded_stream_stops_pulling_after_a_failure() -> None:
+    pulled: list[int] = []
+    source = iter(range(1, 30))
+
+    async def _pull() -> int | None:
+        item = next(source, None)
+        if item is not None:
+            pulled.append(item)
+        return item
+
+    async def _work(n: int) -> int:
+        if n == 1:
+            raise RuntimeError("refused")
+        await asyncio.sleep(0.05)
+        return n
+
+    with pytest.raises(RuntimeError, match="refused"):
+        await oc.map_bounded_stream(_pull, _work, limit=2)
+    assert len(pulled) <= 3
