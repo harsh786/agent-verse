@@ -74,19 +74,3 @@ def test_clamp_limit() -> None:
     assert clamp_limit(10**9, 500) == 500
     assert clamp_limit(-5, 500) == 1
     assert clamp_limit(20, 500) == 20
-
-
-async def test_confluence_ingestor_clamps_an_unbounded_page_limit(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.knowledge.ingestors.confluence_ingestor import ConfluenceIngestor
-
-    calls = {"n": 0}
-
-    async def _fetch(self: Any, space_key: str, start: int = 0, limit: int = 50) -> list[Any]:
-        calls["n"] += 1
-        return [{"id": str(start + i), "body": {}} for i in range(limit)]  # never ends
-
-    monkeypatch.setattr(ConfluenceIngestor, "_fetch_pages", _fetch)
-    await ConfluenceIngestor("https://c.example", "t", "u").ingest_space("S", max_pages=10**9)
-    assert calls["n"] * 50 <= MAX_CONFLUENCE_PAGES + 50

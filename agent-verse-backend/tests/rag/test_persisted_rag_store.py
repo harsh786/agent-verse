@@ -2641,6 +2641,148 @@ async def test_repository_job_is_finished_by_the_redelivery_end_to_end(
     tracker.dead_letter_sourceless.assert_not_awaited()
 
 
+async def test_legacy_source_job_lifecycle_is_typed_fenced_and_reconciled(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """a04-F067-01: the durable job rows serve GitHub / Confluence / Jira / Slack jobs."""
+    tenant, other = tenants
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    collection_id = uuid.uuid4().hex
+    source_url = "https://acme.atlassian.net#project=OPS"
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"legacy-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id,
+        source_url=source_url,
+        source_type="jira",
+        title="jira:OPS",
+        tenant_ctx=tenant,
+    )
+    assert await store.count_active_ingestion_jobs_async(tenant_ctx=tenant, source_type="jira") == 1
+    assert await store.count_active_ingestion_jobs_async(tenant_ctx=tenant) == 0  # repository
+    claim = {
+        "collection_id": collection_id,
+        "source_url": source_url,
+        "lease_seconds": 60,
+        "tenant_ctx": tenant,
+    }
+    # The job's type is part of the claim: a repository worker cannot take it.
+    assert not await store.claim_ingestion_job_async(job_id, lease_owner="repo-w", **claim)
+    assert await store.claim_ingestion_job_async(
+        job_id, lease_owner="w1", source_type="jira", **claim
+    )
+    # Another tenant can neither complete nor read it.
+    assert not await store.complete_ingestion_job_async(
+        job_id, lease_owner="w1", chunk_count=3, tenant_ctx=other
+    )
+    assert await store.get_ingestion_job_async(job_id, tenant_ctx=other) is None
+    # Fenced: only the lease holder completes it.
+    assert not await store.complete_ingestion_job_async(
+        job_id, lease_owner="intruder", chunk_count=3, tenant_ctx=tenant
+    )
+    assert await store.complete_ingestion_job_async(
+        job_id, lease_owner="w1", chunk_count=7, tenant_ctx=tenant,
+        message="1 of 8 documents failed",
+    )  # fmt: skip
+    status = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    assert status is not None
+    assert (status["status"], status["chunk_count"], status["error_message"]) == (
+        "completed", 7, "1 of 8 documents failed",
+    )  # fmt: skip
+    # Terminal: never completed or claimed again.
+    assert not await store.complete_ingestion_job_async(
+        job_id, lease_owner="w1", chunk_count=9, tenant_ctx=tenant
+    )
+
+    # A dead worker's job is reconciled with a source-neutral message.
+    stale = await store.create_ingestion_job_async(
+        collection_id=collection_id, source_url=source_url, source_type="jira",
+        title="jira:OPS", tenant_ctx=tenant,
+    )  # fmt: skip
+    assert await store.claim_ingestion_job_async(
+        stale, lease_owner="dead", source_type="jira", **claim
+    )
+    await _expire_lease(postgres_database, stale)
+    assert await store.reconcile_stale_ingestion_jobs_async(
+        tenant_ctx=tenant, stale_after_seconds=60
+    ) == 1
+    status = await store.get_ingestion_job_async(stale, tenant_ctx=tenant)
+    assert status is not None
+    assert (status["status"], status["error_message"]) == ("failed", "Ingestion interrupted")
+
+
+async def test_legacy_source_worker_indexes_through_the_pipeline_on_postgres(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """The worker body against Postgres: connector docs -> pipeline -> chunks; job done."""
+    from app.ingestion.legacy_source_jobs import run_legacy_source_ingest
+    from app.ingestion.pipeline import IngestionPipeline
+    from app.ingestion.source_config import RawDocument
+
+    tenant, _ = tenants
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    collection_id = uuid.uuid4().hex
+    source_url = "slack:C0LEGACY"
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"slack-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+    job_id = await store.create_ingestion_job_async(
+        collection_id=collection_id, source_url=source_url, source_type="slack",
+        title="slack:C0LEGACY", tenant_ctx=tenant,
+    )  # fmt: skip
+
+    class _Connector:
+        def get_delta(self, config: Any, cursor: str | None) -> AsyncIterator[Any]:
+            async def _gen() -> AsyncIterator[Any]:
+                for n in range(3):
+                    yield RawDocument(
+                        doc_id=f"C0LEGACY_{n}",
+                        source_id=config.source_id,
+                        tenant_id=config.tenant_id,
+                        content=(f"Release {n}: the deploy freeze starts Friday at 18:00. " * 5)
+                        .encode(),
+                        content_type="text/plain",
+                        source_url=f"https://slack.test/archives/C0LEGACY/p{n}",
+                    ), ""
+
+            return _gen()
+
+    pipeline = IngestionPipeline(knowledge_store=store, embedder=_Embedder(_embedding(768)))
+    await run_legacy_source_ingest(
+        job_id=job_id,
+        tenant_ctx=tenant,
+        kind="slack",
+        collection_id=collection_id,
+        source_url=source_url,
+        connection_config={"bot_token": "x", "channels": ["C0LEGACY"]},
+        max_documents=None,
+        store=store,
+        pipeline=pipeline,
+        lease_seconds=60,
+        connector=_Connector(),
+    )
+    status = await store.get_ingestion_job_async(job_id, tenant_ctx=tenant)
+    assert status is not None
+    assert status["status"] == "completed", status
+    async with postgres_database.admin_factory() as session:
+        stored = (
+            await session.execute(
+                text(
+                    "SELECT COUNT(DISTINCT document_id), COUNT(*) FROM knowledge_chunks_768 "
+                    "WHERE collection_id = :c AND tenant_id = :t"
+                ),
+                {"c": collection_id, "t": tenant.tenant_id},
+            )
+        ).one()
+    assert stored[0] == 3
+    assert status["chunk_count"] == stored[1]
+
+
 async def test_zero_chunk_repository_completion_clears_all_lease_fields(
     postgres_database: _Database,
     tenants: tuple[TenantContext, TenantContext],

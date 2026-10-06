@@ -101,6 +101,9 @@ celery_app = Celery(
         "app.ingestion.scheduler",
         # Durable repository (git clone) ingestion (POST /knowledge/ingest/repo).
         "app.ingestion.repo_tasks",
+        # Durable one-shot GitHub / Confluence / Jira / Slack ingestion
+        # (POST /knowledge/ingest/{github,confluence,jira,slack}).
+        "app.ingestion.legacy_source_jobs",
         # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
         "app.scaling.raft_tasks",
         "app.scaling.event_outbox_tasks",

@@ -148,10 +148,12 @@ def test_gdrive_connector_builds_credentials_from_memory() -> None:
     assert service == "svc"
 
 
-def test_sync_legacy_routes_answer_200_not_202() -> None:
+def test_legacy_source_routes_answer_202_for_their_durable_job() -> None:
+    # They used to declare 202 while working synchronously (then an honest 200);
+    # a04-F067-01 made them real durable jobs, so 202 is honest now.
     from app.api.knowledge import router
 
     paths = {"/knowledge/ingest/github", "/knowledge/ingest/confluence",
              "/knowledge/ingest/jira", "/knowledge/ingest/slack"}  # fmt: skip
     codes = {r.path: r.status_code for r in router.routes if getattr(r, "path", "") in paths}
-    assert codes == dict.fromkeys(paths, 200)
+    assert codes == dict.fromkeys(paths, 202)

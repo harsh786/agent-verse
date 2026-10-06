@@ -76,11 +76,19 @@ class JiraConnector(BaseConnector):
         if project_keys:
             joined = ", ".join(f'"{k}"' for k in project_keys)
             parts.append(f"project in ({joined})")
+        jql_extra = str(cc.get("jql_extra") or "").strip()
+        if jql_extra:
+            # Extra filter in the tenant's own Jira (their credentials): the
+            # legacy /ingest/jira option, now served by this connector.
+            parts.append(f"({jql_extra})")
         if cursor:
             parts.append(f"updated > '{cursor}'")
-        jql = " AND ".join(parts) if parts else "ORDER BY updated ASC"
+        # newest_first: a one-shot read capped at N issues wants the latest N
+        # (an incremental sync keeps ascending order for its cursor).
+        order = "DESC" if cc.get("newest_first") and not cursor else "ASC"
+        jql = " AND ".join(parts) if parts else f"ORDER BY updated {order}"
         if "ORDER BY" not in jql:
-            jql += " ORDER BY updated ASC"
+            jql += f" ORDER BY updated {order}"
 
         async with source_client(timeout=30) as client:
             start = 0

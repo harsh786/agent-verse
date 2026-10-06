@@ -860,94 +860,9 @@ def test_ingest_docx_with_mocked_ingestor() -> None:
     assert resp.status_code in (200, 201, 500)
 
 
+# ingest/github, /confluence, /jira, /slack are durable jobs now: see
+# tests/api/test_legacy_source_ingest_jobs.py (a04-F067-01).
 # ---------------------------------------------------------------------------
-# ingest/github, /confluence, /jira, /slack (lines 906-961)
-# ---------------------------------------------------------------------------
-
-def test_ingest_github_with_mocked_ingestor() -> None:
-    """Lines 906-907: GitHub ingest uses GitHubIngestor."""
-    embedder = _make_embedder()
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
-    coll_id = _create_collection(client)
-
-    mock_chunks = [{"content": "def foo(): pass", "metadata": {"file": "main.py"}, "source_type": "github"}]
-    with patch("app.knowledge.ingestors.github_ingestor.GitHubIngestor.ingest_repo", new_callable=AsyncMock, return_value=mock_chunks):
-        with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
-            resp = client.post(
-                "/knowledge/ingest/github",
-                json={"collection_id": coll_id, "owner": "myorg", "repo": "myrepo"},
-                headers=H,
-            )
-    assert resp.status_code in (200, 202, 500)
-
-
-def test_ingest_confluence_with_mocked_ingestor() -> None:
-    """Lines 931-932: Confluence ingest uses ConfluenceIngestor."""
-    embedder = _make_embedder()
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
-    coll_id = _create_collection(client)
-
-    mock_chunks = [{"content": "Confluence page content", "metadata": {}, "source_type": "confluence"}]
-    with patch("app.knowledge.ingestors.confluence_ingestor.ConfluenceIngestor.ingest_space", new_callable=AsyncMock, return_value=mock_chunks):
-        with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
-            resp = client.post(
-                "/knowledge/ingest/confluence",
-                json={
-                    "collection_id": coll_id,
-                    "base_url": "https://company.atlassian.net",
-                    "space_key": "ENG",
-                    "token": "my-token",
-                    "user": "me@company.com",
-                },
-                headers=H,
-            )
-    assert resp.status_code in (200, 202, 500)
-
-
-def test_ingest_jira_with_mocked_ingestor() -> None:
-    """Lines 960-961: Jira ingest uses JiraIngestor."""
-    embedder = _make_embedder()
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
-    coll_id = _create_collection(client)
-
-    mock_chunks = [{"content": "Jira issue content", "metadata": {}, "source_type": "jira"}]
-    with patch("app.knowledge.ingestors.jira_ingestor.JiraIngestor.ingest_project", new_callable=AsyncMock, return_value=mock_chunks):
-        with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
-            resp = client.post(
-                "/knowledge/ingest/jira",
-                json={
-                    "collection_id": coll_id,
-                    "base_url": "https://company.atlassian.net",
-                    "project_key": "PROJ",
-                    "token": "jira-token",
-                    "user": "me@company.com",
-                },
-                headers=H,
-            )
-    assert resp.status_code in (200, 202, 500)
-
-
-def test_ingest_slack_with_mocked_ingestor() -> None:
-    """Lines 982-990: Slack ingest uses SlackIngestor."""
-    embedder = _make_embedder()
-    client = TestClient(_make_app(embedder=embedder), raise_server_exceptions=False)
-    coll_id = _create_collection(client)
-
-    mock_chunks = [{"content": "Slack message content", "metadata": {}, "source_type": "slack"}]
-    with patch("app.knowledge.ingestors.slack_ingestor.SlackIngestor.ingest_channel", new_callable=AsyncMock, return_value=mock_chunks):
-        with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
-            resp = client.post(
-                "/knowledge/ingest/slack",
-                json={
-                    "collection_id": coll_id,
-                    "channel_id": "C01234567",
-                    "token": "xoxb-test-token",
-                    "channel_name": "#engineering",
-                },
-                headers=H,
-            )
-    assert resp.status_code in (200, 202, 500)
-
 
 # ---------------------------------------------------------------------------
 # federated search (lines 1012-1029)

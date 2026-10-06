@@ -1,6 +1,7 @@
 """ConfluenceConnector — Atlassian Confluence page and space ingestion.
 
-Wraps existing ConfluenceIngestor under the BaseConnector interface.
+The one Confluence client: Sources and the one-shot POST /knowledge/ingest/
+confluence job (app.ingestion.legacy_source_jobs) both run it.
 Cursor: last page modified timestamp (ISO 8601).
 """
 

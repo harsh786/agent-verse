@@ -291,7 +291,9 @@ def test_ingest_github_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500)
+    # Durable jobs need a database (a04-F067-01); this app is in-memory.
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Knowledge persistence is unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +360,9 @@ def test_ingest_confluence_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500)
+    # Durable jobs need a database (a04-F067-01); this app is in-memory.
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Knowledge persistence is unavailable"
 
 
 def test_ingest_jira_queued() -> None:
@@ -382,7 +386,9 @@ def test_ingest_jira_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500)
+    # Durable jobs need a database (a04-F067-01); this app is in-memory.
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Knowledge persistence is unavailable"
 
 
 def test_ingest_slack_queued() -> None:
@@ -404,7 +410,9 @@ def test_ingest_slack_queued() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 202, 500, 503)
+    # Durable jobs need a database (a04-F067-01); this app is in-memory.
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Knowledge persistence is unavailable"
 
 
 # ---------------------------------------------------------------------------

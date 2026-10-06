@@ -1597,7 +1597,8 @@
             "type": "string"
           },
           "timeout_seconds": {
-            "default": 300,
+            "default": 0,
+            "minimum": 0.0,
             "title": "Timeout Seconds",
             "type": "integer"
           },
@@ -4059,6 +4060,7 @@
         "properties": {
           "branch": {
             "default": "HEAD",
+            "maxLength": 255,
             "title": "Branch",
             "type": "string"
           },
@@ -4074,10 +4076,12 @@
             "type": "integer"
           },
           "owner": {
+            "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$",
             "title": "Owner",
             "type": "string"
           },
           "repo": {
+            "pattern": "^[A-Za-z0-9._-]{1,100}$",
             "title": "Repo",
             "type": "string"
           },
@@ -36854,7 +36858,7 @@
     },
     "/knowledge/ingest/confluence": {
       "post": {
-        "description": "Ingest a Confluence space into a knowledge collection.",
+        "description": "Queue a Confluence space for ingestion into a collection.",
         "operationId": "ingest_confluence_knowledge_ingest_confluence_post",
         "requestBody": {
           "content": {
@@ -36867,7 +36871,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -36877,7 +36881,13 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Queued as a durable ingestion job (poll /knowledge/ingest/jobs/{id})"
+          },
+          "400": {
+            "description": "base_url names a blocked destination"
+          },
+          "404": {
+            "description": "Knowledge collection not found"
           },
           "422": {
             "content": {
@@ -36888,6 +36898,12 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many ingestions of this kind queued for the tenant"
+          },
+          "503": {
+            "description": "Persistence or the queue is unavailable"
           }
         },
         "summary": "Ingest Confluence",
@@ -37030,7 +37046,7 @@
     },
     "/knowledge/ingest/gdrive-folder": {
       "post": {
-        "description": "Ingest all supported files from a Google Drive folder.\n\nOutcome is reported honestly per file -- a folder where files failed is\nnever answered as a plain success:\n\n* **200** ``status: \"ingested\"`` -- no file failed (files with blank\n  content are listed in ``skipped`` with ``reason: \"empty\"``).\n* **207** ``status: \"partial\"`` -- at least one file ingested and at least\n  one failed; failures are listed in ``failed``.\n* **502** ``detail.status: \"failed\"`` -- every attempted file failed\n  (nothing was ingested); ``detail`` carries the same body shape.\n\nEach ``failed`` entry is ``{\"file_id\", \"filename\", \"error\"}``. ``errors``\nkeeps the legacy ``\"<filename>: <error>\"`` strings for older clients.",
+        "description": "Ingest all supported files from a Google Drive folder.\n\nOutcome is reported honestly per file -- a folder where files failed is\nnever answered as a plain success:\n\n* **200** ``status: \"ingested\"`` -- no file failed (files with blank\n  content are listed in ``skipped`` with ``reason: \"empty\"``).\n* **207** ``status: \"partial\"`` -- at least one file ingested and at least\n  one failed; failures are listed in ``failed``.\n* **502** ``detail.status: \"failed\"`` -- every attempted file failed\n  (nothing was ingested); ``detail`` carries the same body shape.\n\nEach ``failed`` entry is ``{\"file_id\", \"filename\", \"error\",\n\"correlation_id\"}``: ``error`` is a client-safe reason (never the raw\nexception text), the cause is logged under ``correlation_id``. ``errors``\nkeeps the legacy ``\"<filename>: <error>\"`` strings for older clients.",
         "operationId": "ingest_gdrive_folder_knowledge_ingest_gdrive_folder_post",
         "requestBody": {
           "content": {
@@ -37080,7 +37096,7 @@
     },
     "/knowledge/ingest/github": {
       "post": {
-        "description": "Ingest a GitHub repository into a knowledge collection via GitHub REST API.",
+        "description": "Queue a GitHub repository (via the REST API) for ingestion into a collection.",
         "operationId": "ingest_github_knowledge_ingest_github_post",
         "requestBody": {
           "content": {
@@ -37093,7 +37109,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -37103,7 +37119,13 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Queued as a durable ingestion job (poll /knowledge/ingest/jobs/{id})"
+          },
+          "400": {
+            "description": "base_url names a blocked destination"
+          },
+          "404": {
+            "description": "Knowledge collection not found"
           },
           "422": {
             "content": {
@@ -37114,6 +37136,12 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many ingestions of this kind queued for the tenant"
+          },
+          "503": {
+            "description": "Persistence or the queue is unavailable"
           }
         },
         "summary": "Ingest Github",
@@ -37124,7 +37152,7 @@
     },
     "/knowledge/ingest/jira": {
       "post": {
-        "description": "Ingest Jira project issues into a knowledge collection.",
+        "description": "Queue a Jira project's issues for ingestion into a collection.",
         "operationId": "ingest_jira_knowledge_ingest_jira_post",
         "requestBody": {
           "content": {
@@ -37137,7 +37165,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -37147,7 +37175,13 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Queued as a durable ingestion job (poll /knowledge/ingest/jobs/{id})"
+          },
+          "400": {
+            "description": "base_url names a blocked destination"
+          },
+          "404": {
+            "description": "Knowledge collection not found"
           },
           "422": {
             "content": {
@@ -37158,6 +37192,12 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many ingestions of this kind queued for the tenant"
+          },
+          "503": {
+            "description": "Persistence or the queue is unavailable"
           }
         },
         "summary": "Ingest Jira",
@@ -37432,7 +37472,7 @@
     },
     "/knowledge/ingest/slack": {
       "post": {
-        "description": "Ingest a Slack channel's message history into a knowledge collection.",
+        "description": "Queue a Slack channel's message history for ingestion into a collection.",
         "operationId": "ingest_slack_knowledge_ingest_slack_post",
         "requestBody": {
           "content": {
@@ -37445,7 +37485,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -37455,7 +37495,13 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Queued as a durable ingestion job (poll /knowledge/ingest/jobs/{id})"
+          },
+          "400": {
+            "description": "base_url names a blocked destination"
+          },
+          "404": {
+            "description": "Knowledge collection not found"
           },
           "422": {
             "content": {
@@ -37466,6 +37512,12 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "description": "Too many ingestions of this kind queued for the tenant"
+          },
+          "503": {
+            "description": "Persistence or the queue is unavailable"
           }
         },
         "summary": "Ingest Slack",
@@ -46946,7 +46998,7 @@
     },
     "/triggers/dlq/{dlq_id}/retry": {
       "post": {
-        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.",
+        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.\n\nThe retry is dispatched under the dedup key the original firing had\n(``trigger_dlq.idempotency_key``, B2-OPEN-2), so it is idempotent with a\nsender redelivery of the same firing: after a successful redelivery the\nretry is a ``dedup`` no-op, and a redelivery after the retry is deduped.\nEither way the entry is resolved. A throttled retry is not dead-lettered\nagain \u2014 this entry stays open for the next retry.",
         "operationId": "retry_dlq_entry_triggers_dlq__dlq_id__retry_post",
         "parameters": [
           {

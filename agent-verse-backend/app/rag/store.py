@@ -40,6 +40,7 @@ _log = get_logger(__name__)
 # error_message reconciliation writes on a durable ingestion job whose worker
 # vanished (lease expired / stale queue); such a job may be claimed again.
 INGESTION_JOB_INTERRUPTED = "Repository ingestion interrupted"
+SOURCE_INGESTION_JOB_INTERRUPTED = "Ingestion interrupted"
 
 
 class EmbeddingDimensionError(ValueError):
@@ -1649,6 +1650,7 @@ class KnowledgeStore:
         lease_owner: str,
         lease_seconds: int,
         tenant_ctx: TenantContext,
+        source_type: str = "repository",
     ) -> bool:
         """Take the job's lease: a queued job, or one whose holder is gone.
 
@@ -1682,7 +1684,7 @@ class KnowledgeStore:
                         indexed_at = now(), error_message = NULL
                     WHERE id = :id AND tenant_id = :tenant_id
                       AND collection_id = :collection_id
-                      AND source_type = 'repository'
+                      AND source_type = :source_type
                       AND source_url = :source_url AND job_source_hash = :source_hash
                       AND domain_metadata->>'record_type' = 'ingestion_job'
                       AND (
@@ -1691,6 +1693,7 @@ class KnowledgeStore:
                       )
                 """),
                 {
+                    "source_type": source_type,
                     "id": job_id,
                     "tenant_id": tenant_ctx.tenant_id,
                     "collection_id": collection_id,
@@ -1789,6 +1792,54 @@ class KnowledgeStore:
             ).scalar_one_or_none()
         return str(status) if status is not None else None
 
+    async def complete_ingestion_job_async(
+        self,
+        job_id: str,
+        *,
+        lease_owner: str,
+        chunk_count: int,
+        tenant_ctx: TenantContext,
+        message: str | None = None,
+    ) -> bool:
+        """Mark a leased (non-repository) durable job completed; False if the
+        lease was lost. ``message`` notes a partial outcome ("2 of 40 failed").
+
+        Repository jobs complete inside their atomic chunk transaction
+        (:meth:`ingest_repository_chunks_async`) instead.
+        """
+        if self._db is None:
+            raise RuntimeError("Durable ingestion jobs require a database")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE knowledge_documents
+                    SET status = 'completed', chunk_count = :chunk_count,
+                        error_message = :message, indexed_at = now(),
+                        lease_owner = NULL, lease_expires_at = NULL
+                    WHERE id = :id AND tenant_id = :tenant_id
+                      AND source_type <> 'repository'
+                      AND status = 'running' AND lease_owner = :lease_owner
+                      AND lease_expires_at > now()
+                      AND domain_metadata->>'record_type' = 'ingestion_job'
+                """),
+                {
+                    "id": job_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "lease_owner": lease_owner,
+                    "chunk_count": max(0, int(chunk_count)),
+                    "message": message,
+                },
+            )
+        return bool(result.rowcount == 1)
+
     async def get_ingestion_job_async(
         self,
         job_id: str,
@@ -1836,7 +1887,12 @@ class KnowledgeStore:
         tenant_ctx: TenantContext,
         stale_after_seconds: int,
     ) -> int:
-        """Mark tenant-scoped running repository jobs interrupted after restart."""
+        """Fail the tenant's durable ingestion jobs whose worker vanished.
+
+        A running job whose lease expired, or a queued one older than
+        ``stale_after_seconds``, of any durable kind (repository, and the legacy
+        GitHub / Confluence / Jira / Slack jobs).
+        """
         if self._db is None:
             raise RuntimeError("Durable ingestion jobs require a database")
         if stale_after_seconds < 1:
@@ -1854,10 +1910,10 @@ class KnowledgeStore:
                 text("""
                     UPDATE knowledge_documents
                     SET status = 'failed',
-                        error_message = :interrupted,
+                        error_message = CASE WHEN source_type = 'repository'
+                            THEN :interrupted ELSE :interrupted_other END,
                         lease_owner = NULL, lease_expires_at = NULL
                     WHERE tenant_id = :tenant_id
-                      AND source_type = 'repository'
                       AND domain_metadata->>'record_type' = 'ingestion_job'
                       AND (
                           (status = 'queued' AND created_at
@@ -1870,6 +1926,7 @@ class KnowledgeStore:
                     "tenant_id": tenant_ctx.tenant_id,
                     "stale_after_seconds": stale_after_seconds,
                     "interrupted": INGESTION_JOB_INTERRUPTED,
+                    "interrupted_other": SOURCE_INGESTION_JOB_INTERRUPTED,
                 },
             )
         return result.rowcount or 0

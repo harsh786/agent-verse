@@ -2,8 +2,7 @@
 
 Despite the "LAW-01: single pipeline path" comment, ``/knowledge/ingest``,
 ``/ingest/file``, ``/ingest/url``, ``/ingest/openapi`` and the legacy
-per-source ingestors (pdf/docx/github/confluence/jira/slack via
-``_ingest_chunks_from_source``) parsed, chunked, embedded and persisted on their
+per-source ingestors (pdf/docx via ``_ingest_chunks_from_source``) parsed, chunked, embedded and persisted on their
 own: no Stage 6 PII redaction, no Stage 6b RAG_INGEST guardrail, no Stage 3
 dedup. The raw SSN below reached the embedder and the vector store verbatim, and
 re-posting the same document duplicated every chunk.
@@ -227,26 +226,10 @@ def test_ingest_url_redacts_pii() -> None:
     assert _SSN not in _stored_text(store, cid)
 
 
-def test_legacy_ingestor_path_redacts_and_dedups_per_document() -> None:
-    client, store, embedder, cid = _app()
-    chunks = [
-        {"content": _BODY, "source_doc_id": "doc-1", "source_type": "slack"},
-        {"content": "An unrelated second message about release planning.", "source_doc_id": "doc-2"},
-    ]
-    with patch(
-        "app.knowledge.ingestors.slack_ingestor.SlackIngestor.ingest_channel",
-        new=AsyncMock(return_value=chunks),
-    ):
-        body = {"collection_id": cid, "channel_id": "C1", "token": "xoxb-test"}
-        first = client.post("/knowledge/ingest/slack", json=body, headers=_HDRS)
-        # Re-ingest: doc-1 and doc-2 are already indexed → nothing new.
-        second = client.post("/knowledge/ingest/slack", json=body, headers=_HDRS)
-    assert first.status_code == 200, first.text  # synchronous (KB-11), not 202
-    assert first.json()["chunks_ingested"] == 2
-    assert second.json()["chunks_ingested"] == 0
-    assert all(_SSN not in t for t in embedder.seen)
-    assert _SSN not in _stored_text(store, cid)
-    assert len(store._data[(_TENANT, cid)].chunks) == 2
+# The legacy GitHub / Confluence / Jira / Slack routes are durable jobs that run
+# the connector through the IngestionPipeline itself (a04-F067-01); their PII
+# redaction and re-ingest dedup are covered in
+# tests/api/test_legacy_source_ingest_jobs.py.
 
 
 def test_orchestrator_collection_documents_path_redacts_pii() -> None:

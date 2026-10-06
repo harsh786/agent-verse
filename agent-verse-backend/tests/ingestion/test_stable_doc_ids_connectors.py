@@ -665,13 +665,15 @@ async def test_github_chunks_without_a_source_doc_id() -> None:
     from app.ingestion.connectors.github_connector import GitHubConnector
     from app.knowledge.ingestors.github_ingestor import GitHubIngestor
 
-    chunks = [
-        {"content": "def a(): ...", "source_url": "https://g/a.py", "metadata": {}},
-        {"content": "def b(): ...", "source_url": "https://g/b.py", "metadata": {}},
-    ]
+    files = [
+        {"path": "a.py", "content": "def a(): ...", "source_url": "https://g/a.py",
+         "metadata": {}},
+        {"path": "b.py", "content": "def b(): ...", "source_url": "https://g/b.py",
+         "metadata": {}},
+    ]  # fmt: skip
 
     async def run(config: SourceConfig) -> list[RawDocument]:
-        with patch.object(GitHubIngestor, "ingest_repo", AsyncMock(return_value=chunks)):
+        with patch.object(GitHubIngestor, "repo_files", AsyncMock(return_value=files)):
             return await _drain(GitHubConnector().get_delta(config, None))
 
     await _assert_stable(run, "github", {"token": "t", "repos": ["o/r"]})

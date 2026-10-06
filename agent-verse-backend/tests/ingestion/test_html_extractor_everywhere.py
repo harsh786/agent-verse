@@ -5,7 +5,7 @@ regex — keeping ``<script>`` / ``<style>`` bodies, navigation and footers, and
 flattening headings, lists and table rows into one line: the parser registry's
 HTML parser (connector WEB_PAGE / HTML documents parsed from text), the
 orchestrator's HTML chunk fallback, the Zendesk and Confluence connectors, the
-Confluence ingestor, the e-mail parser (HTML parts), the RPA page fetch and the
+e-mail parser (HTML parts), the RPA page fetch and the
 web-augmented RAG pattern's page text.
 """
 
@@ -60,12 +60,6 @@ def test_email_html_part() -> None:
     raw = ("From: ops@example.org\nTo: kb@example.org\nSubject: Reefer\n"
            "Content-Type: text/html; charset=utf-8\n\n" + PAGE)
     _check("\n".join(EmailParser().parse(raw)))
-
-
-def test_confluence_ingestor() -> None:
-    from app.knowledge.ingestors.confluence_ingestor import _html_to_text
-
-    _check(_html_to_text(PAGE))
 
 
 def test_web_augmented_page_text() -> None:
