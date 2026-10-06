@@ -24,6 +24,11 @@ from celery.signals import worker_init as _worker_init
 
 from app.observability.logging import get_logger
 from app.org.feature_flags import is_feature_enabled
+from app.reliability.active_budget import (
+    ActiveTimeBudget,
+    paused_window,
+    run_within_active_budget,
+)
 from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import celery_app, goal_queue_for
@@ -214,23 +219,80 @@ end
 return 0
 """
 
+    _EXTEND_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
+    # Renewal cadence ceiling; the actual interval is min(this, ttl / 3).
+    RENEW_INTERVAL_S = 60.0
+
     def __init__(self, redis_client: Any, lock_value: str) -> None:
         self._redis = redis_client
         self._value = lock_value
+        self._renew_stop: threading.Event | None = None
+        self._renew_thread: threading.Thread | None = None
 
     @property
     def token(self) -> str:
         """This run's lock value (also recorded as goals.runner_token)."""
         return self._value
 
-    def acquire(self, goal_id: str, ttl_ms: int = 1_800_000) -> bool:
-        """Return True if the lock was acquired; False if another worker holds it."""
+    def acquire(self, goal_id: str, ttl_ms: int = 1_800_000, *, renew: bool = True) -> bool:
+        """Return True if the lock was acquired; False if another worker holds it.
+
+        While held, a daemon thread renews the TTL (a08-F193-01): correctness
+        used to rely on the goal timeout firing before the fixed TTL expired,
+        and a goal whose paused time no longer counts against its timeout
+        (a08-F193-04) can outlive any fixed TTL. A worker that dies stops
+        renewing; the reaper releases its lock by token, or the TTL expires.
+        """
         key = f"{self.KEY_PREFIX}{goal_id}"
         result = self._redis.set(key, self._value, px=ttl_ms, nx=True)
+        if result and renew:
+            self._start_renewal(key, ttl_ms)
         return bool(result)
+
+    def extend(self, goal_id: str, ttl_ms: int) -> bool:
+        """Reset the TTL if this instance still owns the lock (atomic)."""
+        key = f"{self.KEY_PREFIX}{goal_id}"
+        return bool(self._redis.eval(self._EXTEND_SCRIPT, 1, key, self._value, str(int(ttl_ms))))
+
+    def _start_renewal(self, key: str, ttl_ms: int) -> None:
+        stop = threading.Event()
+        interval = max(0.05, min(self.RENEW_INTERVAL_S, ttl_ms / 3000))
+
+        def _loop() -> None:
+            while not stop.wait(interval):
+                try:
+                    owned = self._redis.eval(
+                        self._EXTEND_SCRIPT, 1, key, self._value, str(int(ttl_ms))
+                    )
+                except Exception as exc:
+                    logger.warning("goal_lock_renew_failed key=%s: %s", key, exc)
+                    continue
+                if not owned:
+                    logger.warning("goal_lock_lost key=%s (no longer this run's)", key)
+                    return
+
+        self._renew_stop = stop
+        self._renew_thread = threading.Thread(
+            target=_loop, name=f"goal-lock-renew-{key}", daemon=True
+        )
+        self._renew_thread.start()
+
+    def _stop_renewal(self) -> None:
+        stop, thread = self._renew_stop, self._renew_thread
+        self._renew_stop = self._renew_thread = None
+        if stop is not None:
+            stop.set()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=5)
 
     def release(self, goal_id: str) -> None:
         """Release the lock only if this instance owns it (atomic Lua check-and-delete)."""
+        self._stop_renewal()
         key = f"{self.KEY_PREFIX}{goal_id}"
         with contextlib.suppress(Exception):
             self._redis.eval(self._RELEASE_SCRIPT, 1, key, self._value)
@@ -854,6 +916,7 @@ def _make_worker_pause_gate(
     tenant_id: str | None = None,
     org_id: str | None = None,
     org_unverified: bool = False,
+    budget: Any = None,
 ) -> Any:
     """Step-boundary gate for worker runs, driven by the cross-replica Redis flags.
 
@@ -882,10 +945,12 @@ def _make_worker_pause_gate(
             return
         logger.info("goal_paused_in_worker goal_id=%s", goal_id)
         await _emit({"type": "goal_paused_at_step_boundary"})
-        while is_paused_sync(goal_id, sync_r):
-            await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
-            if is_cancelled_sync(goal_id, sync_r):
-                raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+        # Paused time does not count against the goal timeout (a08-F193-04).
+        with paused_window(budget):
+            while is_paused_sync(goal_id, sync_r):
+                await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
+                if is_cancelled_sync(goal_id, sync_r):
+                    raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
         logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
         await _emit({"type": "goal_execution_resumed"})
 
@@ -902,8 +967,12 @@ async def _run_with_signals(
     *,
     org_id: str | None = None,
     org_unverified: bool = False,
+    budget: Any = None,
 ) -> Any:
     """Run agent_runner.run() while observing cross-replica pause/cancel signals.
+
+    *budget* (an ``ActiveTimeBudget``) is told about every pause wait, so time
+    a goal spends paused is not counted against its timeout.
 
     *org_id* is the goal's organisation (``goals.execution_context.org_id``,
     resolved by ``run_goal``): an org emergency stop halts the run too; with
@@ -934,6 +1003,7 @@ async def _run_with_signals(
             tenant_id=_tenant_id,
             org_id=_org_id,
             org_unverified=org_unverified,
+            budget=budget,
         )
 
     run_task = asyncio.create_task(
@@ -967,6 +1037,7 @@ async def _run_with_signals(
             tenant_id=_tenant_id,
             org_id=_org_id,
             org_unverified=org_unverified,
+            budget=budget,
         )
     finally:
         if listener is not None:
@@ -1038,6 +1109,7 @@ async def _signal_poll_loop(
     tenant_id: str | None,
     org_id: str | None,
     org_unverified: bool = False,
+    budget: Any = None,
 ) -> Any:
     from app.governance.emergency_stop import enforce_emergency_stop_sync
     from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
@@ -1078,10 +1150,11 @@ async def _signal_poll_loop(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await run_task
                 logger.info("goal_paused_in_worker goal_id=%s", goal_id)
-                while is_paused_sync(goal_id, sync_r):
-                    await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
-                    if is_cancelled_sync(goal_id, sync_r):
-                        raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+                with paused_window(budget):
+                    while is_paused_sync(goal_id, sync_r):
+                        await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
+                        if is_cancelled_sync(goal_id, sync_r):
+                            raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
                 logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
                 # Re-run from checkpoint (AgentGraph will resume from last durable state)
                 run_task = asyncio.create_task(
@@ -3951,8 +4024,6 @@ def run_goal(
         async def worker_event_callback(event: dict[str, Any]) -> None:
             await append_submitted_goal_event(event)
 
-        import asyncio as _asyncio
-
         # ── Pre-execution cancel check (cross-process signal) ──────────────────
         try:
             from app.reliability.goal_lifecycle import is_cancelled_sync as _is_cancelled
@@ -4194,11 +4265,16 @@ def run_goal(
                     retrieval_gateway=_retrieval_gateway_worker,
                 )
 
-            from app.providers.rate_limit import run_with_llm_deadline
+            from app.providers.rate_limit import run_with_llm_budget
 
-            _goal_run = _asyncio.wait_for(
+            # The goal timeout counts ACTIVE time only: the pause gates mark
+            # their waits on this budget (a08-F193-04). It used to be a
+            # wait_for over the whole run, so a goal paused longer than its
+            # plan timeout failed as "Goal timed out".
+            _goal_budget = ActiveTimeBudget(float(goal_timeout_s))
+            _goal_run = run_within_active_budget(
                 # P5-1: provider-throttling backoff never waits past the goal budget.
-                run_with_llm_deadline(
+                run_with_llm_budget(
                     _run_with_signals(
                         _agent_runner,
                         effective_goal,
@@ -4208,10 +4284,11 @@ def run_goal(
                         initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
                         org_id=_goal_org_id or _worker_exec_ctx.get("org_id"),
                         org_unverified=_worker_ctx_unreadable and not _goal_org_id,
+                        budget=_goal_budget,
                     ),
-                    float(goal_timeout_s),
+                    _goal_budget,
                 ),
-                timeout=float(goal_timeout_s),
+                _goal_budget,
             )
             state = _run_async(
                 _await_then_flush_audit(
