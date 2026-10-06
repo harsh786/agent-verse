@@ -740,6 +740,7 @@ class GuardrailsEngine:
             if result["triggered"]:
                 would_trigger.append(
                     {
+                        "rule_id": rule.rule_id,
                         "rule_name": rule.name,
                         "action": rule.action.value,
                         "category": result.get("category", "unknown"),

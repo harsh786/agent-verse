@@ -6,6 +6,7 @@ Violations and stats read the durable guardrails-v2 store (P8b-3);
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import Any
@@ -370,13 +371,72 @@ async def delete_guardrail_config(
 # ---------------------------------------------------------------------------
 
 
+# Legacy (v1) verdict actions, least → most severe.
+_V1_ACTION_RANK = ("logged", "warned", "redacted", "hitl_queued", "blocked")
+# guardrails_v2 rule action → the legacy verdict action it produces.
+_V2_TO_V1_ACTION: dict[str, str] = {
+    "log": "logged",
+    "warn": "warned",
+    "redact": "redacted",
+    "require_hitl": "hitl_queued",
+    "block": "blocked",
+    "quarantine": "blocked",
+}
+# v2 rules carry a severity, not a score; the legacy shape reports a risk_score.
+_SEVERITY_RISK: dict[str, float] = {
+    "critical": 1.0, "high": 0.9, "medium": 0.6, "low": 0.3, "info": 0.1,
+}
+
+
+def _matched_pattern(matches: list[Any]) -> str | None:
+    """A printable summary of a rule's matches (PII values are never echoed)."""
+    parts: list[str] = []
+    for m in matches:
+        text = str(m.get("type") or "") if isinstance(m, dict) else str(m)
+        if text and text not in parts:
+            parts.append(text)
+    return ", ".join(parts)[:200] or None
+
+
+async def _tenant_rule_hits(body: TestGuardrailRequest, tenant_id: str) -> list[dict[str, Any]]:
+    """The tenant's stored guardrails_v2 rules that *body* would trigger.
+
+    Uses the engine's non-recording ``simulate`` — testing content must never
+    write a violation (``/guardrails-v2/evaluate`` records them).
+    """
+    layers = _LAYER_MAP.get(str(body.layer).strip().lower(), ("goal",))
+    hits: list[dict[str, Any]] = []
+    for layer in layers:
+        content = (
+            json.dumps(body.tool_args, default=str)
+            if layer == "tool_args" and body.tool_args
+            else body.text
+        )
+        try:
+            sim = await _rules_engine().simulate(content, layer, tenant_id)
+        except Exception as exc:  # never answer "allowed" without the tenant's rules
+            raise HTTPException(
+                status_code=503, detail="Guardrail rules are temporarily unavailable"
+            ) from exc
+        for hit in sim.get("triggered_rules") or []:
+            hits.append({**hit, "layer": layer})
+    return hits
+
+
 @router.post("/test")
 async def test_guardrail(
     body: TestGuardrailRequest,
     request: Request,
     ctx: Any = Depends(_require_tenant),
 ) -> dict[str, Any]:
+    """Dry-run *body* against the built-in checks AND the tenant's stored rules.
+
+    QA-12: this used to run only the built-in v1 checks, so a tenant's own rules
+    (what goals, workflows and ingestion actually enforce) never showed up here.
+    Nothing is recorded.
+    """
     _check_test_rate(ctx.tenant_id)
+    tenant_hits = await _tenant_rule_hits(body, ctx.tenant_id)
     engine: GuardrailEngine = _get_engine(request)
 
     if body.layer in ("tool_args",) and body.tool_name:
@@ -402,13 +462,37 @@ async def test_guardrail(
             "recommendation": (
                 "block" if v.risk_score >= 0.9 else "warn" if v.risk_score >= 0.6 else "log"
             ),
+            "source": "builtin",
         }
         for v in result.violations
     ]
+    action = result.action.value
+    risk_score = result.risk_score
+    for hit in tenant_hits:
+        severity = str(hit.get("severity") or "high")
+        hit_risk = _SEVERITY_RISK.get(severity.lower(), 0.9)
+        violations_out.append(
+            {
+                "layer": hit["layer"],
+                "category": hit.get("category") or "unknown",
+                "severity": severity,
+                "risk_score": hit_risk,
+                "matched_pattern": _matched_pattern(list(hit.get("matches") or [])),
+                "recommendation": hit["action"],
+                "source": "tenant_rule",
+                "rule_id": hit.get("rule_id"),
+                "rule_name": hit.get("rule_name"),
+            }
+        )
+        risk_score = max(risk_score, hit_risk)
+        hit_action = _V2_TO_V1_ACTION.get(str(hit["action"]), "logged")
+        if _V1_ACTION_RANK.index(hit_action) > _V1_ACTION_RANK.index(action):
+            action = hit_action
     return {
-        "allowed": result.allowed,
-        "risk_score": result.risk_score,
-        "action": result.action.value,
+        "allowed": action not in ("blocked", "hitl_queued"),
+        "risk_score": risk_score,
+        "action": action,
+        "quarantined": any(h["action"] == "quarantine" for h in tenant_hits),
         "violations": violations_out,
         "input_hash": result.input_hash,
     }
