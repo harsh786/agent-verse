@@ -1,0 +1,50 @@
+{{- /*
+  NF-16: migrations run as the schema OWNER (MIGRATION_DATABASE_URL, falling back
+  to database-url for a single-role install) in ONE Job per release revision (Jobs
+  are immutable) — never in an app workload. alembic's env.py then creates/repairs
+  the least-privilege application role (APP_DB_USER) with grants
+  (app/db/app_role.py). Every app pod waits for it in a wait-for-schema
+  initContainer (app/db/wait_for_schema.py) instead of crash-looping. Previously
+  the API image CMD migrated on start: every replica raced to migrate and the
+  workers/beat started on whatever schema they found. Not a helm hook: a
+  post-install hook deadlocks `helm --wait` (the pods wait for this Job).
+  Mirrors infra/helm/agentverse/templates/migrate-job.yaml.
+*/}}
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agentverse-db-migrate-{{ .Release.Revision }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-db-migrate
+    component: db-migrate
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app: agentverse-db-migrate
+        component: db-migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: db-migrate
+          image: {{ include "agentverse.backendImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agentverse-secrets
+                  key: database-url
+            {{- include "agentverse.migrationEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+{{- end }}

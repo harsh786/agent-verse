@@ -10,7 +10,8 @@ Postgres SUPERUSER — so RLS was bypassed for every table locally and
 * the role is created on a fresh volume by an initdb script and, for existing
   volumes, by ``db-migrate`` (alembic + app/db/app_role.py) before anything
   connects;
-* pgbouncer knows the app role's credentials.
+* pgbouncer knows the app role's credentials, and the maintenance role's when
+  it is a separate role (MAINTENANCE_DB_USER).
 """
 
 from __future__ import annotations
@@ -26,6 +27,10 @@ INFRA = Path(__file__).resolve().parents[2] / "infra"
 COMPOSE = INFRA / "docker-compose.yml"
 APP_SERVICES = ("backend", "worker", "subgoal-worker", "beat", "workflow-worker")
 _USER = re.compile(r"^postgresql\+asyncpg://([^:@]+):")
+_MAINTENANCE_USERINFO = (
+    "postgresql+asyncpg://${MAINTENANCE_DB_USER:-agentverse}:"
+    "${MAINTENANCE_DB_PASSWORD:-agentverse}@"
+)
 
 
 def _compose() -> dict[str, Any]:
@@ -57,8 +62,9 @@ def test_app_services_connect_as_the_least_privilege_role() -> None:
         assert _user(env["DATABASE_URL"]) == "${APP_DB_USER:-agentverse_app}", name
         assert "agentverse:agentverse@" not in env["DATABASE_URL"], name
         assert "${APP_DB_PASSWORD:-agentverse_app}" in env["DATABASE_URL"], name
-        # Cross-tenant system jobs keep the BYPASSRLS owner, explicitly.
-        assert _user(env["MAINTENANCE_DATABASE_URL"]) == "agentverse", name
+        # Cross-tenant system jobs: the BYPASSRLS maintenance role (the owner by
+        # default), the same user/password pgbouncer's auth file gets.
+        assert env["MAINTENANCE_DATABASE_URL"].startswith(_MAINTENANCE_USERINFO), name
         # Nothing at runtime migrates: the app role cannot run DDL.
         assert "MIGRATION_DATABASE_URL" not in env, name
 
@@ -108,3 +114,22 @@ def test_pgbouncer_knows_the_app_role() -> None:
     assert "exec /entrypoint.sh" in script
     # Two (db, user) pools now share Postgres's 100 connections.
     assert int(env["MAX_DB_CONNECTIONS"]) <= 90
+
+
+def test_pgbouncer_knows_the_maintenance_role() -> None:
+    """A separate BYPASSRLS maintenance role is in pgbouncer's auth file too.
+
+    The image writes only DB_USER (the owner); MAINTENANCE_DATABASE_URL pointed at
+    another role failed authentication at pgbouncer. Every app service's DSN and
+    pgbouncer read the same MAINTENANCE_DB_USER / MAINTENANCE_DB_PASSWORD.
+    """
+    services = _compose()["services"]
+    env = _env(services["pgbouncer"])
+    assert env["MAINTENANCE_DB_USER"] == "${MAINTENANCE_DB_USER:-agentverse}"
+    assert env["MAINTENANCE_DB_PASSWORD"] == "${MAINTENANCE_DB_PASSWORD:-agentverse}"
+    assert env["DB_USER"] == "agentverse"  # the default maintenance role = the owner
+    for name, svc in services.items():
+        dsn = _env(svc).get("MAINTENANCE_DATABASE_URL")
+        if dsn is not None:
+            assert dsn.startswith(_MAINTENANCE_USERINFO), name
+            assert "@pgbouncer:6432/" in dsn, name

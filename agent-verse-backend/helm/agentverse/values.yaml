@@ -32,6 +32,24 @@ backend:
     LOG_LEVEL: INFO
     DEFAULT_LLM_PROVIDER: anthropic
 
+# ── Database migrations (NF-16) ──────────────────────────────────────────────
+# enabled: one `alembic upgrade head` Job per release revision runs as the schema
+# owner (externalSecrets migrationDatabaseUrl, else database-url) and provisions
+# the app role; the API runs uvicorn only and every app pod waits in a
+# wait-for-schema initContainer until the schema is at its image's alembic head.
+# false: the API image migrates on start (owner DSN on the API) and the workers /
+# beat still wait for the schema.
+migrations:
+  enabled: true
+  backoffLimit: 20
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
 # ── Celery Worker ─────────────────────────────────────────────────────────────
 # Worker memory budget (owner decision D4, same numbers as L-03 in
 # infra/docker-compose.prod.yml and infra/k8s/worker-deployment.yaml):
@@ -199,7 +217,7 @@ externalSecrets:
     # NF-16 (three roles, see the repo-root CLAUDE.md): database-url should be the
     # least-privilege app role; the BYPASSRLS maintenance role serves the
     # cross-tenant system jobs; the owner DSN + app role credentials let the
-    # API's start-up migration provision that app role. Remove an entry to skip it.
+    # migrate Job (migrate-job.yaml) provision that app role. Remove an entry to skip it.
     maintenanceDatabaseUrl:
       remoteRef:
         key: agentverse/maintenance-database-url

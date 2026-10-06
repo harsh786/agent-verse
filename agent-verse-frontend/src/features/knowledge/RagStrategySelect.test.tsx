@@ -97,6 +97,20 @@ describe('RagStrategySelect', () => {
     expect(calls.every((u) => u.endsWith('/rag/strategies?collection_id=col-1'))).toBe(true);
   });
 
+  test('a value the backend does not offer (legacy made-up id) falls back to hybrid', async () => {
+    mockBackend();
+    const onChange = vi.fn();
+    wrap(<RagStrategySelect collectionId={null} value="vector" onChange={onChange} />);
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('hybrid'));
+  });
+
+  test('before strategies load, the current value is left alone', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
+    const onChange = vi.fn();
+    wrap(<RagStrategySelect collectionId={null} value="hyde" onChange={onChange} />);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   test('a strategy that becomes unavailable falls back to hybrid', async () => {
     mockBackend();
     const onChange = vi.fn();

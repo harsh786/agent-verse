@@ -20,6 +20,8 @@ import { workflowsApi, apiFetch } from '../../lib/api/client';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { RagStrategySelect } from '@/features/knowledge/RagStrategySelect';
+import { DEFAULT_RAG_STRATEGY } from '@/features/knowledge/ragStrategies';
 
 // ─── Node Types ──────────────────────────────────────────────────────────────
 
@@ -342,6 +344,18 @@ function ToolSelector({ value, onChange }: { value: string; onChange: (v: string
 
 // ─── Type-Specific Inspector ──────────────────────────────────────────────────
 
+/**
+ * The collection a RAG node's strategy readiness is checked against: a literal
+ * id only. A blank field or a `{{template}}` resolved at run time has no single
+ * collection yet, so the backend reports collection-indexed strategies as
+ * needing one.
+ */
+function ragCollectionForReadiness(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const id = raw.trim();
+  return id && !id.includes('{{') ? id : null;
+}
+
 function TypeSpecificConfig({
   nodeData,
   onChange,
@@ -532,16 +546,15 @@ function TypeSpecificConfig({
       {field('query-tmpl', 'Query Template', nodeData.query_template as string | undefined, (v) => onChange({ query_template: v }), '{{goal}}', 'textarea')}
       <div>
         <label htmlFor="rag-strategy" className={labelCls}>Strategy</label>
-        <select
+        {/* Real strategy ids from GET /rag/strategies (the backend refuses any
+            other id), with readiness for the node's collection. */}
+        <RagStrategySelect
           id="rag-strategy"
-          value={(nodeData.strategy as string | undefined) ?? 'hybrid'}
-          onChange={(e) => onChange({ strategy: e.target.value })}
+          collectionId={ragCollectionForReadiness(nodeData.collection_id)}
+          value={(nodeData.strategy as string | undefined) ?? DEFAULT_RAG_STRATEGY}
+          onChange={(strategy) => onChange({ strategy })}
           className={inputCls}
-        >
-          <option value="hybrid" className="bg-command-black">Hybrid</option>
-          <option value="vector" className="bg-command-black">Vector</option>
-          <option value="lexical" className="bg-command-black">Lexical</option>
-        </select>
+        />
       </div>
       <div>
         <label htmlFor="rag-topk" className={labelCls}>Top K</label>

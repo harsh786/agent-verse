@@ -24,13 +24,15 @@ export function RagStrategySelect({ collectionId, value, onChange, id = 'rag-str
   const strategies = data?.strategies ?? [];
   const selected = strategies.find((s) => s.id === value);
 
-  // A collection change can make the chosen strategy unavailable: fall back to
-  // the default instead of sending a request that can only fail.
+  // A collection change can make the chosen strategy unavailable, and a saved
+  // value can name a strategy the backend does not offer (older workflow
+  // definitions stored made-up ids): fall back to the default instead of
+  // sending a request that can only fail.
+  const unknown = strategies.length > 0 && selected === undefined;
   useEffect(() => {
-    if (selected && !selected.available && value !== DEFAULT_RAG_STRATEGY) {
-      onChange(DEFAULT_RAG_STRATEGY);
-    }
-  }, [selected, value, onChange]);
+    if (value === DEFAULT_RAG_STRATEGY) return;
+    if (unknown || (selected && !selected.available)) onChange(DEFAULT_RAG_STRATEGY);
+  }, [selected, unknown, value, onChange]);
 
   const options = strategies.length > 0
     ? strategies

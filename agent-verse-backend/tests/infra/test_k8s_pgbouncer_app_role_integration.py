@@ -1,4 +1,4 @@
-"""NF-16 follow-up (integration): the k8s pgBouncer pod's auth file lists the app role.
+"""NF-16 follow-up (integration): the k8s pgBouncer auth file lists the app and maintenance roles.
 
 Runs the manifest's image with its own command, the ConfigMap script and the
 manifest env (secret refs resolved to test values), and reads the auth file the
@@ -19,8 +19,13 @@ import yaml
 pytestmark = pytest.mark.integration
 
 K8S = Path(__file__).resolve().parents[2] / "infra" / "k8s"
-_SECRET = {"POSTGRES_PASSWORD": "owner-pw", "APP_DB_USER": "agentverse_app",
-           "APP_DB_PASSWORD": "app-pw-123"}
+_SECRET = {
+    "POSTGRES_PASSWORD": "owner-pw",
+    "APP_DB_USER": "agentverse_app",
+    "APP_DB_PASSWORD": "app-pw-123",
+    "MAINTENANCE_DB_USER": "agentverse_maint",
+    "MAINTENANCE_DB_PASSWORD": "maint-pw-456",
+}
 
 
 def _manifest() -> tuple[dict[str, Any], str]:
@@ -63,7 +68,7 @@ def test_pgbouncer_auth_file_lists_owner_and_app_role() -> None:
             while time.monotonic() < deadline:
                 stdout, stderr = container.get_logs()
                 out = (stdout or b"").decode() + (stderr or b"").decode()
-                if ("agentverse_app" in out and '"agentverse"' in out) or "can't" in out:
+                if ('"agentverse_maint"' in out and '"agentverse"' in out) or "can't" in out:
                     break
                 time.sleep(0.5)
         finally:
@@ -71,3 +76,5 @@ def test_pgbouncer_auth_file_lists_owner_and_app_role() -> None:
 
     assert '"agentverse_app" "app-pw-123"' in out, out
     assert '"agentverse"' in out, out  # the owner, written by the image itself
+    # A separate BYPASSRLS maintenance role (MAINTENANCE_DATABASE_URL).
+    assert '"agentverse_maint" "maint-pw-456"' in out, out

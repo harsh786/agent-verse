@@ -101,8 +101,9 @@ tests/infra/test_vault_key_distribution.py.
 {{- end }}
 
 {{/*
-NF-16: the schema owner DSN + the app role it provisions — for the API only,
-whose image CMD runs `alembic upgrade head` before uvicorn. With them set,
+NF-16: the schema owner DSN + the app role it provisions — for the migrate Job
+(migrate-job.yaml), or, with migrations.enabled=false, for the API, whose image
+CMD then runs `alembic upgrade head` before uvicorn. With them set,
 alembic migrates as the owner and creates/repairs APP_DB_USER, so database-url
 can be that least-privilege role (unset = the previous single-role behaviour).
 */}}

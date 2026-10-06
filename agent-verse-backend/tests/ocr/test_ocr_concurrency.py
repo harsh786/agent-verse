@@ -352,3 +352,111 @@ async def test_map_bounded_stream_stops_pulling_after_a_failure() -> None:
     with pytest.raises(RuntimeError, match="refused"):
         await oc.map_bounded_stream(_pull, _work, limit=2)
     assert len(pulled) <= 3
+
+
+# ── orderly shutdown (exit abort: libc++abi recursive_mutex, EXIT 134) ───────
+
+
+def test_shutdown_is_a_no_op_when_no_pool_was_ever_created() -> None:
+    oc.shutdown_ocr_concurrency()  # clears whatever earlier tests left
+    assert oc._runtime is None
+    assert len(oc._executors) == 0
+    oc.shutdown_ocr_concurrency()
+    oc.shutdown_ocr_concurrency(wait=False, cancel_futures=False)
+    assert oc._runtime is None
+
+
+async def test_shutdown_is_idempotent_and_a_later_call_builds_a_fresh_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(oc, "ocr_limits", lambda: oc.OcrLimits(2, 2, 1, 300))
+    assert await oc.run_ocr_work(lambda: 41 + 1) == 42
+    first = oc._get_runtime().executor
+    oc.shutdown_ocr_concurrency()
+    oc.shutdown_ocr_concurrency()
+    assert oc._runtime is None
+    with pytest.raises(RuntimeError):
+        first.submit(int)  # really shut down
+    assert await oc.run_ocr_work(lambda: 7) == 7
+    assert oc._get_runtime().executor is not first
+
+
+def test_shutdown_waits_for_running_work_and_cancels_queued_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(oc, "ocr_limits", lambda: oc.OcrLimits(1, 2, 1, 300))
+    executor = oc._get_runtime().executor
+    started = threading.Event()
+    finished: list[str] = []
+
+    def _running() -> str:
+        started.set()
+        time.sleep(0.2)
+        finished.append("running")
+        return "done"
+
+    running = executor.submit(_running)
+    queued = executor.submit(finished.append, "queued")
+    assert started.wait(5)
+    oc.shutdown_ocr_concurrency()  # wait=True, cancel_futures=True
+    assert running.result(timeout=0) == "done"  # finished before shutdown returned
+    assert queued.cancelled()
+    assert finished == ["running"]
+
+
+def test_shutdown_also_stops_pools_retired_by_reset() -> None:
+    oc.reset_ocr_concurrency(oc.OcrLimits(1, 2, 1, 300))
+    retired = oc._get_runtime().executor
+    oc.reset_ocr_concurrency(oc.OcrLimits(1, 2, 1, 300))  # shut down with wait=False
+    current = oc._get_runtime().executor
+    assert retired in oc._executors and current in oc._executors
+    oc.shutdown_ocr_concurrency()
+    for executor in (retired, current):
+        with pytest.raises(RuntimeError):
+            executor.submit(int)
+    assert len(oc._executors) == 0
+
+
+def test_shutdown_runs_at_interpreter_exit() -> None:
+    """Registered with atexit: run the exit handlers in a child interpreter."""
+    import subprocess
+    import sys
+
+    code = (
+        "import atexit\n"
+        "from app.ocr import concurrency as oc\n"
+        "ex = oc._get_runtime().executor\n"
+        "assert ex.submit(lambda: 1).result() == 1\n"
+        "atexit._run_exitfuncs()\n"
+        "assert oc._runtime is None\n"
+        "try:\n"
+        "    ex.submit(int)\n"
+        "except RuntimeError:\n"
+        "    print('pool shut down at exit')\n"
+    )
+    backend = Path(__file__).resolve().parents[2]
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=backend,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "pool shut down at exit" in proc.stdout
+
+
+def test_session_teardown_shuts_the_pool_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    conftest = sys.modules["tests.conftest"]  # the loaded root conftest, not a re-import
+    calls: list[dict[str, bool]] = []
+    monkeypatch.setattr(oc, "shutdown_ocr_concurrency", lambda **kw: calls.append(kw))
+    conftest._shutdown_ocr_pools()
+    assert calls == [{"wait": True, "cancel_futures": True}]
+    # Never imports the module itself when no test did.
+    monkeypatch.delitem(sys.modules, "app.ocr.concurrency")
+    conftest._shutdown_ocr_pools()
+    assert "app.ocr.concurrency" not in sys.modules
+    assert len(calls) == 1

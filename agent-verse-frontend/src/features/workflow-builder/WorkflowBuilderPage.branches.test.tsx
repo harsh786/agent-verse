@@ -97,6 +97,24 @@ interface Plan {
   run?: unknown;
 }
 
+/** GET /rag/strategies: RAPTOR needs a collection with a RAPTOR index (col-1 has one). */
+function ragStrategiesFor(collectionId: string | null) {
+  const raptorReady = collectionId === 'col-1';
+  return {
+    collection_id: collectionId,
+    strategies: [
+      { id: 'hybrid', name: 'Hybrid', available: true, unavailable_reason: null },
+      { id: 'hyde', name: 'HyDE', available: true, unavailable_reason: null },
+      {
+        id: 'raptor',
+        name: 'Raptor',
+        available: raptorReady,
+        unavailable_reason: raptorReady ? null : collectionId ? 'requires RAPTOR indexing' : 'collection_index_required',
+      },
+    ],
+  };
+}
+
 function mockFetch(plan: Plan = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
@@ -105,6 +123,7 @@ function mockFetch(plan: Plan = {}) {
       new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     if (url.includes('/rpa/tools')) return ok([]);
+    if (url.includes('/rag/strategies')) return ok(ragStrategiesFor(new URL(url, 'http://x').searchParams.get('collection_id')));
     if (url.includes('/workflows/generate') && method === 'POST')
       return ok(plan.generate ?? { nodes: [], edges: [] });
     if (/\/workflows\/[^/]+\/run/.test(url) && method === 'POST')
@@ -277,6 +296,46 @@ describe('WorkflowBuilderPage — type-specific inspector', () => {
     expect(screen.getByLabelText('Query Template')).toBeInTheDocument();
     expect(screen.getByLabelText('Strategy')).toBeInTheDocument();
     expect(screen.getByLabelText('Top K')).toBeInTheDocument();
+  });
+
+  test('rag strategy options come from GET /rag/strategies, not a hardcoded list', async () => {
+    const spy = mockFetch();
+    renderPage();
+    addNode('RAG Retrieval');
+    selectFirstNode();
+    const select = screen.getByLabelText('Strategy') as HTMLSelectElement;
+    expect(await screen.findByRole('option', { name: 'HyDE' })).toBeInTheDocument();
+    const ids = Array.from(select.options).map((o) => o.value);
+    expect(ids).toEqual(['hybrid', 'hyde', 'raptor']);
+    // The made-up ids the backend refuses are gone.
+    expect(ids).not.toContain('vector');
+    expect(ids).not.toContain('lexical');
+    expect(select.value).toBe('hybrid');
+    expect(screen.getByRole('option', { name: 'Raptor (needs a collection)' })).toBeDisabled();
+    const calls = spy.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/rag/strategies'));
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  test('rag strategy readiness follows the node collection id; a template id is not sent', async () => {
+    const spy = mockFetch();
+    renderPage();
+    addNode('RAG Retrieval');
+    selectFirstNode();
+    const strategyCalls = () =>
+      spy.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/rag/strategies'));
+
+    fireEvent.change(screen.getByLabelText('Collection ID'), { target: { value: '{{collection}}' } });
+    await screen.findByRole('option', { name: 'Raptor (needs a collection)' });
+    expect(strategyCalls().some((u) => u.includes('collection_id='))).toBe(false);
+
+    fireEvent.change(screen.getByLabelText('Collection ID'), { target: { value: ' col-1 ' } });
+    const raptor = await screen.findByRole('option', { name: 'Raptor' });
+    expect(raptor).not.toBeDisabled();
+    expect(strategyCalls().some((u) => u.endsWith('/rag/strategies?collection_id=col-1'))).toBe(true);
+
+    const select = screen.getByLabelText('Strategy') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'raptor' } });
+    expect(select.value).toBe('raptor');
   });
 
   test('skill node shows skill id + goal fields', async () => {
