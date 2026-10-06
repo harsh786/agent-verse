@@ -147,6 +147,12 @@ class TriggerSpec:
     watch_agent_id: str = ""  # filter by agent
     score_threshold: float = 0.0
     score_dimension: str = ""  # "overall" | specific dimension name
+    # goal_score_below decides on the last N watched goals' scores, not one
+    # (app.triggers.score_window): 0 = auto (1 for deterministic dimensions, 3 for
+    # the LLM-judged accuracy / coherence and for overall). "mean" = rolling
+    # average below the threshold, "all" = N consecutive breaches.
+    score_window: int = 0
+    score_aggregation: str = "mean"
     hitl_queue_id: str = ""  # for HITL_APPROVED / HITL_REJECTED
     memory_type: str = ""  # for MEMORY_CREATED: type of memory
     # B7: may this trigger fire on events produced by a goal it started itself?

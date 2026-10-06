@@ -374,14 +374,18 @@ def test_goal_score_below_threshold_and_dimension(
     for label, extra in (("none", {}), ("zero", {"score_threshold": 0}),
                          ("above_one", {"score_threshold": 1.5}),
                          ("bad_dimension", {"score_threshold": 0.7,
-                                            "score_dimension": "acuracy"})):
+                                            "score_dimension": "acuracy"}),
+                         ("bad_window", {"score_threshold": 0.7, "score_window": -1}),
+                         ("bad_aggregation", {"score_threshold": 0.7,
+                                              "score_aggregation": "median"})):
         r = api.post("/triggers", json={"spec": {**base, "name": f"rw-b7-bad-{label}-{t}", **extra},
                                         "goal_template": "x" + ACK})
         codes[label] = r.status_code
         if r.status_code == 201:
             cleanup("DELETE", f"/triggers/{r.json()['schedule_id']}")
     evidence["invalid_create"] = codes
-    assert codes == {"none": 422, "zero": 422, "above_one": 422, "bad_dimension": 422}, codes
+    assert codes == {"none": 422, "zero": 422, "above_one": 422, "bad_dimension": 422,
+                     "bad_window": 422, "bad_aggregation": 422}, codes
     cases = {  # name -> (dimension, threshold)
         "overall_high": ("", 0.97),
         "overall_low": ("", 0.05),
@@ -390,8 +394,10 @@ def test_goal_score_below_threshold_and_dimension(
         "task_completion": ("task_completion", 0.5),
     }
     sids = {
+        # score_window 1: this scenario scores ONE goal, so each trigger decides on
+        # it alone (judged dimensions and overall default to a 3-goal window).
         name: _trigger(api, cleanup, {**base, "name": f"rw-b7-score-{name}-{t}",
-                                      "score_threshold": thr,
+                                      "score_threshold": thr, "score_window": 1,
                                       **({"score_dimension": dim} if dim else {})},
                        "Review low-scoring goal {{payload.goal_id}} (score {{payload.score}})."
                        + ACK)
