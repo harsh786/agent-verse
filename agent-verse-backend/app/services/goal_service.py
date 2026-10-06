@@ -1268,7 +1268,17 @@ class GoalService:
             _svc_logger.warning("goal_recovery_skipped_no_redis")
             return 0
         recovered = 0
-        for goal_id, record in list(self._goals.items()):
+        candidates = dict(self._goals)
+        # The warm cache holds only the last 24 h, at most 500 goals per tenant:
+        # orphans outside it were left to the stuck-goal sweeper, which waits
+        # out the plan's whole goal timeout (a08-F189-05). Postgres is asked
+        # directly for in-process goals of other replicas.
+        try:
+            for orphan in await self._db_orphan_candidates():
+                candidates.setdefault(orphan.goal_id, orphan)
+        except Exception as exc:
+            _svc_logger.warning("goal_recovery_db_scan_failed", error=str(exc)[:160])
+        for goal_id, record in list(candidates.items()):
             if record.status in _NOT_RECOVERABLE_STATUSES or self._runs_locally(record):
                 continue
             runner = record.execution_context.get(_RUNNER_KEY)
@@ -1291,6 +1301,79 @@ class GoalService:
             except Exception as exc:
                 _svc_logger.warning("goal_recovery_failed", goal_id=goal_id, error=str(exc))
         return recovered
+
+    async def _db_orphan_candidates(self, per_tenant: int = 1_000) -> list[GoalRecord]:
+        """Active goals whose recorded runner is ANOTHER replica's in-process loop.
+
+        Read per active tenant under its RLS context with an explicit
+        ``tenant_id`` predicate, with no age cutoff. Whether each one is really
+        orphaned (replica heartbeat gone, no worker lock, atomic claim) is
+        decided by the caller exactly as for the warm cache.
+        """
+        if self._db is None:
+            return []
+        from sqlalchemy import select
+        from sqlalchemy import text as _sql
+
+        from app.db.models.goal import Goal
+        from app.db.models.tenant import Tenant
+        from app.db.rls import sqlalchemy_rls_context
+
+        out: list[GoalRecord] = []
+        active = [
+            s.value for s in GoalStatus if s not in _NOT_RECOVERABLE_STATUSES
+        ]
+        async with self._db() as session:
+            tenant_ids = [
+                str(t)
+                for t in (
+                    await session.execute(
+                        select(Tenant.id).where(Tenant.is_active == True)  # noqa: E712
+                    )
+                ).scalars()
+            ]
+            for tenant_id in tenant_ids:
+                async with sqlalchemy_rls_context(session, tenant_id):
+                    rows = (
+                        await session.execute(
+                            select(Goal)
+                            .where(
+                                Goal.tenant_id == tenant_id,
+                                Goal.status.in_(active),
+                                _sql(
+                                    "goals.execution_context::jsonb -> CAST(:rk AS text) "
+                                    "->> 'kind' = :kind AND "
+                                    "COALESCE(goals.execution_context::jsonb -> "
+                                    "CAST(:rk AS text) ->> 'replica', '') "
+                                    "NOT IN ('', :me)"
+                                ).bindparams(
+                                    rk=_RUNNER_KEY, kind=_RUNNER_IN_PROCESS, me=self._replica_id
+                                ),
+                            )
+                            .order_by(Goal.created_at)
+                            .limit(per_tenant)
+                        )
+                    ).scalars().all()
+                for g in rows:
+                    try:
+                        status = GoalStatus(g.status)
+                    except ValueError:
+                        continue
+                    out.append(
+                        GoalRecord(
+                            goal_id=g.id,
+                            goal_text=g.goal_text,
+                            status=status,
+                            tenant_id=g.tenant_id,
+                            priority=g.priority,
+                            dry_run=g.dry_run,
+                            created_at=g.created_at.isoformat() if g.created_at else "",
+                            agent_id=g.agent_id,
+                            workflow_mode=g.workflow_mode,
+                            execution_context=g.execution_context or {},
+                        )
+                    )
+        return out
 
     async def _recover_one(self, record: GoalRecord, dead_replica: str) -> bool:
         """Claim and re-dispatch one orphaned goal; True when it was re-enqueued."""
