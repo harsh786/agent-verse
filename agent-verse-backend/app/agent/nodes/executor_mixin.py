@@ -1524,6 +1524,30 @@ class ExecutorMixin:
 
     # ── OI-1: goal-scoped ledger of executed calls and approval decisions ──────
 
+    @staticmethod
+    def _tool_idempotency_scope(state: AgentState, tool_ref: Any, arguments: Any) -> Any:
+        """MCP idempotency scope for one tool dispatch of this goal (a06-F101-04).
+
+        A side-effecting call carries ``goal:<goal_id>:<call fingerprint>`` (the
+        workflow tool step's WF-14 mechanism), so the call that was in flight
+        when a worker crashed is not applied twice when the redelivered goal
+        re-issues it. Read calls carry no key.
+        """
+        from app.agent.goal_action_ledger import call_fingerprint, call_idempotency_key
+        from app.mcp.client import idempotency_scope
+
+        server_id = str(getattr(tool_ref, "server_id", "") or "")
+        name = str(getattr(tool_ref, "name", "") or "")
+        args = arguments if isinstance(arguments, dict) else {}
+        key: str | None = None
+        if classify_tool_risk(name, str(getattr(tool_ref, "server_name", "") or ""), args) != (
+            "read"
+        ):
+            key = call_idempotency_key(
+                str(getattr(state, "goal_id", "") or ""), call_fingerprint(server_id, name, args)
+            )
+        return idempotency_scope(key)
+
     def _goal_action_ledger(self, state: AgentState, tenant_ctx: TenantContext) -> Any:
         """The goal's action ledger: state context mirror + the shared Redis hash."""
         from app.agent.goal_action_ledger import GoalActionLedger
@@ -3339,12 +3363,15 @@ class ExecutorMixin:
                                     {"type": "approval_granted", "request_id": req_id}
                                 )
                             _note_step_tool(tool_ref.name, tool_ref.server_name)
-                            _approved_result = await self._mcp_client.call_tool(
-                                server_id=tool_ref.server_id,
-                                tool_name=tool_ref.name,
-                                arguments=tool_call.arguments,
-                                tenant_ctx=tenant_ctx,
-                            )
+                            with self._tool_idempotency_scope(
+                                state, tool_ref, tool_call.arguments
+                            ):
+                                _approved_result = await self._mcp_client.call_tool(
+                                    server_id=tool_ref.server_id,
+                                    tool_name=tool_ref.name,
+                                    arguments=tool_call.arguments,
+                                    tenant_ctx=tenant_ctx,
+                                )
                             raw_output = (
                                 _approved_result.output
                                 if _approved_result.success
@@ -3465,12 +3492,15 @@ class ExecutorMixin:
                                             tool_call.tool if hasattr(tool_call, "tool") else "",
                                         )
                                         _note_step_tool(tool_ref.name, tool_ref.server_name)
-                                        result = await self._mcp_client.call_tool(
-                                            server_id=tool_ref.server_id,
-                                            tool_name=tool_ref.name,
-                                            arguments=tool_call.arguments,
-                                            tenant_ctx=tenant_ctx,
-                                        )
+                                        with self._tool_idempotency_scope(
+                                            state, tool_ref, tool_call.arguments
+                                        ):
+                                            result = await self._mcp_client.call_tool(
+                                                server_id=tool_ref.server_id,
+                                                tool_name=tool_ref.name,
+                                                arguments=tool_call.arguments,
+                                                tenant_ctx=tenant_ctx,
+                                            )
                                 except Exception as _dispatch_exc:
                                     record_tool_call(
                                         tool_ref.name,
@@ -4227,12 +4257,13 @@ class ExecutorMixin:
             _t0 = time.monotonic()
             try:
                 _note_step_tool(tool_ref.name, tool_ref.server_name)
-                result = await self._mcp_client.call_tool(
-                    server_id=tool_ref.server_id,
-                    tool_name=tool_ref.name,
-                    arguments=args,
-                    tenant_ctx=tenant_ctx,
-                )
+                with self._tool_idempotency_scope(state, tool_ref, args):
+                    result = await self._mcp_client.call_tool(
+                        server_id=tool_ref.server_id,
+                        tool_name=tool_ref.name,
+                        arguments=args,
+                        tenant_ctx=tenant_ctx,
+                    )
             except Exception as exc:
                 record_tool_call(
                     tool_ref.name, tool_ref.server_id, "failed", time.monotonic() - _t0
