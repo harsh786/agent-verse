@@ -159,10 +159,18 @@ class ModelRouter:
         self._config = _apply_env_model_overrides(self._config)
         self._override = ""
         self._role_map: dict[str, str] = {}
+        self._policy_roles: dict[str, str] = {}
 
     def set_role_map(self, role_map: dict[str, str]) -> None:
         """Pin roles to models the goal's provider serves (deployment_roles)."""
         self._role_map = dict(role_map)
+
+    def set_policy_roles(self, roles: dict[str, str]) -> None:
+        """The tenant's own routing-policy role pins (PUT /models/routing-policies).
+
+        More specific than the deployment-wide reasoning order, so they win over
+        it; they also stay in the role map (fallback chains read it)."""
+        self._policy_roles = dict(roles)
 
     @property
     def role_map(self) -> dict[str, str]:
@@ -192,6 +200,9 @@ class ModelRouter:
         # (set_role_map — see app/ai_router/deployment_roles.py).
         if self._override:
             return self._override
+        _policy_role = _ROLE_ALIASES.get(task_type, task_type)
+        if getattr(self, "_policy_roles", {}).get(_policy_role):
+            return self._policy_roles[_policy_role]
         # The operator's saved reasoning order (Model Registry) is explicit intent
         # too: it wins over the env pins and the automatic deployment role map,
         # which every NVIDIA / on-prem deployment has — the model ranked first

@@ -7,8 +7,9 @@ used to decide only the failover chain: both role routers (``ModelRouter`` and
 first — which every NVIDIA / on-prem deployment has (planning on NVIDIA,
 execution and verification on Qwen) — so the model ranked first never ran.
 
-Precedence in both routers is now: per-agent override > saved reasoning order >
-per-role env pin (``DEFAULT_*_MODEL``) > deployment role map > cheapest
+Precedence in both routers is now: per-agent / per-goal override > the tenant's
+own routing-policy pin (``PUT /models/routing-policies``) > saved reasoning
+order > per-role env pin (``DEFAULT_*_MODEL``) > deployment role map > cheapest
 configured model.
 """
 

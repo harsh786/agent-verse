@@ -104,3 +104,13 @@ def test_non_reasoning_roles_are_untouched():
     model_registry.set_preferences({"text_generation": ["custom/ranked"]})
     assert preferred_role_model("embedding") == ""
     assert preferred_role_model("planning") == "ranked"
+
+
+def test_a_tenant_routing_policy_pin_outranks_the_deployment_wide_order():
+    _add("custom", "ranked")
+    model_registry.set_preferences({"text_generation": ["custom/ranked"]})
+    for router in _routers():
+        router.set_role_map({**ROLE_MAP, "planning": "tenant-pinned"})
+        router.set_policy_roles({"planning": "tenant-pinned"})
+        assert router.model_for("planning") == "tenant-pinned"
+        assert router.model_for("execution") == "ranked"  # not pinned by the tenant

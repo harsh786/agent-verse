@@ -437,6 +437,7 @@ class ModelOrchestratorAdapter:
         self._last_budget_ratio: float = 0.0
         self._override = ""
         self._role_map: dict[str, str] = {}
+        self._policy_roles: dict[str, str] = {}
         self._plan_tier = ""
 
     def set_plan_tier(self, plan: str) -> None:
@@ -481,6 +482,11 @@ class ModelOrchestratorAdapter:
     def set_role_map(self, role_map: dict[str, str]) -> None:
         """Pin roles to models the goal's provider serves (deployment_roles)."""
         self._role_map = dict(role_map)
+
+    def set_policy_roles(self, roles: dict[str, str]) -> None:
+        """The tenant's own routing-policy role pins: they win over the
+        deployment-wide reasoning order (see ModelRouter.set_policy_roles)."""
+        self._policy_roles = dict(roles)
 
     @property
     def role_map(self) -> dict[str, str]:
@@ -555,6 +561,11 @@ class ModelOrchestratorAdapter:
             # every self-hosted model costs 0.
             if self._override:
                 return self._capped(self._override, task_type)
+            from app.ai_router.deployment_roles import ROLE_ALIASES as _ALIASES
+
+            _policy = getattr(self, "_policy_roles", {}).get(_ALIASES.get(task_type, task_type))
+            if _policy:
+                return self._capped(_policy, task_type)
             # The saved reasoning order wins over the automatic role map (see
             # app/ai_router/role_preference.py); the plan-tier cap still applies.
             from app.ai_router.role_preference import preferred_role_model

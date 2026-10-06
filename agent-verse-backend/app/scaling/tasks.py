@@ -3340,10 +3340,8 @@ def run_goal(
             # API path; they were stored in one API process and never applied.
             # PROV-20: store wired first; an unreadable store fails the goal
             # instead of running it while ignoring the tenant's policy.
-            _worker_roles = {
-                **_worker_roles,
-                **_worker_tenant_policy_roles(tenant_id, real_provider),
-            }
+            _worker_policy_roles = _worker_tenant_policy_roles(tenant_id, real_provider)
+            _worker_roles = {**_worker_roles, **_worker_policy_roles}
             if _worker_roles:
                 try:
                     if _model_router is None:
@@ -3351,6 +3349,10 @@ def run_goal(
 
                         _model_router = ModelRouter(provider_name="onprem")
                     _model_router.set_role_map(_worker_roles)
+                    # The tenant's own pins outrank the deployment-wide
+                    # reasoning order (MR-6); the role map keeps them too.
+                    if _worker_policy_roles and hasattr(_model_router, "set_policy_roles"):
+                        _model_router.set_policy_roles(_worker_policy_roles)
                 except Exception as _rm_exc:
                     logger.warning("worker_model_role_map_apply_failed: %s", _rm_exc)
             # A goal-level model_override (POST /goals body) wins over the agent's.

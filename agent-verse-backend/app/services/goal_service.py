@@ -1800,6 +1800,10 @@ class GoalService:
                 )
                 if _policy_roles:
                     _model_router.set_role_map({**_model_router.role_map, **_policy_roles})
+                    # The tenant's own pins outrank the deployment-wide reasoning
+                    # order (MR-6); the role map keeps them for fallback chains.
+                    if hasattr(_model_router, "set_policy_roles"):
+                        _model_router.set_policy_roles(_policy_roles)
             except Exception as _tp_exc:
                 _svc_logger.warning("tenant_routing_policy_apply_failed", error=str(_tp_exc))
 
