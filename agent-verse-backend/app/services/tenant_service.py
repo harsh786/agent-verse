@@ -39,6 +39,23 @@ def _hash_key(raw_key: str) -> str:
 # never longer than the key's remaining lifetime.
 _API_KEY_CACHE_TTL_S = 300
 
+# a08-F194-06: revocation tombstones. A resolve that read the key row just
+# before a revoke / deactivation committed would otherwise re-populate
+# api_key:{hash} after the revoke deleted it, and the revoked key kept working
+# for up to the cache TTL. Revoke / deactivate set these markers; a resolve that
+# caches a context re-checks them AFTER its write and deletes its own entry
+# when one is present. They outlive any in-flight resolve (2 x the cache TTL).
+_REVOCATION_TOMBSTONE_TTL_S = 2 * _API_KEY_CACHE_TTL_S
+
+
+def _revoked_key_marker(key_hash: str) -> str:
+    return f"api_key_revoked:{key_hash}"
+
+
+def _deactivated_tenant_marker(tenant_id: str) -> str:
+    return f"tenant_deactivated:{tenant_id}"
+
+
 # a08-F194-03: a failed read of the shared API-key cache falls through to the
 # DB (authoritative), but it is logged — at most once per window per process,
 # so a Redis outage does not log on every request.
@@ -407,6 +424,12 @@ class TenantService:
         # rather than suppressed.
         if key_hash and self._redis is not None:
             try:
+                # Tombstone first (a08-F194-06), then the entry: a resolve racing
+                # this revoke either finds its entry deleted here or sees the
+                # tombstone after its own write and deletes it.
+                await self._redis.setex(
+                    _revoked_key_marker(key_hash), _REVOCATION_TOMBSTONE_TTL_S, "1"
+                )
                 await self._redis.delete(f"api_key:{key_hash}")
             except Exception as exc:
                 logging.getLogger(__name__).error(
@@ -549,7 +572,7 @@ class TenantService:
                 return
             ttl = min(ttl, remaining)
 
-        with suppress(Exception):  # caching is best-effort
+        try:
             await self._redis.setex(
                 cache_key,
                 ttl,
@@ -564,6 +587,30 @@ class TenantService:
                     }
                 ),
             )
+        except Exception:
+            return  # caching is best-effort; nothing was written
+        # a08-F194-06: re-check the revocation tombstones AFTER the write. A
+        # revoke / deactivation that committed while this resolve was in flight
+        # set one before deleting the entry, so either it deleted this entry or
+        # this check sees its tombstone and drops the entry here.
+        key_hash = cache_key.removeprefix("api_key:")
+        try:
+            revoked = await self._redis.get(_revoked_key_marker(key_hash))
+            if revoked is None:
+                revoked = await self._redis.get(_deactivated_tenant_marker(ctx.tenant_id))
+        except Exception as exc:
+            # Unknown: do not leave a possibly-revoked context cached.
+            logging.getLogger(__name__).warning(
+                "api_key_tombstone_check_failed: %s", type(exc).__name__
+            )
+            revoked = "unknown"
+        if revoked is not None:
+            try:
+                await self._redis.delete(cache_key)
+            except Exception as exc:
+                logging.getLogger(__name__).error(
+                    "api_key_revoked_entry_not_dropped: %s", type(exc).__name__
+                )
 
     # ── DB persistence helpers ────────────────────────────────────────────────
 
@@ -1026,6 +1073,11 @@ class TenantService:
         if sso_sub:
             cache_keys.append(_sso_cache_key(sso_sub))
         try:
+            # Tombstone first (a08-F194-06): a resolve that read the tenant as
+            # active before this commit must not re-cache one of its keys.
+            await self._redis.setex(
+                _deactivated_tenant_marker(tenant_id), _REVOCATION_TOMBSTONE_TTL_S, "1"
+            )
             await self._redis.delete(*cache_keys)
         except Exception as exc:
             logging.getLogger(__name__).error(

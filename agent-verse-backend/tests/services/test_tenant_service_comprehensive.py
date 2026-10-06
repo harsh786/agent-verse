@@ -247,7 +247,12 @@ class TestResolveApiKey:
         ctx = await svc.resolve_api_key(raw_key)
         assert ctx is not None
         assert ctx.tenant_id == created["tenant_id"]
-        mock_redis.get.assert_called_once()
+        # The first read is the api_key:{hash} cache entry. (This legacy entry has no
+        # scopes/expires_at, so it is re-resolved; the later reads are the revocation
+        # tombstone checks after the re-cache, a08-F194-06.)
+        from app.services.tenant_service import _hash_key
+
+        assert mock_redis.get.call_args_list[0].args == (f"api_key:{_hash_key(raw_key)}",)
 
     async def test_resolve_populates_redis_cache(self) -> None:
         svc = TenantService()
