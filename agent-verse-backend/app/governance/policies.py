@@ -77,6 +77,27 @@ class GovernancePolicy:
     tenant_id: str = ""
 
 
+# The actions a stored policy can carry; ``block`` is an alias of ``deny`` (QA-10).
+SUPPORTED_POLICY_ACTIONS: frozenset[str] = frozenset({"deny", "require_approval"})
+POLICY_ACTION_ALIASES: dict[str, str] = {"block": "deny"}
+
+
+def normalize_policy_action(action: Any, *, policy: str = "") -> str:
+    """A stored policy action as one the engine enforces.
+
+    An unknown (or missing) action is enforced as ``deny`` — fail closed: the
+    row exists because someone meant to restrict the tool, and the old reload
+    turned it into a policy that restricted nothing (QA-10). Logged, since an
+    operator should fix the row.
+    """
+    raw = str(action or "").strip().lower()
+    raw = POLICY_ACTION_ALIASES.get(raw, raw)
+    if raw in SUPPORTED_POLICY_ACTIONS:
+        return raw
+    _log.warning("policy_action_unknown_enforced_as_deny", policy=policy, action=str(action)[:50])
+    return "deny"
+
+
 # Among equal-priority matches the most restrictive result wins (QA-9).
 _RESULT_SEVERITY: dict[PolicyResult, int] = {
     PolicyResult.DENY: 0,
@@ -356,7 +377,8 @@ class PolicyEngine:
                     policy for policy in self._policies if policy.tenant_id != tenant_id
                 ]
                 for row in rows:
-                    name, action, tools_pattern, policy_tenant_id = row[0], row[1], row[2], row[3]
+                    name, tools_pattern, policy_tenant_id = row[0], row[2], row[3]
+                    action = normalize_policy_action(row[1], policy=name)
                     hours, weekdays = windows.get(name, (None, None))
                     self._policies.append(
                         Policy(
@@ -414,7 +436,8 @@ class PolicyEngine:
                         self._policies = []
 
                     for row in rows:
-                        name, action, tools_pattern, pol_tenant_id = row[0], row[1], row[2], row[3]
+                        name, tools_pattern, pol_tenant_id = row[0], row[2], row[3]
+                        action = normalize_policy_action(row[1], policy=name)
                         # "*" not ".*": patterns are fnmatch globs, and ".*" only
                         # matches names starting with "." — a pattern-less deny
                         # policy reloaded as deny-NOTHING (fail-open).

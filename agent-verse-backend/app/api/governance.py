@@ -7,16 +7,21 @@ import json as _json
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import UTC
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
 from app.governance.hitl import ApprovalStatus, HITLGateway, HITLResolutionUnavailableError
-from app.governance.policies import Policy, PolicyEngine
+from app.governance.policies import (
+    POLICY_ACTION_ALIASES,
+    Policy,
+    PolicyEngine,
+    normalize_policy_action,
+)
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
 
@@ -32,10 +37,20 @@ class CreatePolicyRequest(BaseModel):
     name: str
     description: str = ""
     tools_pattern: str
-    action: str = "deny"  # "deny" or "require_approval"
+    # QA-10: free text used to create a no-op policy (201) for e.g. "block".
+    # Only enforceable actions are accepted; "block" is an alias of "deny".
+    action: Literal["deny", "require_approval"] = "deny"
     priority: int = 0
     allowed_hours_utc: list[int] | None = None  # [start_hour, end_hour]
     allowed_weekdays: list[int] | None = None
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _action_alias(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip().lower()
+            return POLICY_ACTION_ALIASES.get(value, value)
+        return value
 
 
 class ApproveRejectRequest(BaseModel):
@@ -358,10 +373,10 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
     denied_tools: list[str] = []
     approval_tools: list[str] = []
 
-    if body.action == "deny":
-        denied_tools = [body.tools_pattern]
-    elif body.action == "require_approval":
+    if body.action == "require_approval":
         approval_tools = [body.tools_pattern]
+    else:
+        denied_tools = [body.tools_pattern]
 
     policy = Policy(
         name=body.name,
@@ -2022,6 +2037,9 @@ async def rollback_policy(
             if isinstance(rules, str):
                 rules = _json.loads(rules)
             rule: dict[str, Any] = (rules[0] if isinstance(rules, list) and rules else {}) or {}
+            # QA-10: never restore an action the engine cannot enforce (a no-op
+            # policy); an unknown/missing one is restored as deny (fail closed).
+            restored_action = normalize_policy_action(rule.get("action"), policy=str(target[1]))
             restored_deleted = target[5] is not None
             if restored_deleted:
                 await session.execute(
@@ -2046,7 +2064,7 @@ async def rollback_policy(
                         "tid": tid,
                         "name": target[1],
                         "pattern": rule.get("tools_pattern") or "*",
-                        "action": rule.get("action") or "deny",
+                        "action": restored_action,
                         "priority": int(rule.get("priority") or 0),
                         "desc": target[2] or "",
                     },
@@ -2087,7 +2105,7 @@ async def rollback_policy(
             "name": target[1],
             "description": target[2] or "",
             "tools_pattern": rule.get("tools_pattern") or "*",
-            "action": rule.get("action") or "deny",
+            "action": restored_action,
             "priority": int(rule.get("priority") or 0),
             "allowed_hours_utc": rule.get("allowed_hours_utc"),
             "allowed_weekdays": rule.get("allowed_weekdays"),
