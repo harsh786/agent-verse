@@ -22,6 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
+from app.core.errors import PlatformError
 from app.tenancy.context import PlanTier, TenantContext
 
 # ---------------------------------------------------------------------------
@@ -391,6 +392,20 @@ def _session_unavailable_response() -> JSONResponse:
     )
 
 
+def _key_store_unavailable_response(exc: PlatformError) -> JSONResponse:
+    return JSONResponse(
+        content={
+            "error": {
+                "code": exc.code,
+                "message": "Could not verify the API key; retry shortly.",
+                "retryable": True,
+            }
+        },
+        status_code=503,
+        headers={"Retry-After": "5"},
+    )
+
+
 async def _resolve_agent_key(request: Request, raw_key: str) -> TenantContext | None:
     """Resolve an ``av_agent_*`` key; None (→ 401) when unknown or unverifiable."""
     from app.auth import agent_credentials
@@ -567,7 +582,15 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
         # Fall back to API key resolution
         if tenant_ctx is None:
-            tenant_ctx = await self._resolver(raw_key)
+            try:
+                tenant_ctx = await self._resolver(raw_key)
+            except PlatformError as exc:
+                # a08-F194-05: the key store could not answer (DB outage). That
+                # is a retryable 503, never a 401 that tells the client its key
+                # is bad. Other errors keep propagating (500).
+                if exc.http_status != 503:
+                    raise
+                return _key_store_unavailable_response(exc)
 
         if tenant_ctx is None:
             return _auth_error_response()

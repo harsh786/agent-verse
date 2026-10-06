@@ -752,7 +752,8 @@ class TenantService:
 
     async def _db_resolve_by_hash(self, key_hash: str) -> dict[str, Any] | None:
         """Authoritative single-key lookup by hash. Returns the active, non-expired
-        key + tenant plan, or None. This makes auth DB-authoritative so a key
+        key + tenant plan, or None; raises :class:`KeyStoreUnavailableError` when
+        the DB cannot answer. This makes auth DB-authoritative so a key
         revoked on one pod is honoured cluster-wide (the DB is the source of truth;
         the Redis cache in front is cleared on revoke).
 
@@ -804,8 +805,17 @@ class TenantService:
                 "expires_at": expiry,
             }
         except Exception as exc:
-            logging.getLogger(__name__).warning("DB resolve api_key failed: %s", exc)
-            return None
+            # a08-F194-05: this returned None, so a Postgres outage answered 401
+            # "invalid key" for every uncached key (clients drop or rotate a key
+            # on 401). Unknown is not invalid: a retryable 503 (the middleware
+            # maps it), the key is neither accepted nor called bad.
+            logging.getLogger(__name__).warning(
+                "api_key_resolve_db_unavailable: %s", type(exc).__name__
+            )
+            raise KeyStoreUnavailableError(
+                "The API key could not be verified (key store unavailable); retry shortly.",
+                cause=exc,
+            ) from exc
 
     # ── SSO JIT provisioning ──────────────────────────────────────────────────
 
