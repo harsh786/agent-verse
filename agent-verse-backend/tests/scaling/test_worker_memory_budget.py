@@ -262,7 +262,9 @@ def _maintained_pool(values: dict[str, Any], pool: str) -> tuple[list[str], str,
 def _legacy_pool(values: dict[str, Any], pool: str) -> tuple[list[str], str, dict[str, str]]:
     name = "worker-deployment.yaml" if pool == "worker" else "subgoal-worker-deployment.yaml"
     text = (_LEGACY_CHART / "templates" / name).read_text()
-    command = text.split("command:", 1)[1].split("envFrom:", 1)[0]
+    # The main container's command (after the wait-for-schema init container's).
+    main = text.split("\n      containers:\n", 1)[-1]
+    command = main.split("command:", 1)[1].split("envFrom:", 1)[0]
     argv = [str(a) for a in yaml.safe_load(_subst(command, values))]
     env: dict[str, str] = {}
     lines = text.splitlines()
