@@ -1165,9 +1165,18 @@ class ChatService:
             message_id=message_id, session_id=session_id, tenant_id=tenant_id,
             role=role, content=content, intent=intent, goal_id=goal_id, metadata=metadata,
         )
+        await self._notify_transcript(tenant_id, session_id)
         return _Message(
             id=message_id, session_id=session_id, tenant_id=tenant_id, role=role,
             content=content, goal_id=goal_id, intent=intent, metadata=metadata or {},
+        )
+
+    async def _notify_transcript(self, tenant_id: str, session_id: str) -> None:
+        """CHAT-KB: a consented session changed — its transcript is re-indexed."""
+        from app.ingestion.agent_generated_events import notify_chat_transcript
+
+        await notify_chat_transcript(
+            tenant_id, session_id, db_factory=getattr(self._repository, "_sf", None)
         )
 
     async def alist_messages(
@@ -1197,6 +1206,7 @@ class ChatService:
         pruned = await self._repository.delete_messages_after(
             str(row["session_id"]), tenant_id, row["created_at"]
         )
+        await self._notify_transcript(tenant_id, str(row["session_id"]))
         row["content"] = new_content
         return self._message_from_row(row), pruned
 

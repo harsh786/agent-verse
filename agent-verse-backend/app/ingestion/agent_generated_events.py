@@ -21,6 +21,8 @@ import time
 from typing import Any
 
 from app.ingestion.connectors.agent_generated_connector import (
+    CONSENTED_SESSION_SQL,
+    KIND_CHAT_TRANSCRIPT,
     SUPPORTED_KINDS,
     AgentGeneratedConfigError,
     parse_options,
@@ -180,6 +182,37 @@ async def notify_agent_generated(
         return False
 
 
+async def notify_chat_transcript(
+    tenant_id: str, session_id: str, *, db_factory: Any = None
+) -> bool:
+    """A chat message was saved: sync the listening Sources when the session may
+    be indexed (owned by a person who opted in, tenant switch on).
+
+    One cached query when nobody listens for ``chat_transcript``; one indexed
+    probe otherwise. Never raises (the next sync reads the session anyway).
+    """
+    if not tenant_id or not session_id or db_factory is None:
+        return False
+    try:
+        if KIND_CHAT_TRANSCRIPT not in await listening_kinds(tenant_id, db_factory=db_factory):
+            return False
+        eligible = await _rows(
+            db_factory,
+            tenant_id,
+            "SELECT 1 FROM chat_sessions s WHERE s.id = :sid AND " + CONSENTED_SESSION_SQL,
+            {"tid": tenant_id, "sid": session_id},
+        )
+        if not eligible:
+            return False
+        await asyncio.to_thread(enqueue_notify, tenant_id, KIND_CHAT_TRANSCRIPT, session_id)
+        return True
+    except Exception as exc:
+        _log.warning(
+            "chat_transcript_notify_failed tenant=%s session=%s: %s", tenant_id, session_id, exc
+        )
+        return False
+
+
 _READY_SQL = {
     "goal_output": (
         "SELECT 1 FROM goals WHERE tenant_id = :tid AND id = :ref "
@@ -195,6 +228,7 @@ _READY_SQL = {
         "AND id::text = :ref AND status = 'complete'"
     ),
     "learning": "SELECT 1 FROM memory_records WHERE tenant_id = :tid AND id = :ref",
+    "chat_transcript": "SELECT 1 FROM chat_sessions WHERE tenant_id = :tid AND id = :ref",
 }
 
 

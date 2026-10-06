@@ -10,7 +10,13 @@ searchable knowledge in its collection:
   (``agentverse://workflow-approvals/<request_id>``);
 * ``workflow_output`` — the outputs of every completed workflow run
   (``agentverse://workflow-runs/<run_id>``);
-* ``learning``        — active reflexion lessons (``agentverse://memories/<id>``).
+* ``learning``        — active reflexion lessons (``agentverse://memories/<id>``);
+* ``chat_transcript`` — a person's own chat sessions, one document each
+  (``agentverse://chat-sessions/<session_id>``), only with double consent (owner
+  decision 7): the tenant switch is on AND the session's owner opted in
+  (``app.services.chat_knowledge``). Never a default kind; PII and secrets are
+  redacted before the document leaves the connector; only the owner's own
+  messages and the replies to them are part of it.
 
 It is a pull connector over those tables (keyset-paged per stream, a JSON
 cursor per stream, bounded per sync) — so a sync is resumable, idempotent and
@@ -53,7 +59,11 @@ KIND_GOAL_OUTPUT = "goal_output"
 KIND_HITL_DECISION = "hitl_decision"
 KIND_WORKFLOW_OUTPUT = "workflow_output"
 KIND_LEARNING = "learning"
-SUPPORTED_KINDS = (KIND_GOAL_OUTPUT, KIND_HITL_DECISION, KIND_WORKFLOW_OUTPUT, KIND_LEARNING)
+KIND_CHAT_TRANSCRIPT = "chat_transcript"
+SUPPORTED_KINDS = (
+    KIND_GOAL_OUTPUT, KIND_HITL_DECISION, KIND_WORKFLOW_OUTPUT, KIND_LEARNING,
+    KIND_CHAT_TRANSCRIPT,
+)
 DEFAULT_KINDS = (KIND_GOAL_OUTPUT, KIND_HITL_DECISION)
 
 DEFAULT_MIN_EVAL_SCORE = 0.7
@@ -64,6 +74,9 @@ _LEARNING_CLASSES = frozenset({"public", "internal", "confidential", "restricted
 
 _PAGE = 200
 _LIVE_PAGE = 1000
+# A chat page reads up to this many sessions, each with its latest messages.
+_CHAT_PAGE = 50
+_CHAT_MAX_MESSAGES = 500
 # Rows whose timestamp lies within this window before the cursor are read again
 # on the next sync: a row committed late with an earlier timestamp is not lost
 # (an unchanged document is skipped by the pipeline's content hash).
@@ -72,6 +85,19 @@ _MAX_TEXT_CHARS = 200_000
 _MAX_JSON_CHARS = 20_000
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+# A chat session (alias ``s``) that may be indexed: owned by a person who opted in,
+# while the tenant's switch is on. Both are re-read on every page, so a
+# revocation or the switch turned off stops indexing at the next page (the purge
+# removes what was already indexed).
+CONSENTED_SESSION_SQL = (
+    "s.tenant_id = :tid AND s.owner_user_id IS NOT NULL "
+    "AND EXISTS (SELECT 1 FROM tenants t WHERE t.id = s.tenant_id "
+    "AND t.chat_transcripts_kb_enabled IS TRUE) "
+    "AND EXISTS (SELECT 1 FROM chat_kb_consents c WHERE c.tenant_id = s.tenant_id "
+    "AND c.user_id = s.owner_user_id AND c.opted_in IS TRUE)"
+)
 
 
 class AgentGeneratedConfigError(ValueError):
@@ -318,6 +344,13 @@ class AgentGeneratedConnector(BaseConnector):
                 _Stream(
                     "learning", KIND_LEARNING, False,
                     self._page_learnings, _render_learning, self._live_learnings,
+                )
+            )
+        if KIND_CHAT_TRANSCRIPT in opts.kinds and goals:
+            streams.append(
+                _Stream(
+                    "chat_transcript", KIND_CHAT_TRANSCRIPT, False,
+                    self._page_chats, _render_chat, self._live_chats,
                 )
             )
         return streams
@@ -706,6 +739,81 @@ class AgentGeneratedConnector(BaseConnector):
             params,
         )
 
+    # ── Chat transcripts (owner decision 7: double consent) ──────────────────
+
+    @staticmethod
+    def _chat_filters(opts: _Options, params: dict[str, Any]) -> str:
+        if not opts.agent_ids:
+            return ""
+        params["agents"] = list(opts.agent_ids)
+        return " AND s.agent_id = ANY(CAST(:agents AS text[]))"
+
+    async def _page_chats(
+        self, tenant_id: str, opts: _Options, ts: datetime, after: str, limit: int
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "tid": tenant_id, "ts": ts, "id": after, "lim": min(limit, _CHAT_PAGE),
+        }
+        rows = await self._query(
+            tenant_id,
+            "SELECT s.id, s.title, s.owner_user_id, s.agent_id, s.updated_at "
+            "FROM chat_sessions s WHERE " + CONSENTED_SESSION_SQL
+            + " AND (s.updated_at, s.id) > (:ts, :id)"
+            + self._chat_filters(opts, params)
+            + " ORDER BY s.updated_at, s.id LIMIT :lim",
+            params,
+        )
+        if not rows:
+            return []
+        messages = await self._chat_messages(tenant_id, [str(r[0]) for r in rows])
+        return [
+            {
+                "_ts": r[4], "_id": str(r[0]), "session_id": str(r[0]),
+                "title": str(r[1] or ""), "owner_user_id": str(r[2]),
+                "agent_id": str(r[3] or ""), "updated_at": _iso(r[4]),
+                "messages": messages.get(str(r[0]), []),
+            }
+            for r in rows
+        ]
+
+    async def _chat_messages(
+        self, tenant_id: str, session_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The latest ``_CHAT_MAX_MESSAGES`` user / assistant messages per session."""
+        rows = await self._query(
+            tenant_id,
+            "SELECT session_id, role, content, metadata, created_at FROM ("
+            " SELECT m.session_id, m.role, m.content, m.metadata, m.created_at, m.id,"
+            " row_number() OVER (PARTITION BY m.session_id"
+            "   ORDER BY m.created_at DESC, m.id DESC) AS rn"
+            " FROM chat_messages m WHERE m.tenant_id = :tid"
+            " AND m.session_id = ANY(CAST(:sids AS text[]))"
+            " AND m.role IN ('user', 'assistant')"
+            ") x WHERE rn <= :max ORDER BY session_id, created_at, id",
+            {"tid": tenant_id, "sids": session_ids, "max": _CHAT_MAX_MESSAGES},
+        )
+        out: dict[str, list[dict[str, Any]]] = {}
+        for session_id, role, content, metadata, created_at in rows:
+            meta = _as_obj(metadata)
+            out.setdefault(str(session_id), []).append(
+                {"role": str(role), "content": str(content or ""),
+                 "metadata": meta if isinstance(meta, dict) else {},
+                 "created_at": created_at}
+            )
+        return out
+
+    async def _live_chats(
+        self, tenant_id: str, opts: _Options, after: str, limit: int
+    ) -> list[Any]:
+        params: dict[str, Any] = {"tid": tenant_id, "id": after, "lim": limit}
+        return await self._query(
+            tenant_id,
+            "SELECT s.id FROM chat_sessions s WHERE " + CONSENTED_SESSION_SQL
+            + " AND s.id > :id" + self._chat_filters(opts, params)
+            + " ORDER BY s.id LIMIT :lim",
+            params,
+        )
+
 
 # ── Cursor ───────────────────────────────────────────────────────────────────
 
@@ -935,3 +1043,69 @@ def _render_learning(config: SourceConfig, row: dict[str, Any]) -> RawDocument |
             agent_id=row["agent_id"],
         ),
     )
+
+
+def _chat_lines(owner: str, messages: list[dict[str, Any]]) -> list[str]:
+    """The owner's own turns, oldest first, PII and secrets redacted.
+
+    A user message counts only when its author is the session's owner; an
+    assistant message only when it answers one. Whatever another person (or an
+    API key) wrote into the session — and the answer to it — is left out.
+    """
+    from app.guardrails_v2.output_screening import redact_baseline
+
+    lines: list[str] = []
+    answering_owner = False
+    for msg in messages:
+        if msg["role"] == "user":
+            answering_owner = (msg.get("metadata") or {}).get("author_user_id") == owner
+            speaker = "User"
+        else:
+            speaker = "Assistant"
+        if not answering_owner or not msg["content"].strip():
+            continue
+        lines.append(
+            f"**{speaker}** ({_iso(msg.get('created_at'))}):\n\n"
+            f"{redact_baseline(msg['content'].strip())}"
+        )
+    return lines
+
+
+def _render_chat(config: SourceConfig, row: dict[str, Any]) -> RawDocument | None:
+    owner = row["owner_user_id"]
+    turns = _chat_lines(owner, row.get("messages") or [])
+    if not turns:
+        return None
+    from app.guardrails_v2.output_screening import redact_baseline
+
+    sid = row["session_id"]
+    title = redact_baseline(row["title"] or "Chat")
+    header = [
+        f"# Chat: {title[:300]}",
+        "",
+        f"- Chat session id: {sid}",
+        f"- Owner: {owner}",
+        f"- Last activity: {row['updated_at']}",
+        "",
+    ]
+    # Keep the latest turns within the size bound (the oldest are dropped first).
+    budget = _MAX_TEXT_CHARS - sum(len(h) + 1 for h in header) - 200
+    kept: list[str] = []
+    for turn in reversed(turns):
+        if budget - len(turn) - 2 < 0:
+            kept.append(f"_… {len(turns) - len(kept)} earlier messages omitted_")
+            break
+        budget -= len(turn) + 2
+        kept.append(turn)
+    doc = _doc(
+        config, KIND_CHAT_TRANSCRIPT, sid,
+        title=f"Chat: {title}",
+        body="\n".join(header) + "\n\n".join(reversed(kept)),
+        url=f"agentverse://chat-sessions/{sid}",
+        modified_at=row["updated_at"],
+        author=owner,
+        origin=_origin(KIND_CHAT_TRANSCRIPT, chat_session_id=sid, user_id=owner),
+    )
+    # Indexed under its owner's id (LAW-07 access-control provenance).
+    doc.acl = [f"user:{owner}"]
+    return doc

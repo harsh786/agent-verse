@@ -958,6 +958,9 @@ async def _sync_locked(
                 )
 
         await _resolve_indexed()
+        # CHAT-KB: transcripts whose owner revoked (or whose tenant switched the
+        # kind off) while this run was indexing them are removed before it ends.
+        sweep = await _sweep_unconsented_transcripts(config, pipeline)
         # ── Final cursor commit ───────────────────────────────────────────────
         # A connector whose per-document cursor is a resume position (S3: the
         # last key handed over) publishes the next run's watermark once its
@@ -975,7 +978,9 @@ async def _sync_locked(
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed
         job.docs_discovered = docs_indexed + docs_skipped + docs_failed
-        await tracker.complete_job(job, cancelled=cancelled, notices=_move_notices(moves))
+        await tracker.complete_job(
+            job, cancelled=cancelled, notices=_move_notices(moves) + sweep["notices"]
+        )
         await _record_moves(source_store, config, moves)
         # Advance last_synced_at + cursor on the durable source row so the beat
         # due-scan reschedules the next sync one interval out (item 6).
@@ -1008,6 +1013,7 @@ async def _sync_locked(
             "docs_failed": docs_failed,
             "reconcile_scheduled": reconcile_scheduled,
             "cancelled": cancelled,
+            **({"chat_transcripts_removed": sweep["removed"]} if sweep["ran"] else {}),
         }
 
     except SyncLockLostError as exc:
@@ -1076,6 +1082,62 @@ def _note_move(moves: dict[str, str], raw_doc: Any) -> None:
     old, new = str(moved.get("from") or ""), str(moved.get("to") or "")
     if old and new and old != new:
         moves[old] = new
+
+
+async def _sweep_unconsented_transcripts(config: Any, pipeline: Any) -> dict[str, Any]:
+    """Remove this Source's chat transcripts no longer consented (CHAT-KB).
+
+    The connector re-reads the consent and the tenant switch on every page, but a
+    page read just before a revocation is indexed after the revocation's purge
+    ran; sweeping after the delta loop (bounded, holds kept) closes that window.
+    A failure is reported on the job, never hidden.
+    """
+    out: dict[str, Any] = {"ran": False, "removed": 0, "notices": []}
+    if getattr(config, "source_type", "") != "agent_generated":
+        return out
+    from app.ingestion.connectors.agent_generated_connector import (
+        KIND_CHAT_TRANSCRIPT,
+        AgentGeneratedConfigError,
+        parse_options,
+    )
+
+    try:
+        if KIND_CHAT_TRANSCRIPT not in parse_options(config.connection_config).kinds:
+            return out
+    except AgentGeneratedConfigError:
+        return out
+    store = getattr(pipeline, "_kb", None)
+    if store is None or not config.collection_id:
+        return out
+    from app.services.chat_knowledge import (
+        ChatKnowledgeSettings,
+        ChatKnowledgeUnavailableError,
+        purge_transcripts,
+    )
+
+    out["ran"] = True
+    try:
+        report = await purge_transcripts(
+            store, config.tenant_id, collection_id=config.collection_id,
+            unconsented_only=True, settings=ChatKnowledgeSettings(db=getattr(store, "_db", None)),
+        )
+    except ChatKnowledgeUnavailableError as exc:
+        _log.warning("chat_transcripts_sweep_failed source=%s: %s", config.source_id, exc)
+        out["notices"].append(
+            f"chat transcripts no longer consented could not be removed: {exc}; "
+            "the next sync retries"
+        )
+        return out
+    out["removed"] = report.removed
+    if report.held:
+        out["notices"].append(
+            f"{report.held} chat transcript(s) no longer consented are kept: under legal hold"
+        )
+    if report.truncated:
+        out["notices"].append(
+            "more chat transcripts no longer consented remain; the next sync continues"
+        )
+    return out
 
 
 def _move_notices(moves: dict[str, str]) -> list[str]:

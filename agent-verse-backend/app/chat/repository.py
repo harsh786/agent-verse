@@ -368,6 +368,16 @@ class PostgresChatRepository:
                 text("UPDATE chat_messages SET content = :c WHERE id = :id AND tenant_id = :t"),
                 {"c": content, "id": message_id, "t": tenant_id},
             )
+            # The session changed: its transcript (CHAT-KB) is re-read by the
+            # next sync, whose cursor walks sessions by updated_at.
+            await s.execute(
+                text(
+                    "UPDATE chat_sessions SET updated_at = now() WHERE tenant_id = :t "
+                    "AND id = (SELECT session_id FROM chat_messages "
+                    "WHERE id = :id AND tenant_id = :t)"
+                ),
+                {"id": message_id, "t": tenant_id},
+            )
             return (result.rowcount or 0) > 0
 
     async def delete_messages_after(
