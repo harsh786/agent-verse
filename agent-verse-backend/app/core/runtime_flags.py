@@ -28,6 +28,8 @@ class RuntimeFlags:
     # Core orchestration + RAG (first-class)
     dynamic_orchestration: bool = True
     agentic_rag: bool = True
+    # Not read anywhere yet (a10-F250-03): reserved for the AP10-T10 boundary
+    # classification gate. Setting DATA_CLASSIFICATION=false changes nothing today.
     data_classification: bool = True
     # Safety
     guardrail_profile: bool = True

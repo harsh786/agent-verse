@@ -1,4 +1,12 @@
-"""DataClassifier — regex-based classification. No data enters prompts until classified."""
+"""DataClassifier — regex-based data classification.
+
+Scope today (a10-F250-01): the only live caller is the few-shot CoT strategy
+(``app/agent/patterns/few_shot_cot.py``), which drops examples that are not
+``safe_for_prompt``. It is NOT a platform-wide prompt gate: other prompt inputs
+are protected by their own layers (ingestion PII handling, ``guardrails_v2``
+output screening, ``app.agent.sanitization``, log redaction). Making it a gate
+on every model call is the open AP10-T10 plan item (owner decision pending).
+"""
 
 from __future__ import annotations
 
