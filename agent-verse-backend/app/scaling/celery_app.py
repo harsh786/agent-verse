@@ -521,10 +521,14 @@ celery_app.conf.broker_transport_options = dict(_BROKER_TRANSPORT_OPTIONS)
 try:
     import redbeat  # type: ignore[import]  # noqa: F401
 
-    celery_app.conf.beat_scheduler = "redbeat.RedBeatScheduler"
+    # B1-14: RedBeat that never subscribes the beat to task results.
+    celery_app.conf.beat_scheduler = "app.scaling.beat_scheduler:AgentVerseRedBeatScheduler"
     celery_app.conf.redbeat_redis_url = REDIS_URL
     celery_app.conf.redbeat_lock_key = "agentverse:beat:lock"
     celery_app.conf.redbeat_lock_timeout = 300  # 5 minutes
+    # B1-14: wake at least every 30 s, well inside the 300 s lock (the default
+    # 300 s sleep equalled the lock timeout, so a late wake-up lost the lock).
+    celery_app.conf.beat_max_loop_interval = 30
 except ImportError:
     # redbeat not installed — falls back to default file-based beat scheduler
     pass
@@ -546,7 +550,7 @@ if _SENTINEL_URLS:
     celery_app.conf.redis_backend_use_ssl = REDIS_URL.startswith("rediss://")
 
     # RedBeat also needs the Sentinel URL so the lock key survives failover.
-    if getattr(celery_app.conf, "beat_scheduler", "").endswith("RedBeatScheduler"):
+    if "RedBeatScheduler" in str(getattr(celery_app.conf, "beat_scheduler", "")):
         celery_app.conf.redbeat_redis_url = _BROKER_URL
 
 # Backwards-compatible alias used by some imports

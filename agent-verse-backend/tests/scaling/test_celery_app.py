@@ -1497,3 +1497,23 @@ def test_fire_due_schedules_skips_unavailable_db(monkeypatch: Any, caplog: Any) 
     assert result["schedules_checked"] == 0
     assert result["schedules_fired"] == 0
     # Note: log message goes through structlog (stdout), not caplog — verify behavior only
+
+
+def test_the_beat_never_waits_for_results_and_wakes_inside_its_lock() -> None:
+    """B1-14: the live beat went silent for 5-15 min and crashed with
+    LockNotOwnedError: its sleep could equal the 300 s RedBeat lock, and every
+    beat-sent task subscribed it to a result channel it never read."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from app.scaling.beat_scheduler import AgentVerseRedBeatScheduler
+
+    conf = celery_app.conf
+    assert conf.beat_scheduler == "app.scaling.beat_scheduler:AgentVerseRedBeatScheduler"
+    assert conf.beat_max_loop_interval * 5 <= conf.redbeat_lock_timeout
+    entry = SimpleNamespace(options={"queue": "schedules", "expires": 55})
+    sent: list[dict[str, Any]] = []
+    with patch("redbeat.RedBeatScheduler.apply_async",
+               lambda self, e, producer=None, advance=True, **kw: sent.append(dict(e.options))):
+        AgentVerseRedBeatScheduler.apply_async(object.__new__(AgentVerseRedBeatScheduler), entry)
+    assert sent == [{"queue": "schedules", "expires": 55, "ignore_result": True}]

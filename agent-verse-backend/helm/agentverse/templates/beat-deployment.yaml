@@ -28,7 +28,7 @@ spec:
             - -A
             - app.scaling.celery_app
             - beat
-            - --scheduler=redbeat.RedBeatScheduler
+            - --scheduler=app.scaling.beat_scheduler:AgentVerseRedBeatScheduler
             - --loglevel=info
           envFrom:
             - configMapRef:

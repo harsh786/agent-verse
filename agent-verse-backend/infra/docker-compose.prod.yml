@@ -239,7 +239,7 @@ services:
       target: runtime
     restart: unless-stopped
     command: ["celery", "-A", "app.scaling.celery_app", "beat",
-              "--loglevel=info", "--scheduler=redbeat.RedBeatScheduler"]
+              "--loglevel=info", "--scheduler=app.scaling.beat_scheduler:AgentVerseRedBeatScheduler"]
     environment:
       <<: *common-env
     healthcheck:
