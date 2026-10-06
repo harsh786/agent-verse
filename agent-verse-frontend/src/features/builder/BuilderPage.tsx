@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { Code2, Loader2, Zap, Layout, Server, Database, Globe, Smartphone, Bot, FileCode, ChevronRight, CheckCircle, Play, Download } from 'lucide-react';
+import { Code2, Loader2, Zap, Layout, Server, Database, Globe, Smartphone, Bot, FileCode, ChevronRight, CheckCircle, Play } from 'lucide-react';
 import { toast } from '@/stores/toast';
 import { getAuthHeader } from '@/stores/auth';
 import { API_BASE } from '@/lib/api/client';
@@ -294,35 +294,16 @@ export default function BuilderPage() {
                     <Play className="h-3 w-3" /> View Execution
                   </button>
                 )}
-                {result.download_url && (
-                  <a href={result.download_url} download
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs border border-input rounded-lg hover:bg-muted/50">
-                    <Download className="h-3 w-3" /> Download
-                  </a>
-                )}
               </div>
             </div>
 
-            {/* Files generated */}
-            {result.files && result.files.length > 0 && (
-              <div className="p-4 space-y-1.5">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Generated Files</p>
-                {result.files.map((f: any, i: number) => (
-                  <div key={i} className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0">
-                    <FileCode className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                    <span className="text-xs font-mono truncate">{f.path ?? f.name ?? f}</span>
-                    {f.size && <span className="text-[10px] text-muted-foreground ml-auto shrink-0">{f.size}</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Summary */}
-            {result.summary && (
-              <div className="px-4 pb-4">
-                <p className="text-xs text-muted-foreground leading-relaxed">{result.summary}</p>
-              </div>
-            )}
+            {/* The build is an ordinary goal: there is no live preview, download or
+                file list here (the API serves none) — its output is on the goal page. */}
+            <div className="p-4">
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                The build runs as a goal. Follow its progress and output on the goal page.
+              </p>
+            </div>
           </div>
 
           <div className="flex gap-3">

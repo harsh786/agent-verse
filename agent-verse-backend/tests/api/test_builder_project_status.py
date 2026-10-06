@@ -63,7 +63,7 @@ def test_created_project_resolves_to_its_build_goal() -> None:
     assert status.status_code == 200
     body = status.json()
     assert body["goal_id"] == "build-1" and body["status"] == "executing"
-    assert body["preview_url"] is None
+    assert "preview_url" not in body  # no live preview (a10-F229-01)
 
     svc._goals["build-1"].status = GoalStatus.COMPLETE
     assert client.get(f"/builder/projects/{created['project_id']}").json()["status"] == "complete"
