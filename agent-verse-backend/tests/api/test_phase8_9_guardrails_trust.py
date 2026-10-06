@@ -341,7 +341,9 @@ def test_list_compliance_bundles():
     assert "gdpr" in bundle_ids
     assert "hipaa" in bundle_ids
     assert "soc2" in bundle_ids
-    assert "pci" in bundle_ids
+    # a03-F057-03: the governance catalogue (the ids enable/disable accept).
+    assert "pci_dss" in bundle_ids
+    assert "pci" not in bundle_ids
 
 def test_approval_not_found():
     client = TestClient(_make_app())
@@ -612,3 +614,21 @@ async def test_a_viewer_key_cannot_approve_reject_or_toggle_compliance_bundles()
         assert r.status_code == 403
         r = await c.delete("/trust/compliance-bundles/hipaa", headers=_VIEWER_HEADERS)
         assert r.status_code == 403
+
+
+def test_every_listed_compliance_bundle_can_be_enabled() -> None:
+    """a03-F057-03: the list and enable/disable use the same catalogue."""
+    client = TestClient(_make_app())
+    listed = client.get("/trust/compliance-bundles", headers=_HEADERS).json()["bundles"]
+    by_id = {b["id"]: b for b in listed}
+    assert by_id["pci_dss"]["guardrail_bundle"] == "pci"
+    assert by_id["hipaa"]["max_autonomy_mode"] == "supervised"
+    for bundle in listed:
+        r = client.post(f"/trust/compliance-bundles/{bundle['id']}/enable", headers=_HEADERS)
+        assert r.status_code == 200, (bundle["id"], r.text)
+        assert bundle["id"] in r.json()["active"]
+        if bundle["guardrail_bundle"]:
+            assert bundle["rule_count"] > 0
+    for bundle in listed:
+        r = client.delete(f"/trust/compliance-bundles/{bundle['id']}", headers=_HEADERS)
+        assert r.status_code == 200, r.text

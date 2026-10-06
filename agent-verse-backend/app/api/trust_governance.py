@@ -396,30 +396,57 @@ async def simulate_policy(request: Request) -> dict[str, Any]:
     }
 
 
+# The guardrails-v2 rule bundle (POST /guardrails-v2/bundles/{name}) that holds
+# the content rules for each governance bundle; the ids differ for two of them.
+_GUARDRAIL_BUNDLE_FOR: dict[str, str] = {
+    "hipaa": "hipaa",
+    "gdpr": "gdpr",
+    "soc2": "soc2",
+    "pci_dss": "pci",
+    "india_dpdp": "dpdp",
+}
+
+
 @router.get("/compliance-bundles")
 async def list_compliance_bundles(request: Request) -> dict[str, Any]:
-    """List available compliance bundles."""
-    _require_tenant(request)
-    from app.guardrails_v2.models import COMPLIANCE_BUNDLES, ComplianceBundle
+    """List the compliance bundles this tenant can enable here.
 
-    return {
-        "bundles": [
+    a03-F057-03: this listed the guardrails-v2 rule catalogue (ids ``pci``,
+    ``dpdp``, ``sox``) while enable/disable below use
+    ``app.governance.compliance_bundles`` (``pci_dss``, ``india_dpdp``, no SOX),
+    so two listed ids answered 400 on enable and the listed facts were not the
+    ones enabling applies. Each entry is now the governance bundle itself, with
+    the guardrails-v2 rule bundle that carries its content rules, if any.
+    """
+    _require_tenant(request)
+    from app.governance.compliance_bundles import COMPLIANCE_BUNDLES
+    from app.guardrails_v2.models import COMPLIANCE_BUNDLES as GUARDRAIL_RULE_BUNDLES
+    from app.guardrails_v2.models import ComplianceBundle as GuardrailBundle
+
+    bundles = []
+    for bundle in COMPLIANCE_BUNDLES.values():
+        guardrail_id = _GUARDRAIL_BUNDLE_FOR.get(bundle.id)
+        rule_count = (
+            len(GUARDRAIL_RULE_BUNDLES.get(GuardrailBundle(guardrail_id), []))
+            if guardrail_id
+            else 0
+        )
+        if not rule_count:
+            guardrail_id = None  # no preset content rules (e.g. DPDP today)
+        bundles.append(
             {
-                "id": b.value,
-                "name": b.value.upper(),
-                "rule_count": len(COMPLIANCE_BUNDLES.get(b, [])),
-                "description": {
-                    "gdpr": "EU General Data Protection Regulation — PII protection",
-                    "soc2": "SOC 2 Type II — Security, secrets, injection prevention",
-                    "hipaa": "HIPAA — PHI protection for healthcare data",
-                    "pci": "PCI DSS — Payment card data protection",
-                    "dpdp": "India Digital Personal Data Protection Act",
-                    "sox": "Sarbanes-Oxley — Financial data controls",
-                }.get(b.value, ""),
+                "id": bundle.id,
+                "name": bundle.name,
+                "description": bundle.description,
+                "max_autonomy_mode": bundle.max_autonomy_mode,
+                "required_hitl_for": list(bundle.required_hitl_for),
+                "audit_retention_days": bundle.audit_retention_days,
+                "data_residency_required": bundle.data_residency_required,
+                "guardrail_bundle": guardrail_id,
+                "rule_count": rule_count,
             }
-            for b in ComplianceBundle
-        ]
-    }
+        )
+    return {"bundles": bundles}
 
 
 def _bundle_store(request: Request) -> Any:
