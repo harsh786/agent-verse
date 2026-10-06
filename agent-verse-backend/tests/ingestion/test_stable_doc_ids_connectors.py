@@ -739,7 +739,13 @@ async def test_s3_live_listing_matches_its_document_ids() -> None:
     with patch.dict(sys.modules, _fake_boto3()):
         docs = await _drain(S3Connector().get_delta(cfg, None))
         live = await S3Connector().list_live_doc_ids(cfg)
-    assert live == {d.doc_id for d in docs} == {"s3://b/a.txt"}
+    from app.ingestion.connectors.s3_connector import s3_document_id
+
+    # Source-scoped id; the legacy ``s3://b/a.txt`` is listed too so a
+    # not-yet-migrated copy of a live object is kept by reconciliation.
+    assert {d.doc_id for d in docs} == {s3_document_id(cfg, "b", "a.txt")}
+    assert live == {s3_document_id(cfg, "b", "a.txt"), "s3://b/a.txt"}
+    assert S3Connector().manages_doc_id(s3_document_id(cfg, "b", "a.txt"))
     assert S3Connector().manages_doc_id("s3://b/a.txt")
     assert not S3Connector().manages_doc_id("3f2b0d0c-legacy")
 
@@ -800,9 +806,13 @@ async def test_s3_live_listing_streams_pages_lazily() -> None:
     cfg = _cfg("s3", {"bucket": "b"}, "src-a")
     with patch.dict(sys.modules, modules):
         stream = S3Connector().iter_live_doc_ids(cfg)
-        first = [await stream.__anext__() for _ in range(1500)]
+        first = [await stream.__anext__() for _ in range(3000)]
         await stream.aclose()
-    assert first[0] == "s3://b/p0-0.txt" and first[-1] == "s3://b/p1-499.txt"
+    from app.ingestion.connectors.s3_connector import s3_document_id
+
+    # Two ids per key: the Source-scoped one, then the legacy one.
+    assert first[0] == s3_document_id(cfg, "b", "p0-0.txt") and first[1] == "s3://b/p0-0.txt"
+    assert first[-1] == "s3://b/p1-499.txt"
     assert len(pulled) <= 3  # two pages consumed (plus at most one read ahead)
 
 

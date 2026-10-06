@@ -269,6 +269,13 @@ class IngestionPipeline:
 
             # ── Stage 3: CONTENT HASH (LAW-02: idempotency) ──────────────────
             content_hash = raw_doc.compute_hash()
+            # A document re-keyed by its connector (S3: ``s3://bucket/key`` →
+            # Source-scoped id) takes over its legacy copy when Stage 12 writes
+            # it. Stage 3 stays document-scoped for it (P1b-6): another Source's
+            # copy of the same bytes is not a reason to skip this one.
+            legacy_takeover: str | None = None
+            if not supersedes and self._kb is not None and not dry:
+                legacy_takeover = await self._owned_legacy_document(raw_doc, source_config)
             if self._kb is not None and not dry and supersedes:
                 # Errors propagate (outer handler -> failed): the caller deletes
                 # the superseded copy only after a confirmed write.
@@ -289,6 +296,10 @@ class IngestionPipeline:
                     result.status = "skipped"
                     result.skip_reason = "dedup"
                     return result
+
+            if legacy_takeover:
+                supersedes = legacy_takeover
+                result.metadata["superseded_legacy_id"] = legacy_takeover  # type: ignore[attr-defined]
 
             # ── Stage 4: CLASSIFY ─────────────────────────────────────────────
             # Prefer the connector-supplied MIME type (trustworthy for binary
@@ -547,6 +558,38 @@ class IngestionPipeline:
                 _log.debug("ocr_engine_unavailable: %s", e)
                 return None
         return self._ocr
+
+    async def _owned_legacy_document(
+        self, raw_doc: RawDocument, config: SourceConfig
+    ) -> str | None:
+        """The legacy id (``CONNECTOR_LEGACY_DOC_ID_KEY``) this document replaces, or None.
+
+        Only when a document is indexed under that id in the collection AND it
+        is attributed to this Source: another Source's copy of the same object
+        is never taken over (it stays that Source's document). A lookup error
+        propagates (the document fails and is retried) rather than leaving a
+        duplicate beside the legacy copy.
+        """
+        from app.ingestion.source_config import CONNECTOR_LEGACY_DOC_ID_KEY
+
+        legacy = str((raw_doc.metadata or {}).get(CONNECTOR_LEGACY_DOC_ID_KEY) or "")
+        if not legacy or legacy == raw_doc.doc_id or not config.collection_id:
+            return None
+        lookup = getattr(self._kb, "get_document_source_async", None)
+        if lookup is None:
+            return None
+        from app.tenancy.context import PlanTier, TenantContext
+
+        source = await lookup(
+            legacy,
+            collection_id=config.collection_id,
+            tenant_ctx=TenantContext(
+                tenant_id=config.tenant_id, plan=PlanTier.FREE, api_key_id="ingestion"
+            ),
+        )
+        if source and str(source.get("source_id") or "") == config.source_id:
+            return legacy
+        return None
 
     async def _check_existing_hash(
         self, content_hash: str, config: SourceConfig, *, doc_id: str = ""

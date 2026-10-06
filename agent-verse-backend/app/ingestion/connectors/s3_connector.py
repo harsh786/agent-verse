@@ -22,6 +22,7 @@ from app.ingestion.base_connector import (
     ConnectorFetchError,
     ConnectorUnavailableError,
     fetch_failure_document,
+    stable_doc_id,
 )
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
@@ -31,6 +32,7 @@ from app.ingestion.connector_egress import (
 )
 from app.ingestion.connector_registry import register
 from app.ingestion.sdk_executor import iterate_blocking, run_blocking
+from app.ingestion.source_config import CONNECTOR_LEGACY_DOC_ID_KEY
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -54,6 +56,30 @@ def _describe(exc: BaseException) -> str:
 
 # CONNECTOR_REPLAY_KEY "kind" of a failed S3 object fetch (see replay_event).
 _REPLAY_KIND = "s3_object"
+
+
+def s3_document_id(config: SourceConfig, bucket: str, key: str) -> str:
+    """The document id of an object: scoped to the Source (and the bucket).
+
+    It used to be the bare ``s3://bucket/key``, so two Sources reading the same
+    object into one collection (or two endpoints with the same bucket name)
+    shared one document: the second was dedup-skipped or replaced the first,
+    and it stayed attributed to whichever Source wrote it.
+    """
+    return stable_doc_id(config, f"s3://{bucket}/{key}")
+
+
+def s3_legacy_document_id(bucket: str, key: str) -> str:
+    """The pre-namespacing id (``s3://bucket/key``) of an object.
+
+    Compat: documents indexed before stay searchable under it. A sync that
+    re-fetches the object indexes it under :func:`s3_document_id` and the
+    pipeline deletes the legacy copy in the same transaction — only when that
+    copy is attributed to the same Source (``CONNECTOR_LEGACY_DOC_ID_KEY``).
+    Reconciliation keeps a live object's legacy copy and deletes a removed
+    object's (both ids are listed as live).
+    """
+    return f"s3://{bucket}/{key}"
 
 
 class _OversizedObjectError(Exception):
@@ -435,7 +461,8 @@ class S3Connector(BaseConnector):
                 position = dataclasses.replace(
                     cursor, after=key, run=run_started.isoformat(), legacy=False
                 ).dump()
-                uri = f"s3://{bucket}/{key}"
+                uri = s3_legacy_document_id(bucket, key)
+                doc_id = s3_document_id(config, bucket, key)
                 meta = {
                     "s3_key": key,
                     "s3_bucket": bucket,
@@ -447,7 +474,7 @@ class S3Connector(BaseConnector):
                     # USR-1: reported (a counted, permanent failure), not dropped.
                     yield fetch_failure_document(
                         config,
-                        doc_id=uri,
+                        doc_id=doc_id,
                         reason=f"object exceeds the {cap}-byte size cap",
                         retryable=False,
                         source_url=uri,
@@ -466,7 +493,7 @@ class S3Connector(BaseConnector):
                     # the object (replay_event).
                     yield fetch_failure_document(
                         config,
-                        doc_id=uri,
+                        doc_id=doc_id,
                         reason=reason,
                         retryable=retryable,
                         source_url=uri,
@@ -476,7 +503,7 @@ class S3Connector(BaseConnector):
                     ), position
                     continue
                 yield RawDocument(
-                    doc_id=uri,
+                    doc_id=doc_id,
                     source_id=config.source_id,
                     tenant_id=config.tenant_id,
                     content=content_bytes,
@@ -484,7 +511,7 @@ class S3Connector(BaseConnector):
                     source_url=uri,
                     title=key.split("/")[-1],
                     modified_at=modified.isoformat(),
-                    metadata=meta,
+                    metadata={**meta, CONNECTOR_LEGACY_DOC_ID_KEY: uri},
                 ), position
 
         if run_started is None:  # an empty listing still has a start
@@ -515,14 +542,28 @@ class S3Connector(BaseConnector):
                 for obj in page.get("Contents", []):
                     key = obj["Key"]
                     if self._matches_patterns(key, include, exclude):
-                        yield f"s3://{bucket}/{key}"
+                        yield s3_document_id(config, bucket, key)
+                        # A not-yet-migrated copy of a live object is kept.
+                        yield s3_legacy_document_id(bucket, key)
 
     async def list_live_doc_ids(self, config: SourceConfig) -> set[str] | None:
         """The live listing as a set (small buckets / tests; reconciliation streams)."""
         return {doc_id async for doc_id in self.iter_live_doc_ids(config)}
 
     def manages_doc_id(self, doc_id: str) -> bool:
-        return str(doc_id).startswith("s3://")
+        """Current ids (Source-scoped uuid5) and legacy ``s3://bucket/key`` ids.
+
+        Reconciliation only asks about documents attributed to this Source.
+        """
+        import uuid
+
+        text = str(doc_id)
+        if text.startswith("s3://"):
+            return True
+        try:
+            return uuid.UUID(text).version == 5
+        except ValueError:
+            return False
 
     async def on_webhook(
         self,
@@ -585,16 +626,23 @@ class S3Connector(BaseConnector):
 
         cap = int(config.max_doc_size_bytes)
 
+        legacy_id = s3_legacy_document_id(bucket, key)
+
         def _doc(content: bytes, content_type: str, **meta: Any) -> RawDocument:
             return RawDocument(
-                doc_id=f"s3://{bucket}/{key}",
+                doc_id=s3_document_id(config, bucket, key),
                 source_id=config.source_id,
                 tenant_id=config.tenant_id,
                 content=content,
                 content_type=content_type,
-                source_url=f"s3://{bucket}/{key}",
+                source_url=legacy_id,
                 title=key.split("/")[-1],
-                metadata={"s3_key": key, "s3_bucket": bucket, **meta},
+                metadata={
+                    "s3_key": key,
+                    "s3_bucket": bucket,
+                    CONNECTOR_LEGACY_DOC_ID_KEY: legacy_id,
+                    **meta,
+                },
             )
 
         try:
