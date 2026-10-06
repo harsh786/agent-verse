@@ -523,6 +523,7 @@ async def test_get_retryable_webhooks_maps_rows() -> None:
         "tenant_id": "t1",
         "workflow_id": "wf-1",
         "payload": '{"hello": "world"}',
+        "idempotency_key": "webhook:d-1",
     }
     app_db = _app_role_db()
     system_db = FakeDBFactory([[FakeResult(), FakeResult(mapping_all=[row])]])
@@ -530,6 +531,7 @@ async def test_get_retryable_webhooks_maps_rows() -> None:
     events = await store.get_retryable_webhooks(max_attempts=5)
     assert events[0]["id"] == "evt-1"
     assert events[0]["payload"] == {"hello": "world"}
+    assert events[0]["idempotency_key"] == "webhook:d-1"
     assert app_db.sessions == [], "maintenance scan ran on the application role"
     # system_session's SET LOCAL, then the scan — on the maintenance session.
     (session,) = system_db.sessions

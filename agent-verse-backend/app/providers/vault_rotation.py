@@ -15,7 +15,10 @@ context, with an explicit ``tenant_id`` predicate as well):
 * ``source_configs.connection_config`` secret values — ingestion source credentials;
 * ``agent_credentials.private_key_ref`` — agent signing keys;
 * ``auction_registry.sealed_keys`` — sealed-bid auction keys;
-* ``mcp_credentials.encrypted_value`` — durable connector secrets.
+* ``mcp_credentials.encrypted_value`` — durable connector secrets;
+* ``workflows.definition`` / ``workflow_definitions.definition_json`` /
+  ``workflow_definition_versions.definition_json`` ``enc:v1:`` values — workflow
+  webhook HMAC secrets (B2-OPEN-1).
 
 Redis: connector secrets (``mcp:connector_secrets:*``), OAuth tokens copied into
 connector configs (``mcp:servers:*``) and the tenant LLM-config cache
@@ -79,6 +82,9 @@ class PgStore:
     # Column recording which platform key sealed the row (BYOK-2): set to the new
     # key's fingerprint on every row that opens with it after this run.
     fingerprint_column: str = ""
+    # tenant_id is a UUID column (the workflow engine tables): the tenant id is
+    # matched as a UUID, and a tenant whose id is not a UUID has no rows there.
+    uuid_tenant: bool = False
 
 
 PG_STORES: tuple[PgStore, ...] = (
@@ -112,6 +118,25 @@ PG_STORES: tuple[PgStore, ...] = (
         "mcp_credentials",
         "(server_id || chr(31) || secret_key)",
         ("encrypted_value",),
+    ),
+    # Workflow webhook HMAC secrets (B2-OPEN-1): ``enc:v1:`` values inside the
+    # definition JSON — the builder row, its run-engine mirror and its snapshots.
+    PgStore("workflow_webhook_secrets", "workflows", "id", ("definition",), source_json=True),
+    PgStore(
+        "workflow_definition_secrets",
+        "workflow_definitions",
+        "id::text",
+        ("definition_json",),
+        source_json=True,
+        uuid_tenant=True,
+    ),
+    PgStore(
+        "workflow_version_secrets",
+        "workflow_definition_versions",
+        "id::text",
+        ("definition_json",),
+        source_json=True,
+        uuid_tenant=True,
     ),
 )
 REDIS_STORES: tuple[str, ...] = ("connector_secrets", "connector_oauth_copies", "llm_config_cache")
@@ -155,6 +180,12 @@ def _rotate_source_config(config: Any, old: Any, new: Any, report: StoreReport) 
     """connection_config with every ``enc:v1:`` secret re-encrypted (None = unchanged)."""
     from app.ingestion.source_secrets import is_secret_key
 
+    if isinstance(config, list):
+        # A list of configs (workflow definition ``triggers``).
+        items = [_rotate_source_config(item, old, new, report) for item in config]
+        if all(item is None for item in items):
+            return None
+        return [orig if item is None else item for orig, item in zip(config, items, strict=True)]
     if not isinstance(config, dict):
         return None
     changed = False
@@ -166,7 +197,7 @@ def _rotate_source_config(config: Any, old: Any, new: Any, report: StoreReport) 
                 new_value = _rotate_prefixed(value, _SOURCE_PREFIX, old, new, report)
             except _OpenFailedError:
                 new_value = None
-        elif isinstance(value, dict):
+        elif isinstance(value, dict | list):
             new_value = _rotate_source_config(value, old, new, report)
         if new_value is not None:
             out[key] = new_value
@@ -203,6 +234,15 @@ async def _rotate_pg_batch(
     from app.db.rls import sqlalchemy_rls_context
 
     report = StoreReport()
+    tenant_param = tenant_id
+    if store.uuid_tenant:
+        import uuid as _uuid
+
+        try:
+            tenant_param = str(_uuid.UUID(str(tenant_id)))
+        except (ValueError, TypeError, AttributeError):
+            return report, None  # a non-UUID tenant has no rows in a UUID-keyed table
+    tenant_match = "tenant_id = CAST(:t AS uuid)" if store.uuid_tenant else "tenant_id = :t"
     fp_col = store.fingerprint_column
     cols = ", ".join((*store.columns, fp_col) if fp_col else store.columns)
     async with (
@@ -214,10 +254,10 @@ async def _rotate_pg_batch(
             await session.execute(
                 text(
                     f"SELECT {store.pk}, {cols} FROM {store.table} "
-                    f"WHERE tenant_id = :t AND {store.pk} > :after "
+                    f"WHERE {tenant_match} AND {store.pk} > :after "
                     f"ORDER BY {store.pk} LIMIT :n"
                 ),
-                {"t": tenant_id, "after": after, "n": batch_size},
+                {"t": tenant_param, "after": after, "n": batch_size},
             )
         ).fetchall()
         for row in rows:
@@ -251,9 +291,9 @@ async def _rotate_pg_batch(
                 await session.execute(
                     text(
                         f"UPDATE {store.table} SET {assignments} "
-                        f"WHERE tenant_id = :t AND {store.pk} = :pk"
+                        f"WHERE {tenant_match} AND {store.pk} = :pk"
                     ),
-                    {**updates, "t": tenant_id, "pk": row[0]},
+                    {**updates, "t": tenant_param, "pk": row[0]},
                 )
                 report.rows_written += 1
     last = str(rows[-1][0]) if len(rows) == batch_size else None

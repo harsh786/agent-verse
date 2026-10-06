@@ -53,13 +53,14 @@ async def test_write_to_dlq_persists_row() -> None:
                     error_message="Concurrent goal limit reached",
                     raw_payload={"repo": "octo/hello", "n": 42},
                     retry_count=0,
+                    idempotency_key="firing-key-1",
                 )
             async with session_factory() as session:
                 rows = (
                     await session.execute(
                         text(
-                            "SELECT tenant_id, failed_at, failure_type, raw_payload, retry_count "
-                            "FROM trigger_dlq WHERE tenant_id = 't-dlq'"
+                            "SELECT tenant_id, failed_at, failure_type, raw_payload, retry_count, "
+                            "idempotency_key FROM trigger_dlq WHERE tenant_id = 't-dlq'"
                         )
                     )
                 ).mappings().all()
@@ -71,3 +72,5 @@ async def test_write_to_dlq_persists_row() -> None:
     assert row["failure_type"] == "GOAL_ENQUEUE_FAILED"
     assert row["raw_payload"] == {"repo": "octo/hello", "n": 42}
     assert row["failed_at"].tzinfo is not None, "failed_at must be timezone-aware"
+    # B2-OPEN-2: the firing's dedup key is kept for an idempotent DLQ retry.
+    assert row["idempotency_key"] == "firing-key-1"

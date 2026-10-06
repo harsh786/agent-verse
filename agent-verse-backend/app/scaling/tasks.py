@@ -7091,6 +7091,14 @@ _ANY_TENANT_HOLD_SQL = (
     "AND resource_type = 'tenant' AND (expires_at IS NULL OR expires_at > NOW()))"
 )
 
+def _vendor_replay_guard_purge_sql() -> str:
+    from app.triggers.webhooks.replay import purge_sql
+
+    return purge_sql(_TENANT_HOLD_EXEMPT)
+
+
+_VENDOR_REPLAY_GUARD_PURGE = _vendor_replay_guard_purge_sql()
+
 # (label, batched DELETE). Each selects at most :lim victims by an indexed column.
 _RETENTION_DELETES: tuple[tuple[str, str], ...] = (
     (
@@ -7113,6 +7121,13 @@ _RETENTION_DELETES: tuple[tuple[str, str], ...] = (
         "DELETE FROM trigger_events WHERE id IN ("
         f"SELECT id FROM trigger_events WHERE fired_at < :c_naive{_TENANT_HOLD_EXEMPT} "
         "LIMIT :lim)",
+    ),
+    (
+        # DEF-NEW-3: replay-guard rows of body-signed vendor webhooks outlive the
+        # trigger_events purge on purpose; one is dead only once its trigger is
+        # deleted or a secret rotation completed after it was recorded.
+        "vendor_webhook_replay_guard",
+        _VENDOR_REPLAY_GUARD_PURGE,
     ),
     (
         # D-18: each memory record carries its own deadline in expires_at.

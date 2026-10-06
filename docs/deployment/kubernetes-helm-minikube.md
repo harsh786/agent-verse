@@ -340,6 +340,17 @@ A4 grayscale, plus its preprocessed copy), so peak OCR memory per process is abo
 `OCR_MAX_CONCURRENCY x 20 MB`. Give the CPU limit to the pods that OCR, and
 raise `OCR_MAX_CONCURRENCY` only together with it.
 
+### Messaging gateway public URL (Telegram, channel callbacks)
+
+Set `GATEWAY_PUBLIC_BASE_URL` to the public HTTPS origin the messaging platforms
+can reach (optionally with a path prefix), e.g. `https://agents.example.com`. With
+it the server registers Telegram bindings with `setWebhook` and returns absolute
+channel callback URLs; empty (the default) means tenants register their webhooks
+by hand. Anything that is not `https://` is treated as unset. Helm:
+`gateway.publicBaseUrl` (both charts); raw k8s: `GATEWAY_PUBLIC_BASE_URL` in the
+`agentverse-config` ConfigMap; production compose: `GATEWAY_PUBLIC_BASE_URL` in the
+shell or `infra/.env` (passed to every app service); dev compose: the backend `.env`.
+
 ## GitHub Actions Pipelines
 
 The repository contains separate pipelines for each stage:

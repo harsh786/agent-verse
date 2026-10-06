@@ -90,7 +90,25 @@ async def get_version(workflow_id: str, version: int, request: Request) -> dict[
     ver = await svc.get_version(tenant_id=tenant_id, workflow_id=workflow_id, version=version)
     if ver is None:
         raise HTTPException(status_code=404, detail="Version not found")
-    return ver
+    return _masked_version(ver)
+
+
+def _masked(item: Any) -> Any:
+    """B2-OPEN-1: a workflow dict with its webhook ``hmac_secret`` masked."""
+    from app.workflow.webhook_secrets import redact_workflow
+
+    return redact_workflow(item)
+
+
+def _masked_version(ver: dict[str, Any]) -> dict[str, Any]:
+    """A version with its secret masked in both the JSON and the YAML copy
+    (snapshots recorded before B2-OPEN-1 hold it in their YAML too)."""
+    import yaml as _yaml  # type: ignore[import-untyped]
+
+    out: dict[str, Any] = _masked(ver)
+    if out is not ver and out.get("definition_yaml"):
+        out["definition_yaml"] = _yaml.safe_dump(out["definition"], sort_keys=False)
+    return out
 
 
 @router.post(
@@ -118,7 +136,7 @@ async def restore_version(workflow_id: str, version: int, request: Request) -> d
     record_workflow_action(
         request, "version_restored", workflow_id=workflow_id, note=f"version={version}"
     )
-    return result
+    return _masked(result)  # type: ignore[no-any-return]
 
 
 @router.get("/{workflow_id}/versions/{version_a}/diff/{version_b}", dependencies=_CAN_VIEW)
@@ -194,7 +212,7 @@ async def _approval_call(
         approver=approver,
         note=f"version={result.get('version')}" + (f"; note={note}" if note else ""),
     )
-    return dict(result)
+    return dict(_masked(dict(result)))
 
 
 @router.post(
@@ -284,9 +302,10 @@ async def export_yaml(workflow_id: str, request: Request) -> str:
     if item is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     from app.workflow.dsl import WorkflowDefinition
+    from app.workflow.webhook_secrets import redact_definition
 
     raw_def = item.definition if hasattr(item, "definition") else item["definition"]
-    wf = WorkflowDefinition(**raw_def)
+    wf = WorkflowDefinition(**redact_definition(raw_def))  # B2-OPEN-1: secret masked
     return wf.to_yaml()
 
 
@@ -324,7 +343,7 @@ async def import_yaml(request: Request) -> dict[str, Any]:
     from app.workflow.audit_middleware import record_workflow_created
 
     record_workflow_created(request, result, name=wf.name, source="import")
-    return result
+    return _masked(result)  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------
@@ -358,4 +377,4 @@ async def clone_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
     record_workflow_created(
         request, result, name=name, source="clone", cloned_from=workflow_id
     )
-    return result
+    return _masked(result)  # type: ignore[no-any-return]

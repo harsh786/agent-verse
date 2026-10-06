@@ -30,7 +30,13 @@ from jose import jwt as jose_jwt
 
 from app.triggers.models import TriggerType
 from app.triggers.webhooks.verifier import WebhookSignatureVerifier, atlassian_qsh
-from tests.triggers.webhooks.test_vendor_signed_deliveries import TOKEN, _body, _client, _post
+from tests.triggers.webhooks.test_vendor_signed_deliveries import (
+    _NOW_MS,
+    TOKEN,
+    _body,
+    _client,
+    _post,
+)
 
 # Built from parts: no provider-key-shaped literal in the repo.
 _SECRET = "-".join(("vendor", "shared", "secret", "def5"))
@@ -177,7 +183,7 @@ def test_stripe_timestamp_cannot_be_refreshed_without_resigning() -> None:
 # ── Jira ─────────────────────────────────────────────────────────────────────
 
 _ISSUE_CREATED = {
-    "timestamp": 1727690000000,
+    "timestamp": _NOW_MS,  # stamped by _body: a stale one is refused (DEF-NEW-3)
     "webhookEvent": "jira:issue_created",
     "issue_event_type_name": "issue_created",
     "user": {"accountId": "5b10ac8d82e05b22cc7d4ef5", "displayName": "Ada"},

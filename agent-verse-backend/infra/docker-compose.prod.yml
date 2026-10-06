@@ -45,6 +45,10 @@ x-common-env: &common-env
   VAULT_MASTER_KEY: ${VAULT_MASTER_KEY:?set VAULT_MASTER_KEY (the same value on every service)}
   VAULT_PREVIOUS_MASTER_KEYS: ${VAULT_PREVIOUS_MASTER_KEYS:-}
 
+  # Messaging gateway public HTTPS base URL (DEF-NEW-1), e.g. https://agents.example.com:
+  # Telegram setWebhook + absolute channel callback URLs. Empty = register by hand.
+  GATEWAY_PUBLIC_BASE_URL: ${GATEWAY_PUBLIC_BASE_URL:-}
+
   # Connector egress escape hatch (EGRESS-CFG) — operator-only, default off. Set the
   # flag AND list your own internal hosts (hostnames or IP literals, comma-separated);
   # the list alone does nothing. Shared by the API and every worker / beat.

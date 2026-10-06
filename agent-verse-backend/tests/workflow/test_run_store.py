@@ -424,7 +424,7 @@ async def test_webhook_dlq_lifecycle(seeded: dict, factories: tuple) -> None:
 
     ok_id = await store.record_webhook_failure(
         tenant_id=tid, workflow_id=wid, token_fingerprint="fp1",
-        payload={"n": 1}, error="broker down",
+        payload={"n": 1}, error="broker down", idempotency_key="webhook:d-1",
     )
     bad_id = await store.record_webhook_failure(
         tenant_id=tid, workflow_id=wid, token_fingerprint="fp2",
@@ -437,6 +437,9 @@ async def test_webhook_dlq_lifecycle(seeded: dict, factories: tuple) -> None:
     due = {e["id"]: e for e in await store.get_retryable_webhooks(backoff_seconds=0)}
     assert {ok_id, bad_id} <= set(due)
     assert due[ok_id]["payload"] == {"n": 1} and due[ok_id]["tenant_id"] == tid
+    # B2-OPEN-2: the retry runs under the delivery's live dedup key.
+    assert due[ok_id]["idempotency_key"] == "webhook:d-1"
+    assert due[bad_id]["idempotency_key"] is None
 
     run_id = str(uuid.uuid4())
     await store.create(run_id=run_id, workflow_id=wid, tenant_id=tid)

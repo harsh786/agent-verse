@@ -15,6 +15,11 @@ data:
   OTEL_SERVICE_NAME: "agentverse"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
   OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+  # Messaging gateway public HTTPS base URL (DEF-NEW-1), e.g.
+  # "https://agents.example.com": Telegram bindings are registered with setWebhook
+  # and channel callback URLs are absolute. Empty = register webhooks by hand.
+  # https only. Enforced by tests/infra/test_vault_key_distribution.py.
+  GATEWAY_PUBLIC_BASE_URL: ""
   # Connector egress escape hatch (operator-only, never tenant-settable). Every app
   # workload (API, workers, beat) reads this one ConfigMap, so ingestion on the API
   # and on the workers enforce the same policy. To allow your own internal sources

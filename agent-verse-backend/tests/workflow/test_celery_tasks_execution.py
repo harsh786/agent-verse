@@ -242,6 +242,42 @@ def test_retry_dead_letter_webhooks_retries_each_event(monkeypatch: pytest.Monke
     )
 
 
+def test_retry_dead_letter_webhooks_replays_under_the_delivery_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B2-OPEN-2: the retry reuses the live path's dedup key, so a delivery the
+    sender already redelivered returns its existing run instead of a second."""
+    run_store = AsyncMock()
+    run_store.get_retryable_webhooks.return_value = [
+        {
+            "id": "e1",
+            "workflow_id": "wf1",
+            "tenant_id": "t1",
+            "payload": {"a": 1},
+            "idempotency_key": "webhook:d-1",
+        },
+    ]
+    run_store.mark_webhook_attempt.return_value = "succeeded"
+    runner = MagicMock()
+    runner._run_store = run_store
+    runner.run = AsyncMock(return_value="run-existing")
+    monkeypatch.setattr(ct, "_get_runner", lambda: runner)
+
+    ct.retry_dead_letter_webhooks.run()
+
+    runner.run.assert_awaited_once_with(
+        workflow_id="wf1",
+        tenant_id="t1",
+        inputs={"a": 1},
+        trigger_type="webhook",
+        trigger_payload={"a": 1},
+        idempotency_key="webhook:d-1",
+    )
+    run_store.mark_webhook_attempt.assert_awaited_once_with(
+        tenant_id="t1", event_id="e1", run_id="run-existing", error=None, max_attempts=3
+    )
+
+
 def test_retry_dead_letter_webhooks_no_runner_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ct, "_get_runner", lambda: None)
     ct.retry_dead_letter_webhooks.run()  # must not raise

@@ -169,6 +169,16 @@ class WorkflowDetailResponse(WorkflowResponse):
     """
 
     definition: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("definition")
+    @classmethod
+    def _mask_webhook_secret(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """B2-OPEN-1: a webhook ``hmac_secret`` is never returned (masked)."""
+        from app.workflow.webhook_secrets import redact_definition
+
+        out: dict[str, Any] = redact_definition(v)
+        return out
+
     # The caller's level on this workflow (viewer | runner | editor | admin) so
     # the UI can disable what the per-workflow ACL would refuse.
     access: str | None = None

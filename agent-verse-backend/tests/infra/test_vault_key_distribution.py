@@ -774,3 +774,86 @@ def test_env_example_documents_the_egress_settings_off() -> None:
         assert lines, f".env.example does not document {key}"
         assert all(ln.startswith("#") for ln in lines), f"{key} must ship commented (off)"
     assert "# INGESTION_ALLOW_INTERNAL_SOURCES=false" in text
+
+
+# ── DEF-NEW-1: GATEWAY_PUBLIC_BASE_URL is settable in every deployment ────────
+#
+# app.gateway.binding_verification.public_base_url() reads it to setWebhook
+# Telegram bindings and to print absolute channel callback URLs. It was only in
+# .env.example, so helm / raw k8s / prod compose operators could not set it.
+# Every app workload gets it from the same place as the API, default empty.
+
+GATEWAY_KEY = "GATEWAY_PUBLIC_BASE_URL"
+_GATEWAY_HELM_EXPR = "{{ .Values.gateway.publicBaseUrl | quote }}"
+
+
+def test_k8s_every_app_workload_gets_the_gateway_base_url_from_the_api_config_map() -> None:
+    docs = _k8s_docs()
+    config_maps = {
+        d["metadata"]["name"]: dict(d.get("data") or {})
+        for f, d in docs
+        if d.get("kind") == "ConfigMap" and f in _kustomized()
+    }
+    workloads = [w for w in _k8s_app_workloads() if w[1] != "agentverse-db-migration"]
+    api = next(c for _f, n, c in workloads if n == "agentverse-backend")
+    carrying = [m for m in _config_map_refs(api) if GATEWAY_KEY in config_maps.get(m, {})]
+    assert len(carrying) == 1, f"API config maps: none/several carry {GATEWAY_KEY}"
+    assert config_maps[carrying[0]][GATEWAY_KEY] == ""
+    for name, keys in _secret_keys(docs, _kustomized()).items():
+        assert GATEWAY_KEY not in keys, f"secret {name} also sets {GATEWAY_KEY}"
+    for fname, name, container in workloads:
+        assert carrying[0] in _config_map_refs(container), f"{fname}:{name} lacks {carrying[0]}"
+        explicit = {e["name"] for e in container.get("env") or []}
+        assert GATEWAY_KEY not in explicit, f"{fname}:{name} overrides the shared value"
+
+
+def test_helm_every_app_workload_gets_the_gateway_base_url_from_one_config_map() -> None:
+    values = _helm_values(HELM_DIR)
+    assert values["gateway"] == {"publicBaseUrl": ""}
+    text = (HELM_DIR / "configmaps.yaml").read_text()
+    assert re.search(rf"^\s+{GATEWAY_KEY}: {re.escape(_GATEWAY_HELM_EXPR)}\s*$", text, re.M)
+    blocks = {c: _expand(b) for c, b in _helm_blocks().items() if c != "frontend"}
+    assert {"backend", "worker", "subgoal-worker", "schedule-worker", "beat"} <= set(blocks)
+    shared = '{{ include "agentverse.fullname" . }}-config'
+    for comp, block in blocks.items():
+        main = block.split("\n      containers:\n", 1)[-1]
+        assert shared in _config_map_refs(main), comp
+        assert f"- name: {GATEWAY_KEY}" not in block, f"{comp} overrides {GATEWAY_KEY}"
+    assert GATEWAY_KEY not in (values["backend"].get("env") or {})
+
+
+def test_legacy_helm_every_app_workload_gets_the_gateway_base_url_from_one_config_map() -> None:
+    values = _helm_values(LEGACY_HELM_DIR)
+    assert values["gateway"] == {"publicBaseUrl": ""}
+    text = (LEGACY_HELM_DIR / "configmap.yaml").read_text()
+    assert re.search(rf"^\s+{GATEWAY_KEY}: {re.escape(_GATEWAY_HELM_EXPR)}\s*$", text, re.M)
+    for fname in (
+        "deployment.yaml",
+        "worker-deployment.yaml",
+        "subgoal-worker-deployment.yaml",
+        "schedule-worker-deployment.yaml",
+        "beat-deployment.yaml",
+    ):
+        workload = (LEGACY_HELM_DIR / fname).read_text()
+        assert _config_map_refs(workload) == ["agentverse-config"], fname
+        assert f"- name: {GATEWAY_KEY}" not in workload, f"{fname} overrides {GATEWAY_KEY}"
+
+
+def test_compose_prod_every_app_service_gets_the_gateway_base_url() -> None:
+    services = {n: s for n, s in _compose("docker-compose.prod.yml").items() if _is_app_service(s)}
+    assert {"backend", "worker", "schedule-worker", "subgoal-worker", "beat"} <= set(services)
+    for name, svc in services.items():
+        assert svc["environment"].get(GATEWAY_KEY) == "${GATEWAY_PUBLIC_BASE_URL:-}", name
+
+
+def test_compose_dev_never_pins_the_gateway_base_url_per_service() -> None:
+    """Dev compose reads it from ../.env (every app service has the env_file)."""
+    services = {n: s for n, s in _compose("docker-compose.yml").items() if _is_app_service(s)}
+    for name, svc in services.items():
+        assert GATEWAY_KEY not in (svc.get("environment") or {}), name
+
+
+def test_env_example_documents_the_gateway_base_url_commented() -> None:
+    text = (INFRA.parent / ".env.example").read_text()
+    lines = [ln for ln in text.splitlines() if re.match(rf"#?\s*{GATEWAY_KEY}=", ln)]
+    assert lines and all(ln.startswith("#") for ln in lines)

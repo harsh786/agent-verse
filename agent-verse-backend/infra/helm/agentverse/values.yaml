@@ -49,6 +49,14 @@ secrets:
   smtpUser: ""
   smtpPassword: ""
 
+# DEF-NEW-1: public HTTPS base URL of the messaging gateway (GATEWAY_PUBLIC_BASE_URL),
+# e.g. "https://agents.example.com" (optional path prefix). With it the server
+# registers Telegram bindings with setWebhook and returns absolute channel callback
+# URLs; empty = tenants register their webhooks by hand. https only (anything else
+# is treated as unset). Rendered into the shared config map (API + workers + beat).
+gateway:
+  publicBaseUrl: ""
+
 # EGRESS-CFG: connector egress escape hatch — OPERATOR-ONLY, never tenant-settable.
 # Connectors refuse private / loopback / link-local / metadata addresses. To let them
 # reach your own internal infrastructure (e.g. a MinIO on 192.168.63.104) set

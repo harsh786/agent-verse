@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import uuid
+from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.tenancy.context import TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.simulation import get_sample_payload
+from app.triggers.webhooks.replay import BODY_SIGNED_VENDORS as _BODY_SIGNED_VENDORS
 
 router = APIRouter(prefix="/triggers", tags=["triggers"])
 logger = structlog.get_logger(__name__)
@@ -476,6 +478,13 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
     ``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by
     ``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible
     and answers 404 rather than reporting a retry that never happened.
+
+    The retry is dispatched under the dedup key the original firing had
+    (``trigger_dlq.idempotency_key``, B2-OPEN-2), so it is idempotent with a
+    sender redelivery of the same firing: after a successful redelivery the
+    retry is a ``dedup`` no-op, and a redelivery after the retry is deduped.
+    Either way the entry is resolved. A throttled retry is not dead-lettered
+    again — this entry stays open for the next retry.
     """
     from datetime import UTC, datetime, timedelta
 
@@ -498,7 +507,8 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         row = (
             await session.execute(
                 text(
-                    "SELECT trigger_id, raw_payload, retry_count FROM trigger_dlq "
+                    "SELECT trigger_id, raw_payload, retry_count, idempotency_key "
+                    "FROM trigger_dlq "
                     "WHERE id = :id AND tenant_id = :tid AND resolved_at IS NULL "
                     "FOR UPDATE"
                 ),
@@ -511,6 +521,7 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         trigger_id = str(row[0])
         raw_payload = row[1] if isinstance(row[1], dict) else {}
         attempt = int(row[2] or 0) + 1
+        original_key = str(row[3] or "")
         # Exponential backoff; attempts past the table stay on the last delay.
         delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS)) - 1]
         next_retry_at = datetime.now(UTC) + timedelta(seconds=delay)
@@ -526,8 +537,16 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
     # Re-dispatch with the dispatcher's real signature (spec, payload, tenant_ctx).
     # The old call passed tenant_id=/payload= keywords, raised a TypeError that
     # contextlib.suppress swallowed, and answered "queued" without ever firing.
-    # A per-attempt message_id gives the retry its own idempotency key so the
-    # durable dedup gate does not drop it as a replay of the original firing.
+    # The retry replays the ORIGINAL firing under its own dedup key (B2-OPEN-2).
+    # That key was never claimed by the throttled / failed attempt (the gates run
+    # before the claim; a failed enqueue releases it), so the retry fires unless
+    # the sender's redelivery already did. Entries written before the key was
+    # recorded fall back to a per-attempt message id (the old behaviour).
+    dispatch_identity: dict[str, Any] = (
+        {"idempotency_key": original_key}
+        if original_key
+        else {"message_id": f"dlq-retry:{dlq_id}:{attempt}"}
+    )
     dispatched = False
     status_str = "scheduled"  # attempt recorded; nothing to re-fire right now
     skip_reason: str | None = None
@@ -542,7 +561,8 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
                 raw_payload,
                 tenant_ctx,
                 caller_role=role,
-                message_id=f"dlq-retry:{dlq_id}:{attempt}",
+                dead_letter_throttled=False,  # this entry stays open instead
+                **dispatch_identity,
             )
         except Exception as exc:
             raise HTTPException(
@@ -553,6 +573,11 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         goal_id = getattr(event, "goal_id", None)
         dispatched = bool(getattr(event, "goal_created", False))
         status_str = "skipped" if skip_reason else ("dispatched" if dispatched else "failed")
+        # The firing ran now, or already ran (a redelivery under the same key;
+        # an identical goal already in progress): nothing left to retry.
+        if dispatched or (original_key and skip_reason in ("dedup", "goal_in_progress")):
+            await _resolve_dlq_entry(db, tenant_ctx.tenant_id, dlq_id, skip_reason or "retried")
+            status_str = "dispatched" if dispatched else "already_delivered"
 
     return {
         "status": status_str,
@@ -564,6 +589,22 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
         "goal_id": goal_id,
         "skip_reason": skip_reason,
     }
+
+
+async def _resolve_dlq_entry(db: Any, tenant_id: str, dlq_id: str, outcome: str) -> None:
+    """Mark a DLQ entry resolved after its retry ran (or found the firing done)."""
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        await session.execute(
+            text(
+                "UPDATE trigger_dlq SET resolved_at = NOW(), resolved_by = :by "
+                "WHERE id = :id AND tenant_id = :tid AND resolved_at IS NULL"
+            ),
+            {"by": f"retry:{outcome}"[:200], "id": dlq_id, "tid": tenant_id},
+        )
 
 
 # ── Per-trigger routes ────────────────────────────────────────────────────────
@@ -988,10 +1029,6 @@ async def _mark_sns_confirmed(store: Any, records: list[dict[str, Any]], caller:
             )
 
 
-# Vendors whose signature covers only the body (no signed timestamp / id).
-_BODY_SIGNED_VENDORS = frozenset(
-    {"github", "jira", "confluence", "linear", "sentry", "pagerduty", "salesforce", "grafana"}
-)
 
 
 def _vendor_signed_message_id(webhook_type: str, body: Any, body_bytes: bytes) -> str:
@@ -1177,6 +1214,12 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     # (Stripe evt_, Slack event_id, Teams activity id) key on it; the rest on
     # the signed body itself, unwindowed.
     signed_message_id = _vendor_signed_message_id(webhook_type, body, body_bytes)
+    # DEF-NEW-3: the signed-body dedup row (trigger_events) is purged after the
+    # retention period, so a body-only signature must not stay acceptable longer
+    # than its dedup record (app.triggers.webhooks.replay).
+    from app.triggers.webhooks import replay as _replay
+
+    guard_db = _get_db(request)
     matched = 0
     failed = 0
     results: list[Any] = []
@@ -1236,6 +1279,16 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             if not verified:
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
         vendor_signed = bool(secret) and not generic and bool(signed_message_id)
+        guard_key = ""
+        if vendor_signed and webhook_type in _BODY_SIGNED_VENDORS:
+            event_time = _replay.signed_event_time(webhook_type, body)
+            if event_time is not None:
+                # Jira: refuse a delivery older than its dedup record's lifetime.
+                _replay.check_signed_freshness(event_time)
+            elif guard_db is not None:
+                # GitHub & co.: no signed age, so remember the delivery for as
+                # long as the secret that signed it is accepted.
+                guard_key = signed_message_id
         if (
             webhook_type == "slack"
             and isinstance(body, dict)
@@ -1261,13 +1314,37 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
                 message_id = signed_message_id
             else:
                 message_id = delivery_message_id
+            guard_trigger = str(getattr(spec, "trigger_id", "") or "")
+            if guard_key and await _replay.already_delivered(
+                guard_db, tenant_id, guard_trigger, guard_key
+            ):
+                # Ran before and its trigger_events row is gone: a replay.
+                logger.warning(
+                    "vendor_webhook_replay_refused",
+                    webhook_type=webhook_type,
+                    tenant_id=tenant_id,
+                    trigger_id=guard_trigger,
+                )
+                results.append(SimpleNamespace(skip_reason="dedup", goal_id=None))
+                continue
             # A throttled delivery is answered 429 (the sender retries) rather
             # than dead-lettered (B2-1).
-            results.append(
-                await dispatcher.dispatch(
-                    spec, enriched, caller, message_id=message_id, dead_letter_throttled=False
-                )
+            event = await dispatcher.dispatch(
+                spec, enriched, caller, message_id=message_id, dead_letter_throttled=False
             )
+            results.append(event)
+            ran = bool(getattr(event, "goal_id", None)) or getattr(
+                event, "skip_reason", None
+            ) in ("dedup", "goal_in_progress")
+            if guard_key and ran:
+                # Only a delivery that ran is remembered: a throttled / failed
+                # one must stay deliverable by the sender's retry.
+                try:
+                    await _replay.record_delivered(guard_db, tenant_id, guard_trigger, guard_key)
+                except Exception as exc:  # trigger_events still dedupes it for now
+                    logger.warning(
+                        "vendor_webhook_replay_guard_write_failed", error=str(exc)[:200]
+                    )
         except Exception as exc:
             # Was suppressed and still answered "accepted", so the platform never
             # redelivered an event that fired nothing.

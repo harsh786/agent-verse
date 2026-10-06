@@ -450,6 +450,18 @@ class WorkflowService:
         _log.info("workflow.published", tenant_id=tenant_id, workflow_id=workflow_id)
         return result
 
+    # ── Webhook HMAC secret (B2-OPEN-1) ───────────────────────────────────────
+
+    async def open_webhook_secret(self, tenant_id: str, value: Any) -> str:
+        """A stored ``hmac_secret`` (vault-encrypted, or legacy plaintext) in clear,
+        for signature verification only. Raises ``WebhookSecretError``."""
+        opener = getattr(self._store, "open_webhook_secret", None)
+        if opener is not None:
+            return str(await opener(tenant_id, value))
+        from app.workflow.webhook_secrets import open_secret
+
+        return open_secret(value)
+
     # ── Webhook token (rotation) ──────────────────────────────────────────────
 
     async def webhook_token_version(self, tenant_id: str, workflow_id: str) -> int:

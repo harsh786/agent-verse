@@ -180,6 +180,7 @@ class TriggerDispatcher:
         message_id: str | None = None,
         txn_id: str | None = None,
         dead_letter_throttled: bool = True,
+        idempotency_key: str | None = None,
     ) -> TriggerEvent | SimulatedTriggerResult:
         """Execute the 12-step dispatch pipeline, auditing suppressed fires.
 
@@ -192,6 +193,11 @@ class TriggerDispatcher:
         bulkhead full, condition false) used to be returned to the caller and
         dropped: ``trigger_events`` only ever recorded fires that created a goal,
         so a suppressed third-party delivery left no trace at all.
+
+        ``idempotency_key`` replays a firing under the dedup key it was first
+        dispatched with (a dead-lettered firing retried from the DLQ, B2-OPEN-2)
+        instead of deriving a new one, so the replay and a sender redelivery of
+        the same firing dedupe against each other: whichever runs first wins.
         """
         result = await self._dispatch_pipeline(
             trigger_spec,
@@ -205,6 +211,7 @@ class TriggerDispatcher:
             message_id=message_id,
             txn_id=txn_id,
             dead_letter_throttled=dead_letter_throttled,
+            replay_idempotency_key=idempotency_key,
         )
         if isinstance(result, TriggerEvent) and result.skip_reason and not simulation:
             if result.trigger_type == "unknown":
@@ -249,6 +256,7 @@ class TriggerDispatcher:
         message_id: str | None = None,
         txn_id: str | None = None,
         dead_letter_throttled: bool = True,
+        replay_idempotency_key: str | None = None,
     ) -> TriggerEvent | SimulatedTriggerResult:
         """Execute the 12-step dispatch pipeline."""
         start_ms = time.monotonic() * 1000
@@ -291,7 +299,8 @@ class TriggerDispatcher:
             )
 
         # ── Step 3: Idempotency key derivation ────────────────────────────────
-        idempotency_key = derive_idempotency_key(
+        # A DLQ replay reuses the key its firing was first dispatched with.
+        idempotency_key = replay_idempotency_key or derive_idempotency_key(
             trigger_id,
             trigger_spec.trigger_type.value
             if hasattr(trigger_spec.trigger_type, "value")
@@ -365,6 +374,7 @@ class TriggerDispatcher:
                     "RATE_LIMITED",
                     f"max {trigger_spec.max_firings_per_hour or 'plan'} firings/hour reached",
                     payload,
+                    idempotency_key=idempotency_key,
                 )
             return self._make_skip_event(
                 trigger_id,
@@ -400,6 +410,7 @@ class TriggerDispatcher:
                     "BULKHEAD_FULL",
                     "tenant's concurrent trigger firings at the plan limit",
                     payload,
+                    idempotency_key=idempotency_key,
                 )
             return self._make_skip_event(
                 trigger_id,
@@ -506,6 +517,7 @@ class TriggerDispatcher:
                     "GOAL_ENQUEUE_FAILED",
                     str(exc),
                     payload,
+                    idempotency_key=idempotency_key,
                 )
                 goal_id = None
                 enqueue_failed = True
@@ -605,7 +617,12 @@ class TriggerDispatcher:
         this firing to release — and deleting the key could drop the claim of
         an in-flight original of the same firing."""
         await self._write_dlq(
-            tenant_id, trigger_id, f"{gate.upper()}_UNAVAILABLE", str(exc)[:500], payload
+            tenant_id,
+            trigger_id,
+            f"{gate.upper()}_UNAVAILABLE",
+            str(exc)[:500],
+            payload,
+            idempotency_key=idempotency_key,
         )
         return self._make_skip_event(
             trigger_id, tenant_id, payload, idempotency_key, f"{gate}_unavailable"
@@ -858,7 +875,11 @@ class TriggerDispatcher:
         failure_type: str,
         error_message: str,
         payload: dict,
+        *,
+        idempotency_key: str | None = None,
     ) -> None:
+        """Dead-letter a firing with the dedup key it was dispatched under, so
+        a DLQ retry replays THAT firing (B2-OPEN-2), not a new one."""
         if self._db_factory is None:
             return
         try:
@@ -870,6 +891,7 @@ class TriggerDispatcher:
                     failure_type=failure_type,
                     error_message=error_message,
                     raw_payload=payload,
+                    idempotency_key=idempotency_key,
                 )
         except Exception as exc:
             _log.warning("dlq_write_failed trigger_id=%s: %s", trigger_id, exc)

@@ -45,6 +45,9 @@ TEAMS_SECRET = base64.b64encode(b"teams-outgoing-webhook-key-012345").decode()
 # cases are built at import, so ``_body`` stamps the real time when a test runs —
 # an import-time stamp goes stale once a long suite passes the 5-minute window.
 _NOW_ISO = "<now>"
+# DEF-NEW-3: Jira's signed event time (epoch ms) must be inside the acceptance
+# window too, so Jira samples are stamped when the body is built.
+_NOW_MS = "<now-ms>"
 
 Signer = Callable[[bytes, str], dict[str, str]]
 
@@ -97,7 +100,7 @@ VENDORS: list[tuple[str, str, TriggerType, str, Signer, dict[str, Any]]] = [
         # Jira Cloud: "X-Hub-Signature: sha256=<hex HMAC-SHA256 of the body>".
         "jira", "jira", TriggerType.JIRA_WEBHOOK, SECRET,
         lambda b, s: {"X-Hub-Signature": "sha256=" + _hex(b, s)},
-        {"timestamp": 1727690000000, "webhookEvent": "jira:issue_created",
+        {"timestamp": _NOW_MS, "webhookEvent": "jira:issue_created",
          "issue": {"id": "10002", "key": "OPS-42",
                    "fields": {"summary": "Checkout 500s", "project": {"key": "OPS"}}}},
     ),
@@ -225,6 +228,8 @@ def _body(payload: dict[str, Any]) -> bytes:
     if payload.get("timestamp") == _NOW_ISO:
         now = time.strftime("%Y-%m-%dT%H:%M:%S.0000000Z", time.gmtime())
         payload = {**payload, "timestamp": now}
+    elif payload.get("timestamp") == _NOW_MS:
+        payload = {**payload, "timestamp": int(time.time() * 1000)}
     return json.dumps(payload, separators=(",", ":")).encode()
 
 

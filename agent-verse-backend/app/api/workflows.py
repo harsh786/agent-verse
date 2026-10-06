@@ -32,7 +32,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
+from app.workflow import webhook_secrets as _ws
+from app.workflow.webhook_secrets import redact_definition
+
+_log = get_logger(__name__)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -114,7 +119,8 @@ def _workflow_to_out(w: dict[str, Any]) -> WorkflowOut:
         id=w["id"],
         name=w["name"],
         description=w.get("description", ""),
-        definition=w.get("definition") or {},
+        # B2-OPEN-1: a webhook hmac_secret is never returned (masked).
+        definition=redact_definition(w.get("definition") or {}),
         status=w.get("status", "draft"),
         version=w.get("version", 1),
         created_at=_iso(w.get("created_at")),
@@ -160,15 +166,160 @@ class _WorkflowStore:
 
     async def list(self, tenant_id: str) -> list[dict[str, Any]]:
         if self._db is not None:
-            return await self._list_db(tenant_id)
-        rows = [w for w in self._mem.values() if w["tenant_id"] == tenant_id]
-        return sorted(rows, key=lambda w: w["created_at"], reverse=True)
+            rows = await self._list_db(tenant_id)
+        else:
+            rows = [w for w in self._mem.values() if w["tenant_id"] == tenant_id]
+            rows = sorted(rows, key=lambda w: w["created_at"], reverse=True)
+        return [await self._migrate_legacy_secret(tenant_id, w) for w in rows]
 
     async def get(self, tenant_id: str, workflow_id: str) -> dict[str, Any] | None:
         if self._db is not None:
-            return await self._get_db(tenant_id, workflow_id)
-        w = self._mem.get(workflow_id)
-        return w if (w and w["tenant_id"] == tenant_id) else None
+            item = await self._get_db(tenant_id, workflow_id)
+        else:
+            w = self._mem.get(workflow_id)
+            item = w if (w and w["tenant_id"] == tenant_id) else None
+        return await self._migrate_legacy_secret(tenant_id, item)
+
+    # ── Webhook HMAC secrets (B2-OPEN-1, app.workflow.webhook_secrets) ────────
+
+    async def _tenant_vault(self, tenant_id: str) -> Any:
+        """The tenant's own vault key (None = platform vault / no DB)."""
+        if self._db is None:
+            return None
+        from app.providers.tenant_vault import ensure_tenant_vault
+
+        return await ensure_tenant_vault(self._db, tenant_id)
+
+    async def _sealed(
+        self, tenant_id: str, definition: dict[str, Any], existing: Any = None
+    ) -> dict[str, Any]:
+        """``definition`` as it is stored: masked secrets resolved against
+        ``existing``, plaintext secrets vault-encrypted."""
+        out = definition
+        if _ws.has_masked_secret(out):
+            out = _ws.merge_masked_secrets(out, existing)
+        if _ws.has_plaintext_secret(out):
+            out = _ws.seal_plaintext_secrets(out, await self._tenant_vault(tenant_id))
+        return out
+
+    async def open_webhook_secret(self, tenant_id: str, value: Any) -> str:
+        """A stored ``hmac_secret`` in clear, for signature verification only.
+        Raises :class:`~app.workflow.webhook_secrets.WebhookSecretError`."""
+        try:
+            tenant_vault = (
+                await self._tenant_vault(tenant_id) if _ws.needs_tenant_vault(value) else None
+            )
+        except Exception as exc:
+            raise _ws.WebhookSecretError(f"tenant vault key unavailable: {exc}") from exc
+        return _ws.open_secret(value, tenant_vault)
+
+    async def _migrate_legacy_secret(
+        self, tenant_id: str, item: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Read-through migration: a definition stored before B2-OPEN-1 with a
+        plaintext secret is re-sealed in place (no version bump; best effort —
+        a plaintext value keeps verifying until it succeeds)."""
+        if item is None or not _ws.has_plaintext_secret(item.get("definition")):
+            return item
+        old = item["definition"]
+        try:
+            sealed = _ws.seal_plaintext_secrets(old, await self._tenant_vault(tenant_id))
+            if self._db is None:
+                item["definition"] = sealed
+                return item
+            await self._reseal_db(tenant_id, str(item["id"]), old, sealed)
+        except Exception as exc:
+            _log.warning(
+                "workflow_webhook_secret_reseal_failed",
+                workflow_id=str(item.get("id")),
+                error=type(exc).__name__,
+            )
+            return item
+        _log.info("workflow_webhook_secret_resealed", workflow_id=str(item["id"]))
+        return {**item, "definition": sealed}
+
+    async def _reseal_db(
+        self, tenant_id: str, workflow_id: str, old: dict[str, Any], new: dict[str, Any]
+    ) -> None:
+        """Rewrite a legacy definition sealed: the row (compare-and-swap on the
+        definition read), its run-engine mirror and its version snapshots."""
+        from sqlalchemy import text as sa_text
+
+        uuid_ids = True
+        try:
+            uuid.UUID(str(tenant_id))
+            uuid.UUID(str(workflow_id))
+        except (ValueError, TypeError, AttributeError):
+            uuid_ids = False  # not bridged into the run engine (see _bridge_upsert_definition)
+        async with self._db() as session:
+            await session.execute(
+                sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            result = await session.execute(
+                sa_text(
+                    "UPDATE workflows SET definition = CAST(:new AS jsonb) "
+                    "WHERE id = :id AND tenant_id = :tid AND definition = CAST(:old AS jsonb)"
+                ),
+                {"new": json.dumps(new), "old": json.dumps(old), "id": workflow_id,
+                 "tid": tenant_id},
+            )
+            if not getattr(result, "rowcount", 0):
+                await session.rollback()
+                return  # edited meanwhile: the edit sealed it
+            if uuid_ids:
+                await session.execute(
+                    sa_text(
+                        "UPDATE workflow_definitions SET definition_json = CAST(:new AS jsonb) "
+                        "WHERE id = CAST(:id AS uuid) AND tenant_id = CAST(:tid AS uuid)"
+                    ),
+                    {"new": json.dumps(new), "id": workflow_id, "tid": tenant_id},
+                )
+            await session.commit()
+        if uuid_ids:
+            await self._reseal_versions_db(tenant_id, workflow_id)
+
+    async def _reseal_versions_db(self, tenant_id: str, workflow_id: str) -> None:
+        import yaml as _yaml  # type: ignore[import-untyped]
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await session.execute(
+                sa_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id, definition_json FROM workflow_definition_versions "
+                        "WHERE workflow_id = CAST(:id AS uuid) AND tenant_id = CAST(:tid AS uuid)"
+                    ),
+                    {"id": workflow_id, "tid": tenant_id},
+                )
+            ).all()
+            decoded = [
+                (str(r[0]), json.loads(r[1]) if isinstance(r[1], str) else r[1]) for r in rows
+            ]
+            legacy = [(vid, d) for vid, d in decoded if _ws.has_plaintext_secret(d)]
+            if not legacy:
+                return
+            tenant_vault = await self._tenant_vault(tenant_id)
+            for version_id, definition in legacy:
+                sealed = _ws.seal_plaintext_secrets(definition, tenant_vault)
+                await session.execute(
+                    sa_text(
+                        "UPDATE workflow_definition_versions SET "
+                        " definition_json = CAST(:new AS jsonb), definition_yaml = :yaml "
+                        "WHERE id = CAST(:vid AS uuid) AND tenant_id = CAST(:tid AS uuid) "
+                        " AND definition_json = CAST(:old AS jsonb)"
+                    ),
+                    {
+                        "new": json.dumps(sealed),
+                        "old": json.dumps(definition),
+                        "yaml": _yaml.safe_dump(redact_definition(sealed), sort_keys=False),
+                        "vid": version_id,
+                        "tid": tenant_id,
+                    },
+                )
+            await session.commit()
 
     async def create(
         self,
@@ -179,6 +330,8 @@ class _WorkflowStore:
         labels: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         labels = labels or {}
+        # B2-OPEN-1: a webhook hmac_secret is stored vault-encrypted.
+        definition = await self._sealed(tenant_id, definition or {})
         if self._db is not None:
             return await self._create_db(tenant_id, name, description, definition, labels)
         now = datetime.now(UTC)
@@ -209,6 +362,13 @@ class _WorkflowStore:
     ) -> dict[str, Any] | None:
         """Partial update — only the provided fields are changed; version bumps."""
         updates = {k: v for k, v in fields.items() if k in self._UPDATABLE_FIELDS}
+        if isinstance(updates.get("definition"), dict):
+            # B2-OPEN-1: a masked secret keeps the stored one; plaintext is sealed.
+            existing = None
+            if _ws.has_masked_secret(updates["definition"]):
+                current = await self.get(tenant_id, workflow_id)
+                existing = (current or {}).get("definition")
+            updates["definition"] = await self._sealed(tenant_id, updates["definition"], existing)
         if self._db is not None:
             return await self._update_db(tenant_id, workflow_id, updates)
         w = self._mem.get(workflow_id)
@@ -713,7 +873,7 @@ async def run_workflow(
             "status": "dry_run",
             "workflow_id": workflow_id,
             "goal": goal_text,
-            "definition": definition,
+            "definition": redact_definition(definition),
         }
 
     from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
