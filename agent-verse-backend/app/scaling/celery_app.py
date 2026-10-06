@@ -234,13 +234,16 @@ celery_app.conf.update(
             "schedule": 30.0,
             "options": {"queue": "maintenance"},
         },
-        # B1-7: on second 0 of every minute (cron slots are minute-aligned; a
-        # 60 s interval counted from the beat's start fired up to 59 s late). A
-        # tick no worker took within the minute expires: the next one covers it.
+        # B1-7 / B1-16: every 15 s, so a slot fires at most ~15 s late whatever
+        # second the beat started on (a 60 s interval counted from the beat's
+        # start fired up to 59 s late, and RedBeat keeps a crontab entry on the
+        # second of its first run). Each tick is one indexed claim of due rows;
+        # the beat guard keeps ticks from overlapping. A tick no worker took
+        # in time expires: the next one covers it (slots come from last_fired_at).
         "fire-due-schedules-every-60s": {
             "task": "app.scaling.tasks.fire_due_schedules",
-            "schedule": crontab(minute="*"),
-            "options": {"queue": "schedules", "expires": 55},
+            "schedule": 15.0,
+            "options": {"queue": "schedules", "expires": 14},
         },
         "record-queue-depths-every-30s": {
             "task": "app.scaling.tasks.record_queue_depths",
