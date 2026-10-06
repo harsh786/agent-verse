@@ -305,7 +305,10 @@ def test_replayed_body_signed_delivery_collapses_onto_one_firing(
     assert first == replay  # the dispatcher dedups the replay as the same firing
 
     # ... while a genuinely different (signed) delivery is a separate firing.
-    other = _body({**payload, "delivery": "second"})
+    second = {**payload, "delivery": "second"}
+    if vid == "teams":  # Teams keys on its (signed) activity id: a new message has a new id
+        second["id"] = payload["id"] + "2"
+    other = _body(second)
     assert _post(client, path_type, other, sign(other, secret)).status_code == 200
     assert dispatcher.keys[2] != first
 

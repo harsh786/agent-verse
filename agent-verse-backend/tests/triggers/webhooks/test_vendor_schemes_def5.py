@@ -98,7 +98,32 @@ def test_github_replay_with_a_forged_delivery_id_collapses_onto_one_firing() -> 
     body = _body(_PUSH)
     assert _post(client, "github", body, _github_headers(body)).status_code == 200
     assert _post(client, "github", body, _github_headers(body)).status_code == 200
+    forged = {**_github_headers(body), "Idempotency-Key": "fresh-1", "X-Request-Id": "r-2"}
+    assert _post(client, "github", body, forged).status_code == 200
+    assert dispatcher.keys[0] == dispatcher.keys[1] == dispatcher.keys[2]
+
+
+def test_github_replay_after_the_body_hash_window_still_collapses(monkeypatch) -> None:
+    """The generic no-delivery-id identity is windowed (5 min); a vendor-signed
+    body has no signed time, so its identity must not expire."""
+    from app.triggers.webhooks import ingress
+
+    client, dispatcher = _client(TriggerType.GITHUB_WEBHOOK, _SECRET)
+    body = _body(_PUSH)
+    headers = {k: v for k, v in _github_headers(body).items() if k != "X-GitHub-Delivery"}
+    assert _post(client, "github", body, headers).status_code == 200
+    later = time.time() + 3 * ingress.REPLAY_WINDOW_SECONDS
+    monkeypatch.setattr(ingress.time, "time", lambda: later)
+    assert _post(client, "github", body, headers).status_code == 200
     assert dispatcher.keys[0] == dispatcher.keys[1]
+
+
+def test_distinct_signed_github_deliveries_are_distinct_firings() -> None:
+    client, dispatcher = _client(TriggerType.GITHUB_WEBHOOK, _SECRET)
+    one, two = _body(_PUSH), _body({**_PUSH, "after": "0" * 40})
+    assert _post(client, "github", one, _github_headers(one)).status_code == 200
+    assert _post(client, "github", two, _github_headers(two)).status_code == 200
+    assert dispatcher.keys[0] != dispatcher.keys[1]
 
 
 # ── Stripe ───────────────────────────────────────────────────────────────────
