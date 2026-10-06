@@ -14,13 +14,12 @@ I re-checked each item against today's QA fixes:
 
 | Status | Items |
 |---|---:|
-| Fixed (were OPEN) | 13 |
+| Fixed (were OPEN) | 14 |
 | ALREADY-FIXED | 2 |
 | OBSOLETE | 1 |
-| NEEDS-OWNER | 1 |
 | PARTIAL | 1 |
 
-Of the 13 fixed items, two went in as one commit each with a partner item: F195-01 with F195-03, and F197-01 with F197-02. a08-F197-03 is OBSOLETE in one half and by design in the other.
+Of the 14 fixed items, two went in as one commit each with a partner item: F195-01 with F195-03, and F197-01 with F197-02. a08-F196-05 was fixed after the owner chose the opt-in option. a08-F197-03 is OBSOLETE in one half and by design in the other.
 
 | Item | Status | Reason | Commit / test |
 |---|---|---|---|
@@ -37,7 +36,7 @@ Of the 13 fixed items, two went in as one commit each with a partner item: F195-
 | a08-F196-02 | ALREADY-FIXED | QA-13: the per-tenant channel cache is re-read at most every 30 s, and `sync_from_db` *replaces* the cached set. Channels added, changed or deleted on another replica take effect here within that window. | `e048c3c3d` · `tests/services/test_notification_channel_cache_refresh.py` |
 | a08-F196-03 | FIXED | A failed insert or delete raises `NotificationStoreUnavailableError` (503, retryable). After a failed insert nothing is cached; after a failed delete the cached channel is restored. `POST`/`DELETE /governance/notifications` answer 503 instead of "created" or 404. The old fire-and-forget methods still only log, because they have no caller to report to. | `9e48d548d` · `tests/services/test_notification_channel_write_failures.py` (5 fail before) |
 | a08-F196-04 | ALREADY-FIXED | QA-5: `normalize_channel_config` (in the request model's validator) returns 422 for a `channel_type` other than slack/teams/webhook, or for a missing or non-http(s) URL. | `578103313` · `tests/api/test_governance_notification_channel_validation.py`, `tests/services/test_notification_channel_config.py` |
-| a08-F196-05 | NEEDS-OWNER | Still true: `notify_goal_complete` has no caller. Settings shows `goalComplete` / `goalFailed` preferences, and both default to **on**. Wiring them is a product choice, because default-on would start posting every goal completion of every tenant to its Slack/Teams/webhook channels. **(a)** Remove the method and the two preference keys. **(b)** Wire a consumer group on `trigger:stream:goal` (`goal.completed` / `goal.failed`, already published by API and worker) that honours `notif_prefs:{tenant}` and flips the defaults to opt-in. Either way, GoalService does not change. | — |
+| a08-F196-05 | FIXED (owner decision: opt-in) | `goalComplete` and `goalFailed` now default to OFF in the API and in Settings. A preference record saved before this change has no schema version, so its goal keys count as never set and no existing tenant is opted in silently. PUT merges partial updates. `GoalNotificationConsumer` reads the goal lifecycle stream with its own consumer group (started by `TriggerConsumerSupervisor`); in-process goals and worker goals both publish to that stream. For an opted-in tenant it takes a `SET NX` claim on `goal_notified:{tenant}:{goal}:{outcome}` (7 days) and sends once via `notify_goal_outcome` to the tenant's Slack/Teams/webhook channels. The message has the goal id, the status, and the goal text or failure reason, redacted with `redact_baseline` and cut to 280 characters; it never includes tool output. A channel error is logged and counted in `agentverse_goal_notification_total`. Settings reads and writes the server now instead of a localStorage copy. No migration (the preferences are a Redis record). There are no per-agent notification settings. Delivery is at most once: a crash between the claim and the send loses that one notification. | `0c5edf99c` · `tests/services/test_goal_notifications.py` (10), `tests/services/test_goal_notifications_redis.py` (real Redis, 2 replicas, duplicate publish), `SettingsPage.test.tsx` (notifications tab, 5) |
 | a08-F197-01 | FIXED | Removed `webhook_service.py` and `persistence.py`, which had no importer. `OutboundWebhookService` also posted with raw httpx and no SSRF guard. Their tests were removed too. | `9f3a594a4` · `tests/services/test_dead_service_modules_removed.py` |
 | a08-F197-02 | FIXED | Removed the unused singleton `usage_service._usage_service`. The app binds its own `UsageService`. | `9f3a594a4` · same file, `tests/services/test_usage_service.py::test_app_binds_its_own_usage_service` |
 | a08-F197-03 | OBSOLETE (one half) / by design (other half) | **OBSOLETE half:** since OI-1 (`79dc747ab`) and a06-F101-01/-04 (`9427d9f46`), a redelivered goal resumes from its last checkpoint. A side-effecting call already in the action ledger is replayed as `tool_call_already_executed`, which is not metered. Only calls that are really dispatched again emit `tool_call_complete` and are metered: read calls of the unfinished step, and the call in flight at the crash, which goes out again under its idempotency key. Those are real second dispatches. A per-event `record_id` would need the executor to stamp a call id, and that is agent-core code. **By-design half:** the worker builds a `UsageService` per use because it flushes on every call and the session factory changes per task. | tests: `tests/agent/nodes/test_executor_approved_action_idempotency.py`, `tests/scaling/test_worker_approved_action_once.py`, `tests/agent/test_checkpoint_resume.py` |
@@ -45,7 +44,7 @@ Of the 13 fixed items, two went in as one commit each with a partner item: F195-
 
 ## Notes for the owner
 
-- **a08-F196-05** needs the decision described in the table.
+- **a08-F196-05:** owner decision (opt-in) implemented in `0c5edf99c`.
 - **Residual, not in the audit:** `LLMConfigStore.get_config` re-fills the cache after a DB read. If a read that saw the old row races a concurrent save, it can re-cache the old config for up to 300 s. This is the same race class as F194-06; fixing it would need a version check or a tombstone. `update_plan` has the same window for a plan change, which is lower risk.
 - **Behaviour changes made on purpose** (old test assertions updated):
   - API-key resolve does extra Redis GETs (tombstone checks) on a cache miss.
