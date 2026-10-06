@@ -532,7 +532,11 @@ class VerifierMixin:
                 except Exception as _ltm_exc:
                     await self._memory_degraded(agent_state, "long_term_memory_write", _ltm_exc)
 
-            # Score the completed goal — persists eval to DB (BUG 3 fix)
+            # Score the completed goal — persists eval to DB (BUG 3 fix).
+            # B7-L2: mark it COMPLETE first: task_completion is 1.0 iff the goal
+            # reached COMPLETE, and scoring before the transition stored 0.0 for
+            # every successful goal (goal_score_below fired on all of them).
+            agent_state.status = GoalStatus.COMPLETE
             scorecard = None
             if self._eval_runner is not None:
                 scorecard = await self._eval_runner.score_and_persist(
