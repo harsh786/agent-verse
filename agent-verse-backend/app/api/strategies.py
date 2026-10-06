@@ -6,7 +6,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.orchestration.execution_drivers import strategy_availability
+from app.orchestration.execution_drivers import goal_execution_driver, strategy_availability
 from app.orchestration.strategy_certification import CertificationEvaluator, RuntimeEvidence
 from app.orchestration.strategy_evidence import StrategyEvidenceRecorder, StrategyRunEvidence
 from app.orchestration.strategy_readiness import ReadinessEvaluator
@@ -76,6 +76,12 @@ def _catalogue_item(
         "state_schema_version": capability.state_schema_version,
         "derived_state": derived.state.value,
         "availability": availability.availability,
+        # The flag goal-strategy pickers filter on: true only for a strategy a goal can
+        # actually run (POST /goals refuses every other strategy_override with a 422).
+        # Strategies with adapter logic but no goal driver (rewoo, llm_compiler, lats,
+        # codeact) stay in the catalogue with goal_selectable=false and are hidden.
+        # RAG strategies are "available" on the RAG runtime but are not goal strategies.
+        "goal_selectable": goal_execution_driver(capability) is not None,
         "execution_driver": availability.execution_driver,
         "ready": ready and runnable,
         "readiness_reasons": reasons,
@@ -146,6 +152,7 @@ async def get_strategy_readiness(request: Request, strategy_id: str) -> dict[str
         "strategy_id": capability.strategy_id,
         "adapter_version": capability.adapter_version,
         "availability": availability.availability,
+        "goal_selectable": goal_execution_driver(capability) is not None,
         "ready": decision.ready and runnable,
         "degraded": bool(decision.degraded_reasons),
         "reason_codes": reason_codes,
