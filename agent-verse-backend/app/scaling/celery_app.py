@@ -234,10 +234,13 @@ celery_app.conf.update(
             "schedule": 30.0,
             "options": {"queue": "maintenance"},
         },
+        # B1-7: on second 0 of every minute (cron slots are minute-aligned; a
+        # 60 s interval counted from the beat's start fired up to 59 s late). A
+        # tick no worker took within the minute expires: the next one covers it.
         "fire-due-schedules-every-60s": {
             "task": "app.scaling.tasks.fire_due_schedules",
-            "schedule": 60.0,
-            "options": {"queue": "schedules"},
+            "schedule": crontab(minute="*"),
+            "options": {"queue": "schedules", "expires": 55},
         },
         "record-queue-depths-every-30s": {
             "task": "app.scaling.tasks.record_queue_depths",
@@ -471,8 +474,8 @@ celery_app.conf.update(
         # Item 4: fire published workflows whose cron schedule trigger is due.
         "workflow-fire-due-schedules": {
             "task": "workflow.fire_due_workflow_schedules",
-            "schedule": 60.0,  # every 60 seconds
-            "options": {"queue": "workflows.maintenance"},
+            "schedule": crontab(minute="*"),  # B1-7: second 0 of every minute
+            "options": {"queue": "workflows.maintenance", "expires": 55},
         },
         # Durable timer waits: re-dispatch runs whose ``wait`` step wake time has
         # passed (the wait no longer sleeps inside a worker slot).

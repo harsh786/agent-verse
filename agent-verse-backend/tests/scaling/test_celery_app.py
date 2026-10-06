@@ -47,6 +47,25 @@ def test_beat_schedule_routes_fire_due_schedules_to_schedules_queue() -> None:
     assert options["queue"] == "schedules"
 
 
+def test_time_trigger_ticks_are_aligned_to_the_minute_and_never_pile_up() -> None:
+    """B1-7: the tick ran every 60 s counted from the beat's start (live: at
+    second 43), so a slot at hh:mm:00 fired up to 59 s late. Cron slots are
+    minute-aligned, so the tick runs at second 0 of every minute; a tick no
+    worker picked up within the minute expires (the next one covers it)."""
+    from celery.schedules import crontab
+
+    beat_schedule = cast(Mapping[str, Mapping[str, Any]], celery_app.conf.beat_schedule)
+    for name in ("fire-due-schedules-every-60s", "workflow-fire-due-schedules"):
+        entry = beat_schedule[name]
+        schedule = entry["schedule"]
+        assert isinstance(schedule, crontab), name
+        # Every minute of every hour and day, on the minute.
+        assert schedule.minute == set(range(60)), name
+        assert schedule.hour == set(range(24)), name
+        options = cast(Mapping[str, Any], entry["options"])
+        assert 0 < float(options["expires"]) < 60, name
+
+
 def test_beat_schedule_records_queue_depths_on_maintenance_queue() -> None:
     beat_schedule = cast(Mapping[str, Mapping[str, Any]], celery_app.conf.beat_schedule)
     schedule_entry = beat_schedule["record-queue-depths-every-30s"]
