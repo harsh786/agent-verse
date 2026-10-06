@@ -1131,7 +1131,8 @@ async def test_update_goal_dlq_with_mocked_db() -> None:
 
     from app.scaling.tasks import _update_goal_dlq
 
-    mock_execute = AsyncMock()
+    # UPDATE ... RETURNING: no row = the goal had already finished.
+    mock_execute = AsyncMock(return_value=MagicMock(first=MagicMock(return_value=None)))
     mock_session = AsyncMock()
     mock_session.execute = mock_execute
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -1205,7 +1206,8 @@ async def test_find_and_fail_stuck_goals_with_mocked_db() -> None:
     from app.scaling.tasks import _find_and_fail_stuck_goals
 
     mock_result = MagicMock()
-    mock_result.fetchall.return_value = [("id-1",), ("id-2",)]
+    # RETURNING id, tenant_id, agent_id, execution_context, dry_run
+    mock_result.fetchall.return_value = [("id-1", "t", "", {}, True), ("id-2", "t", "", {}, True)]
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(return_value=mock_result)

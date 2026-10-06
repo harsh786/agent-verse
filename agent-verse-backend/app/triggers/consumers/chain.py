@@ -36,6 +36,7 @@ __all__ = [
     "MAX_CHAIN_DEPTH",
     "ChainTriggerConsumer",
     "build_chain_event",
+    "goal_failed_chain_event",
 ]
 
 # Goal event type → lifecycle channel this consumer listens on. Published by
@@ -80,6 +81,29 @@ def build_chain_event(
     if source_trigger_id:
         payload["source_trigger_id"] = source_trigger_id
     return json.dumps(payload)
+
+
+def goal_failed_chain_event(
+    *, tenant_id: str, goal_id: str, agent_id: str = "", execution_context: object = None
+) -> str:
+    """``goal.failed`` payload for a goal failed outside its runner (B7-2).
+
+    The stuck-goal detector, the stale-runner watchdog, the HITL-expiry sweep and
+    the DLQ fail goals by a DB update; this builds the same event the runner
+    would publish, with the goal's trigger lineage from its execution_context
+    (so the loop guard holds) and the deterministic completion id (so a goal
+    whose runner also published ``goal.failed`` still fires each trigger once).
+    """
+    lineage = lineage_from_context(execution_context)
+    return build_chain_event(
+        channel="goal.failed",
+        tenant_id=tenant_id,
+        goal_id=goal_id,
+        agent_id=agent_id or "",
+        status="failed",
+        trigger_chain_depth=lineage.depth,
+        source_trigger_id=lineage.source_trigger_id,
+    )
 
 
 class ChainTriggerConsumer:

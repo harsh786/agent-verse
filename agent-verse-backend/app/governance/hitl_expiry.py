@@ -79,7 +79,7 @@ async def fail_goals_parked_on_expired(
                   AND g.id = ar.goal_id
                   AND g.tenant_id = ar.tenant_id
                   AND g.status = 'waiting_human'
-                RETURNING g.id, g.tenant_id, ar.id, g.execution_context
+                RETURNING g.id, g.tenant_id, ar.id, g.execution_context, g.agent_id, g.dry_run
                 """
             ),
             {"ids": [str(i) for i in expired_request_ids], "k": _SUSPENDED_KEY,
@@ -103,6 +103,8 @@ async def fail_goals_parked_on_expired(
                 "request_id": str(row[2]),
                 "reason": _message(str(row[2])),
                 "execution_context": ctx,
+                "agent_id": str(row[4] or ""),
+                "dry_run": bool(row[5]),
             }
         )
     if failed:
@@ -119,8 +121,12 @@ async def announce_parked_goal_failures(
     *,
     publish: PublishFn | None = None,
     finalize: Callable[[str, str], Awaitable[None]] | None = None,
+    on_failed: Callable[[dict[str, Any]], Any] | None = None,
 ) -> int:
     """Append + publish ``goal_failed`` for each goal failed above (after commit).
+
+    ``on_failed`` is called with each goal (B7-2: the worker publishes
+    ``goal.failed`` for goal_failed triggers from it).
 
     ``db_factory`` is the APPLICATION session factory: each append runs in its
     goal's tenant RLS scope. Best effort per goal — the status is already durable.
@@ -157,6 +163,15 @@ async def announce_parked_goal_failures(
                     goal["tenant_id"],
                     goal["goal_id"],
                     {**event, **({"_seq": seq} if seq is not None else {})},
+                )
+        if on_failed is not None:
+            try:
+                on_failed(goal)
+            except Exception as exc:
+                _log.warning(
+                    "parked_goal_failed_callback_error",
+                    goal_id=goal["goal_id"],
+                    error=str(exc)[:200],
                 )
         if finalize is not None:
             with contextlib.suppress(Exception):
