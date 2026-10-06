@@ -142,3 +142,75 @@ spec:
             periodSeconds: 60
             timeoutSeconds: 15
             failureThreshold: 3
+---
+# Dedicated pool for the time triggers (B1-4). The beat's fire_due_schedules and
+# the run_scheduled_goal / poll_trigger tasks are short (claim due rows, create and
+# enqueue the goal) but shared the goal pool, so while goals ran, beat ticks and
+# fires waited minutes. The goal itself still runs on agentverse-worker, which
+# also consumes these queues (a stopped schedule pool degrades, never stops).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-schedule-worker
+  namespace: agentverse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: agentverse-schedule-worker
+  template:
+    metadata:
+      labels:
+        app: agentverse-schedule-worker
+    spec:
+      initContainers:
+        - name: wait-for-schema
+          image: agentverse-backend:latest
+          command: ["python", "-m", "app.db.wait_for_schema"]
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+      containers:
+        - name: schedule-worker
+          image: agentverse-backend:latest
+          command:
+            - "celery"
+            - "-A"
+            - "app.scaling.celery_app"
+            - "worker"
+            - "--loglevel=info"
+            - "-Q"
+            - "schedules,triggers.poll"
+            - "-n"
+            - "schedules@%h"
+            - "--concurrency=2"
+            - "--max-tasks-per-child=200"
+            - "--max-memory-per-child=700000"
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+            - secretRef:
+                name: agentverse-secrets
+          env:
+            - name: AGENTVERSE_DB_SCHEDULE_DISCOVERY
+              value: "true"
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB growth).
+              memory: "2Gi"
+              cpu: "500m"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "celery -A app.scaling.celery_app inspect ping -d schedules@$HOSTNAME -t 5 2>/dev/null | grep -q OK"
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 15
+            failureThreshold: 3

@@ -1,0 +1,50 @@
+# Dedicated pool for the time triggers (B1-4): the beat's fire_due_schedules and
+# the run_scheduled_goal / poll_trigger tasks never wait behind running goals.
+# The goal itself still runs on agentverse-worker (goals.{plan}).
+{{- if .Values.scheduleWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agentverse-schedule-worker
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: agentverse-schedule-worker
+    component: schedule-worker
+    {{- include "agentverse.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.scheduleWorker.replicas }}
+  selector:
+    matchLabels:
+      app: agentverse-schedule-worker
+  template:
+    metadata:
+      labels:
+        app: agentverse-schedule-worker
+        component: schedule-worker
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: schedule-worker
+          image: {{ include "agentverse.scheduleWorkerImage" . }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - celery
+            - -A
+            - app.scaling.celery_app
+            - worker
+            - --loglevel=info
+            - --concurrency={{ .Values.scheduleWorker.concurrency }}
+            - --max-tasks-per-child={{ .Values.scheduleWorker.maxTasksPerChild }}
+            - --max-memory-per-child={{ .Values.scheduleWorker.maxMemoryPerChildKb }}
+            - -n
+            - schedules@%h
+            - -Q
+            - {{ .Values.scheduleWorker.queues }}
+          envFrom:
+            - configMapRef:
+                name: agentverse-config
+          env:
+            {{- include "agentverse.appSecretEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.scheduleWorker.resources | nindent 12 }}
+{{- end }}

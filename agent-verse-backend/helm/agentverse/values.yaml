@@ -91,6 +91,28 @@ subgoalWorker:
       cpu: 1000m
       memory: 3.5Gi  # D4 / L-03 budget, see the comment above `worker:`
 
+# ── Celery schedule worker (B1-4) ─────────────────────────────────────────────
+# Dedicated pool for the time triggers: the beat's fire_due_schedules and the
+# run_scheduled_goal / poll_trigger tasks must never wait behind running goals.
+# worker.queues also lists them, so a stopped pool degrades instead of stopping.
+scheduleWorker:
+  enabled: true
+  image:
+    name: backend
+    tag: "latest"
+  replicas: 2
+  concurrency: 2
+  maxTasksPerChild: 200
+  maxMemoryPerChildKb: 700000
+  queues: "schedules,triggers.poll"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 2Gi  # L-03 budget: 300 MB + 2 x (700 MB cap + 100 MB)
+
 # ── Celery Beat ───────────────────────────────────────────────────────────────
 beat:
   image:

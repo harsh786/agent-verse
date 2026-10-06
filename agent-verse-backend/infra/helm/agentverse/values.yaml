@@ -142,6 +142,25 @@ subgoalWorker:
       cpu: "1"
       memory: 3.5Gi  # D4 / L-03 budget
 
+# Dedicated pool for the time triggers (B1-4); `worker` also consumes these queues.
+scheduleWorker:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: agentverse/backend
+    tag: local
+  concurrency: 2
+  maxTasksPerChild: 200
+  maxMemoryPerChildKb: 700000
+  queues: schedules,triggers.poll
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 2Gi  # L-03 budget: 300 MB + 2 x (700 MB cap + 100 MB)
+
 beat:
   enabled: true
   image:

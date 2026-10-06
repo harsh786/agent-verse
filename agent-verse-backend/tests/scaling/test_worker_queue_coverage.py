@@ -219,3 +219,51 @@ def test_legacy_helm_chart_runs_subgoals_on_a_dedicated_pool() -> None:
     _assert_separate_pools(pools, "helm helm/agentverse")
     template = (chart / "templates" / "subgoal-worker-deployment.yaml").read_text()
     assert "{{ .Values.subgoalWorker.queues }}" in template
+
+
+# ── B1-4: time triggers have a pool that never runs goals ─────────────────────
+# Live (2026-10-06): the beat's fire_due_schedules and run_scheduled_goal shared
+# the 2-slot goal worker; while two goals ran, ticks waited (00:10, 00:12, 00:13
+# never ran on time, 14 schedule tasks queued) and a one-shot fired 88 s late.
+
+_SCHEDULE_QUEUES = {"schedules", "triggers.poll"}
+_GOAL_QUEUES = _MAIN_GOAL_QUEUES | _SUBGOAL_QUEUES | {f"workflows.{p}" for p in _PLANS}
+
+
+def _assert_schedule_pool(pools: list[set[str]], where: str) -> None:
+    dedicated = [q for q in pools if _SCHEDULE_QUEUES <= q and not q & _GOAL_QUEUES]
+    assert dedicated, (
+        f"{where}: no worker consumes {sorted(_SCHEDULE_QUEUES)} without also running goals"
+    )
+
+
+@pytest.mark.parametrize("compose", ["docker-compose.yml", "docker-compose.prod.yml"])
+def test_compose_runs_time_triggers_on_a_pool_without_goals(compose: str) -> None:
+    _assert_schedule_pool(_compose_pools(INFRA / compose), compose)
+
+
+def test_k8s_runs_time_triggers_on_a_pool_without_goals() -> None:
+    pools = []
+    for doc in yaml.safe_load_all((INFRA / "k8s" / "worker-deployment.yaml").read_text()):
+        if not doc:
+            continue
+        for c in doc["spec"]["template"]["spec"]["containers"]:
+            pools.append(_queues_from_argv(_argv(c.get("command")) + _argv(c.get("args"))))
+    _assert_schedule_pool(pools, "k8s worker-deployment")
+
+
+def test_helm_charts_run_time_triggers_on_a_pool_without_goals() -> None:
+    for chart, template_name in (
+        (INFRA / "helm" / "agentverse", "app-workloads.yaml"),
+        (Path(__file__).resolve().parents[2] / "helm" / "agentverse",
+         "schedule-worker-deployment.yaml"),
+    ):
+        template = (chart / "templates" / template_name).read_text()
+        assert "{{- if .Values.scheduleWorker.enabled }}" in template
+        values = yaml.safe_load((chart / "values.yaml").read_text())
+        assert values["scheduleWorker"]["enabled"] is True
+        pools = [
+            {q.strip() for q in str(values[k]["queues"]).split(",") if q.strip()}
+            for k in ("worker", "subgoalWorker", "scheduleWorker")
+        ]
+        _assert_schedule_pool(pools, str(chart))

@@ -194,7 +194,12 @@ def test_only_the_main_dev_worker_preloads_retrieval_models() -> None:
         name: str(env.get("WORKER_PRELOAD_RETRIEVAL_MODELS", "false")).lower() == "true"
         for name, _argv, _limit, env in _compose_workers(INFRA / "docker-compose.yml")
     }
-    assert preload == {"worker": True, "subgoal-worker": False, "workflow-worker": False}
+    assert preload == {
+        "worker": True,
+        "subgoal-worker": False,
+        "workflow-worker": False,
+        "schedule-worker": False,
+    }
 
 
 # ── D4: Helm charts use the same per-pod budget as compose/k8s ──────────────

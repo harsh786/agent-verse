@@ -166,6 +166,39 @@ services:
           # L-03 budget: parent ~300 MB + 4 children x (700 MB cap + ~100 MB growth).
           memory: 3584M
 
+  # Dedicated pool for the time triggers (B1-4): fire_due_schedules,
+  # run_scheduled_goal and poll_trigger must never wait behind running goals
+  # (they did on the shared pool: beat ticks and fires ran minutes late). The
+  # goal itself still runs on `worker`, which also consumes these queues.
+  schedule-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    command: ["celery", "-A", "app.scaling.celery_app", "worker",
+              "--loglevel=info", "-Q", "schedules,triggers.poll", "-n", "schedules@%h",
+              "--concurrency=2", "--max-tasks-per-child=200", "--max-memory-per-child=700000"]
+    environment:
+      <<: *common-env
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.scaling.celery_app inspect ping -d schedules@$(hostname) --timeout=5 || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          # L-03 budget: parent ~300 MB + 2 children x (700 MB cap + ~100 MB growth).
+          memory: 2G
+
   # Dedicated pool for supervisor sub-goals (CORE-09): a supervisor parent holds
   # its `worker` slot while it waits, so its sub-goals (goals.subgoals.{plan})
   # must never queue behind it on the same pool. `worker` never consumes these.
