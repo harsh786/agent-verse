@@ -472,6 +472,10 @@ class Settings(BaseSettings):
     email_max_recipients: int = 50
     # Recipients per tenant per UTC day; 0 = the plan default (app/tools/email_quota.py).
     email_daily_recipient_quota: int = 0
+    # Ports a tenant-owned SMTP sender (PUT /tenants/me/email/smtp) may use. The
+    # host passes the SSRF guard; the port list keeps the test endpoint from
+    # probing arbitrary services on the hosts that guard allows.
+    tenant_smtp_allowed_ports: str = "25,465,587,1025,2525"
 
     # --- feature flags ---
     civilization_enabled: bool = False

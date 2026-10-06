@@ -81,6 +81,8 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("PUT", "/tenants/me/llm"): "tenancy:write",
     # D3: lists the tenant's opted-in agents on the public A2A directory.
     ("PUT", "/tenants/me/a2a-directory"): "tenancy:write",
+    # a02-F036-02: the email recipient allowlist and the tenant SMTP sender.
+    ("PUT", "/tenants/me/email"): "tenancy:write",
     # Templates (goal templates)
     # TRG-36: a caller links ITS OWN Slack identity (any role may; what the link
     # can do in Slack is re-checked against the key's live scopes per action).

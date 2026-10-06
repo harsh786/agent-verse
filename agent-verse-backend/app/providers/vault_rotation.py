@@ -21,7 +21,9 @@ context, with an explicit ``tenant_id`` predicate as well):
   webhook HMAC secrets (B2-OPEN-1);
 * ``channel_tenant_mappings.channel_config`` ``*_enc`` values — messaging-gateway
   binding secrets (``secret_enc`` / ``outbound_token_enc`` / ``verify_token_enc``,
-  DEF-3) of tenants without an envelope key (B2-GAP-2).
+  DEF-3) of tenants without an envelope key (B2-GAP-2);
+* ``tenant_email_settings.smtp_secret_enc`` — tenant-owned SMTP sender secrets
+  (a02-F036-02).
 
 Redis: connector secrets (``mcp:connector_secrets:*``), OAuth tokens copied into
 connector configs (``mcp:servers:*``) and the tenant LLM-config cache
@@ -155,6 +157,15 @@ PG_STORES: tuple[PgStore, ...] = (
         ("channel_config",),
         source_json=True,
         enc_fields=True,
+    ),
+    # Tenant-owned SMTP sender secrets (a02-F036-02). Appended last so a rotation
+    # checkpointed before this store existed resumes onto it.
+    PgStore(
+        "tenant_smtp_secrets",
+        "tenant_email_settings",
+        "tenant_id",
+        ("smtp_secret_enc",),
+        fingerprint_column="vault_key_fingerprint",
     ),
 )
 REDIS_STORES: tuple[str, ...] = ("connector_secrets", "connector_oauth_copies", "llm_config_cache")

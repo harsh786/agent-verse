@@ -27,8 +27,11 @@ def test_binding_store_is_listed_with_the_enc_field_codec() -> None:
     store = next(s for s in PG_STORES if s.name == "channel_binding_secrets")
     assert store.table == "channel_tenant_mappings" and store.columns == ("channel_config",)
     assert store.source_json and store.enc_fields
-    # Last: a rotation checkpointed before the store existed resumes onto it.
-    assert PG_STORES[-1] is store
+    # Appended after every older store: a rotation checkpointed before the store
+    # existed resumes onto it (later stores, e.g. tenant SMTP secrets, follow it).
+    names = [s.name for s in PG_STORES]
+    assert names.index("channel_binding_secrets") > names.index("workflow_version_secrets")
+    assert PG_STORES[-1].name == "tenant_smtp_secrets"
 
 
 def test_enc_fields_are_re_encrypted_and_everything_else_left_alone() -> None:
@@ -69,7 +72,9 @@ async def test_completed_rotation_from_before_the_store_resumes_onto_it(
 ) -> None:
     """A rotation that reported ``complete`` before this store was added would
     otherwise skip every store on re-run, leaving the bindings on the old key."""
-    old_report = {s.name: {} for s in PG_STORES if s.name != "channel_binding_secrets"}
+    names = [s.name for s in PG_STORES]
+    added = names[names.index("channel_binding_secrets") :]  # stores newer than the run
+    old_report = {name: {} for name in names if name not in added}
     visited: list[str] = []
     recorded: list[str] = []
     saved: list[str] = []
@@ -100,13 +105,13 @@ async def test_completed_rotation_from_before_the_store_resumes_onto_it(
         old=OLD, new=NEW, rotation_id="rot-1", system_db=object()
     )
     assert result["status"] == "complete", result
-    assert visited == ["channel_binding_secrets"]
+    assert visited == added
     assert recorded == []  # the key version was recorded by the original run
     assert saved[-1] == "complete"
 
     # A checkpoint that already covers every store stays a no-op.
     visited.clear()
-    old_report["channel_binding_secrets"] = {}
+    old_report.update({name: {} for name in added})
     result = await vault_rotation.rotate_all_stores(
         old=OLD, new=NEW, rotation_id="rot-1", system_db=object()
     )
