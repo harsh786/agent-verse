@@ -28,15 +28,6 @@ def test_self_improvement_action_model_exists() -> None:
     assert hasattr(SelfImprovementAction, "reason")
 
 
-def test_ab_test_result_model_exists() -> None:
-    from app.db.models.orchestration import ABTestResult
-
-    assert hasattr(ABTestResult, "goal_id")
-    assert hasattr(ABTestResult, "experiment_type")
-    assert hasattr(ABTestResult, "arm_id")
-    assert hasattr(ABTestResult, "score")
-
-
 def test_reflexion_lesson_model_exists() -> None:
     from app.db.models.orchestration import ReflexionLesson
 

@@ -4,7 +4,6 @@ Tables:
   eval_scorecards          — per-goal eval results
   tool_trust_records       — per-tool trust history (persisted across restarts)
   self_improvement_actions — decisions made after goal completion
-  ab_test_results          — A/B experiment arm results
   reflexion_lessons        — persistent failure lessons per tenant
 """
 
@@ -142,25 +141,6 @@ class SelfImprovementAction(Base):
     action_type: Mapped[str] = mapped_column(String(100), nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     action_metadata: Mapped[dict[str, Any] | None] = mapped_column("metadata", JSONB, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
-
-
-class ABTestResult(Base):
-    __tablename__ = "ab_test_results"
-
-    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: uuid.uuid4().hex)
-    goal_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    tenant_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("tenants.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    experiment_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    arm_id: Mapped[str] = mapped_column(String(100), nullable=False)
-    score: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -1,7 +1,7 @@
 """OrchestrationPersistence — persists all orchestration state to Postgres.
 
 Called from graph.py _node_complete after every goal execution.
-Writes to: eval_scorecards, reflexion_lessons, tool_trust_records, ab_test_results.
+Writes to: eval_scorecards, reflexion_lessons, tool_trust_records.
 Degrades gracefully to in-memory when DB is not available.
 """
 
