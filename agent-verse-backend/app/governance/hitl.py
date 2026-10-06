@@ -990,7 +990,8 @@ class HITLGateway:
                 background_publish=False,
             )
         )
-        if approved and req.status == ApprovalStatus.APPROVED:
+        # (getattr: mypy keeps req.status narrowed to PENDING from the check above.)
+        if approved and getattr(req, "status", None) == ApprovalStatus.APPROVED:
             await self._publish_approved(req, approver=approver, note=note, tenant_ctx=tenant_ctx)
         return approved
 
