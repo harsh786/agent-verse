@@ -29,10 +29,11 @@ invents numbers.
 
 from __future__ import annotations
 
+import math
 import re
 import statistics
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -364,6 +365,23 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
 # ── Execution Graph ───────────────────────────────────────────────────────────
 
 
+async def _load_goal[T](call: Awaitable[T], what: str) -> T:
+    """Await a goal-service read: unknown goal -> 404, any other failure -> 503."""
+    from app.core.errors import NotFoundError
+
+    try:
+        return await call
+    except NotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Goal not found") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("insights_goal_read_failed", what=what, error=str(exc)[:200])
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, f"{what} unavailable: goal store failed"
+        ) from exc
+
+
 @router.get("/graph/{goal_id}")
 async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
     """Return the goal execution as a graph of tool calls and data flows."""
@@ -373,11 +391,12 @@ async def get_execution_graph(goal_id: str, request: Request) -> dict[str, Any]:
         raise HTTPException(503, "Goal service not available")
 
     # Load goal events.  get_events() has a DB fallback so it works even after
-    # a server restart or when the goal was run by a Celery worker.
-    try:
-        events: list[dict[str, Any]] = await goal_svc.get_events(goal_id=goal_id, tenant_ctx=tenant)
-    except Exception:
-        events = []
+    # a server restart or when the goal was run by a Celery worker. An unknown
+    # (or another tenant's) goal is a 404 and a store failure a 503: both used to
+    # be swallowed into a 200 "start-only" graph that looked like an empty run.
+    events: list[dict[str, Any]] = await _load_goal(
+        goal_svc.get_events(goal_id=goal_id, tenant_ctx=tenant), "Execution graph"
+    )
 
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
@@ -534,11 +553,9 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
     if goal_svc is None:
         raise HTTPException(503, "Goal service not available")
 
-    try:
-        goal = await goal_svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
-    except Exception as _b904_exc:
-        raise HTTPException(404, "Goal not found") from _b904_exc
-
+    goal = await _load_goal(
+        goal_svc.get_goal(goal_id=goal_id, tenant_ctx=tenant), "Failure analysis"
+    )
     if not goal:
         raise HTTPException(404, "Goal not found")
 
@@ -661,6 +678,27 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
 # ── Natural Language Query ────────────────────────────────────────────────────
 
 
+# The LLM's ``days`` is model output: bound it before it reaches timedelta (a huge
+# value raised OverflowError -> 500; a negative one put the cutoff in the future).
+_QUERY_MAX_DAYS = 3650
+
+
+def _clamp_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 30
+    return max(1, min(days, _QUERY_MAX_DAYS))
+
+
+def _finite_or_none(value: Any) -> float | None:
+    try:
+        f = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 class NLQueryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     entity: str = Field(default="goals", pattern="^(goals|agents|connectors)$")
@@ -717,9 +755,9 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
             import json as _json
 
             parsed = _json.loads(resp.content.strip())
-            days = int(parsed.get("days", 30))
+            days = _clamp_days(parsed.get("days", 30))
             status_filter = parsed.get("status") or None
-            cost_min = float(parsed["cost_min"]) if parsed.get("cost_min") else None
+            cost_min = _finite_or_none(parsed["cost_min"]) if parsed.get("cost_min") else None
             llm_parsed = True
         except DecisionBudgetExceededError:
             raise  # 429 via the app's handler: a budget refusal is not an LLM outage
@@ -746,7 +784,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
             r"cost(?:s?)?\s+(?:more|over|greater)\s+than\s+\$?([\d.]+)", query_lower
         )
         if cost_match:
-            cost_min = float(cost_match.group(1))
+            cost_min = _finite_or_none(cost_match.group(1))
 
     query_parsed = {
         "days": days,

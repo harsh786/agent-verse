@@ -181,7 +181,7 @@ def test_graph_fallback_to_goal_record_events():
 
 
 def test_graph_event_log_exception():
-    """When get_event_log raises, falls back to empty events."""
+    """A goal-store failure is a 503 (a10-F233-05: it was a 200 start-only graph)."""
     mock_svc = AsyncMock()
     mock_svc.get_event_log.side_effect = RuntimeError("no events table")
 
@@ -190,10 +190,7 @@ def test_graph_event_log_exception():
     app = _make_app(goal_service=mock_svc)
     client = TestClient(app)
     resp = client.get("/insights/graph/g-exc", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    # Only start node
-    assert any(n["id"] == "start" for n in data["nodes"])
+    assert resp.status_code == 503
 
 
 def test_graph_plan_ready_event():
@@ -291,14 +288,14 @@ def test_analysis_default_suggestions_for_unknown_failure():
     assert len(data["suggestions"]) >= 3
 
 
-def test_analysis_goal_exception_returns_404():
-    """When get_goal raises, returns 404."""
+def test_analysis_goal_exception_returns_503():
+    """A goal-store failure is a 503, not a 404 (a10-F233-05)."""
     mock_svc = AsyncMock()
     mock_svc.get_goal.side_effect = Exception("DB error")
     app = _make_app(goal_service=mock_svc)
     client = TestClient(app)
     resp = client.get("/insights/analysis/g-exc", headers=_HEADERS)
-    assert resp.status_code == 404
+    assert resp.status_code == 503
 
 
 def test_analysis_with_llm_provider():
