@@ -34,11 +34,22 @@ two fleets never consume the same queues and beat never double-schedules.
     ./run_forever.py -- uv run celery ...  # override: supervise exactly this one cmd
     ./run_forever.py --port 9000           # backend on a different port
     ./run_forever.py start                 # background (detached), logs to a file
+    ./run_forever.py --log-file F          # foreground, rotating log file F
     ./run_forever.py status                # is it up? what's the supervisor pid?
     ./run_forever.py stop                  # stop supervisor + children, release awake
     ./run_forever.py restart               # stop then start
     ./run_forever.py install               # LaunchAgent: start at login, survive logout
     ./run_forever.py uninstall             # remove the LaunchAgent
+
+Logs: ``start`` and ``install`` write the supervisor's own messages AND every
+child's stdout/stderr (piped through the supervisor, one ``[api]``/``[worker]``/
+``[beat]`` prefixed line each) to ``run_forever.log``, rotated by size: 50 MB x 5
+backups by default (``--log-max-mb`` / ``--log-backups``, env
+AGENTVERSE_RUN_FOREVER_LOG_MAX_MB / AGENTVERSE_RUN_FOREVER_LOG_BACKUPS). The
+children used to inherit launchd's StandardOutPath and the file grew forever
+(2.5 GB). An older plist that still points launchd at run_forever.log is detected
+at start-up and handled the same way; a pre-existing log larger than the limit is
+set aside once as ``run_forever.log.<timestamp>.old`` (never deleted).
 
 "Forever" means: while this process runs it will not let the service stay down
 and will not let the Mac idle-sleep. `install` extends that across logins by
@@ -49,7 +60,10 @@ Nothing needs sudo; stopping the supervisor releases the machine back to normal.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
+import logging
+import logging.handlers
 import os
 import signal
 import subprocess
@@ -62,13 +76,19 @@ from pathlib import Path
 # Reuse the awake backend (IOKit assertions + caffeinate fallback) from the
 # sibling script rather than reimplementing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from keep_awake import ASSERT_DISPLAY, ASSERT_SYSTEM, log, make_backend  # noqa: E402
+import keep_awake
+from keep_awake import ASSERT_DISPLAY, ASSERT_SYSTEM, make_backend
+
+_console_log = keep_awake.log  # plain stdout; ``log`` below may route to a file
 
 APP_NAME = "agentverse_run_forever"
 LABEL = "com.local.agentverse.runforever"
 STATE_DIR = Path.home() / ".local" / "state" / APP_NAME
 PID_FILE = STATE_DIR / "supervisor.pid"
 LOG_FILE = STATE_DIR / "run_forever.log"
+# Where a detached / launchd supervisor's own stdout+stderr go: only what bypasses
+# the rotating log (a crash before it is set up, an interpreter traceback).
+STDIO_LOG = STATE_DIR / "run_forever.stdio.log"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -80,6 +100,136 @@ BACKOFF_MAX = 30.0
 # If the child stays up at least this long, the restart is treated as "healthy"
 # and backoff resets - so a stable service that gets killed once recovers fast.
 HEALTHY_UPTIME = 30.0
+
+
+# --------------------------------------------------------------------------- #
+# logging: console by default, a size-rotated file for start / install
+# --------------------------------------------------------------------------- #
+LOG_MAX_MB_ENV = "AGENTVERSE_RUN_FOREVER_LOG_MAX_MB"
+LOG_BACKUPS_ENV = "AGENTVERSE_RUN_FOREVER_LOG_BACKUPS"
+DEFAULT_LOG_MAX_MB = 50.0
+DEFAULT_LOG_BACKUPS = 5
+# A child line longer than this is split, so a child writing without newlines
+# cannot grow the supervisor's memory.
+_MAX_LINE_BYTES = 64 * 1024
+_LOGGER = logging.getLogger("agentverse.run_forever")
+_LOGGER.propagate = False
+
+
+@dataclass(frozen=True)
+class LogRotation:
+    max_bytes: int
+    backups: int
+
+
+def log_rotation_settings(
+    args: argparse.Namespace, environ: dict[str, str] | None = None
+) -> LogRotation:
+    """Rotation limits: CLI flag, else env, else 50 MB x 5.
+
+    backups is at least 1: RotatingFileHandler with backupCount=0 never rotates.
+    """
+    env = os.environ if environ is None else environ
+
+    def pick(flag: object, name: str, default: float) -> float:
+        if flag is not None:
+            return float(flag)  # type: ignore[arg-type]
+        raw = (env.get(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            return float(raw)
+        except ValueError:
+            raise SystemExit(f"{name} must be a number, got {raw!r}") from None
+
+    max_mb = pick(getattr(args, "log_max_mb", None), LOG_MAX_MB_ENV, DEFAULT_LOG_MAX_MB)
+    backups = pick(getattr(args, "log_backups", None), LOG_BACKUPS_ENV, DEFAULT_LOG_BACKUPS)
+    if max_mb <= 0:
+        raise SystemExit(f"log max size must be > 0 MB, got {max_mb}")
+    if backups < 1 or backups != int(backups):
+        raise SystemExit(f"log backups must be a whole number >= 1, got {backups}")
+    return LogRotation(max_bytes=int(max_mb * 1024 * 1024), backups=int(backups))
+
+
+def log(message: str) -> None:
+    """The supervisor's log line: the rotating file once configured, else stdout."""
+    if _LOGGER.handlers:
+        _LOGGER.info(message)
+    else:
+        _console_log(message)
+
+
+def _same_file(fd: int, path: Path) -> bool:
+    try:
+        a, b = os.fstat(fd), path.stat()
+    except OSError:
+        return False
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def configure_log_file(
+    path: Path, rotation: LogRotation, *, stdio_path: Path | None = None
+) -> logging.handlers.RotatingFileHandler:
+    """Send every supervisor line (and, via ``log``, every child line) to *path*,
+    rotated at ``rotation.max_bytes`` keeping ``rotation.backups`` old files.
+
+    * A pre-existing file already over the limit (the unrotated legacy log) is
+      renamed once to ``<name>.<timestamp>.old`` so rotation never deletes it.
+    * When our own stdout/stderr IS that file (an older launchd plist points
+      StandardOutPath at it), they are re-pointed at *stdio_path*: launchd's
+      descriptor would otherwise keep appending to whichever file it opened,
+      outside the rotation.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stdio_hijacked = [fd for fd in (1, 2) if _same_file(fd, path)]
+    with contextlib.suppress(FileNotFoundError):
+        if path.stat().st_size > rotation.max_bytes:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            archived = path.with_name(f"{path.name}.{stamp}.old")
+            path.rename(archived)
+            _console_log(f"set aside the oversized log as {archived} (not deleted)")
+    if stdio_hijacked:
+        target = stdio_path or path.with_name(f"{path.stem}.stdio.log")
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            for std in stdio_hijacked:
+                (sys.stdout if std == 1 else sys.stderr).flush()
+                os.dup2(fd, std)
+        finally:
+            os.close(fd)
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=rotation.max_bytes, backupCount=rotation.backups, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", "%Y-%m-%d %H:%M:%S"))
+    for old in list(_LOGGER.handlers):
+        _LOGGER.removeHandler(old)
+        old.close()
+    _LOGGER.addHandler(handler)
+    _LOGGER.setLevel(logging.INFO)
+    # keep_awake's helpers (power assertions, caffeinate) log through it too.
+    keep_awake.log = log  # type: ignore[assignment]
+    return handler
+
+
+def capturing_child_output() -> bool:
+    """Children are piped through the supervisor only when it logs to a file."""
+    return bool(_LOGGER.handlers)
+
+
+def _pump_output(name: str, stream: object) -> None:
+    """Copy one child's combined stdout/stderr into the log, line by line."""
+    readline = stream.readline  # type: ignore[attr-defined]
+    try:
+        while True:
+            raw = readline(_MAX_LINE_BYTES)
+            if not raw:
+                break
+            log(f"[{name}] {raw.decode('utf-8', 'replace').rstrip()}")
+    except (OSError, ValueError):
+        pass  # the pipe closed under us (shutdown)
+    finally:
+        with contextlib.suppress(OSError):
+            stream.close()  # type: ignore[attr-defined]
 
 
 # --------------------------------------------------------------------------- #
@@ -382,12 +532,25 @@ def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
             _interruptible_sleep(FLEET_RECHECK_SECONDS, lambda: state.stopping)
             continue
         started = time.monotonic()
+        capture = capturing_child_output()
+        # Logging to the rotating file: pipe the child through us instead of
+        # letting it inherit (and grow, unrotated) whatever our stdout is.
+        piped: dict[str, object] = (
+            {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "env": {**os.environ, "PYTHONUNBUFFERED": "1"},
+            }
+            if capture
+            else {}
+        )
         try:
-            child = subprocess.Popen(
+            child = subprocess.Popen(  # type: ignore[call-overload]
                 service.command,
                 cwd=str(service.cwd),
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
+                **piped,
             )
         except OSError as exc:
             log(f"[{service.name}] failed to launch: {exc}")
@@ -399,6 +562,15 @@ def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
 
         with state.lock:
             service.child = child
+        pump: threading.Thread | None = None
+        if capture and child.stdout is not None:
+            pump = threading.Thread(
+                target=_pump_output,
+                args=(service.name, child.stdout),
+                name=f"output-{service.name}",
+                daemon=True,
+            )
+            pump.start()
         log(f"[{service.name}] started (child pid {child.pid})")
         stand_down = [False]
 
@@ -414,6 +586,10 @@ def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
         rc = _wait_child(child, ensure_awake=awake, stopping=stopping)
         with state.lock:
             service.child = None
+        if pump is not None:
+            # Drain what the child wrote before exiting; a grandchild still
+            # holding the pipe must not block the restart.
+            pump.join(timeout=5)
         uptime = time.monotonic() - started
 
         if state.stopping:
@@ -435,6 +611,13 @@ def _supervise_one(service: _Service, awake: object, state: _RunState) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    log_file = getattr(args, "log_file", None)
+    if not log_file and _same_file(1, LOG_FILE):
+        # An older launchd plist sends our stdout straight into run_forever.log:
+        # take it over as a rotating log instead of letting it grow forever.
+        log_file = str(LOG_FILE)
+    if log_file:
+        configure_log_file(Path(log_file), log_rotation_settings(args), stdio_path=STDIO_LOG)
     existing = read_pid_file()
     if existing and existing != os.getpid() and not args.force:
         log(f"supervisor already running as pid {existing} (use --force to run anyway)")
@@ -555,6 +738,12 @@ def _forwarded_run_args(args: argparse.Namespace) -> list[str]:
         forwarded.append("--force-workers")
     if args.cwd:
         forwarded += ["--cwd", args.cwd]
+    # The detached / launchd supervisor always logs to the rotating LOG_FILE.
+    forwarded += ["--log-file", str(getattr(args, "log_file", None) or LOG_FILE)]
+    if getattr(args, "log_max_mb", None) is not None:
+        forwarded += ["--log-max-mb", f"{args.log_max_mb:g}"]
+    if getattr(args, "log_backups", None) is not None:
+        forwarded += ["--log-backups", str(args.log_backups)]
     if args.command:
         forwarded += ["--", *args.command]
     return forwarded
@@ -567,7 +756,9 @@ def cmd_start(args: argparse.Namespace) -> int:
         return 0
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    with LOG_FILE.open("ab") as logf:
+    # The supervisor writes LOG_FILE itself (rotated); its raw stdout/stderr only
+    # catch what bypasses that (a crash before logging is set up).
+    with STDIO_LOG.open("ab") as logf:
         proc = subprocess.Popen(
             [sys.executable, os.path.abspath(__file__), *_forwarded_run_args(args)],
             stdin=subprocess.DEVNULL,
@@ -577,7 +768,7 @@ def cmd_start(args: argparse.Namespace) -> int:
         )
     time.sleep(0.8)
     if proc.poll() is not None:
-        log(f"failed to start; see {LOG_FILE}")
+        log(f"failed to start; see {STDIO_LOG}")
         return 1
     log(f"started supervisor in background as pid {proc.pid}; log: {LOG_FILE}")
     return 0
@@ -686,7 +877,10 @@ def cmd_install(args: argparse.Namespace) -> int:
             args="\n".join(f"        <string>{a}</string>" for a in argv),
             path=launch_path,
             workdir=REPO_ROOT,
-            log=LOG_FILE,
+            # Not LOG_FILE: launchd never rotates its StandardOutPath, and the
+            # children used to inherit it (2.5 GB). The supervisor writes and
+            # rotates LOG_FILE itself (--log-file, see _forwarded_run_args).
+            log=STDIO_LOG,
         )
     )
     subprocess.run(
@@ -756,6 +950,26 @@ def build_parser() -> argparse.ArgumentParser:
                 "run the local worker/beat even while the docker compose stack's "
                 f"are running (default: defer to compose; env {FORCE_WORKERS_ENV}=1)"
             ),
+        )
+        p.add_argument(
+            "--log-file",
+            help=(
+                "write the supervisor's and the children's output to this file, "
+                "rotated by size (start/install always use run_forever.log)"
+            ),
+        )
+        p.add_argument(
+            "--log-max-mb",
+            type=float,
+            help=(
+                f"rotate the log at this size (default {DEFAULT_LOG_MAX_MB:g}; "
+                f"env {LOG_MAX_MB_ENV})"
+            ),
+        )
+        p.add_argument(
+            "--log-backups",
+            type=int,
+            help=f"rotated logs to keep (default {DEFAULT_LOG_BACKUPS}; env {LOG_BACKUPS_ENV})",
         )
         p.set_defaults(worker=True, beat=True)
         p.add_argument(
