@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
@@ -32,6 +33,19 @@ _VISION_RETRY_DELAY_S = float(os.getenv("VISION_RETRY_DELAY_SECONDS", "") or 2.0
 
 # Process-level guard so the proactive warm-up ping runs at most once.
 _warmed_up = False
+
+_log = logging.getLogger(__name__)
+
+
+def _vision_fallback_models(primary: str) -> list[str]:
+    """Other configured vision models (Model Registry vision order, then OCR
+    models, then the env model) to fail over to after *primary*."""
+    try:
+        from app.ai_router.selection import resolve_vision_fallback_models
+
+        return resolve_vision_fallback_models(primary)
+    except Exception:  # pragma: no cover - never block the primary call
+        return []
 
 
 async def _retry_async(factory: Callable[[], Awaitable[str]]) -> str:
@@ -209,6 +223,7 @@ class VisionParser:
         from app.ai_router.selection import resolve_vision_model
         from app.providers.base import CompletionRequest, Message
 
+        primary = resolve_vision_model("")
         request = CompletionRequest(
             messages=[
                 Message(
@@ -218,7 +233,7 @@ class VisionParser:
                 )
             ],
             # Dedicated vision/OCR model; empty defers to the provider default.
-            model=resolve_vision_model(""),
+            model=primary,
             system="You are an expert image analyst. Describe the image accurately.",
             max_tokens=500,
         )
@@ -232,6 +247,9 @@ class VisionParser:
             request,
             role="vision_parse",
             timeout_seconds=generation_timeout_seconds(),
+            # A failing / timing-out vision model fails over to the next one in
+            # the Model Registry vision order (it used to be a single-model call).
+            fallback_models=_vision_fallback_models(primary),
         )
         return response.content or ""
 
@@ -245,27 +263,40 @@ class VisionParser:
         from app.ai_router.selection import resolve_vision_model
 
         ocr_model = resolve_vision_model("gpt-4o")
-        response = await client.chat.completions.create(
-            model=ocr_model,
-            timeout=_VISION_TIMEOUT_S,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{b64_image}",
-                                "detail": "auto",
-                            },
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{b64_image}",
+                            "detail": "auto",
                         },
-                    ],
-                }
-            ],
-            max_tokens=500,
-        )
-        return response.choices[0].message.content or ""
+                    },
+                ],
+            }
+        ]
+        models = [ocr_model, *_vision_fallback_models(ocr_model)]
+        last_exc: Exception | None = None
+        for i, model in enumerate(models):
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    timeout=_VISION_TIMEOUT_S,
+                    messages=messages,
+                    max_tokens=500,
+                )
+                return response.choices[0].message.content or ""
+            except Exception as exc:
+                last_exc = exc
+                if i + 1 < len(models):
+                    _log.warning(
+                        "vision_model_failover from=%s to=%s error=%s",
+                        model, models[i + 1], str(exc)[:200],
+                    )
+        raise last_exc if last_exc else RuntimeError("vision call failed")
 
     async def _describe_with_anthropic(self, b64_image: str, mime_type: str, prompt: str) -> str:
         import anthropic  # type: ignore[import]

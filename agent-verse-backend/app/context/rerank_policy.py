@@ -528,12 +528,12 @@ class RerankPolicy:
             return []
         try:
             from app.core.config import get_settings
-            from app.rag_platform.hosted_reranker import (
-                HostedRerankerError,
-                hosted_reranker_from_settings,
-            )
+            from app.rag_platform.hosted_reranker import HostedRerankerError
+            from app.rag_platform.registry_reranker import reranker_chain_from_settings
 
-            reranker = hosted_reranker_from_settings(get_settings())
+            # Model Registry rerank models (preference order, each on its own
+            # provider's API), then the env endpoint; all failing → local path.
+            reranker = reranker_chain_from_settings(get_settings())
             if reranker is None:
                 return self._tfidf_rerank(chunks, query)
             documents = [str(c.get("content", "")) for c in chunks]
@@ -557,6 +557,7 @@ class RerankPolicy:
                     "score": float(score),
                     "pre_rerank_score": float(chunk.get("score", 0.0)),
                     "hosted_rerank_score": float(score),
+                    "hosted_rerank_model": reranker.last_model,
                 }
             )
         return reordered
