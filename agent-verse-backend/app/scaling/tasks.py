@@ -8775,37 +8775,120 @@ def embed_marketplace_templates() -> dict:
     return _run_async(_run())
 
 
-@celery_app.task(name="app.scaling.tasks.conclude_stale_experiments", queue="maintenance")
-def conclude_stale_experiments() -> dict:
-    """Conclude A/B optimization experiments older than 30 days."""
+_STALE_EXPERIMENT_BATCH = 1000
 
-    async def _run() -> dict:
-        try:
-            from sqlalchemy import text
 
-            from app.db.rls import system_session
-            from app.db.session import get_system_session_factory
+async def _conclude_stale_experiments_async(db: Any) -> dict[str, Any]:
+    """Conclude A/B prompt experiments whose challengers stopped getting evidence.
 
-            # prompt_variants is FORCE RLS and this sweep is cross-tenant: it runs
-            # on the maintenance (BYPASSRLS) factory under system_session (which
-            # fails loudly on a NOBYPASSRLS role instead of matching no rows).
-            # The trial counters are win_count / loss_count (migration 0029);
-            # the query used "wins + losses" and failed on every run.
-            db = get_system_session_factory()
-            async with db() as session, session.begin(), system_session(session):
-                result = await session.execute(
+    A challenger is stale when it is active, not the control, owned by a tenant
+    (never the shared ``global`` rows), had no outcome for 30 days and has at
+    least 20 trials. For each (tenant, prompt key) the promotion decision runs
+    one last time against the control (``PromptOptimizer.decide_promotion``:
+    significance + RegressionGate): a winner becomes the control, and every
+    other stale challenger is retired (``is_active = false``), so traffic stops
+    being split to it. Keys without a control are left alone.
+
+    a10-F246-04: the sweep only bumped ``updated_at`` — nothing was concluded.
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+    from app.intelligence.prompt_optimizer import PromptOptimizer, VariantStats
+
+    opt = PromptOptimizer()
+    cols = PromptOptimizer._COLUMNS
+    promoted = retired = skipped = 0
+    async with db() as session, session.begin(), system_session(session):
+        rows = (
+            (
+                await session.execute(
                     text(
-                        "UPDATE prompt_variants SET updated_at = NOW() "
-                        "WHERE updated_at < NOW() - INTERVAL '30 days' "
-                        "AND win_count + loss_count >= 20 RETURNING id"
+                        f"SELECT {cols} FROM prompt_variants "
+                        "WHERE is_active AND NOT is_control AND tenant_id <> 'global' "
+                        "AND updated_at < NOW() - INTERVAL '30 days' "
+                        "AND win_count + loss_count >= 20 "
+                        "ORDER BY tenant_id, prompt_key, id LIMIT :lim FOR UPDATE"
+                    ),
+                    {"lim": _STALE_EXPERIMENT_BATCH},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        groups: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        for row in rows:
+            tenant_id, variant = PromptOptimizer._from_row(row)
+            groups[(tenant_id, variant.prompt_key)].append(variant)
+        for (tenant_id, key), stale in groups.items():
+            control_row = (
+                (
+                    await session.execute(
+                        text(
+                            f"SELECT {cols} FROM prompt_variants WHERE tenant_id = :tid "
+                            "AND prompt_key = :key AND is_control AND is_active "
+                            "LIMIT 1 FOR UPDATE"
+                        ),
+                        {"tid": tenant_id, "key": key},
                     )
                 )
-                concluded = len(result.fetchall())
-            return {"status": "ok", "concluded": concluded}
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)}
+                .mappings()
+                .first()
+            )
+            if control_row is None:
+                skipped += len(stale)
+                continue
+            _, control = PromptOptimizer._from_row(control_row)
+            verdict = opt.decide_promotion(
+                VariantStats.of(control),
+                [VariantStats.of(v) for v in stale],
+                tenant_id=tenant_id,
+                prompt_key=key,
+            )
+            winner = verdict.promoted_variant_id
+            if winner is not None:
+                await PromptOptimizer._swap_control(session, tenant_id, key, winner)
+                promoted += 1
+            losers = [v.variant_id for v in stale if v.variant_id != winner]
+            if losers:
+                await session.execute(
+                    text(
+                        "UPDATE prompt_variants SET is_active = FALSE, updated_at = NOW() "
+                        "WHERE tenant_id = :tid AND id = ANY(CAST(:ids AS text[]))"
+                    ),
+                    {"tid": tenant_id, "ids": losers},
+                )
+                retired += len(losers)
+            logger.info(
+                "prompt_experiment_concluded tenant=%s key=%s promoted=%s retired=%d",
+                tenant_id,
+                key,
+                winner,
+                len(losers),
+            )
+    return {
+        "status": "ok",
+        "concluded": promoted + retired,
+        "promoted": promoted,
+        "retired": retired,
+        "skipped_no_control": skipped,
+    }
 
-    return _run_async(_run())
+
+@celery_app.task(name="app.scaling.tasks.conclude_stale_experiments", queue="maintenance")
+def conclude_stale_experiments() -> dict:
+    """Conclude A/B optimization experiments with no evidence for 30 days.
+
+    prompt_variants is FORCE RLS and this sweep is cross-tenant: it runs on the
+    maintenance (BYPASSRLS) factory under system_session (which fails loudly on
+    a NOBYPASSRLS role instead of matching no rows). A failure raises, so Celery
+    records it (it used to return {"status": "error"} as a SUCCESS).
+    """
+    from app.db.session import get_system_session_factory
+
+    return _run_async(_conclude_stale_experiments_async(get_system_session_factory()))
 
 
 @celery_app.task(
