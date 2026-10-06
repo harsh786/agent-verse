@@ -114,8 +114,8 @@ async def _verify_declared_auth(
     *,
     svc: Any,
     tenant_id: str,
-) -> None:
-    """Enforce ``trigger.webhook.auth: hmac`` (B2-9).
+) -> str | None:
+    """Enforce ``trigger.webhook.auth: hmac`` (B2-9); the verified secret, else None.
 
     The DSL accepted ``auth: hmac`` + ``hmac_secret`` but nothing read them, so
     an unsigned or forged delivery started a run. Any webhook/api trigger that
@@ -156,7 +156,8 @@ async def _verify_declared_auth(
                 detail="Webhook declares HMAC auth but has no secret configured",
             )
         check_signature(request.headers, raw, [secret])
-        return
+        return str(secret)
+    return None
 
 
 @router.post("/{token}")
@@ -211,13 +212,40 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
     if not any(t.get("type") in ("webhook", "api") for t in triggers):
         raise HTTPException(status_code=400, detail="Workflow has no webhook/api trigger")
 
-    await _verify_declared_auth(request, triggers, raw, svc=svc, tenant_id=tenant_id)
+    secret = await _verify_declared_auth(request, triggers, raw, svc=svc, tenant_id=tenant_id)
+
+    # WF-REPLAY-1: a signed delivery's identity comes from the signed bytes only
+    # (the delivery-id header is not signed), and an accepted one is remembered
+    # in workflow_webhook_replay_guard so a captured delivery cannot run again.
+    from app.workflow import webhook_replay
+
+    guard_db = getattr(request.app.state, "db_session_factory", None)
+    signed_key = webhook_replay.signed_replay_key(request.headers, raw) if secret else ""
+    ref = webhook_replay.secret_ref(secret) if secret else ""
+    if signed_key and guard_db is not None:
+        try:
+            replayed = await webhook_replay.already_accepted(
+                guard_db, tenant_id, workflow_id, signed_key, ref
+            )
+        except Exception as exc:
+            _log.error("workflow_webhook_replay_guard_unreadable", error=type(exc).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Webhook replay guard unavailable; retry later",
+                headers={"Retry-After": "30"},
+            ) from exc
+        if replayed:
+            _log.warning("workflow_webhook_replay_refused", workflow_id=workflow_id)
+            return {"status": "duplicate", "run_id": None, "workflow_id": workflow_id}
 
     await _enforce_rate_limit(request, runner, tenant_id=tenant_id, workflow_id=workflow_id)
 
     # Sender retries carry the same delivery id: dedupe on it through the run
     # store's (tenant, workflow, idempotency_key) unique index — across replicas.
+    # A signed delivery dedupes on its signed identity instead (WF-REPLAY-1).
     idempotency_key = _delivery_key(request)
+    if signed_key:
+        idempotency_key = webhook_replay.run_identity(signed_key, idempotency_key)
     extra: dict[str, Any] = {}
     if idempotency_key and getattr(runner, "_run_store", None) is not None:
         extra["idempotency_key"] = idempotency_key
@@ -238,7 +266,7 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
         # The payload itself is unacceptable: retrying it can never succeed.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        return await _dead_letter(
+        queued = await _dead_letter(
             runner,
             tenant_id=tenant_id,
             workflow_id=workflow_id,
@@ -247,8 +275,29 @@ async def fire_workflow_webhook(token: str, request: Request) -> Any:
             exc=exc,
             idempotency_key=extra.get("idempotency_key"),
         )
+        # Accepted for the dead-letter retry: the sender will not redeliver it.
+        await _remember_signed(guard_db, tenant_id, workflow_id, signed_key, ref)
+        return queued
+    await _remember_signed(guard_db, tenant_id, workflow_id, signed_key, ref)
     _log.info("workflow_webhook_fired", workflow_id=workflow_id, run_id=run_id)
     return {"status": "accepted", "run_id": run_id, "workflow_id": workflow_id}
+
+
+async def _remember_signed(
+    db: Any, tenant_id: str, workflow_id: str, signed_key: str, ref: str
+) -> None:
+    """Record an accepted signed delivery in the replay guard (WF-REPLAY-1).
+
+    A write error is logged: the run store's idempotency index (keyed on the
+    same signed identity) still dedupes the replay while the run row exists."""
+    if not signed_key or db is None:
+        return
+    from app.workflow import webhook_replay
+
+    try:
+        await webhook_replay.record_accepted(db, tenant_id, workflow_id, signed_key, ref)
+    except Exception as exc:
+        _log.warning("workflow_webhook_replay_guard_write_failed", error=type(exc).__name__)
 
 
 async def _dead_letter(
