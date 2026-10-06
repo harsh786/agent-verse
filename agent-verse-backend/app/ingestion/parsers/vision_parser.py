@@ -239,14 +239,14 @@ class VisionParser:
         )
         from app.providers.guarded_completion import (
             complete_decision,
-            generation_timeout_seconds,
+            vision_timeout_seconds,
         )
 
         response = await complete_decision(
             provider,
             request,
             role="vision_parse",
-            timeout_seconds=generation_timeout_seconds(),
+            timeout_seconds=vision_timeout_seconds(),
             # A failing / timing-out vision model fails over to the next one in
             # the Model Registry vision order (it used to be a single-model call).
             fallback_models=_vision_fallback_models(primary),

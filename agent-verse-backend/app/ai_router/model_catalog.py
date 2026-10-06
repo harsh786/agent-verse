@@ -110,8 +110,9 @@ _STATIC: tuple[CatalogProvider, ...] = (
             # and add OCR to it in the registry to use it for OCR).
             _M("meta/llama-3.2-90b-vision-instruct", ("text_generation", "vision"), 0.0002,
                0.0006, 0.80),
-            _M("nvidia/nemotron-3-embed-1b", _EMBED, 0.00002, 0.0, 0.80),
-            _M("nvidia/llama-nemotron-embed-vl-1b-v2", _EMBED, 0.00002, 0.0, 0.79),
+            _M("nvidia/nemotron-3-embed-1b", _EMBED, 0.00002, 0.0, 0.80, dimensions=2048),
+            _M("nvidia/llama-nemotron-embed-vl-1b-v2", _EMBED, 0.00002, 0.0, 0.79,
+               dimensions=2048),
             _M("nvidia/nv-rerankqa-mistral-4b-v3", _RERANK, 0.00003, 0.0, 0.78),
         ),
     ),
