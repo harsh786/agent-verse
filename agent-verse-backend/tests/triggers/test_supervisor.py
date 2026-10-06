@@ -41,11 +41,17 @@ class FakeDispatcher:
         return None
 
 
+class FakeNotifications:
+    async def notify_goal_outcome(self, **_k: Any) -> dict[str, Any]:
+        return {"sent": 0, "channels": []}
+
+
 def _full_supervisor(**overrides: Any) -> TriggerConsumerSupervisor:
     kwargs: dict[str, Any] = {
         "schedule_store": FakeStore(),
         "dispatcher": FakeDispatcher(),
         "redis": FakeRedis(),
+        "notification_service": FakeNotifications(),
     }
     kwargs.update(overrides)
     return TriggerConsumerSupervisor(**kwargs)
@@ -58,8 +64,9 @@ async def test_start_spawns_one_task_per_core_consumer() -> None:
     sup = _full_supervisor()
     try:
         await sup.start()
-        # chain, hitl, memory, event, condition, conversational
-        assert len(sup.tasks) == 6
+        # chain, hitl, memory, event, condition, conversational + the opt-in
+        # goal notification consumer (a08-F196-05)
+        assert len(sup.tasks) == 7
         assert {c.__class__.__name__ for c in sup.consumers} == {
             "ChainTriggerConsumer",
             "HITLTriggerConsumer",
@@ -67,6 +74,7 @@ async def test_start_spawns_one_task_per_core_consumer() -> None:
             "EventTriggerConsumer",
             "ConditionTriggerConsumer",
             "ConversationalTriggerConsumer",
+            "GoalNotificationConsumer",
         }
         assert not sup.skipped
     finally:
@@ -78,8 +86,8 @@ async def test_start_skips_all_when_redis_missing() -> None:
     try:
         await sup.start()
         assert sup.tasks == []
-        # All six core consumers skipped for the missing dependency.
-        assert len(sup.skipped) == 6
+        # All six core consumers + the goal notification consumer skipped.
+        assert len(sup.skipped) == 7
         assert all(reason == "missing_deps" for _, reason in sup.skipped)
     finally:
         await sup.stop()
@@ -89,7 +97,8 @@ async def test_start_skips_when_dispatcher_missing() -> None:
     sup = _full_supervisor(dispatcher=None)
     try:
         await sup.start()
-        assert sup.tasks == []
+        # The goal notification consumer needs no dispatcher; the six core ones do.
+        assert [c.__class__.__name__ for c in sup.consumers] == ["GoalNotificationConsumer"]
         assert len(sup.skipped) == 6
     finally:
         await sup.stop()
@@ -114,7 +123,7 @@ async def test_extended_families_mix_when_flag_on() -> None:
         await sup.start()
         started = {c.__class__.__name__ for c in sup.consumers}
         assert "ChainTriggerConsumer" in started
-        assert len(sup.tasks) == 6
+        assert len(sup.tasks) == 7  # 6 core + goal notifications
         skipped_names = {name for name, _ in sup.skipped}
         assert "MQTTTriggerConsumer" in skipped_names
     finally:

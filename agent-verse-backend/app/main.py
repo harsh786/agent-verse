@@ -2789,6 +2789,8 @@ def create_app(
                         schedule_store=getattr(app.state, "schedule_store", None),
                         dispatcher=getattr(app.state, "trigger_dispatcher", None),
                         redis=redis_for_runtime,
+                        notification_service=getattr(app.state, "notification_service", None),
+                        db_session_factory=db_factory,
                         enable_extended=getattr(
                             settings, "triggers_extended_consumers_enabled", False
                         ),

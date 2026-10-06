@@ -236,9 +236,9 @@ class TestNotifyApprovalRequired:
         assert result["sent"] == 1
 
 
-# ── notify_goal_complete ──────────────────────────────────────────────────────
+# ── notify_goal_outcome ───────────────────────────────────────────────────────
 
-class TestNotifyGoalComplete:
+class TestNotifyGoalOutcome:
     async def test_notify_complete_status(self) -> None:
         svc = NotificationService()
         svc.add_channel(_webhook_channel())
@@ -251,7 +251,7 @@ class TestNotifyGoalComplete:
         with patch("httpx.AsyncClient") as mock_httpx:
             mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_httpx.return_value.__aexit__ = AsyncMock(return_value=False)
-            await svc.notify_goal_complete(goal_id="g1", status="complete", tenant_id="t1")
+            await svc.notify_goal_outcome(goal_id="g1", status="complete", tenant_id="t1")
 
         mock_client.post.assert_called_once()
 
@@ -267,13 +267,13 @@ class TestNotifyGoalComplete:
         with patch("httpx.AsyncClient") as mock_httpx:
             mock_httpx.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             mock_httpx.return_value.__aexit__ = AsyncMock(return_value=False)
-            await svc.notify_goal_complete(goal_id="g1", status="failed", tenant_id="t1")
+            await svc.notify_goal_outcome(goal_id="g1", status="failed", tenant_id="t1")
 
         mock_client.post.assert_called_once()
 
     async def test_notify_no_channels_noop(self) -> None:
         svc = NotificationService()
-        await svc.notify_goal_complete(goal_id="g1", status="complete", tenant_id="t1")
+        await svc.notify_goal_outcome(goal_id="g1", status="complete", tenant_id="t1")
 
     async def test_send_error_is_logged_not_raised(self) -> None:
         svc = NotificationService()
@@ -285,7 +285,7 @@ class TestNotifyGoalComplete:
             )
             mock_httpx.return_value.__aexit__ = AsyncMock(return_value=False)
             # Must not raise
-            await svc.notify_goal_complete(goal_id="g1", status="failed", tenant_id="t1")
+            await svc.notify_goal_outcome(goal_id="g1", status="failed", tenant_id="t1")
 
 
 # ── _send (internal routing) ──────────────────────────────────────────────────

@@ -484,21 +484,45 @@ class NotificationService:
                 )
         return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
 
-    async def notify_goal_complete(self, *, goal_id: str, status: str, tenant_id: str) -> None:
-        """Notify when a goal reaches a terminal state."""
+    async def notify_goal_outcome(
+        self, *, goal_id: str, status: str, tenant_id: str, summary: str = ""
+    ) -> dict[str, Any]:
+        """Send a goal outcome (complete / failed) to every channel of the tenant.
+
+        Called by the opt-in goal notification consumer (a08-F196-05); *summary*
+        is already sanitized there (redacted goal text or failure reason — never
+        raw tool output). Returns per-channel results like the other notify_*
+        methods; a channel that fails is reported, never raised.
+        """
         await self.ensure_tenant_loaded(tenant_id)
         channels = self.get_channels(tenant_id)
+        if not channels:
+            return {"sent": 0, "channels": []}
+        ok = status == "complete"
+        title = "Goal completed" if ok else "Goal failed"
+        lines = [f"{'✅' if ok else '❌'} *{title}*", f"Goal: `{goal_id}`", f"Status: `{status}`"]
+        if summary:
+            lines.append(("Summary: " if ok else "Reason: ") + summary)
         message = {
             "type": "goal_terminal",
             "goal_id": goal_id,
             "status": status,
-            "text": f"{'✅' if status == 'complete' else '❌'} Goal `{goal_id}` {status}",
+            "summary": summary,
+            "text": "\n".join(lines),
         }
+        results = []
         for channel in channels:
             try:
                 await self._send(channel, message)
+                results.append({"channel_id": channel.channel_id, "status": "sent"})
             except Exception as exc:
-                logger.warning("goal_notification_failed", error=str(exc))
+                logger.warning(
+                    "goal_notification_failed", channel_id=channel.channel_id, error=str(exc)[:200]
+                )
+                results.append(
+                    {"channel_id": channel.channel_id, "status": "failed", "error": str(exc)[:200]}
+                )
+        return {"sent": sum(1 for r in results if r["status"] == "sent"), "channels": results}
 
     async def notify_budget_alert(self, alert: dict[str, Any]) -> None:
         """Send a budget threshold alert to every channel of the tenant (COST-03)."""

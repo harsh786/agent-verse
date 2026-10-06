@@ -812,84 +812,98 @@ describe('SettingsPage – Notifications tab', () => {
     vi.restoreAllMocks();
   });
 
-  test('renders all notification preference toggles with default state', async () => {
-    makeSettingsFetch({});
+  function notifFetch(serverPrefs: object | null, puts: object[] = []) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/tenants/me/notifications') && init?.method === 'PUT') {
+        const change = JSON.parse(String(init.body));
+        puts.push(change);
+        return new Response(
+          JSON.stringify({ status: 'updated', preferences: { ...(serverPrefs ?? {}), ...change } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      if (url.endsWith('/tenants/me/notifications')) {
+        if (serverPrefs === null) return new Response(null, { status: 503 });
+        return new Response(JSON.stringify(serverPrefs), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+  }
+
+  const SERVER_DEFAULTS = {
+    goalComplete: false,
+    goalFailed: false,
+    budgetAlert: true,
+    hitlPending: true,
+    weeklyReport: false,
+  };
+
+  test('a08-F196-05: goal notifications are shown OFF by default (opt-in)', async () => {
+    notifFetch(SERVER_DEFAULTS);
     renderSettingsPage('notifications');
     expect(await screen.findByText('Notification Preferences')).toBeInTheDocument();
     expect(screen.getByText('Goal completed')).toBeInTheDocument();
-    expect(screen.getByText('Weekly digest')).toBeInTheDocument();
     const switches = screen.getAllByRole('switch');
     expect(switches).toHaveLength(5);
-    // weeklyReport defaults to false, the rest default to true
-    expect(switches[4]).toHaveAttribute('aria-checked', 'false');
-    expect(switches[0]).toHaveAttribute('aria-checked', 'true');
+    expect(switches[0]).toHaveAttribute('aria-checked', 'false'); // goalComplete
+    expect(switches[1]).toHaveAttribute('aria-checked', 'false'); // goalFailed
+    expect(switches[2]).toHaveAttribute('aria-checked', 'true'); // budgetAlert
+    expect(switches[4]).toHaveAttribute('aria-checked', 'false'); // weeklyReport
   });
 
-  test('toggling a preference flips it, persists to localStorage, and PUTs to the API', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.endsWith('/tenants/me/notifications') && init?.method === 'PUT') {
-        return new Response(null, { status: 200 });
-      }
-      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    });
-    renderSettingsPage('notifications');
-    await screen.findByText('Notification Preferences');
-    await userEvent.click(screen.getByText('Weekly digest'));
-
-    await waitFor(() =>
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringMatching(/\/tenants\/me\/notifications$/),
-        expect.objectContaining({ method: 'PUT' })
-      )
-    );
-    const stored = JSON.parse(localStorage.getItem('av_notification_prefs')!);
-    expect(stored.weeklyReport).toBe(true);
-  });
-
-  test('falls back gracefully when the notifications PUT endpoint is unavailable', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.endsWith('/tenants/me/notifications') && init?.method === 'PUT') {
-        return new Response(null, { status: 404 });
-      }
-      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    });
-    renderSettingsPage('notifications');
-    await screen.findByText('Notification Preferences');
-    await userEvent.click(screen.getByText('Goal failed'));
-    const stored = JSON.parse(localStorage.getItem('av_notification_prefs')!);
-    expect(stored.goalFailed).toBe(false);
-  });
-
-  test('falls back to defaults when localStorage contains corrupted JSON', async () => {
-    localStorage.setItem('av_notification_prefs', '{not valid json');
-    makeSettingsFetch({});
-    renderSettingsPage('notifications');
-    await screen.findByText('Notification Preferences');
-    const switches = screen.getAllByRole('switch');
-    // Defaults: everything true except weeklyReport
-    expect(switches[0]).toHaveAttribute('aria-checked', 'true');
-    expect(switches[4]).toHaveAttribute('aria-checked', 'false');
-  });
-
-  test('loads persisted preferences from localStorage on mount', async () => {
+  test('a08-F196-05: an old localStorage copy (goal prefs on) is ignored and never saved', async () => {
     localStorage.setItem(
       'av_notification_prefs',
-      JSON.stringify({
-        goalComplete: false,
-        goalFailed: false,
-        budgetAlert: false,
-        hitlPending: false,
-        weeklyReport: true,
-      })
+      JSON.stringify({ ...SERVER_DEFAULTS, goalComplete: true, goalFailed: true }),
     );
-    makeSettingsFetch({});
+    const puts: object[] = [];
+    notifFetch(SERVER_DEFAULTS, puts);
     renderSettingsPage('notifications');
     await screen.findByText('Notification Preferences');
-    const switches = screen.getAllByRole('switch');
-    expect(switches[0]).toHaveAttribute('aria-checked', 'false');
-    expect(switches[4]).toHaveAttribute('aria-checked', 'true');
+    await waitFor(() =>
+      expect(screen.getAllByRole('switch')[0]).toHaveAttribute('aria-checked', 'false'),
+    );
+    await userEvent.click(screen.getByText('Weekly digest'));
+    await waitFor(() => expect(puts).toEqual([{ weeklyReport: true }]));
+  });
+
+  test('toggling sends only the changed key and shows the server result', async () => {
+    const puts: object[] = [];
+    notifFetch(SERVER_DEFAULTS, puts);
+    renderSettingsPage('notifications');
+    await screen.findByText('Notification Preferences');
+    await waitFor(() =>
+      expect(screen.getAllByRole('switch')[0]).toHaveAttribute('aria-checked', 'false'),
+    );
+    await userEvent.click(screen.getByText('Goal completed'));
+    await waitFor(() => expect(puts).toEqual([{ goalComplete: true }]));
+    await waitFor(() =>
+      expect(screen.getAllByRole('switch')[0]).toHaveAttribute('aria-checked', 'true'),
+    );
+  });
+
+  test('shows the server-stored choices', async () => {
+    notifFetch({ ...SERVER_DEFAULTS, goalFailed: true, budgetAlert: false });
+    renderSettingsPage('notifications');
+    await screen.findByText('Notification Preferences');
+    await waitFor(() =>
+      expect(screen.getAllByRole('switch')[1]).toHaveAttribute('aria-checked', 'true'),
+    );
+    expect(screen.getAllByRole('switch')[2]).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('when preferences cannot be loaded nothing is saved and an error is shown', async () => {
+    const puts: object[] = [];
+    notifFetch(null, puts);
+    renderSettingsPage('notifications');
+    expect(await screen.findByText(/could not be loaded/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Goal completed'));
+    expect(puts).toEqual([]);
+    expect(screen.getAllByRole('switch')[0]).toHaveAttribute('aria-checked', 'false');
   });
 });
 

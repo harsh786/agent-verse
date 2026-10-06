@@ -448,7 +448,7 @@ def test_get_notifications_defaults_without_redis() -> None:
     resp = client.get("/tenants/me/notifications", headers=H)
     assert resp.status_code == 200
     body = resp.json()
-    assert body["goalComplete"] is True
+    assert body["goalComplete"] is False  # goal notifications are opt-in (F196-05)
     assert body["weeklyReport"] is False
 
 

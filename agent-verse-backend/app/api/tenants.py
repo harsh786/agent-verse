@@ -1434,52 +1434,48 @@ async def set_chat_transcripts_knowledge(
     return {"enabled": False, **report}
 
 
-_NOTIFICATION_KEYS = frozenset(
-    {"goalComplete", "goalFailed", "budgetAlert", "hitlPending", "weeklyReport"}
-)
-
-
 @router.get("/me/notifications")
 async def get_notifications(request: Request) -> dict:
-    """Get tenant notification preferences."""
-    tenant = _require_tenant(request)
-    prefs: dict = {
-        "goalComplete": True,
-        "goalFailed": True,
-        "budgetAlert": True,
-        "hitlPending": True,
-        "weeklyReport": False,
-    }
-    redis = getattr(request.app.state, "_redis", None)
-    if redis is not None:
-        import json
+    """Get tenant notification preferences.
 
-        try:
-            stored = await redis.get(f"notif_prefs:{tenant.tenant_id}")
-        except Exception as exc:
-            # Not the defaults: that would show "saved" preferences as reset.
-            raise HTTPException(
-                status_code=503, detail="Notification preferences unavailable"
-            ) from exc
-        if stored:
-            prefs.update(json.loads(stored))
-    return prefs
+    a08-F196-05: goal outcome notifications are opt-in. ``goalComplete`` /
+    ``goalFailed`` are off unless the tenant switched them on with the current
+    PUT; a record saved before they were delivered counts as never set.
+    """
+    from app.services.notification_prefs import DEFAULT_PREFS, load_prefs
+
+    tenant = _require_tenant(request)
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is None:
+        return dict(DEFAULT_PREFS)
+    try:
+        return await load_prefs(redis, tenant.tenant_id)
+    except Exception as exc:
+        # Not the defaults: that would show "saved" preferences as reset.
+        raise HTTPException(status_code=503, detail="Notification preferences unavailable") from exc
 
 
 @router.put("/me/notifications")
 async def update_notifications(request: Request) -> dict:
-    """Update tenant notification preferences."""
+    """Update tenant notification preferences (merged into the current ones)."""
+    from app.services.notification_prefs import (
+        NOTIFICATION_KEYS,
+        load_prefs,
+        prefs_key,
+        serialize_prefs,
+    )
+
     tenant = _require_tenant(request)
     try:
         body = await request.json()
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Body must be a JSON object") from exc
     if not isinstance(body, dict) or not all(
-        k in _NOTIFICATION_KEYS and isinstance(v, bool) for k, v in body.items()
+        k in NOTIFICATION_KEYS and isinstance(v, bool) for k, v in body.items()
     ):
         raise HTTPException(
             status_code=422,
-            detail=f"Body must map {sorted(_NOTIFICATION_KEYS)} to booleans",
+            detail=f"Body must map {sorted(NOTIFICATION_KEYS)} to booleans",
         )
 
     # "updated" used to be returned with no Redis wired and on a Redis error,
@@ -1487,15 +1483,15 @@ async def update_notifications(request: Request) -> dict:
     redis = getattr(request.app.state, "_redis", None)
     if redis is None:
         raise HTTPException(status_code=503, detail="Notification preferences store unavailable")
-    import json
-
     try:
-        await redis.set(f"notif_prefs:{tenant.tenant_id}", json.dumps(body))
+        # A partial update keeps the other choices (it used to replace the record).
+        prefs = {**(await load_prefs(redis, tenant.tenant_id)), **body}
+        await redis.set(prefs_key(tenant.tenant_id), serialize_prefs(prefs))
     except Exception as exc:
         raise HTTPException(
             status_code=503, detail="Notification preferences could not be saved"
         ) from exc
-    return {"status": "updated", "preferences": body}
+    return {"status": "updated", "preferences": prefs}
 
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
