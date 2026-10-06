@@ -988,10 +988,8 @@ class VerifierMixin:
                     )
                     self._background_tasks.add(_v2_task)
                     _v2_task.add_done_callback(self._background_tasks.discard)
-            # MEM-29: no ABTestingEngine record here. It filed every goal as a
-            # RAG_STRATEGY result under the SelfOptimizerV2 arm (or "control"),
-            # yet nothing assigns ABTestingEngine arms or reads its stats — the
-            # telemetry was mislabelled. SelfOptimizerV2 records its own arms above.
+            # MEM-29 / a05-F089-01: the arm-less ABTestingEngine is gone; the
+            # live A/B loops are SelfOptimizerV2 (above) and PromptOptimizer.
         else:
             scorecard = None
             # FIX: On permanent failure (retry=False), roll back all registered actions

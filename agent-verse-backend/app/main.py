@@ -2166,18 +2166,6 @@ def create_app(
             except Exception as _cal_exc:
                 logger.warning("verifier_calibration_wire_failed", error=str(_cal_exc))
 
-            # Wire DB into ABTestingEngine. No startup hydration: that was a
-            # cross-tenant scan of ab_test_results (zero rows under the
-            # NOBYPASSRLS role, and a mixed-tenant pool otherwise). Each
-            # tenant's history now loads lazily, tenant-scoped, on first use.
-            try:
-                from app.optimization.ab_testing import ab_testing_engine as _ab_engine
-
-                _ab_engine._db_factory = db_factory
-                logger.info("ab_testing_engine_wired")
-            except Exception as _ab_exc:
-                logger.warning("ab_testing_engine_wire_failed", error=str(_ab_exc))
-
             # Wire Episodic and Procedural memory stores (same helper as the
             # Celery worker, so both run paths get the same service set).
             try:

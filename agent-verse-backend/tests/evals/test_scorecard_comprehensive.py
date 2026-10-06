@@ -1,12 +1,11 @@
 """Comprehensive scorecard and eval tests (25+ tests).
 
-Tests RuntimeScorecard, SelfImprovementEngine, ABTestingEngine, EvalRunner.
+Tests RuntimeScorecard, SelfImprovementEngine, EvalRunner.
 """
 from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from app.providers.fake import FakeProvider
 
@@ -251,81 +250,6 @@ class TestSelfImprovementEngine:
         actions = engine.decide_actions(scorecard, profile)
         action_types = [a.action_type for a in actions]
         assert ImprovementAction.UPDATE_MODEL_ROUTING in action_types
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ABTestingEngine
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestABTestingEngine:
-    def test_init(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine
-        engine = ABTestingEngine()
-        assert engine._results == {}
-
-    def test_get_experiment_arm_deterministic(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-        engine = ABTestingEngine()
-        arm1 = engine.get_experiment_arm("goal-123", ExperimentType.PLANNER_PROMPT)
-        arm2 = engine.get_experiment_arm("goal-123", ExperimentType.PLANNER_PROMPT)
-        assert arm1.arm_id == arm2.arm_id
-
-    def test_get_experiment_arm_returns_valid_arm(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-        engine = ABTestingEngine()
-        arm = engine.get_experiment_arm("goal-1", ExperimentType.MODEL_ROUTING)
-        assert arm.arm_id in ("control", "variant_a", "variant_b")
-
-    def test_record_result_and_get_stats(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-        engine = ABTestingEngine()
-        engine.record_result("g1", ExperimentType.PLANNER_PROMPT, "control", 0.8)
-        engine.record_result("g2", ExperimentType.PLANNER_PROMPT, "control", 0.6)
-        stats = engine.get_arm_stats(ExperimentType.PLANNER_PROMPT, "control")
-        assert stats["call_count"] == 2
-        assert stats["avg_score"] == pytest.approx(0.7, abs=0.01)
-
-    def test_get_arm_stats_no_data(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-        engine = ABTestingEngine()
-        stats = engine.get_arm_stats(ExperimentType.RAG_STRATEGY, "variant_a")
-        assert stats["call_count"] == 0
-        assert stats["avg_score"] == 0.0
-
-    def test_can_promote_variant_below_threshold(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-        engine = ABTestingEngine()
-        # Populate enough data
-        for i in range(5):
-            engine.record_result(f"g{i}", ExperimentType.RAG_STRATEGY, "variant_a", 0.5)
-        result = engine.can_promote_variant(
-            ExperimentType.RAG_STRATEGY, "variant_a", 0.8, 0.5
-        )
-        assert result is False
-
-    def test_can_promote_variant_above_threshold(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-        engine = ABTestingEngine()
-        for i in range(5):
-            engine.record_result(f"g{i}", ExperimentType.RAG_STRATEGY, "variant_b", 0.9)
-        result = engine.can_promote_variant(
-            ExperimentType.RAG_STRATEGY, "variant_b", 0.8, 0.9
-        )
-        assert result is True
-
-    async def test_record_result_async_no_db(self) -> None:
-        from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-        engine = ABTestingEngine()
-        await engine.record_result_async(
-            "g1", ExperimentType.MODEL_ROUTING, "control", 0.75, tenant_id="t1"
-        )
-        stats = engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control", tenant_id="t1")
-        assert stats["call_count"] == 1
-        # Results are tenant-scoped: no other tenant (nor the tenant-less pool)
-        # sees t1's result.
-        other = engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control", tenant_id="t2")
-        assert other["call_count"] == 0
-        assert engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control")["call_count"] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

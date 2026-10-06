@@ -101,42 +101,6 @@ def test_budget_out_of_range_is_422_not_500(body: dict) -> None:
     assert resp.status_code == 422, resp.text
 
 
-# ── ab_test_results ────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_ab_record_hydrates_then_inserts_tenant_scoped() -> None:
-    from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-
-    session = RecordingSession()
-    engine = ABTestingEngine(db_factory=factory_for(session))
-    await engine.record_result_async(
-        "g", ExperimentType.RAG_STRATEGY, "control", 0.7, tenant_id=TID
-    )
-    await engine.record_result_async(
-        "g2", ExperimentType.RAG_STRATEGY, "control", 0.9, tenant_id=TID
-    )
-
-    assert session.guc_calls[0] == TID and session.log[0] == f"guc:{TID}"
-    selects = [s for s, _ in session.statements if "SELECT" in s]
-    inserts = [p for s, p in session.statements if "INSERT INTO ab_test_results" in s]
-    assert len(selects) == 1, "history must hydrate once per tenant, not per result"
-    assert "WHERE tenant_id = :tid" in selects[0]
-    assert [p["tenant_id"] for p in inserts] == [TID, TID]
-    assert engine.get_arm_stats(ExperimentType.RAG_STRATEGY, "control", TID)["call_count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_ab_without_tenant_never_touches_db() -> None:
-    from app.optimization.ab_testing import ABTestingEngine, ExperimentType
-
-    session = RecordingSession()
-    engine = ABTestingEngine(db_factory=factory_for(session))
-    await engine.record_result_async("g", ExperimentType.RAG_STRATEGY, "control", 0.5)
-    assert await engine.load_from_db(tenant_id="") == 0
-    assert session.statements == [] and session.guc_calls == []
-
-
 # ── cost_ledger (analytics) ────────────────────────────────────────────────────
 
 
